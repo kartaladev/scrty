@@ -1,7 +1,10 @@
 package logsample_test
 
 import (
+	"fmt"
+	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -275,5 +278,87 @@ func TestSampler_ReentrantReporterDoesNotDeadlock(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("reporter calling Allow deadlocked")
+	}
+}
+
+func TestSampler_TotalsBalance(t *testing.T) {
+	t.Parallel()
+
+	type counts struct {
+		suppressedEvents atomic.Int64 // events Allow marked as suppressed
+		writtenCounts    atomic.Int64 // suppressed counts returned on written events
+	}
+
+	record := func(c *counts, write bool, n int) {
+		if write {
+			c.writtenCounts.Add(int64(n))
+			return
+		}
+		c.suppressedEvents.Add(1)
+	}
+
+	type testCase struct {
+		name   string
+		drive  func(s *logsample.Sampler, c *counts)
+		assert func(t *testing.T, suppressed, written, reported int64)
+	}
+
+	balanced := func(t *testing.T, suppressed, written, reported int64) {
+		assert.Positive(t, suppressed)
+		assert.Equal(t, suppressed, written+reported)
+	}
+
+	cases := []testCase{
+		{
+			name: "sequential random sequence",
+			drive: func(s *logsample.Sampler, c *counts) {
+				rng := rand.New(rand.NewPCG(42, 99))
+				at := base
+				for range 200_000 {
+					at = at.Add(time.Duration(rng.IntN(20_000)) * time.Millisecond)
+					switch rng.IntN(1000) {
+					case 0:
+						at = at.Add(3 * time.Minute)
+					case 1:
+						at = at.Add(-30 * time.Second)
+					}
+					w, n := s.Allow(fmt.Sprintf("k%d", rng.IntN(50)), at)
+					record(c, w, n)
+				}
+			},
+			assert: balanced,
+		},
+		{
+			name: "64 concurrent goroutines",
+			drive: func(s *logsample.Sampler, c *counts) {
+				var clock atomic.Int64
+				clock.Store(base.UnixNano())
+				var wg sync.WaitGroup
+				for worker := range 64 {
+					wg.Go(func() {
+						rng := rand.New(rand.NewPCG(uint64(worker), 7))
+						for range 5_000 {
+							at := time.Unix(0, clock.Add(int64(rng.IntN(50))*int64(time.Millisecond)))
+							w, n := s.Allow(fmt.Sprintf("k%d", rng.IntN(20)), at)
+							record(c, w, n)
+						}
+					})
+				}
+				wg.Wait()
+			},
+			assert: balanced,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var reported atomic.Int64
+			s := logsample.New(time.Minute, logsample.WithReporter(func(_ string, n int) { reported.Add(int64(n)) }))
+			var c counts
+			tc.drive(s, &c)
+			s.Flush()
+			tc.assert(t, c.suppressedEvents.Load(), c.writtenCounts.Load(), reported.Load())
+		})
 	}
 }
