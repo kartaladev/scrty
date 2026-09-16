@@ -20,10 +20,12 @@ const (
 	seedMask    = 1<<seedBits - 1
 )
 
-// V7Generator produces RFC 9562 version 7 identifiers.
+// V7Generator produces RFC 9562 version 7 identifiers that strictly increase.
 type V7Generator struct {
-	now    func() time.Time
-	random io.Reader
+	now     func() time.Time
+	random  io.Reader
+	lastMS  int64
+	counter uint32
 }
 
 // V7Option configures a V7Generator.
@@ -59,11 +61,27 @@ func NewV7Generator(opts ...V7Option) *V7Generator {
 }
 
 // NewID returns the next identifier.
+//
+// In a new millisecond the 26-bit counter is re-seeded with 25 random bits. In the
+// same millisecond, or when the clock moved backwards, the last timestamp is kept
+// and the counter increments. On overflow the timestamp advances by 1 ms.
 func (g *V7Generator) NewID() (ID, error) {
 	var rnd [10]byte
 	_, _ = io.ReadFull(g.random, rnd[:])
 	seed := binary.BigEndian.Uint32(rnd[0:4]) & seedMask
-	return layout(g.now().UnixMilli(), seed, rnd[4:10]), nil
+
+	ms := g.now().UnixMilli()
+	switch {
+	case ms > g.lastMS:
+		g.lastMS = ms
+		g.counter = seed
+	case g.counter < counterMax:
+		g.counter++
+	default:
+		g.lastMS++
+		g.counter = seed
+	}
+	return layout(g.lastMS, g.counter, rnd[4:10]), nil
 }
 
 // layout places a 48-bit millisecond timestamp, the version, a 26-bit counter
