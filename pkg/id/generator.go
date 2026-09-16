@@ -3,7 +3,9 @@ package id
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"sync"
 	"time"
 )
 
@@ -21,7 +23,9 @@ const (
 )
 
 // V7Generator produces RFC 9562 version 7 identifiers that strictly increase.
+// It is safe for concurrent use.
 type V7Generator struct {
+	mu      sync.Mutex
 	now     func() time.Time
 	random  io.Reader
 	lastMS  int64
@@ -60,16 +64,20 @@ func NewV7Generator(opts ...V7Option) *V7Generator {
 	return g
 }
 
-// NewID returns the next identifier.
+// NewID returns the next identifier. It is safe for concurrent use.
 //
 // In a new millisecond the 26-bit counter is re-seeded with 25 random bits. In the
 // same millisecond, or when the clock moved backwards, the last timestamp is kept
-// and the counter increments. On overflow the timestamp advances by 1 ms.
+// and the counter increments. On overflow the timestamp advances by 1 ms. When the
+// random source fails, NewID returns an error wrapping it and no identifier.
 func (g *V7Generator) NewID() (ID, error) {
 	var rnd [10]byte
-	_, _ = io.ReadFull(g.random, rnd[:])
+	if _, err := io.ReadFull(g.random, rnd[:]); err != nil {
+		return Nil, fmt.Errorf("id: read random source: %w", err)
+	}
 	seed := binary.BigEndian.Uint32(rnd[0:4]) & seedMask
 
+	g.mu.Lock()
 	ms := g.now().UnixMilli()
 	switch {
 	case ms > g.lastMS:
@@ -81,7 +89,10 @@ func (g *V7Generator) NewID() (ID, error) {
 		g.lastMS++
 		g.counter = seed
 	}
-	return layout(g.lastMS, g.counter, rnd[4:10]), nil
+	ts, ctr := g.lastMS, g.counter
+	g.mu.Unlock()
+
+	return layout(ts, ctr, rnd[4:10]), nil
 }
 
 // layout places a 48-bit millisecond timestamp, the version, a 26-bit counter

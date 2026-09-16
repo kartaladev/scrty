@@ -3,9 +3,13 @@ package id_test
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"math/rand/v2"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -133,4 +137,57 @@ func TestV7Generator_Ordering(t *testing.T) {
 			tc.assert(t, tc.drive(t))
 		})
 	}
+}
+
+func TestV7Generator_Concurrent(t *testing.T) {
+	t.Parallel()
+
+	const workers, perWorker = 64, 1_000
+	gen := id.NewV7Generator()
+	results := make(chan id.ID, workers*perWorker)
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for range perWorker {
+				v, err := gen.NewID()
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				results <- v
+			}
+		})
+	}
+	wg.Wait()
+	close(results)
+
+	seen := make(map[id.ID]struct{}, workers*perWorker)
+	all := make([]id.ID, 0, workers*perWorker)
+	for v := range results {
+		_, dup := seen[v]
+		assert.False(t, dup, "duplicate %s", v)
+		seen[v] = struct{}{}
+		all = append(all, v)
+	}
+
+	byBytes := slices.Clone(all)
+	slices.SortFunc(byBytes, func(a, b id.ID) int { return bytes.Compare(a[:], b[:]) })
+	byString := slices.Clone(all)
+	slices.SortFunc(byString, func(a, b id.ID) int { return strings.Compare(a.String(), b.String()) })
+
+	assert.Len(t, seen, workers*perWorker)
+	assert.Equal(t, byBytes, byString)
+}
+
+func TestV7Generator_RandomSourceFailure(t *testing.T) {
+	t.Parallel()
+
+	errEntropy := errors.New("entropy exhausted")
+	gen := id.NewV7Generator(id.WithRandom(iotest.ErrReader(errEntropy)))
+
+	got, err := gen.NewID()
+
+	require.ErrorIs(t, err, errEntropy)
+	assert.True(t, got.IsZero())
 }

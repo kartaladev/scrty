@@ -35,7 +35,9 @@ func TestV7Generator_CounterOverflowBorrowsNextMillisecond(t *testing.T) {
 
 	first, err := g.NewID()
 	require.NoError(t, err)
+	g.mu.Lock()
 	g.counter = counterMax
+	g.mu.Unlock()
 
 	next, err := g.NewID()
 	require.NoError(t, err)
