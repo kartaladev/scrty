@@ -1,0 +1,5 @@
+# Local, never-committed reference snapshot (see .claude/rules/legacy-reference.md)
+.claude/.legacy/
+
+# Pinned tool binaries installed by `make tools`
+.bin/
