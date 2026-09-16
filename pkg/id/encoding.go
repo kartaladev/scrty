@@ -1,6 +1,7 @@
 package id
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 )
@@ -27,3 +28,30 @@ func (i *ID) UnmarshalJSON(data []byte) error {
 	}
 	return i.UnmarshalText([]byte(s))
 }
+
+// Scan implements sql.Scanner. It accepts canonical text (string or []byte) and
+// 16-byte binary. SQL NULL and every other type fail; scan nullable columns with
+// sql.Null[id.ID]. On error, i is left unchanged.
+func (i *ID) Scan(src any) error {
+	switch v := src.(type) {
+	case string:
+		return i.UnmarshalText([]byte(v))
+	case []byte:
+		switch len(v) {
+		case 16:
+			copy(i[:], v)
+			return nil
+		case 36:
+			return i.UnmarshalText(v)
+		}
+		return fmt.Errorf("%w: %d-byte SQL value", ErrInvalid, len(v))
+	case nil:
+		return fmt.Errorf("%w: SQL NULL", ErrInvalid)
+	default:
+		return fmt.Errorf("%w: unsupported SQL type %T", ErrInvalid, src)
+	}
+}
+
+// Value implements driver.Valuer and sends canonical text, which PostgreSQL accepts
+// for uuid and text columns. For a BINARY(16) column, pass i[:] explicitly.
+func (i ID) Value() (driver.Value, error) { return i.String(), nil }
