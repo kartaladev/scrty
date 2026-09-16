@@ -77,6 +77,21 @@ func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) 
 	return false, 0
 }
 
+// Flush reports every pending suppressed count, then forgets all keys, so the next
+// event for any key is written with a count of 0. It is safe on a nil Sampler.
+func (s *Sampler) Flush() {
+	if s == nil || s.window <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.evict(s.previous)
+	s.evict(s.current)
+	s.current, s.previous = nil, nil
+	s.windowStart = time.Time{}
+}
+
 // evict reports every non-zero count in m, in key order.
 func (s *Sampler) evict(m map[string]int) {
 	if s.report == nil {

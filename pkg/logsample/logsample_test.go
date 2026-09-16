@@ -192,3 +192,64 @@ func TestSampler_ReporterOnRotation(t *testing.T) {
 		})
 	}
 }
+
+func TestSampler_FlushAndLowerBound(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		reporter bool
+		drive    func(s *logsample.Sampler) []result
+		assert   func(t *testing.T, got []result, rec *recorder)
+	}
+
+	cases := []testCase{
+		{
+			name:     "flush at shutdown reports pending counts and forgets keys",
+			reporter: true,
+			drive: func(s *logsample.Sampler) []result {
+				got := run(s, []event{{"a", 0}, {"a", 10 * time.Second}, {"a", 20 * time.Second}})
+				s.Flush()
+				return append(got, run(s, []event{{"a", 30 * time.Second}})...)
+			},
+			assert: func(t *testing.T, got []result, rec *recorder) {
+				assert.Equal(t, map[string]int{"a": 2}, rec.got)
+				assert.Equal(t, result{true, 0}, got[3])
+			},
+		},
+		{
+			name: "flush without a reporter forgets keys",
+			drive: func(s *logsample.Sampler) []result {
+				run(s, []event{{"a", 0}, {"a", time.Second}})
+				s.Flush()
+				return run(s, []event{{"a", 2 * time.Second}})
+			},
+			assert: func(t *testing.T, got []result, _ *recorder) {
+				assert.Equal(t, []result{{true, 0}}, got)
+			},
+		},
+		{
+			name: "without a reporter an aged-out count is discarded",
+			drive: func(s *logsample.Sampler) []result {
+				return run(s, []event{{"a", 0}, {"a", time.Second}, {"a", 2 * time.Second}, {"a", 3 * time.Second}, {"a", 180 * time.Second}})
+			},
+			assert: func(t *testing.T, got []result, _ *recorder) {
+				assert.Equal(t, result{true, 0}, got[4])
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := &recorder{}
+			var opts []logsample.Option
+			if tc.reporter {
+				opts = append(opts, logsample.WithReporter(rec.report))
+			}
+			s := logsample.New(time.Minute, opts...)
+			got := tc.drive(s)
+			tc.assert(t, got, rec)
+		})
+	}
+}
