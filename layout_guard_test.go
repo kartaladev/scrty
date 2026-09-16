@@ -244,3 +244,22 @@ func hasViolation(where, what string) func(t *testing.T, vs []violation) {
 		require.Failf(t, "missing violation", "want a violation at %q mentioning %q, got %v", where, what, vs)
 	}
 }
+
+// listModules returns the module paths in dir's module graph.
+func listModules(t *testing.T, dir string, env []string) []string {
+	t.Helper()
+	return strings.Fields(goCmd(t, dir, env, "list", "-m", "-f", "{{.Path}}", "all"))
+}
+
+// realCoreConsumer writes a consumer module that requires the repository's core
+// module through a replace directive, in a temporary directory.
+func realCoreConsumer(t *testing.T) (string, []string) {
+	t.Helper()
+	root, err := filepath.Abs(".")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	gomod := "module example.com/consumer\n\ngo 1.26\n\nrequire github.com/kartaladev/scrty v0.0.0\n\nreplace github.com/kartaladev/scrty => " + root + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
+	// -mod=mod lets go list record go.sum entries for the core's own requirements, in the temp dir only.
+	return dir, []string{"GOFLAGS=-mod=mod"}
+}

@@ -1,6 +1,9 @@
 package scrty_test
 
 import (
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -71,6 +74,60 @@ func TestModuleLayout(t *testing.T) {
 			}
 
 			tc.assert(t, checkModule(t, dir))
+		})
+	}
+}
+
+func TestConsumerModuleGraph(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		consumer func(t *testing.T) (dir string, env []string)
+		assert   func(t *testing.T, modules []string)
+	}
+
+	fixtureConsumer := func(graph string) func(t *testing.T) (string, []string) {
+		return func(t *testing.T) (string, []string) {
+			return filepath.Join(copyFixture(t, graph), "consumer"), nil
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:     "helper used only inside its own module keeps the driver out",
+			consumer: fixtureConsumer("testdata/graph/clean"),
+			assert: func(t *testing.T, modules []string) {
+				assert.NotContains(t, modules, "example.com/driver")
+				assert.NotContains(t, modules, "example.com/core/test")
+			},
+		},
+		{
+			name:     "control: a core test file importing the helper leaks the driver",
+			consumer: fixtureConsumer("testdata/graph/leaky"),
+			assert: func(t *testing.T, modules []string) {
+				assert.Contains(t, modules, "example.com/driver")
+			},
+		},
+		{
+			name:     "consumer of the real core sees no integration module",
+			consumer: realCoreConsumer,
+			assert: func(t *testing.T, modules []string) {
+				for _, m := range modules {
+					for _, bad := range append(slices.Clone(integrationModules), testModule) {
+						assert.False(t, m == bad || strings.HasPrefix(m, bad+"/"), "consumer graph contains %s", m)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir, env := tc.consumer(t)
+			tc.assert(t, listModules(t, dir, env))
 		})
 	}
 }
