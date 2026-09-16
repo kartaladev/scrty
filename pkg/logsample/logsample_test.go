@@ -253,3 +253,27 @@ func TestSampler_FlushAndLowerBound(t *testing.T) {
 		})
 	}
 }
+
+// The reporter calls back into the Sampler, so this test has a different setup
+// from the tables above: it needs a self-referencing sampler and a deadlock guard.
+func TestSampler_ReentrantReporterDoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+
+	var s *logsample.Sampler
+	s = logsample.New(time.Minute, logsample.WithReporter(func(string, int) {
+		s.Allow("summary", base.Add(151*time.Second))
+	}))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run(s, []event{{"a", 0}, {"a", 10 * time.Second}, {"b", 150 * time.Second}})
+		s.Flush()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reporter calling Allow deadlocked")
+	}
+}

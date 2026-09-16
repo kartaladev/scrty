@@ -48,8 +48,8 @@ func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) 
 		return true, 0
 	}
 
+	var evicted []pending
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	switch elapsed := now.Sub(s.windowStart); {
 	case s.windowStart.IsZero():
@@ -57,11 +57,10 @@ func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) 
 	case now.Before(s.windowStart):
 		s.windowStart = now
 	case elapsed >= 2*s.window:
-		s.evict(s.previous)
-		s.evict(s.current)
+		evicted = collect(collect(evicted, s.previous), s.current)
 		s.reset(now)
 	case elapsed >= s.window:
-		s.evict(s.previous)
+		evicted = collect(evicted, s.previous)
 		s.windowStart = now
 		s.previous = s.current
 		s.current = map[string]int{}
@@ -71,10 +70,14 @@ func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) 
 		suppressed = s.previous[key]
 		delete(s.previous, key)
 		s.current[key] = 0
-		return true, suppressed
+		write = true
+	} else {
+		s.current[key]++
 	}
-	s.current[key]++
-	return false, 0
+	s.mu.Unlock()
+
+	s.deliver(evicted)
+	return write, suppressed
 }
 
 // Flush reports every pending suppressed count, then forgets all keys, so the next
@@ -84,23 +87,38 @@ func (s *Sampler) Flush() {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.evict(s.previous)
-	s.evict(s.current)
+	evicted := collect(collect(nil, s.previous), s.current)
 	s.current, s.previous = nil, nil
 	s.windowStart = time.Time{}
+	s.mu.Unlock()
+
+	s.deliver(evicted)
 }
 
-// evict reports every non-zero count in m, in key order.
-func (s *Sampler) evict(m map[string]int) {
+// pending is one key's suppressed count, waiting to be reported.
+type pending struct {
+	key        string
+	suppressed int
+}
+
+// collect appends every non-zero count in m, in key order.
+func collect(dst []pending, m map[string]int) []pending {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		if n := m[k]; n > 0 {
+			dst = append(dst, pending{key: k, suppressed: n})
+		}
+	}
+	return dst
+}
+
+// deliver calls the reporter on the calling goroutine. It must run without the lock
+// held, so a reporter may itself call Allow or Flush.
+func (s *Sampler) deliver(ps []pending) {
 	if s.report == nil {
 		return
 	}
-	for _, k := range slices.Sorted(maps.Keys(m)) {
-		if n := m[k]; n > 0 {
-			s.report(k, n)
-		}
+	for _, p := range ps {
+		s.report(p.key, p.suppressed)
 	}
 }
 
