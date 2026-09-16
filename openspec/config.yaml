@@ -1,23 +1,89 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  scrty is a public Go library for authentication and authorization, module
+  github.com/kartaladev/scrty. It is embedded by other applications and depends on no private
+  library.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Layout
+  - Core module: no framework, driver, scheduler or DI dependency. Go 1.26 minimum; CI on 1.26
+    and 1.27.
+  - Integrations are nested modules: ginsec (gin), fibersec (fiber v3), gorm, pgx,
+    sweep (scheduler), do (optional samber/do wiring).
+  - Shared test helpers, conformance suites and the tests that use them live in
+    github.com/kartaladev/scrty/test. No other scrty module imports it, not even from _test.go
+    files (a test-only import still leaks the helpers' drivers into consumers' module graphs).
+    Mocks never enter production builds.
+  - PostgreSQL in CI: the oldest and newest community-supported majors (currently 15 and 18);
+    the test helper defaults to the newest.
+  - Non-security helpers live under pkg/ (pkg/id, pkg/logsample).
+  - Plain constructors with functional options are the primary API; DI wiring is optional.
+
+  Identifiers and data ownership
+  - Library-owned records use pkg/id.ID: 16 bytes, UUIDv7 default generator, replaceable
+    id.Generator, canonical lowercase text, strict parsing, SQL as text. Identifiers are not
+    secrets; tokens, secrets and link codes come from crypto/rand.
+  - The user reference (identity.UserID) is an opaque, consumer-owned string the library never
+    parses, stored as text.
+  - Two table groups with separate migration sets:
+    - security state (sessions, signing keys, login attempts, MFA enrolments, API keys, one-time
+      tokens, OIDC links/flows/handoffs), always present in durable mode;
+    - an optional default identity store (users, roles, assigned roles, organizations, groups,
+      resource privileges) with a native uuid users.id.
+    No foreign keys or joins across the groups. A consumer with their own user tables implements
+    the identity ports and applies only the security-state migrations.
+  - Each persistence adapter owns its WithTx(ctx, tx) default plus a resolver option for a
+    consumer's existing transaction manager.
+
+  Reference implementation and JOSE
+  - scrty is informed by a mature internal predecessor. Its behaviour and recorded decisions are
+    the default. Depart from them only when a settled scrty decision requires it, or to fix a
+    demonstrable defect, and record every departure as a design decision. Its documents are never
+    copied or cited.
+  - github.com/lestrrat-go/jwx/v3 is the single JOSE/JWT/JWK stack. golang.org/x/oauth2 is
+    allowed for the OIDC code exchange.
+
+  HTTP and errors
+  - httpsec is a framework-agnostic net/http core built as an ordered around-interceptor chain.
+  - Errors propagate up the chain. Sentinel errors, a challenge error type and a status-only
+    mapping helper are the public contract. With nothing wired, responses are a bare status code
+    with no body, and requests fail closed. Rendering belongs to the consumer.
+  - Refusal logs are sampled with pkg/logsample; scrty's own callers always configure a reporter.
+
+  Security rules
+  - One-time credentials are check-then-consume: validate, resolve the account, run side-effect-
+    free refusal checks, then consume atomically last. A refusal or lookup failure never spends
+    the credential.
+  - Refused redemptions of a valid credential count against the per-source rate limit by default,
+    with an opt-out.
+  - Nothing brand-specific in defaults; a TOTP issuer is required configuration.
+  - Options are named after what they govern; one option never silently governs two subsystems.
+  - Rate limiting is in-memory by default; the N-replica multiplication is a documented limit.
+
+  Capability map (spec directory -> owning change)
+  - project-foundation: id-generation, log-sampling, module-layout
+  - identity-and-tokens: identity-model, password-encoding, token-issuance, signing-keys
+  - authn-authz-core: authentication, authorization, sessions, security-policy, rate-limiting,
+    one-time-tokens
+  - durable-persistence: security-state-stores, schema-migrations, store-conformance,
+    secrets-at-rest
+  - default-identity-store: default-identity-store
+  - http-security: http-security-chain, http-error-propagation, framework-adapters,
+    outbound-http-confinement
+  - auth-methods: multi-factor-auth, magic-link, api-keys, email-notification
+  - oidc-brokering: oidc-login, identity-linking, oidc-logout
+  - operations: expiry-sweeping, di-wiring
+  - follow-ups: mfa-enrolment-path (multi-factor-auth), oidc-mfa-assurance (oidc-login),
+    shared-rate-limiting (rate-limiting), bff-resource-server (bff-session, resource-server,
+    csrf-protection)
+
+rules:
+  design:
+    - Every decision that introduces or changes behaviour states the default and how a consumer overrides it, or why there is no override.
+  specs:
+    - Requirements describe the default behaviour; where an override exists, include a scenario showing the consumer's override.
+  tasks:
+    - Every task is test-first (red, green, refactor) and states how completion is verified.
 
 # Per-operation guidance (optional)
 # Add advisory guidance for how apply and archive work should be conducted.
