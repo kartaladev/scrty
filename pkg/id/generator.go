@@ -16,10 +16,12 @@ type Generator interface {
 }
 
 const (
-	counterBits = 26
-	seedBits    = 25
-	counterMax  = 1<<counterBits - 1
-	seedMask    = 1<<seedBits - 1
+	counterBits    = 26
+	counterLowBits = 14 // the counter bits carried at the top of rand_b
+	counterLowMask = 1<<counterLowBits - 1
+	seedBits       = 25
+	counterMax     = 1<<counterBits - 1
+	seedMask       = 1<<seedBits - 1
 )
 
 // V7Generator produces RFC 9562 version 7 identifiers that strictly increase.
@@ -99,18 +101,11 @@ func (g *V7Generator) NewID() (ID, error) {
 // (12 bits in rand_a, 14 bits at the top of rand_b), the variant and 48 random bits.
 func layout(ms int64, counter uint32, random []byte) ID {
 	var i ID
-	i[0] = byte(ms >> 40)
-	i[1] = byte(ms >> 32)
-	i[2] = byte(ms >> 24)
-	i[3] = byte(ms >> 16)
-	i[4] = byte(ms >> 8)
-	i[5] = byte(ms)
-	hi := uint16(counter >> 14)
-	lo := uint16(counter & 0x3FFF)
-	i[6] = 0x70 | byte(hi>>8)
-	i[7] = byte(hi)
-	i[8] = 0x80 | byte(lo>>8)
-	i[9] = byte(lo)
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], uint64(ms))
+	copy(i[:6], ts[2:])
+	binary.BigEndian.PutUint16(i[6:8], 0x7000|uint16(counter>>counterLowBits))
+	binary.BigEndian.PutUint16(i[8:10], 0x8000|uint16(counter&counterLowMask))
 	copy(i[10:], random)
 	return i
 }

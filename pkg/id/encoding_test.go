@@ -28,7 +28,7 @@ func TestID_MarshalJSON(t *testing.T) {
 	cases := []testCase{
 		{
 			name:  "identifier encodes as a JSON string and a zero optional is omitted",
-			input: record{ID: id.MustParse(vector)},
+			input: record{ID: vectorID},
 			assert: func(t *testing.T, got []byte, err error) {
 				require.NoError(t, err)
 				assert.JSONEq(t, `{"id":"`+vector+`"}`, string(got))
@@ -36,7 +36,7 @@ func TestID_MarshalJSON(t *testing.T) {
 		},
 		{
 			name:  "non-zero optional is present",
-			input: record{ID: id.MustParse(vector), Optional: id.MustParse(vector)},
+			input: record{ID: vectorID, Optional: vectorID},
 			assert: func(t *testing.T, got []byte, err error) {
 				require.NoError(t, err)
 				assert.JSONEq(t, `{"id":"`+vector+`","optional":"`+vector+`"}`, string(got))
@@ -68,7 +68,7 @@ func TestID_UnmarshalJSON(t *testing.T) {
 			input: `"` + vector + `"`,
 			assert: func(t *testing.T, got id.ID, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, id.MustParse(vector), got)
+				assert.Equal(t, vectorID, got)
 			},
 		},
 		{
@@ -107,7 +107,6 @@ func TestID_UnmarshalJSON(t *testing.T) {
 func TestID_Scan(t *testing.T) {
 	t.Parallel()
 
-	vectorID := id.MustParse(vector)
 	sentinel := id.ID{0: 0xff, 15: 0xff}
 
 	type testCase struct {
@@ -174,7 +173,7 @@ func TestID_Value(t *testing.T) {
 	cases := []testCase{
 		{
 			name:  "canonical text",
-			value: id.MustParse(vector),
+			value: vectorID,
 			assert: func(t *testing.T, got driver.Value, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, vector, got)

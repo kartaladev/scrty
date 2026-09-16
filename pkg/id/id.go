@@ -21,6 +21,13 @@ func (i ID) IsZero() bool { return i == Nil }
 
 // String formats i as a lowercase RFC 9562 string: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.
 func (i ID) String() string {
+	buf := i.format()
+	return string(buf[:])
+}
+
+// format renders the canonical lowercase text of i. It is the only description of
+// the text layout; String, MarshalText and every caller go through it.
+func (i ID) format() [36]byte {
 	var buf [36]byte
 	hex.Encode(buf[0:8], i[0:4])
 	buf[8] = '-'
@@ -31,7 +38,7 @@ func (i ID) String() string {
 	hex.Encode(buf[19:23], i[8:10])
 	buf[23] = '-'
 	hex.Encode(buf[24:36], i[10:16])
-	return string(buf[:])
+	return buf
 }
 
 // Parse accepts exactly the 36-character hyphenated layout, in either letter case,
@@ -41,15 +48,18 @@ func Parse(s string) (ID, error) {
 	if len(s) != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-' {
 		return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(s))
 	}
+
+	// The hyphens sit at fixed positions, so the other 32 characters are the hex digits.
+	var digits [32]byte
+	n := copy(digits[:], s[0:8])
+	n += copy(digits[n:], s[9:13])
+	n += copy(digits[n:], s[14:18])
+	n += copy(digits[n:], s[19:23])
+	copy(digits[n:], s[24:36])
+
 	var i ID
-	groups := [...][2]int{{0, 8}, {9, 13}, {14, 18}, {19, 23}, {24, 36}}
-	pos := 0
-	for _, g := range groups {
-		n, err := hex.Decode(i[pos:], []byte(s[g[0]:g[1]]))
-		if err != nil {
-			return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(s))
-		}
-		pos += n
+	if _, err := hex.Decode(i[:], digits[:]); err != nil {
+		return Nil, fmt.Errorf("%w: %s", ErrInvalid, describe(s))
 	}
 	return i, nil
 }

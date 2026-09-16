@@ -7,7 +7,10 @@ import (
 )
 
 // MarshalText returns the canonical lowercase text form. It also serves JSON encoding.
-func (i ID) MarshalText() ([]byte, error) { return []byte(i.String()), nil }
+func (i ID) MarshalText() ([]byte, error) {
+	buf := i.format()
+	return buf[:], nil
+}
 
 // UnmarshalText parses b with Parse. On error, i is left unchanged.
 func (i *ID) UnmarshalText(b []byte) error {
@@ -20,10 +23,12 @@ func (i *ID) UnmarshalText(b []byte) error {
 }
 
 // UnmarshalJSON accepts only a JSON string holding a canonical identifier.
-// JSON null, numbers and other values fail; use *ID or omitzero for optional fields.
+// JSON null decodes to the empty string, which Parse rejects like any other
+// malformed value; numbers and other JSON values fail here. Use *ID or omitzero
+// for optional fields.
 func (i *ID) UnmarshalJSON(data []byte) error {
 	var s string
-	if string(data) == "null" || json.Unmarshal(data, &s) != nil {
+	if err := json.Unmarshal(data, &s); err != nil {
 		return fmt.Errorf("%w: JSON value %s is not an identifier string", ErrInvalid, describe(string(data)))
 	}
 	return i.UnmarshalText([]byte(s))
@@ -37,14 +42,11 @@ func (i *ID) Scan(src any) error {
 	case string:
 		return i.UnmarshalText([]byte(v))
 	case []byte:
-		switch len(v) {
-		case 16:
+		if len(v) == len(ID{}) {
 			copy(i[:], v)
 			return nil
-		case 36:
-			return i.UnmarshalText(v)
 		}
-		return fmt.Errorf("%w: %d-byte SQL value", ErrInvalid, len(v))
+		return i.UnmarshalText(v)
 	case nil:
 		return fmt.Errorf("%w: SQL NULL", ErrInvalid)
 	default:

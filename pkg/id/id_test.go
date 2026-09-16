@@ -47,6 +47,8 @@ func TestID_IsZero(t *testing.T) {
 
 const vector = "017f22e2-79b0-7cc3-98c4-dc0c0c07398f" // RFC 9562 Appendix A.6
 
+var vectorID = id.MustParse(vector)
+
 func TestParse(t *testing.T) {
 	t.Parallel()
 
