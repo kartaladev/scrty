@@ -1,3 +1,20 @@
+// Package logsample bounds repeated log records, such as refusals driven by an
+// attacker or an outage, to one record per key per window.
+//
+// A Sampler keeps counts only for keys seen in the current window and the one
+// before it, so memory stays bounded whatever the key space. The first event for a
+// key in a window is written and carries how many events for that key were
+// suppressed since its previous written record.
+//
+// By default there is no reporter, and a key that does not recur before its counts
+// age out has them discarded: suppressed counts are then a lower bound. With
+// WithReporter, every suppressed event is counted exactly once, either on a later
+// written record or in a report. Flush reports everything pending, for example at
+// shutdown.
+//
+// The reporter runs synchronously on the goroutine whose Allow or Flush call
+// triggered it, after the Sampler's lock is released, so it may call back into the
+// Sampler. It must be fast and must not panic.
 package logsample
 
 import (
@@ -7,7 +24,9 @@ import (
 	"time"
 )
 
-// Sampler writes at most one record per key per window.
+// Sampler writes at most one record per key per fixed window, anchored to the first
+// event it sees. A nil *Sampler, or one with a window of zero or less, writes every
+// event. It is safe for concurrent use.
 type Sampler struct {
 	mu          sync.Mutex
 	window      time.Duration
