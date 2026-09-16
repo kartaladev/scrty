@@ -66,7 +66,9 @@ func checkModule(t *testing.T, dir string) []violation {
 // readRequires parses the require directives of a go.mod file.
 func readRequires(t *testing.T, gomod string) []requirement {
 	t.Helper()
-	data, err := os.ReadFile(gomod)
+	// The path is built by these tests from the repository root or a copied
+	// fixture, never from external input.
+	data, err := os.ReadFile(gomod) //nolint:gosec // G304: test-constructed path
 	require.NoError(t, err)
 	var reqs []requirement
 	inBlock := false
@@ -223,7 +225,9 @@ func copyFixture(t *testing.T, root string) string {
 
 func goCmd(t *testing.T, dir string, env []string, args ...string) string {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), "go", args...)
+	// The guard's whole job is asking the go tool about this repository, so the
+	// arguments are built by these tests, never by external input.
+	cmd := exec.CommandContext(t.Context(), "go", args...) //nolint:gosec // G204: fixed binary, test-supplied args
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), "GOWORK=off"), env...)
 	var stderr strings.Builder

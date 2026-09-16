@@ -44,6 +44,6 @@ func TestV7Generator_CounterOverflowBorrowsNextMillisecond(t *testing.T) {
 
 	var ms [8]byte
 	copy(ms[2:], next[:6])
-	assert.Equal(t, at.UnixMilli()+1, int64(binary.BigEndian.Uint64(ms[:])))
+	assert.Equal(t, at.UnixMilli()+1, int64(binary.BigEndian.Uint64(ms[:]))) //nolint:gosec // G115: 48-bit field read back
 	assert.Positive(t, bytes.Compare(next[:], first[:]))
 }

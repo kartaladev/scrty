@@ -314,7 +314,9 @@ func TestSampler_TotalsBalance(t *testing.T) {
 		{
 			name: "sequential random sequence",
 			drive: func(s *logsample.Sampler, c *counts) {
-				rng := rand.New(rand.NewPCG(42, 99))
+				// A seeded PRNG, not crypto/rand: the property must replay identically
+				// when it fails.
+				rng := rand.New(rand.NewPCG(42, 99)) //nolint:gosec // G404: deterministic by design
 				at := base
 				for range 200_000 {
 					at = at.Add(time.Duration(rng.IntN(20_000)) * time.Millisecond)
@@ -338,7 +340,7 @@ func TestSampler_TotalsBalance(t *testing.T) {
 				var wg sync.WaitGroup
 				for worker := range 64 {
 					wg.Go(func() {
-						rng := rand.New(rand.NewPCG(uint64(worker), 7))
+						rng := rand.New(rand.NewPCG(uint64(worker), 7)) //nolint:gosec // G404: deterministic by design
 						for range 5_000 {
 							at := time.Unix(0, clock.Add(int64(rng.IntN(50))*int64(time.Millisecond)))
 							w, n := s.Allow("k"+strconv.Itoa(rng.IntN(20)), at)

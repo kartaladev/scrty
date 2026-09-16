@@ -101,11 +101,17 @@ func (g *V7Generator) NewID() (ID, error) {
 // (12 bits in rand_a, 14 bits at the top of rand_b), the variant and 48 random bits.
 func layout(ms int64, counter uint32, random []byte) ID {
 	var i ID
+	if ms < 0 {
+		// Before 1970 there is no version 7 layout to write: the timestamp field is
+		// unsigned. Clamp rather than wrap a negative clock into the far future.
+		ms = 0
+	}
 	var ts [8]byte
 	binary.BigEndian.PutUint64(ts[:], uint64(ms))
 	copy(i[:6], ts[2:])
-	binary.BigEndian.PutUint16(i[6:8], 0x7000|uint16(counter>>counterLowBits))
-	binary.BigEndian.PutUint16(i[8:10], 0x8000|uint16(counter&counterLowMask))
+	// counter is 26 bits, so each half fits its uint16 by construction.
+	binary.BigEndian.PutUint16(i[6:8], 0x7000|uint16(counter>>counterLowBits)) //nolint:gosec // 12 bits
+	binary.BigEndian.PutUint16(i[8:10], 0x8000|uint16(counter&counterLowMask)) //nolint:gosec // 14 bits
 	copy(i[10:], random)
 	return i
 }
