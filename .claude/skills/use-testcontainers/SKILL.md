@@ -120,6 +120,16 @@ The return type is the **highest-level client a consumer would want**, not a raw
 - Filename is **`testutils.go`** (no `_test.go` suffix) so the helper is reachable from `_test.go` files in *other* packages. The file may itself import test-only dependencies like `github.com/testcontainers/testcontainers-go` — that's fine in this repo because the test container modules are direct deps, not test-only deps.
 - Functional options live in the same file as `RunTestX`; option types are unexported (`testConfig`) with exported `With*` constructors, following the template above.
 
+### scrty: helpers and the tests that use them live in the `test` module
+
+In this repository, the "producer module" rule above is replaced by one rule that applies to every module:
+
+- Shared helpers (`RunTestPostgres`, `RunTestRedis`, …) and conformance suites live in `github.com/kartaladev/scrty/test`.
+- No other scrty module imports that module, **not even from a `_test.go` file**. A test-only import still becomes a `go.mod` requirement, so the helpers' drivers and testcontainers would appear in every consumer's `go list -m all`. This is reproducible: a core `_test.go` importing a helper module that uses pgx adds `github.com/jackc/pgx/v5 // indirect` to the core `go.mod`, and pgx then shows up in a core-only consumer's module graph.
+- Integration tests and conformance-suite runs that need those helpers live **inside** the `test` module, which imports the modules under test: core's `database/sql` adapters, core's in-memory defaults, and the `pgx` and `gorm` adapters.
+- Consumers may import the `test` module freely from their own tests, to run the conformance suites against their own implementations.
+- The layout guard (`layout_test.go` at the repository root) enforces this: it fails on any import of the test module from any file, and on any `go.mod` requirement on it.
+
 ## When *not* to use a container
 
 These cases are out of scope and a real unit-test mock or fake is appropriate:
