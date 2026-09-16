@@ -38,9 +38,9 @@
 - [x] 5.1 Add a separate `tools` module (`tools/go.mod`, not listed in `go.work`) with `tool` directives for golangci-lint v2.13.x, mockgen v0.6.0 and govulncheck. Add a `make tools` target that installs them into a git-ignored `.bin/` with `go install tool`. Verify `.bin/golangci-lint version`, `.bin/mockgen --version` and `.bin/govulncheck -version` run, and that the core `go.mod` gains no tool requirements
 - [x] 5.2 Add `.golangci.yml` (v2 schema, `gofmt` and `goimports` formatters, the linter set from the design); verify `go tool golangci-lint run ./...` is clean, and that a deliberately misformatted file makes it fail before being reverted
 - [x] 5.3 Add a `Makefile` whose `check` target runs, for every module in `go work edit -json`: `gofmt -l`, `go vet`, `golangci-lint run`, `go test -race`, `govulncheck` and `go generate` with `git diff --exit-code`; verify `make check` passes on a clean tree and fails, naming the file, for each injected fault (unformatted file, vet finding, stale generated file), each reverted afterwards
-- [ ] 5.4 Add `.github/workflows/ci.yml` running `make check` on Go 1.26.x and 1.27.x for pushes and pull requests; verify the workflow runs green on both matrix entries after it is pushed
+- [x] 5.4 Add `.github/workflows/ci.yml` running `make check` on Go 1.26.x and 1.27.x for pushes and pull requests; verify the workflow runs green on both matrix entries after it is pushed
 
 ## 6. Project conventions and final verification
 
 - [x] 6.1 Amend `.claude/skills/use-testcontainers/SKILL.md`: for scrty, shared helpers, conformance suites and the tests that use them live in `github.com/kartaladev/scrty/test`, and no other scrty module imports it, test files included. State the reason: a test-only import still adds the helpers' drivers to that module's `go.mod` and to consumers' module graphs. Verify the skill's helper-layout section states the rule
-- [ ] 6.2 Final gate: verify `make check` is green locally on Go 1.27 and in CI on Go 1.26 and 1.27, and `openspec validate project-foundation --strict` passes
+- [x] 6.2 Final gate: verify `make check` is green locally on Go 1.27 and in CI on Go 1.26 and 1.27, and `openspec validate project-foundation --strict` passes
