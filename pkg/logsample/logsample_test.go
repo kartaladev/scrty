@@ -1,6 +1,7 @@
 package logsample_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +119,76 @@ func TestSampler_DisabledAndBackwardsClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.assert(t, run(tc.sampler, tc.events))
+		})
+	}
+}
+
+type recorder struct {
+	mu    sync.Mutex
+	got   map[string]int
+	calls int
+}
+
+func (r *recorder) report(key string, suppressed int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.got == nil {
+		r.got = map[string]int{}
+	}
+	r.got[key] += suppressed
+	r.calls++
+}
+
+func TestSampler_ReporterOnRotation(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		events []event
+		assert func(t *testing.T, got []result, rec *recorder)
+	}
+
+	cases := []testCase{
+		{
+			name: "key goes quiet",
+			events: []event{
+				{"a", 0}, {"a", 10 * time.Second}, {"a", 20 * time.Second}, {"a", 30 * time.Second},
+				{"b", 150 * time.Second},
+				{"a", 160 * time.Second},
+			},
+			assert: func(t *testing.T, got []result, rec *recorder) {
+				assert.Equal(t, map[string]int{"a": 3}, rec.got)
+				assert.Equal(t, result{true, 0}, got[5], "a later event for a reported key carries 0")
+			},
+		},
+		{
+			name: "long silence drops both windows",
+			events: []event{
+				{"a", 0}, {"a", 10 * time.Second},
+				{"b", 70 * time.Second}, {"b", 80 * time.Second},
+				{"c", 210 * time.Second},
+			},
+			assert: func(t *testing.T, _ []result, rec *recorder) {
+				assert.Equal(t, map[string]int{"a": 1, "b": 1}, rec.got)
+				assert.Equal(t, 2, rec.calls, "each key reported once")
+			},
+		},
+		{
+			name:   "keys with nothing suppressed are not reported",
+			events: []event{{"a", 0}, {"b", 150 * time.Second}},
+			assert: func(t *testing.T, _ []result, rec *recorder) {
+				assert.Zero(t, rec.calls)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := &recorder{}
+			s := logsample.New(time.Minute, logsample.WithReporter(rec.report))
+			got := run(s, tc.events)
+			tc.assert(t, got, rec)
 		})
 	}
 }
