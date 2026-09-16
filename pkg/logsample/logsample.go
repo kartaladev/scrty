@@ -1,0 +1,51 @@
+package logsample
+
+import (
+	"sync"
+	"time"
+)
+
+// Sampler writes at most one record per key per window.
+type Sampler struct {
+	mu          sync.Mutex
+	window      time.Duration
+	windowStart time.Time
+	current     map[string]int
+	previous    map[string]int
+}
+
+// New returns a Sampler with fixed windows of the given length.
+func New(window time.Duration) *Sampler {
+	return &Sampler{window: window}
+}
+
+// Allow reports whether the event for key at now should be written, and how many
+// events for key were suppressed since its previous written record.
+func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	switch elapsed := now.Sub(s.windowStart); {
+	case s.windowStart.IsZero() || elapsed >= 2*s.window:
+		s.reset(now)
+	case elapsed >= s.window:
+		s.windowStart = now
+		s.previous = s.current
+		s.current = map[string]int{}
+	}
+
+	if _, seen := s.current[key]; !seen {
+		suppressed = s.previous[key]
+		delete(s.previous, key)
+		s.current[key] = 0
+		return true, suppressed
+	}
+	s.current[key]++
+	return false, 0
+}
+
+func (s *Sampler) reset(now time.Time) {
+	s.windowStart = now
+	s.current = map[string]int{}
+	s.previous = map[string]int{}
+}
