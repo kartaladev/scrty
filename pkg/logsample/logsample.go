@@ -18,8 +18,8 @@
 package logsample
 
 import (
-	"maps"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -47,7 +47,11 @@ func WithReporter(fn func(key string, suppressed int)) Option {
 
 // New returns a Sampler with fixed windows of the given length.
 func New(window time.Duration, opts ...Option) *Sampler {
-	s := &Sampler{window: window}
+	s := &Sampler{
+		window:   window,
+		current:  map[string]int{},
+		previous: map[string]int{},
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(s)
@@ -70,19 +74,17 @@ func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) 
 	var evicted []pending
 	s.mu.Lock()
 
-	switch elapsed := now.Sub(s.windowStart); {
-	case s.windowStart.IsZero():
-		s.reset(now)
-	case now.Before(s.windowStart):
+	// A backwards clock moves the window start back without rotating, so it can
+	// never extend suppression.
+	if now.Before(s.windowStart) {
 		s.windowStart = now
-	case elapsed >= 2*s.window:
-		evicted = collect(collect(evicted, s.previous), s.current)
-		s.reset(now)
-	case elapsed >= s.window:
-		evicted = collect(evicted, s.previous)
+	}
+	// Rotating twice empties both windows, which is also the cold start, so the
+	// whole rule is this one step applied at most twice. The step count is clamped
+	// as a Duration before it becomes an int, so a tiny window cannot overflow it.
+	for range int(min(now.Sub(s.windowStart)/s.window, 2)) {
+		evicted = s.rotate(evicted)
 		s.windowStart = now
-		s.previous = s.current
-		s.current = map[string]int{}
 	}
 
 	if _, seen := s.current[key]; !seen {
@@ -106,12 +108,28 @@ func (s *Sampler) Flush() {
 		return
 	}
 	s.mu.Lock()
-	evicted := collect(collect(nil, s.previous), s.current)
-	s.current, s.previous = nil, nil
+	evicted := s.rotate(s.rotate(nil))
 	s.windowStart = time.Time{}
 	s.mu.Unlock()
 
 	s.deliver(evicted)
+}
+
+// rotate performs one window rotation: it collects what previous is about to lose,
+// shifts current into previous, and leaves current empty. Collecting before
+// discarding is part of this single step, so no caller can drop a count by
+// forgetting it. Rotating twice empties both windows.
+//
+// The drained map is recycled, so a Sampler keeps the bucket capacity of its
+// busiest window rather than shrinking after a burst.
+func (s *Sampler) rotate(dst []pending) []pending {
+	if s.report != nil {
+		dst = collect(dst, s.previous)
+	}
+	drained := s.previous
+	clear(drained)
+	s.previous, s.current = s.current, drained
+	return dst
 }
 
 // pending is one key's suppressed count, waiting to be reported.
@@ -120,13 +138,17 @@ type pending struct {
 	suppressed int
 }
 
-// collect appends every non-zero count in m, in key order.
+// collect appends every non-zero count in m, in key order. Only the entries it
+// appends are sorted, not the whole key space, which matters when one burst leaves
+// many single-event keys behind.
 func collect(dst []pending, m map[string]int) []pending {
-	for _, k := range slices.Sorted(maps.Keys(m)) {
-		if n := m[k]; n > 0 {
+	start := len(dst)
+	for k, n := range m {
+		if n > 0 {
 			dst = append(dst, pending{key: k, suppressed: n})
 		}
 	}
+	slices.SortFunc(dst[start:], func(a, b pending) int { return strings.Compare(a.key, b.key) })
 	return dst
 }
 
@@ -139,10 +161,4 @@ func (s *Sampler) deliver(ps []pending) {
 	for _, p := range ps {
 		s.report(p.key, p.suppressed)
 	}
-}
-
-func (s *Sampler) reset(now time.Time) {
-	s.windowStart = now
-	s.current = map[string]int{}
-	s.previous = map[string]int{}
 }

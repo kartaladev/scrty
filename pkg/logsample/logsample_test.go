@@ -1,8 +1,8 @@
 package logsample_test
 
 import (
-	"fmt"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +25,9 @@ type result struct {
 	suppressed int
 }
 
+// fiveOfA is one key repeated inside a single window.
+var fiveOfA = []event{{"a", 0}, {"a", time.Second}, {"a", 2 * time.Second}, {"a", 3 * time.Second}, {"a", 4 * time.Second}}
+
 func run(s *logsample.Sampler, events []event) []result {
 	out := make([]result, 0, len(events))
 	for _, e := range events {
@@ -46,7 +49,7 @@ func TestSampler_Allow(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "repeated events for one key",
-			events: []event{{"a", 0}, {"a", time.Second}, {"a", 2 * time.Second}, {"a", 3 * time.Second}, {"a", 4 * time.Second}},
+			events: fiveOfA,
 			assert: func(t *testing.T, got []result) {
 				assert.Equal(t, []result{{true, 0}, {false, 0}, {false, 0}, {false, 0}, {false, 0}}, got)
 			},
@@ -88,7 +91,6 @@ func TestSampler_Allow(t *testing.T) {
 func TestSampler_DisabledAndBackwardsClock(t *testing.T) {
 	t.Parallel()
 
-	fiveOfA := []event{{"a", 0}, {"a", time.Second}, {"a", 2 * time.Second}, {"a", 3 * time.Second}, {"a", 4 * time.Second}}
 	allWritten := func(t *testing.T, got []result) {
 		for n, r := range got {
 			assert.Equal(t, result{true, 0}, r, "event %d", n)
@@ -322,7 +324,7 @@ func TestSampler_TotalsBalance(t *testing.T) {
 					case 1:
 						at = at.Add(-30 * time.Second)
 					}
-					w, n := s.Allow(fmt.Sprintf("k%d", rng.IntN(50)), at)
+					w, n := s.Allow("k"+strconv.Itoa(rng.IntN(50)), at)
 					record(c, w, n)
 				}
 			},
@@ -339,7 +341,7 @@ func TestSampler_TotalsBalance(t *testing.T) {
 						rng := rand.New(rand.NewPCG(uint64(worker), 7))
 						for range 5_000 {
 							at := time.Unix(0, clock.Add(int64(rng.IntN(50))*int64(time.Millisecond)))
-							w, n := s.Allow(fmt.Sprintf("k%d", rng.IntN(20)), at)
+							w, n := s.Allow("k"+strconv.Itoa(rng.IntN(20)), at)
 							record(c, w, n)
 						}
 					})
