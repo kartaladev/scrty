@@ -3,3 +3,6 @@
 
 # Pinned tool binaries installed by `make tools`
 .bin/
+
+# JetBrains IDE settings
+.idea/
