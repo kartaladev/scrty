@@ -80,3 +80,44 @@ func TestSampler_Allow(t *testing.T) {
 		})
 	}
 }
+
+func TestSampler_DisabledAndBackwardsClock(t *testing.T) {
+	t.Parallel()
+
+	fiveOfA := []event{{"a", 0}, {"a", time.Second}, {"a", 2 * time.Second}, {"a", 3 * time.Second}, {"a", 4 * time.Second}}
+	allWritten := func(t *testing.T, got []result) {
+		for n, r := range got {
+			assert.Equal(t, result{true, 0}, r, "event %d", n)
+		}
+	}
+
+	type testCase struct {
+		name    string
+		sampler *logsample.Sampler
+		events  []event
+		assert  func(t *testing.T, got []result)
+	}
+
+	cases := []testCase{
+		{name: "zero window", sampler: logsample.New(0), events: fiveOfA, assert: allWritten},
+		{name: "negative window", sampler: logsample.New(-time.Second), events: fiveOfA, assert: allWritten},
+		{name: "nil sampler", sampler: nil, events: fiveOfA, assert: allWritten},
+		{
+			name:    "backwards clock cannot extend suppression",
+			sampler: logsample.New(time.Minute),
+			events:  []event{{"a", 30 * time.Second}, {"a", 0}, {"a", time.Minute}},
+			assert: func(t *testing.T, got []result) {
+				assert.Equal(t, result{false, 0}, got[1], "second event suppressed")
+				assert.True(t, got[2].write, "third event written")
+				assert.Equal(t, 1, got[2].suppressed)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, run(tc.sampler, tc.events))
+		})
+	}
+}
