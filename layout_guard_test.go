@@ -39,11 +39,81 @@ type listedPackage struct {
 	Standard   bool
 }
 
+// integrationModules lists modules the core go.mod must never require directly.
+var integrationModules = []string{
+	"github.com/gin-gonic/gin",
+	"github.com/gofiber/fiber",
+	"gorm.io/gorm",
+	"github.com/jackc/pgx",
+	"github.com/go-co-op/gocron",
+	"github.com/samber/do",
+}
+
+type requirement struct {
+	Path     string
+	Indirect bool
+}
+
 func checkModule(t *testing.T, dir string) []violation {
 	t.Helper()
 	var vs []violation
 	vs = append(vs, productionImportViolations(listDeps(t, dir))...)
 	vs = append(vs, fileViolations(t, dir)...)
+	vs = append(vs, requireViolations(readRequires(t, filepath.Join(dir, "go.mod")))...)
+	return vs
+}
+
+// readRequires parses the require directives of a go.mod file.
+func readRequires(t *testing.T, gomod string) []requirement {
+	t.Helper()
+	data, err := os.ReadFile(gomod)
+	require.NoError(t, err)
+	var reqs []requirement
+	inBlock := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case line == "require (":
+			inBlock = true
+			continue
+		case inBlock && line == ")":
+			inBlock = false
+			continue
+		case strings.HasPrefix(line, "require "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "require "))
+		case !inBlock:
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		reqs = append(reqs, requirement{
+			Path:     strings.Fields(line)[0],
+			Indirect: strings.Contains(line, "// indirect"),
+		})
+	}
+	return reqs
+}
+
+// requireViolations reports direct requirements on integration modules, and any
+// requirement at all on the test module. Other indirect requirements are allowed:
+// transitive production imports are already caught by the go list -deps walk.
+func requireViolations(reqs []requirement) []violation {
+	var vs []violation
+	for _, r := range reqs {
+		if r.Path == testModule || strings.HasPrefix(r.Path, testModule+"/") {
+			vs = append(vs, violation{Where: "go.mod", What: "requires " + r.Path})
+			continue
+		}
+		if r.Indirect {
+			continue
+		}
+		for _, bad := range integrationModules {
+			if r.Path == bad || strings.HasPrefix(r.Path, bad+"/") {
+				vs = append(vs, violation{Where: "go.mod", What: "requires " + r.Path})
+			}
+		}
+	}
 	return vs
 }
 

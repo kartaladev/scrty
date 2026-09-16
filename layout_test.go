@@ -49,6 +49,16 @@ func TestModuleLayout(t *testing.T) {
 			fixture: "testdata/layout/testfiletestmodule",
 			assert:  hasViolation("app/app_test.go", testModule),
 		},
+		{
+			name:    "go.mod requires an integration module",
+			fixture: "testdata/layout/requiresgin",
+			assert:  hasViolation("go.mod", "github.com/gin-gonic/gin"),
+		},
+		{
+			name:    "go.mod requires the test module indirectly",
+			fixture: "testdata/layout/requirestestmodule",
+			assert:  hasViolation("go.mod", testModule),
+		},
 	}
 
 	for _, tc := range cases {
