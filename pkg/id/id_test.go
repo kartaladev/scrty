@@ -121,3 +121,24 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
+
+func FuzzParse(f *testing.F) {
+	f.Add(vector)
+	f.Add(strings.ToUpper(vector))
+	f.Add("")
+	f.Add("{" + vector + "}")
+	f.Add(strings.ReplaceAll(vector, "-", ""))
+
+	f.Fuzz(func(t *testing.T, s string) {
+		got, err := id.Parse(s)
+		if err != nil {
+			require.ErrorIs(t, err, id.ErrInvalid)
+			return
+		}
+		require.Equal(t, strings.ToLower(s), got.String())
+
+		again, err := id.Parse(got.String())
+		require.NoError(t, err)
+		require.Equal(t, got, again)
+	})
+}
