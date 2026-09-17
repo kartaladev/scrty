@@ -3,11 +3,43 @@
 // A key manager generates a key per configured algorithm, writes it to a key
 // store before using it, reloads the store so a restart invalidates no token,
 // rotates keys on a schedule, and stops publishing keys past their lifetime. It
-// publishes the public keys as a JWK Set.
+// publishes the public keys as a JWK Set, and supplies them to token issuance
+// and verification through KeySource.
 //
-// The default store is in-memory and lasts only as long as the process. A
-// consumer supplies any KeyStore instead — a durable one, or one that seals the
-// private bytes, which the store treats as opaque.
+// # Wiring
+//
+// NewKeyManager returns a manager that already has a current key and starts no
+// goroutine. Start launches the rotation, reload and housekeeping loops; Stop
+// ends them and returns only once they have ended, an in-flight store write
+// included.
+//
+//	km, err := signingkey.NewKeyManager()
+//	if err != nil {
+//		return err
+//	}
+//	if err := km.Start(ctx); err != nil {
+//		return err
+//	}
+//	defer func() { _ = km.Stop() }()
+//
+// # Storage
+//
+// The default store is in-memory and lasts only as long as the process, so
+// every token the previous process signed stops verifying. A consumer supplies
+// any KeyStore instead through WithKeyStore — a durable one, or one that wraps
+// another and seals Record.Private, which is opaque to every store and is
+// where the secrets-at-rest capability hooks in.
+//
+// # Two lags a consumer should expect
+//
+// A rotated key signs immediately, so an external verifier that caches the JWK
+// Set will reject tokens signed with the new key until its cache expires. Keep
+// that cache well inside the key lifetime, which is what keeps the replaced
+// key published.
+//
+// Replicas sharing a store see each other's keys one reload interval later, a
+// minute by default, so for up to that long one replica rejects a token
+// another has just minted. WithReloadInterval narrows the window.
 package signingkey
 
 // Alg names a signature algorithm. It is a string alias so a consumer can pass

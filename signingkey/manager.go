@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwk"
+
+	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
 // Default configuration, each replaceable by the Option of the same name.
@@ -17,6 +19,7 @@ const (
 	defaultRotateEvery    = time.Hour
 	defaultHousekeepEvery = time.Hour
 	defaultReloadEvery    = time.Minute
+	defaultSampleWindow   = 5 * time.Minute
 )
 
 // KeyManager owns the signing keys: it generates them, persists them before
@@ -27,15 +30,25 @@ type KeyManager struct {
 	order   []string             // kids, in the order they were held
 	current map[Alg]string       // alg -> kid
 
+	// lifecycle guards the background work. No loop ever takes it, which is
+	// what lets Stop hold it across the wait for the loops to end.
+	lifecycle sync.Mutex
+	started   bool
+	stopped   bool
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+
 	algs           []Alg
 	lifetime       time.Duration
 	rotateEvery    time.Duration
 	housekeepEvery time.Duration
 	reloadEvery    time.Duration
+	sampleWindow   time.Duration
 	store          KeyStore
 	clock          Clock
 	logger         *slog.Logger
 	errorHook      func(error)
+	sampler        *logsample.Sampler
 }
 
 // NewKeyManager returns a manager holding a current key for every configured
@@ -47,9 +60,10 @@ type KeyManager struct {
 // Defaults, each replaced by the Option named after it: RS256 only
 // (WithAlgs); a 24h key lifetime (WithLifetime); rotation every 1h
 // (WithRotateInterval); housekeeping every 1h (WithHousekeepingInterval);
-// reload every 1m (WithReloadInterval); an in-memory store that does not
-// survive a restart (WithKeyStore); the system clock (WithClock);
-// slog.Default() (WithLogger); and no error hook (WithErrorHook).
+// reload every 1m (WithReloadInterval); a 5m failure-log sampling window
+// (WithLogSampleWindow); an in-memory store that does not survive a restart
+// (WithKeyStore); the system clock (WithClock); slog.Default() (WithLogger);
+// and no error hook (WithErrorHook).
 //
 // A configuration that cannot work — an unsupported algorithm, a non-positive
 // interval, a lifetime no longer than the rotation interval, or a reload
@@ -64,6 +78,7 @@ func NewKeyManager(opts ...Option) (*KeyManager, error) {
 		rotateEvery:    defaultRotateEvery,
 		housekeepEvery: defaultHousekeepEvery,
 		reloadEvery:    defaultReloadEvery,
+		sampleWindow:   defaultSampleWindow,
 		store:          NewInMemoryKeyStore(),
 		clock:          systemClock{},
 		logger:         slog.Default(),
@@ -74,6 +89,9 @@ func NewKeyManager(opts ...Option) (*KeyManager, error) {
 	if err := km.validate(); err != nil {
 		return nil, err
 	}
+	// See WithLogSampleWindow for what the sampler is for; the reporter is
+	// what keeps a count from being dropped rather than written.
+	km.sampler = logsample.New(km.sampleWindow, logsample.WithReporter(km.reportSuppressed))
 
 	ctx := context.Background()
 	if err := km.loadFromStore(ctx); err != nil {
@@ -112,10 +130,10 @@ func (km *KeyManager) loadFromStore(ctx context.Context) error {
 // to the record seen later, which for a store's own ordering is the one it
 // listed last. Callers hold km.mu.
 func (km *KeyManager) repickCurrentLocked() {
-	current := make(map[Alg]string, len(km.keys))
-	newest := make(map[Alg]time.Time, len(km.keys))
+	current := make(map[Alg]string, len(km.algs))
+	newest := make(map[Alg]time.Time, len(km.algs))
 
-	for _, kid := range km.orderLocked() {
+	for _, kid := range km.order {
 		entry := km.keys[kid]
 		if best, seen := newest[entry.alg]; seen && entry.createdAt.Before(best) {
 			continue
@@ -124,12 +142,6 @@ func (km *KeyManager) repickCurrentLocked() {
 		current[entry.alg] = kid
 	}
 	km.current = current
-}
-
-// orderLocked returns the held kids in the order they were held, so a tie in
-// createdAt resolves the way the store listed the records. Callers hold km.mu.
-func (km *KeyManager) orderLocked() []string {
-	return append([]string(nil), km.order...)
 }
 
 // mintMissing generates and stores a key for every configured algorithm that
@@ -167,6 +179,18 @@ func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, error)
 	km.holdLocked(entry)
 	km.current[alg] = entry.kid
 	return entry.kid, nil
+}
+
+// expired reports whether the key identified by kid, created at createdAt for
+// alg, has outlived the key lifetime. The current key of an algorithm is never
+// expired however old it is: dropping it would leave that algorithm with
+// nothing to sign with.
+//
+// Reload and housekeeping both ask this, so the rule lives in one place. The
+// current key per algorithm is passed in rather than read from the manager, so
+// a caller may ask outside the keyring lock from a snapshot.
+func (km *KeyManager) expired(current map[Alg]string, alg, kid string, createdAt, now time.Time) bool {
+	return current[alg] != kid && now.Sub(createdAt) > km.lifetime
 }
 
 // holdLocked holds entry, remembering the order keys were held in. Callers hold
@@ -207,7 +231,7 @@ func (km *KeyManager) JWKS() (jwk.Set, error) {
 	defer km.mu.RUnlock()
 
 	set := jwk.NewSet()
-	for _, kid := range km.orderLocked() {
+	for _, kid := range km.order {
 		if err := set.AddKey(km.keys[kid].publicJWK); err != nil {
 			return nil, fmt.Errorf("signingkey: build jwks: %w", err)
 		}

@@ -26,9 +26,45 @@ type Clock interface {
 	Now() time.Time
 }
 
+// Ticker delivers a tick every interval until it is stopped. It is the shape of
+// time.Ticker, narrowed to what the background loops use.
+type Ticker interface {
+	// C returns the channel ticks arrive on. Like time.Ticker's channel, a
+	// tick that is not consumed before the next one is due may be dropped.
+	C() <-chan time.Time
+
+	// Stop releases the ticker. No further tick arrives after it returns.
+	Stop()
+}
+
+// TickerClock is the optional half of Clock: a time source that also paces the
+// rotation, reload and housekeeping loops, so advancing it runs them without
+// waiting for real time to pass.
+//
+// A Clock that does not implement it paces the loops with time.NewTicker, which
+// is what the default system clock does. Implement it to control the cadence as
+// well as the creation times — a test's clock, or a consumer coordinating the
+// loops with their own scheduler.
+type TickerClock interface {
+	Clock
+
+	// NewTicker returns a ticker delivering a tick every d.
+	NewTicker(d time.Duration) Ticker
+}
+
 type systemClock struct{}
 
 func (systemClock) Now() time.Time { return time.Now() }
+
+func (systemClock) NewTicker(d time.Duration) Ticker { return realTicker{ticker: time.NewTicker(d)} }
+
+// realTicker adapts time.Ticker to Ticker. time.Ticker exposes its channel as a
+// field, which cannot satisfy a method of the same name.
+type realTicker struct{ ticker *time.Ticker }
+
+func (r realTicker) C() <-chan time.Time { return r.ticker.C }
+
+func (r realTicker) Stop() { r.ticker.Stop() }
 
 // WithAlgs sets the algorithms a current key is kept for. Default: RS256 only.
 // Supported: RS256, ES256 and EdDSA; anything else fails construction.
@@ -62,6 +98,21 @@ func WithReloadInterval(d time.Duration) Option {
 	return func(km *KeyManager) { km.reloadEvery = d }
 }
 
+// WithLogSampleWindow sets how long one written record about a rotation or
+// reload failure suppresses further records for the same operation and
+// algorithm. Default: 5m.
+//
+// A store outage fails every interval for as long as it lasts, which without
+// sampling is one record per interval. At most one record per window is
+// written, and every record states how many failures were suppressed before it,
+// so no failure goes unaccounted for. A window of zero or less writes every
+// failure, for a consumer whose own handler samples.
+//
+// The error hook is never sampled: every failure reaches it.
+func WithLogSampleWindow(d time.Duration) Option {
+	return func(km *KeyManager) { km.sampleWindow = d }
+}
+
 // WithKeyStore sets where keys are persisted. Default: NewInMemoryKeyStore,
 // which does not survive a restart.
 func WithKeyStore(store KeyStore) Option {
@@ -69,6 +120,10 @@ func WithKeyStore(store KeyStore) Option {
 }
 
 // WithClock sets the time source. Default: the system clock.
+//
+// A clock that also implements TickerClock paces the background loops as well
+// as stamping creation times; one that does not leaves the loops on
+// time.NewTicker.
 func WithClock(clock Clock) Option {
 	return func(km *KeyManager) { km.clock = clock }
 }
@@ -89,6 +144,19 @@ func WithErrorHook(hook func(error)) Option {
 // validate reports a configuration that cannot work, so a wiring mistake fails
 // at construction rather than at the first rotation.
 func (km *KeyManager) validate() error {
+	// A nil port is caught here rather than at first use: a nil store or
+	// clock would panic during construction, and a nil logger would panic in
+	// a background loop at the first failure it tried to report.
+	if km.store == nil {
+		return fmt.Errorf("%w: key store must not be nil", ErrConfig)
+	}
+	if km.clock == nil {
+		return fmt.Errorf("%w: clock must not be nil", ErrConfig)
+	}
+	if km.logger == nil {
+		return fmt.Errorf("%w: logger must not be nil", ErrConfig)
+	}
+
 	if len(km.algs) == 0 {
 		return fmt.Errorf("%w: at least one algorithm is required", ErrConfig)
 	}

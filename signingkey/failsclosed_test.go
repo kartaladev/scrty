@@ -1,7 +1,6 @@
 package signingkey_test
 
 import (
-	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -16,7 +15,6 @@ import (
 func TestNewKeyManagerFailsClosed(t *testing.T) {
 	t.Parallel()
 
-	errStore := errors.New("store unreachable")
 	storedAt := time.Date(2030, 3, 4, 5, 6, 7, 0, time.UTC)
 
 	// corrupt returns a real record whose private bytes have been damaged in
@@ -45,13 +43,13 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 			name: "the store cannot be read",
 			store: func(_ *testing.T, ctrl *gomock.Controller) (signingkey.KeyStore, string) {
 				store := NewMockKeyStore(ctrl)
-				store.EXPECT().LoadAll(gomock.Any()).Return(nil, errStore)
+				store.EXPECT().LoadAll(gomock.Any()).Return(nil, errStoreUnreachable)
 				// No Store call is expected: an unreadable store must never be
 				// treated as an empty one.
 				return store, ""
 			},
 			assert: func(t *testing.T, km *signingkey.KeyManager, _ string, err error) {
-				require.ErrorIs(t, err, errStore)
+				require.ErrorIs(t, err, errStoreUnreachable)
 				assert.Nil(t, km)
 			},
 		},
@@ -91,11 +89,11 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 			store: func(_ *testing.T, ctrl *gomock.Controller) (signingkey.KeyStore, string) {
 				store := NewMockKeyStore(ctrl)
 				store.EXPECT().LoadAll(gomock.Any()).Return(nil, nil)
-				store.EXPECT().Store(gomock.Any(), gomock.Any()).Return(errStore)
+				store.EXPECT().Store(gomock.Any(), gomock.Any()).Return(errStoreUnreachable)
 				return store, ""
 			},
 			assert: func(t *testing.T, km *signingkey.KeyManager, _ string, err error) {
-				require.ErrorIs(t, err, errStore)
+				require.ErrorIs(t, err, errStoreUnreachable)
 				assert.Nil(t, km)
 			},
 		},

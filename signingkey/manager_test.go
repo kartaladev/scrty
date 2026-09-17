@@ -20,12 +20,6 @@ import (
 	"github.com/kartaladev/scrty/signingkey"
 )
 
-// fixedClock is a Clock that does not move, so a test can assert on the exact
-// creation time a record was written with.
-type fixedClock struct{ now time.Time }
-
-func (c fixedClock) Now() time.Time { return c.now }
-
 func TestNewKeyManager(t *testing.T) {
 	t.Parallel()
 
@@ -126,7 +120,7 @@ func TestNewKeyManagerStoresBeforeUse(t *testing.T) {
 
 	km, err := signingkey.NewKeyManager(
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(fixedClock{now: minted}),
+		signingkey.WithClock(newFakeClock(minted)),
 	)
 	require.NoError(t, err)
 

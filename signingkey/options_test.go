@@ -108,6 +108,21 @@ func TestNewKeyManagerValidation(t *testing.T) {
 			assert: refused("at least one algorithm"),
 		},
 		{
+			name:   "a nil logger",
+			opts:   []signingkey.Option{signingkey.WithLogger(nil)},
+			assert: refused("logger must not be nil"),
+		},
+		{
+			name:   "a nil clock",
+			opts:   []signingkey.Option{signingkey.WithClock(nil)},
+			assert: refused("clock must not be nil"),
+		},
+		{
+			name:   "a nil key store",
+			opts:   []signingkey.Option{signingkey.WithKeyStore(nil)},
+			assert: refused("key store must not be nil"),
+		},
+		{
 			name:   "an unsupported algorithm",
 			opts:   []signingkey.Option{signingkey.WithAlgs(signingkey.RS256, "HS256")},
 			assert: refused("HS256"),
