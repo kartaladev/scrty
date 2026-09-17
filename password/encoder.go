@@ -11,6 +11,14 @@
 // the user lookup misses, and the two paths take the same time. Without it, a
 // fast rejection tells an attacker the username does not exist.
 //
+// The length half of that holds for the Argon2id and scrypt encoders. bcrypt is
+// the stated exception: it refuses an input over 72 bytes before deriving
+// anything, because the alternative is matching by truncation, so above that
+// length it returns in nanoseconds. What this reveals is the length of the
+// password the caller just supplied, which the caller already knows, so the
+// exception costs nothing an attacker can use — but the equal-cost claim is
+// Argon2id's and scrypt's, not bcrypt's. See [ErrPasswordTooLong].
+//
 // Passwords are hashed exactly as given — no trimming, case folding or Unicode
 // normalization — because any of those would silently let a different string
 // through. "café" written as one code point and as "e" plus a combining accent

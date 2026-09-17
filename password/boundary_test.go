@@ -2,6 +2,8 @@ package password_test
 
 import (
 	"bytes"
+	"encoding/base64"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -9,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"golang.org/x/crypto/argon2"
 
 	"github.com/kartaladev/scrty/password"
 )
@@ -210,6 +214,83 @@ func TestConstructionRefusesParametersTheAlgorithmWillReject(t *testing.T) {
 			require.NoError(t, encErr,
 				"a configuration the constructor accepted must not fail at the first "+
 					"login: a wiring mistake is a construction error")
+		})
+	}
+}
+
+// --- The parser's salt and key guards ---
+//
+// Both are reachable only through a record this package did not write, and both
+// were previously uncovered: three separate mutations of them compiled and left
+// the whole suite green. A row that merely feeds in a broken record cannot pin
+// them, because a broken record yields a non-matching key whether the guard runs
+// or not. So each row below is built so that IGNORING the guard would produce a
+// match, or a panic, rather than the same false.
+
+func TestArgon2idRejectsARecordWithNoSalt(t *testing.T) {
+	t.Parallel()
+
+	enc, err := password.NewArgon2idEncoder(
+		password.WithArgon2idMemory(mib19),
+		password.WithArgon2idIterations(2),
+	)
+	require.NoError(t, err)
+
+	// The key this record carries is genuinely derived with an empty salt, so a
+	// parser that accepted the empty salt field would derive the same bytes and
+	// report a match. That is what makes this row fail when the guard is removed,
+	// rather than failing for some incidental reason.
+	key := argon2.IDKey([]byte("hunter2"), nil, 2, mib19, 4, 32)
+	record := fmt.Appendf(nil, "argon2id$%d$%d$%d$$%s",
+		mib19, 2, 4, base64.RawStdEncoding.EncodeToString(key))
+
+	assert.False(t, enc.Match("hunter2", record),
+		"a salt is what stops two users who chose the same password sharing a "+
+			"hash, so a record that carries none is not a record this encoder "+
+			"produced and must never verify")
+}
+
+func TestArgon2idRejectsARecordWithNoDerivedKey(t *testing.T) {
+	t.Parallel()
+
+	enc, err := password.NewArgon2idEncoder(
+		password.WithArgon2idMemory(mib19),
+		password.WithArgon2idIterations(2),
+	)
+	require.NoError(t, err)
+
+	honest, err := enc.Encode("hunter2")
+	require.NoError(t, err)
+
+	parts := strings.Split(string(honest), "$")
+	require.Len(t, parts, 6)
+
+	type testCase struct {
+		name string
+		key  string
+	}
+
+	// Both shapes leave the parser with nothing to compare against. Without the
+	// guard the derivation is asked for a zero-length key, which panics inside
+	// argon2 rather than returning anything, so asserting a plain false here is
+	// enough to make the guard load-bearing.
+	cases := []testCase{
+		{name: "the derived key field is empty", key: ""},
+		{name: "the derived key field is not base64", key: "!!!"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			record := strings.Join(
+				[]string{parts[0], parts[1], parts[2], parts[3], parts[4], tc.key}, "$")
+
+			assert.NotPanics(t, func() {
+				assert.False(t, enc.Match("hunter2", []byte(record)),
+					"a record with no derived key reports no match, and reports it "+
+						"rather than crashing the process that asked")
+			})
 		})
 	}
 }

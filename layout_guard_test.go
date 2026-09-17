@@ -199,20 +199,37 @@ func listDeps(t *testing.T, dir string) []listedPackage {
 	return pkgs
 }
 
+// productionImportViolations reports production imports of any module the core
+// must not depend on.
+//
+// It walks both lists, and the integration one is why: requireViolations skips
+// requirements marked indirect, because a transitive production import is
+// supposed to be caught here instead. Checking only the test-only modules here
+// left a gap between the two halves exactly the width of an indirect
+// requirement — and an indirect requirement is the state this project
+// deliberately leaves a new dependency in until its first tidy, so a production
+// file importing a framework passed the guard named after that guarantee.
 func productionImportViolations(pkgs []listedPackage) []violation {
+	forbidden := make([]string, 0, len(forbiddenProduction)+len(integrationModules))
+	forbidden = append(forbidden, forbiddenProduction...)
+	forbidden = append(forbidden, integrationModules...)
+
 	var vs []violation
+
 	for _, p := range pkgs {
 		if p.Standard {
 			continue
 		}
+
 		for _, imp := range p.Imports {
-			for _, bad := range forbiddenProduction {
+			for _, bad := range forbidden {
 				if imp == bad || strings.HasPrefix(imp, bad+"/") {
 					vs = append(vs, violation{Where: p.ImportPath, What: "imports " + imp + " (module " + bad + ")"})
 				}
 			}
 		}
 	}
+
 	return vs
 }
 

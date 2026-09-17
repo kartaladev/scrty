@@ -77,11 +77,17 @@ The bcrypt encoder SHALL refuse to encode a password longer than 72 bytes, with 
 - **THEN** no match is reported
 
 ### Requirement: A mismatch costs the same work as a match
-Matching against a hash SHALL perform the full key derivation its parameters specify, whether or not the password matches, and whatever the password's length. A hash that the encoder produces when a caller is constructed SHALL therefore serve as a decoy: matching any presented password against it SHALL cost the same work as matching against a stored hash produced with the same algorithm and parameters.
+Matching against a hash SHALL perform the full key derivation its parameters specify, whether or not the password matches. A hash that the encoder produces when a caller is constructed SHALL therefore serve as a decoy: matching any presented password against it SHALL cost the same work as matching against a stored hash produced with the same algorithm and parameters.
+
+The Argon2id and scrypt encoders SHALL additionally perform that derivation whatever the presented password's length. The bcrypt encoder is exempt from the length rule, and SHALL refuse an input longer than 72 bytes before deriving anything, because deriving would match by truncation; the cost of that refusal reveals only the length of the password the caller supplied.
 
 #### Scenario: Decoy for an unknown user
 - **WHEN** a decoy hash is encoded at construction, and matching a wrong password against it and matching a wrong password against a stored hash with the same parameters are each benchmarked
 - **THEN** their median durations differ by less than 10 percent
+
+#### Scenario: bcrypt refuses an over-length password rather than deriving
+- **WHEN** a password longer than 72 bytes is matched against a bcrypt hash
+- **THEN** it is refused without a derivation, and the refusal is not treated as a match
 
 #### Scenario: Decoy follows consumer parameters
 - **WHEN** a consumer configures Argon2id with 128 MiB of memory and a decoy hash is encoded with that encoder

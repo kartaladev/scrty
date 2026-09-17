@@ -58,6 +58,16 @@ func TestModuleLayout(t *testing.T) {
 			assert:  hasViolation("go.mod", "github.com/gin-gonic/gin"),
 		},
 		{
+			// The requirement is marked indirect, which is the state this project
+			// deliberately leaves a new dependency in until its first tidy. The
+			// go.mod half of the guard skips indirect requirements, so only the
+			// import walk can catch this — and it used to check just the
+			// test-only modules, never the integration ones.
+			name:    "production file imports an integration module",
+			fixture: "testdata/layout/prodgin",
+			assert:  hasViolation("example.com/fixture/app", "github.com/gin-gonic/gin"),
+		},
+		{
 			name:    "go.mod requires the test module indirectly",
 			fixture: "testdata/layout/requirestestmodule",
 			assert:  hasViolation("go.mod", testModule),
