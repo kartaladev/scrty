@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 )
@@ -29,7 +28,11 @@ func (km *KeyManager) rotateAll(ctx context.Context) {
 // WithLogSampleWindow describes has already had one for this operation and
 // algorithm. The hook is never sampled.
 //
-// It touches no key material, so a caller may hold the keyring lock across it.
+// Both reach consumer code, so no caller may hold the keyring lock across it:
+// WithErrorHook promises a hook that GetSigner and JWKS answer, and either one
+// under the lock a caller already held would deadlock on the loop goroutine.
+// The hook also runs on that goroutine, so it may not call Start or Stop —
+// documented in WithErrorHook, because nothing here can enforce it.
 func (km *KeyManager) report(ctx context.Context, op string, alg Alg, err error) {
 	if km.errorHook != nil {
 		km.errorHook(err)
@@ -79,8 +82,7 @@ func failureAttrs(op string, alg Alg, suppressed int) []slog.Attr {
 }
 
 // reload publishes every stored key the manager does not already hold, skipping
-// non-current keys past their lifetime, and then re-picks the current key per
-// algorithm.
+// those past their lifetime, and then re-picks the current key per algorithm.
 //
 // This is what lets replicas sharing a store verify each other's tokens:
 // without it, a key one replica rotated in would be rejected by every other
@@ -105,7 +107,6 @@ func (km *KeyManager) reload(ctx context.Context) {
 	for kid := range km.keys {
 		held[kid] = struct{}{}
 	}
-	current := maps.Clone(km.current)
 	km.mu.RUnlock()
 
 	// Decoding a record parses a private key and hashes a thumbprint, which
@@ -122,7 +123,12 @@ func (km *KeyManager) reload(ctx context.Context) {
 		if _, have := held[rec.Kid]; have {
 			continue
 		}
-		if km.expired(current, rec.Alg, rec.Kid, rec.CreatedAt, now) {
+		// pastLifetime, not expired: the current-key exemption cannot apply
+		// here. A record that got this far is one the manager does not hold,
+		// and every current key is a key it holds, so no record reaching this
+		// line is current. Asking about an exemption that can never be granted
+		// would read as a rule this path has and does not.
+		if km.pastLifetime(rec.CreatedAt, now) {
 			continue
 		}
 		entry, err := entryFromRecord(rec)

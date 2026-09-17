@@ -139,3 +139,54 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 	assert.LessOrEqual(t, set.Len(), 3,
 		"keys past the 2-hour lifetime stopped being published as the rounds went by")
 }
+
+// TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime pins the boundary
+// itself. A key is published for the lifetime it was given, so one whose age is
+// exactly that lifetime is still published, and one a tick older is not.
+//
+// The interval is what makes the boundary reachable: the sweep that runs at
+// epoch+1s is the one that sees boundary at exactly 24 hours old. stale is an
+// hour further on and is the case's proof that the sweep ran at all.
+func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
+	const (
+		lifetime = 24 * time.Hour
+		sweep    = time.Second
+	)
+
+	clock := newFakeClock(epoch)
+	store := signingkey.NewInMemoryKeyStore()
+
+	stale := realRecord(t, epoch.Add(sweep-lifetime-time.Hour))
+	boundary := realRecord(t, epoch.Add(sweep-lifetime))
+	newest := realRecord(t, epoch)
+	for _, rec := range []signingkey.Record{stale, boundary, newest} {
+		require.NoError(t, store.Store(t.Context(), rec))
+	}
+
+	km, err := signingkey.NewKeyManager(
+		signingkey.WithKeyStore(store),
+		signingkey.WithClock(clock),
+		signingkey.WithLifetime(lifetime),
+		signingkey.WithHousekeepingInterval(sweep),
+		signingkey.WithReloadInterval(30*time.Minute),
+		signingkey.WithRotateInterval(6*time.Hour),
+	)
+	require.NoError(t, err)
+	stopAndVerify(t, km)
+
+	require.Equal(t, newest.Kid, currentKid(t, km, signingkey.RS256))
+	require.NoError(t, km.Start(t.Context()))
+
+	clock.Advance(sweep)
+	require.Eventually(t, func() bool { return !jwksHas(km, stale.Kid) },
+		10*time.Second, 5*time.Millisecond,
+		"the sweep ran: a key an hour past its lifetime stopped being published")
+	assert.True(t, jwksHas(km, boundary.Kid),
+		"a key whose age is exactly the lifetime has not outlived it")
+
+	clock.Advance(sweep)
+	assert.Eventually(t, func() bool { return !jwksHas(km, boundary.Kid) },
+		10*time.Second, 5*time.Millisecond,
+		"and one a tick older has")
+	assert.True(t, jwksHas(km, newest.Kid), "the current key is kept throughout")
+}

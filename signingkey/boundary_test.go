@@ -291,3 +291,102 @@ func TestTypedNilPortIsAConfigurationError(t *testing.T) {
 	require.Error(t, err, "a nil store is a configuration error whatever its static type")
 	assert.Nil(t, km)
 }
+
+// F9 — the configured algorithms are shared with the consumer in both
+// directions: WithAlgs keeps the caller's slice and SupportedAlgs hands the
+// manager's own back. A caller that sorts, filters or reuses either one
+// rewrites what the manager treats as configured, after the configuration was
+// validated — and the reload path reads that list on every tick.
+func TestTheConfiguredAlgorithmsAreNotSharedWithTheConsumer(t *testing.T) {
+	// want is built here, and never handed to the manager, so no assertion can
+	// be satisfied by comparing a corrupted list with itself.
+	want := []signingkey.Alg{signingkey.EdDSA, signingkey.ES256}
+
+	given := []signingkey.Alg{signingkey.EdDSA, signingkey.ES256}
+	km, err := signingkey.NewKeyManager(
+		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+		signingkey.WithAlgs(given...),
+	)
+	require.NoError(t, err)
+	require.Equal(t, want, km.SupportedAlgs())
+
+	given[0] = "HS256" // the caller reuses the slice it configured with
+
+	assert.Equal(t, want, km.SupportedAlgs(),
+		"the manager keeps the algorithms it validated, not a window onto the caller's slice")
+
+	got := km.SupportedAlgs()
+	got[0] = "HS256" // and rewrites an answer it was handed
+
+	assert.Equal(t, want, km.SupportedAlgs(),
+		"the manager reports the algorithms it was configured with, "+
+			"whatever a caller did to an answer it was handed earlier")
+}
+
+// F10 — the record handed to the store carries no public JWK, although its
+// contract promises a store can publish the set without decoding private
+// material. Nothing in the package reads the field back, so nothing noticed.
+func TestStoredRecordCarriesThePublishablePublicKey(t *testing.T) {
+	store := signingkey.NewInMemoryKeyStore()
+	km, err := signingkey.NewKeyManager(
+		signingkey.WithKeyStore(store),
+		signingkey.WithAlgs(signingkey.ES256),
+	)
+	require.NoError(t, err)
+
+	kid, _, ok := km.GetSigner(signingkey.ES256)
+	require.True(t, ok)
+
+	recs, err := store.LoadAll(t.Context())
+	require.NoError(t, err)
+	require.Len(t, recs, 1)
+	require.NotEmpty(t, recs[0].PublicJWK,
+		"a store must be able to publish the set without decoding private material")
+
+	var published map[string]any
+	require.NoError(t, json.Unmarshal(recs[0].PublicJWK, &published))
+
+	assert.Equal(t, kid, published["kid"], "the stored JWK names the key it belongs to")
+	assert.Equal(t, signingkey.ES256, published["alg"], "and declares its algorithm")
+	assert.Equal(t, "sig", published["use"], "and its signature use")
+	for _, private := range []string{"d", "p", "q", "dp", "dq", "qi"} {
+		assert.NotContains(t, published, private,
+			"the publishable half carries no private parameter, found %q", private)
+	}
+}
+
+// F11 — a store listing one key twice makes the manager hold it twice, so the
+// order it publishes by and the keys it holds fall out of step: the set
+// publishes the key twice, and the first sweep that drops it reads the entry it
+// has just deleted. Reload dedups against the keys already held, but not within
+// one batch, so a store that lists a new key twice is enough.
+func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
+	dup := realRecord(t, epoch.Add(-25*time.Hour))
+	current := realRecord(t, epoch)
+
+	clock := newFakeClock(epoch)
+	km, err := signingkey.NewKeyManager(
+		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, current}}),
+		signingkey.WithClock(clock),
+		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithHousekeepingInterval(time.Second),
+		signingkey.WithReloadInterval(30*time.Minute),
+		signingkey.WithRotateInterval(6*time.Hour),
+	)
+	require.NoError(t, err)
+	stopAndVerify(t, km)
+
+	set, err := km.JWKS()
+	require.NoError(t, err)
+	assert.Equal(t, 2, set.Len(), "a key listed twice is one key")
+	require.Equal(t, current.Kid, currentKid(t, km, signingkey.RS256))
+
+	// Housekeeping walks the order it publishes by and deletes as it goes, so a
+	// second entry for a kid it has just dropped would have nothing to read.
+	require.NoError(t, km.Start(t.Context()))
+	clock.Advance(time.Second)
+	require.Eventually(t, func() bool { return !jwksHas(km, dup.Kid) },
+		10*time.Second, 5*time.Millisecond,
+		"the duplicated key stops being published once it is past its lifetime")
+	assert.True(t, jwksHas(km, current.Kid), "and the current key is untouched")
+}

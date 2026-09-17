@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -33,10 +34,14 @@ type KeyManager struct {
 	// lifecycle guards the background work. No loop ever takes it, which is
 	// what lets Stop hold it across the wait for the loops to end.
 	lifecycle sync.Mutex
-	started   bool
-	stopped   bool
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	// cancel ends the run last launched, and is nil when there is none left to
+	// reap; runDone is that run's context's Done channel, so Start can tell a
+	// live run from one whose context has been cancelled. stopped is the only
+	// state Stop leaves behind, because it is the one a later Start honours.
+	cancel  context.CancelFunc
+	runDone <-chan struct{}
+	stopped bool
+	wg      sync.WaitGroup
 
 	algs           []Alg
 	lifetime       time.Duration
@@ -130,16 +135,27 @@ func (km *KeyManager) loadFromStore(ctx context.Context) error {
 	return nil
 }
 
-// repickCurrentLocked chooses, per algorithm, the held key created most
-// recently, whatever order the store returned the records in. An exact tie goes
-// to the record seen later, which for a store's own ordering is the one it
+// repickCurrentLocked chooses, per configured algorithm, the held key created
+// most recently, whatever order the store returned the records in. An exact tie
+// goes to the record seen later, which for a store's own ordering is the one it
 // listed last. Callers hold km.mu.
+//
+// Only configured algorithms get a current key. A store is shared, and the
+// replica on the other side of it may be configured differently, so it holds
+// keys for algorithms this manager was never asked about. Such a key stays
+// published — that is what lets this replica verify the other's tokens — but
+// making it current would hand it to GetSigner for an algorithm SupportedAlgs
+// denies, and would exempt it from housekeeping for as long as the process
+// lived, because the current key of an algorithm is never expired.
 func (km *KeyManager) repickCurrentLocked() {
 	current := make(map[Alg]string, len(km.algs))
 	newest := make(map[Alg]time.Time, len(km.algs))
 
 	for _, kid := range km.order {
 		entry := km.keys[kid]
+		if !slices.Contains(km.algs, entry.alg) {
+			continue
+		}
 		if best, seen := newest[entry.alg]; seen && entry.createdAt.Before(best) {
 			continue
 		}
@@ -186,16 +202,23 @@ func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, error)
 	return entry.kid, nil
 }
 
+// pastLifetime reports whether a key created at createdAt has outlived the key
+// lifetime by now. It is the whole question on the reload path, where a record
+// the manager does not already hold cannot be anyone's current key.
+func (km *KeyManager) pastLifetime(createdAt, now time.Time) bool {
+	return now.Sub(createdAt) > km.lifetime
+}
+
 // expired reports whether the key identified by kid, created at createdAt for
-// alg, has outlived the key lifetime. The current key of an algorithm is never
-// expired however old it is: dropping it would leave that algorithm with
-// nothing to sign with.
+// alg, has outlived the key lifetime and may stop being published. The current
+// key of an algorithm is never expired however old it is: dropping it would
+// leave that algorithm with nothing to sign with.
 //
-// Reload and housekeeping both ask this, so the rule lives in one place. The
-// current key per algorithm is passed in rather than read from the manager, so
-// a caller may ask outside the keyring lock from a snapshot.
+// Only housekeeping asks this, because only housekeeping drops a key it holds.
+// The current key per algorithm is passed in rather than read from the manager,
+// so a caller may ask outside the keyring lock from a snapshot.
 func (km *KeyManager) expired(current map[Alg]string, alg, kid string, createdAt, now time.Time) bool {
-	return current[alg] != kid && now.Sub(createdAt) > km.lifetime
+	return current[alg] != kid && km.pastLifetime(createdAt, now)
 }
 
 // holdLocked holds entry, remembering the order keys were held in. Callers hold
@@ -208,12 +231,20 @@ func (km *KeyManager) holdLocked(entry *keyEntry) {
 }
 
 // SupportedAlgs reports the configured algorithms.
+//
+// The slice returned is the caller's own: sorting, filtering or rewriting it
+// changes nothing here.
 func (km *KeyManager) SupportedAlgs() []Alg {
-	return append([]Alg(nil), km.algs...)
+	return slices.Clone(km.algs)
 }
 
 // GetSigner returns the kid and signer currently signing for alg, and whether
 // there is one.
+//
+// It answers only for the configured algorithms, so what SupportedAlgs reports
+// and what this hands out are the same set. A shared store may hold keys for
+// other algorithms, written by a replica configured differently; those stay
+// published, and none of them ever signs here.
 func (km *KeyManager) GetSigner(alg Alg) (string, crypto.Signer, bool) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
@@ -231,6 +262,12 @@ func (km *KeyManager) GetSigner(alg Alg) (string, crypto.Signer, bool) {
 
 // JWKS returns the public part of every key held, each carrying its kid, its
 // algorithm and use "sig". No entry carries private key material.
+//
+// Every key held is published, a key stored for an algorithm this manager was
+// not configured with included: a replica sharing the store may have written
+// it, and publishing it is what verifies the tokens it signed. Publishing a key
+// is not signing with it — GetSigner hands out none of them — and such a key
+// stops being published once it is past the key lifetime, like any other.
 func (km *KeyManager) JWKS() (jwk.Set, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()

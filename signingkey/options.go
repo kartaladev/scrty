@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 	"time"
 )
 
@@ -69,8 +70,13 @@ func (r realTicker) Stop() { r.ticker.Stop() }
 
 // WithAlgs sets the algorithms a current key is kept for. Default: RS256 only.
 // Supported: RS256, ES256 and EdDSA; anything else fails construction.
+//
+// The list is copied, so a caller may sort, filter or reuse the slice it passed
+// afterwards. Without the copy a consumer reusing that slice would rewrite the
+// configuration after construction validated it, and rotation would go on
+// minting for whatever it had become.
 func WithAlgs(algs ...Alg) Option {
-	return func(km *KeyManager) { km.algs = algs }
+	return func(km *KeyManager) { km.algs = slices.Clone(algs) }
 }
 
 // WithLifetime sets how long a key stays published after it was created.
@@ -131,6 +137,11 @@ func WithClock(clock Clock) Option {
 
 // WithLogger sets where rotation and reload failures are logged. Default:
 // slog.Default().
+//
+// Records are written from the background loops, under the rules
+// WithErrorHook describes: a handler that blocks holds up the loop that is
+// writing, and one that calls Start or Stop deadlocks the manager. A handler
+// that panics takes the loop down with it.
 func WithLogger(logger *slog.Logger) Option {
 	return func(km *KeyManager) { km.logger = logger }
 }
@@ -138,6 +149,26 @@ func WithLogger(logger *slog.Logger) Option {
 // WithErrorHook sets a function called with every rotation and reload failure.
 // Default: none. Use it to surface a store outage that would otherwise leave
 // one key signing indefinitely.
+//
+// The hook runs synchronously on the background loop that failed, which fixes
+// what it may do:
+//
+//   - It must be fast. The loop cannot tick again until the hook returns, so a
+//     hook that blocks for longer than the rotation interval stops rotation for
+//     as long as it blocks.
+//   - It must not panic. There is no recover between the hook and the loop, so
+//     a panic ends that loop and takes the process with it.
+//   - It must not call Start or Stop. Stop waits for the loop the hook is
+//     running on, and Start waits for the same lock Stop holds while it waits,
+//     so either one called from the hook wedges the manager: the loops stop
+//     running, every later Stop blocks, and the process goes on serving with a
+//     key that never rotates. To shut down from a hook, hand the error to a
+//     goroutine or a channel of the consumer's own and call Stop from there.
+//
+// Everything that reads the manager is safe from the hook, which is what a
+// hook needs in order to decide how bad an outage has become: GetSigner, JWKS,
+// SupportedAlgs, KeyLifetime and RotateInterval. The manager never holds the
+// keyring lock across the hook.
 func WithErrorHook(hook func(error)) Option {
 	return func(km *KeyManager) { km.errorHook = hook }
 }

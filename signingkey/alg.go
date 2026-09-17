@@ -54,7 +54,6 @@ const (
 	EdDSA Alg = "EdDSA"
 )
 
-// supportedAlg reports whether alg is one scrty can generate and sign with.
 // SupportedAlg reports whether scrty can produce signatures for alg.
 //
 // It is the single authority on that question, and it is exported because

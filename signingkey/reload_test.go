@@ -30,23 +30,12 @@ func (s *listingStore) LoadAll(context.Context) ([]signingkey.Record, error) {
 	return s.recs, nil
 }
 
-// realRecord returns a genuine RS256 record, created at the given time. It is
-// minted by a throwaway manager so the private bytes and the thumbprint are
-// real: only CreatedAt is rewritten.
+// realRecord returns a genuine RS256 record, created at the given time, which
+// is the algorithm every default-configured test runs on.
 func realRecord(t *testing.T, createdAt time.Time) signingkey.Record {
 	t.Helper()
 
-	store := signingkey.NewInMemoryKeyStore()
-	_, err := signingkey.NewKeyManager(signingkey.WithKeyStore(store))
-	require.NoError(t, err)
-
-	recs, err := store.LoadAll(t.Context())
-	require.NoError(t, err)
-	require.Len(t, recs, 1)
-
-	rec := recs[0]
-	rec.CreatedAt = createdAt
-	return rec
+	return realRecordFor(t, signingkey.RS256, createdAt)
 }
 
 func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
