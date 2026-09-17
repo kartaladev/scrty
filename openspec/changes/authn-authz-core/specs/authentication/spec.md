@@ -39,6 +39,21 @@ Constructing an authentication manager with no providers, or with any absent pro
 - **WHEN** a manager is constructed with a valid provider and an absent one
 - **THEN** construction fails with a configuration error
 
+### Requirement: Identity ports have no silent defaults
+A component that needs a user loader, role loader, user provisioner or MFA requirement lookup SHALL NOT substitute an in-memory or empty implementation when none is supplied. When the component cannot work without the port, it SHALL fail at construction with a configuration error naming the port. A component SHALL load users, privileges and the MFA requirement only through the supplied port.
+
+#### Scenario: Missing user loader
+- **WHEN** a component that requires a user loader is constructed without one
+- **THEN** construction returns a configuration error naming the user loader
+
+#### Scenario: Consumer implementation
+- **WHEN** a consumer supplies their own user loader backed by their user table
+- **THEN** the component loads users only through it
+
+#### Scenario: No substituted default
+- **WHEN** a component that requires a user loader is constructed without one
+- **THEN** it does not fall back to an in-memory or empty user store
+
 ### Requirement: A success without a principal is a failure
 When a deciding provider reports no error but returns no result, or a result without a principal, the manager SHALL return the uniform authentication failure rather than a success.
 

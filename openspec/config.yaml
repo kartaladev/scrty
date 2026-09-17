@@ -6,8 +6,10 @@ context: |
   library.
 
   Layout
-  - Core module: no framework, driver, scheduler or DI dependency. Go 1.26 minimum; CI on 1.26
-    and 1.27.
+  - Core module: no framework, driver, scheduler or DI dependency. Go 1.27 minimum; CI on 1.27.
+    The floor is 1.27 because jwx v4 handles JSON through encoding/json/v2, which reaches the
+    standard library in 1.27; on 1.26 it builds only under GOEXPERIMENT=jsonv2, which every
+    consumer would inherit.
   - Integrations are nested modules: ginsec (gin), fibersec (fiber v3), gorm, pgx,
     sweep (scheduler), do (optional samber/do wiring).
   - Shared test helpers, conformance suites and the tests that use them live in
@@ -40,8 +42,10 @@ context: |
     the default. Depart from them only when a settled scrty decision requires it, or to fix a
     demonstrable defect, and record every departure as a design decision. Its documents are never
     copied or cited.
-  - github.com/lestrrat-go/jwx/v3 is the single JOSE/JWT/JWK stack. golang.org/x/oauth2 is
-    allowed for the OIDC code exchange.
+  - github.com/lestrrat-go/jwx/v4 is the single JOSE/JWT/JWK stack. Its core carries no net/http,
+    so HTTP JWKS retrieval (one-shot fetches and background-refreshed caches) comes from the
+    github.com/jwx-go/jwkfetch/v4 companion. golang.org/x/oauth2 is allowed for the OIDC code
+    exchange.
 
   HTTP and errors
   - httpsec is a framework-agnostic net/http core built as an ordered around-interceptor chain.

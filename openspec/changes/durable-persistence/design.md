@@ -279,7 +279,7 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 
 ### 11. The `test` module
 
-`github.com/kartaladev/scrty/test`, Go 1.26, created by this change.
+`github.com/kartaladev/scrty/test`, Go 1.27, created by `identity-and-tokens` and extended here.
 - **No other scrty module imports it**, test files included (module-layout).
 - **Tests that live here:** the integration tests for the core `database/sql` adapters, the conformance runs against core's in-memory defaults, and the `pgx` and `gorm` adapter runs.
 - **Goose recipe:** a compiled `ExampleApplySecurityStateMigrations` shows the goose recipe, so CI keeps it compiling.

@@ -32,7 +32,7 @@ scrty defines them first, with each of those failures written down as a requirem
   - replaceable parameters above a stated floor;
   - bcrypt never matching by truncation;
   - matching that costs the same whether or not it succeeds, so callers can equalize unknown-user logins with a decoy hash.
-- Add the `token` package: JWT generation and verification on `lestrrat-go/jwx/v3`, with:
+- Add the `token` package: JWT generation and verification on `lestrrat-go/jwx/v4`, with:
   - the algorithm pinned by the key, and `alg: none` rejected;
   - `kid` bound to the header;
   - `exp` required;
@@ -44,7 +44,8 @@ scrty defines them first, with each of those failures written down as a requirem
   - scheduled rotation and housekeeping;
   - JWKS output;
   - start and stop that leave no goroutine behind.
-- Add to the core module jwx v3 and `golang.org/x/crypto`.
+- Add to the core module jwx v4 and `golang.org/x/crypto`.
+- Raise the module's Go floor to 1.27, which jwx v4 forces: it reads and writes JSON through `encoding/json/v2`, which reaches the standard library in Go 1.27. On Go 1.26 it builds only under `GOEXPERIMENT=jsonv2`, a build-environment flag every consumer would otherwise inherit.
 
 Not in this change:
 - deciding logins, MFA or permissions (`authentication`, `security-policy`, `authorization`);
@@ -68,7 +69,8 @@ None. No specs exist yet.
 ## Impact
 
 - **New code:** `identity/`, `factor/`, `password/`, `token/`, `signingkey/` in the core module. In the `test` module: the identity port conformance suite and an in-memory provisioner and loader.
-- **Dependencies:** `github.com/lestrrat-go/jwx/v3` and `golang.org/x/crypto` in the core module. Neither is a framework, driver, scheduler or DI container, so the `module-layout` guard holds.
+- **Dependencies:** `github.com/lestrrat-go/jwx/v4` and `golang.org/x/crypto` in the core module. Neither is a framework, driver, scheduler or DI container, so the `module-layout` guard holds.
+- **Go version:** the floor rises from 1.26 to 1.27 and the CI matrix follows. Nothing is tagged and there are no consumers, so this costs nothing now; after the first tag it would be a breaking change.
 - **Later changes:**
   - `authn-authz-core` builds authentication, authorization, sessions and policy on these types;
   - `durable-persistence` implements the key store;

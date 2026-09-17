@@ -10,7 +10,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - `token-issuance` and `signing-keys`: the internal access token minted at redemption.
   - `http-security-chain`, `http-error-propagation` and `outbound-http-confinement` (http-security): interceptor slots, sentinel-to-status mapping, and the outbound client that enforces `https`, confines redirects, bounds bodies and applies timeouts.
 - **Persistence split.** This change owns the behaviour of the link, flow and handoff stores and ships in-memory defaults. `durable-persistence` owns the three durable adapters (`security-state-stores`) and the sealing of the provider ID token retained on sessions (`secrets-at-rest`).
-- **One JOSE stack.** `github.com/lestrrat-go/jwx/v3` is scrty's only JOSE, JWT and JWK library. Provider ID tokens, logout tokens and provider key sets use it, including its JWKS cache.
+- **One JOSE stack.** `github.com/lestrrat-go/jwx/v4` is scrty's only JOSE, JWT and JWK library. Provider ID tokens, logout tokens and provider key sets use it. v4's core carries no `net/http`, so the JWKS cache comes from its `github.com/jwx-go/jwkfetch/v4` companion rather than from `jwk` itself.
 - **No cross-store transaction.** A provisioned user and its link are two writes to two ports that may live in different databases.
 - **Browser navigation.** The callback arrives as a top-level navigation, not as a request the application's own code made. There is no cookie-borne session or CSRF defence in scrty yet (`bff-resource-server`).
 
@@ -37,13 +37,13 @@ See proposal.md for why this change exists. The constraints that shape the appro
 
 | Package | Holds | Imports |
 |---|---|---|
-| `oidc` | registry, discovery and key cache, authorize/callback manager, flow store port and in-memory store, ID and logout token verification, broker, link store port and in-memory store, handoff manager, handoff store port and in-memory store | `identity`, `session` (types), `pkg/id`, `pkg/logsample`, jwx v3, `golang.org/x/sync/singleflight` |
+| `oidc` | registry, discovery and key cache, authorize/callback manager, flow store port and in-memory store, ID and logout token verification, broker, link store port and in-memory store, handoff manager, handoff store port and in-memory store | `identity`, `session` (types), `pkg/id`, `pkg/logsample`, jwx v4, `github.com/jwx-go/jwkfetch/v4`, `golang.org/x/sync/singleflight` |
 | `httpsec` (additions) | the authorize, callback, redemption and back-channel logout interceptors, and the end-session hook on local logout | `oidc`, `policy`, `ratelimit`, `session`, `token` |
 | `test` module | `RunLinkStoreSuite`, `RunFlowStoreSuite`, `RunHandoffStoreSuite`, an in-process test identity provider, `RunTestKeycloak` | testcontainers-go |
 
 The `oidc` package has no HTTP-framework import, and makes outbound calls only through the client that the `outbound-http-confinement` capability provides.
 
-- **Alternative rejected:** a nested `oidc` module. The core already carries jwx for `token`, and OIDC needs no framework or driver.
+- **Alternative rejected:** a nested `oidc` module. The core already carries jwx for `token`, and OIDC needs no framework or driver. `jwkfetch` is the one addition, and it is a JOSE companion rather than a framework, driver, scheduler or DI container, so the `module-layout` guard still holds — though it does bring `net/http` and `httprc` back into the core's graph, which jwx v4 itself no longer does.
 
 ### 2. Provider registry: trusted, validated input
 
@@ -66,7 +66,7 @@ func WithSigningAlgs(provider string, algs ...string) ManagerOption // default R
 - **Override:** everything is plain data. A consumer-built `Registry` from any source is accepted, and the trust statement then applies to that source.
 - **Alternative rejected:** default-deny internal destinations. The predicate (private ranges, IPv6 unique-local, DNS names resolving to them, resolution at validation versus request time) is non-trivial and TOCTOU-prone. It is the recommended shape if providers ever load from storage.
 
-### 3. Discovery and key sets on the jwx cache
+### 3. Discovery and key sets on the jwkfetch cache
 
 ```go
 func WithDiscoveryTTL(d time.Duration) ManagerOption                    // default 15m
@@ -78,16 +78,18 @@ func (m *Manager) Start(ctx context.Context) error
 func (m *Manager) Stop(ctx context.Context) error
 ```
 
-- **Key-set storage and fetching use jwx v3's `jwk.Cache`.** It is built by `jwk.NewCache` on an `httprc.Client` whose HTTP client is the confined outbound client, so every key-set request passes through `outbound-http-confinement`. Each provider's `jwks_uri` is registered on first use (or at `Start` under eager discovery) with `jwk.WithMinInterval` and `jwk.WithMaxInterval` both set to the TTL, and read with `Lookup`.
-- **The discovery document** uses a small TTL cache of its own, because `jwk.Cache` holds key sets only.
-- **Freshness is scrty's, not the cache's.** A wrapper records the time of every successful fetch it observes, both its own `Refresh` calls and `Lookup` results after a background refresh. A set older than the TTL is refreshed on demand. This matters because `jwk.Cache` keeps its last good copy when a background refresh fails; without the wrapper, a withdrawn key would stay acceptable indefinitely during an outage.
+- **Key-set storage and fetching use `jwkfetch.Cache`.** It is built by `jwkfetch.NewCache(ctx, client)` on an `httprc.Client` whose HTTP client is the confined outbound client, so every key-set request passes through `outbound-http-confinement`. `NewCache` returns an error, which construction propagates. Each provider's `jwks_uri` is registered on first use (or at `Start` under eager discovery) with `jwkfetch.WithMinInterval` and `jwkfetch.WithMaxInterval` — both `RegisterOption`s, set per URL at `Register`, not on the cache — each set to the TTL, and read with `Lookup`.
+- **The transport is set once.** `jwkfetch` applies `WithHTTPClient` and `WithMaxBodySize` uniformly to every registered URL; there is no per-URL override. The confined client is therefore configured on `NewCache` and covers every provider.
+- **The whitelist is not the trust boundary here.** `jwkfetch.Cache` does not consult a whitelist: registration is what makes a URL trusted, and only operator-authored provider configuration reaches `Register` (decision 2). scrty performs no `jku`-style fetching, where an attacker-controlled URL would make a whitelist mandatory.
+- **The discovery document** uses a small TTL cache of its own, because `jwkfetch.Cache` holds key sets only.
+- **Freshness is scrty's, not the cache's.** A wrapper records the time of every successful fetch it observes, both its own `Refresh` calls and `Lookup` results after a background refresh. A set older than the TTL is refreshed on demand. This matters because `jwkfetch.Cache` keeps its last good copy when a background refresh fails; without the wrapper, a withdrawn key would stay acceptable indefinitely during an outage.
 - **Coalescing.** On-demand `Refresh` and document fetches for a resource (`meta:<provider>`, `keys:<provider>`) run through a `singleflight.Group` with `DoChan`. The shared call runs on `context.WithoutCancel(ctx)` with its own timeout, and each caller selects on its own `ctx.Done()`.
 - **Unknown `kid`:** a fresh set missing the `kid` triggers one `Refresh`. The cooldown claim is taken inside the flight body, so the goroutine that claims the window is the goroutine that fetches. A refusal inside the cooldown returns an unknown-signing-key error, which verification maps to invalid token, not provider failure.
 - **Failure backoff:** doubling windows keyed like the flight. A refusal that never reached the network (cooldown, or a document failure inside a key-set flight) is marked not-attempted, so it neither opens nor widens a window. Each window transition is logged once.
 - **Stale-while-error:** off by default. When configured, it serves an expired entry within `TTL + window` after a failed refresh, logging a warning per use. It never serves a fresh entry after a failed unknown-`kid` refresh, and never serves a stale set that lacks the caller's `kid`.
 - **Lifecycle:**
   - `Start` creates the cache and, under eager discovery, registers every provider, failing on any error.
-  - `Stop` calls `Cache.Shutdown` and is idempotent.
+  - `Stop` calls `Cache.Shutdown(ctx)`, which returns an error, and is idempotent.
   - `Start` after `Stop` is an error.
 - **Stated limits:**
   - state is per process, so N replicas refetch up to N times per window;
@@ -130,7 +132,7 @@ type FlowStore interface {
   - Client authentication is `client_secret_post` by default. `client_secret_basic` is per provider (decision 16, departure 7).
   - Bodies are bounded, the error body is logged truncated and never returned, and the provider's access and refresh tokens are discarded.
   - `golang.org/x/oauth2` is permitted but not used: the call is one POST, and its token-source and refresh machinery would sit unused.
-- **Verification (jwx v3):**
+- **Verification (jwx v4):**
   - `jwt.Parse(raw, jwt.WithKeySet(set, jws.WithRequireKid(true)), jwt.WithIssuer(iss), jwt.WithAudience(clientID), jwt.WithAcceptableSkew(skew), jwt.WithValidate(true))`, with the key set filtered to keys whose algorithm is in the provider's allowlist;
   - then scrty's own checks: `exp` present, `sub` non-empty, `azp` when there are several audiences, and `nonce` in constant time;
   - `WithClockSkew` defaults to 60 s.
@@ -420,8 +422,8 @@ Each item names what scrty does differently from the established behaviour of th
    - (b) This was an admitted gap: a provider requiring Basic authentication refused the exchange.
 8. **An accepted-algorithm list containing `none` fails construction.** The established behaviour silently filtered `none` out, and fell back to `RS256` when nothing remained.
    - (a) Wiring mistakes fail at construction.
-9. **Provider key sets live in jwx v3's `jwk.Cache`, behind scrty's own freshness, cooldown, coalescing and backoff wrapper.** The established design wrapped a one-shot fetch in a hand-rolled TTL map.
-   - (a) jwx v3, including its JWKS cache, is scrty's single JOSE stack.
+9. **Provider key sets live in the `jwkfetch` companion's `Cache`, behind scrty's own freshness, cooldown, coalescing and backoff wrapper.** The established design wrapped a one-shot fetch in a hand-rolled TTL map.
+   - (a) jwx is scrty's single JOSE stack, and from v4 its HTTP JWKS retrieval lives in the `jwkfetch` companion rather than in `jwk`.
    - The wrapper keeps every established guarantee, and adds a `Start`/`Stop` lifecycle because the cache runs background goroutines.
 10. **Withdrawn.** Password-hash mapping and claim mirroring are adopted as established, through `identity-model`'s update operation (decision 8a).
 11. **Link stores can delete a user's links.** The established store could only find and insert.

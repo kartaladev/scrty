@@ -14,7 +14,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - wiring mistakes fail at construction;
   - shared test helpers live in the `test` module;
   - the core module takes no framework, driver, scheduler or DI dependency;
-  - JOSE work uses `github.com/lestrrat-go/jwx/v3` as the single stack.
+  - JOSE work uses `github.com/lestrrat-go/jwx/v4` as the single stack.
 - **Project rules:** library-design, golang-tdd, the `table-test`, `use-mockgen` and `use-testcontainers` skills.
 - **Failure classes this design rules out, each pinned by a test:**
   - an issuer check whose condition is inverted, so a configured issuer is never enforced;
@@ -202,13 +202,13 @@ Overrides: every port is the override point. The conformance suite in the `test`
 ### 5. Password encoders
 
 ```go
-type PasswordEncoder interface {
+type Encoder interface {
     Encode(input string) ([]byte, error)
     Match(input string, encoded []byte) bool     // malformed or foreign hash: false
 }
-func NewArgon2idEncoder(opts ...Argon2idOption) (PasswordEncoder, error)
-func NewBcryptEncoder(opts ...BcryptOption) (PasswordEncoder, error)
-func NewScryptEncoder(opts ...ScryptOption) (PasswordEncoder, error)
+func NewArgon2idEncoder(opts ...Argon2idOption) (Encoder, error)
+func NewBcryptEncoder(opts ...BcryptOption) (Encoder, error)
+func NewScryptEncoder(opts ...ScryptOption) (Encoder, error)
 var ErrPasswordTooLong, ErrWeakParameters error
 ```
 
@@ -221,7 +221,7 @@ var ErrPasswordTooLong, ErrWeakParameters error
 Salt and key use unpadded standard base64.
 
 - **Default:** Argon2id with the parameters above.
-- **Override:** each parameter has an option naming its default; the consumer picks bcrypt or scrypt instead, or supplies their own `PasswordEncoder`. The floors are the OWASP password storage minimums, placed so every default above sits at or above them.
+- **Override:** each parameter has an option naming its default; the consumer picks bcrypt or scrypt instead, or supplies their own `Encoder`. The floors are the OWASP password storage minimums, placed so every default above sits at or above them.
 - **Match:**
   - reads parameters from the encoded hash, so hashes made with older parameters keep verifying;
   - compares derived keys in constant time;
@@ -234,9 +234,18 @@ Salt and key use unpadded standard base64.
 - **Salt read failure:** returned from `Encode`.
 - **Input:** used byte-for-byte, with no normalization.
 
-### 6. JOSE library: `github.com/lestrrat-go/jwx/v3`
+### 6. JOSE library: `github.com/lestrrat-go/jwx/v4`
 
-All JWT issuance, verification and JWK work uses jwx v3, the single JOSE stack for scrty. `oidc-login` reuses it for ID token verification.
+All JWT issuance, verification and JWK work uses jwx v4, the single JOSE stack for scrty. `oidc-login` reuses it for ID token verification.
+
+- **Go 1.27 is the floor, and jwx v4 sets it.** v4 handles JSON through `encoding/json/v2`, which ships in the standard library from Go 1.27. On Go 1.26 it builds only under `GOEXPERIMENT=jsonv2`, a build-environment flag every consumer would inherit — which `library-design` forbids leaving unstated, and which no option can remove. Raising the floor is the alternative, and it is free before the first tag. The CI matrix follows.
+- **API shape this design relies on** (v4 differs from v3 here):
+  - `jwk.Import` is generic: `jwk.Import[jwk.Key](signer.Public())`;
+  - field access is `jwt.Get[T](tok, name)` / `jwk.Get[T](key, name)` or `Field(name)`, not `Get(name, &dst)`;
+  - a key set iterates with `for _, key := range set.All()`;
+  - `jws.WithKeySet` requires a `kid` by default (`requireKid` is true), which is the behaviour the verifier wants, so it is not configured;
+  - validation errors are struct types: `errors.Is(err, jwt.TokenExpiredError{})`.
+- **Migration aid:** `github.com/jwx-go/jwxmigrate/v4` applies the mechanical v3→v4 rewrites and reports what needs judgement. It is a tool, not a dependency.
 
 - **Algorithm pinned by the key.** Keys in the verification set carry their `alg`, and verification with the key set selects the key by `kid` and uses that key's algorithm. A header naming a different algorithm, or `none`, does not verify.
 - **`kid` bound to the header.** The generator imports the signer as a JWK carrying the manager's `kid`, so the `kid` is written into the JWS protected header. The verifier requires a `kid` and looks the key up by it.
@@ -245,7 +254,7 @@ All JWT issuance, verification and JWK work uses jwx v3, the single JOSE stack f
   - `github.com/golang-jwt/jwt/v5`: no JWK or JWKS support, so keys would need a second library, with two algorithm guards that can disagree;
   - `github.com/go-jose/go-jose/v4`: a smaller dependency graph, but scrty would still hand-write key-set selection by `kid` and claim validation that jwx provides;
   - `github.com/coreos/go-oidc`: brings go-jose as a second JOSE stack into the OIDC path.
-- **Trade-off:** jwx v3 is a larger dependency graph, and a future jwx incompatibility affects every token and key path at once. No public signature exposes a jwx type; the public surface is `crypto.Signer`, the JWKS, and scrty's own claim accessors.
+- **Trade-off:** jwx is a larger dependency graph than a minimal JOSE library, and a future jwx incompatibility affects every token and key path at once — as the v3→v4 move itself shows. No public signature exposes a jwx type; the public surface is `crypto.Signer`, the JWKS, and scrty's own claim accessors, so an incompatibility stays inside the `token` and `signingkey` packages. v4 trims the core's own dependencies and drops `net/http`, which narrows the graph rather than widening it.
 
 ### 7. Token generator and verifier
 
@@ -402,7 +411,7 @@ Each departure below is justified by (a) a settled decision, or (b) a demonstrab
 | D6 | The generator can set `aud`. | (b) Without it, a verifier configured with an audience rejected every token the generator issued, a limitation recorded in the prior art's own tests. |
 | D7 | Password parameters are options with a floor, the key lifetime must exceed the rotation interval, and a token lifetime longer than key lifetime minus rotation interval is a construction error. | (a) Every default is replaceable; wiring mistakes fail at construction; the floor is part of this change's assignment. The prior art used fixed constants and accepted configurations that would unpublish a key while tokens it signed were still valid. |
 | D8 | A provisioning collision error does not include the username. | (b) The prior art's own comment on the collision write names the harm of an error message embedding the username, which is an email address on just-in-time provisioning, yet its collision error still embedded it. |
-| D9 | JOSE library is jwx v3. | Not a departure; (a) settled. |
+| D9 | JOSE library is jwx v4, and the module's Go floor rises to 1.27 to carry it. | (a) settled: jwx is the single JOSE stack, on its current major. The floor follows from v4's use of `encoding/json/v2`; the alternative imposes `GOEXPERIMENT=jsonv2` on every consumer on Go 1.26. Free before the first tag. |
 | D10 | The key manager reloads the store periodically: default every minute, `WithReloadInterval` to override, and an interval not shorter than the rotation interval is a construction error. | (b) Keys were loaded only at construction, so replicas sharing a store never saw each other's rotated keys, and a token minted on one replica was rejected by the others until restart. |
 | D11 | Rotation and reload failures are logged (sampled) and passed to an optional error hook. | (b) Rotation errors were discarded, so a store that kept rejecting writes left one key signing indefinitely with no signal. |
 
@@ -453,7 +462,8 @@ Behaviours kept exactly as in the prior art, though a fresh design might questio
 - [Rotated keys sign immediately, so an external verifier that caches the JWKS rejects new tokens until its cache refreshes] → Internal verification reads the in-process set and is unaffected. Documented for external resource servers.
 - [The key store grows by one record per algorithm per rotation and is loaded in full at start] → `expiry-sweeping` is the natural owner of pruning; raised as an open question.
 - [A store that keeps failing leaves one key signing] → The previous key stays current. Every failure reaches the logger and error hook (D11). Logs are sampled with a reporter, so a persistent outage writes a bounded number of records with exact suppressed counts.
-- [jwx v3 enlarges the core module's dependency graph] → Accepted as settled. The dependency guard still passes, since jwx is no framework, driver, scheduler or DI container.
+- [jwx enlarges the core module's dependency graph] → Accepted as settled. The dependency guard still passes, since jwx is no framework, driver, scheduler or DI container. v4 narrows the graph rather than widening it: its core drops `net/http` and `httprc`, moving HTTP JWKS retrieval to the `jwkfetch` companion, which this change does not need.
+- [jwx v4 forces the module's Go floor to 1.27] → Accepted, and free before the first tag. A consumer on Go 1.26 cannot embed scrty; the alternative was to make every such consumer set `GOEXPERIMENT=jsonv2`, which `library-design` forbids leaving as a silent inherited constraint.
 - [Argon2id at 64 MiB per verification under concurrency] → Sizing guidance in godoc; the login rate limit bounds concurrency per source.
 
 ## Migration Plan

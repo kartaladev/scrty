@@ -16,7 +16,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - options are named after what they govern;
   - gin and fiber integrations are nested modules;
   - constructors with functional options are the primary API, and DI wiring is optional;
-  - `github.com/lestrrat-go/jwx/v3` is the only JOSE stack.
+  - `github.com/lestrrat-go/jwx/v4` is the only JOSE stack.
 - **Capabilities this change uses, without restating them:**
   - `authentication` decides credentials and bounds its own refusal logs;
   - `authorization` owns the rule set, matchers, requirements and the no-match deny;
@@ -24,7 +24,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - `security-policy` owns phases, decisions, built-in policies and its own log sampling;
   - `rate-limiting` owns the limiter, canonical source keys (including IPv6 prefix grouping) and the source guard;
   - `token-issuance` verifies bearer tokens;
-  - `signing-keys` produces the public key set, as a jwx v3 set;
+  - `signing-keys` produces the public key set, as a jwx v4 set;
   - `log-sampling` owns the sampler;
   - `module-layout` owns the nested-module and test-module rules.
 - **Project rules:** library-design, golang-tdd, table-test, use-mockgen and use-testcontainers.
@@ -233,7 +233,7 @@ func WithGuardErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err e
   - the `StatelessAuthentication` phase runs after success, and there is never a session.
 - **Bearer tokens:**
   - **Scheme:** default `Bearer`, case-insensitive; override with `WithBearerScheme`. `WithBearerAllowEmptyScheme` also accepts a bare token.
-  - **Verification:** through `token-issuance`'s verifier (jwx v3). A failure returns `errors.Join(authn.ErrAuthenticationFailed, cause)` and logs the cause at DEBUG.
+  - **Verification:** through `token-issuance`'s verifier (jwx v4). A failure returns `errors.Join(authn.ErrAuthenticationFailed, cause)` and logs the cause at DEBUG.
   - **Session and user:**
     - a missing or expired session returns `ErrAuthenticationRequired`;
     - an undecryptable session returns `ErrAuthenticationRequired` and is logged at ERROR, so a retired sealing key forces re-login instead of a 500 storm;
@@ -257,7 +257,7 @@ func WithGuardErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err e
   - its own error is ignored, and the handler's result is returned unchanged.
 - **Key set:**
   - **Match:** `GET /.well-known/jwks.json`; override with `WithJWKSEndpointPath`.
-  - **Behaviour:** `KeySetProvider` returns `signing-keys`' public jwx v3 set, marshalled as JSON with `Content-Type: application/json`, status 200.
+  - **Behaviour:** `KeySetProvider` returns `signing-keys`' public jwx v4 set, marshalled as JSON with `Content-Type: application/json`, status 200.
   - **Errors:** propagate.
 
 ### 10. Authorization: rules in the chain, guards per endpoint

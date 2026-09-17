@@ -68,7 +68,7 @@ None. No specs have been archived yet. Two modifications are expected once the q
   - cookie session and CSRF interceptors in `httpsec`;
   - a resource-server verifier.
 - **Placement is not decided.** It depends on open question 1, the in-app BFF versus a standalone proxy.
-- **Dependencies:** no new JOSE library. Remote key sets reuse jwx v3 and the key-set cache semantics that `oidc-brokering` defines. A standalone proxy, if chosen, would be a new nested module.
+- **Dependencies:** no new JOSE library. Remote key sets reuse jwx v4, its `jwkfetch` companion, and the key-set cache semantics that `oidc-brokering` defines. A standalone proxy, if chosen, would be a new nested module.
 - **Depends on:**
   - `sessions`, `security-policy`, `authorization`, `rate-limiting` (authn-authz-core);
   - `token-issuance`, `signing-keys`, `identity-model` (identity-and-tokens);

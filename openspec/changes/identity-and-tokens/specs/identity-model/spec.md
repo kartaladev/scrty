@@ -211,13 +211,16 @@ The MFA requirement lookup SHALL report, for a user reference, whether that user
 - **WHEN** a conforming lookup cannot reach its backend
 - **THEN** it returns an error and no answer
 
-### Requirement: Identity ports have no silent defaults
-A library component that needs a user loader, role loader, user provisioner or MFA requirement lookup SHALL NOT substitute an in-memory or empty implementation when none is supplied. When the component cannot work without the port, it SHALL fail at construction with a configuration error. An in-memory provisioner that also loads users SHALL be available to tests only.
+### Requirement: The library ships no implementation of an identity port
+The identity model SHALL define the user loader, role loader, user provisioner and MFA requirement lookup as contracts only. It SHALL NOT ship an implementation of any of them, in memory or otherwise, and SHALL provide the configuration error value that a component returns when a port it needs was not supplied, naming that port. An in-memory provisioner that also loads users SHALL be available to tests only.
 
-#### Scenario: Missing user loader
-- **WHEN** a component that requires a user loader is constructed without one
-- **THEN** construction returns a configuration error naming the user loader
+Whether a particular component refuses to be constructed without a port is that component's own requirement; the `authentication` capability states it.
 
-#### Scenario: Consumer implementation
-- **WHEN** a consumer supplies their own user loader backed by their user table
-- **THEN** the component loads users only through it
+#### Scenario: No bundled implementation
+- **WHEN** the identity model's public surface is inspected
+- **THEN** it exposes no in-memory or empty implementation of any identity port
+
+#### Scenario: The missing-port error names the port
+- **WHEN** the configuration error for an unsupplied user loader is produced
+- **THEN** it names the user loader
+- **AND** it is identifiable as a missing-port error

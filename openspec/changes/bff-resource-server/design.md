@@ -30,7 +30,7 @@ The constraints that shape the approach:
     - the flow cookie is already `HttpOnly; Secure; SameSite=Lax` with a derived, clamped `Max-Age`;
     - `Strict` is ruled out there, because it drops the cookie on the provider's cross-site return;
     - provider access and refresh tokens are discarded after the exchange, as a stated non-goal.
-  - **`oidc-login` key-set cache:** jwx v3's cache behind scrty's freshness, unknown-`kid` cooldown, coalescing and failure backoff, fetching only through `outbound-http-confinement`.
+  - **`oidc-login` key-set cache:** the `jwkfetch` cache behind scrty's freshness, unknown-`kid` cooldown, coalescing and failure backoff, fetching only through `outbound-http-confinement`.
 - **What does not exist yet:**
   - a cookie that authenticates a request;
   - any CSRF defence;
@@ -42,7 +42,7 @@ The constraints that shape the approach:
   - errors propagate and the default response is a bare status;
   - options are named after what they govern;
   - nothing brand-specific in defaults;
-  - jwx v3 is the only JOSE stack.
+  - jwx v4 is the only JOSE stack, with HTTP JWKS retrieval from its `jwkfetch` companion.
 
 This change departs from no established behaviour. Each mode is new. Where a candidate decision needs another capability to change (identifier rotation in `sessions`, a refusal sentinel in `http-error-propagation`, keeping provider tokens in `oidc-login`), it is flagged rather than restated.
 
@@ -322,7 +322,7 @@ func WithClaimsMapper(m ClaimsMapper) Option     // default: Decision 8
 func WithKeySetCache(...) Option                 // oidc-login cache options, same names and defaults
 ```
 
-- **Verification** uses jwx v3:
+- **Verification** uses jwx v4:
   - `kid` required;
   - the key's algorithm must be in the allowlist;
   - `exp` required;
