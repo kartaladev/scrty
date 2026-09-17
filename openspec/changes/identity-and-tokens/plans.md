@@ -396,6 +396,16 @@ doubles so no consumer's module graph sees them."
 33. **Task 7.3 was implemented after 7.4 and 7.5, deliberately.** 7.3 pins sampling for rotation *and* reload failures, and reload does not exist until 7.4, so its reload case would have been green by vacuity. For the same reason 7.5's red step is an inversion rather than a first run: 7.4's green already had to do something with a failed `LoadAll`, so the red was re-established by reducing that path to a bare `return`.
 34. **`JWKS()` rebuilds the whole set on every call. UNREPRODUCED as a defect, and deliberately left for Task 8.** Measured in a throwaway module at 963 ns and 9 allocations for 25 keys, against 16.5 ns and none for `GetSigner`. It is Task 6 code, and caching it would change the ownership contract of the mutable `jwk.Set` handed back, so the decision belongs with Task 8, where the verification hot path lands.
 35. **design.md has drifted from the code and needs a pass.** It has no row for `WithLogSampleWindow`, its API sketch omits `Ticker`, `TickerClock` and `LifetimeReporter`, and its construction-errors list does not mention the nil-port rejection. Recorded rather than silently reconciled, since design.md is a settled artifact.
+36. **Group 8's first files were written before any test, and the record should say so.** A stalled worker left `options.go`, `claims.go` and `verifier.go` implementing far more than the single test then present, and no generator at all. Rather than discard them, the group continued under the rule that an already-implemented behaviour cannot yield a trustworthy first-run red: each such assertion was written from the requirement text in tasks.md and the spec — never by reading the implementation and describing it back, which is how a test comes to assert a bug — and proven by a named inversion instead. Only task 8.2 is genuinely red-first (the generator did not exist). 8.1 and 8.3-8.13 are characterization-then-inversion, 23 inversions in all. Two inversion attempts only broke the build rather than testing anything, and were redone so they compiled.
+37. **jwx v4.5.0 findings, measured rather than assumed.** `jwt.WithValidateOption` does not exist; `ValidateOption` implements `ParseOption`, so validation options pass straight to `jwt.Parse` and plans.md's separate `jwt.Validate` fallback is unnecessary. `jwt.Parse` validates `exp`, `nbf` and `iat` by default **but accepts a missing `exp`**, so `jwt.WithRequiredClaim(jwt.ExpirationKey)` is what makes expiry mandatory. `jws.WithKeySet` matches on both `alg` and `kid` by default. `jwt.ValidateOption.Value()` is unexported and `Ident()` is `WithValidator` for `WithRequiredClaim`, `WithIssuer` and `WithAudience` alike, so registrations cannot be counted by identity — the `%v` rendering does distinguish them, which is what task 8.7's exactly-once count rests on, and the test asserts that distinguishability first so it cannot pass vacuously. `jwk.PublicKeyOf` already returns a `jwk.Key`, so importing its result fails.
+38. **The issue path must not return `ErrTokenInvalid`. REPRODUCED.** `ErrTokenInvalid` is the verdict on a *presented* token and consumers map it to 401. `identity.PrincipalFromDetails` returns nil for absent details, so a store miss during issuance would have been reported as "your credential was refused" rather than as a server fault. Fixed by returning `identity.ErrNoPrincipal`, with no new exported API; `TestGenerateRefusesRatherThanIssuingAnUnusableToken` now asserts `NotErrorIs(err, ErrTokenInvalid)`, and the inversion that returns `ErrTokenInvalid` fails that row. A nil principal also panicked outright, which the same guard closes.
+39. **Relaxing the `kid` requirement dissolves the unknown-`kid` check as well. REPRODUCED.** With `jws.WithRequireKid(false)`, a token bearing a `kid` that is not in the set is tried against every key in the set and verifies, so a single option defeats two of task 8.5's rows at once. The option is therefore refused structurally, by a guard that parses the production files, rather than merely left unused.
+40. **No `jwk.Import` on the issue path.** plans.md imports the signer as a JWK to carry the `kid`; jwx then exports it straight back to an `*rsa.PrivateKey`, a full RSA encode and decode on every `Generate` that also discards the key's precomputed CRT values. Replaced with `jws.NewHeaders()` and `jws.WithProtectedHeaders`, signing with the `crypto.Signer` directly. Validation options are likewise built once at construction and copied per call, never appended to, which removes roughly 9-14 allocations per request; their read-only use in jwx v4.5.0 was confirmed by reading `option/v3`, `jwt/parseBytes` and `jwt/validate.go` rather than assumed.
+41. **`Verify` propagates the caller's context, which plans.md discards** (`_ context.Context`), so a cancelled request now aborts verification. The verdict is read from the error chain, not from an ambient `ctx.Err()` probe: the ambient form would relabel a genuine rejection as infrastructure whenever a deadline lapsed just after `jwt.Parse` had already judged the token.
+42. **The signing algorithm is resolved at construction, not per call.** `signingkey.Alg` is `= string`, so a typo used to construct cleanly and fail at the first login — `library-design.md` rule 6. `ErrConfig` was added to mirror `signingkey.ErrConfig`, so a wiring mistake is identifiable without matching message text.
+43. **Tasks 8.8 and 8.9 are one table, and were already drifting apart as two.** The `table-test` rule requires folding them, and the fold closed real gaps: the issuer table had a "not configured and absent" row the audience table lacked, and the audience table had a multi-value row the issuer table lacked. Thirteen rows now, and an inversion keyed on `c.issuer != ""` rather than on the `has` flag fails **only** the two "configured as the empty string" rows — which is the proof that the flag, not a non-empty value, is what decides enforcement.
+44. **Open, outside group 8's scope, reported rather than changed.** `signingkey.KeyManager.JWKS()` rebuilds the whole set on every verification under `RLock`, roughly 8-12 allocations per request and paid even for a malformed token — the same class as record 32's lock-held-across-a-decode, and record 34's deferred question, now with the hot path it was deferred to. `signingkey.KeySource` takes no context, so the one potentially blocking call on the verification path can never observe a deadline, which matters precisely for the KMS and HSM implementations its godoc invites. The usable-window formula `KeyLifetime() - RotateInterval()` is duplicated in `token`, encoding `signingkey`'s publication semantics where a change would leave the cap stale with no failing test; collapsing it to one `MaxTokenLifetime()` would also need a one-line edit to `specs/token-issuance/spec.md`. And `jwa.LookupSignatureAlgorithm` is the wrong authority for "supported", since it accepts `HS256`, which `signingkey` cannot produce; an exported `signingkey.SupportedAlg` would give one authority. All four are UNREPRODUCED.
+45. **Task 9.1 asks for a green gate on Go 1.26 and 1.27, which task 1.1 made impossible, deliberately.** The floor was raised to 1.27 precisely because jwx v4 reads JSON through `encoding/json/v2`, which is in the standard library only from 1.27 and on 1.26 needs `GOEXPERIMENT=jsonv2` — a flag every consumer would inherit, and one this plan's Global Constraints forbid setting. `go.mod`, `go.work` and `tools/go.mod` all declare `go 1.27`, the README states the floor and its reason, and the CI matrix is `["1.27.x"]`. So 9.1 was verified on Go 1.27.1 alone, and 1.26 is not merely unverified but unsupported by design. 9.1's wording predates 1.1 and should read 1.27.
 
 ---
 
@@ -6421,58 +6431,72 @@ Run after the plan is written, before execution begins.
 
 ### 1. Spec coverage
 
-| Spec | Requirement | Plan step(s) |
-|---|---|---|
-| identity-model | User reference is opaque and consumer-owned | 3.1a (both rows), 4.4 (case-differing lookup) |
-| identity-model | A principal carries no password hash | 3.1a (`password hash is dropped`, `active role`, `nil details`) |
-| identity-model | Principals distinguish human users from services | 3.3a |
-| identity-model | Roles, privileges and organizations carried as data | 3.1a (`role attributes`, `no default organization`) |
-| identity-model | Inactive is the zero state | 3.3a (`TestDetailsInactiveByDefault`) |
-| identity-model | Principal travels through a request context | 3.6a |
-| identity-model | Credentials report their type and can be cleaned up | 3.7a |
-| identity-model | First-factor kinds map to channels and exemptions | 2.1a, 2.2b, 2.3a |
-| identity-model | User loader contract | 4.4 |
-| identity-model | Role loader contract | 4.4 |
-| identity-model | Provisioning is create-only, collision by the write | 4.5, 4.6 |
-| identity-model | Updating amends only named fields | 4.7 |
-| identity-model | Role updates never silently strip grants | 4.8, 4.9 |
-| identity-model | MFA requirement looked up by user reference | 4.10 |
-| identity-model | The library ships no implementation of an identity port | 4.2 |
-| password-encoding | Argon2id is the default encoding | 5.1a |
-| password-encoding | bcrypt and scrypt are available | 5.4, 5.6 |
-| password-encoding | Matching reads parameters from the stored hash | 5.2 |
-| password-encoding | Parameters replaceable above a stated floor | 5.3, 5.4, 5.6 |
-| password-encoding | bcrypt never matches by truncation | 5.5 (with the D5 proof) |
-| password-encoding | A mismatch costs the same work as a match | 5.9 |
-| password-encoding | Password bytes hashed exactly as given | 5.2 (`different normalization form`) |
-| password-encoding | Salt failures are reported | 5.8 |
-| signing-keys | A current key per algorithm from construction | 6.2b |
-| signing-keys | Keys survive a restart | 6.4 |
-| signing-keys | Construction fails closed | 6.5 |
-| signing-keys | A key is stored before it is used | 6.2f, 7.2 (`rejected write`) |
-| signing-keys | Key identifiers are thumbprints | 6.3 |
-| signing-keys | Keys rotate on a schedule | 7.2, 7.3 |
-| signing-keys | Replicas sharing a store reload each other's keys | 7.4 (with the D10 proof), 6.6 (interval validation) |
-| signing-keys | Housekeeping removes old keys but never the current | 7.6, 6.6 (lifetime validation) |
-| signing-keys | The JWK Set publishes public keys only | 7.8 |
-| signing-keys | Key store replaceable, private bytes opaque | 6.1a |
-| signing-keys | Keys can be supplied without the key manager | 7.9, 8.11 (`TestConsumerSuppliedKeySource`) |
-| signing-keys | The clock is injectable | 7.6 |
-| signing-keys | Start is idempotent, construction starts nothing | 7.1a |
-| signing-keys | Stop leaves no goroutine behind | 7.1a, 7.7 |
-| token-issuance | Issued tokens carry a fixed set of claims | 8.2 |
-| token-issuance | Issued tokens can carry an audience | 8.3 (with the D6 proof) |
-| token-issuance | Issuing requires a key and a valid lifetime | 8.4 (with the D7 case) |
-| token-issuance | A verifier requires a key source | 8.1a, 8.11 |
-| token-issuance | The key identifier selects the key | 8.5 |
-| token-issuance | Algorithm pinned by the key, `alg: none` rejected | 8.6 |
-| token-issuance | Expiry is required and enforced | 8.7 |
-| token-issuance | Issuer enforced exactly when configured | 8.8 (with the inverted-condition proof) |
-| token-issuance | Audience enforced when configured | 8.9 |
-| token-issuance | Failures uniform and keep their cause | 8.10 |
-| token-issuance | The clock is injectable | 8.11 |
+Every requirement of the four specs maps to at least one test named after the behaviour it pins
+(task 9.2). Verified against the test names in the tree, not against this plan's steps: a step can
+be reworded or split, but a test name is what a reader greps for. Port requirements map to named
+subtests of the conformance suite, which is where the behaviour is actually pinned.
 
-**No gaps.** The earlier gap — identity-model's *"Identity ports have no silent defaults"*, whose scenarios needed a component this change does not build — was resolved by moving the component-side rule to `authn-authz-core`'s `authentication` spec. `identity-model` now requires only what this change can test: no bundled implementation, and a missing-port error that names its port. Every requirement in the four specs maps to a step above.
+| Spec | Requirement | Test(s) |
+|---|---|---|
+| identity-model | The user reference is opaque and consumer-owned | `TestPrincipalFromDetails`; `TestInMemoryStoreConformance/UserLoader/the_username_reaches_the_loader_exactly_as_presented`, `/a_username_differing_only_in_case_is_a_different_user` |
+| identity-model | A principal carries no password hash | `TestPrincipalCarriesNoRawSecretMaterial` (structural: rejects any `[]byte` field), `TestPrincipalFromDetails` |
+| identity-model | Principals distinguish human users from services | `TestPrincipalKind` |
+| identity-model | Roles, privileges and organizations are carried as data | `TestPrincipalFromDetails`, `TestResourcePrivilegesCarryTheirData`, `TestPrivilegeKeepsItsGrantedFlag` |
+| identity-model | Inactive is the zero state of user details | `TestDetailsActive`, `TestDetailsActiveIsNotInverted` |
+| identity-model | Principal travels through a request context | `TestPrincipalContext` |
+| identity-model | Presented credentials report their type and can be cleaned up | `TestCredentialsType`, `TestCredentialsTypesAreNamed`, `TestUsernamePasswordCleanupWipesTheBuffer` |
+| identity-model | First-factor kinds map to channels and exemptions | `TestKind`, `TestSecondFactorChannels` |
+| identity-model | User loader contract | `TestInMemoryStoreConformance/UserLoader/*` (4 named cases) |
+| identity-model | Role loader contract | `TestInMemoryStoreConformance/RoleLoader/a_role_returns_the_privileges_it_grants`, `/a_role_granting_nothing_is_identifiable_as_such` |
+| identity-model | Provisioning is create-only and the collision is enforced by the write | `TestInMemoryStoreConformance/Provisioner/Provision/*` (9 named cases), `/Provisioner/Concurrent` |
+| identity-model | Updating amends only named fields of an existing user | `TestInMemoryStoreConformance/Provisioner/Update/*` (5 named cases), `TestApplyUserOptions` |
+| identity-model | Role updates never silently strip grants | `TestInMemoryStoreConformance/Provisioner/Roles/*` (6 named cases), `/Provisioner/ConcurrentRoles` |
+| identity-model | MFA requirement is looked up by user reference and lives with the user | `TestInMemoryStoreConformance/MFALookup/*` (5 named cases), `TestDetailsCarriesNoMFARequirement` |
+| identity-model | The library ships no implementation of an identity port | `TestIdentityShipsNoPortImplementation`, `TestMissingPort`, `TestSentinelsAreDistinct` |
+| password-encoding | Argon2id is the default encoding | `TestArgon2idEncode`, `Example` |
+| password-encoding | bcrypt and scrypt are available | `TestBcryptCost`, `TestScryptEncode` |
+| password-encoding | Matching reads parameters from the stored hash | `TestArgon2idMatch` |
+| password-encoding | Parameters are replaceable above a stated floor | `TestArgon2idParameters`, `TestBcryptCost`, `TestScryptParameters` |
+| password-encoding | bcrypt never matches by truncation | `TestBcryptNeverMatchesByTruncation` (departure D5, reproduced) |
+| password-encoding | A mismatch costs the same work as a match | `BenchmarkMatchStoredHashWrongPassword`, `BenchmarkMatchDecoyWrongPassword`, `BenchmarkMatchDecoyLongPassword`, `TestDecoyFollowsConsumerParameters`, `Example_unknownUser` |
+| password-encoding | Password bytes are hashed exactly as given | `TestPasswordsAreHashedExactlyAsGiven` (6 cases across all three encoders) |
+| password-encoding | Salt failures are reported | `TestEncodeReportsASaltThatCannotBeRead`, `TestConstructionRefusesANilRandomSource` |
+| signing-keys | A current key per algorithm exists from construction | `TestNewKeyManager` |
+| signing-keys | Keys survive a restart | `TestKeyManagerAdoptsStoredKeys` |
+| signing-keys | Construction fails closed | `TestNewKeyManagerFailsClosed`, `TestNewKeyManagerValidation` |
+| signing-keys | A key is stored before it is used | `TestNewKeyManagerStoresBeforeUse`, `TestRotationFailureIsObservable` (see record 23 on what is falsifiable where) |
+| signing-keys | Key identifiers are key thumbprints | `TestKidIsThumbprint` (thumbprint recomputed independently in the test) |
+| signing-keys | Keys rotate on a schedule | `TestRotationAtTheConfiguredInterval`, `TestRotationFailureIsObservable`, `TestFailureLogsAreSampled` |
+| signing-keys | Replicas sharing a store reload each other's keys | `TestReloadPublishesAnotherReplicasKeys`, `TestReloadSkipsExpiredKeysAndRepicksCurrent`, `TestReloadFailureKeepsHeldKeys` (departure D10) |
+| signing-keys | Housekeeping removes old keys but never the current one | `TestHousekeeping`, `TestHousekeepingAndRotationNeverDeadlock` |
+| signing-keys | The JWK Set publishes public keys only | `TestJWKSPublishesPublicKeysOnly` (structural: `jwk.IsPrivateKey` plus the marshalled JSON's keys) |
+| signing-keys | The key store is replaceable and treats private bytes as opaque | `TestInMemoryKeyStore` |
+| signing-keys | Signing and verification keys can be supplied without the key manager | `TestKeySource`, `TestLifetimeReporter`, `TestConsumerSuppliedKeySource` (in `token`) |
+| signing-keys | The clock is injectable | `TestRotationAtTheConfiguredInterval`, `TestHousekeeping`, `TestNewKeyManagerValidation` |
+| signing-keys | Start is idempotent and construction starts nothing | `TestKeyManagerLifecycle`, `TestStartLaunchesEveryLoop` |
+| signing-keys | Stop leaves no goroutine behind | `TestStopWaitsForAnInFlightStoreWrite`, `TestStopAfterSeveralLoopRuns`, `TestKeyManagerLifecycle` (all under `goleak`) |
+| token-issuance | Issued tokens carry a fixed set of claims | `TestGenerateClaims` |
+| token-issuance | Issued tokens can carry an audience | `TestAudienceRoundTrip`, `TestGenerateClaims` (departure D6) |
+| token-issuance | Issuing requires a key and a valid lifetime | `TestNewGeneratorValidation`, `TestGenerateRefusesRatherThanIssuingAnUnusableToken` (departure D7) |
+| token-issuance | A verifier requires a key source | `TestNewVerifierRequiresKeySource`, `TestNewGeneratorValidation` |
+| token-issuance | The key identifier selects the key | `TestVerifyKeySelection` (hand-built tokens) |
+| token-issuance | The algorithm is pinned by the key and `alg: none` is rejected | `TestVerifyAlgorithmPinning`, `TestProductionSourceGuards` (the `kid`-relaxing option refused structurally) |
+| token-issuance | Expiry is required and enforced | `TestVerifyTimeChecks`, `TestExpiryRegisteredExactlyOnce` |
+| token-issuance | Issuer is enforced exactly when configured | `TestVerifyClaimEnforcement` |
+| token-issuance | Audience is enforced when configured | `TestVerifyClaimEnforcement` |
+| token-issuance | Verification failures are uniform and keep their cause | `TestVerifyErrorClassification` |
+| token-issuance | The clock is injectable | `TestGeneratorVerifiesItsOwnTokens`, `TestVerifyTimeChecks` |
+
+Two notes from doing this check rather than assuming it:
+
+- The row for "Password bytes are hashed exactly as given" previously pointed at step 5.2's
+  `different normalization form`. That case does not exist; the requirement is pinned by task 5.7's
+  `TestPasswordsAreHashedExactlyAsGiven`, which covers all three encoders. The stale row is why this
+  table now names tests rather than steps.
+- `Provisioner/Concurrent` and `Provisioner/ConcurrentRoles` are the two subtests whose names
+  describe a setup rather than a behaviour. Both requirements they serve are also covered by
+  well-named sibling cases, so the requirement above is satisfied; the names are worth improving the
+  next time that suite is touched.
 
 ### 2. Placeholder scan
 
