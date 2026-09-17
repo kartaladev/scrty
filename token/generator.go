@@ -16,7 +16,9 @@ import (
 type Generator interface {
 	// Generate returns a signed token for p, carrying id as its jti. It fails
 	// rather than issuing an unsigned token or one signed with an algorithm
-	// other than the configured one.
+	// other than the configured one, and rather than issuing one that
+	// identifies nobody: an empty id, a nil principal and a principal with no
+	// username are each refused. No failure here matches ErrTokenInvalid.
 	Generate(ctx context.Context, id string, p *identity.Principal) (string, error)
 
 	Verifier
@@ -29,15 +31,24 @@ type generator struct{ cfg *config }
 // Defaults: no issuer; no audience; a 15-minute lifetime; RS256; the system
 // clock. Each is a GenerateOption naming its own default.
 //
-// Construction fails when no key source is supplied, when the lifetime is zero
-// or less, and when a key source that reports its own key lifetime and
-// rotation interval could not keep a key published for as long as the tokens
-// would live.
+// A nil option is skipped, so a consumer may build the slice conditionally.
+//
+// Construction fails when no key source is supplied — including a non-nil
+// interface holding a nil pointer, which is what an unchecked constructor
+// error hands over — when the signing algorithm is one this library's key
+// sources cannot produce, when the lifetime is zero or less, and when a key
+// source that reports its own key lifetime and rotation interval could not
+// keep a key published for as long as the tokens would live.
 func NewGenerator(keys signingkey.KeySource, opts ...GenerateOption) (Generator, error) {
 	cfg := newConfig()
 	cfg.keys = keys
 	for _, opt := range opts {
-		opt(cfg)
+		// A consumer who builds the slice conditionally leaves an entry nil
+		// without thinking about it; every other constructor in this library
+		// skips one rather than panicking.
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
@@ -57,8 +68,19 @@ func (g *generator) Generate(_ context.Context, id string, p *identity.Principal
 	// Never ErrTokenInvalid: that is the verdict on a token a caller
 	// presented, and there is no token here. A consumer mapping
 	// ErrTokenInvalid to "credential refused" must not see this.
+	//
+	// A principal that names nobody is refused alongside no principal at all.
+	// identity.Principal is a plain exported struct, so a store row with a
+	// blank username arrives here as a perfectly good pointer, and signing for
+	// it would mint a valid token for the empty subject.
 	if p == nil {
 		return "", fmt.Errorf("token: generate: %w", identity.ErrNoPrincipal)
+	}
+	if p.Username == "" {
+		return "", fmt.Errorf("token: generate: %w", ErrNoSubject)
+	}
+	if id == "" {
+		return "", fmt.Errorf("token: generate: %w", ErrNoTokenID)
 	}
 
 	cfg := g.cfg

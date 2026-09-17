@@ -178,16 +178,64 @@ func TestNewGeneratorValidation(t *testing.T) {
 			assert: refused("key source"),
 		},
 		{
+			// The classic wiring mistake: a constructor's error went
+			// unchecked, or a field on a wiring struct was never set, so the
+			// interface is not nil but the pointer inside it is. The
+			// LifetimeReporter assertion succeeds on it, and the report is
+			// then read off a nil receiver.
+			name: "a typed-nil key source",
+			keys: func(_ *testing.T) signingkey.KeySource {
+				var missing *signingkey.KeyManager
+
+				return missing
+			},
+			assert: refused("key source"),
+		},
+		{
 			name:   "a nil clock",
 			keys:   reporting,
 			opts:   []token.GenerateOption{token.WithClock(nil)},
 			assert: refused("clock"),
 		},
 		{
+			// password, identity and signingkey all skip a nil option, and a
+			// consumer building a slice of options conditionally leaves one
+			// nil without thinking about it.
+			name:   "a nil option is skipped",
+			keys:   reporting,
+			opts:   []token.GenerateOption{nil, token.WithLifetime(time.Minute), nil},
+			assert: constructed,
+		},
+		{
 			name:   "an unknown signing algorithm",
 			keys:   reporting,
 			opts:   []token.GenerateOption{token.WithSigningAlg("RS256-but-misspelled")},
-			assert: refused("unknown signing algorithm"),
+			assert: refused("unsupported signing algorithm"),
+		},
+		{
+			// The JOSE stack knows the name "none" and resolves it, so
+			// asking it whether an algorithm exists is the wrong question.
+			// "no option enables unsigned tokens" has to rest on a rule this
+			// package tests, not on what a dependency happens to refuse at
+			// the first signature.
+			name:   "none as the signing algorithm",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithSigningAlg("none")},
+			assert: refused("unsupported signing algorithm"),
+		},
+		{
+			// HS256 exists too, and it is symmetric: the verification key is
+			// the signing key. This library's key sources cannot produce it.
+			name:   "a symmetric signing algorithm",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithSigningAlg("HS256")},
+			assert: refused("unsupported signing algorithm"),
+		},
+		{
+			name:   "every algorithm the key sources can produce is accepted",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithSigningAlg(signingkey.ES256)},
+			assert: constructed,
 		},
 		{
 			name:   "a zero lifetime",
@@ -247,6 +295,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 		name      string
 		algs      []signingkey.Alg
 		opts      []token.GenerateOption
+		id        string
 		principal func() *identity.Principal
 		assert    func(t *testing.T, raw string, err error)
 	}
@@ -255,6 +304,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 		{
 			name:      "no current key for the configured algorithm",
 			opts:      []token.GenerateOption{token.WithSigningAlg(signingkey.EdDSA)},
+			id:        "s-1",
 			principal: alice,
 			assert: func(t *testing.T, raw string, err error) {
 				require.Error(t, err)
@@ -264,9 +314,39 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 		},
 		{
 			name:      "no principal to name as subject",
+			id:        "s-1",
 			principal: func() *identity.Principal { return nil },
 			assert: func(t *testing.T, raw string, err error) {
 				require.ErrorIs(t, err, identity.ErrNoPrincipal)
+				assert.Empty(t, raw)
+			},
+		},
+		{
+			// identity.Principal is a plain exported struct, so a store row
+			// with a blank username reaches here as a non-nil principal that
+			// names nobody. Issuing for it would put sub: "" in a valid
+			// token, which Claims.Subject cannot tell from "no subject at
+			// all", and a consumer comparing the subject to a row's username
+			// would then match every blank-username row.
+			name:      "a principal with no username to name as subject",
+			id:        "s-1",
+			principal: func() *identity.Principal { return &identity.Principal{ID: "u-1"} },
+			assert: func(t *testing.T, raw string, err error) {
+				require.ErrorIs(t, err, token.ErrNoSubject)
+				assert.Empty(t, raw)
+				assert.NotErrorIs(t, err, identity.ErrNoPrincipal,
+					"there is a principal; what it lacks is a username")
+			},
+		},
+		{
+			// jti is the session identifier on the session path, and
+			// Claims.ID reports the empty string both for a token that
+			// carries none and for one carrying "".
+			name:      "no token identifier to carry as jti",
+			id:        "",
+			principal: alice,
+			assert: func(t *testing.T, raw string, err error) {
+				require.ErrorIs(t, err, token.ErrNoTokenID)
 				assert.Empty(t, raw)
 			},
 		},
@@ -279,7 +359,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 			gen, err := token.NewGenerator(newKeySource(t, tc.algs...), tc.opts...)
 			require.NoError(t, err)
 
-			raw, err := gen.Generate(t.Context(), "s-1", tc.principal())
+			raw, err := gen.Generate(t.Context(), tc.id, tc.principal())
 			tc.assert(t, raw, err)
 			assert.NotErrorIs(t, err, token.ErrTokenInvalid,
 				"a failure to issue is not the verdict on a presented token")

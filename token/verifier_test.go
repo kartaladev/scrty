@@ -7,9 +7,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,13 +21,106 @@ import (
 	"github.com/kartaladev/scrty/token"
 )
 
-func TestNewVerifierRequiresKeySource(t *testing.T) {
+// TestNewVerifierValidation pins that every wiring mistake is refused at
+// construction, identifiably and without matching message text, rather than
+// surfacing at the first request.
+func TestNewVerifierValidation(t *testing.T) {
 	t.Parallel()
 
-	ver, err := token.NewVerifier()
-	require.Error(t, err)
-	assert.Nil(t, ver)
-	assert.Contains(t, err.Error(), "key source")
+	refused := func(mentions string) func(*testing.T, token.Verifier, error) {
+		return func(t *testing.T, ver token.Verifier, err error) {
+			t.Helper()
+
+			require.ErrorIs(t, err, token.ErrConfig)
+			assert.Nil(t, ver, "a refused configuration yields no verifier")
+			assert.Contains(t, err.Error(), mentions)
+		}
+	}
+	constructed := func(t *testing.T, ver token.Verifier, err error) {
+		t.Helper()
+
+		require.NoError(t, err)
+		assert.NotNil(t, ver)
+	}
+
+	type testCase struct {
+		name   string
+		opts   func(t *testing.T) []token.VerifyOption
+		assert func(t *testing.T, ver token.Verifier, err error)
+	}
+
+	withKeys := func(opts ...token.VerifyOption) func(*testing.T) []token.VerifyOption {
+		return func(t *testing.T) []token.VerifyOption {
+			t.Helper()
+
+			return append([]token.VerifyOption{token.VerifyWithKeySource(newKeySource(t))}, opts...)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "no key source",
+			opts:   func(_ *testing.T) []token.VerifyOption { return nil },
+			assert: refused("key source"),
+		},
+		{
+			// A non-nil interface holding a nil pointer: the plain nil check
+			// lets it through, and it reaches the JOSE stack at the first
+			// request instead of failing at wiring time.
+			name: "a typed-nil key source",
+			opts: func(_ *testing.T) []token.VerifyOption {
+				var missing *signingkey.KeyManager
+
+				return []token.VerifyOption{token.VerifyWithKeySource(missing)}
+			},
+			assert: refused("key source"),
+		},
+		{
+			name:   "a nil clock",
+			opts:   withKeys(token.VerifyWithClock(nil)),
+			assert: refused("clock"),
+		},
+		{
+			name: "a typed-nil clock",
+			opts: func(t *testing.T) []token.VerifyOption {
+				t.Helper()
+
+				var missing *fixedClock
+
+				return withKeys(token.VerifyWithClock(missing))(t)
+			},
+			assert: refused("clock"),
+		},
+		{
+			name:   "a zero maximum token size",
+			opts:   withKeys(token.VerifyWithMaxTokenSize(0)),
+			assert: refused("maximum token size"),
+		},
+		{
+			name:   "a negative maximum token size",
+			opts:   withKeys(token.VerifyWithMaxTokenSize(-1)),
+			assert: refused("maximum token size"),
+		},
+		{
+			name:   "a nil option is skipped",
+			opts:   withKeys(nil, token.VerifyWithIssuer("https://auth.example"), nil),
+			assert: constructed,
+		},
+		{
+			name:   "a key source alone is enough",
+			opts:   withKeys(),
+			assert: constructed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ver, err := token.NewVerifier(tc.opts(t)...)
+			tc.assert(t, ver, err)
+		})
+	}
 }
 
 func TestVerifyKeySelection(t *testing.T) {
@@ -206,6 +301,16 @@ func TestVerifyTimeChecks(t *testing.T) {
 			name:     "one second after exp is rejected, so no skew is tolerated",
 			claims:   map[string]any{"sub": "alice", "jti": "s-1", "exp": expiry.Unix()},
 			verifyAt: expiry.Add(time.Second),
+			assert:   rejected,
+		},
+		{
+			// At one-second resolution a sub-second tolerance is invisible:
+			// the row above passes whether or not half a second of skew is
+			// allowed. Expiry is exclusive, so the instant named by exp is
+			// already too late, and any tolerance at all shows up here.
+			name:     "the instant named by exp is already rejected, so not even sub-second skew is tolerated",
+			claims:   map[string]any{"sub": "alice", "jti": "s-1", "exp": expiry.Unix()},
+			verifyAt: expiry,
 			assert:   rejected,
 		},
 		{
@@ -451,6 +556,42 @@ func TestVerifyErrorClassification(t *testing.T) {
 			},
 		},
 		{
+			name: "a key source that hands over no key set at all is not ErrTokenInvalid",
+			keys: func(t *testing.T) signingkey.KeySource {
+				keys := NewMockKeySource(gomock.NewController(t))
+				keys.EXPECT().JWKS().Return(nil, nil).Times(1)
+
+				return keys
+			},
+			token: func(t *testing.T, _ signingkey.KeySource) string {
+				return signClaims(t, newKeySource(t), validClaims(at))
+			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.Error(t, err)
+				assert.Nil(t, claims)
+				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+					"a source that supplied no key set has not judged the token")
+			},
+		},
+		{
+			name: "a key source holding no keys at all is not ErrTokenInvalid",
+			keys: func(t *testing.T) signingkey.KeySource {
+				keys := NewMockKeySource(gomock.NewController(t))
+				keys.EXPECT().JWKS().Return(jwk.NewSet(), nil).Times(1)
+
+				return keys
+			},
+			token: func(t *testing.T, _ signingkey.KeySource) string {
+				return signClaims(t, newKeySource(t), validClaims(at))
+			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.Error(t, err)
+				assert.Nil(t, claims)
+				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+					"with nothing to check against, the verifier has reached no verdict")
+			},
+		},
+		{
 			name: "a cancelled context is not ErrTokenInvalid",
 			keys: func(t *testing.T) signingkey.KeySource { return newKeySource(t) },
 			token: func(t *testing.T, keys signingkey.KeySource) string {
@@ -492,4 +633,252 @@ func TestVerifyErrorClassification(t *testing.T) {
 			tc.assert(t, claims, err)
 		})
 	}
+}
+
+// TestVerifyRejectsNonCanonicalEncoding pins that one issued token has exactly
+// one presentation that verifies. jwt.Parse is lenient: it trims surrounding
+// whitespace and rebuilds the signing input from the decoded segments, so
+// base64 padding, the standard +/ alphabet and stray Unicode space all survive
+// it. A consumer keying a revocation list, a replay cache, an idempotency
+// record or a rate-limit bucket on the presented string would then fail to
+// recognise a re-encoded presentation of a token it has already seen and
+// refused.
+//
+// Every row is the issued token as far as the JOSE stack is concerned — the
+// shared body proves that first — so a row rejected below is rejected for its
+// encoding alone and the rejections are not vacuous.
+func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
+	t.Parallel()
+
+	recode := func(t *testing.T, segment string, enc *base64.Encoding) string {
+		t.Helper()
+
+		raw, err := base64.RawURLEncoding.DecodeString(segment)
+		require.NoError(t, err)
+
+		return enc.EncodeToString(raw)
+	}
+	// rebuild presents the token with one segment re-encoded under enc.
+	rebuild := func(index int, enc *base64.Encoding) func(*testing.T, string) string {
+		return func(t *testing.T, issued string) string {
+			t.Helper()
+
+			parts := strings.Split(issued, ".")
+			require.Len(t, parts, 3)
+			parts[index] = recode(t, parts[index], enc)
+
+			return strings.Join(parts, ".")
+		}
+	}
+	surround := func(prefix, suffix string) func(*testing.T, string) string {
+		return func(_ *testing.T, issued string) string { return prefix + issued + suffix }
+	}
+
+	type testCase struct {
+		name      string
+		present   func(t *testing.T, issued string) string
+		canonical bool // the row presents the issued string unchanged
+		assert    func(t *testing.T, claims *token.Claims, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:      "the issued string itself",
+			present:   func(_ *testing.T, issued string) string { return issued },
+			canonical: true,
+			assert:    accepted,
+		},
+		{
+			name:    "base64 padding on the header",
+			present: rebuild(0, base64.URLEncoding),
+			assert:  rejected,
+		},
+		{
+			name:    "base64 padding on the payload",
+			present: rebuild(1, base64.URLEncoding),
+			assert:  rejected,
+		},
+		{
+			name:    "base64 padding on the signature",
+			present: rebuild(2, base64.URLEncoding),
+			assert:  rejected,
+		},
+		{
+			name:    "the standard base64 alphabet on the signature",
+			present: rebuild(2, base64.StdEncoding),
+			assert:  rejected,
+		},
+		{
+			name:    "a trailing newline",
+			present: surround("", "\n"),
+			assert:  rejected,
+		},
+		{
+			name:    "leading and trailing ASCII whitespace",
+			present: surround(" \t", "\r\n"),
+			assert:  rejected,
+		},
+		{
+			name:    "a trailing no-break space",
+			present: surround("", " "),
+			assert:  rejected,
+		},
+		{
+			name:    "a trailing ideographic space",
+			present: surround("", "　"),
+			assert:  rejected,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keys := newKeySource(t)
+			set, err := keys.JWKS()
+			require.NoError(t, err)
+
+			issued := signClaims(t, keys, validClaims(time.Now()))
+			presented := tc.present(t, issued)
+			if tc.canonical {
+				require.Equal(t, issued, presented, "a canonical row presents the issued string unchanged")
+			} else {
+				require.NotEqual(t, issued, presented, "a non-canonical row must really differ")
+			}
+
+			// Provenance: a verifier that only pins the key set accepts this
+			// exact string, so it carries the issued token's claims and its
+			// valid signature. Rejecting it is a deliberate strictness.
+			_, naive := jwt.Parse([]byte(presented),
+				jwt.WithKeySet(set), jwt.WithRequiredClaim(jwt.ExpirationKey))
+			require.NoError(t, naive,
+				"the presentation must be one a naive verifier accepts, or its rejection proves nothing")
+
+			ver, err := token.NewVerifier(token.VerifyWithKeySource(keys))
+			require.NoError(t, err)
+
+			claims, err := ver.Verify(t.Context(), presented)
+			tc.assert(t, claims, err)
+		})
+	}
+}
+
+// TestVerifyBoundsTheInputItAccepts pins that an unauthenticated string cannot
+// buy unbounded work. jws.Parse base64-decodes all three segments before any
+// signature is checked, so without a ceiling a single request allocates
+// several times the bytes it sent.
+//
+// The oversized token is genuine: the row that raises the ceiling verifies
+// that exact string, so the default's refusal is about its size and nothing
+// else.
+func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
+	t.Parallel()
+
+	signing := newKeySource(t)
+
+	padded := validClaims(time.Now())
+	padded["pad"] = strings.Repeat("x", 12<<10)
+	oversized := signClaims(t, signing, padded)
+	require.Greater(t, len(oversized), 8<<10, "the token must exceed the default ceiling")
+
+	type testCase struct {
+		name   string
+		keys   func(t *testing.T) signingkey.KeySource
+		opts   []token.VerifyOption
+		assert func(t *testing.T, claims *token.Claims, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "the default ceiling refuses it",
+			keys:   func(_ *testing.T) signingkey.KeySource { return signing },
+			assert: rejected,
+		},
+		{
+			name: "a consumer raises the ceiling and the same string verifies",
+			keys: func(_ *testing.T) signingkey.KeySource { return signing },
+			opts: []token.VerifyOption{token.VerifyWithMaxTokenSize(64 << 10)},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, claims)
+				assert.Equal(t, "alice", claims.Subject())
+			},
+		},
+		{
+			name: "the refusal costs no key lookup",
+			keys: func(t *testing.T) signingkey.KeySource {
+				keys := NewMockKeySource(gomock.NewController(t))
+				keys.EXPECT().JWKS().Times(0)
+
+				return keys
+			},
+			assert: rejected,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ver, err := token.NewVerifier(
+				append([]token.VerifyOption{token.VerifyWithKeySource(tc.keys(t))}, tc.opts...)...)
+			require.NoError(t, err)
+
+			claims, err := ver.Verify(t.Context(), oversized)
+			tc.assert(t, claims, err)
+		})
+	}
+}
+
+// TestVerifyTimeChecksResistProcessGlobalJWXSettings pins that the time checks
+// this package documents as unrelaxable are not in fact relaxable by any other
+// package in the consumer's binary.
+//
+// jwx rounds both operands of every time comparison by a process-global
+// truncation that jwt.Settings writes, so a transitive dependency's init could
+// widen it and make an nbf or iat far in the future acceptable. This
+// verification path pins its own truncation, so the setting has no effect
+// here.
+//
+// It mutates process-global state and therefore never runs in parallel.
+func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
+	at := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
+	keys := newKeySource(t)
+
+	// nbf and iat 50 minutes ahead; exp far enough out that expiry plays no
+	// part in the verdict.
+	raw := signClaims(t, keys, map[string]any{
+		"sub": "alice", "jti": "s-1",
+		"nbf": at.Add(50 * time.Minute).Unix(),
+		"iat": at.Add(50 * time.Minute).Unix(),
+		"exp": at.Add(24 * time.Hour).Unix(),
+	})
+
+	ver, err := token.NewVerifier(
+		token.VerifyWithKeySource(keys),
+		token.VerifyWithClock(&fixedClock{now: at}),
+	)
+	require.NoError(t, err)
+
+	// Provenance: the token is well formed and validly signed, and only its
+	// nbf and iat stand between it and acceptance — an hour on, the same
+	// string verifies.
+	later, err := token.NewVerifier(
+		token.VerifyWithKeySource(keys),
+		token.VerifyWithClock(&fixedClock{now: at.Add(time.Hour)}),
+	)
+	require.NoError(t, err)
+	claims, err := later.Verify(t.Context(), raw)
+	accepted(t, claims, err)
+
+	claims, err = ver.Verify(t.Context(), raw)
+	rejected(t, claims, err)
+
+	// Any package in the consumer's binary can do this, including a
+	// dependency's init, which no consumer of this library ever sees.
+	require.NoError(t, jwt.Settings(jwt.WithTruncation(time.Hour)))
+	t.Cleanup(func() { require.NoError(t, jwt.Settings(jwt.WithTruncation(0))) })
+
+	claims, err = ver.Verify(t.Context(), raw)
+	rejected(t, claims, err)
 }

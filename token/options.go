@@ -3,6 +3,7 @@ package token
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
@@ -40,6 +41,13 @@ func (systemClock) Now() time.Time { return time.Now() }
 // configured.
 const defaultLifetime = 15 * time.Minute
 
+// defaultMaxTokenSize is the largest string Verify will look at with no
+// ceiling configured. A compact JWS carrying the claims this package issues
+// and an RS256 signature is a few hundred bytes, so 8 KiB leaves ample room
+// for a consumer's own key source and its own claims while keeping the work an
+// unauthenticated request can buy bounded.
+const defaultMaxTokenSize = 8 << 10
+
 // config is the shared state of a generator and a verifier. Both are built
 // from it so that a generator verifies under exactly the rules it issues
 // under.
@@ -50,6 +58,9 @@ type config struct {
 	lifetime time.Duration
 	alg      signingkey.Alg
 	clock    Clock
+
+	// maxTokenSize bounds the string Verify will look at, in bytes.
+	maxTokenSize int
 
 	// signature is alg resolved once, at construction, so an unknown
 	// algorithm is a wiring error rather than a surprise at the first token.
@@ -68,9 +79,10 @@ type config struct {
 
 func newConfig() *config {
 	return &config{
-		lifetime: defaultLifetime,
-		alg:      signingkey.RS256,
-		clock:    systemClock{},
+		lifetime:     defaultLifetime,
+		alg:          signingkey.RS256,
+		clock:        systemClock{},
+		maxTokenSize: defaultMaxTokenSize,
 	}
 }
 
@@ -156,6 +168,19 @@ func VerifyWithIssuer(iss string) VerifyOption { return VerifyOption(setIssuer(i
 // configured value being non-empty.
 func VerifyWithAudience(aud string) VerifyOption { return VerifyOption(setAudience(aud)) }
 
+// VerifyWithMaxTokenSize sets the largest token, in bytes, that Verify will
+// look at. Default: 8192, which is generous for a compact JWS carrying an
+// RS256 signature.
+//
+// A longer string is refused as an invalid token before anything is decoded
+// and before the key source is consulted, so the work an unauthenticated
+// request can buy stays bounded. Raise it for a consumer whose own claims are
+// large; a size of zero or less fails construction, because a verifier that
+// accepts nothing is a wiring mistake rather than a policy.
+func VerifyWithMaxTokenSize(size int) VerifyOption {
+	return func(c *config) { c.maxTokenSize = size }
+}
+
 // VerifyWithClock sets the time source for every time check. Default: the
 // system clock. No clock skew is tolerated, so this is the only way to move
 // the instant a token is judged against.
@@ -174,6 +199,19 @@ func (c *config) validateOptions() []jwt.ParseOption {
 		// time validators, which tolerate no skew.
 		jwt.WithRequiredClaim(jwt.ExpirationKey),
 		jwt.WithClock(jwt.ClockFunc(c.clock.Now)),
+
+		// Every time comparison is made at the resolution the clock reports.
+		// Unpinned, both of its operands are rounded by a process-global
+		// truncation in the JOSE stack that any package in the consumer's
+		// binary — a transitive dependency's init included — can widen, and an
+		// nbf or iat that far in the future is then accepted.
+		//
+		// Pinned to no truncation rather than to the stack's own one-second
+		// granularity: for the whole-second numeric dates it parses by default
+		// the two agree exactly, and should a consumer ever widen the parse
+		// precision, rounding to the second would grant up to a second of nbf
+		// and iat leniency that this package documents as unavailable.
+		jwt.WithTruncation(0),
 	}
 	if c.hasIssuer {
 		opts = append(opts, jwt.WithIssuer(c.issuer))
@@ -188,19 +226,40 @@ func (c *config) validateOptions() []jwt.ParseOption {
 // validate reports a configuration that cannot work, so a wiring mistake fails
 // at construction rather than at the first issue or verification.
 func (c *config) validate() error {
-	if c.keys == nil {
+	// nilPort rather than == nil: an unchecked constructor error, or a field
+	// on a wiring struct nobody set, hands over a non-nil interface holding a
+	// nil pointer. == nil lets that through, and validateLifetime's
+	// LifetimeReporter assertion then succeeds on it and reads the report off
+	// a nil receiver, inside this constructor.
+	if nilPort(c.keys) {
 		return fmt.Errorf("%w: a key source is required", ErrConfig)
 	}
-	if c.clock == nil {
+	if nilPort(c.clock) {
 		return fmt.Errorf("%w: clock must not be nil", ErrConfig)
+	}
+	if c.maxTokenSize <= 0 {
+		return fmt.Errorf("%w: maximum token size must be positive, got %d",
+			ErrConfig, c.maxTokenSize)
 	}
 
 	// Resolving the algorithm here is what makes a typo a construction error.
-	// It narrows to what the JOSE stack knows; whether the key source can hold
-	// a key for it is the key source's own decision, reported at issue time.
+	//
+	// signingkey is the authority on which algorithms exist for this library,
+	// not the JOSE stack: the stack knows the name "none" and resolves it, and
+	// it knows the symmetric family, whose verification key is the signing
+	// key. Asking it whether a name exists would leave "no option enables
+	// unsigned tokens" resting on what a dependency refuses at the first
+	// signature rather than on a rule this package tests at construction.
+	if !signingkey.SupportedAlg(c.alg) {
+		return fmt.Errorf("%w: unsupported signing algorithm %q", ErrConfig, c.alg)
+	}
+
+	// Whether the key source holds a key for it is the key source's own
+	// decision, reported at issue time.
 	signature, ok := jwa.LookupSignatureAlgorithm(c.alg)
 	if !ok {
-		return fmt.Errorf("%w: unknown signing algorithm %q", ErrConfig, c.alg)
+		return fmt.Errorf("%w: the JOSE stack does not know signing algorithm %q",
+			ErrConfig, c.alg)
 	}
 	c.signature = signature
 	c.parseOpts = c.validateOptions()
@@ -234,4 +293,24 @@ func (c *config) validateLifetime() error {
 	}
 
 	return nil
+}
+
+// nilPort reports whether port is nil, or a non-nil interface holding a nil
+// pointer, map, slice, channel or function.
+//
+// Every port this package accepts goes through it, because == nil answers only
+// the first shape and a consumer's wiring mistake almost always produces the
+// second.
+func nilPort(port any) bool {
+	if port == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(port)
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
