@@ -1,6 +1,13 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
+# .SHELLFLAGS needs GNU Make 3.82 or newer. macOS ships 3.81, which ignores it
+# silently and runs recipes under a bare `-c`: no -e, no pipefail. A `for` loop
+# then reports only its LAST iteration's status, so a failure in any module but
+# the last was reported as success — a gate that printed findings and passed.
+# Every looping recipe below therefore sets the flags itself, which works on
+# either version. Verify with: make --version.
+
 BIN := $(CURDIR)/.bin
 export PATH := $(BIN):$(PATH)
 
@@ -23,19 +30,24 @@ fmt-check:
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 vet:
-	@for m in $(MODULES); do (cd "$$m" && go vet ./...); done
+	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && go vet ./...); done
 
 lint:
-	@for m in $(MODULES); do (cd "$$m" && golangci-lint run ./...); done
+	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && golangci-lint run ./...); done
 
 test:
-	@for m in $(MODULES); do (cd "$$m" && go test -race -count=1 ./...); done
+	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && go test -race -count=1 ./...); done
 
 vuln:
-	@for m in $(MODULES); do (cd "$$m" && govulncheck ./...); done
+	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && govulncheck ./...); done
 
 # Scoped to what go generate can touch: an unrelated edit elsewhere in the tree
-# must not make this gate cry wolf.
+# must not make this gate cry wolf. Go source is the whole of that scope today,
+# because mockgen is the only generating tool and it emits nothing but .go, while
+# every tracked yaml, json and sql file is hand-authored. Diffing those reported an
+# uncommitted config edit as stale generated output, which is the false alarm this
+# comment rules out. Widen the pathspec deliberately if a generator ever emits
+# another format.
 generate-check:
-	@for m in $(MODULES); do (cd "$$m" && go generate ./...); done
-	@git diff --exit-code -- '*.go' '*.sql' '*.json' '*.yaml' '*.yml'
+	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && go generate ./...); done
+	@git diff --exit-code -- '*.go'
