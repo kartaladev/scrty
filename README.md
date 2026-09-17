@@ -15,8 +15,12 @@ this repository enforces that.
 
 ## Supported Go versions
 
-scrty supports the two most recent Go releases, currently **Go 1.26** and **Go 1.27**. Every module
-declares `go 1.26`.
+scrty requires **Go 1.27** or later. Every module declares `go 1.27`.
+
+The floor is 1.27, not 1.26, because scrty's JOSE stack reads and writes JSON through
+`encoding/json/v2`, which reaches the standard library in Go 1.27. On Go 1.26 it builds only under
+`GOEXPERIMENT=jsonv2`, and scrty does not ask the applications that embed it to set a
+build-environment flag.
 
 ## Identifiers are not secrets
 
@@ -31,7 +35,7 @@ make tools   # install pinned golangci-lint, mockgen and govulncheck into ./.bin
 make check   # gofmt, go vet, golangci-lint, go test -race, govulncheck, go generate
 ```
 
-`make check` is what continuous integration runs, on both supported Go versions.
+`make check` is what continuous integration runs.
 
 ## License
 
