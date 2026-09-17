@@ -121,16 +121,6 @@ func TestArgon2idMatch(t *testing.T) {
 			assert: func(t *testing.T, matched bool) { assert.False(t, matched) },
 		},
 		{
-			name: "a malformed hash reports no match rather than erroring",
-			stored: func(_ *testing.T) []byte {
-				return []byte("argon2id$65536$1$4$!!!$AAAA")
-			},
-			input: "hunter2",
-			assert: func(t *testing.T, matched bool) {
-				assert.False(t, matched, "an unreadable salt must never be treated as a match")
-			},
-		},
-		{
 			// Only the algorithm label is rewritten, so the parameters, salt and
 			// derived key all still belong to this encoder. If Match ignored the
 			// label it would derive the identical key and report a match, so this
@@ -154,7 +144,17 @@ func TestArgon2idMatch(t *testing.T) {
 		// plausible mutation makes them fail — a record this broken yields a
 		// non-matching key however the parser mishandles it — so they exist to
 		// pin that Match answers false rather than panicking or erroring on input
-		// a corrupted or hand-edited store might hold.
+		// a corrupted or hand-edited store might hold. The guards they walk past
+		// are proven instead in boundary_test.go, by rewriting one field of a
+		// real record so that ignoring the guard would produce a match.
+		{
+			name: "a record whose salt is not base64 does not match",
+			stored: func(_ *testing.T) []byte {
+				return []byte("argon2id$65536$1$4$!!!$AAAA")
+			},
+			input:  "hunter2",
+			assert: func(t *testing.T, matched bool) { assert.False(t, matched) },
+		},
 		{
 			name: "a truncated record does not match",
 			stored: func(_ *testing.T) []byte {

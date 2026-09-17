@@ -62,11 +62,26 @@ func NewInMemoryKeyStore() KeyStore {
 	return &inMemoryKeyStore{records: make(map[string]Record)}
 }
 
+// copyRecord returns a record that shares no backing array with rec.
+//
+// A Record's byte fields are slices, so copying the struct copies only their
+// headers. Without this the store is a window onto the caller's buffers: a
+// consumer wiping its own PKCS #8 buffer after handing it over — ordinary key
+// hygiene — would destroy the stored key, and one reader zeroing or decrypting
+// in place would corrupt what the next reader loads.
+func copyRecord(rec Record) Record {
+	rec.Private = slices.Clone(rec.Private)
+	rec.PublicJWK = slices.Clone(rec.PublicJWK)
+
+	return rec
+}
+
 func (s *inMemoryKeyStore) Store(_ context.Context, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.records[rec.Kid] = rec
+	s.records[rec.Kid] = copyRecord(rec)
+
 	return nil
 }
 
@@ -76,7 +91,7 @@ func (s *inMemoryKeyStore) LoadAll(_ context.Context) ([]Record, error) {
 
 	out := make([]Record, 0, len(s.records))
 	for _, rec := range s.records {
-		out = append(out, rec)
+		out = append(out, copyRecord(rec))
 	}
 	slices.SortStableFunc(out, func(a, b Record) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out, nil

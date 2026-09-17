@@ -29,6 +29,8 @@ package password
 import (
 	"encoding/base64"
 	"errors"
+	"io"
+	"reflect"
 )
 
 // ErrWeakParameters is returned by an encoder's constructor when a parameter is
@@ -38,6 +40,17 @@ import (
 // construction rather than at first use, so a deployment configured too low
 // fails while someone is watching, instead of quietly storing weak hashes.
 var ErrWeakParameters = errors.New("password: parameters below the supported floor")
+
+// ErrInvalidParameters is returned by an encoder's constructor when a parameter
+// is not weak but meaningless — a value the algorithm itself will refuse.
+//
+// It is distinct from ErrWeakParameters because the operator's response differs:
+// a weak parameter is a policy decision to raise, while an invalid one is a
+// wiring mistake to correct. Both are refused at construction rather than at the
+// first Encode, which for a password encoder is the first registration or
+// password change — late enough that a deployment can look healthy until someone
+// signs up.
+var ErrInvalidParameters = errors.New("password: parameters the algorithm will refuse")
 
 // ErrNoRandomSource is returned by an encoder's constructor when the salt source
 // it was given is nil.
@@ -70,6 +83,28 @@ type Encoder interface {
 	// to do with the difference, and treating it as an error invites a branch
 	// that accidentally admits the user.
 	Match(input string, encoded []byte) bool
+}
+
+// isNilReader reports whether r is nil, or a non-nil interface holding a nil
+// pointer, map, slice, channel or function.
+//
+// == nil alone is not enough: the shape a wiring mistake actually produces is a
+// typed nil — `var r *bytes.Reader; WithArgon2idRandom(r)`, or a helper that
+// returns a typed nil on error — and such an interface is not equal to nil. It
+// passes construction and then panics inside the first Encode, which is the
+// failure ErrNoRandomSource exists to prevent.
+func isNilReader(r io.Reader) bool {
+	if r == nil {
+		return true
+	}
+
+	rv := reflect.ValueOf(r)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // b64 encodes the salt and derived key. Unpadded, so the encoded form has no '='

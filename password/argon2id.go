@@ -81,6 +81,25 @@ func WithArgon2idRandom(r io.Reader) Argon2idOption {
 	return func(e *argon2idEncoder) { e.random = r }
 }
 
+// The ceilings on what a STORED RECORD may demand. They are not configuration:
+// the parameters in a record are data this package did not write, and Match runs
+// on the login path, so the work one record can ask for has to be bounded.
+//
+// The fields are 32 bits wide, so without a ceiling a single row can demand
+// 4 TiB of memory — a fatal, unrecoverable allocation failure rather than a
+// panic a server can recover — or roughly 190 days of derivation per attempt.
+// Both are reachable by anyone who can influence a stored hash: a migration, an
+// import, a sync job.
+//
+// These are the stated line on flexibility rather than an option, because a
+// bound the caller can raise is not a bound. They sit far above any plausible
+// deployment: OWASP suggests 64 MiB at 1 to 3 iterations, and these allow 1 GiB
+// at 16. A record beyond them reports no match, exactly as a malformed one does.
+const (
+	maxRecordMemory     uint64 = 1024 * 1024 // 1 GiB, expressed in KiB
+	maxRecordIterations uint64 = 16
+)
+
 // The OWASP floors for Argon2id. Memory and iterations trade against each other,
 // so neither has a single minimum.
 const (
@@ -97,7 +116,7 @@ const (
 // The memory message names iterations too: the two trade against each other, so
 // an operator told only that memory is too low might raise the wrong dial.
 func (e *argon2idEncoder) validate() error {
-	if e.random == nil {
+	if isNilReader(e.random) {
 		return ErrNoRandomSource
 	}
 
@@ -198,7 +217,7 @@ func (e *argon2idEncoder) Match(input string, encoded []byte) bool {
 	// safe rather than merely unreachable: len is an int, and nothing here has
 	// established that it fits in the uint32 the derivation takes.
 	keyLength := len(want)
-	if keyLength > math.MaxUint32 {
+	if uint64(keyLength) > math.MaxUint32 {
 		return false
 	}
 
@@ -218,17 +237,19 @@ func parseArgon2id(encoded []byte) (
 	}
 
 	memory64, err := strconv.ParseUint(parts[1], 10, 32)
-	if err != nil {
+	if err != nil || memory64 > maxRecordMemory {
 		return 0, 0, 0, nil, nil, false
 	}
 
+	// Below argon2's own minimums this would panic rather than error, and above
+	// the ceiling one record decides how long the login path runs.
 	iterations64, err := strconv.ParseUint(parts[2], 10, 32)
-	if err != nil {
+	if err != nil || iterations64 < 1 || iterations64 > maxRecordIterations {
 		return 0, 0, 0, nil, nil, false
 	}
 
 	threads64, err := strconv.ParseUint(parts[3], 10, 8)
-	if err != nil {
+	if err != nil || threads64 < 1 {
 		return 0, 0, 0, nil, nil, false
 	}
 

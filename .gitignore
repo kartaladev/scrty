@@ -6,3 +6,6 @@
 
 # JetBrains IDE settings
 .idea/
+
+# Throwaway git worktrees created for isolated subagent runs
+.claude/worktrees/

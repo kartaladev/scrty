@@ -108,12 +108,20 @@ func NewScryptEncoder(opts ...ScryptOption) (Encoder, error) {
 // validate refuses a configuration below the floor, naming the parameter so the
 // operator knows which dial to turn.
 func (e *scryptEncoder) validate() error {
-	if e.random == nil {
+	if isNilReader(e.random) {
 		return ErrNoRandomSource
 	}
 
 	if e.n < defaultScryptN {
 		return fmt.Errorf("%w: N=%d; need at least %d", ErrWeakParameters, e.n, defaultScryptN)
+	}
+
+	// Not a weak parameter but a meaningless one: scrypt requires a power of two,
+	// as WithScryptN's own godoc says. Unchecked it constructs cleanly and fails
+	// at the first Encode — that is, at the first registration or password
+	// change, so a deployment looks healthy until someone signs up.
+	if e.n&(e.n-1) != 0 {
+		return fmt.Errorf("%w: N=%d is not a power of two", ErrInvalidParameters, e.n)
 	}
 
 	if e.r < defaultScryptR {
@@ -173,6 +181,18 @@ func (e *scryptEncoder) Match(input string, encoded []byte) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
+// maxRecordFootprint bounds the memory a stored scrypt record may demand, on the
+// same reasoning as Argon2id's maxRecordMemory: a record's parameters are data
+// this package did not write, and Match is the login path.
+const maxRecordFootprint = 1024 * 1024 * 1024 // 1 GiB
+
+// scryptFootprintWithinCeiling reports whether deriving at N and r stays within
+// maxRecordFootprint. scrypt allocates about 128*N*r bytes, and the check is
+// written as a division so the product itself can never overflow.
+func scryptFootprintWithinCeiling(n, r int) bool {
+	return n <= maxRecordFootprint/128/r
+}
+
 // parseScrypt reads an encoded record, reporting false for anything it does not
 // recognise — including a record belonging to another algorithm.
 func parseScrypt(encoded []byte) (n, r, p int, salt, key []byte, ok bool) {
@@ -192,6 +212,15 @@ func parseScrypt(encoded []byte) (n, r, p int, salt, key []byte, ok bool) {
 	}
 
 	if p, err = strconv.Atoi(parts[3]); err != nil {
+		return 0, 0, 0, nil, nil, false
+	}
+
+	// scrypt.Key errors on parameters it can reason about, and Match maps those
+	// to no match. It does not reason about a large power-of-two N: that clears
+	// its own guards and then fails inside make, which panics. So the record's
+	// demand is bounded here, by the footprint it implies rather than by N alone,
+	// since N and r multiply. Below 1 the derivation is meaningless.
+	if n < 1 || r < 1 || p < 1 || !scryptFootprintWithinCeiling(n, r) {
 		return 0, 0, 0, nil, nil, false
 	}
 

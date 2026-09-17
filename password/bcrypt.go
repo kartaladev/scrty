@@ -50,6 +50,13 @@ func NewBcryptEncoder(opts ...BcryptOption) (Encoder, error) {
 			ErrWeakParameters, e.cost, defaultBcryptCost)
 	}
 
+	// Above bcrypt's own maximum the cost is not strong but unusable: every
+	// Encode would fail, and the first one happens at a registration.
+	if e.cost > bcrypt.MaxCost {
+		return nil, fmt.Errorf("%w: cost %d; bcrypt accepts at most %d",
+			ErrInvalidParameters, e.cost, bcrypt.MaxCost)
+	}
+
 	return e, nil
 }
 
@@ -57,10 +64,32 @@ func NewBcryptEncoder(opts ...BcryptOption) (Encoder, error) {
 //
 // bcrypt generates and embeds its own salt, so unlike the Argon2id and scrypt
 // encoders there is no salt to read here and no read to fail.
+// collidesByNulPadding reports whether input is a 72-byte value that bcrypt
+// cannot tell apart from its own first 71 bytes.
+//
+// x/crypto appends a NUL to the key and blowfish's key schedule consumes exactly
+// 72 bytes, so a 71-byte password expands from pw71+NUL, and the 72-byte
+// password pw71+NUL expands from the first 72 bytes of pw71+NUL+NUL — the same
+// schedule. The two are one credential, inside the range this encoder otherwise
+// declares safe.
+//
+// Refusing this one shape rather than lowering the limit to 71 keeps the
+// documented 72-byte maximum true for every password that is genuinely distinct.
+func collidesByNulPadding(input string) bool {
+	return len(input) == bcryptMaxInput && input[bcryptMaxInput-1] == 0
+}
+
 func (e *bcryptEncoder) Encode(input string) ([]byte, error) {
 	if len(input) > bcryptMaxInput {
 		return nil, fmt.Errorf("%w: %d bytes; bcrypt hashes at most %d",
 			ErrPasswordTooLong, len(input), bcryptMaxInput)
+	}
+
+	if collidesByNulPadding(input) {
+		return nil, fmt.Errorf(
+			"%w: a %d-byte password ending in a NUL byte is indistinguishable to "+
+				"bcrypt from its own first %d bytes",
+			ErrPasswordTooLong, bcryptMaxInput, bcryptMaxInput-1)
 	}
 
 	encoded, err := bcrypt.GenerateFromPassword([]byte(input), e.cost)
@@ -84,7 +113,7 @@ func (e *bcryptEncoder) Encode(input string) ([]byte, error) {
 // enough, because a hash written before that check existed — or by another tool
 // — is still on the other side of this comparison.
 func (e *bcryptEncoder) Match(input string, encoded []byte) bool {
-	if len(input) > bcryptMaxInput {
+	if len(input) > bcryptMaxInput || collidesByNulPadding(input) {
 		return false
 	}
 

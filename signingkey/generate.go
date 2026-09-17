@@ -117,23 +117,90 @@ func entryFromSigner(signer crypto.Signer, alg Alg, createdAt time.Time) (*keyEn
 	}, nil
 }
 
+// algMatchesKey reports whether signer can actually produce alg.
+//
+// The algorithm a record claims and the key it carries are two independent
+// pieces of data, and nothing outside this package has to keep them in step: a
+// migration, a hand-edited row or another writer can pair either with either.
+// Trusting the claim publishes a key whose declared algorithm it cannot honour.
+//
+// ES256 checks the curve as well as the key type. RFC 7518 section 3.4 fixes
+// ES256 to P-256, so a P-384 key signs 96 bytes where a verifier expects 64.
+// jwx verifies its own output, so a round trip inside this package would accept
+// it and only a conformant external verifier would refuse.
+func algMatchesKey(alg Alg, signer crypto.Signer) error {
+	switch alg {
+	case RS256:
+		if _, ok := signer.(*rsa.PrivateKey); !ok {
+			return fmt.Errorf("%w: %s needs an RSA key, got %T", ErrConfig, alg, signer)
+		}
+	case ES256:
+		key, ok := signer.(*ecdsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("%w: %s needs an ECDSA key, got %T", ErrConfig, alg, signer)
+		}
+
+		if key.Curve != elliptic.P256() {
+			return fmt.Errorf("%w: %s is defined over P-256, got %s",
+				ErrConfig, alg, key.Curve.Params().Name)
+		}
+	case EdDSA:
+		if _, ok := signer.(ed25519.PrivateKey); !ok {
+			return fmt.Errorf("%w: %s needs an Ed25519 key, got %T", ErrConfig, alg, signer)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported algorithm %q", ErrConfig, alg)
+	}
+
+	return nil
+}
+
 // entryFromRecord decodes a stored record.
 //
 // A record that cannot be decoded is an error, never a skip: skipping it would
 // mint a fresh key and orphan every token the unreadable key signed.
+//
+// Everything the record claims is checked against the key it carries, because a
+// store is a boundary: its rows are data this package did not write and must not
+// take on trust. An algorithm this package cannot produce is refused here as
+// well as in WithAlgs — one rule with two entry points is one rule only if both
+// enforce it, and the store path would otherwise adopt, make current and publish
+// a key declaring an algorithm the option path rejects outright.
 func entryFromRecord(rec Record) (*keyEntry, error) {
+	if !supportedAlg(rec.Alg) {
+		return nil, fmt.Errorf("signingkey: decode key %q: %w: unsupported algorithm %q",
+			rec.Kid, ErrConfig, rec.Alg)
+	}
+
 	key, err := x509.ParsePKCS8PrivateKey(rec.Private)
 	if err != nil {
 		return nil, fmt.Errorf("signingkey: decode key %q: %w", rec.Kid, err)
 	}
+
 	signer, ok := key.(crypto.Signer)
 	if !ok {
 		return nil, fmt.Errorf("signingkey: decode key %q: %T cannot sign", rec.Kid, key)
+	}
+
+	if err := algMatchesKey(rec.Alg, signer); err != nil {
+		return nil, fmt.Errorf("signingkey: decode key %q: %w", rec.Kid, err)
 	}
 
 	entry, err := entryFromSigner(signer, rec.Alg, rec.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("signingkey: decode key %q: %w", rec.Kid, err)
 	}
+
+	// The recorded identifier must be the one this key hashes to. A record whose
+	// private half was replaced still carries the original kid, and holding it
+	// under the newly derived one would publish a set missing the kid every
+	// live token names — orphaning them exactly as skipping the record would.
+	if rec.Kid != "" && entry.kid != rec.Kid {
+		return nil, fmt.Errorf(
+			"signingkey: decode key %q: %w: the key hashes to %q, so the record's "+
+				"private half does not belong to the identifier it carries",
+			rec.Kid, ErrConfig, entry.kid)
+	}
+
 	return entry, nil
 }

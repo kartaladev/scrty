@@ -232,9 +232,21 @@ func (km *KeyManager) JWKS() (jwk.Set, error) {
 
 	set := jwk.NewSet()
 	for _, kid := range km.order {
-		if err := set.AddKey(km.keys[kid].publicJWK); err != nil {
+		// A clone, not the manager's own key. A jwk.Key is mutable, and a caller
+		// that tags or edits a key it was handed would otherwise rewrite the
+		// manager's published identifier under it, leaving jws.WithKeySet — which
+		// matches on kid — unable to find the key its own current signer uses.
+		// The verification path calls this on every request, so the keys handed
+		// out are the same objects that path relies on.
+		clone, err := km.keys[kid].publicJWK.Clone()
+		if err != nil {
+			return nil, fmt.Errorf("signingkey: clone key %q: %w", kid, err)
+		}
+
+		if err := set.AddKey(clone); err != nil {
 			return nil, fmt.Errorf("signingkey: build jwks: %w", err)
 		}
 	}
+
 	return set, nil
 }

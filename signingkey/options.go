@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"time"
 )
 
@@ -147,25 +148,45 @@ func (km *KeyManager) validate() error {
 	// A nil port is caught here rather than at first use: a nil store or
 	// clock would panic during construction, and a nil logger would panic in
 	// a background loop at the first failure it tried to report.
-	if km.store == nil {
+	//
+	// isNilPort, not == nil, because the shape a real wiring mistake produces is
+	// a typed nil — `var s *myStore; WithKeyStore(s)` — and an interface holding
+	// a nil pointer is not equal to nil. Comparing against nil alone accepts it
+	// and panics on the first call instead.
+	if isNilPort(km.store) {
 		return fmt.Errorf("%w: key store must not be nil", ErrConfig)
 	}
-	if km.clock == nil {
+
+	if isNilPort(km.clock) {
 		return fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
-	if km.logger == nil {
+
+	if isNilPort(km.logger) {
 		return fmt.Errorf("%w: logger must not be nil", ErrConfig)
 	}
 
 	if len(km.algs) == 0 {
 		return fmt.Errorf("%w: at least one algorithm is required", ErrConfig)
 	}
+	seen := make(map[Alg]struct{}, len(km.algs))
+
 	for _, alg := range km.algs {
 		if !supportedAlg(alg) {
 			return fmt.Errorf(
 				"%w: unsupported algorithm %q, want one of %q, %q or %q",
 				ErrConfig, alg, RS256, ES256, EdDSA)
 		}
+
+		// One algorithm named twice is still one algorithm. Construction hides a
+		// duplicate, because minting skips an algorithm that already has a key,
+		// but rotation walks this list directly and would mint, marshal and store
+		// one key per mention at every interval, growing the published set each
+		// time. A concatenated config list is all it takes.
+		if _, dup := seen[alg]; dup {
+			return fmt.Errorf("%w: algorithm %q is named more than once", ErrConfig, alg)
+		}
+
+		seen[alg] = struct{}{}
 	}
 
 	for _, interval := range []struct {
@@ -195,5 +216,38 @@ func (km *KeyManager) validate() error {
 				"or a replica would miss another replica's rotation",
 			ErrConfig, km.reloadEvery, km.rotateEvery)
 	}
+
+	// Housekeeping is the only thing that stops publishing an expired key:
+	// reload declines to re-add one, but never drops a key already held. So the
+	// lifetime is only honoured to within one housekeeping interval, and an
+	// interval longer than the lifetime turns the guarantee into a suggestion —
+	// a 2-hour lifetime swept every 1000 hours publishes keys for hundreds of
+	// times their stated life. Refused rather than quietly relaxed.
+	if km.housekeepEvery > km.lifetime {
+		return fmt.Errorf(
+			"%w: housekeeping interval %s must not exceed the lifetime %s, "+
+				"or a key would stay published long past the lifetime it was given",
+			ErrConfig, km.housekeepEvery, km.lifetime)
+	}
+
 	return nil
+}
+
+// isNilPort reports whether v is nil, or a non-nil interface holding a nil
+// pointer, map, slice, channel or function.
+//
+// A consumer's wiring mistake almost always produces the second shape, which
+// == nil does not catch.
+func isNilPort(v any) bool {
+	if v == nil {
+		return true
+	}
+
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
