@@ -337,6 +337,28 @@ type KeySource interface {                                // implemented by *Key
     JWKS() (jwk.Set, error)
 }
 
+// Optional, reported by a source that knows its own rotation schedule, so the
+// generator can refuse a token lifetime the keys cannot outlive (D7).
+type LifetimeReporter interface {
+    KeyLifetime() time.Duration
+    RotateInterval() time.Duration
+}
+
+type Clock interface{ Now() time.Time }                   // WithClock
+
+// Optional. A clock that also paces the loops, so an injected time source
+// drives rotation, reload and housekeeping rather than only stamping keys.
+// Without it the loops run on time.NewTicker and no advance of the clock can
+// fire one, which leaves every configured-interval guarantee unobservable.
+type TickerClock interface {
+    Clock
+    NewTicker(d time.Duration) Ticker
+}
+type Ticker interface {
+    C() <-chan time.Time
+    Stop()
+}
+
 func NewKeyManager(opts ...Option) (*KeyManager, error)
 func (km *KeyManager) Start(ctx context.Context) error
 func (km *KeyManager) Stop() error
@@ -354,12 +376,18 @@ func (km *KeyManager) SupportedAlgs() []Alg
 | `WithClock` | system clock |
 | `WithLogger` | `slog.Default()`; rotation and reload failures, sampled with `pkg/logsample` and a reporter (D11) |
 | `WithErrorHook` | none; called with every rotation and reload failure (D11) |
+| `WithLogSampleWindow` | 5 min; the window `pkg/logsample` suppresses repeated failure records over, each record stating how many it stood for |
 
 **Construction:**
 - **Construction errors:**
   - an unsupported algorithm;
   - a non-positive duration;
-  - a lifetime not longer than the rotation interval (departure D7).
+  - a lifetime not longer than the rotation interval (departure D7);
+  - a reload interval not shorter than the rotation interval (departure D10);
+  - no algorithms at all, which would otherwise construct a manager holding no keys;
+  - a nil key store, clock or logger. The logger is dereferenced from a
+    background goroutine, so a nil one panics the consumer's process at the
+    first store failure rather than at wiring time.
 - **Loading:**
   - it loads every record from the store;
   - a record that cannot be decoded is a construction error and is never skipped, since skipping it would mint a fresh key and orphan every token the unreadable key signed;
