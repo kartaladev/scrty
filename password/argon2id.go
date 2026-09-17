@@ -70,6 +70,17 @@ func WithArgon2idKeyLength(n uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.keyLength = n }
 }
 
+// WithArgon2idRandom sets the source every salt is read from.
+// Default: crypto/rand.Reader.
+//
+// Replace it to read salts from a hardware module or a seeded source under test.
+// A source that cannot deliver is reported by [Encoder.Encode] rather than
+// worked around, so this option cannot weaken the guarantee that every stored
+// hash carries an unpredictable salt.
+func WithArgon2idRandom(r io.Reader) Argon2idOption {
+	return func(e *argon2idEncoder) { e.random = r }
+}
+
 // The OWASP floors for Argon2id. Memory and iterations trade against each other,
 // so neither has a single minimum.
 const (
@@ -86,6 +97,10 @@ const (
 // The memory message names iterations too: the two trade against each other, so
 // an operator told only that memory is too low might raise the wrong dial.
 func (e *argon2idEncoder) validate() error {
+	if e.random == nil {
+		return ErrNoRandomSource
+	}
+
 	switch {
 	case e.iterations >= iterationsForTheLowerMemory && e.memory >= floorMemoryAtTwoIterations:
 	case e.iterations >= 1 && e.memory >= floorMemoryAtOneIteration:
@@ -120,8 +135,9 @@ func (e *argon2idEncoder) validate() error {
 // key.
 //
 // Sizing: each concurrent verification allocates the configured memory, 64 MiB by
-// default, so what bounds total memory use is the rate limit on login attempts,
-// not this encoder.
+// default, for the duration of the call — verification costs as much as encoding.
+// Ten logins at once therefore want 640 MiB. What bounds the total is the rate
+// limit on login attempts, not this encoder.
 func NewArgon2idEncoder(opts ...Argon2idOption) (Encoder, error) {
 	e := &argon2idEncoder{
 		memory:     defaultArgon2idMemory,

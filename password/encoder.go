@@ -13,7 +13,17 @@
 //
 // Passwords are hashed exactly as given — no trimming, case folding or Unicode
 // normalization — because any of those would silently let a different string
-// through.
+// through. "café" written as one code point and as "e" plus a combining accent
+// are two different passwords, as are "hunter2" and " hunter2".
+//
+// Every encoder's parameters have a floor, taken from the OWASP password-storage
+// minimums; see [ErrWeakParameters]. The floors are the only limit on how a
+// consumer configures an encoder — anything at or above them is accepted,
+// including parameters far stronger than the defaults.
+//
+// Memory is the parameter worth planning for, because verification costs as much
+// of it as encoding does and concurrent logins multiply it; see
+// [NewArgon2idEncoder] for the sizing.
 package password
 
 import (
@@ -28,6 +38,15 @@ import (
 // construction rather than at first use, so a deployment configured too low
 // fails while someone is watching, instead of quietly storing weak hashes.
 var ErrWeakParameters = errors.New("password: parameters below the supported floor")
+
+// ErrNoRandomSource is returned by an encoder's constructor when the salt source
+// it was given is nil.
+//
+// That is meaningless configuration rather than a weak parameter — a nil source
+// produces no salt at all — so it is refused at construction. Left to be
+// discovered later, it would panic inside the first Encode, which is to say at
+// the first login after deployment.
+var ErrNoRandomSource = errors.New("password: salt source is nil")
 
 // ErrPasswordTooLong is returned when a password exceeds what its algorithm can
 // hash. Only bcrypt has such a limit: 72 bytes.

@@ -64,6 +64,17 @@ func WithScryptKeyLength(n int) ScryptOption {
 	return func(e *scryptEncoder) { e.keyLength = n }
 }
 
+// WithScryptRandom sets the source every salt is read from.
+// Default: crypto/rand.Reader.
+//
+// Replace it to read salts from a hardware module or a seeded source under test.
+// A source that cannot deliver is reported by [Encoder.Encode] rather than
+// worked around, so this option cannot weaken the guarantee that every stored
+// hash carries an unpredictable salt.
+func WithScryptRandom(r io.Reader) ScryptOption {
+	return func(e *scryptEncoder) { e.random = r }
+}
+
 // NewScryptEncoder returns a scrypt encoder with N = 32768, r = 8, p = 1, a
 // 16-byte salt and a 32-byte derived key.
 //
@@ -97,6 +108,10 @@ func NewScryptEncoder(opts ...ScryptOption) (Encoder, error) {
 // validate refuses a configuration below the floor, naming the parameter so the
 // operator knows which dial to turn.
 func (e *scryptEncoder) validate() error {
+	if e.random == nil {
+		return ErrNoRandomSource
+	}
+
 	if e.n < defaultScryptN {
 		return fmt.Errorf("%w: N=%d; need at least %d", ErrWeakParameters, e.n, defaultScryptN)
 	}
