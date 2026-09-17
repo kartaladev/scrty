@@ -1,8 +1,10 @@
 package identitytest
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -46,13 +48,16 @@ func NewInMemoryStore() *InMemoryStore {
 }
 
 // SeedRole records the privileges a role grants.
+//
+// The rows are copied in for the same reason SeedRoleGrants copies grants:
+// holding the caller's pointers would let seeded state alias the store's own.
 func (s *InMemoryStore) SeedRole(
 	_ context.Context, role string, p []*identity.ResourcePrivileges,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.privs[role] = p
+	s.privs[role] = clonePrivileges(p)
 
 	return nil
 }
@@ -179,7 +184,7 @@ func (s *InMemoryStore) LoadPrivileges(
 		return nil, identity.ErrPrivilegesNotFound
 	}
 
-	return p, nil
+	return clonePrivileges(p), nil
 }
 
 // Required implements identity.MFARequirementLookup.
@@ -223,9 +228,9 @@ func (s *InMemoryStore) Provision(
 		ID:           identity.UserID("u-" + id),
 		Name:         u.Name,
 		Username:     username,
-		Password:     u.Password,
+		Password:     bytes.Clone(u.Password),
 		Active:       true,
-		Organization: u.Organization,
+		Organization: cloneOrg(u.Organization),
 	}
 
 	// Each occurrence of a name creates its own grant, and the first is primary.
@@ -263,11 +268,11 @@ func (s *InMemoryStore) Update(
 	}
 
 	if u.IsSet(identity.FieldPassword) {
-		d.Password = u.Password
+		d.Password = bytes.Clone(u.Password)
 	}
 
 	if u.IsSet(identity.FieldOrganization) {
-		d.Organization = u.Organization
+		d.Organization = cloneOrg(u.Organization)
 	}
 
 	if u.IsSet(identity.FieldRoles) {
@@ -334,7 +339,8 @@ func rebuildRoles(stored []*identity.AssignedRole, names []string) []*identity.A
 // store through the record it was handed.
 func cloneDetails(d *identity.Details) *identity.Details {
 	out := *d
-	out.Password = append([]byte(nil), d.Password...)
+	out.Password = bytes.Clone(d.Password)
+	out.Organization = cloneOrg(d.Organization)
 	out.Roles = make([]*identity.AssignedRole, 0, len(d.Roles))
 
 	for _, r := range d.Roles {
@@ -343,6 +349,44 @@ func cloneDetails(d *identity.Details) *identity.Details {
 	}
 
 	return &out
+}
+
+// cloneOrg copies an organization and the group it points at.
+//
+// Both are pointers, so copying only the Details struct would leave the caller
+// holding the store's own organization: writing through it would move the
+// stored user into another organization, or mark its group internal.
+func cloneOrg(o *identity.Organization) *identity.Organization {
+	if o == nil {
+		return nil
+	}
+
+	out := *o
+
+	if o.Group != nil {
+		g := *o.Group
+		out.Group = &g
+	}
+
+	return &out
+}
+
+// clonePrivileges copies a role's privilege rows, each with its own privilege
+// list, so a reader cannot grant itself a privilege the role is refused.
+func clonePrivileges(p []*identity.ResourcePrivileges) []*identity.ResourcePrivileges {
+	out := make([]*identity.ResourcePrivileges, 0, len(p))
+
+	for _, e := range p {
+		if e == nil {
+			continue
+		}
+
+		ec := *e
+		ec.Privileges = slices.Clone(e.Privileges)
+		out = append(out, &ec)
+	}
+
+	return out
 }
 
 var (

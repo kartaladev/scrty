@@ -116,6 +116,85 @@ var errBackendUnreachable = errors.New("identitytest: backend unreachable")
 func RunUserLoaderSuite(t *testing.T, newFixture Factory) {
 	t.Helper()
 
+	t.Run("Lookup", func(t *testing.T) { runUserLoaderCases(t, newFixture) })
+	t.Run("Ownership", func(t *testing.T) { runLoadOwnershipCase(t, newFixture) })
+}
+
+// runLoadOwnershipCase checks that a loaded record belongs to the caller.
+//
+// The library hands a loaded record onward — to the principal mapper, to a
+// password check, to application code — and those callers treat it as a value
+// of their own: they rewrite a field, wipe the password buffer once it has been
+// verified, or keep the record in a cache. An implementation that returns a
+// handle on its own state turns each of those into a write to the store, so
+// verifying a password can destroy the stored hash and reading a record can
+// move its user into another organization.
+//
+// The check is therefore a round trip: mutate everything the returned record
+// reaches, then read the user again through the port and require the stored
+// state to be exactly as it was.
+func runLoadOwnershipCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+
+	_, err := f.Provision(ctx, "alice",
+		identity.WithUserName("Alice"),
+		identity.WithUserPassword([]byte("H1")),
+		identity.WithUserRoles("admin"),
+		identity.WithUserOrganization(&identity.Organization{
+			ID:    "o-1",
+			Name:  "acme",
+			Group: &identity.Group{ID: "g-1", Name: "external"},
+		}),
+	)
+	require.NoError(t, err)
+
+	loaded, err := f.LoadByUsername(ctx, "alice")
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	require.Len(t, loaded.Roles, 1)
+	require.NotEmpty(t, loaded.Password)
+	require.NotNil(t, loaded.Organization)
+	require.NotNil(t, loaded.Organization.Group,
+		"the suite needs a group to write through, so the record must carry the one provisioned")
+
+	// A caller does with the record what a caller may: rewrite it, and wipe the
+	// password buffer it has finished verifying.
+	loaded.Name = "Rewritten"
+	loaded.Roles[0].SuperRole = true
+	loaded.Organization.ID = "o-victim"
+	loaded.Organization.Group.Internal = true
+	clear(loaded.Password)
+
+	again, err := f.LoadByUsername(ctx, "alice")
+	require.NoError(t, err)
+	require.NotNil(t, again)
+
+	assert.Equal(t, "Alice", again.Name,
+		"a caller rewriting the record it was handed rewrote the stored user")
+	assert.Equal(t, []byte("H1"), again.Password,
+		"wiping the password buffer after verifying it destroyed the stored hash, so the user "+
+			"can never sign in again")
+
+	require.Len(t, again.Roles, 1)
+	assert.False(t, again.Roles[0].SuperRole,
+		"a caller made its own grant a super role by writing through the record it was handed")
+
+	require.NotNil(t, again.Organization)
+	assert.Equal(t, "o-1", again.Organization.ID,
+		"a caller moved the stored user into another organization")
+
+	require.NotNil(t, again.Organization.Group)
+	assert.False(t, again.Organization.Group.Internal,
+		"and marked the stored group internal")
+}
+
+func runUserLoaderCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
 	type testCase struct {
 		name   string
 		seed   func(t *testing.T, ctx context.Context, f Fixture)
@@ -196,6 +275,58 @@ func RunUserLoaderSuite(t *testing.T, newFixture Factory) {
 func RunRoleLoaderSuite(t *testing.T, newFixture Factory) {
 	t.Helper()
 
+	t.Run("Privileges", func(t *testing.T) { runRoleLoaderCases(t, newFixture) })
+	t.Run("Ownership", func(t *testing.T) { runPrivilegesOwnershipCase(t, newFixture) })
+}
+
+// runPrivilegesOwnershipCase checks that loaded privileges belong to the caller.
+//
+// Privileges are read on the request path and cached, so a reader that is
+// handed the store's own rows can grant itself a privilege the role was refused,
+// or repoint a row at another resource, for every later request in the process.
+func runPrivilegesOwnershipCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+
+	require.NoError(t, f.SeedRole(ctx, "clerk", []*identity.ResourcePrivileges{{
+		Group:    "billing",
+		Resource: "invoice",
+		Privileges: []identity.Privilege{
+			{Name: "read", Granted: true},
+			{Name: "delete", Granted: false},
+		},
+	}}))
+
+	got, err := f.LoadPrivileges(ctx, "clerk")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.Len(t, got[0].Privileges, 2,
+		"the suite needs the refused privilege to write through, so it must be carried")
+
+	got[0].Resource = "payment"
+	got[0].Privileges[0].Name = "write"
+	got[0].Privileges[1].Granted = true
+
+	again, err := f.LoadPrivileges(ctx, "clerk")
+	require.NoError(t, err)
+	require.Len(t, again, 1)
+
+	assert.Equal(t, "invoice", again[0].Resource,
+		"a reader rewrote which resource the stored row is about")
+
+	require.Len(t, again[0].Privileges, 2)
+	assert.Equal(t, "read", again[0].Privileges[0].Name,
+		"a reader renamed a privilege on the stored row")
+	assert.False(t, again[0].Privileges[1].Granted,
+		"a reader granted itself a privilege the role is refused")
+}
+
+func runRoleLoaderCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
 	type testCase struct {
 		name   string
 		seed   func(t *testing.T, ctx context.Context, f Fixture)
@@ -205,12 +336,15 @@ func RunRoleLoaderSuite(t *testing.T, newFixture Factory) {
 
 	cases := []testCase{
 		{
-			name: "a role returns the privileges it grants",
+			name: "a role returns the privileges it grants, including the ones it is refused",
 			seed: func(t *testing.T, ctx context.Context, f Fixture) {
 				require.NoError(t, f.SeedRole(ctx, "clerk", []*identity.ResourcePrivileges{{
-					Group:      "billing",
-					Resource:   "invoice",
-					Privileges: []identity.Privilege{{Name: "read", Granted: true}},
+					Group:    "billing",
+					Resource: "invoice",
+					Privileges: []identity.Privilege{
+						{Name: "read", Granted: true},
+						{Name: "delete", Granted: false},
+					},
 				}}))
 			},
 			role: "clerk",
@@ -219,7 +353,13 @@ func RunRoleLoaderSuite(t *testing.T, newFixture Factory) {
 				require.Len(t, p, 1)
 				assert.Equal(t, "billing", p[0].Group)
 				assert.Equal(t, "invoice", p[0].Resource)
-				assert.Equal(t, []identity.Privilege{{Name: "read", Granted: true}}, p[0].Privileges)
+				assert.Equal(t, []identity.Privilege{
+					{Name: "read", Granted: true},
+					{Name: "delete", Granted: false},
+				}, p[0].Privileges,
+					"a privilege that is not granted is carried as refused rather than filtered "+
+						"away, so a caller can tell 'refused' apart from 'not mentioned'; a loader "+
+						"that drops it makes the two indistinguishable")
 			},
 		},
 		{
@@ -258,6 +398,139 @@ func RunProvisionerSuite(t *testing.T, newFixture Factory) {
 	t.Run("Update", func(t *testing.T) { runUpdateCases(t, newFixture) })
 	t.Run("Roles", func(t *testing.T) { runRoleRebuildCases(t, newFixture) })
 	t.Run("ConcurrentRoles", func(t *testing.T) { runRoleRebuildRaceCase(t, newFixture) })
+	t.Run("ProvisionOwnership", func(t *testing.T) { runProvisionOwnershipCase(t, newFixture) })
+	t.Run("UpdateOwnership", func(t *testing.T) { runUpdateOwnershipCase(t, newFixture) })
+}
+
+// runProvisionOwnershipCase checks that a created user is the store's own copy
+// in both directions.
+//
+// A caller hands Provision a password hash and an organization it built, and
+// goes on using both: it wipes the hash buffer once the credential has been
+// used, and reuses the organization value for the next user. A store that keeps
+// those pointers is rewritten by every such use — a routine wipe destroys the
+// stored hash, so the user can never sign in. In the other direction, the
+// record Provision returns is the caller's to amend before handing it on.
+func runProvisionOwnershipCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+
+	hash := []byte("argon2id$hash")
+	org := &identity.Organization{
+		ID:    "o-1",
+		Name:  "acme",
+		Group: &identity.Group{ID: "g-1", Name: "external"},
+	}
+
+	created, err := f.Provision(ctx, "alice",
+		identity.WithUserPassword(hash),
+		identity.WithUserOrganization(org),
+		identity.WithUserRoles("admin"),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, created)
+	require.Len(t, created.Roles, 1)
+
+	// The caller wipes the buffer it owns, as credential hygiene requires, and
+	// reuses the organization value it built.
+	clear(hash)
+	org.ID = "o-victim"
+	org.Group.Internal = true
+
+	// And amends the record it was handed.
+	created.Name = "Rewritten"
+	created.Roles[0].SuperRole = true
+
+	if created.Organization != nil {
+		created.Organization.ID = "o-rewritten"
+	}
+
+	stored, err := f.LoadByUsername(ctx, "alice")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+
+	assert.Equal(t, []byte("argon2id$hash"), stored.Password,
+		"the caller wiping its own buffer wiped the stored hash, so the user can never sign in")
+	assert.Empty(t, stored.Name,
+		"amending the returned record rewrote the stored user; the record a write returns is "+
+			"the caller's, not a handle on the store")
+
+	require.Len(t, stored.Roles, 1)
+	assert.False(t, stored.Roles[0].SuperRole,
+		"and made the stored grant a super role")
+
+	require.NotNil(t, stored.Organization)
+	assert.Equal(t, "o-1", stored.Organization.ID,
+		"the caller reusing the organization value it built moved the stored user")
+
+	require.NotNil(t, stored.Organization.Group)
+	assert.False(t, stored.Organization.Group.Internal,
+		"and marked the stored group internal")
+}
+
+// runUpdateOwnershipCase checks the same ownership rule for an amendment: the
+// values the caller named stay the caller's, and the record returned is a copy.
+func runUpdateOwnershipCase(t *testing.T, newFixture Factory) {
+	t.Helper()
+	t.Parallel()
+
+	ctx := t.Context()
+	f := newFixture(t)
+
+	_, err := f.Provision(ctx, "alice", identity.WithUserRoles("admin"))
+	require.NoError(t, err)
+
+	hash := []byte("argon2id$new")
+	org := &identity.Organization{
+		ID:    "o-1",
+		Name:  "acme",
+		Group: &identity.Group{ID: "g-1", Name: "external"},
+	}
+
+	updated, err := f.Update(ctx, "alice",
+		identity.WithUserName("Alice"),
+		identity.WithUserPassword(hash),
+		identity.WithUserOrganization(org),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, updated)
+	require.Len(t, updated.Roles, 1,
+		"the update named no roles, so the record returned carries the stored grant")
+
+	clear(hash)
+	org.ID = "o-victim"
+	org.Group.Internal = true
+
+	updated.Name = "Rewritten"
+	updated.Roles[0].SuperRole = true
+
+	if updated.Organization != nil {
+		updated.Organization.ID = "o-rewritten"
+	}
+
+	stored, err := f.LoadByUsername(ctx, "alice")
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+
+	assert.Equal(t, []byte("argon2id$new"), stored.Password,
+		"the caller wiping its own buffer wiped the stored hash")
+	assert.Equal(t, "Alice", stored.Name,
+		"amending the returned record rewrote the stored user")
+
+	require.Len(t, stored.Roles, 1)
+	assert.False(t, stored.Roles[0].SuperRole,
+		"and made the stored grant a super role")
+
+	require.NotNil(t, stored.Organization)
+	assert.Equal(t, "o-1", stored.Organization.ID,
+		"the caller reusing the organization value it named moved the stored user")
+
+	require.NotNil(t, stored.Organization.Group)
+	assert.False(t, stored.Organization.Group.Internal,
+		"and marked the stored group internal")
 }
 
 // runRoleRebuildRaceCase checks that concurrent updates of one user are
@@ -272,62 +545,111 @@ func RunProvisionerSuite(t *testing.T, newFixture Factory) {
 //
 // One update revokes admin in favour of viewer while another re-asserts admin.
 // Either outcome is correct, because either caller may win; a blend of the two
-// is not. Serializing on the user's own row is what makes that true, so run the
-// suite with -race -count=10 to give the window a chance to open.
+// is not.
+//
+// Counting the surviving grants cannot tell the two apart: each caller asks for
+// exactly one role, so every interleaving leaves exactly one grant. What
+// distinguishes them is the surviving grant's own attributes. Under any
+// serialized ordering the second write rebuilds from the first write's result,
+// which holds only the other caller's role, so the surviving grant is minted
+// fresh: it carries neither the seeded identifier, nor the seeded validity
+// window, nor the super-role flag. A grant that comes back still carrying them
+// was rebuilt from a state the other caller had already replaced — a lost
+// update, or a revoked super role restored — and no serialized ordering can
+// produce it.
+//
+// The race is run several times over a fresh user, so a window that opens only
+// sometimes is still found; run the suite with -race -count=10 to widen it
+// further.
 func runRoleRebuildRaceCase(t *testing.T, newFixture Factory) {
 	t.Helper()
 	t.Parallel()
 
-	ctx := t.Context()
-	f := newFixture(t)
+	// The attributes seeded on each grant, so that "the survivor was minted
+	// fresh" compares real values rather than two zero values.
+	seeded := map[string]string{"admin": "r-admin", "viewer": "r-viewer"}
 
-	_, err := f.Provision(ctx, "alice")
-	require.NoError(t, err)
-	require.NoError(t, f.SeedRoleGrants(ctx, "alice", []*identity.AssignedRole{
-		{ID: "r-admin", Name: "admin", Primary: true, SuperRole: true},
-		{ID: "r-viewer", Name: "viewer"},
-	}))
+	const rounds = 4
 
-	var wg sync.WaitGroup
+	for round := range rounds {
+		ctx := t.Context()
+		f := newFixture(t)
 
-	start := make(chan struct{})
+		_, err := f.Provision(ctx, "alice")
+		require.NoError(t, err, "round %d", round)
+		require.NoError(t, f.SeedRoleGrants(ctx, "alice", []*identity.AssignedRole{
+			{
+				ID:         seeded["admin"],
+				Name:       "admin",
+				Primary:    true,
+				SuperRole:  true,
+				StartDate:  grantStart,
+				ValidUntil: grantValidUntil,
+			},
+			{
+				ID:         seeded["viewer"],
+				Name:       "viewer",
+				StartDate:  grantStart,
+				ValidUntil: grantValidUntil,
+			},
+		}), "round %d", round)
 
-	wg.Add(2)
+		var wg sync.WaitGroup
 
-	go func() {
-		defer wg.Done()
+		start := make(chan struct{})
 
-		<-start
+		wg.Add(2)
 
-		_, _ = f.Update(ctx, "alice", identity.WithUserRoles("viewer"))
-	}()
+		go func() {
+			defer wg.Done()
 
-	go func() {
-		defer wg.Done()
+			<-start
 
-		<-start
+			_, _ = f.Update(ctx, "alice", identity.WithUserRoles("viewer"))
+		}()
 
-		_, _ = f.Update(ctx, "alice", identity.WithUserRoles("admin"))
-	}()
+		go func() {
+			defer wg.Done()
 
-	close(start)
-	wg.Wait()
+			<-start
 
-	final, err := f.LoadByUsername(ctx, "alice")
-	require.NoError(t, err)
+			_, _ = f.Update(ctx, "alice", identity.WithUserRoles("admin"))
+		}()
 
-	names := make([]string, 0, len(final.Roles))
-	for _, r := range final.Roles {
-		names = append(names, r.Name)
+		close(start)
+		wg.Wait()
+
+		final, err := f.LoadByUsername(ctx, "alice")
+		require.NoError(t, err, "round %d", round)
+		require.Len(t, final.Roles, 1,
+			"round %d: each caller asked for exactly one role, so the final grants must be one "+
+				"caller's set and not a blend", round)
+
+		got := final.Roles[0]
+
+		require.Contains(t, seeded, got.Name,
+			"round %d: the surviving grant must be one of the two that were requested", round)
+		assert.True(t, got.Primary,
+			"round %d: the surviving grant is the first of its caller's list, so it carries the "+
+				"primary flag", round)
+
+		assert.NotEqual(t, seeded[got.Name], got.ID,
+			"round %d: %q survived carrying the identifier it held before either caller wrote, so "+
+				"its rebuild read grants the other caller had already replaced: a serialized "+
+				"second write finds no grant of that name and mints a new one",
+			round, got.Name)
+		assert.False(t, got.SuperRole,
+			"round %d: %q survived as a super role although the other caller had revoked it; no "+
+				"serialized ordering restores a revoked grant's privileges",
+			round, got.Name)
+		assert.True(t, got.StartDate.IsZero(),
+			"round %d: %q survived carrying the validity window seeded before either caller "+
+				"wrote, so the losing caller's decision was computed from grants that no longer "+
+				"existed", round, got.Name)
+		assert.True(t, got.ValidUntil.IsZero(),
+			"round %d: %q survived carrying the valid-until date seeded before either caller "+
+				"wrote", round, got.Name)
 	}
-
-	require.Len(t, names, 1,
-		"each caller asked for exactly one role, so the final grants must be one caller's set "+
-			"and not a blend: %v means the two rebuilds interleaved", names)
-	assert.Contains(t, []string{"viewer", "admin"}, names[0],
-		"the surviving grant must be one of the two that were requested")
-	assert.True(t, final.Roles[0].Primary,
-		"the surviving grant is the first of its caller's list, so it carries the primary flag")
 }
 
 func runRoleRebuildCases(t *testing.T, newFixture Factory) {
@@ -733,6 +1055,37 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 				require.NoError(t, loadErr)
 				assert.Equal(t, []byte("H"), loaded.Password,
 					"a store that re-hashed here would make every stored credential unverifiable")
+			},
+		},
+		{
+			name: "creation does not stamp the password-changed time",
+			user: "carol",
+			opts: []identity.UserOption{identity.WithUserPassword([]byte("H"))},
+			assert: func(t *testing.T, ctx context.Context, f Fixture, d *identity.Details, err error) {
+				require.NoError(t, err)
+				assert.True(t, d.PasswordChangedAt.IsZero(),
+					"the store records the hash; when the password last changed is the consumer's "+
+						"to decide, so creation leaves it unset rather than stamping now — a "+
+						"password-age policy reading a stamp nobody set refuses a fresh credential")
+
+				loaded, loadErr := f.LoadByUsername(ctx, "carol")
+				require.NoError(t, loadErr)
+				assert.True(t, loaded.PasswordChangedAt.IsZero(),
+					"and the stored record carries no stamp either")
+			},
+		},
+		{
+			name: "a username that is only whitespace is opaque and creates a user",
+			user: "   ",
+			assert: func(t *testing.T, ctx context.Context, f Fixture, d *identity.Details, err error) {
+				require.NoError(t, err,
+					"only an empty username is refused: the username is opaque, so an "+
+						"implementation that trims before deciding refuses one the contract allows")
+				require.NotNil(t, d)
+
+				loaded, loadErr := f.LoadByUsername(ctx, "   ")
+				require.NoError(t, loadErr, "and the user it created is loadable by that username")
+				assert.Equal(t, d.ID, loaded.ID)
 			},
 		},
 		{

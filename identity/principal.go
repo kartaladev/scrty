@@ -129,7 +129,17 @@ type Details struct {
 // It drops the password hash, and sets the active role to the primary role when
 // the record has one. Where a record flags several roles primary, the first in
 // the record wins; the library does not reject the record, because role data is
-// carried rather than decided. Absent details yield no principal.
+// carried rather than decided. A nil grant is skipped: there is no grant to
+// carry, and a principal holding one would panic in the first caller that reads
+// its roles. Absent details yield no principal.
+//
+// The principal owns everything it carries. Its grants, its organization and
+// that organization's group are copies, so application code holding a principal
+// cannot write through it into the record the store returned — nor, where that
+// record came from a cache, into the store. The active role is one of the
+// principal's own grants, so writing through it reaches no further either. The
+// copy is deliberately not just of the role slice: the grants are pointers, and
+// cloning only the slice would still hand over the record's own grant objects.
 func PrincipalFromDetails(d *Details) *Principal {
 	if d == nil {
 		return nil
@@ -139,17 +149,44 @@ func PrincipalFromDetails(d *Details) *Principal {
 		ID:           d.ID,
 		Name:         d.Name,
 		Username:     d.Username,
-		Roles:        d.Roles,
-		Organization: d.Organization,
+		Organization: cloneOrganization(d.Organization),
+	}
+
+	if len(d.Roles) > 0 {
+		p.Roles = make([]*AssignedRole, 0, len(d.Roles))
 	}
 
 	for _, r := range d.Roles {
-		if r != nil && r.Primary {
-			p.ActiveRole = r
+		if r == nil {
+			continue
+		}
 
-			break
+		grant := *r
+		p.Roles = append(p.Roles, &grant)
+
+		if grant.Primary && p.ActiveRole == nil {
+			p.ActiveRole = &grant
 		}
 	}
 
 	return p
+}
+
+// cloneOrganization copies an organization and the group it points at.
+//
+// Both are pointers, so copying the Organization value alone would leave the
+// principal's group aliasing the record's.
+func cloneOrganization(o *Organization) *Organization {
+	if o == nil {
+		return nil
+	}
+
+	out := *o
+
+	if o.Group != nil {
+		group := *o.Group
+		out.Group = &group
+	}
+
+	return &out
 }
