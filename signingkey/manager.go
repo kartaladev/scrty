@@ -84,7 +84,12 @@ func NewKeyManager(opts ...Option) (*KeyManager, error) {
 		logger:         slog.Default(),
 	}
 	for _, opt := range opts {
-		opt(km)
+		// A nil option is skipped, so a caller building the slice
+		// conditionally need not filter it first. password and identity
+		// already promise this.
+		if opt != nil {
+			opt(km)
+		}
 	}
 	if err := km.validate(); err != nil {
 		return nil, err
