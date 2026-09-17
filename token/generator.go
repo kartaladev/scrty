@@ -1,0 +1,108 @@
+package token
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/lestrrat-go/jwx/v4/jwt"
+
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/signingkey"
+)
+
+// Generator issues tokens and verifies them with its own key source, issuer and
+// audience, so a service that issues can verify without a second construction.
+type Generator interface {
+	// Generate returns a signed token for p, carrying id as its jti. It fails
+	// rather than issuing an unsigned token or one signed with an algorithm
+	// other than the configured one.
+	Generate(ctx context.Context, id string, p *identity.Principal) (string, error)
+
+	Verifier
+}
+
+type generator struct{ cfg *config }
+
+// NewGenerator returns a Generator signing with keys.
+//
+// Defaults: no issuer; no audience; a 15-minute lifetime; RS256; the system
+// clock. Each is a GenerateOption naming its own default.
+//
+// Construction fails when no key source is supplied, when the lifetime is zero
+// or less, and when a key source that reports its own key lifetime and
+// rotation interval could not keep a key published for as long as the tokens
+// would live.
+func NewGenerator(keys signingkey.KeySource, opts ...GenerateOption) (Generator, error) {
+	cfg := newConfig()
+	cfg.keys = keys
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	if err := cfg.validateLifetime(); err != nil {
+		return nil, err
+	}
+
+	return &generator{cfg: cfg}, nil
+}
+
+func (g *generator) Verify(ctx context.Context, raw string) (*Claims, error) {
+	return g.cfg.verify(ctx, raw)
+}
+
+func (g *generator) Generate(_ context.Context, id string, p *identity.Principal) (string, error) {
+	// Never ErrTokenInvalid: that is the verdict on a token a caller
+	// presented, and there is no token here. A consumer mapping
+	// ErrTokenInvalid to "credential refused" must not see this.
+	if p == nil {
+		return "", fmt.Errorf("token: generate: %w", identity.ErrNoPrincipal)
+	}
+
+	cfg := g.cfg
+
+	kid, signer, ok := cfg.keys.GetSigner(cfg.alg)
+	if !ok {
+		// Never fall back to another algorithm, and never to an unsigned
+		// token. Keys rotate, so this cannot be a construction check.
+		return "", fmt.Errorf("token: no current key for algorithm %q", cfg.alg)
+	}
+
+	now := cfg.clock.Now()
+	builder := jwt.NewBuilder().
+		JwtID(id).
+		Subject(p.Username). // the username, not the opaque identifier
+		IssuedAt(now).
+		Expiration(now.Add(cfg.lifetime))
+	if cfg.hasIssuer {
+		builder = builder.Issuer(cfg.issuer)
+	}
+	if cfg.hasAudience {
+		builder = builder.Audience([]string{cfg.audience})
+	}
+
+	claims, err := builder.Build()
+	if err != nil {
+		return "", fmt.Errorf("token: build claims: %w", err)
+	}
+
+	// The kid goes into the protected header directly, so verification can
+	// select the key. Signing with the crypto.Signer the key source handed
+	// over avoids a round trip through a JWK, which would re-encode and
+	// re-decode the private key on every call and discard its precomputed
+	// values.
+	headers := jws.NewHeaders()
+	if err := headers.Set(jws.KeyIDKey, kid); err != nil {
+		return "", fmt.Errorf("token: set key identifier: %w", err)
+	}
+
+	signed, err := jwt.Sign(claims,
+		jwt.WithKey(cfg.signature, signer, jws.WithProtectedHeaders(headers)))
+	if err != nil {
+		return "", fmt.Errorf("token: sign: %w", err)
+	}
+
+	return string(signed), nil
+}
