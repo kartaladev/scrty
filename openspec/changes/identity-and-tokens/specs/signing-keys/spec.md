@@ -75,7 +75,7 @@ Once started, the key manager SHALL generate a new key for every configured algo
 - **THEN** new keys are generated every 6 hours
 
 ### Requirement: Replicas sharing a store reload each other's keys
-Once started, the key manager SHALL reload every key from the store each reload interval, which is 1 minute by default and configurable. Each reload SHALL publish every stored key not already held, except keys older than the key lifetime that are not current. After each reload, the current key for each algorithm SHALL be the most recently created key held. A reload failure SHALL keep the keys already held, and SHALL be reported like a rotation failure. A reload interval of zero or less, or one that is not shorter than the rotation interval, SHALL fail at construction.
+Once started, the key manager SHALL reload every key from the store each reload interval, which is 1 minute by default and configurable. Each reload SHALL publish every stored key not already held, except keys older than the key lifetime. After each reload, the current key for each configured algorithm SHALL be the most recently created key held for it. A reload failure SHALL keep the keys already held, and SHALL be reported like a rotation failure. A reload interval of zero or less, or one that is not shorter than the rotation interval, SHALL fail at construction.
 
 #### Scenario: Key rotated in by another replica
 - **WHEN** replicas A and B share a store and replica A rotates in key `k2` and signs a token with it
@@ -94,6 +94,13 @@ Once started, the key manager SHALL reload every key from the store each reload 
 - **WHEN** a reload fails because the store is unreachable
 - **THEN** the manager keeps signing and verifying with the keys it already holds
 - **AND** the failure is reported to the configured logger
+
+### Requirement: A key for an unconfigured algorithm is published but never signed with
+A key found in the store for an algorithm the manager was not configured with SHALL be published in the JWK Set, so a token another replica signed with it still verifies, and SHALL NOT be made current. Requesting a signer for an algorithm the manager was not configured with SHALL report that none is available.
+
+#### Scenario: A replica publishes another replica's algorithm without adopting it
+- **WHEN** a manager configured for RS256 alone starts over a store that also holds an ES256 key
+- **THEN** the ES256 key is published in the JWK Set, requesting an ES256 signer reports none available, and the ES256 key is not exempt from housekeeping
 
 ### Requirement: Housekeeping removes old keys but never the current one
 Once started, the key manager SHALL run housekeeping each housekeeping interval, which is 1 hour by default and configurable. Housekeeping SHALL stop publishing every key created longer ago than the key lifetime, which is 24 hours by default and configurable, except the current key of each algorithm. A key lifetime not longer than the rotation interval SHALL fail at construction.
@@ -148,7 +155,7 @@ The key manager SHALL read time from a configurable time source, defaulting to t
 - **THEN** rotation and housekeeping behave as if 25 hours had passed without real waiting
 
 ### Requirement: Start is idempotent and construction starts nothing
-Construction SHALL start no goroutine. Starting SHALL launch the rotation, reload and housekeeping background work. Starting again SHALL launch nothing and return no error. Cancelling the context given to start SHALL end the background work.
+Construction SHALL start no goroutine. Starting SHALL launch the rotation, reload and housekeeping background work. Starting again SHALL launch nothing and return no error. Cancelling the context given to start SHALL end the background work. Starting again under a fresh context, on a manager that has not been stopped, SHALL relaunch it.
 
 #### Scenario: Constructed but not started
 - **WHEN** a key manager is constructed and not started
