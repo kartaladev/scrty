@@ -41,13 +41,21 @@ test:
 vuln:
 	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && govulncheck ./...); done
 
-# Scoped to what go generate can touch: an unrelated edit elsewhere in the tree
-# must not make this gate cry wolf. Go source is the whole of that scope today,
-# because mockgen is the only generating tool and it emits nothing but .go, while
-# every tracked yaml, json and sql file is hand-authored. Diffing those reported an
-# uncommitted config edit as stale generated output, which is the false alarm this
-# comment rules out. Widen the pathspec deliberately if a generator ever emits
-# another format.
+# Measures what go generate itself changed, by checksumming every .go file in the
+# workspace modules before and after the run. It used to `git diff` instead, which
+# cannot tell stale generated output from any uncommitted Go edit: `make check` on
+# a working tree with hand-written changes failed here, reporting the author's own
+# test code as stale generated output. Comparing before against after is immune to
+# whatever was already dirty, and still catches a generator whose committed output
+# no longer matches its input. Scoped to .go because mockgen is the only generating
+# tool and it emits nothing else; widen it deliberately if that changes.
 generate-check:
-	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && go generate ./...); done
-	@git diff --exit-code -- '*.go'
+	@set -eu -o pipefail; \
+	before="$$(gofiles() { find $(MODULES) -name '*.go' -not -path '*/.*' -print0 | sort -z | xargs -0 shasum; }; gofiles)"; \
+	for m in $(MODULES); do (cd "$$m" && go generate ./...); done; \
+	after="$$(gofiles() { find $(MODULES) -name '*.go' -not -path '*/.*' -print0 | sort -z | xargs -0 shasum; }; gofiles)"; \
+	if [ "$$before" != "$$after" ]; then \
+		echo "go generate changed committed output; regenerate and commit:"; \
+		diff <(echo "$$before") <(echo "$$after") || true; \
+		exit 1; \
+	fi
