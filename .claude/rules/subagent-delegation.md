@@ -43,13 +43,18 @@ happens; it is not a licence to take the task back.
 
 1. **Split by file ownership.** Two agents never own the same file. Name in each prompt the files it
    owns and the ones it must not touch.
-2. **Respect compile order.** Within one Go module, the package that consumes a new API cannot be
+2. **Ownership follows the call graph, not the file list.** Changing a signature changes every
+   caller, so the callers belong to the same agent as the definition. A file left out of every
+   agent's list is not neutral ground — it is a file nobody may fix, and the tree stays broken
+   until the main session steps in. Before splitting, find the callers (`gopls` references, not
+   grep) and give them to whoever owns the definition.
+3. **Respect compile order.** Within one Go module, the package that consumes a new API cannot be
    written beside the package that defines it. Sequence those, or hand both agents the exact agreed
    signature and compile only once both have landed — sequencing is the safer default.
-3. **Where a clean split is impossible**, give each agent its own git worktree and integrate
+4. **Where a clean split is impossible**, give each agent its own git worktree and integrate
    afterwards, rather than letting two agents write one tree.
-4. **Launch every independent agent in a single message**, so they actually run concurrently.
-5. **Do not invent parallelism that is not there.** Two agents that must serialize are slower than
+5. **Launch every independent agent in a single message**, so they actually run concurrently.
+6. **Do not invent parallelism that is not there.** Two agents that must serialize are slower than
    one. Say plainly why the work did not split, rather than splitting it into a conflict.
 
 Large multi-agent fan-out through a workflow is a separate thing, and still needs the user to ask
