@@ -1,6 +1,6 @@
 ## Purpose
 
-Manages the asymmetric keys tokens are signed with. It generates keys and persists them before use, reloads them so a restart invalidates no token, and rotates them and removes old ones on a schedule. It exposes the public keys as a JWK Set, and its background work starts and stops without leaving goroutines behind.
+Manages the asymmetric keys tokens are signed with. It generates keys and persists them before use, reloads them so a restart invalidates no token, and rotates them and removes old ones on a schedule. It exposes the public keys as the verification keys token verification selects from, and persists each key's publishable public JWK, and its background work starts and stops without leaving goroutines behind.
 
 ## ADDED Requirements
 
@@ -42,6 +42,21 @@ When the store cannot be read, when any stored key cannot be decoded, or when wr
 - **WHEN** construction over an empty store cannot write its initial key
 - **THEN** construction returns an error
 
+### Requirement: Construction takes the caller's context
+Constructing a key manager SHALL take a context from the caller, and SHALL pass that context to the key store both for loading the stored keys and for writing any key construction mints. Construction SHALL NOT substitute a context of its own and SHALL NOT impose a deadline of its own. When the store abandons its work because that context is cancelled or its deadline has passed, construction SHALL fail with that error and SHALL leave no key manager, no held key and no key added to the store. The default in-memory store performs no input or output and therefore cannot be cancelled: construction over it SHALL succeed whatever state the context is in.
+
+#### Scenario: Cancelled context
+- **WHEN** a key manager is constructed over a durable store with a context that is already cancelled
+- **THEN** construction fails with the store's cancellation error and returns no key manager
+
+#### Scenario: Consumer bounds a slow startup
+- **WHEN** a consumer gives construction a context with a two-second deadline and the store takes longer than that to answer
+- **THEN** construction returns the store's deadline error rather than blocking until the store answers
+
+#### Scenario: The default store cannot be cancelled
+- **WHEN** a key manager is constructed over the default in-memory store with a context that is already cancelled
+- **THEN** construction succeeds with a current key, because that store performs no input or output
+
 ### Requirement: A key is stored before it is used
 A newly generated key SHALL be written to the store before it becomes current or is published. When the write fails, the previous current key SHALL remain current.
 
@@ -51,11 +66,15 @@ A newly generated key SHALL be written to the store before it becomes current or
 - **AND** the previous key still signs
 
 ### Requirement: Key identifiers are key thumbprints
-Every key identifier SHALL be the base64url-encoded RFC 7638 SHA-256 thumbprint of the key's public part. Each published key SHALL declare its algorithm and signature use.
+Every key identifier SHALL be the base64url-encoded RFC 7638 SHA-256 thumbprint of the key's public part. Every published key SHALL be published with the algorithm it verifies, and the public JWK persisted with it SHALL declare that key identifier, that algorithm and signature use.
 
 #### Scenario: Identifier matches thumbprint
 - **WHEN** the RFC 7638 SHA-256 thumbprint of a published key is computed independently
 - **THEN** it equals the key's identifier
+
+#### Scenario: The stored public JWK is publishable as it stands
+- **WHEN** the public JWK stored with a key record is read back
+- **THEN** it declares that key's identifier, its algorithm and signature use, so a consumer serves a JWK Set without decoding private material
 
 ### Requirement: Keys rotate on a schedule
 Once started, the key manager SHALL generate a new key for every configured algorithm each rotation interval, which is 1 hour by default and configurable. Each new key SHALL become the current key for its algorithm as soon as it is stored. Keys it replaces SHALL remain published until housekeeping removes them. A failed rotation SHALL leave the previous key current, SHALL be attempted again at the next interval, and SHALL be reported to the configured logger, which defaults to the process's default structured logger, and to an optional error hook. Repeated failure logs SHALL be sampled, and each record written SHALL state how many failures were suppressed before it.
@@ -96,11 +115,11 @@ Once started, the key manager SHALL reload every key from the store each reload 
 - **AND** the failure is reported to the configured logger
 
 ### Requirement: A key for an unconfigured algorithm is published but never signed with
-A key found in the store for an algorithm the manager was not configured with SHALL be published in the JWK Set, so a token another replica signed with it still verifies, and SHALL NOT be made current. Requesting a signer for an algorithm the manager was not configured with SHALL report that none is available.
+A key found in the store for an algorithm the manager was not configured with SHALL be published among the verification keys, so a token another replica signed with it still verifies, and SHALL NOT be made current. Requesting a signer for an algorithm the manager was not configured with SHALL report that none is available.
 
 #### Scenario: A replica publishes another replica's algorithm without adopting it
 - **WHEN** a manager configured for RS256 alone starts over a store that also holds an ES256 key
-- **THEN** the ES256 key is published in the JWK Set, requesting an ES256 signer reports none available, and the ES256 key is not exempt from housekeeping
+- **THEN** the ES256 key is published among the verification keys, requesting an ES256 signer reports none available, and the ES256 key is not exempt from housekeeping
 
 ### Requirement: Housekeeping removes old keys but never the current one
 Once started, the key manager SHALL run housekeeping each housekeeping interval, which is 1 hour by default and configurable. Housekeeping SHALL stop publishing every key created longer ago than the key lifetime, which is 24 hours by default and configurable, except the current key of each algorithm. A key lifetime not longer than the rotation interval SHALL fail at construction.
@@ -117,13 +136,30 @@ Once started, the key manager SHALL run housekeeping each housekeeping interval,
 - **WHEN** a key manager is constructed with a 30-minute key lifetime and a 1-hour rotation interval
 - **THEN** construction fails with a configuration error
 
-### Requirement: The JWK Set publishes public keys only
-The key manager SHALL expose every key it holds as an RFC 7517 JWK Set containing each key's public part, key identifier, algorithm and signature use. No entry SHALL contain private key material.
+### Requirement: Published keys carry public material only
+The key manager SHALL publish every key it holds as that key's identifier, the algorithm it verifies and its public key. No published key SHALL carry private key material, and no published key SHALL be usable to sign. The key manager SHALL also render its published keys as a serialized RFC 7517 JWK Set, so that a consumer can serve a JWKS endpoint without a JOSE library and without a key store they can read. That document SHALL carry every key the manager holds, in the order it publishes them, each with its identifier, its algorithm and signature use. A consumer SHALL be able to render their own set from the published keys instead, where they need a document the key manager does not produce.
 
 #### Scenario: No private material
-- **WHEN** the JWK Set of a manager holding RS256 and ES256 keys is serialized
+- **WHEN** the verification keys of a manager holding RS256 and ES256 keys are rendered as a JWK Set and serialized
 - **THEN** each entry has `kid`, `alg` and `use` `sig`
 - **AND** no entry has `d`, `p`, `q`, `dp`, `dq` or `qi`
+
+#### Scenario: A published key cannot sign
+- **WHEN** a published key is examined for private material
+- **THEN** it holds none, so nothing obtained from the manager's published keys can produce a signature
+
+#### Scenario: Serving a JWKS endpoint
+- **WHEN** a consumer serves the key manager's rendered JWK Set from an endpoint, having configured no store and imported no JOSE library
+- **THEN** the response is a valid JWK Set holding every key the manager publishes
+- **AND** an external verifier reading it verifies a token the manager signed
+
+#### Scenario: The rendered set carries nothing private
+- **WHEN** the rendered JWK Set of a manager holding RS256, ES256 and EdDSA keys is parsed
+- **THEN** no key in it carries any private parameter
+
+#### Scenario: Consumer renders its own set
+- **WHEN** a consumer needs a set the key manager does not produce, such as one carrying only a subset of the keys
+- **THEN** they build it from the published verification keys, and the key manager's own rendering is unaffected
 
 ### Requirement: The key store is replaceable and treats private bytes as opaque
 The key manager SHALL persist keys only through a key store that can store a key record and load all records. Storing a record whose key identifier is already stored SHALL replace that record. Loading SHALL return records oldest first by creation time. With no store configured, the manager SHALL use an in-memory store that does not survive a restart. A consumer-supplied store SHALL replace it. A store SHALL persist a record's private bytes exactly as given, without interpreting them.
@@ -141,11 +177,19 @@ The key manager SHALL persist keys only through a key store that can store a key
 - **THEN** the private bytes are identical to those stored
 
 ### Requirement: Signing and verification keys can be supplied without the key manager
-Token issuance and verification SHALL obtain signing keys and the verification key set through a key source contract that the key manager implements. A consumer SHALL be able to supply their own key source, such as one backed by an external key service, in place of the key manager.
+Token issuance and verification SHALL obtain the signing key and the verification keys through a key source contract that the key manager implements. The contract SHALL describe a verification key as its key identifier, its algorithm and its public key, using only standard-library types and this capability's own algorithm names, so that implementing it requires no JOSE library. A consumer SHALL be able to supply their own key source, such as one backed by an external key service, in place of the key manager. Verification keys handed to a caller SHALL be copies of what the source holds: writing to a returned key SHALL NOT change the keys the key manager publishes or the key it signs with.
 
 #### Scenario: External key source
 - **WHEN** a consumer supplies a key source backed by an external signing service
 - **THEN** tokens are issued and verified with its keys and no key manager is constructed
+
+#### Scenario: A key source implemented without a JOSE library
+- **WHEN** a consumer implements the key source contract using only the standard library, returning for each key its identifier, its algorithm and its public key
+- **THEN** tokens are issued and verified with those keys, and the implementation imports no JOSE library
+
+#### Scenario: A returned verification key cannot be mutated
+- **WHEN** a caller obtains the key manager's verification keys and overwrites the public key material in the key it was given
+- **THEN** the key manager still publishes that key unchanged and still verifies tokens signed by it
 
 ### Requirement: The clock is injectable
 The key manager SHALL read time from a configurable time source, defaulting to the system clock, for key creation times, rotation and housekeeping.

@@ -39,9 +39,9 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	// and counts the times all of it answered.
 	hook := func(err error) {
 		kid, signer, ok := km.GetSigner(signingkey.EdDSA)
-		set, jwksErr := km.JWKS()
+		published, keysErr := km.VerificationKeys()
 		if ok && signer != nil && kid != "" &&
-			jwksErr == nil && set.Len() > 0 &&
+			keysErr == nil && len(published) > 0 &&
 			len(km.SupportedAlgs()) == 1 && km.KeyLifetime() > 0 {
 			reads.Add(1)
 		}
@@ -51,7 +51,7 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	clock := newFakeClock(epoch)
 
 	var err error
-	km, err = signingkey.NewKeyManager(
+	km, err = signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, report, opRotate)),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA),

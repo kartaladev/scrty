@@ -254,7 +254,7 @@ All JWT issuance, verification and JWK work uses jwx v4, the single JOSE stack f
   - `github.com/golang-jwt/jwt/v5`: no JWK or JWKS support, so keys would need a second library, with two algorithm guards that can disagree;
   - `github.com/go-jose/go-jose/v4`: a smaller dependency graph, but scrty would still hand-write key-set selection by `kid` and claim validation that jwx provides;
   - `github.com/coreos/go-oidc`: brings go-jose as a second JOSE stack into the OIDC path.
-- **Trade-off:** jwx is a larger dependency graph than a minimal JOSE library, and a future jwx incompatibility affects every token and key path at once — as the v3→v4 move itself shows. The public surface is `crypto.Signer`, the JWKS, and scrty's own claim accessors. `token` exposes no jwx type at all, enforced by a guard over its exported surface. `signingkey` has exactly one deliberate exception: `KeySource.JWKS()` returns a `jwk.Set`, and since `KeySource` is the port a consumer implements to supply keys from a KMS or HSM (departure D4), every such consumer imports jwx by path and major version, and a v5 bump would break them. The alternative — returning the serialized RFC 7517 set, or a scrty-owned key type — would make the port jwx-free at the cost of re-parsing on every verification, which is the hot path. The exception is therefore stated rather than designed away, and a guard pins it to that single signature so a second one cannot appear unnoticed. An incompatibility beyond it stays inside `token` and `signingkey`. v4 trims the core's own dependencies and drops `net/http`, which narrows the graph rather than widening it.
+- **Trade-off:** jwx is a larger dependency graph than a minimal JOSE library, and a future jwx incompatibility affects every token and key path at once — as the v3→v4 move itself shows. The public surface is `crypto.Signer`, `signingkey.PublicKey`, the public JWK bytes each key record carries, and scrty's own claim accessors. **No exported signature in either package names a jwx type** (decision 10): `token`'s is enforced by a guard over its exported surface, and `KeySource` describes a verification key as `signingkey.PublicKey`, a struct of standard-library types. jwx stays inside both packages — `signingkey` uses it to render a key's public JWK and its RFC 7638 thumbprint, `token` to parse and verify — so a major-version bump is scrty's problem and reaches no consumer, least of all one who wrote their own key source. v4 trims the core's own dependencies and drops `net/http`, which narrows the graph rather than widening it.
 
 ### 7. Token generator and verifier
 
@@ -297,7 +297,7 @@ func NewVerifier(opts ...VerifyOption) (Verifier, error)   // VerifyWithKeySourc
 - **Lifetime cap:** when the key source reports its key lifetime and rotation interval, a token lifetime longer than lifetime minus rotation interval is a construction error (departure D7).
 
 **Verification:**
-1. The token must be a compact JWS signed by a key in the key source's current set, with the key selected by `kid`. A missing `kid`, an unknown `kid`, `alg: none` and a header algorithm differing from the key's are all rejected.
+1. The token must be a compact JWS signed by a key in the key source's current set, with the key selected by `kid`. `token` builds that set itself from the `[]signingkey.PublicKey` the source returns, so no jwx type crosses the port (decision 10). A missing `kid`, an unknown `kid`, `alg: none` and a header algorithm differing from the key's are all rejected.
 2. `exp` is required, and the token is rejected at or after `exp`.
 3. `nbf` and `iat`, when present, must not be in the future.
 4. No clock skew is tolerated by default.
@@ -332,9 +332,17 @@ type KeyStore interface {
 }
 func NewInMemoryKeyStore() KeyStore
 
+// One verification key, described in standard-library types so a consumer's
+// own source needs no JOSE library (decision 10).
+type PublicKey struct {
+    Kid string
+    Alg Alg              // this package's own string alias
+    Key crypto.PublicKey // *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey
+}
+
 type KeySource interface {                                // implemented by *KeyManager
     GetSigner(alg Alg) (kid string, signer crypto.Signer, ok bool)
-    JWKS() (jwk.Set, error)
+    VerificationKeys() ([]PublicKey, error)
 }
 
 // Optional, reported by a source that knows its own rotation schedule, so the
@@ -359,7 +367,7 @@ type Ticker interface {
     Stop()
 }
 
-func NewKeyManager(opts ...Option) (*KeyManager, error)
+func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error)   // decision 9
 func (km *KeyManager) Start(ctx context.Context) error
 func (km *KeyManager) Stop() error
 func (km *KeyManager) SupportedAlgs() []Alg
@@ -379,6 +387,7 @@ func (km *KeyManager) SupportedAlgs() []Alg
 | `WithLogSampleWindow` | 5 min; the window `pkg/logsample` suppresses repeated failure records over, each record stating how many it stood for |
 
 **Construction:**
+- **The caller's context reaches the store** for the load and for any initial write, and nothing else in construction inspects it (decision 9).
 - **Construction errors:**
   - an unsupported algorithm;
   - a non-positive duration;
@@ -407,7 +416,7 @@ func (km *KeyManager) SupportedAlgs() []Alg
 - A failed rotation leaves the previous key current and is retried on the next tick.
 - Rotation and reload failures go to the logger and the error hook.
 - Housekeeping takes its own lock, and is never called while rotation holds one.
-- Housekeeping removes keys from the in-memory set and the published JWKS; the store is not pruned.
+- Housekeeping removes keys from the in-memory set, so they stop being published; the store is not pruned.
 - Each loop returns on its context's cancellation or on `Stop`.
 - `Start` is idempotent.
 - `Stop`:
@@ -416,7 +425,7 @@ func (km *KeyManager) SupportedAlgs() []Alg
   - returns at once on a manager that was never started, and a later `Start` then launches nothing.
 - `Start` and `Stop` coordinate so a concurrent pair cannot leave a goroutine unjoined.
 
-**JWKS:** the public JWK of every key the manager holds.
+**Published keys:** `VerificationKeys()` returns the public half of every key the manager holds — identifier, algorithm and public key — as copies the caller owns (decision 10). Nothing private leaves, and no jwx type does either. A consumer serving a JWKS endpoint serves what `JWKS()` returns (decision 11), or builds their own set from those keys where they need one this library does not produce.
 
 **Store:**
 - Private bytes are opaque to the store: `secrets-at-rest` wraps a `KeyStore` to seal them.
@@ -425,7 +434,105 @@ func (km *KeyManager) SupportedAlgs() []Alg
 
 - **Overrides:** every option above; any `KeyStore`; and any `KeySource` in place of the manager, such as a KMS-backed signer (departure D4).
 
-### 9. Departures
+### 9. Construction takes the caller's context
+
+```go
+func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error)
+```
+
+Construction is not pure: it reads every record from the key store, and for each configured algorithm with no stored key it writes the key it mints. Both are I/O against something the consumer owns — a PostgreSQL table, a KMS, a network. The context the caller passes is the context those calls receive.
+
+- **Default:** the caller's context is propagated to `KeyStore.LoadAll` and to `KeyStore.Store` unchanged. A context already cancelled, or whose deadline has passed, fails construction with the store's error; no manager is returned, no key is held, and nothing is started.
+- **The manager does not itself inspect the context.** It adds no deadline of its own and checks no cancellation between steps. What a consumer observes is what their store does with the context, which keeps the contract one sentence long and puts the decision where the I/O is.
+- **Override:** the parameter itself is the override point. `context.Background()` asks for an unbounded construction, `context.WithTimeout` for a startup budget, a request or tracing context for a startup span. There is no option and none is needed.
+- **Stated limit:** the default in-memory store performs no I/O, so nothing it does can be cancelled, and construction over it succeeds with an already-cancelled context. The limit belongs to that store, not to the contract; it is documented rather than hidden, per `library-design` rule 4.
+- **Why it changed:** construction previously did its store I/O on `context.Background()` — a context that can never be cancelled and carries no deadline. A durable store that hung at startup therefore hung construction for ever, with no way for the caller to give up: under an orchestrator's startup probe, an init that cannot be killed cleanly. Tracing and request-scoped values were dropped at the one point a consumer would want a startup span.
+- **Alternatives rejected:**
+  - a `WithConstructionContext` option — it stores a context in a struct, which is the anti-pattern the `context` guidance exists to warn against;
+  - leaving it documented — that records a limitation with no upside, when the fix costs one parameter.
+- **Taken now:** nothing is tagged, and `NewKeyManager` had no production caller outside its own doc comment, so the break costs nothing today and gets more expensive after the first tag.
+- **Pinned by** `TestNewKeyManagerConstructionContext`: a cancelled context on the load, an expired deadline on the load, a cancelled context on the initial write, and a live context constructing normally.
+
+### 10. The key source names no JOSE type
+
+```go
+type PublicKey struct {
+    Kid string
+    Alg Alg              // a string alias; jwx-free
+    Key crypto.PublicKey // standard library
+}
+
+type KeySource interface {
+    GetSigner(alg Alg) (kid string, signer crypto.Signer, ok bool)
+    VerificationKeys() ([]PublicKey, error)
+}
+```
+
+`KeySource` is the port a consumer implements to supply keys from an HSM or an external key service, with no key manager constructed at all (D4). Its previous `JWKS() (jwk.Set, error)` obliged every such implementation to import jwx by path and major version for a reason of scrty's and none of its own, so a jwx v5 bump would break all of them. The port is now standard library plus `signingkey.Alg`, which is a string.
+
+- **Default:** `*KeyManager` implements the port, and `token` builds the jwx key set it verifies against from the returned slice. A consumer who wires the manager sees no difference.
+- **Override:** any `KeySource`. What a consumer's source returns is used as given: the library neither interprets it nor rewrites it (`library-design` rule 5), and a source that cannot supply keys is an outage, not a verdict on the token.
+- **The keys are copies.** `crypto.PublicKey` shares structure with the manager's own key — `*rsa.PublicKey` shares `N *big.Int`, `*ecdsa.PublicKey` shares its coordinates, `ed25519.PublicKey` is a slice — so returning live handles would let a consumer reach through a published key and rewrite the material the manager signs under. Each returned key is therefore deep-copied, the same boundary every other key the manager hands out keeps.
+  - An ECDSA key is copied through `PublicKey.Bytes` and `ecdsa.ParseUncompressedPublicKey`, not by building a key from its coordinates. Go deprecated `X` and `Y` in 1.26 because a key assembled from raw coordinates can be off its curve, which is the very thing this copy exists to prevent; the sanctioned round trip validates the point instead of asserting it, so it is the stronger answer and not merely the quieter one. It reports an error, which is why copying a key can fail at all: such a failure is an outage — the key set could not be produced — and never a verdict on a token, exactly as the port already documents for a source that cannot answer.
+- **The name changed deliberately.** The method returns neither JSON nor a set, so `JWKS` named an encoding it does not produce. "Verification keys" is the term the codebase already uses: `token.ErrNoVerificationKeys`, `VerifyWithKeySource`'s godoc, and the signing-keys requirement "Signing and verification keys can be supplied without the key manager".
+- **Alternatives rejected:**
+  - keeping `jwk.Set` with the coupling recorded as a stated exception — which is what this design said before this decision; it makes every consumer's compatibility hostage to scrty's dependency choice, at the one place the library invites consumers to write code;
+  - returning the serialized RFC 7517 set, `JWKS() ([]byte, error)` — `token` would then re-parse JSON and reconstruct keys on every verification, far more work than either other option.
+
+**The cost, measured.** An earlier version of this design asserted that a jwx-free port would cost roughly zero. It does not, and the numbers replace that claim. Apple M4 Pro, 3 runs of 2000 iterations with the first discarded as warm-up — indicative, not benchstat-grade:
+
+| Step | 1 key | 3 algorithms |
+|---|---|---|
+| A full RS256 `Verify` — the denominator | ~25,600 ns / 7,886 B / 119 allocs | — |
+| Obtaining the key set before: `JWKS()` with its per-key clone | ~165 ns / 632 B / 9 allocs (0.6% of a verification) | ~290 ns / 1,288 B / 24 allocs |
+| Obtaining it after: deep copy, then rebuilding the jwx set in `token` | ~440 ns / 1,376 B / 18 allocs (1.7%) | ~1,400 ns / 3,659 B / 64 allocs (~5%) |
+| The deep copy on its own | ~46 ns / 336 B / 3 allocs (0.18%) | — |
+
+The dominant new cost is `jwk.Import` inside `token`, which is paid whether or not the keys are copied. **The trade accepted:** a jwx-free port for about +270 ns and +9 allocations per verification in the default single-key configuration, on a ~25.6 µs operation whose asymmetric cryptography dominates everything around it.
+
+- **Pinned by** `TestVerificationKeysDoNotShareKeyMaterialWithTheManager` for the copies, a consumer key source written with the standard library alone for the port, and `TestNoExportedSymbolExposesAJOSEType`, a guard over `signingkey`'s exported surface that refuses a jwx type reappearing on it — the counterpart of the guard `token` already had.
+
+**What it enables, left open.** An immutable `[]PublicKey` is safe for `token` to cache and rebuild only when the key identifiers change, which would land *below* today's cost; a mutable `jwk.Set` is not safely cacheable, which is why the question could not be asked before. That caching is not part of this change — it needs a lock or an atomic to be correct under concurrent verifications — and is recorded in Open Questions.
+
+### 11. Publishing the key set
+
+```go
+func (km *KeyManager) JWKS() ([]byte, error) // on the manager, not on the port
+```
+
+Decision 10 took `jwk.Set` off the port, which is right for the port and left a gap behind it. A
+service that issues scrty tokens usually has to publish its public keys so other services can
+verify them — a `/.well-known/jwks.json` endpoint. With nothing returning a document, a consumer
+had to serialize RFC 7517 themselves from `VerificationKeys()`, which means importing a JOSE
+library to redo work this package already does, and reintroduces at the endpoint exactly the
+coupling decision 10 removed from the port. Under the default in-memory store it was not merely
+inconvenient but impossible: the `PublicJWK` bytes each record carries are reachable only through a
+store the consumer supplied and can read.
+
+- **Default:** every key the manager currently holds, in the order `VerificationKeys()` reports
+  them, each carrying its `kid`, its `alg` and `use: "sig"`, and none carrying private material. A
+  key held for an algorithm this manager was not configured with is published too, for the reason
+  it is published anywhere: a replica sharing the store wrote it, and publishing it is what
+  verifies the tokens it signed.
+- **Override:** `VerificationKeys()`, which returns plain data. A consumer who needs a document
+  this method does not produce — extra JWK parameters such as `x5c`, a filtered subset of the keys,
+  a different order, or a wrapper their infrastructure expects — renders their own from that slice
+  and never has to fork or copy this one. That is the `library-design` rule 2 override point, and
+  it is named in the godoc so it is discoverable from the method a consumer finds first.
+- **Bytes, deliberately.** Returning `[]byte` rather than a JOSE type is what lets the endpoint be
+  `w.Write(...)` with no JOSE dependency, and it is what keeps this package's exported surface free
+  of jwx, which `TestNoExportedSymbolExposesAJOSEType` enforces. The package still uses jwx
+  internally to build the document; the guard forbids it on the surface, not in the implementation.
+- **Not the rejected alternative.** Decision 10 rejected `JWKS() ([]byte, error)` *on the port*,
+  because `token` would then re-parse JSON and reconstruct keys on every verification. This is the
+  same signature in a different place and for a different purpose: on the concrete manager, for
+  publication, on a path no verification takes. The port keeps `VerificationKeys()`, and a consumer
+  implementing `KeySource` is never asked to serialize anything.
+- **Stated limit:** the document is built on each call and not cached, so a handler serving it on
+  every request pays for it on every request. A consumer who serves it at volume caches the bytes
+  and rebuilds them no more often than the rotation interval.
+
+### 12. Departures
 
 Each departure below is justified by (a) a settled decision, or (b) a demonstrable defect in the prior art scrty learned from.
 
@@ -451,7 +558,7 @@ Behaviours kept exactly as in the prior art, though a fresh design might questio
 - RS256 is the default algorithm;
 - `aud` is not checked when no audience is configured.
 
-### 10. Test-first
+### 13. Test-first
 
 - **`identity` and `factor`:**
   - table tests over the kind/channel/exemption matrix, including empty and unknown kinds;
@@ -480,7 +587,9 @@ Behaviours kept exactly as in the prior art, though a fresh design might questio
   - failing stores;
   - out-of-order stores;
   - housekeeping under a controlled clock;
-  - `goleak` for `Stop`, double `Start`, concurrent `Start`/`Stop`, and `Stop` during an in-flight rotation.
+  - `goleak` for `Stop`, double `Start`, concurrent `Start`/`Stop`, and `Stop` during an in-flight rotation;
+  - construction under a cancelled context and under an expired deadline, on the load and on the initial write, and normally under a live one (decision 9);
+  - a verification key handed out, mutated by the caller, and the manager's own published keys and signatures unchanged (decision 10).
 
 ## Risks / Trade-offs
 
@@ -493,6 +602,8 @@ Behaviours kept exactly as in the prior art, though a fresh design might questio
 - [jwx enlarges the core module's dependency graph] → Accepted as settled. The dependency guard still passes, since jwx is no framework, driver, scheduler or DI container. v4 narrows the graph rather than widening it: its core drops `net/http` and `httprc`, moving HTTP JWKS retrieval to the `jwkfetch` companion, which this change does not need.
 - [jwx v4 forces the module's Go floor to 1.27] → Accepted, and free before the first tag. A consumer on Go 1.26 cannot embed scrty; the alternative was to make every such consumer set `GOEXPERIMENT=jsonv2`, which `library-design` forbids leaving as a silent inherited constraint.
 - [Argon2id at 64 MiB per verification under concurrency] → Sizing guidance in godoc; the login rate limit bounds concurrency per source.
+- [Construction over the default in-memory store cannot be cancelled, because that store performs no I/O] → Stated rather than hidden (decision 9). A consumer who needs a bounded startup has a durable store, which is where the I/O and therefore the cancellation live.
+- [`token` rebuilds the jwx key set on every verification from the slice the key source returns] → Measured at ~1.7% of an RS256 verification with one key and ~5% with three (decision 10), against asymmetric cryptography that dominates the operation. Caching the set is the open follow-up the shape now makes possible.
 
 ## Migration Plan
 
@@ -502,3 +613,4 @@ Not applicable: a new library with no consumers and no tags.
 
 - **Token subject:** should `sub` stay the username, or become the user reference, with a user loader by reference?
 - **Store pruning:** kept as the prior art has it, with no pruning. Whether `expiry-sweeping` should delete keys past their lifetime is for that change to decide.
+- **Caching the verification key set:** `token` rebuilds the jwx set on every verification from the `[]PublicKey` the source returns. That slice is immutable, so the set can be built once and rebuilt only when the key identifiers change, which lands below the cost of the shape that preceded decision 10 — the mutable `jwk.Set` could not be cached safely at all. It needs a lock or an atomic to be correct under concurrent verifications, so it is not part of this change.

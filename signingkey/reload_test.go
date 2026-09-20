@@ -54,7 +54,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 			name: "a restart adopts the stored key and mints no replacement",
 			setup: func(t *testing.T) (signingkey.KeyStore, string) {
 				store := signingkey.NewInMemoryKeyStore()
-				first, err := signingkey.NewKeyManager(signingkey.WithKeyStore(store))
+				first, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
 				require.NoError(t, err)
 				kid, _, ok := first.GetSigner(signingkey.RS256)
 				require.True(t, ok)
@@ -70,10 +70,8 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				assert.Len(t, recs, 1,
 					"an algorithm that already has a stored key gets no replacement")
 
-				set, err := km.JWKS()
-				require.NoError(t, err)
-				_, published := set.LookupKeyID(wantKid)
-				assert.True(t, published, "the stored key is published, so its tokens still verify")
+				assert.True(t, publishes(km, wantKid),
+					"the stored key is published, so its tokens still verify")
 			},
 		},
 		{
@@ -91,9 +89,9 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 
 				assert.Zero(t, store.(*listingStore).stored, "nothing is minted or rewritten")
 
-				set, err := km.JWKS()
+				published, err := km.VerificationKeys()
 				require.NoError(t, err)
-				assert.Equal(t, 2, set.Len(), "the key it replaced stays published")
+				assert.Len(t, published, 2, "the key it replaced stays published")
 			},
 		},
 		{
@@ -118,7 +116,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 
 			store, wantKid := tc.setup(t)
 
-			km, err := signingkey.NewKeyManager(signingkey.WithKeyStore(store))
+			km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
 			require.NoError(t, err)
 
 			tc.assert(t, km, store, wantKid)

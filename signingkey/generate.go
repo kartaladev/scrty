@@ -19,12 +19,18 @@ import (
 // rsaKeyBits is the modulus size of generated RSA keys.
 const rsaKeyBits = 2048
 
-// keyEntry is a key the manager holds: the signer it signs with and the public
-// JWK it publishes.
+// keyEntry is a key the manager holds: the signer it signs with, the public
+// half it publishes, and the public JWK a store records.
 type keyEntry struct {
-	kid       string
-	alg       Alg
-	signer    crypto.Signer
+	kid    string
+	alg    Alg
+	signer crypto.Signer
+	// public is the signer's public half, taken once. crypto.Signer.Public
+	// builds it afresh for some key types and returns a window onto the
+	// private key for others, so taking it once is both the cheaper answer on
+	// the verification path and the single value every published copy is made
+	// from.
+	public    crypto.PublicKey
 	publicJWK jwk.Key
 	createdAt time.Time
 }
@@ -112,6 +118,7 @@ func entryFromSigner(signer crypto.Signer, alg Alg, createdAt time.Time) (*keyEn
 		kid:       kid,
 		alg:       alg,
 		signer:    signer,
+		public:    signer.Public(),
 		publicJWK: public,
 		createdAt: createdAt,
 	}, nil

@@ -52,7 +52,7 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	}
 
 	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -76,7 +76,7 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	served := make(chan string, 1)
 	go func() {
 		kid, signer, ok := km.GetSigner(signingkey.EdDSA)
-		if !ok || signer == nil || !jwksHas(km, kid) {
+		if !ok || signer == nil || !publishes(km, kid) {
 			kid = ""
 		}
 		served <- kid

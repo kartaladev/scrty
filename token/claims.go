@@ -89,7 +89,7 @@ var ErrNoSubject = errors.New("token: principal has no username to name as subje
 var ErrNoTokenID = errors.New("token: no token identifier to carry as jti")
 
 // ErrNoVerificationKeys reports that the key source supplied nothing to verify
-// against: no key set at all, or a set holding no keys. The verifier has then
+// against: no keys at all, or an empty list of them. The verifier has then
 // reached no verdict on the token, so this deliberately does not match
 // ErrTokenInvalid — a consumer who maps every refusal to "credential refused"
 // must not show a key-service outage as a failed login.

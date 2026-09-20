@@ -19,7 +19,7 @@ import (
 func restartable(t *testing.T, clock signingkey.Clock) *signingkey.KeyManager {
 	t.Helper()
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithClock(clock),

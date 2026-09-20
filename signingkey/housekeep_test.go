@@ -43,7 +43,7 @@ func TestHousekeeping(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, current string) {
-				assert.True(t, jwksHas(km, current), "the current key is untouched")
+				assert.True(t, publishes(km, current), "the current key is untouched")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256))
 
 				recs, err := store.LoadAll(t.Context())
@@ -63,7 +63,7 @@ func TestHousekeeping(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, current string) {
-				assert.True(t, jwksHas(km, current),
+				assert.True(t, publishes(km, current),
 					"a current key created 25 hours ago is still published")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256),
 					"and is still the key that signs")
@@ -80,7 +80,7 @@ func TestHousekeeping(t *testing.T) {
 				require.NoError(t, store.Store(t.Context(), rec))
 			}
 
-			km, err := signingkey.NewKeyManager(
+			km, err := signingkey.NewKeyManager(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clock),
 				signingkey.WithLifetime(24*time.Hour),
@@ -93,12 +93,12 @@ func TestHousekeeping(t *testing.T) {
 
 			expired, current := seed[0].Kid, seed[len(seed)-1].Kid
 			require.Equal(t, current, currentKid(t, km, signingkey.RS256))
-			require.True(t, jwksHas(km, expired), "the expired key is published to begin with")
+			require.True(t, publishes(km, expired), "the expired key is published to begin with")
 
 			require.NoError(t, km.Start(t.Context()))
 
 			clock.Advance(time.Second)
-			require.Eventually(t, func() bool { return !jwksHas(km, expired) },
+			require.Eventually(t, func() bool { return !publishes(km, expired) },
 				10*time.Second, 5*time.Millisecond,
 				"housekeeping should have stopped publishing the expired key")
 
@@ -113,7 +113,7 @@ func TestHousekeeping(t *testing.T) {
 // what turns that into a failure instead of a hang.
 func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -134,9 +134,9 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 		require.NotEmpty(t, kid, "round %d", round)
 	}
 
-	set, err := km.JWKS()
+	keys, err := km.VerificationKeys()
 	require.NoError(t, err)
-	assert.LessOrEqual(t, set.Len(), 3,
+	assert.LessOrEqual(t, len(keys), 3,
 		"keys past the 2-hour lifetime stopped being published as the rounds went by")
 }
 
@@ -163,7 +163,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 		require.NoError(t, store.Store(t.Context(), rec))
 	}
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithLifetime(lifetime),
@@ -178,15 +178,15 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 
 	clock.Advance(sweep)
-	require.Eventually(t, func() bool { return !jwksHas(km, stale.Kid) },
+	require.Eventually(t, func() bool { return !publishes(km, stale.Kid) },
 		10*time.Second, 5*time.Millisecond,
 		"the sweep ran: a key an hour past its lifetime stopped being published")
-	assert.True(t, jwksHas(km, boundary.Kid),
+	assert.True(t, publishes(km, boundary.Kid),
 		"a key whose age is exactly the lifetime has not outlived it")
 
 	clock.Advance(sweep)
-	assert.Eventually(t, func() bool { return !jwksHas(km, boundary.Kid) },
+	assert.Eventually(t, func() bool { return !publishes(km, boundary.Kid) },
 		10*time.Second, 5*time.Millisecond,
 		"and one a tick older has")
-	assert.True(t, jwksHas(km, newest.Kid), "the current key is kept throughout")
+	assert.True(t, publishes(km, newest.Kid), "the current key is kept throughout")
 }

@@ -20,7 +20,7 @@ func realRecordFor(t *testing.T, alg signingkey.Alg, createdAt time.Time) signin
 	t.Helper()
 
 	store := signingkey.NewInMemoryKeyStore()
-	_, err := signingkey.NewKeyManager(
+	_, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithAlgs(alg),
 	)
@@ -56,7 +56,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	require.NoError(t, store.Store(t.Context(), fresh))
 
 	// This manager is configured for RS256 only.
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.RS256),
@@ -78,22 +78,22 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	require.NotEmpty(t, currentKid(t, km, signingkey.RS256),
 		"and the manager minted its own RS256 key rather than counting the stored ES256 one")
 
-	require.True(t, jwksHas(km, fresh.Kid),
+	require.True(t, publishes(km, fresh.Kid),
 		"another replica's key is published, so the tokens it signed verify here")
-	require.True(t, jwksHas(km, stale.Kid))
+	require.True(t, publishes(km, stale.Kid))
 
 	require.NoError(t, km.Start(t.Context()))
 
 	clock.Advance(time.Second)
-	require.Eventually(t, func() bool { return !jwksHas(km, stale.Kid) },
+	require.Eventually(t, func() bool { return !publishes(km, stale.Kid) },
 		10*time.Second, 5*time.Millisecond,
 		"housekeeping retires a foreign key past its lifetime")
-	require.True(t, jwksHas(km, fresh.Kid), "the one inside the lifetime is kept")
+	require.True(t, publishes(km, fresh.Kid), "the one inside the lifetime is kept")
 
 	// The newest foreign key is the one a current-key exemption would protect
 	// for the life of the process.
 	clock.Advance(25 * time.Hour)
-	assert.Eventually(t, func() bool { return !jwksHas(km, fresh.Kid) },
+	assert.Eventually(t, func() bool { return !publishes(km, fresh.Kid) },
 		10*time.Second, 5*time.Millisecond,
 		"no foreign key is current, so none is exempt from housekeeping")
 

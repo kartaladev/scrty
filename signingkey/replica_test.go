@@ -45,11 +45,11 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 
 	// Replica A is the one that rotates. Replica B rotates so rarely that
 	// everything it publishes beyond its own first key came from the store.
-	replicaA, err := signingkey.NewKeyManager(append(shared,
+	replicaA, err := signingkey.NewKeyManager(t.Context(), append(shared,
 		signingkey.WithRotateInterval(time.Minute),
 		signingkey.WithLifetime(24*time.Hour))...)
 	require.NoError(t, err)
-	replicaB, err := signingkey.NewKeyManager(append(shared,
+	replicaB, err := signingkey.NewKeyManager(t.Context(), append(shared,
 		signingkey.WithRotateInterval(24*time.Hour),
 		signingkey.WithLifetime(48*time.Hour))...)
 	require.NoError(t, err)
@@ -73,24 +73,23 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 		"replica B has not reloaded yet")
 
 	clock.Advance(9 * time.Second)
-	assert.Never(t, func() bool { return jwksHas(replicaB, k2) },
+	assert.Never(t, func() bool { return publishes(replicaB, k2) },
 		200*time.Millisecond, 20*time.Millisecond,
 		"nothing is reloaded before the consumer's 10-second interval has elapsed")
 
 	clock.Advance(time.Second) // ten seconds since replica A rotated
 	require.Eventually(t, func() bool {
 		kid, _, ok := replicaB.GetSigner(signingkey.EdDSA)
-		return jwksHas(replicaB, k2) && ok && kid == k2
+		return publishes(replicaB, k2) && ok && kid == k2
 	}, 10*time.Second, 5*time.Millisecond,
 		"within one reload interval replica B publishes k2 and adopts it as current")
 
-	setB, err := replicaB.JWKS()
-	require.NoError(t, err)
+	setB := publishedSet(t, replicaB)
 	payload, err := jws.Verify(token, jws.WithKeySet(setB))
 	require.NoError(t, err, "replica B verifies a token replica A signed with k2")
 	assert.Equal(t, "issued by replica A", string(payload))
 
-	assert.True(t, jwksHas(replicaB, k1), "and keeps publishing the key k2 replaced")
+	assert.True(t, publishes(replicaB, k1), "and keeps publishing the key k2 replaced")
 }
 
 func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
@@ -99,7 +98,7 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 	held := realRecord(t, epoch)
 	require.NoError(t, store.Store(t.Context(), held))
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithReloadInterval(10*time.Second),
@@ -124,13 +123,13 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 	clock.Advance(10 * time.Second)
 	require.Eventually(t, func() bool {
 		kid, _, ok := km.GetSigner(signingkey.RS256)
-		return jwksHas(km, newest.Kid) && ok && kid == newest.Kid
+		return publishes(km, newest.Kid) && ok && kid == newest.Kid
 	}, 10*time.Second, 5*time.Millisecond,
 		"a reload publishes the stored key and re-picks the latest CreatedAt as current")
 
-	assert.False(t, jwksHas(km, expired.Kid),
+	assert.False(t, publishes(km, expired.Kid),
 		"a non-current key older than the lifetime is never republished")
-	assert.True(t, jwksHas(km, held.Kid), "the key it replaced is still published")
+	assert.True(t, publishes(km, held.Kid), "the key it replaced is still published")
 
 	recs, err := store.LoadAll(t.Context())
 	require.NoError(t, err)
@@ -142,7 +141,7 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 	report := &failureReport{}
 	recorder, logger := newLogRecorder()
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, report, opReload)),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -172,10 +171,9 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 
 	assert.Equal(t, held, currentKid(t, km, signingkey.EdDSA),
 		"the manager keeps signing with the keys it already holds")
-	assert.True(t, jwksHas(km, held))
+	assert.True(t, publishes(km, held))
 
-	set, err := km.JWKS()
-	require.NoError(t, err)
+	set := publishedSet(t, km)
 	payload, err := jws.Verify(token, jws.WithKeySet(set))
 	require.NoError(t, err, "and keeps verifying the tokens they signed")
 	assert.Equal(t, "issued before the outage", string(payload))

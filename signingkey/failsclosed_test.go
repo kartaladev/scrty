@@ -106,7 +106,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			store, kid := tc.store(t, ctrl)
 
-			km, err := signingkey.NewKeyManager(signingkey.WithKeyStore(store))
+			km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
 			tc.assert(t, km, kid, err)
 		})
 	}

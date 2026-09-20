@@ -14,7 +14,6 @@ import (
 	reflect "reflect"
 
 	signingkey "github.com/kartaladev/scrty/signingkey"
-	jwk "github.com/lestrrat-go/jwx/v4/jwk"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -82,41 +81,41 @@ func (c *MockKeySourceGetSignerCall) DoAndReturn(f func(signingkey.Alg) (string,
 	return c
 }
 
-// JWKS mocks base method.
-func (m *MockKeySource) JWKS() (jwk.Set, error) {
+// VerificationKeys mocks base method.
+func (m *MockKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "JWKS")
-	ret0, _ := ret[0].(jwk.Set)
+	ret := m.ctrl.Call(m, "VerificationKeys")
+	ret0, _ := ret[0].([]signingkey.PublicKey)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// JWKS indicates an expected call of JWKS.
-func (mr *MockKeySourceMockRecorder) JWKS() *MockKeySourceJWKSCall {
+// VerificationKeys indicates an expected call of VerificationKeys.
+func (mr *MockKeySourceMockRecorder) VerificationKeys() *MockKeySourceVerificationKeysCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "JWKS", reflect.TypeOf((*MockKeySource)(nil).JWKS))
-	return &MockKeySourceJWKSCall{Call: call}
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerificationKeys", reflect.TypeOf((*MockKeySource)(nil).VerificationKeys))
+	return &MockKeySourceVerificationKeysCall{Call: call}
 }
 
-// MockKeySourceJWKSCall wrap *gomock.Call
-type MockKeySourceJWKSCall struct {
+// MockKeySourceVerificationKeysCall wrap *gomock.Call
+type MockKeySourceVerificationKeysCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockKeySourceJWKSCall) Return(arg0 jwk.Set, arg1 error) *MockKeySourceJWKSCall {
+func (c *MockKeySourceVerificationKeysCall) Return(arg0 []signingkey.PublicKey, arg1 error) *MockKeySourceVerificationKeysCall {
 	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeySourceJWKSCall) Do(f func() (jwk.Set, error)) *MockKeySourceJWKSCall {
+func (c *MockKeySourceVerificationKeysCall) Do(f func() ([]signingkey.PublicKey, error)) *MockKeySourceVerificationKeysCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeySourceJWKSCall) DoAndReturn(f func() (jwk.Set, error)) *MockKeySourceJWKSCall {
+func (c *MockKeySourceVerificationKeysCall) DoAndReturn(f func() ([]signingkey.PublicKey, error)) *MockKeySourceVerificationKeysCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

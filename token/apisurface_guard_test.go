@@ -38,6 +38,18 @@ var allowedJOSECalls = map[string]string{
 	"jwt.Sign":                 "signs the claim set",
 	"jwt.WithKey":              "names the signing key and algorithm",
 
+	// Verification: building the key set from what the key source supplies,
+	// because KeySource describes its keys with crypto types and something
+	// has to render them for the JOSE stack.
+	"jwk.NewSet":       "the set verification selects from, built here per verification",
+	"jwk.Set":          "the type that set travels as, inside this package only",
+	"jwk.Import":       "turns a crypto.PublicKey from the key source into a JOSE key",
+	"jwk.Key":          "the type jwk.Import is asked to produce",
+	"jwk.KeyIDKey":     "the kid verification matches the token's header against",
+	"jwk.AlgorithmKey": "the one algorithm a published key verifies",
+	"jwk.KeyUsageKey":  "the use parameter, so a key is never tried for encryption",
+	"jwk.ForSignature": "the value of that use parameter",
+
 	// Verification: the key set, the caller's context, and the validation
 	// rules built once at construction.
 	"jwt.Parse":             "the one verification call",

@@ -7,6 +7,7 @@ package signingkey_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -19,7 +20,6 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
-	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,10 +50,15 @@ func auditAlg(t *testing.T, alg signingkey.Alg) jwa.SignatureAlgorithm {
 	return a
 }
 
-// F1 — JWKS() hands out the manager's own live jwk.Key values, so a caller
-// writing to what it was given breaks the manager's verification.
-func TestJWKSDoesNotShareKeysWithTheManager(t *testing.T) {
-	km, err := signingkey.NewKeyManager(
+// F1 — the manager hands out its own live key material, so a caller writing
+// to what it was given breaks the manager's verification.
+//
+// The unit of that defect is covered case by case in
+// TestVerificationKeysDoNotShareKeyMaterialWithTheManager. This one keeps the
+// end the defect was found at: a token the manager signed still verifies
+// against what the manager publishes afterwards.
+func TestPublishedKeysDoNotBreakTheManagersOwnVerification(t *testing.T) {
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithAlgs(signingkey.EdDSA),
 	)
@@ -62,11 +67,14 @@ func TestJWKSDoesNotShareKeysWithTheManager(t *testing.T) {
 	kid, signer, ok := km.GetSigner(signingkey.EdDSA)
 	require.True(t, ok)
 
-	exported, err := km.JWKS()
+	exported, err := km.VerificationKeys()
 	require.NoError(t, err)
-	handed, found := exported.LookupKeyID(kid)
-	require.True(t, found)
-	require.NoError(t, handed.Set(jwk.KeyIDKey, kid+"-exported"))
+	require.Len(t, exported, 1)
+	handed, isEd25519 := exported[0].Key.(ed25519.PublicKey)
+	require.True(t, isEd25519)
+	for i := range handed {
+		handed[i] ^= 0xFF // the caller writes to the key it was given
+	}
 
 	hdr := jws.NewHeaders()
 	require.NoError(t, hdr.Set(jws.KeyIDKey, kid))
@@ -74,9 +82,7 @@ func TestJWKSDoesNotShareKeysWithTheManager(t *testing.T) {
 		jws.WithKey(auditAlg(t, signingkey.EdDSA), signer, jws.WithProtectedHeaders(hdr)))
 	require.NoError(t, err)
 
-	verifySet, err := km.JWKS()
-	require.NoError(t, err)
-	_, verr := jws.Verify(token, jws.WithKeySet(verifySet))
+	_, verr := jws.Verify(token, jws.WithKeySet(publishedSet(t, km)))
 	assert.NoError(t, verr,
 		"a caller writing to a key it was handed must not break the manager's own verification")
 }
@@ -87,7 +93,7 @@ func TestStoredRecordAlgMustMatchItsKey(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(auditStore(t, signingkey.Record{
 			Kid: "lies", Alg: signingkey.ES256, Private: auditDER(t, rsaKey),
 			CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -105,7 +111,7 @@ func TestES256KeyMustBeP256(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	require.NoError(t, err)
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(auditStore(t, signingkey.Record{
 			Kid: "p384", Alg: signingkey.ES256, Private: auditDER(t, key),
 			CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -136,7 +142,7 @@ func TestStoredRecordAlgMustBeSupported(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(auditStore(t, signingkey.Record{
 			Kid: "hs", Alg: "HS256", Private: auditDER(t, rsaKey),
 			CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -150,12 +156,12 @@ func TestStoredRecordAlgMustBeSupported(t *testing.T) {
 	assert.False(t, ok,
 		"the manager offers no signer for an algorithm WithAlgs would have refused")
 
-	set, err := km.JWKS()
+	published, err := km.VerificationKeys()
 	require.NoError(t, err)
-	raw, err := json.Marshal(set)
-	require.NoError(t, err)
-	assert.NotContains(t, string(raw), `"HS256"`,
-		"no published key declares an algorithm scrty does not support: %s", raw)
+	for _, key := range published {
+		assert.NotEqual(t, "HS256", key.Alg,
+			"no published key declares an algorithm scrty does not support: %q", key.Kid)
+	}
 }
 
 // F4 — the private half can be swapped under a record's recorded Kid and
@@ -169,7 +175,7 @@ func TestStoredRecordKidMustMatchItsPrivateKey(t *testing.T) {
 	swapped := genuine
 	swapped.Private = auditDER(t, other)
 
-	km, err := signingkey.NewKeyManager(signingkey.WithKeyStore(auditStore(t, swapped)))
+	km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(auditStore(t, swapped)))
 	if err != nil {
 		return // refused, which is what this test asks for
 	}
@@ -222,7 +228,7 @@ func TestDuplicateAlgsAreRefused(t *testing.T) {
 	store := signingkey.NewInMemoryKeyStore()
 	clock := newFakeClock(epoch)
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA, signingkey.EdDSA, signingkey.EdDSA),
@@ -257,7 +263,7 @@ func TestDuplicateAlgsAreRefused(t *testing.T) {
 // F7 — a housekeeping interval longer than the key lifetime silently extends
 // how long a key stays published, with no error and no documented limit.
 func TestHousekeepingIntervalMustHonourTheLifetime(t *testing.T) {
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
@@ -287,7 +293,7 @@ func TestTypedNilPortIsAConfigurationError(t *testing.T) {
 		}
 	}()
 
-	km, err := signingkey.NewKeyManager(signingkey.WithKeyStore(store))
+	km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
 	require.Error(t, err, "a nil store is a configuration error whatever its static type")
 	assert.Nil(t, km)
 }
@@ -303,7 +309,7 @@ func TestTheConfiguredAlgorithmsAreNotSharedWithTheConsumer(t *testing.T) {
 	want := []signingkey.Alg{signingkey.EdDSA, signingkey.ES256}
 
 	given := []signingkey.Alg{signingkey.EdDSA, signingkey.ES256}
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithAlgs(given...),
 	)
@@ -328,7 +334,7 @@ func TestTheConfiguredAlgorithmsAreNotSharedWithTheConsumer(t *testing.T) {
 // material. Nothing in the package reads the field back, so nothing noticed.
 func TestStoredRecordCarriesThePublishablePublicKey(t *testing.T) {
 	store := signingkey.NewInMemoryKeyStore()
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithAlgs(signingkey.ES256),
 	)
@@ -365,7 +371,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	current := realRecord(t, epoch)
 
 	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, current}}),
 		signingkey.WithClock(clock),
 		signingkey.WithLifetime(24*time.Hour),
@@ -376,17 +382,17 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	require.NoError(t, err)
 	stopAndVerify(t, km)
 
-	set, err := km.JWKS()
+	published, err := km.VerificationKeys()
 	require.NoError(t, err)
-	assert.Equal(t, 2, set.Len(), "a key listed twice is one key")
+	assert.Len(t, published, 2, "a key listed twice is one key")
 	require.Equal(t, current.Kid, currentKid(t, km, signingkey.RS256))
 
 	// Housekeeping walks the order it publishes by and deletes as it goes, so a
 	// second entry for a kid it has just dropped would have nothing to read.
 	require.NoError(t, km.Start(t.Context()))
 	clock.Advance(time.Second)
-	require.Eventually(t, func() bool { return !jwksHas(km, dup.Kid) },
+	require.Eventually(t, func() bool { return !publishes(km, dup.Kid) },
 		10*time.Second, 5*time.Millisecond,
 		"the duplicated key stops being published once it is past its lifetime")
-	assert.True(t, jwksHas(km, current.Kid), "and the current key is untouched")
+	assert.True(t, publishes(km, current.Kid), "and the current key is untouched")
 }

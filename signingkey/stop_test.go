@@ -47,7 +47,7 @@ func TestStopWaitsForAnInFlightStoreWrite(t *testing.T) {
 		}).AnyTimes()
 
 	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -91,7 +91,7 @@ func TestStopAfterSeveralLoopRuns(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithClock(clock),
 		signingkey.WithAlgs(signingkey.EdDSA),

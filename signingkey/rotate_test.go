@@ -39,19 +39,6 @@ func currentKid(t *testing.T, km *signingkey.KeyManager, alg signingkey.Alg) str
 	return kid
 }
 
-// jwksHas reports whether source publishes kid. It takes the port rather than
-// the manager so a consumer's own key source can be asked the same question,
-// and it is safe to call from a polling closure: a set that cannot be built
-// counts as not publishing the key.
-func jwksHas(source signingkey.KeySource, kid string) bool {
-	set, err := source.JWKS()
-	if err != nil {
-		return false
-	}
-	_, ok := set.LookupKeyID(kid)
-	return ok
-}
-
 // waitForRotation returns the kid that replaced was as the current key for alg.
 func waitForRotation(t *testing.T, km *signingkey.KeyManager, alg signingkey.Alg, was string) string {
 	t.Helper()
@@ -85,7 +72,7 @@ func stopAndVerify(t *testing.T, km *signingkey.KeyManager) {
 func TestRotationAtTheConfiguredInterval(t *testing.T) {
 	clock := newFakeClock(epoch)
 	store := signingkey.NewInMemoryKeyStore()
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clock),
 		signingkey.WithRotateInterval(6*time.Hour), // the consumer's interval
@@ -109,8 +96,8 @@ func TestRotationAtTheConfiguredInterval(t *testing.T) {
 	clock.Advance(time.Minute) // six hours since the manager was constructed
 	k2 := waitForRotation(t, km, signingkey.RS256, k1)
 
-	assert.True(t, jwksHas(km, k2), "the new key is published")
-	assert.True(t, jwksHas(km, k1),
+	assert.True(t, publishes(km, k2), "the new key is published")
+	assert.True(t, publishes(km, k1),
 		"the key it replaced stays published until housekeeping removes it")
 
 	recs, err := store.LoadAll(t.Context())
@@ -263,14 +250,14 @@ func TestRotationFailureIsObservable(t *testing.T) {
 		require.GreaterOrEqual(t, len(rejected), 2, "each retry minted and offered a key")
 		for _, kid := range rejected {
 			require.NotEqual(t, previous, kid, "each attempt minted a distinct key")
-			assert.False(t, jwksHas(km, kid), "a key the store rejected is never published")
+			assert.False(t, publishes(km, kid), "a key the store rejected is never published")
 		}
 		assert.NotContains(t, rejected, currentKid(t, km, signingkey.EdDSA),
 			"a key the store rejected is never current")
 
 		assert.Equal(t, previous, currentKid(t, km, signingkey.EdDSA),
 			"the previous key stays current")
-		assert.True(t, jwksHas(km, previous), "and stays published, so it still signs")
+		assert.True(t, publishes(km, previous), "and stays published, so it still signs")
 
 		records := rec.records(t)
 		require.NotEmpty(t, records, "the failure reaches the logger")
@@ -319,7 +306,7 @@ func TestRotationFailureIsObservable(t *testing.T) {
 				signingkey.WithErrorHook(report.hook),
 			}, tc.logTo(t, logger)...)
 
-			km, err := signingkey.NewKeyManager(opts...)
+			km, err := signingkey.NewKeyManager(t.Context(), opts...)
 			require.NoError(t, err)
 			stopAndVerify(t, km)
 

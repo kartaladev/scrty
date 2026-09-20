@@ -137,7 +137,7 @@ func TestNewKeyManagerValidation(t *testing.T) {
 				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 			}, tc.opts...)
 
-			km, err := signingkey.NewKeyManager(opts...)
+			km, err := signingkey.NewKeyManager(t.Context(), opts...)
 			tc.assert(t, km, err)
 		})
 	}

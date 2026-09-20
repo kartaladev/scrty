@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v4/jwk"
-
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -62,6 +60,18 @@ type KeyManager struct {
 //
 // It starts no goroutine.
 //
+// The context is the caller's own, and it is propagated to the key store for
+// the load and for any key minted and written here. A store that honours
+// cancellation therefore lets a construction blocked on a database or a key
+// service be abandoned, rather than holding up start-up until the dependency
+// answers or its own client gives up. The manager does not itself inspect the
+// context: it neither shortens it nor refuses a context that is already done,
+// because the store is the only part of construction that can block, and what
+// a deadline means to it is the store's contract, not this one's. The default
+// in-memory store performs no I/O at all, so a default construction has
+// nothing to cancel — a limit of that store, stated here so it is not
+// discovered as a surprise.
+//
 // Defaults, each replaced by the Option named after it: RS256 only
 // (WithAlgs); a 24h key lifetime (WithLifetime); rotation every 1h
 // (WithRotateInterval); housekeeping every 1h (WithHousekeepingInterval);
@@ -74,7 +84,7 @@ type KeyManager struct {
 // interval, a lifetime no longer than the rotation interval, or a reload
 // interval no shorter than it — is an error here, not a surprise at the first
 // rotation.
-func NewKeyManager(opts ...Option) (*KeyManager, error) {
+func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 	km := &KeyManager{
 		keys:           make(map[string]*keyEntry),
 		current:        make(map[Alg]string),
@@ -103,7 +113,6 @@ func NewKeyManager(opts ...Option) (*KeyManager, error) {
 	// what keeps a count from being dropped rather than written.
 	km.sampler = logsample.New(km.sampleWindow, logsample.WithReporter(km.reportSuppressed))
 
-	ctx := context.Background()
 	if err := km.loadFromStore(ctx); err != nil {
 		return nil, err
 	}
@@ -260,35 +269,40 @@ func (km *KeyManager) GetSigner(alg Alg) (string, crypto.Signer, bool) {
 	return kid, entry.signer, true
 }
 
-// JWKS returns the public part of every key held, each carrying its kid, its
-// algorithm and use "sig". No entry carries private key material.
+// VerificationKeys returns the public half of every key held, each carrying
+// its kid and its algorithm, in the order the keys were held.
 //
 // Every key held is published, a key stored for an algorithm this manager was
 // not configured with included: a replica sharing the store may have written
-// it, and publishing it is what verifies the tokens it signed. Publishing a key
-// is not signing with it — GetSigner hands out none of them — and such a key
-// stops being published once it is past the key lifetime, like any other.
-func (km *KeyManager) JWKS() (jwk.Set, error) {
+// it, and publishing it is what verifies the tokens it signed. Publishing a
+// key is not signing with it — GetSigner hands out none of them — and such a
+// key stops being published once it is past the key lifetime, like any other.
+//
+// The error is never non-nil here, because a manager already holds its keys
+// and has nothing left to fail at. It is part of the KeySource contract for
+// the sources that do: one backed by a key service answers a request per call
+// and has an outage to report.
+func (km *KeyManager) VerificationKeys() ([]PublicKey, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 
-	set := jwk.NewSet()
+	keys := make([]PublicKey, 0, len(km.order))
 	for _, kid := range km.order {
-		// A clone, not the manager's own key. A jwk.Key is mutable, and a caller
-		// that tags or edits a key it was handed would otherwise rewrite the
-		// manager's published identifier under it, leaving jws.WithKeySet — which
-		// matches on kid — unable to find the key its own current signer uses.
-		// The verification path calls this on every request, so the keys handed
-		// out are the same objects that path relies on.
-		clone, err := km.keys[kid].publicJWK.Clone()
+		entry := km.keys[kid]
+		// A copy, not the manager's own key: see clonePublicKey. The
+		// verification path asks for these on every request, so what is handed
+		// out here is exactly what that path relies on.
+		public, err := clonePublicKey(entry.public)
 		if err != nil {
-			return nil, fmt.Errorf("signingkey: clone key %q: %w", kid, err)
+			return nil, fmt.Errorf("signingkey: publish key %q: %w", kid, err)
 		}
 
-		if err := set.AddKey(clone); err != nil {
-			return nil, fmt.Errorf("signingkey: build jwks: %w", err)
-		}
+		keys = append(keys, PublicKey{
+			Kid: kid,
+			Alg: entry.alg,
+			Key: public,
+		})
 	}
 
-	return set, nil
+	return keys, nil
 }

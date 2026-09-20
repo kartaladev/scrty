@@ -18,10 +18,13 @@ import (
 // externalKeySource stands in for a consumer's own key service: it holds a key
 // no KeyManager ever generated, published, or knows about, and satisfies the
 // port on its own. It deliberately does not report a lifetime.
+//
+// It names no JOSE type, which is the point of the port's shape: a consumer
+// implements it with the standard library alone.
 type externalKeySource struct {
 	kid    string
 	signer crypto.Signer
-	set    jwk.Set
+	public ed25519.PublicKey
 }
 
 func newExternalKeySource(t *testing.T) *externalKeySource {
@@ -30,16 +33,7 @@ func newExternalKeySource(t *testing.T) *externalKeySource {
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
-	key, err := jwk.Import[jwk.Key](public)
-	require.NoError(t, err)
-	require.NoError(t, key.Set(jwk.KeyIDKey, "external-1"))
-	require.NoError(t, key.Set(jwk.AlgorithmKey, signingkey.EdDSA))
-	require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
-
-	set := jwk.NewSet()
-	require.NoError(t, set.AddKey(key))
-
-	return &externalKeySource{kid: "external-1", signer: private, set: set}
+	return &externalKeySource{kid: "external-1", signer: private, public: public}
 }
 
 func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
@@ -49,7 +43,13 @@ func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer
 	return s.kid, s.signer, true
 }
 
-func (s *externalKeySource) JWKS() (jwk.Set, error) { return s.set, nil }
+func (s *externalKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
+	return []signingkey.PublicKey{{
+		Kid: s.kid,
+		Alg: signingkey.EdDSA,
+		Key: s.public,
+	}}, nil
+}
 
 // TestKeySource pins that the key manager and a consumer's own source are
 // interchangeable behind one port: each supplies a signer and the set that
@@ -72,9 +72,8 @@ func TestKeySource(t *testing.T) {
 
 		token := signWithCurrent(t, source, "issued over the port")
 
-		require.True(t, jwksHas(source, kid), "the set publishes the key that signed")
-		set, err := source.JWKS()
-		require.NoError(t, err)
+		require.True(t, publishes(source, kid), "the source publishes the key that signed")
+		set := publishedSet(t, source)
 		published, found := set.LookupKeyID(kid)
 		require.True(t, found)
 		isPrivate, err := jwk.IsPrivateKey(published)
@@ -93,7 +92,7 @@ func TestKeySource(t *testing.T) {
 		{
 			name: "the key manager implements it",
 			source: func(t *testing.T) signingkey.KeySource {
-				km, err := signingkey.NewKeyManager(
+				km, err := signingkey.NewKeyManager(t.Context(),
 					signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.EdDSA),
 				)
@@ -135,7 +134,7 @@ func TestLifetimeReporter(t *testing.T) {
 		{
 			name: "the key manager reports the lifetime and interval it was configured with",
 			source: func(t *testing.T) signingkey.KeySource {
-				km, err := signingkey.NewKeyManager(
+				km, err := signingkey.NewKeyManager(t.Context(),
 					signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.EdDSA),
 					signingkey.WithLifetime(48*time.Hour),

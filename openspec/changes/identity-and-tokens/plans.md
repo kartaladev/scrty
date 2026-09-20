@@ -234,15 +234,20 @@ type KeyStore interface {
     LoadAll(ctx context.Context) ([]Record, error)
 }
 func NewInMemoryKeyStore() KeyStore
+type PublicKey struct {          // tasks.md 7.12
+    Kid string
+    Alg Alg
+    Key crypto.PublicKey
+}
 type KeySource interface {
     GetSigner(alg Alg) (kid string, signer crypto.Signer, ok bool)
-    JWKS() (jwk.Set, error)
+    VerificationKeys() ([]PublicKey, error)   // tasks.md 7.12, replacing JWKS() (jwk.Set, error)
 }
 type LifetimeReporter interface {
     KeyLifetime() time.Duration
     RotateInterval() time.Duration
 }
-func NewKeyManager(opts ...Option) (*KeyManager, error)
+func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error)   // ctx: tasks.md 6.7
 func (km *KeyManager) Start(ctx context.Context) error
 func (km *KeyManager) Stop() error
 func (km *KeyManager) SupportedAlgs() []Alg
@@ -263,6 +268,12 @@ type Generator interface {
 func NewGenerator(keys signingkey.KeySource, opts ...GenerateOption) (Generator, error)
 func NewVerifier(opts ...VerifyOption) (Verifier, error)
 ```
+
+> **Two signatures above were settled after Tasks 6–8 were written and executed.** `NewKeyManager` takes
+> the caller's context (tasks.md 6.7–6.8), and `KeySource` describes a verification key with
+> `PublicKey` rather than a `jwk.Set` (tasks.md 7.12). Where Tasks 6, 7 and 8 below still show the
+> earlier shapes, they record what was built then; the sections for 6.7–6.8, 7.12 and 9.3, after
+> Task 9, are what is current.
 
 > `signingkey.Clock` and `token.Clock` are separate one-method interfaces by design — Go interfaces are structural, so one fake clock satisfies both, and neither package gains a dependency on the other for the sake of a shared type.
 
@@ -6436,6 +6447,907 @@ make check green on Go 1.26 and 1.27; openspec validate --strict passes."
 
 ---
 
+## Task 6.7–6.8: signingkey — construction takes the caller's context
+
+**Implements:** tasks.md 6.7, 6.8 — design.md decision 9, and `specs/signing-keys/spec.md` "Construction takes the caller's context".
+
+**Files:**
+- Modify: `signingkey/manager.go` — `NewKeyManager`'s signature and doc comment, and the two store calls it makes (`loadFromStore`, `mintMissing`)
+- Modify: every caller, all of them tests today: `signingkey/*_test.go`, `token/helpers_test.go`
+- Test: `signingkey/constructctx_test.go` (create)
+
+**Interfaces:**
+- Consumes: `KeyStore.LoadAll(ctx) ([]Record, error)` and `KeyStore.Store(ctx, Record) error` (Task 6); `NewMockKeyStore(ctrl)` from `signingkey/keystore_mock_test.go` (Task 6, mockgen `--typed`).
+- Produces: `func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error)`. Nothing else changes shape: `Start(ctx)`, `Stop()`, `GetSigner` and the options are untouched, and no `Option` is added.
+
+**Why a parameter and not an option:** an option would have to park the context on the struct, which is the one thing `context`'s own guidance tells you not to do — the value would outlive the call it describes and be read by background loops that have their own context from `Start`. The parameter is also the whole override surface: `context.Background()` for an unbounded startup, `context.WithTimeout` for a budget, a tracing context for a startup span.
+
+- [ ] **Step 6.7a: Write the failing test**
+
+`signingkey/constructctx_test.go` — one table over what the *store* observes, because the store is the only place the difference between the caller's context and a substituted one is visible. Per the `table-test` skill: an `assert` closure, a `ctx` modifier, `t.Context()` as the base.
+
+```go
+package signingkey_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/signingkey"
+)
+
+func TestNewKeyManagerConstructionContext(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// ctx modifies the context construction is given; nil means the
+		// subtest's own, which is live.
+		ctx    func(ctx context.Context) context.Context
+		store  func(t *testing.T, ctrl *gomock.Controller) signingkey.KeyStore
+		assert func(t *testing.T, km *signingkey.KeyManager, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "loading the store sees the caller's cancellation",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			store: func(_ *testing.T, ctrl *gomock.Controller) signingkey.KeyStore {
+				store := NewMockKeyStore(ctrl)
+				// The store answers from the context it was given, as a
+				// durable one would. No write is expected: a load that failed
+				// must never be treated as an empty store.
+				store.EXPECT().LoadAll(gomock.Any()).
+					DoAndReturn(func(ctx context.Context) ([]signingkey.Record, error) {
+						return nil, ctx.Err()
+					})
+
+				return store
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, km)
+			},
+		},
+		{
+			name: "loading the store sees the caller's expired deadline",
+			ctx: func(ctx context.Context) context.Context {
+				dctx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Minute))
+				t.Cleanup(cancel)
+
+				return dctx
+			},
+			store: func(_ *testing.T, ctrl *gomock.Controller) signingkey.KeyStore {
+				store := NewMockKeyStore(ctrl)
+				store.EXPECT().LoadAll(gomock.Any()).
+					DoAndReturn(func(ctx context.Context) ([]signingkey.Record, error) {
+						return nil, ctx.Err()
+					})
+
+				return store
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.Nil(t, km)
+			},
+		},
+		{
+			name: "writing the initial key sees the caller's cancellation",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			store: func(_ *testing.T, ctrl *gomock.Controller) signingkey.KeyStore {
+				store := NewMockKeyStore(ctrl)
+				// The load ignores the context and reports an empty store, so
+				// the only place this case can fail is the write that follows.
+				store.EXPECT().LoadAll(gomock.Any()).Return(nil, nil)
+				store.EXPECT().Store(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ signingkey.Record) error {
+						return ctx.Err()
+					})
+
+				return store
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, km)
+			},
+		},
+		{
+			name: "a live context constructs, and the store sees no cancellation",
+			store: func(t *testing.T, ctrl *gomock.Controller) signingkey.KeyStore {
+				store := NewMockKeyStore(ctrl)
+				store.EXPECT().LoadAll(gomock.Any()).
+					DoAndReturn(func(ctx context.Context) ([]signingkey.Record, error) {
+						assert.NoError(t, ctx.Err(), "the store was handed a context already done")
+
+						return nil, nil
+					})
+				store.EXPECT().Store(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(ctx context.Context, _ signingkey.Record) error {
+						assert.NoError(t, ctx.Err(), "the store was handed a context already done")
+
+						return nil
+					})
+
+				return store
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, km)
+
+				_, _, ok := km.GetSigner(signingkey.RS256)
+				assert.True(t, ok, "construction left no current key")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			ctrl := gomock.NewController(t)
+			km, err := signingkey.NewKeyManager(ctx, signingkey.WithKeyStore(tc.store(t, ctrl)))
+			tc.assert(t, km, err)
+		})
+	}
+}
+```
+
+- [ ] **Step 6.7b: Run it and watch it fail**
+
+Run: `go test -run TestNewKeyManagerConstructionContext -count=1 ./signingkey`
+
+Expected: FAIL to build — `too many arguments in call to signingkey.NewKeyManager`. That is the compile error the signature change is about, not a missing fixture, so read the next failure too: after Step 6.7c's signature change alone (keeping `context.Background()` inside), the three cancellation cases fail with `Error "..." should be in err chain` and a non-nil manager, because a background context is never done. That second failure is the red step this task claims.
+
+- [ ] **Step 6.7c: Thread the caller's context through construction**
+
+`signingkey/manager.go`:
+
+```go
+func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
+	// ... option application, validate() and the sampler are unchanged ...
+
+	if err := km.loadFromStore(ctx); err != nil {
+		return nil, err
+	}
+	if err := km.mintMissing(ctx); err != nil {
+		return nil, err
+	}
+
+	return km, nil
+}
+```
+
+`loadFromStore` and `mintMissing` already take a `ctx` parameter and pass it to `km.store.LoadAll` / `km.store.Store`; the only change is what is passed in. Delete the `context.Background()` call site. Nothing else in the package may reintroduce one: `Start` has its own context, and the loops keep using it.
+
+- [ ] **Step 6.7d: Update every caller**
+
+Run: `go build ./... && go vet ./...` and fix each `not enough arguments` site by passing the test's own context — `t.Context()` in tests, never `context.Background()` (the `table-test` skill, Global Constraints). The callers are `signingkey/*_test.go` and `token/helpers_test.go`; production code has none, which is why this break is free (design decision 9, "taken now").
+
+- [ ] **Step 6.7e: Run the test and the package**
+
+Run: `go test -run TestNewKeyManagerConstructionContext -race -count=1 ./signingkey && go test -race -count=1 ./signingkey ./token`
+
+Expected: PASS.
+
+- [ ] **Step 6.7f: Prove it bites**
+
+Temporarily restore `km.loadFromStore(context.Background())` in `NewKeyManager`. Expected: the two load cases fail (`context.Canceled`/`context.DeadlineExceeded` not in the chain, manager not nil) while the write case still passes — which is itself informative: the write case only bites once the write receives the caller's context too. Restore both, and record the output with the claim.
+
+- [ ] **Step 6.8a: Add the case that pins the stated limit**
+
+The default in-memory store does no I/O, so nothing it does can be cancelled. That is a documented limit (library-design rule 4), and a limit is worth a case: it also pins that the *manager* inspects the context nowhere itself.
+
+Append to the same table in `signingkey/constructctx_test.go`:
+
+```go
+		{
+			name: "the default in-memory store does no I/O, so a cancelled context cannot stop it",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			// store is nil: this case constructs with no WithKeyStore at all.
+			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+				require.NoError(t, err, "the default store has nothing to cancel")
+				require.NotNil(t, km)
+
+				_, _, ok := km.GetSigner(signingkey.RS256)
+				assert.True(t, ok, "construction left no current key")
+			},
+		},
+```
+
+and make the runner tolerate a case with no store, so the default is exercised as a consumer wiring the minimum would get it:
+
+```go
+			var opts []signingkey.Option
+			if tc.store != nil {
+				opts = append(opts, signingkey.WithKeyStore(tc.store(t, ctrl)))
+			}
+			km, err := signingkey.NewKeyManager(ctx, opts...)
+			tc.assert(t, km, err)
+```
+
+- [ ] **Step 6.8b: Run it, then prove it bites**
+
+Run: `go test -run TestNewKeyManagerConstructionContext -count=1 ./signingkey`
+
+Expected: PASS — this case documents behaviour that is already true, so it must be falsified deliberately. Temporarily add to the top of `NewKeyManager`, after `validate()`:
+
+```go
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("signingkey: construct: %w", err)
+	}
+```
+
+Expected: FAIL at `the default store has nothing to cancel`. That is the manager inspecting the context itself, which the contract says it does not do. Remove the probe and re-run to green. **Run the probe-residue scan before committing** — a leftover probe is indistinguishable from a shipped defect.
+
+- [ ] **Step 6.8c: Godoc the contract and its limit**
+
+`signingkey/manager.go`, added to `NewKeyManager`'s doc comment:
+
+```go
+// The context is the store's, not the manager's: it is passed to the key
+// store for the load and for writing any key minted here, and nothing in
+// construction inspects it or adds a deadline of its own. A caller bounds a
+// slow or unreachable store with context.WithTimeout, and a startup that
+// should never be given up on passes context.Background().
+//
+// The default in-memory store performs no input or output, so there is
+// nothing for a cancelled context to stop: construction over it succeeds
+// whatever state the context is in. Cancellation matters once the store is a
+// durable one.
+```
+
+- [ ] **Step 6.8d: Verify the docs and commit**
+
+Run: `go doc ./signingkey | head -40 && go doc ./signingkey.NewKeyManager && go test -race -count=1 ./signingkey ./token`
+
+Expected: the paragraphs above appear under `NewKeyManager`; PASS.
+
+```bash
+git add signingkey/ token/helpers_test.go openspec/changes/identity-and-tokens/
+git commit -m "feat(signingkey)!: construct with the caller's context
+
+Construction reads the key store and may write to it. Both calls now
+receive the caller's context, so a store that never answers can be given
+up on, and a startup span reaches the one place it was being dropped.
+The manager inspects the context nowhere itself; the default in-memory
+store does no I/O and so cannot be cancelled, which is documented."
+```
+
+---
+
+## Task 7.12: signingkey and token — a key source with no JOSE type
+
+**Implements:** tasks.md 7.12 — design.md decision 10, and `specs/signing-keys/spec.md` "Signing and verification keys can be supplied without the key manager" and "Published keys carry public material only".
+
+**Files:**
+- Modify: `signingkey/keysource.go` — add `PublicKey` and `clonePublicKey`, replace `JWKS() (jwk.Set, error)` on `KeySource` with `VerificationKeys() ([]PublicKey, error)`
+- Modify: `signingkey/manager.go` — `JWKS` becomes `VerificationKeys`, returning copies
+- Modify: `token/verifier.go` — build the `jwk.Set` from the returned slice
+- Modify: `token/keysource_mock_test.go` (regenerate), `token/helpers_test.go`, `signingkey/keysource_test.go` and every test that read the published set
+- Create: `signingkey/verificationkeys_test.go`
+- Delete: `signingkey/jwks_test.go` — its guarantees move to `verificationkeys_test.go`; deleting it is what stops the old contract being pinned in two places
+
+**Interfaces:**
+- Consumes: `KeyManager`'s key ring and its `order` slice (Task 6, record 20), `jwk.Import[jwk.Key]` (Task 6, record 19).
+- Produces: `signingkey.PublicKey{Kid string; Alg Alg; Key crypto.PublicKey}`, `KeySource.VerificationKeys() ([]PublicKey, error)`, `(*KeyManager).VerificationKeys()`. `token` consumes the slice and owns the jwx set; `http-security-chain` will render a JWK Set from the same slice, or serve `Record.PublicJWK` directly.
+
+**What does not change:** `GetSigner`, `LifetimeReporter`, the options, the store port and `Record` (whose `PublicJWK` already carries publishable JWK bytes). `token`'s public surface gains nothing.
+
+- [ ] **Step 7.12a: Write the failing test — a key source written without jwx**
+
+`signingkey/keysource_test.go`: replace the fake source's `JWKS` with the jwx-free shape. This file must not import `github.com/lestrrat-go/jwx/...` at all after this step — that import is the thing being removed from consumers' obligations, and a test that keeps it cannot show the port is free of it.
+
+```go
+// externalKeySource stands in for a consumer's own source — an HSM, a key
+// service — and is written with the standard library alone, which is the
+// property this case exists to pin.
+type externalKeySource struct {
+	kid    string
+	signer crypto.Signer
+	alg    signingkey.Alg
+}
+
+func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
+	if alg != s.alg {
+		return "", nil, false
+	}
+
+	return s.kid, s.signer, true
+}
+
+func (s *externalKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
+	return []signingkey.PublicKey{{Kid: s.kid, Alg: s.alg, Key: s.signer.Public()}}, nil
+}
+
+var _ signingkey.KeySource = (*externalKeySource)(nil)
+```
+
+- [ ] **Step 7.12b: Write the failing test — a handed-out key is a copy**
+
+`signingkey/verificationkeys_test.go` — one table over the three key shapes, each of which shares structure with the manager's own key: `*rsa.PublicKey` through `N`, `*ecdsa.PublicKey` through `X`/`Y`, `ed25519.PublicKey` through its backing array.
+
+```go
+func TestVerificationKeysDoNotShareKeyMaterialWithTheManager(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		alg  signingkey.Alg
+		// corrupt writes to the key the caller was handed, as a caller
+		// reusing the value it was given would.
+		corrupt func(t *testing.T, key crypto.PublicKey)
+	}
+
+	cases := []testCase{
+		{
+			name: "RS256 shares its modulus",
+			alg:  signingkey.RS256,
+			corrupt: func(t *testing.T, key crypto.PublicKey) {
+				pub, ok := key.(*rsa.PublicKey)
+				require.True(t, ok, "expected an *rsa.PublicKey, got %T", key)
+				pub.N.SetInt64(1)
+			},
+		},
+		{
+			name: "ES256 shares its coordinates",
+			alg:  signingkey.ES256,
+			corrupt: func(t *testing.T, key crypto.PublicKey) {
+				pub, ok := key.(*ecdsa.PublicKey)
+				require.True(t, ok, "expected an *ecdsa.PublicKey, got %T", key)
+				pub.X.SetInt64(1)
+			},
+		},
+		{
+			name: "EdDSA shares its bytes",
+			alg:  signingkey.EdDSA,
+			corrupt: func(t *testing.T, key crypto.PublicKey) {
+				pub, ok := key.(ed25519.PublicKey)
+				require.True(t, ok, "expected an ed25519.PublicKey, got %T", key)
+				require.NotEmpty(t, pub)
+				pub[0] ^= 0xFF
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			km, err := signingkey.NewKeyManager(t.Context(),
+				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+				signingkey.WithAlgs(tc.alg),
+			)
+			require.NoError(t, err)
+
+			// want is read before anything is written to, and is a value, not
+			// a handle, so no assertion below can be satisfied by comparing
+			// corrupted material with itself.
+			before, err := km.VerificationKeys()
+			require.NoError(t, err)
+			require.Len(t, before, 1)
+			want := publicKeyBytes(t, before[0].Key)
+
+			handed, err := km.VerificationKeys()
+			require.NoError(t, err)
+			require.Len(t, handed, 1)
+			tc.corrupt(t, handed[0].Key)
+
+			after, err := km.VerificationKeys()
+			require.NoError(t, err)
+			require.Len(t, after, 1)
+			assert.Equal(t, want, publicKeyBytes(t, after[0].Key),
+				"the manager still publishes the key it signs with")
+
+			_, signer, ok := km.GetSigner(tc.alg)
+			require.True(t, ok)
+			assert.Equal(t, want, publicKeyBytes(t, signer.Public()),
+				"and still signs with it")
+		})
+	}
+}
+```
+
+`publicKeyBytes` marshals with `x509.MarshalPKIXPublicKey` and fails the test on error — a value, so the comparison cannot be satisfied by two handles to the same corrupted key.
+
+- [ ] **Step 7.12c: Run both and watch them fail**
+
+Run: `go test -run 'TestVerificationKeys|TestKeySource' -count=1 ./signingkey`
+
+Expected: FAIL to build — `km.VerificationKeys undefined`, `undefined: signingkey.PublicKey`. Then, after Step 7.12d's type and method exist but return `Key: entry.public` directly (no copy), re-run: FAIL at `the manager still publishes the key it signs with` in all three cases. That shallow-copy failure is the red step for the copying claim; see it before writing `clonePublicKey`.
+
+- [ ] **Step 7.12d: Add `PublicKey`, the copy, and the port**
+
+`signingkey/keysource.go`:
+
+```go
+// PublicKey is one verification key: the public half of a key tokens were
+// signed with, the identifier a token's header names it by, and the algorithm
+// it verifies.
+//
+// It is a plain struct of standard-library types on purpose. KeySource is the
+// port a consumer implements, and describing a key with a JOSE library's own
+// type would oblige every such implementation to import that library, at the
+// major version scrty happens to depend on, for no reason of its own.
+type PublicKey struct {
+	Kid string
+	Alg Alg
+	Key crypto.PublicKey
+}
+
+// clonePublicKey returns a copy of key that shares no structure with it.
+//
+// A crypto.PublicKey is never flat: an *rsa.PublicKey holds its modulus in a
+// *big.Int, an *ecdsa.PublicKey holds two, and an ed25519.PublicKey is a
+// slice. Handing any of them out as they are gives the caller a handle on the
+// material this process verifies with.
+func clonePublicKey(key crypto.PublicKey) crypto.PublicKey {
+	switch pub := key.(type) {
+	case *rsa.PublicKey:
+		return &rsa.PublicKey{N: new(big.Int).Set(pub.N), E: pub.E}
+	case *ecdsa.PublicKey:
+		// Curve is a stateless implementation shared process-wide, so it is
+		// copied by reference deliberately; only the coordinates are material.
+		return &ecdsa.PublicKey{Curve: pub.Curve, X: new(big.Int).Set(pub.X), Y: new(big.Int).Set(pub.Y)}
+	case ed25519.PublicKey:
+		return ed25519.PublicKey(slices.Clone(pub))
+	default:
+		// A key of some other type is returned unchanged rather than dropped:
+		// dropping it would silently stop verifying the tokens it signed,
+		// which is worse than sharing it, and a source that supplies such a
+		// key is implemented outside this package.
+		return key
+	}
+}
+
+type KeySource interface {
+	GetSigner(alg Alg) (kid string, signer crypto.Signer, ok bool)
+
+	// VerificationKeys returns the public keys verification selects from,
+	// each carrying its key identifier and the algorithm it verifies, and
+	// none of them carrying private material.
+	//
+	// It is asked on every verification, so an implementation that reaches a
+	// remote key service is expected to cache. An error is an outage — the
+	// check did not happen — and is never reported as a refused token.
+	//
+	// The keys returned belong to the caller: an implementation that holds
+	// its own keys hands over copies.
+	VerificationKeys() ([]PublicKey, error)
+}
+```
+
+`signingkey/manager.go` — `JWKS` is replaced, not kept alongside; two ways to publish the same keys is two contracts to keep in step:
+
+```go
+func (km *KeyManager) VerificationKeys() ([]PublicKey, error) {
+	km.mu.RLock()
+	defer km.mu.RUnlock()
+
+	keys := make([]PublicKey, 0, len(km.order))
+	for _, kid := range km.order {
+		entry := km.keys[kid]
+		keys = append(keys, PublicKey{Kid: kid, Alg: entry.alg, Key: clonePublicKey(entry.public)})
+	}
+
+	return keys, nil
+}
+```
+
+The error is always nil here — a manager already holds its keys — and exists for the sources that do fail. `km.order` keeps the published order stable (record 20).
+
+- [ ] **Step 7.12e: Build the jwx set inside `token`**
+
+`token/verifier.go`: the call site becomes `keys, err := c.keys.VerificationKeys()`, the nil/empty check is unchanged (an outage, never `ErrTokenInvalid`), and a new unexported helper renders the set:
+
+```go
+// keySet renders the keys a source supplied as the set the JOSE stack selects
+// from. Building it here rather than taking one from the source is what keeps
+// the JOSE stack out of KeySource.
+func keySet(keys []signingkey.PublicKey) (jwk.Set, error) {
+	set := jwk.NewSet()
+
+	for _, pk := range keys {
+		key, err := jwk.Import[jwk.Key](pk.Key)
+		if err != nil {
+			// An outage, not a rejection, and never a skip: dropping the key
+			// would leave the check to run against whatever else the source
+			// published.
+			return nil, fmt.Errorf("token: obtain key set: read key %q: %w", pk.Kid, err)
+		}
+		if err := key.Set(jwk.KeyIDKey, pk.Kid); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: set kid %q: %w", pk.Kid, err)
+		}
+		if err := key.Set(jwk.AlgorithmKey, pk.Alg); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: set alg %q on key %q: %w", pk.Alg, pk.Kid, err)
+		}
+		if err := key.Set(jwk.KeyUsageKey, string(jwk.ForSignature)); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: set use on key %q: %w", pk.Kid, err)
+		}
+		if err := set.AddKey(key); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: add key %q: %w", pk.Kid, err)
+		}
+	}
+
+	return set, nil
+}
+```
+
+Setting `alg` and `use` on each imported key is load-bearing: `jws.WithKeySet` matches on `alg` as well as `kid` (record 37), which is what refuses a token whose header names an algorithm the key was not published for.
+
+- [ ] **Step 7.12f: Regenerate the mock and move the moved assertions**
+
+Run: `go generate ./token/... && go test -race -count=1 ./signingkey ./token`
+
+- `token/keysource_mock_test.go` regenerates with `VerificationKeys` in place of `JWKS` (`use-mockgen`: `--typed`, beside its consumer, never in the production build).
+- Every test that read the published set goes through a `publishedSet(t, source)` helper in `signingkey/verificationkeys_test.go` that imports the keys into a `jwk.Set` exactly as `token` does. Keeping that helper in the test package is deliberate: the package under test no longer owes anyone a `jwk.Set`.
+- Delete `signingkey/jwks_test.go` once `TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey` covers what it covered: one entry per held key, a key held for an unconfigured algorithm published but never signing, and no published key carrying private material.
+
+Expected: PASS.
+
+- [ ] **Step 7.12g: Re-run the exported-surface guard**
+
+`signingkey` gets the counterpart of the guard `token` already had, in `signingkey/apisurface_guard_test.go`: it parses the package's own files and fails on any exported signature naming a symbol from the `lestrrat-go/jwx` import prefix, which covers `jwk`, `jws`, `jwa` and `jwt` at whatever major version the module is on.
+
+Run: `go test -run 'TestNoExportedSymbolExposesAJOSEType' -count=1 ./signingkey && go test -run 'TestProductionSourceGuards|TestJOSEAllowListIsHonest' -count=1 ./token`
+
+Expected: PASS. Prove the new guard bites by temporarily adding `func (km *KeyManager) Set() jwk.Set { return nil }`; it must name that method and fail. Remove the probe and run the probe-residue scan.
+
+No jwx name is left on `signingkey`'s exported surface — stronger than the design's earlier "one stated exception", and what decision 10 records.
+
+- [ ] **Step 7.12h: Record the cost, then commit**
+
+The design states this shape's price, so the numbers must come from a run, not an estimate. Benchmark in a throwaway module (not in the tree): a full RS256 `Verify` as the denominator, then obtaining the keys and building the set, at one key and at three algorithms. Report ns/op, B/op and allocs/op, three runs of 2000 iterations with the first discarded, and update decision 10's table if the machine disagrees with what is recorded there.
+
+```bash
+git add signingkey/ token/ openspec/changes/identity-and-tokens/
+git commit -m "feat(signingkey)!: describe verification keys without a JOSE type
+
+KeySource is the port consumers implement, and naming jwk.Set in it
+obliged every such implementation to import jwx at scrty's major
+version. It now returns []PublicKey — kid, alg and a crypto.PublicKey —
+and token builds the jwx set it verifies against itself. The returned
+keys are deep copies: crypto.PublicKey shares structure with the key the
+manager signs under, and a caller that rewrites one would unpublish it."
+```
+
+---
+
+## Task 7.13: signingkey — an ECDSA key is copied the way Go sanctions
+
+**Implements:** tasks.md 7.13 — design.md decision 10, bullet "The keys are copies", and `specs/signing-keys/spec.md` "Signing and verification keys can be supplied without the key manager" (scenario "A returned verification key cannot be mutated").
+
+**Files:**
+- Modify: `signingkey/keysource.go` — `clonePublicKey`'s ECDSA branch and its signature
+- Modify: `signingkey/verificationkeys_test.go` — the ES256 row's sharing detection, if it reads the deprecated fields
+
+**Interfaces:**
+- Consumes: `clonePublicKey(key crypto.PublicKey) crypto.PublicKey` as Task 7.12 left it, called from `(*KeyManager).VerificationKeys`.
+- Produces: `clonePublicKey(key crypto.PublicKey) (crypto.PublicKey, error)`. The added error travels out through `VerificationKeys() ([]PublicKey, error)`, which already returns one; `token` already treats that error as an outage (`token: obtain key set: %w`, never matching `ErrTokenInvalid`), so no caller changes.
+
+**Why this is not a style fix.** Go 1.26 deprecated `ecdsa.PublicKey.X` and `.Y`. The deprecation is not about reading them, it is about *building* a key from raw coordinates, because the result can be a point that is not on its curve — the precise failure the copy exists to prevent. `ecdsa.ParseUncompressedPublicKey` validates the point; assembling `&ecdsa.PublicKey{X: ..., Y: ...}` asserts it. So the sanctioned round trip is the stronger implementation, and the `//nolint:staticcheck` it replaces was suppressing a warning that was right.
+
+- [ ] **Step 7.13a: Confirm the ES256 row still bites before changing anything**
+
+The row must be shown to fail against a non-copying implementation, or it proves nothing about the new one. In `signingkey/keysource.go`, temporarily return the key unchanged:
+
+```go
+	case *ecdsa.PublicKey:
+		return pub // TEMPORARY: prove the ES256 row fails
+```
+
+Run: `go test -run 'TestVerificationKeysDoNotShareKeyMaterialWithTheManager' -count=1 ./signingkey/`
+Expected: FAIL on the `ES256` row, reporting that the manager's published coordinates changed after the caller overwrote the key it was handed. Record the output. Revert the edit.
+
+- [ ] **Step 7.13b: Change the signature and the ECDSA branch**
+
+```go
+func clonePublicKey(key crypto.PublicKey) (crypto.PublicKey, error) {
+	switch pub := key.(type) {
+	case *rsa.PublicKey:
+		return &rsa.PublicKey{N: new(big.Int).Set(pub.N), E: pub.E}, nil
+	case *ecdsa.PublicKey:
+		// Through the encoding Go sanctions rather than the coordinates it
+		// deprecated: a key assembled from raw X and Y can be off its curve,
+		// which is the failure this copy exists to prevent, and parsing
+		// validates the point instead of trusting it.
+		raw, err := pub.Bytes()
+		if err != nil {
+			return nil, fmt.Errorf("signingkey: encode public key: %w", err)
+		}
+
+		// Curve is a stateless implementation shared process-wide, so passing
+		// it on is not sharing key material; only the point is material.
+		parsed, err := ecdsa.ParseUncompressedPublicKey(pub.Curve, raw)
+		if err != nil {
+			return nil, fmt.Errorf("signingkey: decode public key: %w", err)
+		}
+
+		return parsed, nil
+	case ed25519.PublicKey:
+		return ed25519.PublicKey(slices.Clone(pub)), nil
+	default:
+		return key, nil
+	}
+}
+```
+
+Keep the existing godoc, including why an unrecognised type is returned unchanged rather than dropped, and delete the sentences that justified the suppressions.
+
+- [ ] **Step 7.13c: Propagate the error at the one call site**
+
+In `(*KeyManager).VerificationKeys`, the copy now fails rather than silently succeeding. Wrap naming the key, as the neighbouring errors in this package do:
+
+```go
+		copied, err := clonePublicKey(entry.public)
+		if err != nil {
+			return nil, fmt.Errorf("signingkey: publish key %q: %w", kid, err)
+		}
+```
+
+- [ ] **Step 7.13d: Check the test's sharing detection does not itself use the deprecated fields**
+
+If the ES256 row compares `X`/`Y`, it will trip the same lint. Compare the encoded form instead, which is also a stronger assertion — it covers the whole point, not two coordinates:
+
+```go
+			before, err := pub.Bytes()
+			require.NoError(t, err)
+			// ... caller overwrites the key it was handed ...
+			after, err := manager.Bytes()
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "the manager's published key moved with the caller's")
+```
+
+- [ ] **Step 7.13e: Green, and no suppression left behind**
+
+Run, and all must be clean:
+```sh
+go test -race -count=1 ./signingkey ./token
+go vet ./... && gofmt -l . && "$(go env GOPATH)/bin/golangci-lint" run ./...
+rg -n 'nolint:staticcheck' signingkey/keysource.go   # expect no match
+```
+
+---
+
+## Task 7.14: signingkey — publishing the key set as a document
+
+**Implements:** tasks.md 7.14 — design.md decision 11, and `specs/signing-keys/spec.md` "Published keys carry public material only" (scenarios "Serving a JWKS endpoint", "The rendered set carries nothing private", "Consumer renders its own set").
+
+**Files:**
+- Create: `signingkey/jwks.go` — `(*KeyManager).JWKS() ([]byte, error)`
+- Create: `signingkey/jwks_test.go`
+- Modify: `signingkey/alg.go` — one sentence in the package doc, only if the `# Wiring` section needs to name the method
+
+**Interfaces:**
+- Consumes: the key ring and `km.order` (Task 6, record 20), `keyEntry.publicJWK` (a `jwk.Key` already carrying `kid`, `alg` and `use`), and `km.mu` for the same read discipline as the neighbouring methods.
+- Produces: `(*KeyManager).JWKS() ([]byte, error)`. **Not** on `KeySource` — the port keeps `VerificationKeys()` alone, so a consumer implementing it is never asked to serialize.
+
+**Why bytes.** A JOSE type on the exported surface would undo decision 10 at the endpoint and would fail `TestNoExportedSymbolExposesAJOSEType`. Bytes let the handler be `w.Write(doc)` with no JOSE dependency. jwx inside the function body is fine and expected; the guard is about the surface.
+
+**The override, which the library-design rule requires naming:** `VerificationKeys()`. A consumer needing `x5c`, a filtered subset, a different order or a wrapper object builds their own document from that slice. The godoc names it so it is discoverable from here.
+
+- [ ] **Step 7.14a: Write the failing test — the document holds every published key**
+
+`signingkey/jwks_test.go`:
+
+```go
+func TestJWKSRendersEveryPublishedKey(t *testing.T) {
+	t.Parallel()
+
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithAlgs(signingkey.RS256, signingkey.ES256, signingkey.EdDSA))
+	require.NoError(t, err)
+
+	doc, err := km.JWKS()
+	require.NoError(t, err)
+
+	set, err := jwk.Parse(doc)
+	require.NoError(t, err, "the document a JWKS endpoint serves must parse as a JWK Set")
+
+	published, err := km.VerificationKeys()
+	require.NoError(t, err)
+	require.Equal(t, len(published), set.Len(),
+		"the two published views must not drift: %d keys, %d in the document",
+		len(published), set.Len())
+
+	for i, want := range published {
+		key, ok := set.Key(i)
+		require.True(t, ok)
+		assert.Equal(t, want.Kid, key.KeyID(), "same order as VerificationKeys")
+	}
+}
+```
+
+- [ ] **Step 7.14b: Run it and watch it fail**
+
+Run: `go test -run 'TestJWKSRendersEveryPublishedKey' -count=1 ./signingkey/`
+Expected: FAIL. Add the method returning `nil, nil` first if the package will not compile — a compile error is not a red step, and the assertion must be the thing that fails.
+
+- [ ] **Step 7.14c: Write the failing test — nothing private is in the document**
+
+Assert structurally over whatever keys are present, so a newly supported algorithm cannot slip a private parameter through a fixed expectation:
+
+```go
+// privateJWKParams are every private parameter RFC 7517 and RFC 8037 define
+// for the key types this package can publish. A document carrying any of them
+// has leaked a signing key to everyone who can reach the endpoint.
+var privateJWKParams = []string{"d", "p", "q", "dp", "dq", "qi", "k"}
+
+func TestJWKSCarriesNothingPrivate(t *testing.T) {
+	t.Parallel()
+
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithAlgs(signingkey.RS256, signingkey.ES256, signingkey.EdDSA))
+	require.NoError(t, err)
+
+	doc, err := km.JWKS()
+	require.NoError(t, err)
+
+	var parsed struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	require.NoError(t, json.Unmarshal(doc, &parsed))
+	require.NotEmpty(t, parsed.Keys)
+
+	for _, key := range parsed.Keys {
+		for _, param := range privateJWKParams {
+			assert.NotContains(t, key, param,
+				"key %v carries the private parameter %q", key["kid"], param)
+		}
+	}
+}
+```
+
+- [ ] **Step 7.14d: Prove that test bites**
+
+Temporarily marshal the private key instead of the public one inside `JWKS`, run `go test -run 'TestJWKSCarriesNothingPrivate' -count=1 ./signingkey/`, and record the failure naming the leaked parameter. Revert.
+
+- [ ] **Step 7.14e: Write the failing test — the consumer override is real**
+
+The rule requires the override to be covered, not merely documented:
+
+```go
+func TestConsumerRendersItsOwnSet(t *testing.T) {
+	t.Parallel()
+
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithAlgs(signingkey.RS256, signingkey.ES256))
+	require.NoError(t, err)
+
+	// A consumer publishing only what their own policy allows builds the
+	// document from the published keys, with no key manager cooperation.
+	published, err := km.VerificationKeys()
+	require.NoError(t, err)
+	require.Len(t, published, 2)
+
+	own := jwk.NewSet()
+	for _, pk := range published {
+		if pk.Alg != signingkey.ES256 {
+			continue
+		}
+		key, importErr := jwk.Import[jwk.Key](pk.Key)
+		require.NoError(t, importErr)
+		require.NoError(t, key.Set(jwk.KeyIDKey, pk.Kid))
+		require.NoError(t, own.AddKey(key))
+	}
+
+	assert.Equal(t, 1, own.Len(), "the consumer's set carries only what they chose")
+
+	mine, err := km.JWKS()
+	require.NoError(t, err)
+	theirs, err := json.Marshal(own)
+	require.NoError(t, err)
+	assert.NotEqual(t, string(mine), string(theirs),
+		"the override must produce a document the default does not")
+}
+```
+
+- [ ] **Step 7.14f: Implement**
+
+Build the set under the read lock from the held `publicJWK` values, cloning each rather than aliasing — a `jwk.Key` is mutable, and this package has already had one aliasing defect — then marshal. Wrap failures as `signingkey: build jwks: %w` / `signingkey: clone key %q: %w`, matching the package.
+
+- [ ] **Step 7.14g: Green, and the surface is still jwx-free**
+
+```sh
+go test -race -count=1 ./signingkey ./token
+go test -run 'TestNoExportedSymbolExposesAJOSEType' -count=1 ./signingkey/
+go doc ./signingkey JWKS          # must name no jwx type
+go vet ./... && gofmt -l . && "$(go env GOPATH)/bin/golangci-lint" run ./...
+```
+
+---
+
+## Task 9.4: re-verification after publishing landed
+
+**Implements:** tasks.md 9.4.
+
+7.14 adds a requirement to `signing-keys` after the 9.1/9.2/9.3 passes, so those gates are re-run rather than assumed. 7.13 changes no requirement but changes a hot-path implementation, so the race detector and the linter are part of the gate rather than an afterthought.
+
+- [ ] **Step 9.4a: The whole-project gate**
+
+Run: `make check` — `fmt-check`, `vet`, `lint` (0 issues across both modules), `test`, `vuln`, `generate-check`. All green.
+
+- [ ] **Step 9.4b: The artifacts agree with the code**
+
+Run: `openspec validate identity-and-tokens --strict`
+Expected: `Change 'identity-and-tokens' is valid`.
+
+- [ ] **Step 9.4c: Map the new requirement to named tests, both halves**
+
+The default and the override each need a test, per the library-design rule:
+
+| Spec scenario | Test |
+|---|---|
+| Serving a JWKS endpoint | `TestJWKSRendersEveryPublishedKey` |
+| The rendered set carries nothing private | `TestJWKSCarriesNothingPrivate` |
+| Consumer renders its own set | `TestConsumerRendersItsOwnSet` |
+| A returned verification key cannot be mutated (ES256 row, now via the sanctioned copy) | `TestVerificationKeysDoNotShareKeyMaterialWithTheManager` |
+
+Run each by name with `-race` and record that it passes.
+
+- [ ] **Step 9.4d: No suppression was added to buy the gate**
+
+Run: `rg -n 'nolint' signingkey/ token/ | grep -v '_test.go'`
+Expected: no `staticcheck` suppression in the key-copying path. A new suppression anywhere here means 7.13 was worked around rather than done.
+
+## Task 9.3: re-verification after the two late decisions
+
+**Implements:** tasks.md 9.3.
+
+**Files:** none changed; this task runs the gate and reads the artifacts.
+
+- [ ] **Step 9.3a: Run the whole gate**
+
+Run: `make check` across the core and `test` modules on Go 1.27 (see record 45 on why 1.26 is not a target), including `go test -race`, `golangci-lint`, `govulncheck` and `go generate` leaving no diff.
+
+Expected: PASS, no diff.
+
+- [ ] **Step 9.3b: Validate the change artifacts**
+
+Run: `openspec validate identity-and-tokens --strict`
+
+Expected: `Change 'identity-and-tokens' is valid`.
+
+- [ ] **Step 9.3c: Map the new requirements to named tests**
+
+Add to the Self-Review coverage table below, and confirm each named test exists in the tree:
+
+| Spec | Requirement | Test(s) |
+|---|---|---|
+| signing-keys | Construction takes the caller's context | `TestNewKeyManagerConstructionContext` (4 cancellation and deadline cases, plus the default store's stated limit) |
+| signing-keys | Published keys carry public material only | `TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey`, `TestStoredRecordCarriesThePublishablePublicKey` |
+| signing-keys | Signing and verification keys can be supplied without the key manager | `TestKeySource`, `TestLifetimeReporter`, `TestVerificationKeysDoNotShareKeyMaterialWithTheManager`, `TestConsumerSuppliedKeySource` (in `token`) |
+
+- [ ] **Step 9.3d: Read design.md and the signing-keys spec end to end**
+
+Decisions 9 and 10 changed signatures the rest of both documents refers to. Confirm no paragraph still describes `NewKeyManager(opts ...Option)`, a `JWKS()` on the manager or the port, or a JWK Set the manager itself publishes. Fix what does; the artifacts are the deliverable here as much as the code.
+
+---
+
 ## Self-Review
 
 Run after the plan is written, before execution begins.
@@ -6481,9 +7393,10 @@ subtests of the conformance suite, which is where the behaviour is actually pinn
 | signing-keys | Replicas sharing a store reload each other's keys | `TestReloadPublishesAnotherReplicasKeys`, `TestReloadSkipsExpiredKeysAndRepicksCurrent`, `TestReloadFailureKeepsHeldKeys` (departure D10) |
 | signing-keys | A key for an unconfigured algorithm is published but never signed with | `TestForeignAlgorithmKeysVerifyButNeverSign` |
 | signing-keys | Housekeeping removes old keys but never the current one | `TestHousekeeping`, `TestHousekeepingAndRotationNeverDeadlock` |
-| signing-keys | The JWK Set publishes public keys only | `TestJWKSPublishesPublicKeysOnly` (structural: `jwk.IsPrivateKey` plus the marshalled JSON's keys) |
+| signing-keys | Published keys carry public material only | `TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey`, `TestStoredRecordCarriesThePublishablePublicKey` (structural: `jwk.IsPrivateKey` plus the marshalled JSON's keys) |
+| signing-keys | Construction takes the caller's context | `TestNewKeyManagerConstructionContext` (task 6.7, 6.8) |
 | signing-keys | The key store is replaceable and treats private bytes as opaque | `TestInMemoryKeyStore` |
-| signing-keys | Signing and verification keys can be supplied without the key manager | `TestKeySource`, `TestLifetimeReporter`, `TestConsumerSuppliedKeySource` (in `token`) |
+| signing-keys | Signing and verification keys can be supplied without the key manager | `TestKeySource`, `TestLifetimeReporter`, `TestVerificationKeysDoNotShareKeyMaterialWithTheManager`, `TestConsumerSuppliedKeySource` (in `token`) |
 | signing-keys | The clock is injectable | `TestRotationAtTheConfiguredInterval`, `TestHousekeeping`, `TestNewKeyManagerValidation` |
 | signing-keys | Start is idempotent and construction starts nothing | `TestKeyManagerLifecycle`, `TestStartLaunchesEveryLoop` |
 | signing-keys | Stop leaves no goroutine behind | `TestStopWaitsForAnInFlightStoreWrite`, `TestStopAfterSeveralLoopRuns`, `TestKeyManagerLifecycle` (all under `goleak`) |

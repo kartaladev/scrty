@@ -162,7 +162,7 @@ func TestKeyManagerLifecycle(t *testing.T) {
 			ignore := goleak.IgnoreCurrent()
 			noLeak := func() { goleak.VerifyNone(t, ignore) }
 
-			km, err := signingkey.NewKeyManager(
+			km, err := signingkey.NewKeyManager(t.Context(),
 				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 				signingkey.WithAlgs(signingkey.EdDSA),
 			)
@@ -182,7 +182,7 @@ func TestStartLaunchesEveryLoop(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithClock(clock),

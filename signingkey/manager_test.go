@@ -94,7 +94,7 @@ func TestNewKeyManager(t *testing.T) {
 			store := signingkey.NewInMemoryKeyStore()
 			opts := append([]signingkey.Option{signingkey.WithKeyStore(store)}, tc.opts...)
 
-			km, err := signingkey.NewKeyManager(opts...)
+			km, err := signingkey.NewKeyManager(t.Context(), opts...)
 			tc.assert(t, km, store, err)
 		})
 	}
@@ -118,7 +118,7 @@ func TestNewKeyManagerStoresBeforeUse(t *testing.T) {
 		}).
 		After(load.Call)
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(newFakeClock(minted)),
 	)
@@ -133,8 +133,7 @@ func TestNewKeyManagerStoresBeforeUse(t *testing.T) {
 	assert.Equal(t, minted, written.CreatedAt, "the creation time comes from the clock")
 	assert.NotEmpty(t, written.Private, "the private key is persisted, not left to be regenerated")
 
-	set, err := km.JWKS()
-	require.NoError(t, err)
+	set := publishedSet(t, km)
 	published, ok := set.LookupKeyID(kid)
 	require.True(t, ok, "the stored key is the published key")
 

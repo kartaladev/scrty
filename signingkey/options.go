@@ -166,9 +166,9 @@ func WithLogger(logger *slog.Logger) Option {
 //     goroutine or a channel of the consumer's own and call Stop from there.
 //
 // Everything that reads the manager is safe from the hook, which is what a
-// hook needs in order to decide how bad an outage has become: GetSigner, JWKS,
-// SupportedAlgs, KeyLifetime and RotateInterval. The manager never holds the
-// keyring lock across the hook.
+// hook needs in order to decide how bad an outage has become: GetSigner,
+// VerificationKeys, SupportedAlgs, KeyLifetime and RotateInterval. The manager
+// never holds the keyring lock across the hook.
 func WithErrorHook(hook func(error)) Option {
 	return func(km *KeyManager) { km.errorHook = hook }
 }

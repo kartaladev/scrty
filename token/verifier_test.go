@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -543,7 +542,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			name: "a key source that cannot supply its key set is not ErrTokenInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().JWKS().Return(nil, unreachable).Times(1)
+				keys.EXPECT().VerificationKeys().Return(nil, unreachable).Times(1)
 
 				return keys
 			},
@@ -556,10 +555,10 @@ func TestVerifyErrorClassification(t *testing.T) {
 			},
 		},
 		{
-			name: "a key source that hands over no key set at all is not ErrTokenInvalid",
+			name: "a key source that hands over no keys at all is not ErrTokenInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().JWKS().Return(nil, nil).Times(1)
+				keys.EXPECT().VerificationKeys().Return(nil, nil).Times(1)
 
 				return keys
 			},
@@ -570,14 +569,14 @@ func TestVerifyErrorClassification(t *testing.T) {
 				require.Error(t, err)
 				assert.Nil(t, claims)
 				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
-					"a source that supplied no key set has not judged the token")
+					"a source that supplied no keys has not judged the token")
 			},
 		},
 		{
 			name: "a key source holding no keys at all is not ErrTokenInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().JWKS().Return(jwk.NewSet(), nil).Times(1)
+				keys.EXPECT().VerificationKeys().Return([]signingkey.PublicKey{}, nil).Times(1)
 
 				return keys
 			},
@@ -589,6 +588,42 @@ func TestVerifyErrorClassification(t *testing.T) {
 				assert.Nil(t, claims)
 				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
 					"with nothing to check against, the verifier has reached no verdict")
+			},
+		},
+		{
+			name: "a key this package cannot read is an outage, not a token checked against the rest",
+			keys: func(t *testing.T) signingkey.KeySource {
+				signing := newKeySource(t)
+				published, err := signing.VerificationKeys()
+				require.NoError(t, err)
+
+				// A source of the consumer's own hands over whatever a
+				// crypto.PublicKey can hold, and this package can read only
+				// some of that. The key that actually signed is published
+				// alongside the unreadable one on purpose: a verifier that
+				// quietly drops what it cannot read would still hold the
+				// signing key, and would answer as though nothing were wrong.
+				keys := NewMockKeySource(gomock.NewController(t))
+				keys.EXPECT().GetSigner(gomock.Any()).DoAndReturn(signing.GetSigner).AnyTimes()
+				keys.EXPECT().VerificationKeys().Return(append(
+					[]signingkey.PublicKey{{
+						Kid: "unreadable-1",
+						Alg: signingkey.RS256,
+						Key: "not a key at all",
+					}},
+					published...,
+				), nil).AnyTimes()
+
+				return keys
+			},
+			token: func(t *testing.T, keys signingkey.KeySource) string {
+				return signClaims(t, keys, validClaims(at))
+			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.Error(t, err)
+				assert.Nil(t, claims)
+				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+					"a source supplying a key this package cannot read has not judged the token")
 			},
 		},
 		{
@@ -735,8 +770,7 @@ func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
 			t.Parallel()
 
 			keys := newKeySource(t)
-			set, err := keys.JWKS()
-			require.NoError(t, err)
+			set := verificationKeySet(t, keys)
 
 			issued := signClaims(t, keys, validClaims(time.Now()))
 			presented := tc.present(t, issued)
@@ -808,7 +842,7 @@ func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 			name: "the refusal costs no key lookup",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().JWKS().Times(0)
+				keys.EXPECT().VerificationKeys().Times(0)
 
 				return keys
 			},

@@ -29,7 +29,8 @@ func (km *KeyManager) rotateAll(ctx context.Context) {
 // algorithm. The hook is never sampled.
 //
 // Both reach consumer code, so no caller may hold the keyring lock across it:
-// WithErrorHook promises a hook that GetSigner and JWKS answer, and either one
+// WithErrorHook promises a hook that GetSigner and VerificationKeys answer,
+// and either one
 // under the lock a caller already held would deadlock on the loop goroutine.
 // The hook also runs on that goroutine, so it may not call Start or Stop —
 // documented in WithErrorHook, because nothing here can enforce it.

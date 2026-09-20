@@ -2,8 +2,6 @@ package token_test
 
 import (
 	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -56,7 +54,7 @@ func newKeySource(t *testing.T, algs ...signingkey.Alg) *signingkey.KeyManager {
 func newKeySourceWith(t *testing.T, opts ...signingkey.Option) *signingkey.KeyManager {
 	t.Helper()
 
-	km, err := signingkey.NewKeyManager(
+	km, err := signingkey.NewKeyManager(t.Context(),
 		append([]signingkey.Option{
 			signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 		}, opts...)...)
@@ -187,45 +185,24 @@ func tamperPayload(t *testing.T, raw string) string {
 	return parts[0] + "." + encodeSegment(t, claims) + "." + parts[2]
 }
 
-// externalKeySource is the shape a consumer's own key source takes: one key,
-// no KeyManager anywhere, and deliberately no LifetimeReporter, so a source
-// that cannot report its lifetimes gets no lifetime cap.
-//
-// It is hand-written rather than generated because the test needs it to sign
-// real tokens, which a mock cannot do.
-type externalKeySource struct {
-	kid    string
-	signer crypto.Signer
-	set    jwk.Set
-}
-
-func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
-	if alg != signingkey.RS256 {
-		return "", nil, false
-	}
-
-	return s.kid, s.signer, true
-}
-
-func (s *externalKeySource) JWKS() (jwk.Set, error) { return s.set, nil }
-
-func newExternalKeySource(t *testing.T) *externalKeySource {
+// verificationKeySet renders what a key source publishes as the key set the
+// JOSE stack verifies against, exactly as the package under test does. A test
+// that needs a naive verifier to reach its own verdict builds one with it.
+func verificationKeySet(t *testing.T, source signingkey.KeySource) jwk.Set {
 	t.Helper()
 
-	// 2048 is the smallest size the JOSE stack accepts for RS256.
-	private, err := rsa.GenerateKey(rand.Reader, 2048)
+	published, err := source.VerificationKeys()
 	require.NoError(t, err)
-
-	const kid = "consumer-owned-key-1"
-
-	key, err := jwk.Import[jwk.Key](private.Public())
-	require.NoError(t, err)
-	require.NoError(t, key.Set(jwk.KeyIDKey, kid))
-	require.NoError(t, key.Set(jwk.AlgorithmKey, jwa.RS256()))
-	require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
 
 	set := jwk.NewSet()
-	require.NoError(t, set.AddKey(key))
+	for _, pk := range published {
+		key, importErr := jwk.Import[jwk.Key](pk.Key)
+		require.NoError(t, importErr)
+		require.NoError(t, key.Set(jwk.KeyIDKey, pk.Kid))
+		require.NoError(t, key.Set(jwk.AlgorithmKey, pk.Alg))
+		require.NoError(t, key.Set(jwk.KeyUsageKey, string(jwk.ForSignature)))
+		require.NoError(t, set.AddKey(key))
+	}
 
-	return &externalKeySource{kid: kid, signer: private, set: set}
+	return set
 }

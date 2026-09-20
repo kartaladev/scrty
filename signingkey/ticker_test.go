@@ -47,7 +47,7 @@ func TestRealTickerDrivesTheLoops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ignore := goleak.IgnoreCurrent()
 
-			km, err := signingkey.NewKeyManager(
+			km, err := signingkey.NewKeyManager(t.Context(),
 				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
 				signingkey.WithAlgs(signingkey.EdDSA),
 				tc.clockOpt,
@@ -64,12 +64,12 @@ func TestRealTickerDrivesTheLoops(t *testing.T) {
 			second := waitForRotation(t, km, signingkey.EdDSA, first)
 			require.NotEqual(t, first, second, "a real tick rotates")
 
-			assert.Eventually(t, func() bool { return !jwksHas(km, first) },
+			assert.Eventually(t, func() bool { return !publishes(km, first) },
 				10*time.Second, 5*time.Millisecond,
 				"and a real tick stops publishing the replaced key once it is past its lifetime")
 
 			require.NoError(t, km.Stop())
-			assert.True(t, jwksHas(km, currentKid(t, km, signingkey.EdDSA)),
+			assert.True(t, publishes(km, currentKid(t, km, signingkey.EdDSA)),
 				"whatever is current when Stop returns is still published")
 			goleak.VerifyNone(t, ignore)
 		})

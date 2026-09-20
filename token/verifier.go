@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
+
+	"github.com/kartaladev/scrty/signingkey"
 )
 
 //go:generate mockgen -destination=keysource_mock_test.go -package=token_test -typed github.com/kartaladev/scrty/signingkey KeySource
@@ -79,21 +82,27 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 		return nil, fmt.Errorf("%w: not a canonical compact JWS", ErrTokenInvalid)
 	}
 
-	set, err := c.keys.JWKS()
+	keys, err := c.keys.VerificationKeys()
 	if err != nil {
-		// Not a rejection of the token: the key set could not be obtained.
-		// This deliberately does not match ErrTokenInvalid, so a key-service
+		// Not a rejection of the token: the keys could not be obtained. This
+		// deliberately does not match ErrTokenInvalid, so a key-service
 		// outage is never reported as a failed authentication.
 		return nil, fmt.Errorf("token: obtain key set: %w", err)
 	}
 
-	// The port permits both shapes, and a KMS- or HSM-backed source may well
-	// produce them while it is warming up or has lost its backend. Neither is
-	// a verdict on the token: with nothing to check against, the check did not
-	// happen. Reported as an outage, and never dereferenced — jwt.WithKeySet
-	// on a nil set panics inside the JOSE stack.
-	if set == nil || set.Len() == 0 {
+	// The port permits a nil result and an empty one alike, and a KMS- or
+	// HSM-backed source may well produce either while it is warming up or has
+	// lost its backend. Neither is a verdict on the token: with nothing to
+	// check against, the check did not happen. Reported as an outage, and
+	// stopped here rather than rendered — jwt.WithKeySet on an empty set
+	// panics inside the JOSE stack.
+	if len(keys) == 0 {
 		return nil, fmt.Errorf("token: obtain key set: %w", ErrNoVerificationKeys)
+	}
+
+	set, err := keySet(keys)
+	if err != nil {
+		return nil, err
 	}
 
 	// The key is selected by the token's kid, and the algorithm recorded on
@@ -114,6 +123,46 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	}
 
 	return &Claims{tok: tok}, nil
+}
+
+// keySet renders the keys a source supplied as the set the JOSE stack selects
+// from. Each key carries the identifier verification matches on, the one
+// algorithm it verifies, and signature use, which is what stops a key being
+// tried under an algorithm it was not published for.
+//
+// Building the set here rather than taking one from the source is what keeps
+// the JOSE stack out of KeySource: a consumer implementing the port describes
+// its keys with crypto and this package's own types, and a major version bump
+// in the stack is this file's problem and nobody else's.
+func keySet(keys []signingkey.PublicKey) (jwk.Set, error) {
+	set := jwk.NewSet()
+
+	for _, pk := range keys {
+		key, err := jwk.Import[jwk.Key](pk.Key)
+		if err != nil {
+			// An outage, not a rejection, and never a skip. Dropping the key
+			// would leave the check to run against whatever else the source
+			// published, so a token signed by one of those would be accepted
+			// and the misconfigured key would go unreported for as long as
+			// the process lived.
+			return nil, fmt.Errorf("token: obtain key set: read key %q: %w", pk.Kid, err)
+		}
+		if err := key.Set(jwk.KeyIDKey, pk.Kid); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: set kid %q: %w", pk.Kid, err)
+		}
+		if err := key.Set(jwk.AlgorithmKey, pk.Alg); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: set alg %q on key %q: %w",
+				pk.Alg, pk.Kid, err)
+		}
+		if err := key.Set(jwk.KeyUsageKey, string(jwk.ForSignature)); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: set use on key %q: %w", pk.Kid, err)
+		}
+		if err := set.AddKey(key); err != nil {
+			return nil, fmt.Errorf("token: obtain key set: add key %q: %w", pk.Kid, err)
+		}
+	}
+
+	return set, nil
 }
 
 // classify turns a failed parse into the error a caller acts on.
