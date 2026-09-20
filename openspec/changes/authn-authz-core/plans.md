@@ -190,7 +190,7 @@ Verified by the same construction table: a nil logger constructs and logs, a nil
 **Files:**
 - Create: `authenticate/authenticate.go` (port, sentinels, `Authentication`), `authenticate/manager.go`, `authenticate/password.go`, `authenticate/jwt.go`, `authenticate/context.go`
 - Create: `authenticate/manager_test.go`, `authenticate/password_test.go`, `authenticate/jwt_test.go`, `authenticate/context_test.go`, `authenticate/sampling_test.go`
-- Create: `authenticate/mocks_test.go` (mockgen output, test build only)
+- Create: `authenticate/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do) (mockgen output, test build only)
 
 **Interfaces:**
 - Consumes: `identity.Credentials`, `identity.Principal`, `identity.UserLoader`, `identity.Details` (identity-model); `password.Encoder` (password-encoding); `token.Verifier` (token-issuance); `id.Generator` (id-generation); `logsample.Sampler` (log-sampling).
@@ -399,7 +399,9 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 	if nilcheck.IsNil(users) {
 		return nil, fmt.Errorf("%w: a user loader is required", ErrConfig)
 	}
-	p := &passwordAuthenticator{users: users, enc: password.Default(), logEvery: time.Minute}
+	p := &passwordAuthenticator{users: users, logEvery: time.Minute}
+	// The default encoder is password.NewArgon2idEncoder(); there is no password.Default().
+	// Its own construction error is reported here as a configuration error.
 	for _, opt := range opts {
 		if opt != nil {
 			opt(p)
@@ -547,7 +549,7 @@ Expected: PASS. The reporter is what keeps the count from being lost.
 
 **Files:**
 - Create: `authorize/authorize.go` (port, sentinels, attributes), `authorize/manager.go`, `authorize/privilege.go`, `authorize/ownership.go`, `authorize/rules.go`, `authorize/requirements.go`
-- Create: `authorize/manager_test.go`, `authorize/privilege_test.go`, `authorize/ownership_test.go`, `authorize/rules_test.go`, `authorize/requirements_test.go`, `authorize/mocks_test.go`
+- Create: `authorize/manager_test.go`, `authorize/privilege_test.go`, `authorize/ownership_test.go`, `authorize/rules_test.go`, `authorize/requirements_test.go`, `authorize/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
 - Consumes: `identity.Principal`, `identity.AssignedRole`, `identity.RoleLoader` (identity-model); `nilcheck.IsNil` (Task 1).
@@ -781,10 +783,20 @@ func TestRequirements(t *testing.T) {
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, authorize.ErrAuthenticationRequired)
 			}},
-		{name: "AnyOf reports denial when any member denied for another reason",
-			req: authorize.AnyOf(authorize.Authenticated(), authorize.DenyAll()), ctx: withPrincipal, assert: denied},
-		{name: "HasPrivilege denies with no authorizer in context", req: authorize.HasPrivilege("write"), ctx: withPrincipal, assert: denied},
-		{name: "HasPrivilege delegates to the authorizer in context", req: authorize.HasPrivilege("write"), ctx: withPrincipalAndAuthorizer, assert: allowed},
+		// The spec's own scenario: a known caller who meets neither member is
+		// denied rather than sent to log in. Do NOT write this as
+		// AnyOf(Authenticated(), DenyAll()) with a principal — Authenticated()
+		// succeeds there, so the row allows and proves nothing.
+		{name: "AnyOf denies a known caller who meets no member",
+			req:  authorize.AnyOf(authorize.HasAnyRole("admin"), authorize.HasAnyScope("orders:read")),
+			ctx:  withPrincipalHavingNeither, assert: denied},
+		// The privilege requirement names a group and a resource, because the
+		// spec's scenario is "read on billing/invoice". A single-string form
+		// cannot express it.
+		{name: "HasPrivilege denies with no authorizer in context",
+			req: authorize.HasPrivilege("billing", "invoice", "read"), ctx: withPrincipal, assert: denied},
+		{name: "HasPrivilege delegates to the authorizer in context",
+			req: authorize.HasPrivilege("billing", "invoice", "read"), ctx: withPrincipalAndAuthorizer, assert: allowed},
 	}
 	// ... canonical loop, applying tc.ctx to t.Context()
 }
@@ -800,7 +812,7 @@ The empty-set rows are the point: an empty scope list that allowed would turn a 
 
 **Files:**
 - Create: `session/session.go` (the record, `MFAState`), `session/store.go` (port, sentinels), `session/manager.go`, `session/memory.go`, `session/encrypted.go`, `session/options.go`
-- Create: `session/manager_test.go`, `session/memory_test.go`, `session/encrypted_test.go`, `session/resurrection_test.go`, `session/housekeeping_test.go`, `session/mocks_test.go`
+- Create: `session/manager_test.go`, `session/memory_test.go`, `session/encrypted_test.go`, `session/resurrection_test.go`, `session/housekeeping_test.go`, `session/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
 - Consumes: `identity.UserID`, `identity.FactorKind` (identity-model); `secrets.Cipher` (secrets-at-rest); `nilcheck.IsNil`.
@@ -1110,7 +1122,7 @@ The AAD is `"scrty/session:external-id-token:" + ID`, so an envelope moved to an
 
 **Files:**
 - Create: `policy/policy.go` (`Phase`, `Outcome`, `Decision`, `Policy`, `Input`), `policy/engine.go`, `policy/lockout.go`, `policy/attempts.go`, `policy/idle.go`, `policy/passwordage.go`, `policy/concurrent.go`, `policy/mfa.go`, `policy/mfarequirement.go`, `policy/options.go`
-- Create: one `_test.go` beside each, plus `policy/reasonless_deny_test.go` and `policy/samechannel_test.go` for the two departures, and `policy/mocks_test.go`
+- Create: one `_test.go` beside each, plus `policy/reasonless_deny_test.go` and `policy/samechannel_test.go` for the two departures, and `policy/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
 - Consumes: `identity.UserID`, `identity.FactorKind`, `identity.FactorChannel`, `identity.MFARequirementLookup` (identity-model); `session.Session` (Task 4); `logsample.Sampler`; `nilcheck.IsNil`.
@@ -1462,7 +1474,7 @@ Then `FlushRefusalLogs` on each, asserting each reports its own suppressed count
 
 **Files:**
 - Create: `ratelimit/limiter.go` (port), `ratelimit/memory.go`, `ratelimit/keyer.go`, `ratelimit/guard.go`, `ratelimit/options.go`
-- Create: `ratelimit/memory_test.go`, `ratelimit/keyer_test.go`, `ratelimit/guard_test.go`, `ratelimit/concurrency_test.go`, `ratelimit/mocks_test.go`
+- Create: `ratelimit/memory_test.go`, `ratelimit/keyer_test.go`, `ratelimit/guard_test.go`, `ratelimit/concurrency_test.go`, `ratelimit/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
 - Consumes: `logsample.Sampler`; `nilcheck.IsNil`.
@@ -1660,7 +1672,7 @@ Run: `go test -race -count=1 ./ratelimit/`
 
 **Files:**
 - Create: `onetime/onetime.go` (`Token`, `Checked`, `Check`, sentinels), `onetime/store.go` (port, `Reaper`), `onetime/memory.go`, `onetime/manager.go`, `onetime/options.go`
-- Create: `onetime/manager_test.go`, `onetime/check_test.go`, `onetime/consume_test.go`, `onetime/memory_test.go`, `onetime/mocks_test.go`
+- Create: `onetime/manager_test.go`, `onetime/check_test.go`, `onetime/consume_test.go`, `onetime/memory_test.go`, `onetime/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
 - Consumes: `id.ID`, `id.Generator` (id-generation); `nilcheck.IsNil`.
@@ -1727,7 +1739,7 @@ Every row additionally asserts the store recorded zero writes — `Check` must b
 
 - [ ] **Step 7.6: Optional binding**
 
-Rows: an unbound token checks with an empty binding; a bound token refuses a wrong binding; a bound token accepts its binding; an unbound token presented with a binding is refused.
+Rows: an unbound token checks with an empty binding; a bound token refuses a wrong binding; a bound token accepts its binding; and an unbound token presented with a binding **ignores it**. That last row is the spec's (`Binding is optional`: "A token issued without one SHALL ignore any presented binding", and the scenario "the binding does not affect the outcome"). Refusing instead would make an unbound token behave as though it were bound to the empty string, which is a different contract from the one the capability states.
 
 - [ ] **Step 7.7: Atomic consumption**
 
@@ -1814,8 +1826,12 @@ Rows: no issues counts zero; three inside the window count three; an issue older
 		require.NoError(t, err, "the purge broke a live token")
 	})
 
-	t.Run("a store with no reaper reports unsupported", func(t *testing.T) {
-		_, err := memoryBacked(t).PurgeExpired(ctx)
+	t.Run("a consumer store that cannot purge says so rather than reporting zero", func(t *testing.T) {
+		// The in-memory store implements purging: the spec requires it to
+		// ("it SHALL implement purging"). The unsupported error is for a
+		// consumer's store that does not, and it must never be a silent zero,
+		// which would read as "nothing needed purging".
+		_, err := managerOver(t, storeWithoutReaper(t)).PurgeExpired(ctx)
 		require.ErrorIs(t, err, onetime.ErrReapUnsupported)
 	})
 

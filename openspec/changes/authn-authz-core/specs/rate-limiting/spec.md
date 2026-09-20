@@ -69,8 +69,8 @@ The default IPv6 prefix length SHALL be 64 bits, and a consumer SHALL be able to
 - **THEN** it keys as `fe80::/64`
 
 #### Scenario: Consumer prefix
-- **WHEN** a keyer configured with a 56-bit prefix keys `2001:db8:1:2::1`
-- **THEN** it keys as `2001:db8:1:200::/56`
+- **WHEN** a keyer configured with a 56-bit prefix keys `2001:db8:1:299::1`
+- **THEN** it keys as `2001:db8:1:200::/56`, the prefix cutting within the fourth group rather than on its boundary
 
 #### Scenario: Zero prefix
 - **WHEN** a keyer is constructed with a prefix length of 0

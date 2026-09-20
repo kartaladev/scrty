@@ -468,6 +468,40 @@ Departures:
   - a nil delegate panicking;
   - the same-channel login completing silently.
 
+### 20. Choices the capability specs left open
+
+Implementation surfaced decisions the specs do not pin. Each is recorded here because a later
+reader would otherwise have to re-derive it from the code, and because changing any of them after
+the first tag is a compatibility decision.
+
+- **`HasAnyRole` matches the active role only, and matches names exactly.** The spec requires a
+  requirement for "any of a set of roles" without saying which of a principal's roles count.
+  Matching every assigned role would let a caller acting under a lesser role pass a role guard that
+  the privilege authorizer — which counts only the active role — would then refuse, so the two
+  halves of the library would disagree about one request. Names are compared exactly because
+  `identity-model` states role identifiers are opaque and never case-folded. A principal with no
+  active role therefore meets no role requirement, which is the closed failure.
+- **The bearer credential type lives in `authenticate`, not `identity`.** `identity-model` requires
+  the credential *types* `username-password` and `jwt` to be named, and `identity` names both. It
+  does not require a struct for each, and `identity` ships one only for the password. Putting the
+  bearer credential beside the provider that consumes it keeps an archived capability closed; a
+  consumer who wants it in `identity` is asking for a change to that capability, not this one.
+- **A verified token naming no subject is refused.** The spec says the principal is built only from
+  the verified claims, and is silent on a token whose subject is empty. Such a principal satisfies
+  every "is anyone authenticated?" check while naming nobody, so the provider refuses rather than
+  issue it.
+- **The privilege requirement names a group and a resource**: `HasPrivilege(group, resource,
+  required ...string)`, all-of. The spec's own scenario is "`read` on `billing/invoice`", which a
+  single-string form cannot express. Any-of is reached through `AnyOf` over one `HasPrivilege`
+  each, or by handing `PrivilegeAttributes{Mode: MatchAnyOf}` to an authorizer directly.
+- **`MatchAllOf` is the zero value of `MatchMode`, and an unknown mode is refused.** Attributes
+  built without naming a mode demand every privilege listed, so a forgotten field narrows access
+  rather than widening it. The mode constants carry the type-name prefix because the requirement
+  constructors `AnyOf` and `HasAnyRole` already own the unprefixed names.
+- **The in-memory one-time-token store implements purging**, as `one-time-tokens` requires of it.
+  `ErrReapUnsupported` is reserved for a consumer's store that cannot, and is never a silent zero,
+  which a caller would read as "nothing needed purging".
+
 ## Risks / Trade-offs
 
 - **[Password age allows unknown change times, so it enforces nothing against stores that never record them]** → State it in godoc. The challenge mode is one option away. Whether the default identity store stamps the change time is that change's decision.
