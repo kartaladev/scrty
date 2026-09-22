@@ -23,4 +23,23 @@
 // sealing store wraps any other Store and encrypts the provider token a
 // federated session carries, which is the one field of the record that is a
 // credential in its own right.
+//
+// # Wiring
+//
+// A consumer who wires nothing gets a working manager:
+//
+//	m, err := session.NewManager()
+//
+// and a consumer who wires everything replaces each default in place:
+//
+//	sealing, err := session.NewEncryptedStore(myStore, myCipher)
+//	m, err := session.NewManager(
+//		session.WithStore(sealing),
+//		session.WithIdleTimeout(15*time.Minute),
+//		session.WithAbsoluteTimeout(8*time.Hour),
+//	)
+//
+// Cipher is declared here rather than imported, so an implementation shipped
+// by another capability satisfies it structurally and neither package has to
+// import the other.
 package session

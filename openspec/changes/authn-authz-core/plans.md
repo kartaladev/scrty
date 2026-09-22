@@ -815,8 +815,11 @@ The empty-set rows are the point: an empty scope list that allowed would turn a 
 - Create: `session/manager_test.go`, `session/memory_test.go`, `session/encrypted_test.go`, `session/resurrection_test.go`, `session/housekeeping_test.go`, `session/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
-- Consumes: `identity.UserID`, `identity.FactorKind` (identity-model); `secrets.Cipher` (secrets-at-rest); `nilcheck.IsNil`.
-- Produces: `Session`, `MFAState`, `Store`, `NewManager(...ManagerOption) (*Manager, error)`, `NewMemoryStore`, `NewEncryptedStore(inner Store, c secrets.Cipher) (Store, error)`, `ErrSessionNotFound`, `ErrSessionExpired`, `ErrSessionUnreadable`. `security-state-stores` implements `Store` durably against this contract.
+- Consumes: `identity.UserID` (identity-model), `factor.Kind` (the `factor` package, sole owner of the
+  first-factor vocabulary), `nilcheck.IsNil`. The cipher port is **declared here**, not imported: see
+  design decision 10 — `secrets-at-rest` belongs to a later change, so there is no package to import,
+  and an implementation it ships later satisfies `session.Cipher` structurally.
+- Produces: `Session`, `MFAState`, `Store`, `NewManager(...ManagerOption) (*Manager, error)`, `NewMemoryStore`, `Cipher`, `NewEncryptedStore(inner Store, c Cipher) (Store, error)`, `ErrSessionNotFound`, `ErrSessionExpired`, `ErrSessionUnreadable`. `security-state-stores` implements `Store` durably against this contract.
 
 - [ ] **Step 4.1: Unguessable identifiers**
 
@@ -867,7 +870,7 @@ func TestLibraryStateIsNotInConsumerData(t *testing.T) {
 	t.Parallel()
 
 	s := sessionWith(t, func(s *session.Session) {
-		s.FirstFactor = identity.FactorPassword
+		s.FirstFactor = factor.Password
 		s.MFA = session.MFASatisfied
 		s.PasswordChangePending = true
 	})
@@ -943,8 +946,13 @@ Run: `go test -run 'TestNewManager' -count=1 ./session/` — each row FAILs befo
 		name: "Touch moves the idle deadline to now plus idle",
 	},
 	{
+		// A session in constant use, not an idle one: touching at
+		// absolute-1m a session created 11h50m ago would find it
+		// idle-expired at 09:30, and Touch would rightly refuse it. Keep it
+		// alive with activity every 20 minutes so the cap is what the row
+		// proves.
 		name: "Touch never moves it past the absolute deadline",
-		// clock set to absoluteExpiresAt - 1m, idle 30m
+		// activity every 20m up to 20:50; idle 30m; absolute deadline 21:00
 		assert: func(t *testing.T, s *session.Session, err error) {
 			require.NoError(t, err)
 			assert.Equal(t, s.AbsoluteExpiresAt, s.IdleExpiresAt,
@@ -994,7 +1002,7 @@ Rename the throwaway to `TestSaveNeverRecreatesADeletedSession`, keep it permane
 	store := NewMockStore(ctrl)
 	store.EXPECT().Create(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, s *session.Session) error {
-			assert.Equal(t, identity.FactorPassword, s.FirstFactor,
+			assert.Equal(t, factor.Password, s.FirstFactor,
 				"the first factor was applied after the create write, so a crash could lose it")
 			assert.Equal(t, "iss", s.ExternalIssuer)
 			return nil
@@ -1109,7 +1117,11 @@ The AAD is `"scrty/session:external-id-token:" + ID`, so an envelope moved to an
 		inner := NewMockStore(ctrl)
 		inner.EXPECT().Load(gomock.Any(), gomock.Any()).Return(sealed, nil)
 		// No EXPECT for Create or Save: a write on read is the resurrection race.
-		_, err := session.MustEncrypted(t, inner).Load(ctx, id)
+		// Build the sealing store over the mock directly. Do not add a
+		// test-only helper to the production package for this.
+		store, err := session.NewEncryptedStore(inner, fakeCipher(t))
+		require.NoError(t, err)
+		_, err = store.Load(ctx, id)
 		require.NoError(t, err)
 	})
 ```
@@ -1125,7 +1137,7 @@ The AAD is `"scrty/session:external-id-token:" + ID`, so an envelope moved to an
 - Create: one `_test.go` beside each, plus `policy/reasonless_deny_test.go` and `policy/samechannel_test.go` for the two departures, and `policy/<interface>_mock_test.go` (one destination per interface, as `signingkey` and `token` already do)
 
 **Interfaces:**
-- Consumes: `identity.UserID`, `identity.FactorKind`, `identity.FactorChannel`, `identity.MFARequirementLookup` (identity-model); `session.Session` (Task 4); `logsample.Sampler`; `nilcheck.IsNil`.
+- Consumes: `identity.UserID`, `factor.Kind`, `factor.Channel`, `identity.MFARequirementLookup` (identity-model); `session.Session` (Task 4); `logsample.Sampler`; `nilcheck.IsNil`.
 - Produces: `Phase` (`PreAuthentication`, `PostAuthentication`, `PerRequest`, `PostHandler`, `StatelessAuthentication`), `Outcome` (`Allow`, `Deny`, `Challenge`), `Decision`, `Policy`, `Input`, `NewEngine(...Policy) (*Engine, error)`, `(*Engine).Add`, `(*Engine).EvaluatePhase`, `AttemptStore`, `AttemptReaper`, `MFAMethodLookup`, the six policy constructors, and the sentinels `ErrPolicyDenied`, `ErrAccountLocked`, `ErrSessionIdle`, `ErrTooManySessions`, `ErrSecondFactorSameChannel`, `ErrMFARequired`, `ErrMFAEnrollmentRequired`, `ErrReapUnsupported`, `ErrRetainSinceRequired`, `ErrMFARequirementLookupMissing`, `ErrMFARequirementUnsatisfiable`. `http-security` registers policies and maps these sentinels to statuses.
 
 - [ ] **Step 5.1: Policies run only in their declared phases**
@@ -1358,8 +1370,8 @@ func TestZTmpSameChannelLoginCompletesSilently(t *testing.T) {
 	// arrived on. Two factors on one channel are one factor, so the enrolment
 	// cannot count — but completing anyway lowers the assurance the user chose,
 	// and leaves no record that it happened.
-	p := mfaPolicyWith(t, methodOnChannel(identity.ChannelEmail))
-	in := inputWithFirstFactor(identity.FactorEmailLink) // also ChannelEmail
+	p := mfaPolicyWith(t, methodOnChannel(factor.Email))
+	in := inputWithFirstFactor(factor.MagicLink) // also ChannelEmail
 
 	d := p.Evaluate(t.Context(), in)
 
@@ -1396,7 +1408,7 @@ That second subtest is the documented line the override may not cross.
 
 - [ ] **Step 5.18: The exemption override**
 
-Default row: `identity-model`'s rule exempts what it exempts. Override row: `WithMFAExemption(func(identity.FactorKind) bool { return false })` makes a normally-exempt kind non-exempt. Both in one table.
+Default row: `identity-model`'s rule exempts what it exempts. Override row: `WithMFAExemption(func(factor.Kind) bool { return false })` makes a normally-exempt kind non-exempt. Both in one table.
 
 - [ ] **Step 5.19: Requirement policy construction**
 

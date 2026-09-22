@@ -206,7 +206,7 @@ Identifiers and expiry:
 `Session` fields:
 - `ID` and `UserID`;
 - `CreatedAt`, `LastAccessedAt`, `IdleExpiresAt` and `AbsoluteExpiresAt`;
-- `FirstFactor identity.FactorKind`;
+- `FirstFactor factor.Kind`;
 - `MFA MFAState` (none, pending or satisfied);
 - `PasswordChangePending bool`;
 - `ExternalProvider`, `ExternalIssuer`, `ExternalSessionID` and `ExternalIDToken`;
@@ -229,8 +229,21 @@ It copies records on write and read, behind a read-write mutex.
 ### 10. The sealing store
 
 ```go
-func NewEncryptedStore(inner Store, c secrets.Cipher) (Store, error) // nil inner or cipher → configuration error
+type Cipher interface { // declared here, in session, not imported
+    Seal(plaintext, additionalData []byte) ([]byte, error)
+    Open(ciphertext, additionalData []byte) ([]byte, error)
+}
+
+func NewEncryptedStore(inner Store, c Cipher) (Store, error) // nil inner or cipher → configuration error
 ```
+
+**Where the cipher port lives.** The Context lists `secrets-at-rest` as supplying the cipher port, and
+that capability belongs to a later change, so there is nothing to import: the package it will live
+in does not exist. The port is therefore declared here, in the package that consumes it, which is
+where Go puts an interface anyway. Nothing is lost when `secrets-at-rest` arrives — a cipher it
+ships satisfies this interface structurally, so neither package imports the other, and a consumer
+wires one implementation into every place that seals. A later capability that also needs sealing
+declares the narrow port it needs rather than inheriting this one.
 
 - **Sealed field:** only `ExternalIDToken`. The additional authenticated data is `"scrty/session:external-id-token:" + ID`, and the envelope is base64url-encoded.
 - **Unsealed:** an empty token. Every other field and method passes through.
@@ -267,7 +280,7 @@ The first-factor kinds, their channels and their local-MFA exemptions are `ident
 - the same-channel rule (Decision 15) compares a method's channel with the login's first-factor channel;
 - the MFA requirement (Decision 16) skips exempt kinds and enforces the empty kind.
 
-The MFA policies accept `WithMFAExemption(func(identity.FactorKind) bool)`, which defaults to `identity-model`'s rule. This departs under (a), every default is replaceable: it adds an override, and the default behaviour is unchanged.
+The MFA policies accept `WithMFAExemption(func(factor.Kind) bool)`, which defaults to `identity-model`'s rule. This departs under (a), every default is replaceable: it adds an override, and the default behaviour is unchanged.
 
 ### 13. Account lockout
 
@@ -322,7 +335,7 @@ Defaults: threshold 5, window 15 minutes.
 ```go
 type MFAMethodLookup interface {
     Enrolled(ctx, user identity.UserID) (bool, error)
-    Channel() identity.FactorChannel
+    Channel() factor.Channel
 }
 func NewMFAPolicy(method MFAMethodLookup, opts ...MFAOption) (Policy, error) // nil → configuration error (a)
 func WithSameChannelEnrolment(mode SameChannelMode) MFAOption // default SameChannelRefuse
