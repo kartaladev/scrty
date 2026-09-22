@@ -7,7 +7,9 @@
 // overrule another policy's refusal. A phase with nothing registered allows.
 // Each policy declares the phases it runs in and is asked in no other, so a
 // rule written for the moment of login does not quietly start running on every
-// request.
+// request. The engine also tells each policy which phase it is being asked in,
+// through the context, so a rule that answers differently at login and on a
+// later request can tell the two apart without the consumer wiring anything.
 //
 // A denial always carries a reason, substituted by the engine where a policy
 // left none. A caller that reports that reason as its own error returns nil for

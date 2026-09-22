@@ -267,6 +267,17 @@ func (e *Engine) EvaluatePhase(ctx, phase Phase, in *Input) Decision
 - **Precedence:** Deny, then the first held Challenge, then Allow. An empty phase is Allow.
 - **`Phase.String()`** returns the constant's name, for logs.
 - **`Input` carries:** user, username, principal, session, first factor, password-changed time, the MFA-satisfied flag and now.
+- **The phase reaches a policy through the context.** `EvaluatePhase` puts the phase it is
+  evaluating into the `ctx` it passes on, and `ContextWithPhase`/`PhaseFromContext` are the
+  package's vocabulary for it. The `Input` is passed unchanged; the context is not.
+  - **Why it is not an `Input` field:** the field list above is the contract a policy reads, and
+    a phase is not a fact about the request — it is which question is being asked of it.
+  - **Why a policy cannot do without it:** Decision 16's order gives *opposite* answers for
+    post-authentication, per-request and stateless authentication, and nothing else in `Input`
+    distinguishes them. A policy left to guess must fail closed, which refuses the very users
+    the order says to challenge or allow.
+  - **Override:** `WithMFARequirementPhaseSource` replaces how that policy learns the phase; a
+    policy evaluated outside an engine, with no phase in the context, fails closed.
 
 Departures:
 - **Departure (b): a Deny with a nil reason gets `ErrPolicyDenied`.**
