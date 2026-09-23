@@ -89,6 +89,10 @@ func (e *Engine) Add(p Policy) error {
 //   - with no deny, the first challenge in registration order is returned, and
 //     otherwise the phase allows.
 //
+// A decision carrying an outcome this package does not define denies, with
+// ErrPolicyDenied as the reason: an answer the engine cannot interpret is not
+// an answer it may pass over, since passing it over would allow.
+//
 // A phase no policy declared allows. That is the same answer as a phase whose
 // policies all allowed, deliberately: a phase is a point the library reaches,
 // not a check the library requires something to be registered for.
@@ -139,6 +143,14 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 		case Allow:
 			// An allow raises no objection and cannot clear another policy's
 			// held challenge.
+		default:
+			// An outcome this engine does not recognise is not a decision it
+			// can act on. Passing it over lets a policy that meant to refuse
+			// be ignored — and the zero Decision this loop would otherwise
+			// return is an Allow — so it denies. This is the case a later
+			// Outcome constant creates if it is added without updating this
+			// switch, which the compiler does not catch.
+			return Decision{Outcome: Deny, Reason: ErrPolicyDenied}
 		}
 	}
 

@@ -389,3 +389,85 @@ func TestEnginePassesTheInputIntact(t *testing.T) {
 	assert.True(t, seen.MFASatisfied)
 	assert.Equal(t, now, seen.Now)
 }
+
+func TestEngineDeniesAnUnrecognisedOutcome(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		policies []policy.Policy
+		assert   func(t *testing.T, d policy.Decision)
+	}
+
+	// Outcome(9) names no constant of the enumeration. It stands for the
+	// outcome a later constant would be: one this engine's switch has no case
+	// for, which the compiler does not report because Outcome is an integer.
+	unrecognised := stubPolicy{
+		name:     "unrecognised",
+		phases:   []policy.Phase{policy.PerRequest},
+		decision: policy.Decision{Outcome: policy.Outcome(9)},
+	}
+	challenging := stubPolicy{
+		name:     "challenging for mfa",
+		phases:   []policy.Phase{policy.PerRequest},
+		decision: policy.Decision{Outcome: policy.Challenge, Challenge: policy.ChallengeMFA},
+	}
+	denying := stubPolicy{
+		name:     "denying",
+		phases:   []policy.Phase{policy.PerRequest},
+		decision: policy.Decision{Outcome: policy.Deny, Reason: errDenied},
+	}
+
+	deniesUninterpreted := func(t *testing.T, d policy.Decision) {
+		t.Helper()
+
+		require.Equal(t, policy.Deny, d.Outcome,
+			"an outcome the engine cannot interpret was passed over, and the phase allowed")
+		assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+	}
+
+	cases := []testCase{
+		{
+			name:     "an unrecognised outcome alone in a phase denies",
+			policies: []policy.Policy{unrecognised},
+			assert:   deniesUninterpreted,
+		},
+		{
+			// A held challenge is not an answer that survives an
+			// uninterpretable one: the engine still cannot say the request is
+			// safe to continue, so the deny outranks it exactly as a policy's
+			// own deny would.
+			name:     "an unrecognised outcome after a held challenge still denies",
+			policies: []policy.Policy{challenging, unrecognised},
+			assert: func(t *testing.T, d policy.Decision) {
+				t.Helper()
+
+				deniesUninterpreted(t, d)
+				assert.Equal(t, policy.ChallengeNone, d.Challenge,
+					"a deny carried the challenge it outranked")
+			},
+		},
+		{
+			name:     "an unrecognised outcome does not disturb an earlier deny",
+			policies: []policy.Policy{denying, unrecognised},
+			assert: func(t *testing.T, d policy.Decision) {
+				t.Helper()
+
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, errDenied,
+					"the first deny's own reason was replaced by a later policy's outcome")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.policies...)
+			require.NoError(t, err)
+
+			tc.assert(t, e.EvaluatePhase(t.Context(), policy.PerRequest, &policy.Input{}))
+		})
+	}
+}

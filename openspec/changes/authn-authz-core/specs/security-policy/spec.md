@@ -22,6 +22,8 @@ The policy engine SHALL evaluate, for a given phase, only the policies that decl
 ### Requirement: Deny outranks challenge, which outranks allow
 Within a phase, the first deny SHALL end evaluation and be returned. A challenge SHALL be held while later policies run, so a later deny still wins. When no policy denies, the first challenge in registration order SHALL be returned, and otherwise allow.
 
+An outcome the engine does not recognise SHALL be treated as a deny. A policy that returned one cannot be shown to have permitted the request, and passing it over would let a policy that meant to refuse be ignored.
+
 #### Scenario: Locked account beats an MFA prompt
 - **WHEN** in one phase a policy challenging for MFA is registered before a policy that denies
 - **THEN** the deny is returned
@@ -29,6 +31,10 @@ Within a phase, the first deny SHALL end evaluation and be returned. A challenge
 #### Scenario: First challenge wins
 - **WHEN** a policy challenging for MFA is registered before one challenging for a password change, and neither denies
 - **THEN** the MFA challenge is returned
+
+#### Scenario: An unrecognised outcome
+- **WHEN** a policy returns an outcome that is neither allow, deny nor challenge
+- **THEN** the phase evaluates to deny with the generic policy-denied reason
 
 ### Requirement: A deny always carries a reason
 When a policy returns a deny without a reason, the engine SHALL substitute a generic policy-denied reason. That way, a caller that refuses a request by returning the reason as its error can never return nothing for a deny. Registering an absent policy SHALL fail with a configuration error.
