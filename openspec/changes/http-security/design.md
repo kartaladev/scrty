@@ -450,3 +450,15 @@ Not applicable: a new library with no consumers and no tags.
 ## Open Questions
 
 - **gin pin.** Which gin minor version `ginsec` pins at implementation. It changes no spec, approach or task structure.
+- **Does anything evaluate a policy without an engine?** `policy` exports `ContextWithPhase` and
+  `PhaseFromContext` solely for a caller that evaluates a phase-sensitive policy with no `Engine` to
+  say the phase for it. `Engine.EvaluatePhase` sets the phase itself, so a chain that always goes
+  through an engine never calls either. This change is the first real consumer and settles it: if
+  the chain does not need them, both should be unexported. Nothing is tagged, so that is still free
+  — after the first tag it is a breaking change.
+- **One `RefusalLogFlusher`, or one per capability?** `authenticate` and `policy` each declare an
+  identical `FlushRefusalLogs() error` interface, and `auth-methods` and `oidc-brokering` will each
+  want one too. Go satisfies interfaces structurally, so the duplication costs documentation rather
+  than interoperability — a consumer asserting against either name reaches every component. The
+  question is whether the chain should flush components through one shared declaration, and where it
+  would live. Also free until the first tag.

@@ -293,6 +293,16 @@ The first-factor kinds, their channels and their local-MFA exemptions are `ident
 
 The MFA policies accept `WithMFAExemption(func(factor.Kind) bool)`, which defaults to `identity-model`'s rule. This departs under (a), every default is replaceable: it adds an override, and the default behaviour is unchanged.
 
+One option value has to be accepted by **both** `NewMFAPolicy` and `NewMFARequirementPolicy`, so a
+deployment states its exemption rule once and hands the same value to each. Two distinct named
+`func(*T)` option types cannot share a value, and generic inference does not resolve it in an
+argument position. So `MFAOption` and `MFARequirementOption` are one-method interfaces with
+unexported adapters, and `WithMFAExemption` returns an exported `MFAExemptionOption` implementing
+both. A consumer still writes `policy.WithMFAExemption(...)`, and handing an option to the wrong
+constructor is still a compile error. The cost is that mocks of those option interfaces are
+excluded from generation, since a method taking an unexported type will not compile in the
+black-box test package.
+
 ### 13. Account lockout
 
 ```go
@@ -304,8 +314,16 @@ type AttemptStore interface {
 type AttemptReaper interface{ DeleteAttemptsBefore(ctx, retainSince time.Time) (int, error) } // zero → ErrRetainSinceRequired
 func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, error)
 // WithAttemptStore (default in-memory), WithLockoutThreshold(5), WithLockoutWindow(15m), WithLockoutClock
+func (p *AccountLockoutPolicy) RecordFailure(ctx, username string) error // stamps the policy's own clock
+func (p *AccountLockoutPolicy) Reset(ctx, username string) error         // what a successful authentication does
 func (p *AccountLockoutPolicy) PurgeExpired(ctx) (int, error) // cutoff = now - own window; ErrReapUnsupported
 ```
+
+`RecordFailure` and `Reset` are on the policy rather than left to the consumer's own use of the
+store, because the requirement is that failures are recorded and cleared *through the attempt
+store*, and `Evaluate` only reads the count. A consumer driving the store directly would also have
+to stamp the policy's clock to match the window it is counted against, which is precisely the
+detail they would get wrong. What counts as a failure stays the login flow's decision.
 
 Evaluation, in the pre-authentication phase:
 - **At or above the threshold:** `ErrAccountLocked`, counting failures strictly after `now - window`.
@@ -382,9 +400,15 @@ It runs in the post-authentication phase.
 ```go
 func NewMFARequirementPolicy(required identity.MFARequirementLookup, method MFAMethodLookup, opts ...MFARequirementOption) (Policy, error)
 // WithMFARequiredForAll, WithMFARequirementLogger, WithMFARequirementLogInterval(1m)
+// WithMFAExemption, WithMFARequirementClock, WithMFARequirementPhaseSource
 ```
 
 It runs in the post-authentication, per-request and stateless-authentication phases.
+
+Because its answer differs by phase, it is told which phase it is in — see Decision 11. The default
+reads what the engine put in the context; `WithMFARequirementPhaseSource` replaces that for a
+consumer whose call path cannot reach it, and a source that cannot identify a phase is treated as
+none, which fails closed with `ErrMFARequired`. A nil source is a configuration error.
 
 Construction errors:
 - `ErrMFARequirementLookupMissing`: a nil lookup without for-all.
