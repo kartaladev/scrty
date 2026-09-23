@@ -41,6 +41,27 @@ When a policy returns a deny without a reason, the engine SHALL substitute a gen
 - **WHEN** an engine is constructed with an absent policy
 - **THEN** construction fails with a configuration error
 
+### Requirement: Policies are told which phase they are being asked in
+The engine SHALL make the phase it is evaluating available to every policy it evaluates, so that a policy whose decision depends on the phase can tell one from another. The facts the engine reports about the request SHALL reach every policy unchanged, so that each judges the same request against the same instant.
+
+A policy whose decision depends on the phase SHALL fail closed when no phase can be identified, rather than assume one. A consumer SHALL be able to replace how such a policy learns the phase, and a replacement that cannot identify a phase SHALL be treated as none.
+
+#### Scenario: A phase-dependent policy is challenged mid-session
+- **WHEN** a user who is required to use MFA, is enrolled on a usable method, and has not satisfied a second factor is evaluated through an engine in the per-request phase
+- **THEN** the outcome is an MFA challenge
+
+#### Scenario: The same user after authenticating
+- **WHEN** that same user is evaluated through an engine in the post-authentication phase
+- **THEN** the outcome is allow, leaving the login challenge to the second-factor challenge policy
+
+#### Scenario: No phase can be identified
+- **WHEN** the MFA requirement policy is evaluated directly, outside an engine, with no phase available
+- **THEN** the outcome is deny with the MFA-required reason
+
+#### Scenario: Consumer supplies the phase
+- **WHEN** a consumer configures the MFA requirement policy with a rule of their own that derives the phase from the request
+- **THEN** that rule decides the phase instead of the engine's
+
 ### Requirement: Accounts lock after repeated failures
 The account lockout policy SHALL run in the pre-authentication phase.
 - It SHALL deny with an account-locked reason when the submitted identifier has at least the threshold number of failures recorded strictly within the window before now.
