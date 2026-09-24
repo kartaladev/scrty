@@ -100,8 +100,11 @@ func (e *Engine) Add(p Policy) error {
 // The Input is passed to every policy unchanged, so each of them judges the
 // same request against the same instant. The context is not: the phase being
 // evaluated is added to it, which is how a policy whose answer depends on the
-// phase learns which one it is in. A consumer does not set it themselves — see
-// ContextWithPhase, which is for evaluating a policy without an engine.
+// phase learns which one it is in. A consumer does not set it themselves, and
+// this call is the only thing that publishes it: naming the phase here is
+// already saying it. A consumer whose call path cannot reach the context
+// replaces how a phase-sensitive policy learns the phase through that policy's
+// own option — see WithMFARequirementPhaseSource.
 func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Decision {
 	// A policy that answers differently per phase has no other way to tell one
 	// from another: Input's fields are fixed and carry no phase, and Evaluate is
@@ -111,7 +114,7 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 	// challenge or allow. Saying the phase here says it once, for every policy
 	// registered and every consumer, rather than asking each caller to repeat in
 	// the context what it has just named in this argument.
-	ctx = ContextWithPhase(ctx, phase)
+	ctx = contextWithPhase(ctx, phase)
 
 	held := Decision{}
 

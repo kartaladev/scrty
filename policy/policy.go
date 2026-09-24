@@ -101,31 +101,27 @@ func (p Phase) String() string {
 // outside this package can collide with it or overwrite it by accident.
 type phaseContextKey struct{}
 
-// ContextWithPhase returns a copy of ctx carrying phase, for the policies that
+// contextWithPhase returns a copy of ctx carrying phase, for the policies that
 // answer differently depending on where in a request's life they are asked.
 //
 // Input carries what is known about the request, not where the question came
 // from, and Policy.Evaluate is handed only the two — so the phase travels in
 // the context instead. Engine.EvaluatePhase sets it on every evaluation it
-// makes, which is why a consumer who registers a phase-sensitive policy with an
-// engine never calls this: naming the phase in that call is already saying it.
-//
-// It is exported for the caller who evaluates a policy directly, with no engine
-// to say the phase for them:
-//
-//	ctx = policy.ContextWithPhase(ctx, policy.PerRequest)
-//	d := p.Evaluate(ctx, in)
+// makes, which is the only way the phase is ever published: a consumer names
+// the phase by calling EvaluatePhase, and one whose call path cannot reach the
+// context replaces how the policy learns it — see
+// WithMFARequirementPhaseSource.
 //
 // It is safe to set in every phase, and policies that do not read it ignore it.
-func ContextWithPhase(ctx context.Context, phase Phase) context.Context {
+func contextWithPhase(ctx context.Context, phase Phase) context.Context {
 	return context.WithValue(ctx, phaseContextKey{}, phase)
 }
 
-// PhaseFromContext reports the phase ctx carries, and whether it carries one at
-// all. A context that reached the policy through neither Engine.EvaluatePhase
-// nor ContextWithPhase reports false, which a policy must treat as "not
-// identified" rather than as the zero phase.
-func PhaseFromContext(ctx context.Context) (Phase, bool) {
+// phaseFromContext reports the phase ctx carries, and whether it carries one at
+// all. A context that did not reach the policy through Engine.EvaluatePhase
+// reports false, which a policy must treat as "not identified" rather than as
+// the zero phase.
+func phaseFromContext(ctx context.Context) (Phase, bool) {
 	phase, ok := ctx.Value(phaseContextKey{}).(Phase)
 
 	return phase, ok

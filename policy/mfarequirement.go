@@ -105,7 +105,7 @@ func WithMFARequirementClock(now func() time.Time) MFARequirementOption {
 
 // WithMFARequirementPhaseSource replaces how the policy learns which phase it
 // is being evaluated in. The default reads the phase from the context, where
-// Engine.EvaluatePhase puts it — or a direct caller, with ContextWithPhase.
+// Engine.EvaluatePhase puts it.
 //
 // The policy answers differently per phase and Input carries no phase, so it
 // has to be told. A consumer whose call path cannot reach the context — or who
@@ -153,9 +153,9 @@ type mfaRequirementPolicy struct {
 // where a per-request evaluation is challenged — and Input does not carry the
 // phase. It reads the phase from the context, which Engine.EvaluatePhase puts
 // there for every policy it asks, so a consumer evaluating through an engine
-// has nothing to wire. A caller evaluating this policy directly sets it with
-// ContextWithPhase, and one whose call path reaches neither supplies a rule of
-// their own through WithMFARequirementPhaseSource.
+// has nothing to wire. A caller that evaluates this policy directly, with no
+// engine to say the phase for it, supplies a rule of their own through
+// WithMFARequirementPhaseSource.
 //
 // An evaluation whose phase it cannot identify is refused with ErrMFARequired.
 // The two phases it could not tell apart, a login and a stateless request, want
@@ -444,7 +444,7 @@ func (p *mfaRequirementPolicy) FlushRefusalLogs() error {
 // evaluating this policy put in the context. It is replaceable with
 // WithMFARequirementPhaseSource.
 func phaseOfContext(ctx context.Context, _ *Input) (Phase, bool) {
-	return PhaseFromContext(ctx)
+	return phaseFromContext(ctx)
 }
 
 // The messages the policy writes.
