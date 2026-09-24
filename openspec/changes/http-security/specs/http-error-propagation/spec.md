@@ -18,9 +18,10 @@ Interceptors and guards SHALL report every refusal by returning an error. The li
 ### Requirement: Refusal errors are a stable public contract
 The library SHALL expose distinguishable public refusal errors for at least these cases:
 - authentication required;
-- refused by policy without a reason;
 - malformed login;
 - request too large.
+
+A refusal a core already names SHALL be reported as that core's own error rather than restated under a second name. In particular, a policy that denies without giving a reason SHALL be reported as the security-policy capability's reasonless-deny error, because the policy engine already substitutes it: a second sentinel for the same condition would be unreachable, and a consumer matching one identity would miss the other. Where this capability's own refusal and a core's name the same condition, the chain SHALL wrap the core's with its own so that either identity matches.
 
 It SHALL also expose one challenge error type, and SHALL map the refusal errors that the authentication, authorization, session, security-policy and second-factor cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. No refusal error's text SHALL contain an access token, a session handle or a submitted credential.
 
@@ -41,10 +42,10 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 
 | Refusal | Status |
 |---|---|
-| authentication required, authentication failed, session idle, throttled source | 401 |
+| authentication required (this capability's, and the authorization capability's own), authentication failed, session idle, throttled source | 401 |
 | challenge of kind password change | 403 |
 | challenge of any other kind | 401 |
-| access denied, refused by policy without a reason, second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first | 403 |
+| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first | 403 |
 | malformed login | 400 |
 | request too large | 413 |
 | account locked | 423 |
@@ -70,6 +71,10 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 #### Scenario: Unrecognised error
 - **WHEN** the error is a database connection failure that wraps no refusal
 - **THEN** the mapping returns 500
+
+#### Scenario: Either identity matches a wrapped core refusal
+- **WHEN** an unauthenticated request matches a rule requiring authentication
+- **THEN** the refusal matches both this capability's authentication-required error and the authorization capability's own, and maps to 401
 
 #### Scenario: Consumer refines the mapping
 - **WHEN** the consumer's error handler maps its own error type to 409 and falls back to the library mapping for everything else

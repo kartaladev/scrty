@@ -172,7 +172,6 @@ The principle, adopted as scrty's own: **a public option either takes effect or 
 ```go
 var (
     ErrAuthenticationRequired = errors.New("httpsec: authentication required")
-    ErrRefusedByPolicy        = errors.New("httpsec: refused by policy")
     ErrCredentialsMissing     = errors.New("httpsec: missing or unreadable login credentials")
     ErrRequestTooLarge        = errors.New("httpsec: request too large")
 )
@@ -189,18 +188,31 @@ func StatusForError(err error) int
 - **Default:** every library default response and helper uses the table.
 - **Override:** the consumer's error handler (net/http), their gin error middleware, or their fiber error handler, each calling `StatusForError` for what they do not handle themselves.
 - **Departure (a):** no problem-details mappers ship. The status-only function is the whole mapping contract, by settled decision.
-- **Departure (a):** `ErrRefusedByPolicy` is exported. The sentinels are the public contract, and a consumer's handler must be able to recognise a policy refusal that carried no reason.
+- **No `ErrRefusedByPolicy`.** A reasonless deny arrives as `policy.ErrPolicyDenied`, which the engine substitutes, and the table maps that. See Decision 6.
 - **Departure (b):** `ErrCredentialsMissing` maps to 400. Unmapped, a login with no credentials or an undecodable JSON body answered 500, reporting a client mistake as a server fault. It still reveals nothing about the account.
 
 ### 6. A policy deny without a reason is always a refusal
 
-`policyDenyReason(d)` returns `d.Reason`, or `ErrRefusedByPolicy` when the reason is nil. Every deny site uses it:
-- pre- and post-authentication in form login;
-- the stateless phase in Basic authentication;
-- the per-request phase in bearer authentication;
-- the login completion seam.
+`policy.Engine.EvaluatePhase` already guarantees it: a `Deny` whose `Reason` is nil has
+`policy.ErrPolicyDenied` substituted before the decision is returned (`policy/engine.go:128-133`),
+and an outcome the engine cannot interpret denies with the same error. The chain always evaluates
+through an `Engine` (Decision 3), so a reasonless deny cannot reach a deny site.
 
-- **Departure (b):** the fallback applies to every deny site, not only the redemption paths. Without it, a reasonless deny on form login, Basic or bearer returns a nil error. The interceptor then returns without continuing or writing, so the client receives 200 with an empty body and no session: a refusal that reads as success. `policy.Decision` is exported, so any consumer policy can construct that value.
+`policyDenyReason(d)` is therefore `d.Reason` — a named reader, not a fallback — and every deny
+site uses it: pre- and post-authentication in form login, the stateless phase in Basic
+authentication, the per-request phase in bearer authentication, and the login completion seam.
+
+- **Mapping:** `StatusForError` maps `policy.ErrPolicyDenied` to 403.
+- **Departure retired.** An earlier draft of this design added an `httpsec.ErrRefusedByPolicy`
+  sentinel and a nil-reason fallback, on the grounds that a reasonless deny returned nil and so
+  served a refusal as a 200 with an empty body. `policy` has since closed that at the engine, so the
+  fallback is unreachable and the second sentinel would be a name nothing produces. One refusal has
+  one identity: a consumer matching `policy.ErrPolicyDenied` reaches every reasonless deny, and
+  there is no second name for them to miss.
+- **Where two names already exist**, the chain wraps rather than picks. `authorize` exports its own
+  `ErrAuthenticationRequired` for an anonymous request that matched a protected rule; the
+  authorization stage wraps it with `httpsec.ErrAuthenticationRequired`, so `errors.Is` reaches
+  either and a consumer need not know which stage refused.
 - **Override:** a consumer policy that wants a specific status sets a reason.
 
 ### 7. The net/http default response is a bare status
@@ -429,6 +441,102 @@ func WithMaxResponseBytes(n int64) Option    // default 1 MiB; <= 0 refused
 - **Origin comparison:** an accept and reject table with the U+0130 and U+212A look-alikes. Allowlist rows for each refusal message.
 - **Mocks:** `mockgen` for the limiter and stores where no in-memory default serves.
 
+## Decisions taken during implementation
+
+Recorded here because each changes what a consumer sees, and none was in the design as first
+written. The names in the Go snippets above predate the code: read `authn` as `authenticate` and
+`authz` as `authorize` throughout.
+
+### 17. Corrections to the API this design sketched
+
+- `authorize.Rule`/`Rules` are generic, so `EnableAuthorization(az authorize.Authorizer, rules ...authorize.Rule[Request])` instantiates the rule set over the chain's own `Request`. Rules append across calls; the **authorizer is last-call-wins**, because a chain judges by one authorizer.
+- `session` exports no context helper, so `httpsec` owns the session context key.
+- `internal/nilcheck.IsNil` is reused for every typed-nil check rather than a second reflection helper, and `signingkey.KeyManager.JWKS()` already returns marshalled bytes, so `KeySetProvider` is `interface{ JWKS() ([]byte, error) }` and nothing re-marshals a jwx set.
+- `WithErrorHandler` governs the **net/http chain only**. gin refusals go to gin's error channel and fiber's to fiber's error handler, each by design. Documented on the option and on both adapters.
+
+### 18. The caller is published, not only the authentication event
+
+The chain publishes the authentication result **and** the principal, through one exported helper,
+`httpsec.WithCaller`.
+
+- **Why.** Publishing only `authenticate.WithAuthentication` left `identity.PrincipalFromContext`
+  empty, and the guards read it — so a caller the chain had just authenticated was refused 401 by
+  its own guard, on every first factor. The failure was indistinguishable from a missing credential,
+  which is why it survived until an adapter test looked for the principal specifically.
+- **Why exported.** A consumer's own first factor is a registered interceptor (Decision 2), and the
+  spec requires such an interceptor to do everything a built-in can. With the helper unexported, a
+  consumer reaching for `authenticate.WithAuthentication` — the obvious exported API — hit the same
+  trap. One call publishes both, so no call site can publish one without the other.
+- **Override:** none. A consumer who wants only the event calls `authenticate.WithAuthentication`
+  directly and accepts that guards will not see their caller.
+
+### 19. Form login binds from the POST body only
+
+- **Default:** the credential is read from the parsed body, and only when it declares
+  `application/x-www-form-urlencoded`. The URL query is never consulted.
+- **Why.** `Request.FormValue` carries net/http's semantics, which merge the query into the form, so
+  `POST /login?username=ada&password=s3cret` authenticated — putting the password into every access
+  log, proxy log, browser history and `Referer` that saw the URL. "Form fields" in the requirement
+  means a body; a URL is not one.
+- **Scope.** Only form login's binding narrows. `Request.FormValue` keeps net/http semantics, because
+  a consumer interceptor reading an ordinary query parameter is legitimate and the abstraction is a
+  public adapter contract.
+- **Stated limits:** a `multipart/form-data` login is refused with `ErrCredentialsMissing`, and a
+  urlencoded body that does not parse yields no credential rather than the pairs that did. Both are
+  fail-closed and both are documented.
+
+### 20. Defaults and required dependencies settled at construction
+
+- **Rate limiter:** defaults to an in-memory limiter (5 failures per 15 minutes, matching `policy`'s
+  lockout defaults), built at construction so the documented default is real. `WithRateLimiter(nil)`,
+  and a typed nil, are refused.
+- **Refused as nil**, beyond the list in Decision 4: `WithPolicyEngine`, `WithLogger` and
+  `WithErrorHandler`. A nil engine would read as "no policies" while the consumer believed theirs
+  were running, and a nil error handler would answer a refused request with 200.
+- **Required, not defaulted:** the attempt store on form login and Basic, because a library-supplied
+  store is one the consumer's lockout policy never reads — a lockout that silently never fires. The
+  godoc says to pass the same store `policy` was given. `LogoutDeps.Sessions` is likewise required.
+- **Session-store outage answers 401, not 500.** Every `Load` failure is `ErrAuthenticationRequired`,
+  so a client cannot learn whether a session existed. The cost is that an outage looks like a
+  logged-out user; the uniform refusal is the requirement.
+- **The per-request challenge marker is per-request.** `completeLogin` saves the marker set at login
+  before any token exists, which is the case that must survive. On the per-request path the policy
+  re-evaluates on every request, so persisting the marker would freeze a decision the policy owns.
+  With the gate enabled the marker is never reached by session touch anyway, because the gate at
+  `OrderPasswordChange` refuses without calling `next`.
+
+### 21. Adapter and outbound details the pinned versions forced
+
+- **fiber v3.5.0:** `fiber.Ctx` is an interface; `c.Cookie` takes fiber's own cookie type;
+  `c.SendStatus` writes the status text as the body, so `fibersec.ErrorHandler` uses `c.Status` to
+  keep the bare-status contract; and `c.IP()` reads the proxy header only when `Config.ProxyHeader`
+  is set, so that field is **mandatory** in the safe proxy configuration, not optional.
+  `fibersec.NewGuards` takes no options: the only thing its peers let a consumer replace is how a
+  refusal is answered, and on fiber that is `fiber.Config.ErrorHandler`.
+- **`outbound`:** the body is read to `maxBytes+1` so "fits exactly" is distinguishable from
+  "truncated"; the final-URL check applies the scheme/allowlist rules **and** same-origin-with-start,
+  because the allowlist is empty by default and would otherwise permit any HTTPS host; and
+  `WithAllowedSchemes` adds to `https`, which is always allowed, since removing it could not make
+  anything safer.
+- **`internal/origin.NewAllowlist` copies its input slices**, so a caller mutating its slice after
+  construction cannot change a list that was already validated.
+
+### 22. What this change deliberately leaves unwired
+
+The source throttle seam (`sourceThrottled`, `recordSourceFailure`) has no built-in caller. Form
+login's per-account lockout is the policy engine reading the attempt store; per-source throttling
+belongs to the redemption flows `auth-methods` adds. The seam, the client-address rules and the
+sampled refusal logs are complete and tested; the first interceptor to throttle a flow supplies its
+own `ratelimit.SourceGuard` built over `Chain`'s limiter and IPv6 prefix.
+
+### 23. The conformance suite's module direction
+
+`test` requires `ginsec` and `fibersec`, and all three adapter runs live in `test`. The reverse —
+an adapter requiring `github.com/kartaladev/scrty/test` — is forbidden even from a `_test.go` file,
+because a test-only import puts the helpers' dependencies in a consumer's module graph.
+`TestModuleLayout` cannot catch a mistake here: it skips any directory holding a `go.mod`, so it
+never scans the integration modules. The check is a documented manual one.
+
 ## Risks / Trade-offs
 
 - **[The request/response abstraction is a public contract that every adapter depends on]** → Its shape is settled before the first tag. The conformance suite runs every change to an interceptor through all three adapters.
@@ -449,16 +557,26 @@ Not applicable: a new library with no consumers and no tags.
 
 ## Open Questions
 
-- **gin pin.** Which gin minor version `ginsec` pins at implementation. It changes no spec, approach or task structure.
-- **Does anything evaluate a policy without an engine?** `policy` exports `ContextWithPhase` and
-  `PhaseFromContext` solely for a caller that evaluates a phase-sensitive policy with no `Engine` to
-  say the phase for it. `Engine.EvaluatePhase` sets the phase itself, so a chain that always goes
-  through an engine never calls either. This change is the first real consumer and settles it: if
-  the chain does not need them, both should be unexported. Nothing is tagged, so that is still free
-  — after the first tag it is a breaking change.
-- **One `RefusalLogFlusher`, or one per capability?** `authenticate` and `policy` each declare an
-  identical `FlushRefusalLogs() error` interface, and `auth-methods` and `oidc-brokering` will each
-  want one too. Go satisfies interfaces structurally, so the duplication costs documentation rather
-  than interoperability — a consumer asserting against either name reaches every component. The
-  question is whether the chain should flush components through one shared declaration, and where it
-  would live. Also free until the first tag.
+All three are settled. They are kept here with their answers, because each was recorded as open and
+a reader of this design will otherwise wonder how it was closed.
+
+- **gin pin — settled.** `ginsec` pins `github.com/gin-gonic/gin v1.12.0`, the latest v1 at
+  implementation. It changed no spec, approach or task.
+- **Does anything evaluate a policy without an engine? — settled: no.** `gopls references` found no
+  caller of `policy.ContextWithPhase` or `PhaseFromContext` outside `policy` itself, in any module.
+  `Engine.EvaluatePhase` sets the phase itself, and the chain always goes through an engine. Both
+  helpers are unexported. Nothing is tagged, so this cost nothing; after the first tag it would have
+  been a breaking change. The override a phase-sensitive policy still has is
+  `policy.WithMFARequirementPhaseSource`, which is what the godoc now points a consumer at, so the
+  archived `security-policy` requirement — "a consumer SHALL be able to replace how such a policy
+  learns the phase" — is still met without either helper being public. The package's own tests reach
+  the unexported publisher through `policy/export_test.go`, the same idiom `factor` and `httpsec`
+  use.
+- **One `RefusalLogFlusher`, or one per capability? — settled: one per capability, for now**, pinned
+  by `TestFlushRefusalLogsScope`, which wires a real policy engine into the chain and asserts the
+  chain reports its own suppressed counts while the policy's stay held.**
+  `Chain.FlushRefusalLogs` flushes the chain's own sampler only, and its godoc says consumers flush
+  `authenticate` and `policy` themselves. No shared declaration is introduced by this change. Go
+  satisfies interfaces structurally, so a consumer asserting against any of the identical
+  `FlushRefusalLogs() error` declarations already reaches every component; the duplication costs
+  documentation, not interoperability. A shared declaration remains free until the first tag.
