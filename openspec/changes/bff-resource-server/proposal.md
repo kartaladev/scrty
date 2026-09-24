@@ -24,6 +24,7 @@ Before either mode can be specified, the team must decide where the browser-faci
   - verified scopes and claims are mapped into the principal that `authorization` evaluates.
 - Add **CSRF protection** that is on by default for every cookie-authenticated, state-changing request and cannot be switched off silently. The default layers a Fetch Metadata and Origin check with a token check, and each layer is replaceable.
 - Record a comparison of token refresh strategies: a refresh token held by the BFF on the server, or short sessions that fall back to re-login.
+- Make the **magic-link endpoints' form parameters and body limit replaceable**, as form login's already are. They hard-code `email`, `next` and `token`, and bound their body with a constant named for the login endpoint that no option can set. Form login exposes all four through `WithLoginParams` and `WithLoginBodyLimit`, so this is a parity gap rather than a decision: `library-design` requires every default to be replaceable without forking, or the design to say why not, and there is no why. It lands here because this change revisits how every browser-facing, state-changing POST is read — the magic-link consume endpoint being one of them — but it is a small, self-contained fix that could equally ride with any change that next touches that interceptor. Inherited from `auth-methods`.
 - List five **open questions** for the team. They block the specs for all three capabilities.
 
 Not in this change:
