@@ -5,7 +5,10 @@ See proposal.md for why this change exists. The constraints that shape the appro
 - **Starting point.** Earlier changes provide:
   - `identity` (principal, user reference, user loader, first-factor kinds and channels, MFA requirement lookup);
   - `session`, `policy`, `ratelimit` and `onetime` from `authn-authz-core`;
-  - `httpsec`'s interceptor chain and error contract from `http-security`;
+  - `httpsec`'s interceptor chain and error contract from `http-security`, including the named slots
+    (`OrderMagicLink`, `OrderAPIKey`, `OrderMFAChallenge`), the login completion step and the source
+    throttle step, which this change is the first to use — `http-security` shipped them tested but
+    with no built-in caller;
   - durable stores and sealing from `durable-persistence`;
   - `pkg/id` and `pkg/logsample`.
 - **Behaviour owned elsewhere and used here, not restated:**
@@ -30,6 +33,22 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - email sending is a port with a deadline-bounded SMTP default;
   - API keys are shown once, hashed, prefixed, bound to a service principal, throttled per source and revocable;
   - secrets come from `crypto/rand`.
+
+### Inbound dependency from `http-security`
+
+**This change must refuse, at construction, a policy that can challenge for a second factor when its
+challenge interceptor is not enabled.**
+
+`http-security` records this as a flagged dependency it cannot enforce itself. The chain's
+per-request phase marks a second-factor challenge pending on the session and continues, because the
+gate for that challenge is what enforces it and its verify endpoint must stay reachable. That gate
+is the challenge interceptor at `OrderMFAChallenge`, which this change adds. With a policy that can
+raise the challenge and no interceptor to enforce it, sessions are marked pending and nothing ever
+acts on the marker: the caller proceeds with an unsatisfied second factor, and nothing in the
+request path reports it.
+
+The failure is silent, which is why it has to be a construction error rather than a documented
+caution — the same rule the rest of this design applies to wiring mistakes.
 
 ## Goals / Non-Goals
 
