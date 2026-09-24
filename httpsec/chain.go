@@ -90,6 +90,53 @@ func (c *Chain) Assemble(terminal Next) Next {
 	return next
 }
 
+// registeredAt reports whether any interceptor occupies slot at.
+//
+// It asks about the slot rather than about a particular built-in, because what
+// enforces a challenge is whatever runs there: a consumer's own interceptor at
+// OrderMFAChallenge is as good an answer as EnableMFA.
+func (c *config) registeredAt(at Order) bool {
+	for _, r := range c.registrations {
+		if r.order == at {
+			return true
+		}
+	}
+
+	return false
+}
+
+// refuseUnenforcedChallenges refuses a chain whose policies can raise a
+// second-factor challenge that nothing on it would enforce.
+//
+// The per-request phase marks such a challenge pending on the session and lets
+// the request continue, because the gate at OrderMFAChallenge is what enforces
+// it and the verify endpoint behind that gate has to stay reachable. With
+// nothing registered there, every challenged session is marked and then served
+// anyway: the caller goes on with a second factor it never gave, and no error,
+// no status and no record says so.
+//
+// That silence is why this is a construction error rather than a documented
+// caution. A chain that does not build serves no traffic, whereas a chain that
+// builds and quietly ignores a policy is indistinguishable, from the outside,
+// from one enforcing it.
+//
+// A policy that does not declare its challenges is taken to raise none — see
+// policy.Challenger, which says why, and what a consumer whose own policy
+// challenges has to do so that this check can see it.
+func (c *config) refuseUnenforcedChallenges() error {
+	if c.engine == nil || !c.engine.CanChallenge(policy.ChallengeMFA) {
+		return nil
+	}
+
+	if c.registeredAt(OrderMFAChallenge) {
+		return nil
+	}
+
+	return newConfigError("a registered policy can challenge for a second factor, but nothing " +
+		"on this chain enforces it: add EnableMFA, register an interceptor at " +
+		"OrderMFAChallenge, or remove the policy")
+}
+
 // ordered returns the registrations sorted into the order they run in: by slot
 // ascending, and within one slot by the sequence they were registered in.
 //

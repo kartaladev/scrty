@@ -16,6 +16,7 @@ import (
 // identity port implementation.
 var portMethods = map[string]string{
 	"LoadByUsername": "UserLoader",
+	"LoadByUserID":   "UserLoader",
 	"LoadPrivileges": "RoleLoader",
 	"Provision":      "UserProvisioner",
 	"Update":         "UserProvisioner",

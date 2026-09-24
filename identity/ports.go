@@ -119,6 +119,18 @@ type UserLoader interface {
 	// any other failure returns an error that is not ErrUserNotFound, so a caller
 	// can tell "no such user" from "the store is down".
 	LoadByUsername(ctx context.Context, username string) (*Details, error)
+
+	// LoadByUserID loads the user with this reference, matched byte-for-byte and
+	// never parsed, trimmed or case-folded. The same miss-versus-outage contract
+	// applies: a miss returns ErrUserNotFound, and any other failure returns an
+	// error that is not.
+	//
+	// A flow that recorded a reference and later resolves it — redeeming a
+	// sign-in link, for one — must load by that reference rather than by the
+	// username it was requested with. A username is a reusable handle: reissued
+	// to another person, it would let a credential minted for the first
+	// authenticate the second.
+	LoadByUserID(ctx context.Context, id UserID) (*Details, error)
 }
 
 // RoleLoader resolves a role name to the privileges it grants.

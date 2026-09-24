@@ -1,0 +1,76 @@
+package mfa_test
+
+import (
+	"context"
+	"reflect"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/policy"
+)
+
+// stubMethod is a consumer's own method: it proves the port admits one that is
+// not TOTP, and lets a test choose what the store underneath it answers.
+type stubMethod struct {
+	name     string
+	channel  factor.Channel
+	enrolled bool
+	err      error
+}
+
+func (s *stubMethod) Name() string {
+	if s.name == "" {
+		return "stub"
+	}
+
+	return s.name
+}
+
+func (s *stubMethod) Channel() factor.Channel { return s.channel }
+
+func (s *stubMethod) Enrolled(context.Context, identity.UserID) (bool, error) {
+	return s.enrolled, s.err
+}
+
+func (s *stubMethod) Verify(context.Context, identity.UserID, string) error { return s.err }
+
+func TestMethodSatisfiesLookup(t *testing.T) {
+	t.Parallel()
+
+	// The assertion is on the interface type, not on one implementation of it:
+	// a concrete type may satisfy both ports by coincidence, while what this
+	// pins is that every Method is a policy lookup, with no adapter at all.
+	assert.True(t,
+		reflect.TypeFor[mfa.Method]().Implements(reflect.TypeFor[policy.MFAMethodLookup]()),
+		"a Method is usable as a policy lookup without an adapter")
+
+	var m mfa.Method = &stubMethod{channel: factor.AuthenticatorApp}
+
+	_, ok := any(m).(policy.MFAMethodLookup)
+	assert.True(t, ok)
+}
+
+func TestMFASentinels(t *testing.T) {
+	t.Parallel()
+
+	sentinels := []error{
+		mfa.ErrInvalidCode,
+		mfa.ErrAlreadyEnrolled,
+		mfa.ErrSameChannel,
+		mfa.ErrVerifyThrottled,
+	}
+
+	for i, a := range sentinels {
+		for j, b := range sentinels {
+			if i != j {
+				assert.NotErrorIs(t, a, b)
+			}
+		}
+
+		assert.Contains(t, a.Error(), "mfa: ")
+	}
+}

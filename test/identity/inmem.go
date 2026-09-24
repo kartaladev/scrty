@@ -168,6 +168,31 @@ func (s *InMemoryStore) LoadByUsername(
 	return cloneDetails(d), nil
 }
 
+// LoadByUserID implements identity.UserLoader.
+//
+// The reference is matched byte-for-byte, exactly as LoadByUsername matches a
+// username: the store keeps its records under the username it provisioned them
+// with, so this walks them rather than keeping a second index that could fall
+// out of step with the first.
+func (s *InMemoryStore) LoadByUserID(
+	_ context.Context, id identity.UserID,
+) (*identity.Details, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+
+	for _, d := range s.byName {
+		if d.ID == id {
+			return cloneDetails(d), nil
+		}
+	}
+
+	return nil, identity.ErrUserNotFound
+}
+
 // LoadPrivileges implements identity.RoleLoader.
 func (s *InMemoryStore) LoadPrivileges(
 	_ context.Context, role string,

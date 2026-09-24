@@ -78,6 +78,44 @@ func (e *Engine) Add(p Policy) error {
 	return nil
 }
 
+// CanChallenge reports whether any registered policy can raise this kind of
+// challenge.
+//
+// It is how a component that enforces challenges checks its own wiring before
+// it serves: a policy able to raise a challenge, with nothing registered to
+// enforce it, marks sessions and has them served anyway. That failure is
+// silent, so it is worth refusing at construction, and this is the question
+// such a refusal rests on.
+//
+// The answer is drawn from the optional Challenger interface, and a policy
+// that does not implement it is taken to raise nothing — see Challenger for
+// why silence is read that way, and for what a consumer whose own policy
+// challenges has to do about it.
+//
+// A policy registered for no phase is never asked anything, so it can raise
+// nothing whatever it declares.
+//
+// It reads the registration index and is meant for wiring time, alongside Add,
+// rather than for the request path.
+func (e *Engine) CanChallenge(kind ChallengeKind) bool {
+	for _, policies := range e.byPhase {
+		for _, p := range policies {
+			c, ok := p.(Challenger)
+			if !ok {
+				continue
+			}
+
+			for _, declared := range c.Challenges() {
+				if declared == kind {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 // EvaluatePhase asks the policies that declared phase, in the order they were
 // registered, and reduces their answers to one Decision.
 //

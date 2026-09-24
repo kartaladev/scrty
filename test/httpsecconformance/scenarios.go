@@ -775,7 +775,14 @@ func loginChallenge() Scenario {
 			require.NoError(t, err)
 
 			return ChainSpec{
-				Options: append(formLoginOptions(effects), httpsec.WithPolicyEngine(engine)),
+				Options: append(formLoginOptions(effects),
+					httpsec.WithPolicyEngine(engine),
+					// The policy can raise a second-factor challenge, so this
+					// chain has to carry something that enforces one: a chain
+					// that marks a challenge nothing acts on does not build.
+					// What enforces it is not this scenario's subject, so it is
+					// the smallest interceptor that occupies the slot.
+					enforcesTheChallenge()),
 				Effects: effects,
 			}
 		},
@@ -1049,13 +1056,29 @@ func (fixtureUsers) LoadByUsername(
 		return nil, identity.ErrUserNotFound
 	}
 
+	return fixtureUserDetails(), nil
+}
+
+func (fixtureUsers) LoadByUserID(
+	_ context.Context, id identity.UserID,
+) (*identity.Details, error) {
+	if id != UserID {
+		return nil, identity.ErrUserNotFound
+	}
+
+	return fixtureUserDetails(), nil
+}
+
+// fixtureUserDetails is the one record both lookups return, so a scenario
+// reaching the user by reference sees exactly what reaching it by username sees.
+func fixtureUserDetails() *identity.Details {
 	return &identity.Details{
 		ID:                UserID,
 		Username:          Username,
 		Name:              "Ada",
 		Active:            true,
 		PasswordChangedAt: time.Now().Add(-time.Hour),
-	}, nil
+	}
 }
 
 // fixtureAuthorizer answers every attribute set with err, so a scenario names
@@ -1089,6 +1112,14 @@ func (challengingPolicy) Evaluate(context.Context, *policy.Input) policy.Decisio
 	return policy.Decision{Outcome: policy.Challenge, Challenge: policy.ChallengeMFA}
 }
 
+// Challenges declares what this policy can ask for, which is what lets a chain
+// check that something is wired to enforce it. A policy that challenges and
+// says nothing is taken to challenge for nothing, so declaring it here is what
+// makes this fixture stand in for a real deployment's rule.
+func (challengingPolicy) Challenges() []policy.ChallengeKind {
+	return []policy.ChallengeKind{policy.ChallengeMFA}
+}
+
 // fixtureKeySet serves fixed bytes, which is what the key set scenario compares
 // the response body against byte for byte.
 type fixtureKeySet struct{}
@@ -1104,8 +1135,38 @@ var (
 	_ authorize.Authorizer       = fixtureAuthorizer{}
 	_ policy.Policy              = lockedPolicy{}
 	_ policy.Policy              = challengingPolicy{}
+	_ policy.Challenger          = challengingPolicy{}
 	_ httpsec.KeySetProvider     = fixtureKeySet{}
 )
+
+// enforcesTheChallenge occupies the second-factor slot without doing anything,
+// which is all a chain needs to have a challenge enforced somewhere.
+func enforcesTheChallenge() httpsec.Option {
+	return httpsec.RegisterInterceptor(
+		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+			return next(ex)
+		}),
+		httpsec.OrderMFAChallenge)
+}
+
+// UnenforcedMFAChallenge is a policy that can ask a login for a second factor,
+// on a chain with nothing registered to enforce one.
+//
+// It is the second wiring mistake every adapter must refuse identically. The
+// failure it stands for has no symptom at all at request time — the session is
+// marked, the marker is never read, and the caller is served — which is why it
+// is refused at construction, and why every adapter has to refuse it the same
+// way.
+func UnenforcedMFAChallenge() httpsec.Option {
+	engine, err := policy.NewEngine(challengingPolicy{})
+	if err != nil {
+		// Unreachable: the policy is this package's own and is never nil. A
+		// panic here would be a fault in the fixture, not in what it tests.
+		panic(err)
+	}
+
+	return httpsec.WithPolicyEngine(engine)
+}
 
 // MisconfiguredFormLogin is form login wired with everything a login needs
 // except the session manager it must open a session in.

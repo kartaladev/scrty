@@ -272,6 +272,31 @@ func (s *brokenStore) LoadByUsername(
 	return clonedDetails(d), nil
 }
 
+func (s *brokenStore) LoadByUserID(
+	_ context.Context, id identity.UserID,
+) (*identity.Details, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.loadErr != nil {
+		return nil, s.loadErr
+	}
+
+	for _, d := range s.byName {
+		if d.ID != id {
+			continue
+		}
+
+		if s.d == defectAliasingLoad {
+			return d, nil
+		}
+
+		return clonedDetails(d), nil
+	}
+
+	return nil, identity.ErrUserNotFound
+}
+
 func (s *brokenStore) LoadPrivileges(
 	_ context.Context, role string,
 ) ([]*identity.ResourcePrivileges, error) {

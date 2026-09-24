@@ -302,6 +302,13 @@ func (p *mfaPolicy) Phases() []Phase { return []Phase{PostAuthentication} }
 //
 // It reads the Input and never writes to it: an allow here records no satisfied
 // second factor, because none happened.
+// Challenges reports that this policy can ask for a second factor, so a chain
+// that composes it can refuse to assemble when nothing would enforce one.
+//
+// A fresh slice every call: what a caller does with it is their business, and
+// this policy keeps no state a caller could reach through it.
+func (p *mfaPolicy) Challenges() []ChallengeKind { return []ChallengeKind{ChallengeMFA} }
+
 func (p *mfaPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 	if in.MFASatisfied || p.exempt(in.FirstFactor) {
 		return Decision{Outcome: Allow}

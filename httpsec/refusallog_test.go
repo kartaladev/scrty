@@ -357,8 +357,16 @@ func TestFlushRefusalLogsScope(t *testing.T) {
 		calls    []reporterCall
 	)
 
+	// The policy above can raise a second-factor challenge, so the chain must
+	// carry something that enforces one — a chain that marks a challenge
+	// nothing acts on is refused at construction. What enforces it is not this
+	// test's subject, so it is the smallest interceptor that occupies the slot.
+	enforced := httpsec.InterceptorFunc(
+		func(ex *httpsec.Exchange, next httpsec.Next) error { return next(ex) })
+
 	c, err := httpsec.New(
 		httpsec.WithPolicyEngine(engine),
+		httpsec.RegisterInterceptor(enforced, httpsec.OrderMFAChallenge),
 		httpsec.WithLogger(slog.New(&chainLog)),
 		httpsec.WithRefusalLogReporter(func(key string, suppressed int) {
 			calls = append(calls, reporterCall{key: key, suppressed: suppressed})

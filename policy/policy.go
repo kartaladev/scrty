@@ -163,6 +163,45 @@ func (o Outcome) String() string {
 	}
 }
 
+// Challenger is the optional half of Policy: a policy that can answer a
+// request with a challenge reports which kinds it can raise.
+//
+// It exists so that wiring can be checked before traffic arrives. A challenge
+// is enforced by something outside this package — an interceptor that holds
+// the challenged session and an endpoint that resolves it — and a challenge
+// nothing enforces is the worst kind of failure: the session is marked, the
+// marker is never acted on, the caller is served anyway, and no part of the
+// request path says so. A component that composes policies with the things
+// that enforce them asks the engine (see Engine.CanChallenge) and refuses that
+// combination at construction.
+//
+// # What silence means
+//
+// A policy that does not implement this interface is taken to raise no
+// challenges. It is read that way rather than as "may raise anything" because
+// the alternative is unusable: every deployment that registered one rule of
+// its own — a lockout, an address check, anything — would be forced to wire
+// every challenge interceptor, including ones its policies never raise, and a
+// check that refuses working deployments is one consumers disable.
+//
+// The cost of that choice is stated plainly: a consumer whose own policy can
+// challenge must implement this interface, or no wiring check can see their
+// challenge and it is theirs to enforce. Every policy this package ships that
+// can challenge implements it.
+//
+// # The contract
+//
+// Challenges reports the kinds this policy can raise, and must return a value
+// the caller may keep and modify: a fresh slice, or a copy of one the policy
+// holds. A policy must not hand out a window into its own state.
+//
+// It is asked while an application is being wired, not on the request path,
+// and must be constant for the policy's lifetime: a policy that could start
+// raising a kind it never declared would defeat the check it exists to serve.
+type Challenger interface {
+	Challenges() []ChallengeKind
+}
+
 // ChallengeKind names what a challenging decision asks the caller for.
 //
 // It is meaningful only on a Decision whose Outcome is Challenge; every other

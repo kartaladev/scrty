@@ -8,10 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/magiclink"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -106,6 +109,12 @@ type config struct {
 	// wiring is split across.
 	authzRules []authorize.Rule[Request]
 
+	// logoutPath is where logout answers, and is empty when the consumer
+	// enabled none. It is kept here because the MFA gate has to exempt it, and
+	// an exemption configured separately from the endpoint is one a consumer
+	// can move half of.
+	logoutPath string
+
 	ipv6Prefix int
 
 	errorHandler func(w http.ResponseWriter, r *http.Request, err error)
@@ -155,6 +164,30 @@ func (c *config) useSessions(m *session.Manager) {
 func (c *config) register(i Interceptor, at Order) {
 	c.registrations = append(c.registrations, registration{interceptor: i, order: at, seq: c.seq})
 	c.seq++
+}
+
+// eachInterceptor runs fn against every registered interceptor of type T, in
+// registration order, and stops at the first error.
+//
+// Each built-in that has to finish assembling itself after every option has
+// been applied walks the registrations looking for its own interceptor. The
+// walk is the same every time and only the type differs, so they share this
+// rather than each keeping a copy that can drift from the others. The
+// per-built-in functions stay separate, because the order they are called in
+// is what decides which of two misconfigured built-ins reports first.
+func eachInterceptor[T any](c *config, fn func(T) error) error {
+	for _, r := range c.registrations {
+		i, ok := r.interceptor.(T)
+		if !ok {
+			continue
+		}
+
+		if err := fn(i); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // validate reports the first wiring fault, naming the option and the dependency
@@ -220,8 +253,29 @@ func New(opts ...Option) (*Chain, error) {
 
 // build freezes the validated configuration into the chain that serves it.
 func (c *config) build() (*Chain, error) {
+	// Before anything is built: a challenge nothing enforces is the one wiring
+	// mistake on this chain that has no symptom at all.
+	if err := c.refuseUnenforcedChallenges(); err != nil {
+		return nil, err
+	}
+
 	limiter, err := c.resolveLimiter()
 	if err != nil {
+		return nil, err
+	}
+
+	// The second factor is handed the rest of its wiring here, because both
+	// halves of it depend on options that may be applied after EnableMFA: the
+	// logout path it exempts, and the logger its throttle writes through.
+	if err := c.wireMFA(); err != nil {
+		return nil, err
+	}
+
+	if err := c.wireMagicLink(); err != nil {
+		return nil, err
+	}
+
+	if err := c.wireAPIKey(); err != nil {
 		return nil, err
 	}
 
@@ -800,6 +854,607 @@ func WithBearerAllowEmptyScheme() BearerTokenOption {
 	}
 }
 
+// MFAOption configures the second factor. Each replaces one of the defaults
+// named on EnableMFA.
+type MFAOption func(*mfaInterceptor) error
+
+// EnableMFA verifies a second factor at the MFA slot, and holds every session
+// that owes one.
+//
+// Defaults: the endpoint answers POST requests on DefaultMFAVerifyPath and
+// reads the code from the "code" form field (WithMFAVerifyPath); failed
+// verifications are counted per user reference by an in-memory limiter of 5
+// failures per 15 minutes (WithMFAVerifyLimiter); and the records those
+// refusals write are sampled over one minute (WithMFALogInterval). A consumer
+// who wires nothing else gets all three.
+//
+// The method is required, and one reporting no channel is refused here. An
+// empty channel equals the channel of an unrecorded first factor, so every
+// session established without a recorded kind would be refused at verify as a
+// same-channel attempt — a wiring mistake whose symptom appears far from its
+// cause.
+//
+// The session manager is not a parameter: the handle is rotated in the one the
+// chain already resolves sessions through, taken from the built-ins enabled
+// alongside this one, exactly as the chain's own activity write-back takes it.
+// A chain with no session manager at all is refused, because a second factor
+// that could not rotate the handle would leave a pre-MFA handle live after the
+// privilege change.
+func EnableMFA(method mfa.Method, opts ...MFAOption) Option {
+	const option = "EnableMFA"
+
+	return func(c *config) error {
+		// LookupFor is the one place a method with no channel is caught, so the
+		// rule and its message are stated once for the policy lookup and for
+		// this endpoint rather than drifting apart.
+		if _, err := mfa.LookupFor(method); err != nil {
+			return newConfigError("%s was given an unusable method: %s", option, err)
+		}
+
+		i := &mfaInterceptor{
+			method:     method,
+			now:        time.Now,
+			verifyPath: DefaultMFAVerifyPath,
+			respond:    writeMFAResult,
+		}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(i); err != nil {
+				return err
+			}
+		}
+
+		c.enable(option, func() error {
+			if c.sessions == nil {
+				return newConfigError("%s needs a session manager to rotate the handle with, "+
+					"and none of the built-ins enabled on this chain was wired to one", option)
+			}
+
+			if i.tokens == nil {
+				return newConfigError("%s needs a token generator: rotating the handle ends the "+
+					"credential the caller arrived with, so the response has to hand back one "+
+					"naming the rotated session (WithMFATokens)", option)
+			}
+
+			return nil
+		})
+
+		c.register(i, OrderMFAChallenge)
+
+		return nil
+	}
+}
+
+// WithMFAVerifyPath answers code submissions on path instead.
+//
+// Default: DefaultMFAVerifyPath. Only POST on that exact path is a
+// verification; every other request to it is judged like any other, which for
+// a session that owes a second factor means the gate holds it.
+//
+// An empty path is refused: it would match nothing, so the endpoint the
+// consumer asked for would silently not exist and the challenge could never be
+// resolved.
+func WithMFAVerifyPath(path string) MFAOption {
+	return func(i *mfaInterceptor) error {
+		if path == "" {
+			return newConfigError("WithMFAVerifyPath was given no path, so a session owing a " +
+				"second factor would have no way to resolve it")
+		}
+
+		i.verifyPath = path
+
+		return nil
+	}
+}
+
+// WithMFAVerifyLimiter counts failed code verifications through l.
+//
+// Default: an in-memory limiter of 5 failures per 15 minutes, keyed by the user
+// reference rather than by the request's source — by the time a second factor
+// is being checked the attacker already holds the first and can present codes
+// from as many addresses as they like. A deployment running more than one
+// replica supplies one its replicas share, or the limit is per process and the
+// guesses are simply spread.
+//
+// It governs failed code verifications alone. The key is composed by mfa, and
+// mfa.VerifyThrottleKey reports it, so a consumer sharing one limiter across
+// flows can read or clear that bucket.
+//
+// A nil limiter, including an interface holding a nil pointer, is refused: it
+// would read as "no limit" while the consumer believed they had replaced one.
+func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
+	return func(i *mfaInterceptor) error {
+		if err := requireDep("WithMFAVerifyLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		i.throttleOpts = append(i.throttleOpts, mfa.WithVerifyLimiter(l))
+
+		return nil
+	}
+}
+
+// WithMFATokens issues the rotated session's access token through g.
+//
+// There is no default, and it is required: rotation deletes the handle the
+// caller arrived with, and the session identifier is the token's jti, so
+// without a generator a caller who passed their second factor would hold a
+// credential naming a session that no longer exists. It is the same generator
+// the first factors issue through, so a token from a login and one from a
+// second factor are indistinguishable to whatever verifies them.
+func WithMFATokens(g token.Generator) MFAOption {
+	return func(i *mfaInterceptor) error {
+		if err := requireDep("WithMFATokens", "token generator", g); err != nil {
+			return err
+		}
+
+		i.tokens = g
+
+		return nil
+	}
+}
+
+// WithMFAResponder replaces the response written when a second factor
+// succeeds.
+//
+// With none supplied, the library writes a JSON document carrying an access
+// token for the rotated session and that session's validity, the same shape a
+// successful login answers with, so a client handles both alike.
+//
+// It is called instead of the downstream handler, because the verify endpoint
+// is the library's own and the application has no route behind it. The session
+// it receives carries the handle rotation produced, which is the only place
+// that handle is available: an error it returns leaves the chain as the
+// request's refusal, and nothing else will hand the caller a usable
+// credential.
+func WithMFAResponder(fn MFAResponder) MFAOption {
+	return func(i *mfaInterceptor) error {
+		if fn == nil {
+			return newConfigError("WithMFAResponder was given no function; omit the option to " +
+				"keep the default document")
+		}
+
+		i.respond = fn
+
+		return nil
+	}
+}
+
+// WithMFALogInterval writes at most one second-factor throttle record per
+// reason per d.
+//
+// Default: one minute. It governs the records MFA verification refusals write
+// and nothing else, so a user being guessed at cannot drown out or silence any
+// other part of the chain — the chain's own refusal records keep their own
+// window, set by WithRefusalLogInterval.
+//
+// An interval of zero or less writes every record, which is the documented way
+// to ask for the full stream: it is a choice about volume, not a fault.
+func WithMFALogInterval(d time.Duration) MFAOption {
+	return func(i *mfaInterceptor) error {
+		i.throttleOpts = append(i.throttleOpts, mfa.WithVerifyLogInterval(d))
+
+		return nil
+	}
+}
+
+// APIKeyOption configures API key authentication. Each replaces one of the
+// defaults named on EnableAPIKey.
+type APIKeyOption func(*apiKeyInterceptor) error
+
+// EnableAPIKey authenticates machine callers by key at the API key slot.
+//
+// Defaults: a key is read from the Authorization header after the literal
+// DefaultAPIKeyScheme prefix (WithAPIKeyScheme), and a source that presents
+// wrong keys is cut off after 20 failures a minute by a limiter this flow alone
+// uses (WithAPIKeyLimiter).
+//
+// A request that does not carry the scheme passes through untouched and
+// consults nothing: ordinary unauthenticated traffic is not a failed attempt,
+// and counting it would fill the buckets that exist to catch guessing.
+//
+// The caller a key resolves is published with no session. A machine has nobody
+// to prompt and nothing to keep between requests, so a policy that challenges
+// in the stateless phase refuses outright rather than raising a prompt nothing
+// can answer.
+func EnableAPIKey(m *apikey.Manager, opts ...APIKeyOption) Option {
+	const option = "EnableAPIKey"
+
+	return func(c *config) error {
+		if m == nil {
+			return newConfigError("%s needs an API key manager", option)
+		}
+
+		i := &apiKeyInterceptor{keys: m, now: time.Now, scheme: DefaultAPIKeyScheme}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(i); err != nil {
+				return err
+			}
+		}
+
+		c.register(i, OrderAPIKey)
+		c.wire(i.wire)
+
+		return nil
+	}
+}
+
+// WithAPIKeyScheme matches presented keys under scheme instead.
+//
+// Default: DefaultAPIKeyScheme. The scheme is matched exactly, case and
+// trailing space included, so include the separating space: "Service " matches
+// "Service sk_...", while "Service" would also claim "Servicex".
+//
+// An empty scheme is refused: it would claim every Authorization header on the
+// chain, including the ones another interceptor answers.
+func WithAPIKeyScheme(scheme string) APIKeyOption {
+	return func(i *apiKeyInterceptor) error {
+		if scheme == "" {
+			return newConfigError("WithAPIKeyScheme was given no scheme, which would claim " +
+				"every Authorization header, including another interceptor's")
+		}
+
+		i.scheme = scheme
+
+		return nil
+	}
+}
+
+// WithAPIKeyLimiter counts failed key verifications through l.
+//
+// Default: an in-memory limiter of 20 failures per source per minute, used by
+// this flow alone. A deployment running more than one replica supplies one its
+// replicas share, or the limit is per process and a scanner simply spreads its
+// guesses.
+//
+// One limiter may be handed to several flows. That shares the store and the
+// limit it was built with, not the allowance: every key carries the flow it
+// belongs to, so a source that exhausts its key guesses still has its whole
+// allowance at every other endpoint.
+//
+// It counts wrong keys and nothing else: a policy refusal of a valid key is not
+// a failed guess, and a request carrying no key at all never reaches it.
+//
+// A nil limiter, including an interface holding a nil pointer, is refused.
+func WithAPIKeyLimiter(l ratelimit.Limiter) APIKeyOption {
+	return func(i *apiKeyInterceptor) error {
+		if err := requireDep("WithAPIKeyLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		i.limiter = l
+
+		return nil
+	}
+}
+
+// MagicLinkOption configures the magic-link endpoints. Each replaces one of
+// the defaults named on EnableMagicLink.
+type MagicLinkOption func(*magicLinkInterceptor) error
+
+// EnableMagicLink answers the two magic-link endpoints at the magic-link slot.
+//
+// Defaults: a link is asked for by POST on DefaultMagicLinkRequestPath, which
+// reads "email" and "next" from a form body or a JSON one and always answers
+// 202 with an empty body (WithMagicLinkRequestPath); a link is redeemed by
+// POST on DefaultMagicLinkConsumePath, which reads "token" from the form and
+// the binding from DefaultBindingCookieName (WithMagicLinkConsumePath,
+// WithBindingCookieName); no redirect target is allowed, so every submitted
+// "next" becomes "/" (WithAllowedRedirects, WithAllowedOrigins); every failed
+// redemption counts against the source (WithMagicLinkCountRefusals), at 10 per
+// 15 minutes through a limiter this flow alone uses (WithMagicLinkLimiter);
+// the built-in redeemer is the manager's own (WithMagicLinkRedeemer) and no
+// consumer refusal checks run (WithMagicLinkChecks).
+//
+// Whether links are bound to the requesting device is read from the manager,
+// never configured here: an interceptor that could be told one thing while the
+// manager was told another would emit cookies for links that carry no binding,
+// or issue bound links nothing ever answers.
+//
+// The token generator is required, because a redeemed link establishes a
+// session the caller then has to be able to present. The session manager is
+// taken from the chain when WithMagicLinkSessions is not given, and a chain
+// with neither is refused.
+func EnableMagicLink(m *magiclink.Manager, opts ...MagicLinkOption) Option {
+	const option = "EnableMagicLink"
+
+	return func(c *config) error {
+		if m == nil {
+			return newConfigError("%s needs a magic-link manager", option)
+		}
+
+		i := &magicLinkInterceptor{
+			manager:       m,
+			respond:       writeMagicLinkResult,
+			now:           time.Now,
+			requestPath:   DefaultMagicLinkRequestPath,
+			consumePath:   DefaultMagicLinkConsumePath,
+			cookieName:    DefaultBindingCookieName,
+			bodyLimit:     DefaultLoginBodyLimit,
+			countRefusals: true,
+		}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(i); err != nil {
+				return err
+			}
+		}
+
+		c.enable(option, func() error { return i.check(c, option) })
+
+		c.useSessions(i.sessions)
+		c.register(i, OrderMagicLink)
+		c.wire(i.wire)
+
+		return nil
+	}
+}
+
+// WithMagicLinkRequestPath answers link requests on path instead.
+//
+// Default: DefaultMagicLinkRequestPath. An empty path is refused, and so is
+// one equal to the consume path: one path cannot both ask for a link and
+// redeem one, and whichever branch matched first would silently swallow the
+// other endpoint.
+func WithMagicLinkRequestPath(path string) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if path == "" {
+			return newConfigError("WithMagicLinkRequestPath was given no path, so no link " +
+				"could be asked for")
+		}
+
+		i.requestPath = path
+
+		return nil
+	}
+}
+
+// WithMagicLinkConsumePath redeems links on path instead.
+//
+// Default: DefaultMagicLinkConsumePath. It is also what the binding cookie is
+// scoped to, so moving the endpoint moves the cookie's scope with it. An empty
+// path, or one equal to the request path, is refused.
+func WithMagicLinkConsumePath(path string) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if path == "" {
+			return newConfigError("WithMagicLinkConsumePath was given no path, so no link " +
+				"could be redeemed")
+		}
+
+		i.consumePath = path
+
+		return nil
+	}
+}
+
+// WithBindingCookieName carries the same-device binding in a cookie called
+// name.
+//
+// Default: DefaultBindingCookieName. An empty name is refused: a cookie
+// without one is not set at all, and every bound link would then be
+// unredeemable.
+func WithBindingCookieName(name string) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if name == "" {
+			return newConfigError("WithBindingCookieName was given no name, so the binding " +
+				"cookie would never be set and no bound link could be redeemed")
+		}
+
+		i.cookieName = name
+
+		return nil
+	}
+}
+
+// WithAllowedRedirects allows targets as redirect destinations after a link is
+// redeemed.
+//
+// Default: none, so every submitted target becomes "/". A target is used only
+// when it exactly equals one of these entries — no prefix matching, no case
+// folding, no normalisation — because every way of making two targets equal is
+// a way of reaching an entry that was never configured.
+//
+// An entry is either a host-relative path, or an absolute http or https URL
+// without userinfo whose origin was declared with WithAllowedOrigins. Anything
+// else fails construction, naming the entry and this option.
+//
+// Calls accumulate, so a consumer whose configuration is split across several
+// places builds one list from all of them.
+func WithAllowedRedirects(targets ...string) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		i.allowedRedirects = append(i.allowedRedirects, targets...)
+
+		return nil
+	}
+}
+
+// WithAllowedOrigins declares the origins an absolute redirect entry may sit
+// on.
+//
+// Default: none, under which only host-relative targets can ever be accepted,
+// so nothing the consumer configures can send a browser to another site.
+// Declaring an origin is deliberately a separate act from listing the entry:
+// widening the set of reachable sites is not something a redirect entry should
+// be able to do on its own.
+//
+// An origin is a scheme, a host and an optional port, and must be https except
+// on a loopback host, where http is accepted so a consumer can develop against
+// one. Anything else fails construction, naming the origin and this option.
+func WithAllowedOrigins(origins ...string) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		i.allowedOrigins = append(i.allowedOrigins, origins...)
+
+		return nil
+	}
+}
+
+// WithMagicLinkCountRefusals decides whether a policy denial or a consumer
+// check refusal of a valid link counts against the source's allowance.
+//
+// Default: true. An attacker holding one link the policy refuses could
+// otherwise replay it without limit for as long as it lives, and each attempt
+// would cost a store read and a policy evaluation.
+//
+// Passing false exempts exactly those two refusals. Every other redemption
+// failure is still recorded, including one from a redeemer that discarded the
+// denial and then failed for a reason of its own.
+func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		i.countRefusals = count
+
+		return nil
+	}
+}
+
+// WithMagicLinkLimiter counts failed redemptions through l.
+//
+// Default: an in-memory limiter of 10 failures per source per 15 minutes, used
+// by this flow alone. A deployment running more than one replica supplies one
+// its replicas share, or the limit is per process and an attacker simply
+// spreads their attempts.
+//
+// One limiter may be handed to several flows. That shares the store and the
+// limit it was built with, not the allowance: every key carries the flow it
+// belongs to, so a source that exhausts its redemptions still has its whole
+// allowance at every other endpoint.
+//
+// A nil limiter, including an interface holding a nil pointer, is refused: it
+// would read as "no limit" while the consumer believed they had replaced one.
+func WithMagicLinkLimiter(l ratelimit.Limiter) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if err := requireDep("WithMagicLinkLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		i.limiter = l
+
+		return nil
+	}
+}
+
+// WithMagicLinkSessions opens the redeemed link's session in m.
+//
+// Default: the session manager the chain's other built-ins were wired to, so a
+// deployment with one session store declares it once. A chain that has none at
+// all is refused: a redemption that could not open a session would spend the
+// link and authenticate nobody.
+func WithMagicLinkSessions(m *session.Manager) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if err := requireDep("WithMagicLinkSessions", "session manager", m); err != nil {
+			return err
+		}
+
+		i.sessions = m
+
+		return nil
+	}
+}
+
+// WithMagicLinkTokens issues the redeemed link's access token through g.
+//
+// There is no default, and it is required: the library ships no signing key, and
+// a session a caller has no credential for is one they cannot use. The
+// generator is the same one the other first factors issue through, so a token
+// from a link and a token from a password are indistinguishable to whatever
+// verifies them.
+func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if err := requireDep("WithMagicLinkTokens", "token generator", g); err != nil {
+			return err
+		}
+
+		i.tokens = g
+
+		return nil
+	}
+}
+
+// WithMagicLinkRedeemer redeems links through r instead of the manager.
+//
+// Default: the magic-link manager's own Redeem, which checks everything before
+// it consumes anything. A consumer who replaces it takes on that ordering
+// contract — see Redeemer, which also says what the endpoint still enforces
+// itself and what it cannot.
+//
+// A nil redeemer is refused: there would be nothing to redeem with.
+func WithMagicLinkRedeemer(r Redeemer) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if err := requireDep("WithMagicLinkRedeemer", "redeemer", r); err != nil {
+			return err
+		}
+
+		i.redeemer = r
+
+		return nil
+	}
+}
+
+// WithMagicLinkResponder replaces the response written when a link is
+// successfully redeemed.
+//
+// With none supplied, the library writes a JSON document carrying the access
+// token, an empty refresh token field, the session's validity and the resolved
+// redirect target — the same document a successful login answers with, plus
+// that target.
+//
+// It is called instead of the downstream handler, because the consume endpoint
+// is the library's own and the application has no route behind it. An error it
+// returns leaves the chain as the request's refusal.
+//
+// The result's Next is the target the allowlist resolved, never the one the
+// caller submitted: a responder that redirects to it cannot send a caller
+// somewhere the allowlist refused. Referrer-Policy is already set when the
+// responder runs, so a response that forgets it still cannot leak the token
+// through a referrer.
+func WithMagicLinkResponder(fn MagicLinkResponder) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		if fn == nil {
+			return newConfigError("WithMagicLinkResponder was given no function; omit the " +
+				"option to keep the default document")
+		}
+
+		i.respond = fn
+
+		return nil
+	}
+}
+
+// WithMagicLinkChecks runs the consumer's own refusal checks at redemption.
+//
+// Default: none. Each check receives the resolved principal and the user's
+// password-change time, and the first that returns an error stops the
+// redemption, leaving the link redeemable and returning that error unchanged.
+//
+// A check must have no side effects: several racing redemptions of one link may
+// each run it, and only one of them will go on to spend the link.
+//
+// Calls accumulate, and the checks run in the order they were given, after the
+// library's own policy check.
+func WithMagicLinkChecks(checks ...magiclink.Check) MagicLinkOption {
+	return func(i *magicLinkInterceptor) error {
+		for _, check := range checks {
+			if check == nil {
+				return newConfigError("WithMagicLinkChecks was given a nil check, which would " +
+					"panic at the first redemption")
+			}
+		}
+
+		i.checks = append(i.checks, checks...)
+
+		return nil
+	}
+}
+
 // PasswordChangeOption configures the password-change gate. Each replaces one
 // of the defaults named on EnablePasswordChangeGate.
 type PasswordChangeOption func(*passwordChangeGate) error
@@ -913,6 +1568,10 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 		c.enable(option, func() error {
 			return requireDep(option, "session manager", d.Sessions)
 		})
+
+		// Recorded for the MFA gate, which exempts this path so a session
+		// stranded mid-challenge can still be ended. See wireMFA.
+		c.logoutPath = l.path
 
 		c.useSessions(d.Sessions)
 		c.register(l, OrderLogout)

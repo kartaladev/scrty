@@ -1,0 +1,215 @@
+package httpsec_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/session"
+)
+
+// mfaChallengingEngine is an engine holding the library's own second-factor
+// policy, which declares that it can raise the challenge.
+func mfaChallengingEngine(t *testing.T) *policy.Engine {
+	t.Helper()
+
+	p, err := policy.NewMFAPolicy(NewMockMFAMethodLookup(gomock.NewController(t)))
+	require.NoError(t, err)
+
+	return engineOf(t, p)
+}
+
+// passwordChangeChallengingEngine holds a policy that can challenge, but for
+// something the MFA interceptor has nothing to do with.
+func passwordChangeChallengingEngine(t *testing.T) *policy.Engine {
+	t.Helper()
+
+	p, err := policy.NewPasswordAgePolicy()
+	require.NoError(t, err)
+
+	return engineOf(t, p)
+}
+
+// chainSessions is a session manager for a chain that needs one, supplied
+// through a built-in as a deployment would.
+func chainSessions(t *testing.T) httpsec.Option {
+	t.Helper()
+
+	m, err := session.NewManager()
+	require.NoError(t, err)
+
+	return httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: m})
+}
+
+// enableMFAFor is EnableMFA wired to everything it needs, so a case that is
+// about the assembly check is not about the MFA options.
+func enableMFAFor(t *testing.T) httpsec.Option {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+
+	method := NewMockMethod(ctrl)
+	method.EXPECT().Name().Return("test-method").AnyTimes()
+	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+
+	return httpsec.EnableMFA(method, httpsec.WithMFATokens(NewMockGenerator(ctrl)))
+}
+
+// TestChainRefusesUnenforcedMFAChallenge pins the refusal http-security
+// flagged and could not enforce itself.
+//
+// The per-request phase marks a second-factor challenge pending and continues,
+// because the gate is what enforces it and the verify endpoint must stay
+// reachable. With no gate, every challenged session is marked and served
+// anyway: the caller goes on with an unsatisfied second factor and nothing in
+// the request path says so. That silence is why this is a construction error.
+func TestChainRefusesUnenforcedMFAChallenge(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   func(t *testing.T) []httpsec.Option
+		assert func(t *testing.T, c *httpsec.Chain, err error)
+	}
+
+	assembles := func(t *testing.T, c *httpsec.Chain, err error) {
+		t.Helper()
+
+		require.NoError(t, err)
+		assert.NotNil(t, c)
+	}
+
+	cases := []testCase{
+		{
+			name: "a policy that can challenge for MFA with no interceptor",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{httpsec.WithPolicyEngine(mfaChallengingEngine(t))}
+			},
+			assert: func(t *testing.T, c *httpsec.Chain, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, c)
+				assert.Contains(t, strings.ToLower(err.Error()), "enablemfa",
+					"the error names what is missing")
+			},
+		},
+		{
+			name: "the same policy with EnableMFA",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(mfaChallengingEngine(t)),
+					enableMFAFor(t),
+				}
+			},
+			assert: assembles,
+		},
+		{
+			// The interceptor may be a consumer's own. What the check asks is
+			// whether anything occupies the slot, not whose it is.
+			name: "the same policy with a consumer's own interceptor at the slot",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				passes := httpsec.InterceptorFunc(
+					func(ex *httpsec.Exchange, next httpsec.Next) error { return next(ex) })
+
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(mfaChallengingEngine(t)),
+					httpsec.RegisterInterceptor(passes, httpsec.OrderMFAChallenge),
+				}
+			},
+			assert: assembles,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, err := httpsec.New(append([]httpsec.Option{chainSessions(t)}, tc.opts(t)...)...)
+			tc.assert(t, c, err)
+		})
+	}
+}
+
+// TestChainMFAChallengeRefusalScope pins that the refusal does not fire where
+// it should not. A check that refuses working deployments is one consumers
+// learn to route around.
+func TestChainMFAChallengeRefusalScope(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		opts func(t *testing.T) []httpsec.Option
+	}
+
+	cases := []testCase{
+		{
+			name: "a policy that can only challenge for a password change",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(passwordChangeChallengingEngine(t)),
+				}
+			},
+		},
+		{
+			name: "no policy at all",
+			opts: func(*testing.T) []httpsec.Option { return nil },
+		},
+		{
+			name: "an engine holding no policies",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{httpsec.WithPolicyEngine(engineOf(t))}
+			},
+		},
+		{
+			// Enforcing a challenge nothing raises is harmless: the gate never
+			// fires. Only the other direction is a hole.
+			name: "EnableMFA without an MFA policy",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{enableMFAFor(t)}
+			},
+		},
+		{
+			name: "a policy that challenges for a password change, with EnableMFA",
+			opts: func(t *testing.T) []httpsec.Option {
+				t.Helper()
+
+				return []httpsec.Option{
+					httpsec.WithPolicyEngine(passwordChangeChallengingEngine(t)),
+					enableMFAFor(t),
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, err := httpsec.New(append([]httpsec.Option{chainSessions(t)}, tc.opts(t)...)...)
+
+			require.NoError(t, err)
+			assert.NotNil(t, c)
+		})
+	}
+}
+
+// compile-time proof that the method double these cases use is a real method.
+var _ mfa.Method = (*MockMethod)(nil)

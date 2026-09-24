@@ -43,6 +43,45 @@ type sourceGuard interface {
 // here rather than a surprise where an interceptor is wired.
 var _ sourceGuard = (*ratelimit.SourceGuard)(nil)
 
+// resolveSourceGuard builds the per-source guard an endpoint counts its
+// failures through, supplying the documented in-memory limiter when the
+// consumer gave none.
+//
+// Every endpoint that guards by source wires it the same way, so they share
+// this: a limiter of that endpoint's own default limit and window, logging
+// through the chain's logger, wrapped in a guard named after the endpoint's
+// flow. option is the Enable... option the endpoint came from, so a wiring
+// failure names the setting the consumer has to change rather than the
+// internals it failed in.
+//
+// It runs after every option has been applied, because the default limiter
+// writes its one per-replica warning through the chain's logger, and which
+// logger that is is not settled until then.
+func (c *config) resolveSourceGuard(
+	option, flow string,
+	limiter ratelimit.Limiter,
+	limit int,
+	window time.Duration,
+) (sourceGuard, error) {
+	if limiter == nil {
+		built, err := ratelimit.NewMemoryLimiter(limit, window,
+			ratelimit.WithMemoryLimiterLogger(c.logger))
+		if err != nil {
+			return nil, newConfigError("%s could not build its default limiter: %s", option, err)
+		}
+
+		limiter = built
+	}
+
+	guard, err := ratelimit.NewSourceGuard(flow, limiter,
+		ratelimit.WithSourceGuardLogger(c.logger))
+	if err != nil {
+		return nil, newConfigError("%s could not build its source guard: %s", option, err)
+	}
+
+	return guard, nil
+}
+
 // classifyAddress decides whether addr may key a rate-limit bucket, and names
 // the reason when it may not.
 //

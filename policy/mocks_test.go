@@ -17,6 +17,68 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
+// MockChallenger is a mock of Challenger interface.
+type MockChallenger struct {
+	ctrl     *gomock.Controller
+	recorder *MockChallengerMockRecorder
+	isgomock struct{}
+}
+
+// MockChallengerMockRecorder is the mock recorder for MockChallenger.
+type MockChallengerMockRecorder struct {
+	mock *MockChallenger
+}
+
+// NewMockChallenger creates a new mock instance.
+func NewMockChallenger(ctrl *gomock.Controller) *MockChallenger {
+	mock := &MockChallenger{ctrl: ctrl}
+	mock.recorder = &MockChallengerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockChallenger) EXPECT() *MockChallengerMockRecorder {
+	return m.recorder
+}
+
+// Challenges mocks base method.
+func (m *MockChallenger) Challenges() []policy.ChallengeKind {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Challenges")
+	ret0, _ := ret[0].([]policy.ChallengeKind)
+	return ret0
+}
+
+// Challenges indicates an expected call of Challenges.
+func (mr *MockChallengerMockRecorder) Challenges() *MockChallengerChallengesCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Challenges", reflect.TypeOf((*MockChallenger)(nil).Challenges))
+	return &MockChallengerChallengesCall{Call: call}
+}
+
+// MockChallengerChallengesCall wrap *gomock.Call
+type MockChallengerChallengesCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockChallengerChallengesCall) Return(arg0 []policy.ChallengeKind) *MockChallengerChallengesCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockChallengerChallengesCall) Do(f func() []policy.ChallengeKind) *MockChallengerChallengesCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockChallengerChallengesCall) DoAndReturn(f func() []policy.ChallengeKind) *MockChallengerChallengesCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockPolicy is a mock of Policy interface.
 type MockPolicy struct {
 	ctrl     *gomock.Controller

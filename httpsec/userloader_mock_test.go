@@ -41,6 +41,45 @@ func (m *MockUserLoader) EXPECT() *MockUserLoaderMockRecorder {
 	return m.recorder
 }
 
+// LoadByUserID mocks base method.
+func (m *MockUserLoader) LoadByUserID(ctx context.Context, id identity.UserID) (*identity.Details, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LoadByUserID", ctx, id)
+	ret0, _ := ret[0].(*identity.Details)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// LoadByUserID indicates an expected call of LoadByUserID.
+func (mr *MockUserLoaderMockRecorder) LoadByUserID(ctx, id any) *MockUserLoaderLoadByUserIDCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LoadByUserID", reflect.TypeOf((*MockUserLoader)(nil).LoadByUserID), ctx, id)
+	return &MockUserLoaderLoadByUserIDCall{Call: call}
+}
+
+// MockUserLoaderLoadByUserIDCall wrap *gomock.Call
+type MockUserLoaderLoadByUserIDCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockUserLoaderLoadByUserIDCall) Return(arg0 *identity.Details, arg1 error) *MockUserLoaderLoadByUserIDCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockUserLoaderLoadByUserIDCall) Do(f func(context.Context, identity.UserID) (*identity.Details, error)) *MockUserLoaderLoadByUserIDCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockUserLoaderLoadByUserIDCall) DoAndReturn(f func(context.Context, identity.UserID) (*identity.Details, error)) *MockUserLoaderLoadByUserIDCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // LoadByUsername mocks base method.
 func (m *MockUserLoader) LoadByUsername(ctx context.Context, username string) (*identity.Details, error) {
 	m.ctrl.T.Helper()

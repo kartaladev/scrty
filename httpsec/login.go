@@ -312,6 +312,14 @@ func writeLoginResult(ex *Exchange, result LoginResult) error {
 		body.ValidUntil = result.Session.IdleExpiresAt
 	}
 
+	return writeSuccessDocument(ex, body)
+}
+
+// writeSuccessDocument is the framing every built-in responder answers a
+// success with: the document as JSON, with the content type and 200 that go
+// with it. The responders differ in the document they build and in nothing
+// else, so they share this and cannot drift apart in how they write it.
+func writeSuccessDocument(ex *Exchange, body any) error {
 	//nolint:gosec // G117: the access token is the document's purpose, not a leak of one
 	encoded, err := json.Marshal(body)
 	if err != nil {

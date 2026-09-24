@@ -85,6 +85,13 @@ type Session struct {
 	// MFA is how far a second-factor challenge has got. Library-owned.
 	MFA MFAState
 
+	// MFASatisfiedAt is when the second factor was accepted, read from the
+	// manager's clock. It is zero until then, including while a challenge is
+	// pending. Library-owned, like MFA itself: a consumer cannot set it
+	// through Data, so a satisfied second factor is something the library
+	// recorded and not something a consumer key can claim.
+	MFASatisfiedAt time.Time
+
 	// PasswordChangePending marks that this session owes a password change.
 	// Library-owned.
 	PasswordChangePending bool

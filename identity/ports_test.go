@@ -1,9 +1,12 @@
 package identity_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
 )
@@ -113,6 +116,112 @@ func TestApplyUserOptions(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, identity.ApplyUserOptions(tc.opts...))
+		})
+	}
+}
+
+// stubLoader is the smallest thing that satisfies identity.UserLoader: the two
+// lookups over a seeded map, plus a single injected failure standing in for a
+// store that is down. It exists so the port's miss-versus-outage contract can be
+// exercised without a store, since identity ships no loader of its own.
+type stubLoader struct {
+	byID map[identity.UserID]*identity.Details
+	err  error
+}
+
+func (s stubLoader) LoadByUsername(
+	_ context.Context, username string,
+) (*identity.Details, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	for _, d := range s.byID {
+		if d.Username == username {
+			return d, nil
+		}
+	}
+
+	return nil, identity.ErrUserNotFound
+}
+
+func (s stubLoader) LoadByUserID(
+	_ context.Context, id identity.UserID,
+) (*identity.Details, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+
+	d, ok := s.byID[id]
+	if !ok {
+		return nil, identity.ErrUserNotFound
+	}
+
+	return d, nil
+}
+
+func TestUserLoaderLoadByUserID(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		loader identity.UserLoader
+		id     identity.UserID
+		assert func(t *testing.T, d *identity.Details, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a hit returns the details",
+			loader: stubLoader{byID: map[identity.UserID]*identity.Details{
+				"u-1": {ID: "u-1", Username: "ada"},
+			}},
+			id: "u-1",
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, d)
+				assert.Equal(t, identity.UserID("u-1"), d.ID)
+			},
+		},
+		{
+			name:   "a miss is ErrUserNotFound",
+			loader: stubLoader{byID: map[identity.UserID]*identity.Details{}},
+			id:     "u-missing",
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				assert.ErrorIs(t, err, identity.ErrUserNotFound)
+				assert.Nil(t, d)
+			},
+		},
+		{
+			name:   "an outage is not ErrUserNotFound",
+			loader: stubLoader{err: errors.New("dial tcp: connection refused")},
+			id:     "u-1",
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound,
+					"a caller must be able to tell an outage from a miss")
+				assert.Nil(t, d)
+			},
+		},
+		{
+			name: "the reference is matched byte-for-byte",
+			loader: stubLoader{byID: map[identity.UserID]*identity.Details{
+				"u-1": {ID: "u-1"},
+			}},
+			id: "U-1",
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				assert.ErrorIs(t, err, identity.ErrUserNotFound, "references are not case-folded")
+				assert.Nil(t, d)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, err := tc.loader.LoadByUserID(t.Context(), tc.id)
+			tc.assert(t, d, err)
 		})
 	}
 }

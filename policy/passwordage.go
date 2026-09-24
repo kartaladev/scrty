@@ -98,6 +98,15 @@ type PasswordAgePolicy struct {
 	unknown UnknownPasswordAge
 }
 
+// Challenges reports that this policy can ask for a password change, and not
+// for a second factor: the two are enforced by different things, and a chain
+// that reads this must not be told to wire one for the other.
+//
+// A fresh slice every call, for the reason Challenger states.
+func (p *PasswordAgePolicy) Challenges() []ChallengeKind {
+	return []ChallengeKind{ChallengePasswordChange}
+}
+
 // Compile-time proof that this policy is one an Engine can hold.
 var _ Policy = (*PasswordAgePolicy)(nil)
 

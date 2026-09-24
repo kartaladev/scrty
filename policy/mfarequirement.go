@@ -64,6 +64,21 @@ func (f mfaRequirementOption) applyMFARequirement(p *mfaRequirementPolicy) { f(p
 // The default is to ask the lookup per user. With this set the lookup is never
 // called, so it may be omitted entirely — but a method must be configured, or
 // the policy would demand of everyone something nobody could present.
+//
+// # Enrol users before enabling it
+//
+// This option locks out every user who has not enrolled, and the library offers
+// them no way to enrol through the refusal. A user with no usable enrolment is
+// refused at every non-exempt login, and a refusal is all they get: there is no
+// enrolment step inside it, by design, because an enrolment offered to whoever
+// just presented a first factor is a second factor an attacker can enrol for
+// themselves.
+//
+// So enrol users first — out of band, or through a session established by a
+// login this policy exempts — and enable this afterwards. The change
+// mfa-enrolment-path will add a path for a user who is already required to use
+// a second factor; until it lands, this limit is real and is stated here rather
+// than discovered in production.
 func WithMFARequiredForAll() MFARequirementOption {
 	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.requiredForAll = true })
 }
@@ -251,6 +266,16 @@ func (p *mfaRequirementPolicy) Phases() []Phase {
 
 // Evaluate answers for one request, in the order NewMFARequirementPolicy
 // documents. It reads the Input and never writes to it.
+// Challenges reports that this policy can ask for a second factor. It denies
+// more often than it challenges, but a required user who has a usable
+// enrolment is challenged rather than refused, and that challenge needs
+// enforcing like any other.
+//
+// A fresh slice every call, for the reason Challenger states.
+func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
+	return []ChallengeKind{ChallengeMFA}
+}
+
 func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 	// 1. An exempt first factor is decided before anything is looked up: a
 	// machine caller has nobody to prompt, and a federated login already

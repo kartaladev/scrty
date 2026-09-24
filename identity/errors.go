@@ -8,8 +8,9 @@ import "errors"
 // is, never on data carried with it: a provisioner's collision error
 // deliberately carries no username.
 var (
-	// ErrUserNotFound is returned by a user loader for an unknown username, and
-	// by a provisioner's Update for a user that does not exist.
+	// ErrUserNotFound is returned by a user loader for an unknown username or
+	// user reference, and by a provisioner's Update for a user that does not
+	// exist.
 	ErrUserNotFound = errors.New("identity: user not found")
 
 	// ErrUserExists is returned by Provision when the username is taken.

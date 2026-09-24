@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -24,8 +25,9 @@ import (
 // through WithIdleTimeout and WithAbsoluteTimeout, and a test moves time
 // through WithClock without waiting for it.
 //
-// A Manager is safe for concurrent use as far as its store is: it holds no
-// mutable state of its own after construction.
+// A Manager is safe for concurrent use as far as its store is: after
+// construction it holds no mutable state of its own beyond the lock that
+// serialises Rotate.
 type Manager struct {
 	store           Store
 	idleTimeout     time.Duration
@@ -37,6 +39,68 @@ type Manager struct {
 	// storeSupplied records that WithStore replaced the default, so the
 	// per-process warning below is written only where it is true.
 	storeSupplied bool
+
+	// rotating serialises Rotate, one identifier at a time. Rotation is a
+	// read of the old entry followed by two writes, and the Store contract
+	// offers no way to do those three as one step, so without a lock two
+	// rotations of one session both see it present and both leave a live
+	// handle behind — which is the whole thing rotation exists to prevent.
+	// The lock follows the session rather than the manager, so two users
+	// completing a second factor at the same moment do not take turns across
+	// three store round-trips. See Rotate for what this does and does not
+	// cover.
+	rotating keyedMutex
+}
+
+// keyedMutex hands out one mutex per key and keeps none it is not using.
+//
+// The zero value is ready to use. It exists because the resource a rotation
+// contends for is one session, not the whole manager: locking per key lets
+// unrelated sessions rotate at the same time while two rotations of one
+// identifier still take turns.
+type keyedMutex struct {
+	mu   sync.Mutex
+	held map[string]*keyedLock
+}
+
+// keyedLock is one key's mutex and a count of who is using or waiting for it.
+// The count is what lets the last one out remove the entry, so the map does
+// not grow by one dead mutex per session ever rotated.
+type keyedLock struct {
+	mu       sync.Mutex
+	inFlight int
+}
+
+// lock takes the mutex for key and returns the function that releases it.
+//
+// Registering under k.mu and then taking the key's own mutex outside it is
+// what keeps unrelated keys concurrent: k.mu is held only for the map lookup,
+// never for the work the caller does under the key.
+func (k *keyedMutex) lock(key string) func() {
+	k.mu.Lock()
+	if k.held == nil {
+		k.held = make(map[string]*keyedLock)
+	}
+	l, found := k.held[key]
+	if !found {
+		l = &keyedLock{}
+		k.held[key] = l
+	}
+	l.inFlight++
+	k.mu.Unlock()
+
+	l.mu.Lock()
+
+	return func() {
+		l.mu.Unlock()
+
+		k.mu.Lock()
+		l.inFlight--
+		if l.inFlight == 0 {
+			delete(k.held, key)
+		}
+		k.mu.Unlock()
+	}
 }
 
 // perProcessWarning is written once per manager left on the default store.
@@ -235,3 +299,64 @@ func (m *Manager) IdleTimeout() time.Duration { return m.idleTimeout }
 // AbsoluteTimeout reports the deadline nothing extends, which is what
 // WithAbsoluteTimeout configured.
 func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
+
+// Rotate moves s to a new identifier and returns it under that identifier.
+//
+// It exists for the moment a session's privilege changes — a second factor
+// accepted, a step-up completed — because a handle someone obtained before
+// that change must not still answer requests after it. Everything except the
+// identifier is carried over: the user, the first factor, both deadlines, the
+// challenge state and the consumer's own data.
+//
+// The new entry is written before the old one is deleted. A failure of the
+// write leaves the old handle working and returns the error, so a caller that
+// refuses on the error has lost nothing. A failure of the delete is returned
+// too, and the old entry then expires on its own deadline rather than living
+// forever.
+//
+// A session the store no longer holds, or that is past either deadline, is
+// refused with the store's own error and nothing is written: rotation is a
+// move, not a way to bring a revoked session back under a fresh handle. That
+// is also what settles a race between two rotations of the same handle. They
+// are serialised on that identifier, so the second one finds the old entry
+// already gone and is refused with ErrSessionNotFound rather than minting a
+// second live handle for a session that has already moved. Rotations of
+// different sessions do not wait for each other.
+//
+// The limit of that guarantee is this process. The lock is a Manager's own,
+// so two managers over one shared durable store — two replicas, say — can
+// still rotate the same handle at the same time and leave two live ones. A
+// consumer who needs the guarantee across replicas enforces it in the store,
+// in the Delete of the old identifier.
+//
+// s is not modified. The returned session is the one to use.
+func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
+	if s == nil {
+		return nil, fmt.Errorf("session: rotate was given no session")
+	}
+
+	unlock := m.rotating.lock(s.ID)
+	defer unlock()
+
+	if _, err := m.store.Load(ctx, s.ID); err != nil {
+		return nil, err
+	}
+
+	id, err := m.newIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	rotated := s.clone()
+	rotated.ID = id
+
+	if err := m.store.Create(ctx, rotated); err != nil {
+		return nil, err
+	}
+
+	if err := m.store.Delete(ctx, s.ID); err != nil {
+		return nil, err
+	}
+
+	return rotated, nil
+}
