@@ -1,8 +1,10 @@
+# email-notification Specification
+
 ## Purpose
 
 Delivers the email messages scrty's flows send, such as sign-in links, through a transport the consumer can replace. The default SMTP transport is bounded in time, refuses header injection and requires encryption by default, and a queued sender keeps delivery out of the caller's response time.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Sending is a replaceable port
 Every library component that sends email SHALL depend only on the sending port. A consumer-supplied implementation SHALL receive every message such a component sends, unchanged, and the built-in SMTP sender SHALL then not be used.
@@ -141,3 +143,16 @@ Logs written by the built-in senders SHALL NOT contain the message body.
 #### Scenario: Failed delivery of a sign-in link
 - **WHEN** delivery of a message whose body contains a sign-in link fails
 - **THEN** no written log record contains the link
+
+### Requirement: Delivery failures are reported by default
+The built-in senders SHALL write their failure records to the application's own default logger unless the consumer supplies another. A dropped queued message, a failed delivery and a recovered panic SHALL all be reported this way.
+
+A dropped message is a sign-in link that never arrives, and the caller has already been told the send succeeded, so a default that discarded these records would make the failure invisible at both ends. A consumer who wants them silenced SHALL be able to supply a discarding logger explicitly.
+
+#### Scenario: A dropped message is reported without configuration
+- **WHEN** a queued sender with no logger configured drops a message because its queue is full
+- **THEN** a record of the drop is written to the default logger
+
+#### Scenario: Silence is available but must be asked for
+- **WHEN** a consumer supplies a discarding logger
+- **THEN** no record is written

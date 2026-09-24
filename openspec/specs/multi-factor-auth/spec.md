@@ -1,8 +1,10 @@
+# multi-factor-auth Specification
+
 ## Purpose
 
 Lets a user prove a second factor after the first, with methods that declare the channel their codes travel over. TOTP is built in. Codes cannot be replayed or guessed without limit, and a lost or unreadable enrolment never lets a user who is required to use MFA through.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Methods declare a constant, non-empty channel
 Every MFA method SHALL report a name and the channel its codes travel over, using a channel value defined by the identity model, and SHALL report the same channel for its whole lifetime. The built-in TOTP method SHALL report the identity model's `authenticator-app` channel, which is not the channel of any first-factor kind the library names. Constructing a component with a method whose channel is empty SHALL fail with a configuration error. A consumer SHALL be able to supply their own method.
@@ -134,6 +136,12 @@ When MFA is required for all users, a user with no usable enrolment SHALL be ref
 ### Requirement: Failed verifications are throttled per user
 The library SHALL count failed code verifications per user reference. It SHALL refuse further verifications for a user at the limit with a throttled error, without checking the code. The default SHALL be 5 failures per 15 minutes. A successful verification SHALL spend nothing. A consumer SHALL be able to replace the limiter. A limiter that cannot decide SHALL cause the verification to be refused.
 
+Recording a failure SHALL NOT be abandoned because the caller went away: a guess that was made SHALL be charged even if the client disconnects before the answer is written. The context handed to the limiter when recording a failure SHALL therefore carry no cancellation from the request.
+
+#### Scenario: A client that hangs up is still charged
+- **WHEN** a wrong code is presented and the request's context is already cancelled
+- **THEN** the failure is still recorded against that user
+
 #### Scenario: Guessing codes
 - **WHEN** five wrong codes are presented for `u-1` within 15 minutes and then a valid code is presented
 - **THEN** the valid code is refused with the throttled error
@@ -164,13 +172,23 @@ When a session's recorded first factor has the same channel as the method, the v
 - **THEN** verification proceeds and succeeds
 
 ### Requirement: The verify endpoint resolves the challenge and rotates the session
-The verify endpoint SHALL match only POST requests to its path, and SHALL read the code from the `code` form field. The default path SHALL be `/mfa/totp`, replaceable by an option. A request with no session SHALL be refused as authentication required.
+The verify endpoint SHALL match only POST requests to its path, and SHALL read the code from the `code` form field. The default path SHALL be `/mfa/totp`, replaceable by an option. A request with no session SHALL be refused as authentication required, and so SHALL a request whose session carries no resolved caller — the credential the endpoint issues names a principal, so a session without one cannot be answered. Both refusals SHALL happen before the code is read.
+
+The endpoint SHALL be given a token generator at construction, and a chain that enables it without one SHALL fail to assemble: the endpoint's whole purpose on success is to hand back a credential for the rotated session, and it has none to issue without a generator.
 
 On a valid code the endpoint SHALL:
 - resolve the session's MFA challenge, which records the second-factor-satisfied time;
 - rotate the session handle;
-- make the new handle available to the consumer's response;
+- write the response itself, through a replaceable responder that receives the rotated session;
 - answer with a success status without passing the request to later handlers.
+
+Because the endpoint answers the request itself, no later handler runs, so the rotated handle SHALL
+reach the caller through that responder or not at all. With no responder supplied the library SHALL
+write a credential the caller can use for its next request; a consumer SHALL be able to replace that
+whole response, for example to set a cookie instead.
+
+Rotation SHALL NOT strand the caller: a caller that completes its second factor SHALL be able to
+make an authenticated request afterwards without signing in again.
 
 On any failure the challenge SHALL stay pending, the handle SHALL be unchanged, and the error SHALL propagate to the consumer's error handling unchanged.
 
@@ -178,6 +196,24 @@ On any failure the challenge SHALL stay pending, the handle SHALL be unchanged, 
 - **WHEN** a session with the MFA challenge pending posts a valid code
 - **THEN** the session reports no pending challenge and a second-factor-satisfied time
 - **AND** the previous session handle no longer loads
+- **AND** the response carries a credential naming the rotated session, so the next request authenticates
+
+#### Scenario: The caller is not stranded by rotation
+- **WHEN** a bearer caller completes its second factor and then requests a protected route with the credential the verify response returned
+- **THEN** the request is authenticated and reaches the handler
+
+#### Scenario: Consumer responder
+- **WHEN** the endpoint is configured with a responder that sets a session cookie and writes no body
+- **THEN** that responder writes the response instead of the library's default
+- **AND** it receives the rotated session
+
+#### Scenario: A session with no resolved caller
+- **WHEN** a request to the verify path carries a session but no resolved caller
+- **THEN** it is refused as authentication required, and no code is read and no failure is recorded
+
+#### Scenario: No token generator
+- **WHEN** a chain enables the verify endpoint without a token generator
+- **THEN** assembly fails with a configuration error
 
 #### Scenario: Wrong code
 - **WHEN** a session with the MFA challenge pending posts a wrong code

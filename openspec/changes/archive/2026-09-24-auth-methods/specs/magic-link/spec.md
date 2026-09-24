@@ -242,6 +242,31 @@ The redemption endpoint SHALL match only POST requests to its path, and SHALL re
 - **WHEN** a link is redeemed successfully
 - **THEN** the response carries `Referrer-Policy: no-referrer`
 
+### Requirement: The redemption success response is replaceable
+The consume endpoint SHALL write the success response itself, through a replaceable responder that
+receives the established session, the issued access token and the **resolved** redirect target.
+
+With no responder supplied the library SHALL write a JSON document carrying the access token, an
+empty refresh token field, the session's validity and that redirect target. A consumer SHALL be able
+to replace that whole response, for example to set a cookie or answer with a redirect. A responder
+SHALL NOT receive the submitted redirect target, so that a consumer cannot reintroduce a target the
+allowlist refused.
+
+An error the responder returns SHALL become the request's refusal.
+
+#### Scenario: The default response
+- **WHEN** a valid link is redeemed with default options
+- **THEN** the response carries the access token, an empty refresh token field, the session's validity and the redirect target
+
+#### Scenario: Consumer responder
+- **WHEN** the endpoint is configured with a responder that sets a session cookie and writes no body
+- **THEN** that responder writes the response instead of the library's default
+- **AND** it receives the established session and the resolved redirect target
+
+#### Scenario: A responder that fails refuses the request
+- **WHEN** the configured responder returns an error
+- **THEN** that error becomes the request's refusal
+
 ### Requirement: Redirect targets are allowlisted exactly
 A submitted redirect target SHALL be used only when it exactly equals an entry of the redirect allowlist, and that entry is either a host-relative path or an absolute URL without userinfo on an origin the consumer declared. Every other target SHALL be replaced by `/`. By default the allowlist and the declared origins SHALL be empty.
 

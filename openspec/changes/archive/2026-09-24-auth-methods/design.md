@@ -125,7 +125,13 @@ func NewQueuedSender(inner Sender, opts ...QueuedOption) (*QueuedSender, error)
 func (s *QueuedSender) Close(ctx context.Context) error
 ```
 
-- **Defaults:** 2 workers, a queue of 256 and a send timeout of 30 s. Each is replaceable (`WithQueueWorkers`, `WithQueueSize`, `WithQueueSendTimeout`, `WithQueueLogger`), and non-positive values are construction errors.
+- **Defaults:** 2 workers, a queue of 256, a send timeout of 30 s, and `slog.Default()` for the
+  failure records. Each is replaceable (`WithQueueWorkers`, `WithQueueSize`, `WithQueueSendTimeout`,
+  `WithQueueLogger`), and non-positive values are construction errors. The logger default is
+  `slog.Default()` and not a discarding handler for the reason section 15 gives: `Send` has already
+  returned nil by the time a queued message is dropped, so a discarded record would make a lost
+  sign-in link invisible at both ends. A consumer wanting silence passes a discarding handler, which
+  makes the silence visible at the wiring.
 - **Behaviour:**
   - the request context is detached with `context.WithoutCancel`, so values survive while cancellation does not;
   - a full queue drops the message, logs at error and returns `ErrQueueFull`, never blocking;
@@ -223,6 +229,16 @@ func EnableMFA(method mfa.Method, opts ...MFAOption) Option
 | `WithMFAVerifyPath` | `/mfa/totp` | the POST path |
 | `WithMFAVerifyLimiter` | in-memory, 5 failures per 15 min, keyed by user reference | failed-code throttling only |
 | `WithMFALogInterval` | 1 min | MFA throttle-log sampling only |
+| `WithMFAResponder` | a JSON body carrying an access token for the rotated session and its expiry | the success response |
+| `WithMFATokens` | none: required, and a chain enabling MFA without one fails to assemble | the generator that issues the post-rotation credential |
+
+**The session manager is the chain's, and there is no option for another.** Magic link takes
+`WithMagicLinkSessions` because it *creates* a session and a consumer may legitimately want it made
+somewhere specific. The verify endpoint only ever *rotates* a session the chain already resolved, so
+a second manager could only ever be the wrong one — it would look up a handle that the rest of the
+chain does not know about. The asymmetry is deliberate: the option is absent because supplying it
+would be a wiring mistake, which is the same reason the rest of this design turns wiring mistakes
+into construction errors.
 
 **Verify endpoint, in order:**
 1. **Session.** No session returns `ErrAuthenticationRequired`.
@@ -232,8 +248,23 @@ func EnableMFA(method mfa.Method, opts ...MFAOption) Option
 5. **Success.**
    - resolve the MFA challenge on the session, which sets the second-factor-satisfied time;
    - rotate the handle (D5);
-   - place the new handle on the exchange so the consumer's response or cookie writer can use it;
-   - write 200 and end the chain.
+   - place the new handle on the exchange, and call the **MFA responder** with the rotated session;
+   - end the chain.
+
+**Why a responder and not a bare 200.** Implementation showed that placing the new handle on the
+exchange reaches nobody. The endpoint answers the request itself, so no downstream handler runs, and
+with `Chain.Middleware()` a consumer has no hook that sees the rotated identifier. A bearer caller's
+access token still named the deleted session, so completing the second factor signed the user out —
+rotation turning into a denial of service against the users who did exactly what was asked of them.
+
+`httpsec` already solved this shape once: `EnableFormLogin` takes a `LoginResponder`, "called instead
+of the downstream handler, because a login is the library's own endpoint and the application has no
+route behind it". The verify endpoint has the same shape, so it takes the same kind of thing.
+
+- **Default:** a JSON body carrying a freshly issued access token for the rotated session and its
+  expiry — the same shape the default login responder writes, so a client handles both alike.
+- **Override:** `WithMFAResponder` replaces the whole response, for a consumer who sets a cookie, who
+  answers 204, or who returns their own document. An error it returns becomes the request's refusal.
 
 **Gate:** any other request whose session has the MFA challenge pending returns `&ChallengeError{Kind: ChallengeMFA, Session: s}`. The one exception is the configured logout endpoint (POST on its path), which passes through (D15). Chain assembly gives the gate the logout path, so a consumer's logout path is exempt too, and slot order cannot strand a pending session.
 
@@ -314,7 +345,28 @@ func (m *Manager) Redeem(ctx context.Context, token, bindingNonce string, checks
   - mark any challenge pending in the creating flow;
   - issue the access token;
   - set `Referrer-Policy: no-referrer`;
+  - write the response through the **magic-link responder**;
   - return the challenge error or the success result.
+
+- **The success response is replaceable.** The consume endpoint is the library's own, with no route
+  behind it, so the same argument that gives form login a `LoginResponder` and the verify endpoint an
+  `MFAResponder` applies here. With none supplied the library writes the access token, an empty
+  refresh token, the session's validity and the resolved redirect target; `WithMagicLinkResponder`
+  replaces that whole document, for a consumer who sets a cookie or answers with a redirect instead.
+  The responder receives the resolved target, never the submitted one, so a consumer cannot
+  reintroduce the open redirect the allowlist closed.
+
+- **`PostAuthentication` is evaluated twice on this path**: once as the redemption check that decides
+  whether to spend the link, and again inside the shared login tail. The tail is shared deliberately,
+  so that challenge marking, the save-before-token ordering and the challenge error are identical to
+  form login's rather than a second copy that drifts. The cost is the second evaluation.
+
+  This is safe because a policy is a decision, not an action: the capability's contract is that
+  evaluating one has no side effects. A consumer policy that counts attempts, scores risk
+  adaptively or writes anywhere will therefore fire twice per redemption, and must not be written
+  that way. It is recorded here rather than left to be discovered, and closing it means letting the
+  tail accept a decision already made — a change to a helper form login also uses, which belongs to
+  its own change.
 - **Rate-limit accounting (D8):**
   - the source guard is checked before `Redeem`;
   - on any `Redeem` error, the interceptor records a failure for the source;
@@ -333,6 +385,7 @@ func (m *Manager) Redeem(ctx context.Context, token, bindingNonce string, checks
 | `WithAllowedOrigins(...)` | empty: no absolute redirect entry accepted |
 | `WithMagicLinkCountRefusals(bool)` | true |
 | `WithMagicLinkLimiter` | in-memory, 10 per 15 min |
+| `WithMagicLinkResponder` | a JSON body carrying the access token, an empty refresh token, the session's validity and the resolved redirect target |
 
 - **Request endpoint:**
   - POST only;
@@ -391,7 +444,17 @@ func (m *Manager) List(ctx context.Context, principal identity.UserID) ([]Key, e
   4. Evaluate `StatelessAuthentication` with `FirstFactor: api-key`. A deny returns its reason, and is not recorded, because the credential was valid.
   5. Populate the exchange without a session.
 
-  The default limiter allows 20 failures per source per minute (`WithAPIKeyLimiter`). A nil limiter is a construction error. Guards given the same limiter instance share buckets, as `rate-limiting` documents.
+  The default limiter allows 20 failures per source per minute (`WithAPIKeyLimiter`). A nil limiter is a construction error.
+
+  **Correction, proven during implementation.** An earlier draft of this decision said "guards given
+  the same limiter instance share buckets, as `rate-limiting` documents". That is false, and
+  `rate-limiting` documents the opposite: `NewSourceGuard`'s flow name "becomes part of every key the
+  guard reads and writes, so a source that exhausts one flow's allowance still has its own in
+  another". Sharing a limiter shares the *store and the limit*, never the allowance. The test
+  `TestFlowLimitersAreIndependent/one limiter shared by both flows` hands one `MemoryLimiter` to both
+  `WithMagicLinkLimiter` and `WithAPIKeyLimiter` and pins that exhausting one leaves the other
+  untouched. A consumer who genuinely wants one combined allowance across flows cannot get it by
+  sharing a limiter.
 - **Override:** every option. A consumer `Store` must pass `store-conformance`. Scope enforcement is the consumer's rule set, through `authorization`'s scope requirements.
 
 ### 12. Logging
@@ -464,9 +527,191 @@ Everything else follows the established behaviour, including:
 
 Each group ends with a `/simplify` pass and a re-run.
 
+### 15. What implementation corrected in these artifacts
+
+The decisions above were written before the code they describe. Implementation found them wrong in
+places. The code is right and these artifacts are now corrected; this section records what moved, so
+that a later reader does not "fix" the code back towards an earlier draft.
+
+**Vocabulary.** `factor` owns the first-factor and channel vocabulary and imports nothing, so the
+snippets' `identity.Channel` is `factor.Channel`, first-factor kinds are `factor.Kind`
+(`factor.Password`, `factor.MagicLink`, `factor.APIKey`, `factor.Basic`, `factor.OIDC`), and the
+authenticator-app channel is `factor.AuthenticatorApp`.
+
+**Ports that already existed.** Decision 4 proposed a new `mfa.EnrolmentLookup`. It was not needed:
+`policy.MFAMethodLookup` already exists with `Enrolled` plus `Channel`, and its godoc already pins
+the contract decision 4 describes — "a store failure, or a stored secret that will not decrypt, is an
+error, never a false". `mfa.LookupFor` therefore **adapts** a `Method` to that port and declares no
+new one. Likewise decision 10's redirect helper: `internal/origin.Allowlist` already validates
+entries and declared origins and resolves a requested target, so `httpsec` reuses it rather than
+growing a private copy, and `oidc-login` will reuse the same one.
+
+**Field and function names the snippets got wrong.** `identity.Details`'s reference field is `ID`,
+not `UserID`; its active flag is `Active`, not `Enabled`. `identity.Principal`'s display name is
+`Name` — there is no `DisplayName`. `pkg/id` has no package-level `New()`; identifiers come from
+`id.Generator.NewID()`. `session.Store.Save` never inserts, so `Rotate` writes with `Create`.
+`Exchange`'s writer is `Writer`, not `ResponseWriter`, and its client address is `ClientIP()`.
+`ErrAuthenticationFailed` belongs to `authenticate`, not `httpsec`. The module layout guard is
+`TestModuleLayout`, and the identity port guard is `TestIdentityShipsNoPortImplementation` — three
+artifacts named a `TestLayoutGuard` that does not exist, so the command they gave matched nothing and
+passed vacuously.
+
+**Options the design did not name but the design's own code required.** `httpsec` needed
+`WithMFATokens` and `WithMagicLinkTokens` (both required — the library ships no signing key, and an
+endpoint that cannot issue a credential cannot complete a login), `WithMagicLinkSessions`,
+`WithMagicLinkRedeemer`, `WithMagicLinkChecks`, and the `Default*` path, scheme and cookie-name
+constants that match `DefaultLoginPath` and `DefaultLogoutPath`. `notify` needed `WithSMTPTLSConfig`
+(a private certificate authority is a real deployment, and required STARTTLS cannot be tested
+against a self-signed server without it), `WithSMTPDialer` and the logger options. `apikey` and
+`magiclink` each needed `WithLogger` and `ErrConfig`, following the convention eleven other packages
+already share. `magiclink` also needed `WithRandom` and the exported `BindingNonceLength`.
+
+**Option names that had to differ between packages.** Decision 6 names `WithMFAVerifyLimiter` and
+`WithMFALogInterval`; those are the `httpsec` names, and they forward to `mfa`'s own
+`WithVerifyLimiter` and `WithVerifyLogInterval`. One name per subsystem, as the project's option
+rule requires.
+
+**Where the artifacts contradicted each other, and what was chosen.**
+
+- *The binding nonce.* Decision 8 said every `Request` branch returns "the same empty result" while
+  decision 10 had the interceptor synthesising a decoy. With binding enabled, `Request` now always
+  returns a nonce of `BindingNonceLength` — genuine when a link went out, a fresh decoy otherwise,
+  drawn **before** the address is resolved so the result cannot depend on anything learned
+  afterwards. The interceptor synthesises nothing and holds no decoy branch. This closes the channel
+  in the package that owns the secret rather than trusting every caller of `Request` to remember the
+  decoy, which is decision 8's own argument for refusing a synchronous sender, applied again.
+
+- *Limiter sharing.* Corrected in decision 11 above, with the test that proves it.
+
+**The MFA throttle logs to `slog.Default()`,** not to a discarding logger. A default that silently
+drops security-refusal records is not the safe default this project requires, and `policy` and
+`ratelimit` already log there. Silence remains available, but a consumer must ask for it explicitly,
+which makes the silence visible at the wiring.
+
+**`mfa.VerifyThrottleKey` is exported.** A consumer who supplies a shared limiter needs to name the
+bucket these failures land in — to read it, or to clear it after an administrative unlock — and a
+well-known key belongs in a documented contract rather than a string a consumer has to guess. It is
+`VerifyThrottleKey` and not `Key` because `apikey.Key` is a record type in a package consumers import
+alongside this one.
+
+**A policy that does not implement `policy.Challenger` is taken to raise no challenges.** Decision 14
+below rests on that reading; it is recorded on the interface itself.
+
+### 16. The three prerequisite APIs this change added
+
+The archived `sessions` and `identity-model` capabilities did not ship three things these specs
+require. Nothing is tagged, so they are additive. Each was added to the package that owns the
+concept, not to this change's own packages:
+
+| Added | Where | Required by |
+|---|---|---|
+| `Session.MFASatisfiedAt time.Time` | `session` | "records the second-factor-satisfied time". It is library-owned, so it sits beside `MFA` rather than in consumer `Data`, which a consumer could otherwise forge. |
+| `(*session.Manager).Rotate` | `session` | D5, session fixation. Rotation belongs to the manager that owns identifiers and the store, not to the HTTP layer that asks for it. |
+| `identity.UserLoader.LoadByUserID` | `identity` | D7. A link records a user reference, so redeeming it must load by that reference; loading by username is what D7 exists to prevent. |
+
+**`Rotate` decides a race with a presence check and an in-process keyed lock.** The `Store` port
+cannot express "the delete found nothing": `Delete` returns no count, and its contract states that
+deleting an absent session is not an error. Reporting it would mean changing a public interface this
+change has no mandate to change. The lock is keyed by session identifier, not held per manager, so
+rotations of different sessions do not serialise — `Rotate` runs on every successful second factor,
+and in durable mode it spans three store round-trips. The guarantee is therefore **within one
+process**: two managers over one shared durable store can still both rotate the same handle, and a
+consumer needing that across replicas enforces it in the store's delete. `Rotate`'s godoc says so.
+
+**Reported, not acted on:** the archived `sessions` and `identity-model` specs now understate their
+packages by exactly these three APIs. This change does not edit archived specs.
+
+### 17. What this change could not close
+
+**API key rotation is not atomic outside a transaction.** `Rotate` issues the new key, then revokes
+the old one: two writes. The spec scenario that demands a failed revoke roll the whole thing back
+needs a `Store` that can carry a caller-attached transaction, and none exists until
+`durable-persistence` lands. `UNREPRODUCED` — there is no code to reproduce it against. What ships
+is tested: the new key verifies, the old one fails, an unknown key issues nothing, and a failed
+revoke returns an error naming **both** identifiers so an operator knows which key to revoke by hand,
+with the old key still live. `Rotate`'s godoc states the limit.
+
+**Flagged to `durable-persistence`:**
+- the MFA enrolment table needs `confirmed_at` and `last_step` columns beyond the sealed secret;
+- an API key table matching `apikey.Key`;
+- three `store-conformance` scenarios these ports depend on and that no in-memory store can prove
+  for a real backend: `AcceptStep`'s conditional write, `PutPending`'s already-enrolled decision
+  being made **by the write**, and API key rotation's atomicity inside an attached transaction.
+
+**Flagged to `identity-model`:** `LoadByUserID` is the one `identity.UserLoader` method the
+`identitytest` conformance suite does not pin, so a consumer store could trim or case-fold a
+reference and still pass. D7's guarantee is tested in `magiclink` against that package's own loader,
+so this change's behaviour is covered; the *port contract* is not. A conformance case belongs with
+whichever change next touches that suite.
+
+**`PostAuthentication` is evaluated twice on the magic-link path**, as decision 9 records. Policies
+are not pure in practice — `policy.MFARequirement` reaches a store through `Enrolled` — so each
+magic-link sign-in costs a duplicate enrolment lookup.
+
+### 18. Claims raised during implementation
+
+Each was found while reviewing this change's own code, and each is labelled per the project's rule on
+defect claims. None was fixed under cover of the simplification pass; the two that fell inside this
+change's own packages were closed afterwards, test-first, as tasks 17.1 and 17.2. The rest are
+recorded because the next change to touch those areas should start from them.
+
+**Closed here.**
+
+- **`mfa.VerifyThrottle.RecordFailure` abandoned a recorded failure when the caller went away.**
+  `ratelimit.Limiter`'s contract says implementations should expect a cancellation-stripped context —
+  "a client that hangs up mid-attempt must still be charged for the guess it made" — and both
+  `ratelimit.SourceGuard.RecordFailure` and `httpsec`'s source recorder honour it. This one passed
+  the live request context straight through, and the verify endpoint hands it the request's own.
+  Invisible with the built-in in-memory limiter, which ignores the context entirely; a
+  consumer-supplied networked limiter — precisely what `WithMFAVerifyLimiter` exists for — would
+  fail to count a guess from a client that hung up, handing an attacker a free retry against the
+  throttle D4 exists to impose. **REPRODUCED** by task 17.2's red step and closed with
+  `context.WithoutCancel`.
+
+- **`notify`'s senders defaulted to a discarding logger**, while section 15 records that a default
+  which silently drops records is not the safe default this project requires. A dropped queued
+  message is a sign-in link that never arrives, and `Send` has already returned nil, so the failure
+  was invisible at both ends. The two defaults sat inside one change and one of them was wrong. Not a
+  defect — a default that contradicted the change's own stated rule. Closed as task 17.1: both
+  senders now report to `slog.Default()`, and silence is available but must be asked for.
+
+**Left open, for the changes that own them.**
+
+- **UNREPRODUCED — `httpsec.WithIPv6SourcePrefix` and `WithRateLimiter` reach none of this change's
+  flows.** `config.ipv6Prefix` and `config.limiter` are copied onto `Chain` and read by nothing in
+  production. The magic-link and API-key guards this change added build their own limiters with the
+  default `SourceKeyer`, so a consumer who narrows IPv6 keying or supplies a fleet-wide limiter at
+  chain level gets it applied to nothing — with no error and no log, while both options' godoc
+  describes behaviour that does not happen. This is a `library-design` rule 2 and 4 problem: an
+  override point that silently does nothing. It appears to predate this change, which merely brought
+  the first flows that could have honoured it. Unreproduced because the fix is a design decision —
+  which flows honour chain-level settings — rather than a repair.
+
+
+- **UNREPRODUCED — the unenforced-challenge refusal covers only `ChallengeMFA`.** Decision 14's
+  argument is that a challenge nothing enforces marks sessions that are then served anyway, silently.
+  That argument holds word for word for `ChallengePasswordChange`, which `policy`'s password-age
+  policy raises and which only the opt-in password-change gate enforces, while the chain marks the
+  session pending either way. The check now has the mechanism to cover both — `Challenger` is
+  implemented by the password-age policy — and covers one.
+
+- **UNREPRODUCED — the password-change gate has no logout exemption.** D15 established that a caller
+  stranded mid-challenge must still be able to end their session, because on a shared device that is
+  the one thing they most need to do. The MFA gate exempts logout; the password-change gate, which
+  sits outside logout's slot, does not. The two gates disagree about the same question.
+
+
+- **Library-design gap, not a defect:** the magic-link endpoints hard-code their form parameter names
+  and borrow `DefaultLoginBodyLimit` for a bound no option can set, where form login — the endpoint
+  they were modelled on — makes all four replaceable.
+
 ## Risks / Trade-offs
 
 - [The durable enrolment table defined by `durable-persistence` holds only the sealed secret] → This change needs `confirmed_at` and `last_step` columns. Squashing into the initial migration is free before the first tag. It is flagged to `durable-persistence`.
+- [`durable-persistence` also owes this change an API key table matching `apikey.Key`, and three `store-conformance` scenarios] → `AcceptStep`'s conditional write, `PutPending`'s already-enrolled decision being made by the write, and API key rotation's atomicity inside an attached transaction. The first two are contracts an in-memory store satisfies trivially and a real backend may not; the third is the scenario this change could not close at all (section 17). Flagged.
+- [`LoadByUserID` is not pinned by the `identitytest` conformance suite] → A consumer store could trim or case-fold a user reference and still pass, while D7's guarantee depends on byte-for-byte matching. This change's own behaviour is covered by `magiclink`'s tests; the port contract is not. Flagged to `identity-model`.
+- [The archived `sessions` and `identity-model` specs now understate their packages] → By `Session.MFASatisfiedAt`, `session.Manager.Rotate` and `identity.UserLoader.LoadByUserID` (section 16). Reported, not edited: archived specs are not this change's to rewrite.
+- [A consumer policy that can challenge but does not implement `policy.Challenger` is invisible to the wiring check] → Decision 14's refusal covers the library's own policies and any consumer policy that opts in. Enforcement for a silent consumer policy is the consumer's. The alternative — reading silence as "may raise anything" — would refuse working deployments, and a check that does that is one consumers disable.
 - [An attacker holding a user's password can lock them out of MFA verification for 15 minutes] → Documented. The limiter is replaceable, and the window is a per-flow option.
 - [Requiring MFA for all locks out unenrolled users] → Documented on the option and in the README. It is closed by `mfa-enrolment-path`.
 - [The magic-link request still does store work only for real accounts] → A small timing difference remains after the queued sender. It is documented, and a constant-work decoy path is left for later.
