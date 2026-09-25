@@ -60,6 +60,48 @@ happens; it is not a licence to take the task back.
 Large multi-agent fan-out through a workflow is a separate thing, and still needs the user to ask
 for it explicitly.
 
+## Dispatch size and review
+
+1. **A lane longer than about six tasks is split into sequential dispatches** at natural seams: one
+   component, or one group of spec requirements. Each dispatch is a fresh agent. The dispatches of
+   one lane run in order and never at the same time, so a later one may extend files an earlier one
+   in the same lane created. Dispatches of different lanes still run in parallel.
+2. **After each dispatch, verify, then review.** The main session runs the dispatch's verification
+   commands and reads the output, including the red-step failures the agent reports. Then a fresh
+   reviewer agent, which did not write the code, checks the diff against the spec requirements and
+   design decisions the dispatch covers. The reviewer reports and edits nothing. A defect it claims
+   needs a failing test or is labelled `UNREPRODUCED` (`defect-claims.md`).
+3. **Findings go back to a fresh dispatch of the same lane.** The main session may correct a few
+   lines itself instead, and says so, as allowed above. The lane's next dispatch starts only when
+   verification is green and the review is clean.
+4. **One whole-branch review runs before the final gate and before archive**, against every spec
+   requirement the change covers.
+
+## Choosing the implementer's model
+
+The main session chooses the model of every implementer subagent. It sets it explicitly on each
+dispatch, and never leaves it to the default. It chooses from the complexity of that dispatch:
+
+- **Sonnet** when the work is well specified and local. The plan gives the signatures and the tests,
+  and the dispatch applies a known pattern: a single-file seam change, an in-memory store
+  against a stated contract, a conformance case in an existing suite, option plumbing, adapter
+  scenarios, test fixtures, or godoc.
+- **Opus** when the dispatch needs judgement the plan cannot fully carry. That includes:
+  - concurrency, or ordering under races: singleflight, cooldowns, backoff, conditional writes,
+    barrier tests;
+  - security-critical verification or refusal logic: token and signature checks, check-then-consume,
+    policy guards, redaction;
+  - a refactor that must keep existing behaviour while extracting shared code;
+  - a change that touches several packages or an interface other lanes compile against;
+  - any dispatch where a mistake would pass the tests and still be wrong.
+- **When the two are close, choose Opus.** A redo costs more than the difference.
+- **Escalate on failure.** A dispatch that comes back failing verification or review for a reason
+  the stronger model would likely have avoided goes back on Opus, not Sonnet again.
+
+The main session names the chosen model and a one-line reason when it announces each dispatch, so
+the user can overrule it. Reviewer agents are outside this rule; the main session picks their model
+as it sees fit.
+
 ## What every delegation prompt carries
 
 A subagent does not reliably inherit this directory, so each prompt states for itself:
