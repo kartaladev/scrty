@@ -38,6 +38,17 @@ func TestHTTPRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "every value of a repeated query parameter, in order",
+			build: func(t *testing.T) *http.Request {
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/cb?state=a&code=c&state=b", nil)
+			},
+			assert: func(t *testing.T, r httpsec.Request) {
+				assert.Equal(t, []string{"a", "b"}, r.QueryValues("state"))
+				assert.Equal(t, []string{"c"}, r.QueryValues("code"))
+				assert.Nil(t, r.QueryValues("error"), "an absent parameter has no values")
+			},
+		},
+		{
 			name: "a present cookie is reported present",
 			build: func(t *testing.T) *http.Request {
 				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil)

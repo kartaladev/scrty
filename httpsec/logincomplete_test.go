@@ -222,6 +222,9 @@ type loginSpies struct {
 	store    *MockStore
 	tokens   *MockGenerator
 	sessions *session.Manager
+
+	mu      sync.Mutex
+	created *session.Session
 }
 
 func newLoginSpies(t *testing.T) *loginSpies {
@@ -245,6 +248,32 @@ func (s *loginSpies) expectCreate(log *callLog) {
 
 			return nil
 		})
+}
+
+// expectCreateCapturing is expectCreate that also keeps a copy of the session
+// as the store received it, so a test reads what the creating write carried
+// rather than what a later mutation left on the pointer.
+func (s *loginSpies) expectCreateCapturing(log *callLog) {
+	s.store.EXPECT().Create(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, got *session.Session) error {
+			log.add("Create")
+
+			written := *got
+
+			s.mu.Lock()
+			s.created = &written
+			s.mu.Unlock()
+
+			return nil
+		})
+}
+
+// createdSession is the session the store's Create received, or nil.
+func (s *loginSpies) createdSession() *session.Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.created
 }
 
 func (s *loginSpies) expectSave(log *callLog, err error) {
@@ -287,8 +316,9 @@ func TestCompleteLogin(t *testing.T) {
 	type testCase struct {
 		name   string
 		engine func(t *testing.T) *policy.Engine
+		opts   []session.CreateOption
 		wire   func(t *testing.T, s *loginSpies, log *callLog, jti *string)
-		assert func(t *testing.T, ex *httpsec.Exchange, tok string, err error, calls []string, jti string)
+		assert func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, jti string)
 	}
 
 	cases := []testCase{
@@ -299,7 +329,7 @@ func TestCompleteLogin(t *testing.T) {
 				s.expectCreate(log)
 				s.expectGenerate(log, jti)
 			},
-			assert: func(t *testing.T, ex *httpsec.Exchange, tok string, err error, calls []string, jti string) {
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, jti string) {
 				require.NoError(t, err)
 				assert.Equal(t, "issued-token", tok)
 				assert.Equal(t, []string{"Create", "Generate"}, calls)
@@ -325,7 +355,7 @@ func TestCompleteLogin(t *testing.T) {
 				s.expectCreate(log)
 				s.expectGenerate(log, jti)
 			},
-			assert: func(t *testing.T, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				require.NoError(t, err, "with no policies wired the chain rests on authentication alone")
 				assert.Equal(t, "issued-token", tok)
 				assert.Equal(t, []string{"Create", "Generate"}, calls)
@@ -339,7 +369,7 @@ func TestCompleteLogin(t *testing.T) {
 				return denyingEngine(t, policy.ErrAccountLocked)
 			},
 			wire: func(*testing.T, *loginSpies, *callLog, *string) {},
-			assert: func(t *testing.T, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				require.ErrorIs(t, err, policy.ErrAccountLocked)
 				assert.Empty(t, tok)
 				assert.Empty(t, calls, "no session is created for a login policy refused")
@@ -353,7 +383,7 @@ func TestCompleteLogin(t *testing.T) {
 				return denyingEngine(t, nil) // the engine substitutes ErrPolicyDenied
 			},
 			wire: func(*testing.T, *loginSpies, *callLog, *string) {},
-			assert: func(t *testing.T, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				require.Error(t, err, "a reasonless deny must never return nil")
 				require.ErrorIs(t, err, policy.ErrPolicyDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(err))
@@ -373,7 +403,7 @@ func TestCompleteLogin(t *testing.T) {
 				s.expectSave(log, nil)
 				s.expectGenerate(log, jti)
 			},
-			assert: func(t *testing.T, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, _ *loginSpies, ex *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, err, &ch)
 				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
@@ -398,7 +428,7 @@ func TestCompleteLogin(t *testing.T) {
 				s.expectSave(log, nil)
 				s.expectGenerate(log, jti)
 			},
-			assert: func(t *testing.T, _ *httpsec.Exchange, _ string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, _ string, err error, calls []string, _ string) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, err, &ch)
 				require.NotNil(t, ch.Session)
@@ -418,11 +448,85 @@ func TestCompleteLogin(t *testing.T) {
 				s.expectSave(log, errors.New("store unavailable"))
 				// No expectation on the generator: any call to it fails the test.
 			},
-			assert: func(t *testing.T, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
+			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				require.Error(t, err)
 				assert.Empty(t, tok)
 				assert.NotContains(t, calls, "Generate",
 					"a token must never exist for a session whose pending flag failed to persist")
+			},
+		},
+		{
+			name:   "a caller's first-factor option cannot replace the tail's",
+			engine: allowingEngine,
+			opts: []session.CreateOption{
+				session.WithFirstFactor(factor.Kind("magic-link")),
+			},
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectCreateCapturing(log)
+				s.expectGenerate(log, jti)
+			},
+			assert: func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, _ string, err error, calls []string, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"Create", "Generate"}, calls)
+
+				created := s.createdSession()
+				require.NotNil(t, created, "the store must have received the session")
+				assert.Equal(t, factor.Password, created.FirstFactor,
+					"the tail's own first factor wins; a caller's option cannot replace it")
+
+				require.NotNil(t, ex.Session)
+				assert.Equal(t, factor.Password, ex.Session.FirstFactor)
+			},
+		},
+		{
+			// Form login calls the tail with no create options, so this is the
+			// session a password login stores.
+			name:   "a password session records no external provider, issuer, session id or ID token",
+			engine: allowingEngine,
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectCreateCapturing(log)
+				s.expectGenerate(log, jti)
+			},
+			assert: func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, _ string, err error, _ []string, _ string) {
+				require.NoError(t, err)
+
+				created := s.createdSession()
+				require.NotNil(t, created, "the store must have received the session")
+				assert.Empty(t, created.ExternalProvider, "a password session names no provider")
+				assert.Empty(t, created.ExternalIssuer, "a password session names no issuer")
+				assert.Empty(t, created.ExternalSessionID, "a password session names no provider session")
+				assert.Empty(t, created.ExternalIDToken, "a password session holds no ID token")
+
+				require.NotNil(t, ex.Session)
+				assert.Empty(t, ex.Session.ExternalProvider)
+			},
+		},
+		{
+			name:   "caller create options land in the creating write",
+			engine: allowingEngine,
+			opts: []session.CreateOption{
+				session.WithExternalSession("corp", "https://idp.example", "sid-9", "raw.id.token"),
+			},
+			wire: func(_ *testing.T, s *loginSpies, log *callLog, jti *string) {
+				s.expectCreateCapturing(log)
+				s.expectGenerate(log, jti)
+			},
+			assert: func(t *testing.T, s *loginSpies, ex *httpsec.Exchange, _ string, err error, calls []string, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"Create", "Generate"}, calls,
+					"the federated fields are in the first write; no Save follows to add them")
+
+				created := s.createdSession()
+				require.NotNil(t, created, "the store must have received the session")
+				assert.Equal(t, "corp", created.ExternalProvider)
+				assert.Equal(t, "https://idp.example", created.ExternalIssuer)
+				assert.Equal(t, "sid-9", created.ExternalSessionID)
+				assert.Equal(t, "raw.id.token", created.ExternalIDToken)
+				assert.Equal(t, factor.Password, created.FirstFactor,
+					"the tail's own first factor still applies beside the caller's options")
+
+				require.NotNil(t, ex.Session)
+				assert.Equal(t, "corp", ex.Session.ExternalProvider)
 			},
 		},
 	}
@@ -444,8 +548,8 @@ func TestCompleteLogin(t *testing.T) {
 				testPrincipal(), factor.Password, "ada", time.Time{}, time.Now())
 
 			tok, err := httpsec.CompleteLoginForTest(ex,
-				httpsec.LoginTailDepsForTest(tc.engine(t), spies.sessions, spies.tokens), in)
-			tc.assert(t, ex, tok, err, log.all(), jti)
+				httpsec.LoginTailDepsForTest(tc.engine(t), spies.sessions, spies.tokens), in, tc.opts...)
+			tc.assert(t, spies, ex, tok, err, log.all(), jti)
 		})
 	}
 }

@@ -1,22 +1,30 @@
 package test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	_ "embed"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
+	"html"
 	"io"
 	"math/big"
 	"mime"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/mail"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +33,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mailpit"
+	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/outbound"
 )
 
 // smtpImage is the SMTP test server every RunTestSMTP caller gets, pinned by
@@ -45,6 +57,10 @@ type testConfig struct {
 	image    string
 	username string
 	password string
+
+	// Read by RunTestKeycloak only.
+	backchannelPort   int
+	backchannelPrefix string
 }
 
 // WithTestSMTPImage replaces the digest-pinned SMTP server image RunTestSMTP
@@ -278,4 +294,426 @@ func serverCertificate(t *testing.T) (certPEM, keyPEM []byte, pool *x509.CertPoo
 	require.True(t, pool.AppendCertsFromPEM(certPEM))
 
 	return certPEM, keyPEM, pool
+}
+
+// keycloakImage is the OpenID provider every RunTestKeycloak caller gets,
+// pinned by digest so a remote tag move cannot change what the tests ran
+// against.
+const keycloakImage = "quay.io/keycloak/keycloak:26.7.2@sha256:831330513f55695572286e521f94fcd3c7e285250ed5b848090265a33192f669"
+
+// The realm RunTestKeycloak imports, and the bootstrap administrator the
+// container starts with. The administrator only ever drives the admin API
+// from the test process; it is never handed to the code under test.
+const (
+	keycloakRealm         = "scrty"
+	keycloakHTTPSPort     = "8443/tcp"
+	keycloakAdminUsername = "admin"
+	keycloakAdminPassword = "admin"
+)
+
+// keycloakRealmJSON is the realm RunTestKeycloak imports: two confidential
+// clients, one per client authentication method, and two users. It is
+// embedded so a caller in any package gets the same realm without depending
+// on its own working directory.
+//
+//go:embed testdata/keycloak/realm.json
+var keycloakRealmJSON []byte
+
+// keycloakClientAuth is the client authentication method each realm client
+// stands for. Keycloak accepts either method from a client-secret client, so
+// the pairing is a convention of this fixture, not something Keycloak
+// enforces: the method a test exercises is the one its oidc.Provider names.
+var keycloakClientAuth = map[string]oidc.ClientAuthMethod{
+	"scrty-post":  oidc.ClientSecretPost,
+	"scrty-basic": oidc.ClientSecretBasic,
+}
+
+// WithTestKeycloakImage replaces the digest-pinned Keycloak image
+// RunTestKeycloak starts. Use it to reproduce a report against another
+// version; the default is what CI runs.
+func WithTestKeycloakImage(ref string) TestOption {
+	return func(c *testConfig) { c.image = ref }
+}
+
+// WithTestKeycloakBackchannelLogout registers a back-channel logout URL on
+// every realm client, so Keycloak delivers a logout token to the test process
+// when one of the client's sessions ends.
+//
+// hostPort is a port the test process is already listening on, on the host.
+// Keycloak runs in a container, where the host's loopback is not reachable,
+// so the port is exposed into the container through testcontainers' host
+// port access, and the URL Keycloak posts to is
+// http://host.testcontainers.internal:<hostPort><pathPrefix><client id>.
+// The listener must therefore exist before RunTestKeycloak is called; an
+// unstarted httptest.Server already holds its listener.
+//
+// The default registers no back-channel URL, and Keycloak then sends no
+// logout token at all.
+func WithTestKeycloakBackchannelLogout(hostPort int, pathPrefix string) TestOption {
+	return func(c *testConfig) {
+		c.backchannelPort = hostPort
+		c.backchannelPrefix = pathPrefix
+	}
+}
+
+// KeycloakClient is one confidential client of the test realm.
+type KeycloakClient struct {
+	ID          string
+	Secret      string
+	RedirectURL string                // the only redirect URI the realm accepts for it
+	Auth        oidc.ClientAuthMethod // the method this client stands for
+}
+
+// KeycloakUser is one user of the test realm. Subject is Keycloak's user id,
+// fixed by the realm import, and so the sub every token for the user carries.
+type KeycloakUser struct {
+	Subject  string
+	Username string
+	Password string
+	Email    string
+}
+
+// KeycloakConn is how a test reaches the Keycloak realm RunTestKeycloak
+// started.
+type KeycloakConn struct {
+	// Issuer is the https issuer URL of the test realm, as the test process
+	// reaches it.
+	Issuer string
+
+	// Clients are the realm's clients, one per client authentication method.
+	Clients []KeycloakClient
+
+	// Users are the realm's users, with their passwords.
+	Users []KeycloakUser
+
+	// Outbound is a confined client that trusts the certificate Keycloak
+	// presents, and nothing else beyond the defaults: https only.
+	Outbound *outbound.Client
+
+	// Login plays the user at Keycloak's login page, without a browser: given
+	// the authorization redirect, it loads the login form, submits username
+	// and password, and returns the redirect Keycloak answers with — the
+	// client's callback URL carrying code and state. It fails the test when
+	// Keycloak does not redirect back.
+	Login func(t *testing.T, authorizeURL, username, password string) (callbackURL string)
+
+	base string       // the Keycloak origin, for the admin API
+	hc   *http.Client // trusts the container's certificate, follows no redirect
+}
+
+// RunTestKeycloak starts a Keycloak server for one test, with the realm in
+// testdata/keycloak/realm.json imported, and returns how to reach it.
+//
+// Keycloak serves https only, with a certificate generated for this test and
+// trusted by KeycloakConn.Outbound, so the code under test keeps its default
+// https-only outbound policy and its certificate verification. The container
+// is ready only once the realm's discovery document answers, because the port
+// opens before the import has finished.
+//
+// The container is torn down with the test. It skips the test when Docker is
+// unavailable. Every test that needs a real OpenID provider calls this rather
+// than starting its own.
+func RunTestKeycloak(t *testing.T, opts ...TestOption) KeycloakConn {
+	t.Helper()
+
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+
+	cfg := &testConfig{image: keycloakImage}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	realm, clients, users := keycloakRealmFixture(t, cfg)
+
+	certPEM, keyPEM, pool := serverCertificate(t)
+	keyPEM = pkcs8PEM(t, keyPEM)
+
+	ctx := t.Context()
+
+	customizers := []testcontainers.ContainerCustomizer{
+		testcontainers.WithExposedPorts(keycloakHTTPSPort),
+		testcontainers.WithCmd("start-dev", "--import-realm"),
+		testcontainers.WithEnv(map[string]string{
+			"KC_BOOTSTRAP_ADMIN_USERNAME":   keycloakAdminUsername,
+			"KC_BOOTSTRAP_ADMIN_PASSWORD":   keycloakAdminPassword,
+			"KC_HTTPS_CERTIFICATE_FILE":     "/opt/keycloak/conf/tls.crt",
+			"KC_HTTPS_CERTIFICATE_KEY_FILE": "/opt/keycloak/conf/tls.key",
+		}),
+		testcontainers.WithFiles(
+			testcontainers.ContainerFile{
+				Reader:            bytes.NewReader(certPEM),
+				ContainerFilePath: "/opt/keycloak/conf/tls.crt",
+				FileMode:          0o644,
+			},
+			testcontainers.ContainerFile{
+				Reader:            bytes.NewReader(keyPEM),
+				ContainerFilePath: "/opt/keycloak/conf/tls.key",
+				FileMode:          0o644,
+			},
+			testcontainers.ContainerFile{
+				Reader:            bytes.NewReader(realm),
+				ContainerFilePath: "/opt/keycloak/data/import/realm.json",
+				FileMode:          0o644,
+			},
+		),
+		testcontainers.WithWaitStrategy(
+			wait.ForHTTP("/realms/"+keycloakRealm+"/.well-known/openid-configuration").
+				WithPort(keycloakHTTPSPort).
+				// A config of its own: a transport mutates the config it is
+				// given, so it is never shared with the clients below.
+				WithTLS(true, &tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12}).
+				WithStatusCodeMatcher(func(status int) bool { return status == http.StatusOK }).
+				WithStartupTimeout(3 * time.Minute),
+		),
+	}
+	if cfg.backchannelPort != 0 {
+		customizers = append(customizers, testcontainers.WithHostPortAccess(cfg.backchannelPort))
+	}
+
+	ctr, err := testcontainers.Run(ctx, cfg.image, customizers...)
+	// Registered as soon as a container exists, before the error is checked,
+	// so one that started but never became ready is removed too.
+	if ctr != nil {
+		t.Cleanup(func() {
+			// Not t.Context(): it is already cancelled by the time cleanup
+			// runs, and Terminate would fail before it removed anything.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			// The JVM is slow to honour SIGTERM; nothing in it needs a clean
+			// shutdown, so it is killed shortly after.
+			if err := ctr.Terminate(cleanupCtx, testcontainers.StopTimeout(2*time.Second)); err != nil {
+				t.Fatalf("failed to terminate Keycloak container: %s", err)
+			}
+		})
+	}
+	require.NoError(t, err, "failed to start Keycloak test container")
+
+	host, err := ctr.Host(ctx)
+	require.NoError(t, err, "failed to read the Keycloak host")
+	port, err := ctr.MappedPort(ctx, keycloakHTTPSPort)
+	require.NoError(t, err, "failed to read the Keycloak port")
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}
+
+	out, err := outbound.New(outbound.WithHTTPClient(&http.Client{Transport: transport}))
+	require.NoError(t, err, "failed to build the outbound client")
+
+	base := "https://" + net.JoinHostPort(host, port.Port())
+	hc := &http.Client{
+		Transport:     transport,
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	return KeycloakConn{
+		Issuer:   base + "/realms/" + keycloakRealm,
+		Clients:  clients,
+		Users:    users,
+		Outbound: out,
+		Login:    keycloakLogin(transport),
+		base:     base,
+		hc:       hc,
+	}
+}
+
+// LogoutUser ends every Keycloak session of the user with this subject
+// through the admin API, as an administrator would. Keycloak then delivers a
+// back-channel logout token to every client of those sessions that registered
+// a back-channel URL.
+func (c KeycloakConn) LogoutUser(t *testing.T, subject string) {
+	t.Helper()
+
+	form := url.Values{
+		"grant_type": {"password"},
+		"client_id":  {"admin-cli"},
+		"username":   {keycloakAdminUsername},
+		"password":   {keycloakAdminPassword},
+	}
+	tokReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		c.base+"/realms/master/protocol/openid-connect/token", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	tokReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := c.hc.Do(tokReq) //nolint:bodyclose // closed by readAll once the caller is done with it
+	require.NoError(t, err, "admin token request failed")
+	body := readAll(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "admin token request answered %s", body)
+
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	require.NoError(t, json.Unmarshal(body, &tok))
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+		c.base+"/admin/realms/"+keycloakRealm+"/users/"+url.PathEscape(subject)+"/logout", nil)
+	require.NoError(t, err)
+	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+
+	resp, err = c.hc.Do(req) //nolint:bodyclose // closed by readAll once the caller is done with it
+	require.NoError(t, err, "admin logout request failed")
+	body = readAll(t, resp)
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "admin logout answered %s", body)
+}
+
+// keycloakLoginForm finds the login form's action in Keycloak's login page.
+var keycloakLoginForm = regexp.MustCompile(`(?s)<form[^>]*\bid="kc-form-login"[^>]*>`)
+
+// keycloakFormAction reads the action attribute out of a form tag.
+var keycloakFormAction = regexp.MustCompile(`\baction="([^"]+)"`)
+
+// keycloakLogin returns KeycloakConn.Login over transport. Each call keeps its
+// own cookie jar, as a fresh browser would, so two logins never share a
+// Keycloak session.
+func keycloakLogin(transport http.RoundTripper) func(t *testing.T, authorizeURL, username, password string) string {
+	return func(t *testing.T, authorizeURL, username, password string) string {
+		t.Helper()
+
+		jar, err := cookiejar.New(nil)
+		require.NoError(t, err)
+
+		hc := &http.Client{
+			Transport:     transport,
+			Jar:           jar,
+			Timeout:       30 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
+
+		authorizeReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, authorizeURL, nil)
+		require.NoError(t, err)
+		resp, err := hc.Do(authorizeReq) //nolint:bodyclose // closed by readAll once the caller is done with it
+		require.NoError(t, err, "loading Keycloak's login page failed")
+		page := readAll(t, resp)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "Keycloak's login page answered %s", page)
+
+		form := keycloakLoginForm.Find(page)
+		require.NotNil(t, form, "Keycloak's page has no login form: %s", page)
+		action := keycloakFormAction.FindSubmatch(form)
+		require.NotNil(t, action, "Keycloak's login form has no action: %s", form)
+
+		loginForm := url.Values{
+			"username":     {username},
+			"password":     {password},
+			"credentialId": {""},
+		}
+		loginReq, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+			html.UnescapeString(string(action[1])), strings.NewReader(loginForm.Encode()))
+		require.NoError(t, err)
+		loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err = hc.Do(loginReq) //nolint:bodyclose // closed by readAll once the caller is done with it
+		require.NoError(t, err, "submitting Keycloak's login form failed")
+		answer := readAll(t, resp)
+		require.Equal(t, http.StatusFound, resp.StatusCode,
+			"Keycloak did not redirect back after login: %s", answer)
+
+		callback := resp.Header.Get("Location")
+		require.NotEmpty(t, callback, "Keycloak's redirect carried no Location")
+
+		return callback
+	}
+}
+
+// keycloakRealmFixture reads the embedded realm, registers the back-channel
+// URL on every client when cfg asks for one, and returns the realm to import
+// with the clients and users it defines.
+func keycloakRealmFixture(t *testing.T, cfg *testConfig) (realm []byte, clients []KeycloakClient, users []KeycloakUser) {
+	t.Helper()
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(keycloakRealmJSON, &doc), "the realm fixture is not JSON")
+
+	var shape struct {
+		Clients []struct {
+			ClientID     string   `json:"clientId"`
+			Secret       string   `json:"secret"`
+			RedirectURIs []string `json:"redirectUris"`
+		} `json:"clients"`
+		Users []struct {
+			ID          string `json:"id"`
+			Username    string `json:"username"`
+			Email       string `json:"email"`
+			Credentials []struct {
+				Value string `json:"value"`
+			} `json:"credentials"`
+		} `json:"users"`
+	}
+	require.NoError(t, json.Unmarshal(keycloakRealmJSON, &shape), "the realm fixture has an unexpected shape")
+
+	for _, c := range shape.Clients {
+		auth, ok := keycloakClientAuth[c.ClientID]
+		require.True(t, ok, "the realm fixture's client %q stands for no client authentication method", c.ClientID)
+		require.Len(t, c.RedirectURIs, 1, "the realm fixture's client %q needs exactly one redirect URI", c.ClientID)
+
+		clients = append(clients, KeycloakClient{
+			ID:          c.ClientID,
+			Secret:      c.Secret,
+			RedirectURL: c.RedirectURIs[0],
+			Auth:        auth,
+		})
+	}
+
+	for _, u := range shape.Users {
+		require.Len(t, u.Credentials, 1, "the realm fixture's user %q needs exactly one password", u.Username)
+
+		users = append(users, KeycloakUser{
+			Subject:  u.ID,
+			Username: u.Username,
+			Password: u.Credentials[0].Value,
+			Email:    u.Email,
+		})
+	}
+
+	if cfg.backchannelPort != 0 {
+		rawClients, ok := doc["clients"].([]any)
+		require.True(t, ok, "the realm fixture has no clients list")
+
+		for _, rc := range rawClients {
+			client, ok := rc.(map[string]any)
+			require.True(t, ok)
+
+			attrs, ok := client["attributes"].(map[string]any)
+			if !ok {
+				attrs = map[string]any{}
+				client["attributes"] = attrs
+			}
+
+			attrs["backchannel.logout.url"] = fmt.Sprintf("http://%s:%d%s%s",
+				testcontainers.HostInternal, cfg.backchannelPort, cfg.backchannelPrefix, client["clientId"])
+		}
+	}
+
+	realm, err := json.Marshal(doc)
+	require.NoError(t, err)
+
+	return realm, clients, users
+}
+
+// pkcs8PEM re-encodes an EC private key in PKCS #8, the encoding Keycloak's
+// certificate loader reads.
+func pkcs8PEM(t *testing.T, keyPEM []byte) []byte {
+	t.Helper()
+
+	block, _ := pem.Decode(keyPEM)
+	require.NotNil(t, block, "the generated key is not PEM")
+
+	key, err := x509.ParseECPrivateKey(block.Bytes)
+	require.NoError(t, err)
+
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	require.NoError(t, err)
+
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
+// readAll reads and closes resp's body.
+func readAll(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+
+	defer func() { _ = resp.Body.Close() }()
+
+	b, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	return b
 }

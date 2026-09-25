@@ -125,7 +125,16 @@ func markChallengePending(s *session.Session, kind policy.ChallengeKind) {
 // With no policy engine wired the phase allows, which is the documented default
 // of WithPolicyEngine: a consumer who registers no policies rests on
 // authentication alone rather than on a phase that refuses everything.
-func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input) (string, error) {
+//
+// opts are the caller's own attributes for the session, applied in the write
+// that creates it and before the first factor the tail records from in. A
+// federated login passes its provider session here, so the session is never
+// stored, even briefly, without it. Form login and magic-link pass none.
+//
+// The first factor recorded is always in.FirstFactor, the tail's own: it is
+// applied last, so a caller's own session.WithFirstFactor in opts cannot
+// replace the factor the policy phase was just evaluated on.
+func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...session.CreateOption) (string, error) {
 	ctx := ex.Context()
 
 	d := policy.Decision{Outcome: policy.Allow}
@@ -137,7 +146,17 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input) (string, 
 		return "", policyDenyReason(d)
 	}
 
-	s, err := deps.sessions.Create(ctx, in.User, session.WithFirstFactor(in.FirstFactor))
+	// The caller's own attributes first, then the first factor: a federated
+	// login records its provider session here, in the write that creates the
+	// session, so no request ever sees the session without it. The first
+	// factor is applied last so it always wins, even if opts happens to carry
+	// its own session.WithFirstFactor — the factor the policy phase was just
+	// evaluated on is the one that gets recorded.
+	create := make([]session.CreateOption, 0, len(opts)+1)
+	create = append(create, opts...)
+	create = append(create, session.WithFirstFactor(in.FirstFactor))
+
+	s, err := deps.sessions.Create(ctx, in.User, create...)
 	if err != nil {
 		return "", err
 	}

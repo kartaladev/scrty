@@ -27,6 +27,9 @@ func (h *httpRequest) Path() string           { return h.r.URL.Path }
 func (h *httpRequest) Header(n string) string { return h.r.Header.Get(n) }
 func (h *httpRequest) Query(n string) string  { return h.r.URL.Query().Get(n) }
 
+// QueryValues returns every value of the parameter, in the order sent.
+func (h *httpRequest) QueryValues(n string) []string { return h.r.URL.Query()[n] }
+
 // Cookie reports absence separately from an empty value, so an interceptor can
 // tell a cookie that was never sent from one deliberately cleared.
 func (h *httpRequest) Cookie(n string) (string, bool) {

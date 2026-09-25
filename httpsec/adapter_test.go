@@ -80,6 +80,12 @@ func (r *miniRequest) Query(name string) string {
 	return r.ex.query.Get(name)
 }
 
+func (r *miniRequest) QueryValues(name string) []string {
+	r.Query(name) // parses the query on first use
+
+	return r.ex.query[name]
+}
+
 // FormValue carries this framework's own semantics, which are net/http's: the
 // posted form first, the query behind it. What an interceptor may read a
 // credential from is the interceptor's decision, not the adapter's.

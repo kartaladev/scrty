@@ -56,6 +56,11 @@ const (
 	defectRoleMint defect = "role-mint"
 	// The loader trims and case-folds the username it is given.
 	defectTrimmingLoader defect = "trimming-loader"
+	// LoadByUserID matches a reference case-insensitively instead of byte for byte.
+	defectCaseFoldsUserID defect = "case-folds user references"
+	// LoadByUserID trims whitespace from a reference before comparing, although a
+	// reference is opaque and must match byte for byte.
+	defectTrimsUserID defect = "trims user references"
 	// Update writes every field, ignoring which the caller named.
 	defectIgnoresIsSet defect = "ignores-isset"
 	// Update's read-modify-write is not serialized.
@@ -95,6 +100,8 @@ var everyDefect = []defect{
 	defectRoleStrip,
 	defectRoleMint,
 	defectTrimmingLoader,
+	defectCaseFoldsUserID,
+	defectTrimsUserID,
 	defectIgnoresIsSet,
 	defectUnserializedUpdate,
 	defectNoFaultInjection,
@@ -282,8 +289,18 @@ func (s *brokenStore) LoadByUserID(
 		return nil, s.loadErr
 	}
 
+	lookup := id
+	if s.d == defectTrimsUserID {
+		lookup = identity.UserID(strings.TrimSpace(string(id)))
+	}
+
 	for _, d := range s.byName {
-		if d.ID != id {
+		matches := d.ID == lookup
+		if s.d == defectCaseFoldsUserID {
+			matches = strings.EqualFold(string(d.ID), string(id))
+		}
+
+		if !matches {
 			continue
 		}
 

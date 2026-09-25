@@ -442,7 +442,7 @@ func TestOutboundNoBodyReplay(t *testing.T) {
 
 	evil, _ := countingServer(t, true, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if strings.Contains(string(body), "client_secret") {
+		if strings.Contains(string(body), "client_secret") || r.Header.Get("Authorization") != "" {
 			secretsReceived.Add(1)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -458,7 +458,7 @@ func TestOutboundNoBodyReplay(t *testing.T) {
 	res, err := c.PostForm(t.Context(), idp.URL+"/token", url.Values{
 		"client_secret": {"the-secret"},
 		"code":          {"the-code"},
-	})
+	}, http.Header{"Authorization": {"Basic c2VjcmV0"}})
 
 	assert.Zero(t, secretsReceived.Load(), "no client secret may reach another origin")
 	require.ErrorIs(t, err, outbound.ErrRefused)
@@ -728,36 +728,123 @@ func TestOutboundBodyLimit(t *testing.T) {
 }
 
 // TestOutboundPostForm pins that what the caller gave is what the provider
-// receives. It stands outside a table because it is the only case exercising
-// PostForm's own shape: TestOutboundNoBodyReplay calls PostForm too, but for
-// what happens to the body on a redirect, with a second server and a different
-// setup entirely.
+// receives: the form always, and the caller's header exactly as given, or
+// nothing beyond the form content type when there is none.
+//
+// TestOutboundNoBodyReplay calls PostForm too, but for what happens to the
+// body and the header on a redirect, with a second server and a different
+// setup entirely, which is why that case stays a separate test rather than a
+// row here.
 func TestOutboundPostForm(t *testing.T) {
 	t.Parallel()
 
-	idp, _ := countingServer(t, true, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		w.WriteHeader(http.StatusOK)
-		//nolint:gosec // G705: a test server echoing the request back to the test that sent it
-		_, _ = fmt.Fprintf(w, "%s\n%s", r.Header.Get("Content-Type"), body)
-	})
+	type received struct {
+		contentType, authorization string
+		form                       url.Values
+	}
 
-	c, err := outbound.New(outbound.WithHTTPClient(trusting(t, idp)))
-	require.NoError(t, err)
+	type testCase struct {
+		name   string
+		header http.Header
+		assert func(t *testing.T, got received, err error)
+	}
 
-	res, err := c.PostForm(t.Context(), idp.URL+"/token", url.Values{
-		"grant_type": {"authorization_code"},
-		"code":       {"the code"},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, res)
+	cases := []testCase{
+		{
+			name:   "no header sends only the form and its content type",
+			header: nil,
+			assert: func(t *testing.T, got received, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "application/x-www-form-urlencoded", got.contentType)
+				assert.Empty(t, got.authorization)
+				assert.Equal(t, "authorization_code", got.form.Get("grant_type"))
+				assert.Equal(t, "the code", got.form.Get("code"))
+			},
+		},
+		{
+			name:   "a caller header is sent exactly as given",
+			header: http.Header{"Authorization": {"Basic Y2xpZW50OnNlY3JldA=="}},
+			assert: func(t *testing.T, got received, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, "Basic Y2xpZW50OnNlY3JldA==", got.authorization)
+				assert.Equal(t, "the code", got.form.Get("code"),
+					"the header travels beside the form, not instead of it")
+			},
+		},
+	}
 
-	contentType, encoded, found := strings.Cut(string(res.Body), "\n")
-	require.True(t, found)
-	assert.Equal(t, "application/x-www-form-urlencoded", contentType)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	sent, err := url.ParseQuery(encoded)
-	require.NoError(t, err)
-	assert.Equal(t, "authorization_code", sent.Get("grant_type"))
-	assert.Equal(t, "the code", sent.Get("code"))
+			var got received
+			idp, _ := countingServer(t, true, func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				got.contentType = r.Header.Get("Content-Type")
+				got.authorization = r.Header.Get("Authorization")
+				got.form, _ = url.ParseQuery(string(body))
+				w.WriteHeader(http.StatusOK)
+			})
+
+			c, err := outbound.New(outbound.WithHTTPClient(trusting(t, idp)))
+			require.NoError(t, err)
+
+			_, err = c.PostForm(t.Context(), idp.URL+"/token", url.Values{
+				"grant_type": {"authorization_code"},
+				"code":       {"the code"},
+			}, tc.header)
+			tc.assert(t, got, err)
+		})
+	}
+}
+
+func TestOutboundAllowsScheme(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []outbound.Option
+		assert func(t *testing.T, c *outbound.Client)
+	}
+
+	cases := []testCase{
+		{
+			name: "the default client allows https only",
+			assert: func(t *testing.T, c *outbound.Client) {
+				assert.True(t, c.AllowsScheme("https"))
+				assert.True(t, c.AllowsScheme("HTTPS"), "schemes compare case-insensitively")
+				assert.False(t, c.AllowsScheme("http"))
+				assert.False(t, c.AllowsScheme(""))
+				assert.False(t, c.AllowsScheme("ftp"))
+			},
+		},
+		{
+			name: "a client allowing http reports it, case-insensitively",
+			opts: []outbound.Option{outbound.WithAllowedSchemes("http")},
+			assert: func(t *testing.T, c *outbound.Client) {
+				assert.True(t, c.AllowsScheme("HTTP"))
+				assert.True(t, c.AllowsScheme("http"))
+				assert.True(t, c.AllowsScheme("https"))
+			},
+		},
+		{
+			name: "case folding stays inside ASCII",
+			assert: func(t *testing.T, c *outbound.Client) {
+				// U+017F LATIN SMALL LETTER LONG S folds to "s" under Unicode
+				// case folding; a request to such a URL would not parse as
+				// https, so the answer here must not either.
+				assert.False(t, c.AllowsScheme("httpſ"))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			c, err := outbound.New(tc.opts...)
+			require.NoError(t, err)
+			tc.assert(t, c)
+		})
+	}
 }

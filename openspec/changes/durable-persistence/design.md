@@ -31,6 +31,11 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - use-testcontainers.
 - **Target database:** PostgreSQL only.
 
+- **Inbound needs from `oidc-brokering`** (reported by that change on completion; its in-memory stores and contracts are final):
+  - tables matching the records `oidc.Link`, `oidc.Flow` and `oidc.HandoffRecord` as the table model below now describes them: the handoff row keys the user by reference (`user_id`), not by username, and both flows and handoffs store `next`;
+  - the durable adapters run the `test/oidc` conformance suites `RunLinkStoreSuite`, `RunFlowStoreSuite` and `RunHandoffStoreSuite`, which each come with a load-bearing guard. They pin a refused zero cutoff on `DeleteExpired` (`oidc.ErrRetainSinceRequired`), a strictly-before cutoff (a record expiring exactly at the cutoff is kept), single completion and single consumption under 8 racing callers, and refusal of an identical re-insert of a link;
+  - a `session.Cipher` implementation for the existing `session.NewEncryptedStore`, which seals the federated session's retained ID token (`secrets-at-rest`).
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -79,8 +84,9 @@ Tables are created unqualified, in the connection's `search_path`. Each owning c
 | `mfa_enrolments` | `id uuid` | `user_id` | `secret text NOT NULL` (base64url envelope) | `confirmed_at timestamptz NULL`; `last_step bigint NULL` (last accepted TOTP time step); re-enrolment replaces the secret and resets both to `NULL` |
 | `api_keys` | `id uuid` | `key_id` | — | `user_id text`; `secret_hash bytea` one-way digest |
 | `one_time_tokens` | `id uuid` | `token_id` | — | `purpose`, `subject`; `secret_hash`, `binding_hash` digests; `consumed_at timestamptz NULL`; index `(purpose, subject)` |
-| `oidc_links` | `id uuid` | `(provider, issuer, subject)` | — | `user_id text`, indexed for deletion by user; never keyed on email || `oidc_flows` | `id uuid` | `handle` | — | `completed_at NULL`; index `expires_at` |
-| `oidc_handoffs` | `id uuid` | `token_id` | — | `secret_hash` digest; `subject text` (the username the handoff redeems into, stored and returned unchanged; oidc-brokering checks the stored user reference still matches); `provider`, `issuer text`; `session_id`, `id_token text NOT NULL DEFAULT ''`; `consumed_at NULL`; index `expires_at`; no roles column (roles are resolved at redemption) |
+| `oidc_links` | `id uuid` | `(provider, issuer, subject)` | — | `user_id text` (the opaque user reference, compared byte for byte), indexed for deletion by user; `username`, `email text` kept for operators only, never used for lookup and never keyed on; `created_at` |
+| `oidc_flows` | `id uuid` | `handle` | — | `provider`, `state`, `nonce`, `verifier`, `next text` (untrusted, stored verbatim); `expires_at`; `completed_at NULL`; index `expires_at`. `Complete(handle, provider, state)` is one conditional `UPDATE … WHERE handle = $1 AND provider = $2 AND state = $3 AND completed_at IS NULL AND expires_at > now` |
+| `oidc_handoffs` | `id uuid` | `token_id` | — | `secret_hash` digest; `user_id text` (the user reference the code was issued for; redemption loads the user by it and checks the loaded reference still matches byte for byte); `next text` (untrusted, re-resolved through the redirect allowlist at redemption); `provider`, `issuer text`; `session_id`, `id_token text NOT NULL DEFAULT ''`; `consumed_at NULL`; index `expires_at`; no roles column (roles are resolved at redemption) |
 
 Rules and why:
 - **Primary keys** come from each store's `id.Generator`. Default: `id.NewV7Generator()`. Override: `WithIDGenerator` on every adapter.

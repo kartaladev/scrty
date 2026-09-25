@@ -1,0 +1,65 @@
+{
+  "realm": "scrty",
+  "enabled": true,
+  "sslRequired": "external",
+  "clients": [
+    {
+      "clientId": "scrty-post",
+      "name": "scrty client_secret_post",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "scrty-post-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": ["https://app.example/login/oauth2/callback/scrty-post"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      }
+    },
+    {
+      "clientId": "scrty-basic",
+      "name": "scrty client_secret_basic",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "scrty-basic-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "frontchannelLogout": false,
+      "redirectUris": ["https://app.example/login/oauth2/callback/scrty-basic"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "backchannel.logout.session.required": "true",
+        "backchannel.logout.revoke.offline.tokens": "false"
+      }
+    }
+  ],
+  "users": [
+    {
+      "id": "5f0c2b8e-3d1a-4c7e-9a2b-1e6f8d4c0a01",
+      "username": "ada",
+      "email": "ada@example.com",
+      "emailVerified": true,
+      "firstName": "Ada",
+      "lastName": "Lovelace",
+      "enabled": true,
+      "credentials": [{"type": "password", "value": "ada-password", "temporary": false}]
+    },
+    {
+      "id": "5f0c2b8e-3d1a-4c7e-9a2b-1e6f8d4c0a02",
+      "username": "grace",
+      "email": "grace@example.com",
+      "emailVerified": true,
+      "firstName": "Grace",
+      "lastName": "Hopper",
+      "enabled": true,
+      "credentials": [{"type": "password", "value": "grace-password", "temporary": false}]
+    }
+  ]
+}

@@ -21,8 +21,8 @@ const (
 	// OrderJWKS serves the public key set, which is answered for anyone.
 	OrderJWKS Order = 100
 
-	// OrderOIDC is reserved for federated login: the authorize redirect, the
-	// callback and the handoff.
+	// OrderOIDC is federated login: the authorize redirect, the callback, the
+	// handoff redemption and back-channel logout. See EnableOIDCLogin.
 	OrderOIDC Order = 200
 
 	// OrderFormLogin is the form and JSON login endpoint.

@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -56,6 +57,10 @@ func TestStatusForError(t *testing.T) {
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
 		{name: "account locked", err: policy.ErrAccountLocked, want: 423},
 		{name: "too many sessions", err: policy.ErrTooManySessions, want: 429},
+		{name: "unknown identity provider", err: oidc.ErrUnknownProvider, want: 404},
+		{name: "invalid logout token", err: oidc.ErrInvalidLogoutToken, want: 400},
+		{name: "invalid handoff is an authentication failure with no row", err: oidc.ErrInvalidHandoff, want: 401},
+		{name: "wrapped invalid ID token", err: fmt.Errorf("x: %w", oidc.ErrInvalidIDToken), want: 401},
 
 		{
 			name: "wrapped sentinel keeps its status",
@@ -181,6 +186,24 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrInvalidAttributes":      authorize.ErrInvalidAttributes,
 		"authorize.ErrUnsupportedAttributes":  authorize.ErrUnsupportedAttributes,
 	},
+	"github.com/kartaladev/scrty/oidc": {
+		"oidc.ErrConfig":              oidc.ErrConfig,
+		"oidc.ErrDiscoveryFailed":     oidc.ErrDiscoveryFailed,
+		"oidc.ErrExchangeFailed":      oidc.ErrExchangeFailed,
+		"oidc.ErrFlowStoreFull":       oidc.ErrFlowStoreFull,
+		"oidc.ErrFlowUnspent":         oidc.ErrFlowUnspent,
+		"oidc.ErrHandoffNotFound":     oidc.ErrHandoffNotFound,
+		"oidc.ErrInvalidHandoff":      oidc.ErrInvalidHandoff,
+		"oidc.ErrInvalidIDToken":      oidc.ErrInvalidIDToken,
+		"oidc.ErrInvalidLogoutToken":  oidc.ErrInvalidLogoutToken,
+		"oidc.ErrInvalidState":        oidc.ErrInvalidState,
+		"oidc.ErrLinkExists":          oidc.ErrLinkExists,
+		"oidc.ErrLinkNotFound":        oidc.ErrLinkNotFound,
+		"oidc.ErrNoLinkedAccount":     oidc.ErrNoLinkedAccount,
+		"oidc.ErrProvisioningRefused": oidc.ErrProvisioningRefused,
+		"oidc.ErrRetainSinceRequired": oidc.ErrRetainSinceRequired,
+		"oidc.ErrUnknownProvider":     oidc.ErrUnknownProvider,
+	},
 	"github.com/kartaladev/scrty/policy": {
 		"policy.ErrAccountLocked":               policy.ErrAccountLocked,
 		"policy.ErrConfig":                      policy.ErrConfig,
@@ -240,11 +263,21 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"policy.ErrReapUnsupported":               "a maintenance-path fault, not a request refusal",
 		"policy.ErrRetainSinceRequired":           "a maintenance-path fault, not a request refusal",
 		"policy.ErrMFARequirementLookupMissing":   "a wiring fault, refused at construction",
+		"oidc.ErrConfig":                          "a wiring fault, refused at construction",
+		"oidc.ErrExchangeFailed":                  "a provider failure, deliberately 500",
+		"oidc.ErrDiscoveryFailed":                 "a provider failure, deliberately 500",
+		"oidc.ErrLinkNotFound":                    "a store outcome the library converts before it leaves oidc",
+		"oidc.ErrLinkExists":                      "a store outcome the library converts before it leaves oidc",
+		"oidc.ErrHandoffNotFound":                 "a store outcome the library converts before it leaves oidc",
+		"oidc.ErrRetainSinceRequired":             "a purge misuse, never a request outcome",
+		"oidc.ErrFlowStoreFull":                   "capacity exhaustion, deliberately 500",
+		"oidc.ErrFlowUnspent":                     "a marker joined onto another refusal, never returned alone",
 	}
 
 	for _, pkg := range []string{
 		"github.com/kartaladev/scrty/authenticate",
 		"github.com/kartaladev/scrty/authorize",
+		"github.com/kartaladev/scrty/oidc",
 		"github.com/kartaladev/scrty/policy",
 		"github.com/kartaladev/scrty/ratelimit",
 		"github.com/kartaladev/scrty/session",

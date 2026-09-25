@@ -19,6 +19,13 @@ type Request interface {
 	Path() string
 	Header(name string) string
 	Query(name string) string
+
+	// QueryValues returns every value of the query parameter name, in the
+	// order the client sent them, and nil when the parameter is absent. It is
+	// what lets an interceptor refuse a parameter sent more than once rather
+	// than silently judge whichever value Query happens to return.
+	QueryValues(name string) []string
+
 	Cookie(name string) (value string, ok bool)
 	FormValue(name string) string
 

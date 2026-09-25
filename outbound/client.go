@@ -145,15 +145,46 @@ func (c *Client) Get(ctx context.Context, rawURL string, header http.Header) (*R
 // PostForm sends form to rawURL as application/x-www-form-urlencoded, which is
 // what a token exchange is.
 //
-// The form is the caller's, encoded and sent unchanged. Because the body may
-// carry a client secret, a code and a verifier, the redirect policy this
-// package installs matters most here: a 307 or 308 answer that would resend it
-// somewhere else is refused before the redirected request goes out.
-func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values) (*Response, error) {
-	header := http.Header{}
-	header.Set("Content-Type", "application/x-www-form-urlencoded")
+// The form is the caller's, encoded and sent unchanged. The header may be nil,
+// which is the same as no header: whatever it carries is sent as given, except
+// Content-Type, which this method always sets to the form content type, replacing
+// any the caller supplied. This package adds and interprets nothing else of its
+// own — a client authenticating with HTTP
+// Basic puts its credentials here. Because the body and the header may both
+// carry a client secret, the redirect policy this package installs matters
+// most here: a 307 or 308 answer that would resend either somewhere else is
+// refused before the redirected request goes out.
+func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values, header http.Header) (*Response, error) {
+	h := header.Clone()
+	if h == nil {
+		h = http.Header{}
+	}
+	h.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	return c.do(ctx, http.MethodPost, rawURL, header, form.Encode())
+	return c.do(ctx, http.MethodPost, rawURL, h, form.Encode())
+}
+
+// AllowsScheme reports whether the client sends requests to URLs with this
+// scheme: https always, and http only when WithAllowedSchemes added it. The
+// scheme compares case-insensitively, within ASCII only.
+//
+// It answers from the same allow-set, and with the same normalisation, as the
+// check every request passes, so a component can refuse at construction a URL
+// the client would refuse at request time.
+func (c *Client) AllowsScheme(scheme string) bool {
+	return slices.Contains(c.schemes, asciiLower(scheme))
+}
+
+// asciiLower folds only A-Z. Unicode case mapping would fold a look-alike
+// letter onto an allowed scheme that url.Parse never produces.
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, ch := range b {
+		if 'A' <= ch && ch <= 'Z' {
+			b[i] = ch + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // checkTarget refuses a URL before a connection is opened.
@@ -167,7 +198,7 @@ func (c *Client) checkTarget(raw string) error {
 		return fmt.Errorf("%w: %q is not an absolute http or https URL with a host", ErrRefused, raw)
 	}
 
-	if !slices.Contains(c.schemes, scheme) {
+	if !c.AllowsScheme(scheme) {
 		return fmt.Errorf("%w: the scheme of %q is not allowed", ErrRefused, raw)
 	}
 

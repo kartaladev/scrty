@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -118,6 +119,7 @@ func RunUserLoaderSuite(t *testing.T, newFixture Factory) {
 
 	t.Run("Lookup", func(t *testing.T) { runUserLoaderCases(t, newFixture) })
 	t.Run("Ownership", func(t *testing.T) { runLoadOwnershipCase(t, newFixture) })
+	t.Run("LoadByUserID", func(t *testing.T) { runLoadByUserIDCases(t, newFixture) })
 }
 
 // runLoadOwnershipCase checks that a loaded record belongs to the caller.
@@ -269,6 +271,95 @@ func runUserLoaderCases(t *testing.T, newFixture Factory) {
 			tc.assert(t, d, err)
 		})
 	}
+}
+
+// runLoadByUserIDCases checks the load-by-reference contract: a reference is
+// opaque and matched byte for byte, never trimmed or case-folded.
+func runLoadByUserIDCases(t *testing.T, newFixture Factory) {
+	t.Helper()
+
+	type testCase struct {
+		name   string
+		lookup func(created identity.UserID) identity.UserID
+		assert func(t *testing.T, created identity.UserID, d *identity.Details, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "an existing reference loads details carrying exactly that reference",
+			lookup: func(created identity.UserID) identity.UserID { return created },
+			assert: func(t *testing.T, created identity.UserID, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, d)
+				assert.Equal(t, created, d.ID, "the reference is returned byte for byte")
+			},
+		},
+		{
+			name:   "an unknown reference is user not found",
+			lookup: func(identity.UserID) identity.UserID { return "no-such-user" },
+			assert: func(t *testing.T, _ identity.UserID, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+		{
+			name: "a case-folded reference is user not found",
+			lookup: func(created identity.UserID) identity.UserID {
+				return identity.UserID(swapCase(string(created)))
+			},
+			assert: func(t *testing.T, _ identity.UserID, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound,
+					"a reference is opaque: one that differs only in case names another user")
+			},
+		},
+		{
+			name:   "a reference with a trailing space is not trimmed",
+			lookup: func(created identity.UserID) identity.UserID { return created + " " },
+			assert: func(t *testing.T, _ identity.UserID, _ *identity.Details, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t)
+			created, err := f.Provision(t.Context(), "ada@example.com")
+			require.NoError(t, err)
+
+			d, err := f.LoadByUserID(t.Context(), tc.lookup(created.ID))
+			tc.assert(t, created.ID, d, err)
+		})
+	}
+}
+
+// swapCase inverts the case of every letter in s, so the result differs from s
+// wherever s has letters to invert. A generated reference that carries no
+// letters at all would leave a naive swap unchanged, which would make the
+// "case-folded" row indistinguishable from the "existing reference" row and
+// prove nothing; appending a letter-bearing suffix in that case keeps the
+// result different from s while still asserting the not-found outcome.
+func swapCase(s string) string {
+	out := []rune(s)
+	changed := false
+
+	for i, r := range out {
+		switch {
+		case unicode.IsUpper(r):
+			out[i] = unicode.ToLower(r)
+			changed = true
+		case unicode.IsLower(r):
+			out[i] = unicode.ToUpper(r)
+			changed = true
+		}
+	}
+
+	if !changed {
+		return s + "X"
+	}
+
+	return string(out)
 }
 
 // RunRoleLoaderSuite checks the role loader contract.

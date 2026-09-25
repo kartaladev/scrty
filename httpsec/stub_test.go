@@ -25,7 +25,17 @@ func (r stubRequest) Path() string              { return r.path }
 func (r stubRequest) Header(n string) string    { return r.headers[n] }
 func (r stubRequest) Query(n string) string     { return r.query[n] }
 func (r stubRequest) FormValue(n string) string { return r.form[n] }
-func (r stubRequest) ClientIP() string          { return r.clientIP }
+
+// QueryValues answers from the single-valued query map, so a stub never sends
+// a parameter twice.
+func (r stubRequest) QueryValues(n string) []string {
+	v, ok := r.query[n]
+	if !ok {
+		return nil
+	}
+	return []string{v}
+}
+func (r stubRequest) ClientIP() string { return r.clientIP }
 
 func (r stubRequest) Cookie(n string) (string, bool) {
 	v, ok := r.cookies[n]

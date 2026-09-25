@@ -41,20 +41,24 @@ Any failure other than "not found" or "link exists" SHALL be returned as an erro
 - **THEN** every link lookup and insert is served by that store
 
 ### Requirement: A linked identity resolves only to the user it was created for
-When a link exists for a verified identity, the library SHALL load the user by the link's username through the user loader. The login SHALL succeed only when:
+When a link exists for a verified identity, the library SHALL load the user by the link's user reference through the user loader, never by the link's username. The login SHALL succeed only when:
 - the loader returns details whose user reference equals the link's user reference exactly; and
 - the user is enabled.
 
-A "user not found" result, no details, a user reference that differs from the link's, and a disabled user SHALL each fail the login as an authentication failure, with the same outcome as an unlinked identity. A loader failure other than "user not found" SHALL be returned as an error that is not an authentication failure.
+A "user not found" result, no details, a user reference that differs from the link's, and a disabled user SHALL each fail the login as an authentication failure, with the same outcome as an unlinked identity. A loader failure other than "user not found" SHALL be returned as an error that is not an authentication failure. A missing user loader or link store SHALL fail construction with a configuration error naming the missing port.
 
 #### Scenario: Dangling link
-- **WHEN** a link names username `alice` and the user loader reports "user not found" for `alice`
+- **WHEN** a link names user reference `u-1` and the user loader reports "user not found" for `u-1`
 - **THEN** the login fails as an authentication failure, not as a server error
 
 #### Scenario: Recycled username
 - **WHEN** a link was created for user reference `u-1` with username `alice`, `u-1` was deleted, and a different user `u-2` now holds username `alice`
 - **THEN** the login fails as an authentication failure
-- **AND** it does not resolve to `u-2`
+- **AND** the user loader is never asked for username `alice`
+
+#### Scenario: Non-conforming loader returns another user
+- **WHEN** a link names user reference `u-1` and the loader, asked for `u-1`, returns details for `u-2`
+- **THEN** the login fails as an authentication failure
 
 #### Scenario: Disabled user
 - **WHEN** a link names user `u-1` and `u-1` is disabled
@@ -134,7 +138,7 @@ A username that already exists SHALL fail the login as an authentication failure
 
 #### Scenario: Missing provisioner
 - **WHEN** provisioning is enabled for `corp` and no user provisioner is supplied
-- **THEN** construction fails with a configuration error naming the missing provisioner
+- **THEN** construction fails with a configuration error that is identifiable as a missing port and names the user provisioner
 
 ### Requirement: A password hash can be mapped from a claim only in a verifiable, bounded form
 A consumer SHALL be able to map a dotted claim path to the user's stored password hash for a provider. It is off by default. The mapped value SHALL be accepted only when it is a well-formed bcrypt hash whose cost factor, read from the hash itself, lies within the accepted cost band. The band SHALL be 10 to 15 inclusive by default, and the consumer SHALL be able to replace it with any band inside bcrypt's own range of 4 to 31. Any other value, and a value that is absent or not a string, SHALL be ignored: nothing is written, and the login is not failed.
@@ -179,7 +183,7 @@ A mapped hash SHALL never appear in a log or an error. Errors from the user prov
 - **THEN** construction fails with a configuration error
 
 ### Requirement: Claim mirroring refreshes mapped fields on later logins through an update
-A consumer SHALL be able to enable claim mirroring per provider. It is off by default. With mirroring enabled, every login that resolves through a link SHALL first resolve the provider's mapped display-name and password-hash claims under the same rules as provisioning. When at least one mapped field resolves to a value that differs from the stored value, the library SHALL amend the user through the user provisioner's update operation of the `identity-model` capability. The update SHALL name only the mapped fields that resolved. When nothing resolves, or nothing differs, no update SHALL be made.
+A consumer SHALL be able to enable claim mirroring per provider. It is off by default. With mirroring enabled, every login that resolves through a link SHALL first resolve the provider's mapped display-name and password-hash claims under the same rules as provisioning. When at least one mapped field resolves to a value that differs from the stored value, the library SHALL amend the user through the user provisioner's update operation of the `identity-model` capability. The update SHALL name only the mapped fields that resolved to a value differing from the stored one, and "named" SHALL mean exactly what that capability reports as the fields a caller named. When nothing resolves, or nothing differs, no update SHALL be made.
 
 After a successful update, the principal for that login SHALL carry the mirrored values for the mirrored fields only. Every other field SHALL keep the value loaded before the update, whatever the update returned.
 

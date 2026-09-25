@@ -4,14 +4,14 @@ Ends local sessions that were established through an external OpenID Connect pro
 
 ## ADDED Requirements
 
-### Requirement: A federated session records its provider session when it is created
-Every session established by an OIDC login SHALL record, in the write that creates it:
+### Requirement: An OIDC login records its provider session through the sessions capability
+Every session established by an OIDC login SHALL record, through the federated session fields of the `sessions` capability and in the write that creates the session:
 - the provider name;
 - the verified issuer;
 - the provider session id from the ID token's `sid` claim, or empty when the provider issued none;
 - the raw ID token.
 
-The ID token SHALL be kept only as a logout hint. It SHALL never be verified again or accepted as a credential. A session established by any other first factor SHALL record none of these values.
+The ID token SHALL be kept only as a logout hint. It SHALL never be verified again or accepted as a credential. The documentation SHALL point to the sealing store of the `sessions` capability for protecting it at rest. A session established by any other first factor SHALL record none of these values.
 
 #### Scenario: Recorded at creation
 - **WHEN** a login through provider `corp` with issuer `https://idp.example` and `sid` `abc` establishes a session
@@ -35,7 +35,7 @@ A logout token SHALL be accepted only when all of the following hold:
 - it carries no `nonce`;
 - it carries a subject, a session id, or both.
 
-The contents of the event's object and unknown claims SHALL be ignored. Every verification failure SHALL be one invalid-logout-token outcome, with the specific cause available only to logs. A key set that could not be retrieved SHALL be reported as a provider failure, not as an invalid token. A maximum age of zero or less SHALL fail construction.
+The contents of the event's object and unknown claims SHALL be ignored. Every verification failure SHALL be one invalid-logout-token outcome, with the specific cause available only to logs. The invalid-logout-token outcome SHALL map to 400 through the `http-error-propagation` capability. A key set that could not be retrieved SHALL be reported as a provider failure, not as an invalid token. A maximum age of zero or less SHALL fail construction.
 
 #### Scenario: ID token presented as a logout token
 - **WHEN** a valid ID token, carrying a `nonce` and no `events` claim, is posted as a logout token
@@ -111,7 +111,7 @@ By default, a subject-only logout SHALL end only the user's sessions established
 - **THEN** both sessions are ended
 
 ### Requirement: Back-channel responses reveal nothing about sessions or users
-A verified token SHALL be answered with status 200, an empty body and `Cache-Control: no-store`, whether any sessions were ended or none. A request without a `logout_token`, or with a token that fails verification, SHALL be answered with status 400 and `Cache-Control: no-store`. The response SHALL NOT say which rule the token failed. A store failure, a link-store failure or a provider key-set failure SHALL be returned as an error that is not the invalid-logout-token outcome, so that it maps to a server-error status. The number of sessions ended SHALL appear only in logs. A request with another method, or to a path that is not the endpoint, SHALL pass through untouched.
+A verified token SHALL be answered with status 200, an empty body and `Cache-Control: no-store`, whether any sessions were ended or none. A request without a `logout_token`, or with a token that fails verification, SHALL be refused with the invalid-logout-token outcome and `Cache-Control: no-store`; with the default error handling, that is a bare status 400. The response SHALL NOT say which rule the token failed. A store failure, a link-store failure or a provider key-set failure SHALL be returned as an error that is not the invalid-logout-token outcome, so that it maps to a server-error status. The number of sessions ended SHALL appear only in logs, where the sessions capability reports one; a logout that ends every session of a user SHALL log that it did so without a count. A request with another method, or to a path that is not the endpoint, SHALL pass through untouched.
 
 #### Scenario: Same answer for zero and many
 - **WHEN** one verified token ends 3 sessions and another verified token ends none
@@ -126,13 +126,13 @@ A verified token SHALL be answered with status 200, an empty body and `Cache-Con
 - **THEN** the response is status 400 with no description of the failed check
 
 ### Requirement: RP-initiated logout offers the provider's end-session URL
-When a session that records a provider is ended by a local logout, the library SHALL end the local session first. It SHALL then produce the provider's end-session URL, if the provider advertises or pins an end-session endpoint. The URL SHALL carry:
+When a session that records a provider is ended by a local logout, the library SHALL end the local session first. It SHALL then produce the provider's end-session URL, if the provider advertises or pins an end-session endpoint, and the local logout SHALL return it through the end-session step of the `http-security-chain` capability. The URL SHALL carry:
 - the client id;
 - the session's ID token as the hint;
 - the consumer's configured post-logout redirect URL, when one is configured;
 - a state value, when the caller supplies one.
 
-Empty values SHALL be omitted from the URL rather than sent empty. The post-logout redirect URL SHALL be validated at construction: it SHALL be an absolute `https` URL with no user information, or construction fails. A provider without an end-session endpoint, and a session that records no provider, SHALL produce no URL and SHALL NOT be an error. RP-initiated logout SHALL be on by default. A consumer SHALL be able to turn it off, after which a local logout ends the session and produces no URL.
+Empty values SHALL be omitted from the URL rather than sent empty. The post-logout redirect URL SHALL be validated at construction: it SHALL be an absolute URL with a host and no user information, whose scheme the confined outbound client allows (`https` only with that client's defaults), or construction fails. A provider without an end-session endpoint, and a session that records no provider, SHALL produce no URL and SHALL NOT be an error. A failure to build the URL after the session was ended SHALL be logged and SHALL NOT fail the logout. RP-initiated logout SHALL be on by default whenever OIDC login is wired. A consumer SHALL be able to turn it off, after which a local logout ends the session and produces no URL, and SHALL be able to supply their own end-session step, which then takes precedence.
 
 #### Scenario: Federated session with end-session endpoint
 - **WHEN** a session from provider `corp`, whose end-session endpoint is `https://idp.example/logout`, is logged out locally with post-logout redirect `https://app.example/bye`
@@ -146,6 +146,10 @@ Empty values SHALL be omitted from the URL rather than sent empty. The post-logo
 #### Scenario: Consumer turns RP-initiated logout off
 - **WHEN** RP-initiated logout is turned off and a session from a provider with an end-session endpoint is logged out locally
 - **THEN** the session is ended and no URL is returned
+
+#### Scenario: Consumer end-session step
+- **WHEN** the consumer supplies their own end-session step and a federated session is logged out locally
+- **THEN** the URL the consumer's step returns is the one answered
 
 #### Scenario: No post-logout redirect configured
 - **WHEN** no post-logout redirect URL is configured and a federated session is logged out locally

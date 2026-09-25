@@ -43,9 +43,10 @@ context: |
     demonstrable defect, and record every departure as a design decision. Its documents are never
     copied or cited.
   - github.com/lestrrat-go/jwx/v4 is the single JOSE/JWT/JWK stack. Its core carries no net/http,
-    so HTTP JWKS retrieval (one-shot fetches and background-refreshed caches) comes from the
-    github.com/jwx-go/jwkfetch/v4 companion. golang.org/x/oauth2 is allowed for the OIDC code
-    exchange.
+    so remote key sets are fetched through scrty's confined outbound client and parsed with
+    jwk.Parse, behind scrty's own TTL cache. The github.com/jwx-go/jwkfetch/v4 companion is not
+    used: it cannot run on the confined client, and its background refresh keeps a last good copy
+    scrty would have to override. golang.org/x/oauth2 is allowed for the OIDC code exchange.
 
   HTTP and errors
   - httpsec is a framework-agnostic net/http core built as an ordered around-interceptor chain.

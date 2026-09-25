@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -26,9 +27,13 @@ var statusTable = []statusRow{
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
 
 	{ErrCredentialsMissing, http.StatusBadRequest},
+	{oidc.ErrInvalidLogoutToken, http.StatusBadRequest},
 	{ErrRequestTooLarge, http.StatusRequestEntityTooLarge},
 	{policy.ErrAccountLocked, http.StatusLocked},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
+
+	// A federated-login path segment naming no registered provider.
+	{oidc.ErrUnknownProvider, http.StatusNotFound},
 
 	{authorize.ErrAccessDenied, http.StatusForbidden},
 	{policy.ErrPolicyDenied, http.StatusForbidden},

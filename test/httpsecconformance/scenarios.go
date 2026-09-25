@@ -121,6 +121,10 @@ type Effects struct {
 	// Attempts is the failed-login counter the chain records against.
 	Attempts policy.AttemptStore
 
+	// OIDC is the federated-login wiring of an OIDC scenario, and nil for
+	// every other scenario.
+	OIDC *OIDCFixture
+
 	// SessionID is the session Build pre-created, for the scenarios that need a
 	// request to arrive already authenticated. It is empty where none was.
 	SessionID string
@@ -413,7 +417,7 @@ type Adapter interface {
 // framework adapters specification gives, plus the two this change earned — a
 // credential in the query string, and a key set body nothing appended to.
 func Scenarios() []Scenario {
-	return []Scenario{
+	return append([]Scenario{
 		loginSucceeds(),
 		loginFailsOnAWrongPassword(),
 		lockedAccountIsRefused(),
@@ -429,7 +433,7 @@ func Scenarios() []Scenario {
 		keySetEndpoint(),
 		contextPropagation(),
 		unattributableClientAddress(),
-	}
+	}, oidcScenarios()...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

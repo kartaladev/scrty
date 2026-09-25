@@ -44,6 +44,8 @@ type observed struct {
 	path     string
 	header   string
 	query    string
+	states   []string
+	errors   []string
 	form     string
 	clientIP string
 
@@ -64,6 +66,8 @@ func observe(r httpsec.Request, limit int64) observed {
 		path:        r.Path(),
 		header:      r.Header("Authorization"),
 		query:       r.Query("next"),
+		states:      r.QueryValues("state"),
+		errors:      r.QueryValues("error"),
 		form:        r.FormValue("username"),
 		clientIP:    r.ClientIP(),
 		cookie:      cookie,
@@ -99,6 +103,34 @@ func TestFiberExchange(t *testing.T) {
 				assert.Equal(t, "/login", got.path)
 				assert.Equal(t, "Bearer abc", got.header)
 				assert.Equal(t, "/home", got.query)
+			},
+		},
+		{
+			name: "the path is decoded as net/http decodes it, an encoded slash included",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/oauth2/authorization/corp%2F..", nil)
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "/oauth2/authorization/corp/..", got.path)
+			},
+		},
+		{
+			name: "a plus sign stays a plus and an encoded space decodes, as in net/http",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/a+b/c%20d", nil)
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "/a+b/c d", got.path)
+			},
+		},
+		{
+			name: "every value of a repeated query parameter, in order",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/login?state=a&next=/home&state=b", nil)
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, []string{"a", "b"}, got.states)
+				assert.Nil(t, got.errors, "an absent parameter has no values")
 			},
 		},
 		{

@@ -43,6 +43,15 @@
 // not run here. gin's error channel is this adapter's equivalent, and it is
 // where a gin application already handles every other error.
 //
+// One refusal is committed instead of left open for that error middleware: a
+// 404 for a request gin matched no route for at all, such as a federated
+// login path naming an unregistered provider. Left open, gin's own no-route
+// fallback would write its default "404 page not found" body there, which the
+// net/http and fiber adapters never send for the same refusal. This adapter
+// commits that one case with an empty body instead, so a consumer's own gin
+// error middleware cannot re-render it — every other refusal, including a 404
+// on a route gin did match, keeps the rule above.
+//
 // # Client addresses
 //
 // A request is attributed to its transport peer, which is the one address a

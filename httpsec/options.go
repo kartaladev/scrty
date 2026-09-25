@@ -115,6 +115,11 @@ type config struct {
 	// can move half of.
 	logoutPath string
 
+	// logout is the registered logout interceptor, nil when the consumer
+	// enabled none, kept so a later option can supply the end-session step
+	// the consumer left unset.
+	logout *logout
+
 	ipv6Prefix int
 
 	errorHandler func(w http.ResponseWriter, r *http.Request, err error)
@@ -272,6 +277,10 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	if err := c.wireMagicLink(); err != nil {
+		return nil, err
+	}
+
+	if err := c.wireOIDCLogin(); err != nil {
 		return nil, err
 	}
 
@@ -1535,6 +1544,13 @@ type LogoutDeps struct {
 	// manager the authentication interceptors load sessions from, or a logout
 	// deletes from a store nothing reads.
 	Sessions *session.Manager
+
+	// EndSession builds the identity provider's end-session URL for a session
+	// a federated login created. It is optional: nil means no end-session
+	// step, and logout answers every caller as it answers a password session,
+	// unless EnableOIDCLogin on the same chain supplies its manager's step
+	// (see WithOIDCRPInitiatedLogout). A step set here always takes precedence.
+	EndSession EndSessionBuilder
 }
 
 // LogoutOption configures logout. Each replaces one of the defaults named on
@@ -1550,11 +1566,20 @@ type LogoutOption func(*logout) error
 // two clients ending one session is ordinary.
 //
 // Every other request, including a GET on that path, passes through untouched.
+//
+// With LogoutDeps.EndSession set, a session that records an identity provider
+// is deleted first, then the builder is asked for the provider's end-session
+// URL, handed the deleted session and the request's "state" form value. A URL
+// is answered 200 with {"end_session_url": ...} and Cache-Control: no-store;
+// an empty URL, or a builder error, which is logged, keeps the empty 200. The
+// default is nil: no end-session step, and every logout answers as above,
+// unless EnableOIDCLogin is on the chain, which supplies its manager's step
+// when this one is nil (WithOIDCRPInitiatedLogout turns that off).
 func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 	const option = "EnableLogout"
 
 	return func(c *config) error {
-		l := &logout{sessions: d.Sessions, path: DefaultLogoutPath}
+		l := &logout{sessions: d.Sessions, endSession: d.EndSession, path: DefaultLogoutPath}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -1572,8 +1597,10 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 		// Recorded for the MFA gate, which exempts this path so a session
 		// stranded mid-challenge can still be ended. See wireMFA.
 		c.logoutPath = l.path
+		c.logout = l
 
 		c.useSessions(d.Sessions)
+		c.wire(l.wire)
 		c.register(l, OrderLogout)
 
 		return nil

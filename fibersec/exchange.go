@@ -3,6 +3,7 @@ package fibersec
 import (
 	"bytes"
 	"net/http"
+	"net/url"
 
 	"github.com/gofiber/fiber/v3"
 
@@ -24,9 +25,45 @@ var (
 )
 
 func (r request) Method() string            { return r.c.Method() }
-func (r request) Path() string              { return r.c.Path() }
 func (r request) Header(name string) string { return r.c.Get(name) }
 func (r request) Query(name string) string  { return r.c.Query(name) }
+
+// Path returns the request path decoded exactly as net/http decodes URL.Path,
+// so every adapter hands the chain the same path for the same request: "%2F"
+// becomes "/", "%20" a space, and "+" stays "+".
+//
+// It reads fasthttp's original path rather than fiber's Path, which is the path
+// still percent-encoded by default and form-decoded ("+" as a space) under
+// fiber's UnescapePath. A rewrite through fiber's Path(override) is still seen,
+// because fiber writes it back to the URI. A path with a malformed escape, which
+// net/http would have refused before any handler ran, is returned as sent; it
+// then names nothing the chain serves.
+func (r request) Path() string {
+	raw := string(r.c.Request().URI().PathOriginal())
+	decoded, err := url.PathUnescape(raw)
+	if err != nil {
+		return raw
+	}
+
+	return decoded
+}
+
+// QueryValues returns every value of the parameter, in the order sent, and nil
+// when it is absent. Each value is copied, because fasthttp's are views into a
+// buffer it reuses for the next request on the connection.
+func (r request) QueryValues(name string) []string {
+	raw := r.c.Request().URI().QueryArgs().PeekMulti(name)
+	if len(raw) == 0 {
+		return nil
+	}
+
+	values := make([]string, len(raw))
+	for i, v := range raw {
+		values[i] = string(v)
+	}
+
+	return values
+}
 
 // FormValue reads a submitted field. fiber searches the query string, the
 // posted form and any multipart form, in that order, and parses the multipart

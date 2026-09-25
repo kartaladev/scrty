@@ -1,6 +1,8 @@
 package ginsec
 
 import (
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 
 	"github.com/kartaladev/scrty/httpsec"
@@ -53,6 +55,16 @@ func newConfig(opts ...Option) config {
 // itself — a login, a logout, the key set — stops the gin handlers with no
 // status of its own, so neither a matched route nor a no-route handler can
 // overwrite what the chain wrote.
+//
+// One refusal is committed instead of left open: a 404 for a request gin
+// matched no route for at all, such as a path a chain endpoint would own but
+// that names an unregistered provider. gin's own no-route fallback writes its
+// default "404 page not found" body there whenever nothing has been written,
+// which the other adapters never send for the same refusal; committing an
+// empty body keeps the three answering alike, at the cost that a consumer's
+// own gin error middleware cannot re-render that one case. Every other
+// refusal, and every 404 on a route gin did match, still leaves the status
+// open for it.
 //
 // The chain's own WithErrorHandler is the net/http entrypoint's, and does not
 // run here: on gin the refusal goes to gin's error channel instead, which is
@@ -132,11 +144,25 @@ func Middleware(chain *httpsec.Chain, opts ...Option) gin.HandlerFunc {
 // middleware at all registering and aborting answers 200 with an empty body —
 // a refusal served as a success. A response an interceptor already committed is
 // left alone: it chose that status, and this is not the place to take it back.
+//
+// One case is committed here instead of left open: a 404 for a request gin
+// matched no route for at all. gin's own no-route fallback writes its default
+// "404 page not found" body whenever a 404 reaches it with nothing written —
+// a body the net/http and fiber adapters never send for the same refusal, and
+// the only way to keep the three answering alike. The cost is that a
+// consumer's own gin error middleware cannot re-render this one case: by the
+// time it runs, the empty body is already on the wire. Every other refusal,
+// and every 404 on a route gin did match, is left exactly as above.
 func refuse(gc *gin.Context, err error) {
 	_ = gc.Error(err)
 
 	if !gc.Writer.Written() {
-		gc.Status(httpsec.StatusForError(err))
+		status := httpsec.StatusForError(err)
+		gc.Status(status)
+
+		if status == http.StatusNotFound && gc.FullPath() == "" {
+			gc.Writer.WriteHeaderNow()
+		}
 	}
 
 	gc.Abort()

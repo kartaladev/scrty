@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/ginsec"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/oidc"
 )
 
 // errStoreDown is an internal fault a refusal must neither render nor answer as
@@ -36,6 +37,10 @@ func TestGinRefusal(t *testing.T) {
 		// registered by the case itself, because where it sits relative to the
 		// consumer's own middleware is what several rows are about.
 		build func(t *testing.T, out *served) *gin.Engine
+
+		// req builds the request to serve. nil means GET /reports, a route
+		// every case but the unrouted ones registers.
+		req func(ctx context.Context) *http.Request
 
 		assert func(t *testing.T, out *served)
 	}
@@ -156,6 +161,93 @@ func TestGinRefusal(t *testing.T) {
 				assert.False(t, out.routeRan)
 			},
 		},
+		{
+			// gin matched no route for this request at all. With no error
+			// middleware, and nothing committing the status, gin's own no-route
+			// fallback would otherwise step in and write its default
+			// "404 page not found" body — a body the other adapters never send
+			// for the same refusal.
+			name: "a 404 refusal on an unrouted request is committed with an empty body",
+			build: func(t *testing.T, _ *served) *gin.Engine {
+				t.Helper()
+
+				eng := gin.New()
+				eng.Use(ginsec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(
+						refusing(oidc.ErrUnknownProvider, nil), httpsec.OrderAuthorizer))))
+				// No route registered for the request path below: that is the
+				// point of the case.
+
+				return eng
+			},
+			req: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(
+					ctx, http.MethodGet, "/oauth2/authorization/nope", nil)
+			},
+			assert: func(t *testing.T, out *served) {
+				assert.Equal(t, http.StatusNotFound, out.rec.Code)
+				assert.Empty(t, out.rec.Body.String(),
+					"committed empty, not gin's default \"404 page not found\"")
+				assert.False(t, out.routeRan)
+			},
+		},
+		{
+			// A 404 on a matched route is not the unrouted case: the status
+			// stays open, and the consumer's own error middleware still
+			// renders it, exactly like every other refusal.
+			name: "a 404 refusal on a matched route stays uncommitted for the consumer",
+			build: func(t *testing.T, out *served) *gin.Engine {
+				t.Helper()
+
+				eng := gin.New()
+				eng.Use(rendering(http.StatusTeapot, "application/problem+json", `{"detail":"no"}`))
+				eng.Use(ginsec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(
+						refusing(oidc.ErrUnknownProvider, nil), httpsec.OrderAuthorizer))))
+				eng.GET("/reports", out.route())
+
+				return eng
+			},
+			assert: func(t *testing.T, out *served) {
+				res := out.rec.Result()
+				defer func() { _ = res.Body.Close() }()
+
+				assert.Equal(t, http.StatusTeapot, res.StatusCode,
+					"the consumer's status, not the adapter's")
+				assert.JSONEq(t, `{"detail":"no"}`, out.rec.Body.String())
+				assert.False(t, out.routeRan)
+			},
+		},
+		{
+			// An unrouted 401 is not the exception: only a 404 on an unrouted
+			// request is committed. The status stays open here too.
+			name: "a 401 refusal on an unrouted request stays uncommitted for the consumer",
+			build: func(t *testing.T, _ *served) *gin.Engine {
+				t.Helper()
+
+				eng := gin.New()
+				eng.Use(rendering(http.StatusTeapot, "application/problem+json", `{"detail":"no"}`))
+				eng.Use(ginsec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(
+						refusing(authenticate.ErrAuthenticationFailed, nil), httpsec.OrderAuthorizer))))
+				// No route registered: the exception is about the status, not
+				// about whether a route matched.
+
+				return eng
+			},
+			req: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(
+					ctx, http.MethodGet, "/oauth2/authorization/nope", nil)
+			},
+			assert: func(t *testing.T, out *served) {
+				res := out.rec.Result()
+				defer func() { _ = res.Body.Close() }()
+
+				assert.Equal(t, http.StatusTeapot, res.StatusCode,
+					"the consumer's status, not the adapter's")
+				assert.JSONEq(t, `{"detail":"no"}`, out.rec.Body.String())
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -164,8 +256,12 @@ func TestGinRefusal(t *testing.T) {
 
 			out := &served{}
 			eng := tc.build(t, out)
-			out.rec = serve(eng, httptest.NewRequestWithContext(
-				t.Context(), http.MethodGet, "/reports", nil))
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/reports", nil)
+			if tc.req != nil {
+				req = tc.req(t.Context())
+			}
+			out.rec = serve(eng, req)
 
 			tc.assert(t, out)
 		})
