@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/oidc"
 )
 
@@ -45,8 +46,11 @@ var errNilLink = errors.New("httpsec: the link store returned no link and no err
 // carries none, or one that fails verification, is one uniform refusal with
 // Cache-Control: no-store; a verified token is always answered 200 with an
 // empty body and no-store, however many sessions it ended, so the answer tells
-// a caller nothing about the user. A store, link store or key-set failure is
-// returned as itself, so it maps to a server error the provider will retry.
+// a caller nothing about the user. A store, link store or key-set failure maps
+// to a server error the provider will retry. A store's or link store's failure
+// is returned behind fixed text rather than its own, which may quote the row it
+// could not read or delete; its error still matches through errors.Is and
+// errors.As.
 //
 // A refused token leaves one sampled WARN record, keyed by the back-channel
 // flow and reason invalid_token, naming the provider and the cause: the rule
@@ -91,7 +95,7 @@ func (i *oidcInterceptor) backchannel(ex *Exchange, provider string) error {
 		// The cause names the rule that failed and never a claim value, so it
 		// is logged; the response names no check.
 		i.logBackchannel(ctx, slog.LevelWarn, backchannelInvalidToken, provider,
-			slog.String("cause", err.Error()))
+			slog.String("cause", err.Error())) //nolint:forbidigo // stated exception (design decision 6): logout-token verification cause
 
 		return err
 	}
@@ -150,7 +154,8 @@ func (i *oidcInterceptor) endBackchannelSessions(
 		// exist here. That is what the provider asked for.
 		return nil
 	case err != nil:
-		return err
+		// The link store is the consumer's, and its text may quote the row.
+		return diag.Wrap(err, "httpsec: the back-channel logout subject's link could not be looked up")
 	case link == nil:
 		return errNilLink
 	}

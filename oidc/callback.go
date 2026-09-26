@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 // errForeignFlow is a refusal of a flow the store completed for another
@@ -24,8 +26,9 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 // Every failure at or before completing the flow leaves the flow live and is
 // joined with ErrFlowUnspent, so the caller keeps the flow cookie: an
 // unregistered provider (ErrUnknownProvider), an empty code or a flow the
-// store refuses (ErrInvalidState), and a store fault, which is returned as
-// itself and logged at ERROR. After completion the flow is spent, and a
+// store refuses (ErrInvalidState), and a store fault, which comes back
+// wrapped with fixed library text — still matching the store's own error by
+// identity — and logged at ERROR. After completion the flow is spent, and a
 // failure is returned without the marker: ErrInvalidState when the store
 // completed a flow of another provider, ErrDiscoveryFailed,
 // ErrExchangeFailed, ErrInvalidIDToken, or the broker's error as the broker
@@ -101,8 +104,9 @@ func (m *Manager) Callback(ctx context.Context, provider, code, state, handle st
 // provider's error text. A state that does not complete the flow, including an
 // empty one, changes nothing and returns false with no error, so a forged
 // error link cannot cancel someone else's login. An unregistered provider is
-// ErrUnknownProvider, and a store fault is returned as itself; neither ends
-// the flow.
+// ErrUnknownProvider, and a store fault comes back wrapped with fixed library
+// text, still matching the store's own error by identity; neither ends the
+// flow.
 func (m *Manager) AbortFlow(ctx context.Context, provider, state, handle string) (bool, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
@@ -126,15 +130,17 @@ func (m *Manager) AbortFlow(ctx context.Context, provider, state, handle string)
 //
 // A refusal is ErrInvalidState. A flow of another provider is errForeignFlow:
 // the store has already consumed it, so the flow is spent though refused. Any
-// other store error is a fault, logged at ERROR and returned as itself.
+// other store error is a fault, logged at ERROR and returned wrapped with
+// fixed library text; a consumer who wants its own detail logs it inside
+// their own implementation of FlowStore.
 func (m *Manager) completeFlow(ctx context.Context, provider, state, handle string) (Flow, error) {
 	f, err := m.flows.Complete(ctx, handle, provider, state)
 	switch {
 	case errors.Is(err, ErrInvalidState):
 		return Flow{}, ErrInvalidState
 	case err != nil:
-		m.logCallbackRefusal(ctx, slog.LevelError, "flow-store-failed", provider, err)
-		return Flow{}, err
+		m.logCallbackFailure(ctx, provider, "flow-store", err)
+		return Flow{}, diag.Wrap(err, "oidc: completing the login flow")
 	case f.Provider != provider:
 		return Flow{}, errForeignFlow
 	}
@@ -142,8 +148,11 @@ func (m *Manager) completeFlow(ctx context.Context, provider, state, handle stri
 }
 
 // logCallbackRefusal writes one sampled record for a callback failure, keyed
-// by reason and provider. cause is the library's own error text or the flow
-// store's; neither carries a token, a state, a nonce or a claim value.
+// by reason and provider. cause is the library's own error text — never a
+// consumer dependency's: an invalid ID token's verification failure is the
+// only caller, and its text is a deliberate exception operators keep (see
+// [Manager]'s package doc). Neither carries a token, a state, a nonce or a
+// claim value.
 func (m *Manager) logCallbackRefusal(ctx context.Context, level slog.Level, reason, provider string, cause error) {
 	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.now())
 	if !write {
@@ -153,5 +162,22 @@ func (m *Manager) logCallbackRefusal(ctx context.Context, level slog.Level, reas
 		slog.String("reason", reason),
 		slog.String("provider", provider),
 		slog.Int("suppressed", suppressed),
-		slog.String("error", cause.Error()))
+		slog.String("error", cause.Error())) //nolint:forbidigo // stated exception (design decision 6): ID-token verification text
+}
+
+// logCallbackFailure writes one sampled record for a callback failure caused
+// by a consumer-supplied dependency — the flow store. The record carries
+// diag.Failure's fixed reason and the error's type, never the store's own
+// text, so a consumer who wants that detail logs it inside their own
+// implementation of FlowStore.
+func (m *Manager) logCallbackFailure(ctx context.Context, provider, reason string, err error) {
+	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.now())
+	if !write {
+		return
+	}
+	attrs := append([]slog.Attr{
+		slog.String("provider", provider),
+		slog.Int("suppressed", suppressed),
+	}, diag.Failure(reason, err)...)
+	m.log.LogAttrs(ctx, slog.LevelError, "oidc callback failed", attrs...)
 }

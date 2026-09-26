@@ -81,7 +81,7 @@ func (b *Broker) mirror(ctx context.Context, ext ExternalIdentity, l *Link, det 
 			b.log.LogAttrs(ctx, slog.LevelError,
 				"oidc: claim mirroring could not update the user; the login continues with the stored values",
 				slog.String("provider", ext.Provider),
-				slog.String("error", err.Error()),
+				slog.String("error", err.Error()), //nolint:forbidigo // stated exception (design decision 6): err was already scrubbed by redact() above
 				slog.Int("suppressed", suppressed))
 		}
 		return det

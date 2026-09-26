@@ -3,6 +3,7 @@ package mfa_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -283,6 +284,96 @@ func TestMFALogsCarryNoSecrets(t *testing.T) {
 	assert.NotContains(t, logged, p.Secret, "an enrolment secret must not be logged")
 	assert.NotContains(t, logged, p.URI, "a provisioning URI must not be logged")
 	assert.NotContains(t, logged, "otpauth://")
+}
+
+// TestVerifyThrottleFailureRecords pins the diagnostic-redaction requirement
+// for the limiter's own failures (spec diagnostic-redaction, "Log records
+// carry no dependency error text"): the record names the reason and the
+// limiter error's Go type, never its text, and the reason is named exactly
+// once — diag.Failure's own reason attribute, not a second one alongside it.
+func TestVerifyThrottleFailureRecords(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		wantReason string
+		wantMsg    string
+		limiter    func(t *testing.T, ctrl *gomock.Controller) ratelimit.Limiter
+		trigger    func(t *testing.T, th *mfa.VerifyThrottle)
+	}
+
+	cases := []testCase{
+		{
+			name:       "the limiter cannot decide whether the user is throttled",
+			wantReason: "limiter-error",
+			wantMsg:    "mfa: verification throttle could not be consulted",
+			limiter: func(t *testing.T, ctrl *gomock.Controller) ratelimit.Limiter {
+				t.Helper()
+
+				l := NewMockLimiter(ctrl)
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, errMFAFixture).AnyTimes()
+				return l
+			},
+			trigger: func(t *testing.T, th *mfa.VerifyThrottle) {
+				t.Helper()
+
+				_ = th.Check(t.Context(), "some-user")
+			},
+		},
+		{
+			name:       "the limiter cannot record a failure",
+			wantReason: "record-error",
+			wantMsg:    "mfa: verification failure could not be recorded",
+			limiter: func(t *testing.T, ctrl *gomock.Controller) ratelimit.Limiter {
+				t.Helper()
+
+				l := NewMockLimiter(ctrl)
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+				l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(errMFAFixture).AnyTimes()
+				return l
+			},
+			trigger: func(t *testing.T, th *mfa.VerifyThrottle) {
+				t.Helper()
+
+				th.RecordFailure(t.Context(), "some-user")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			ctrl := gomock.NewController(t)
+			th, err := mfa.NewVerifyThrottle(
+				mfa.WithVerifyLimiter(tc.limiter(t, ctrl)),
+				mfa.WithVerifyLogger(logger),
+			)
+			require.NoError(t, err)
+
+			tc.trigger(t, th)
+
+			logged := buf.String()
+			require.NotEmpty(t, logged, "the failure reaches the logger")
+
+			line := strings.TrimSpace(strings.SplitN(logged, "\n", 2)[0])
+			var rec map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &rec))
+
+			assert.Equal(t, tc.wantMsg, rec["msg"])
+			assert.Equal(t, tc.wantReason, rec["reason"])
+			assert.Equal(t, 1, strings.Count(line, `"reason":`),
+				"the reason is named exactly once, not once by this site and again by diag.Failure")
+			assert.NotEmpty(t, rec["error_type"], "the record carries the limiter error's Go type")
+			assert.NotContains(t, logged, "alice@example.com",
+				"the record must not carry the limiter's own error text")
+			assert.NotContains(t, logged, "u-123",
+				"the record must not carry the limiter's own error text")
+		})
+	}
 }
 
 // TestVerifyThrottleChargesAHangUp pins the asymmetry between the two calls the

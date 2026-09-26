@@ -24,4 +24,21 @@
 // threshold, a window or a log interval governs one policy and never two. The
 // store the lockout policy counts failures in is a port, with an in-memory
 // implementation as its default.
+//
+// # A store that fails
+//
+// When a store or lookup the consumer supplies cannot answer, the policy
+// denies, and the denial's reason carries fixed text of this package's own,
+// never the store's error text: that text is written by code the library does
+// not know and can quote values it never saw. The policy's sentinel, where it
+// has one, and the store's error both stay reachable through errors.Is and
+// errors.As, so matching and the status a caller maps the reason to are
+// unchanged. The records a policy writes about such a failure carry a fixed
+// reason and the error's Go type, never its text. A consumer who wants the
+// store's full error logs it inside their own implementation of the port.
+//
+// The second-factor policies' records name the user, by the opaque reference
+// identity.UserID the consumer supplied, on purpose: an operator needs to know
+// whose login was refused or challenged, and the reference is the consumer's
+// own identifier rather than an address or a name.
 package policy

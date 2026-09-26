@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -84,6 +85,11 @@ type KeyManager struct {
 // interval, a lifetime no longer than the rotation interval, or a reload
 // interval no shorter than it — is an error here, not a surprise at the first
 // rotation.
+//
+// A record of a failed rotation or reload carries a fixed reason and the
+// error's Go type, never the store's own text; a consumer who wants that
+// detail logs it inside their own implementation of KeyStore. The algorithm
+// the failure belongs to is kept.
 func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 	km := &KeyManager{
 		keys:           make(map[string]*keyEntry),
@@ -127,7 +133,7 @@ func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 func (km *KeyManager) loadFromStore(ctx context.Context) error {
 	recs, err := km.store.LoadAll(ctx)
 	if err != nil {
-		return fmt.Errorf("signingkey: load keys: %w", err)
+		return diag.Wrap(err, "signingkey: load keys")
 	}
 
 	km.mu.Lock()
@@ -184,8 +190,8 @@ func (km *KeyManager) mintMissing(ctx context.Context) error {
 		if have {
 			continue
 		}
-		if _, err := km.mintAndStore(ctx, alg); err != nil {
-			return err
+		if _, f := km.mintAndStore(ctx, alg); f != nil {
+			return f.err
 		}
 	}
 	return nil
@@ -194,13 +200,21 @@ func (km *KeyManager) mintMissing(ctx context.Context) error {
 // mintAndStore generates a key, writes it to the store, and only then holds it
 // and makes it current. A key the store rejected is never used, so a failed
 // write leaves the previous current key signing.
-func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, error) {
+//
+// A failure comes back as a *failure, whose err is what construction returns
+// and the error hook receives, and whose cause is the store's own error, so a
+// record names the store's error type rather than this package's wrapping.
+func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, *failure) {
 	entry, rec, err := generateKey(alg, km.clock.Now())
 	if err != nil {
-		return "", err
+		return "", &failure{err: err, reason: reasonGenerate, cause: err}
 	}
 	if err := km.store.Store(ctx, rec); err != nil {
-		return "", fmt.Errorf("signingkey: store %s key: %w", alg, err)
+		return "", &failure{
+			err:    diag.Wrap(err, fmt.Sprintf("signingkey: store %s key", alg)),
+			reason: reasonStore,
+			cause:  err,
+		}
 	}
 
 	km.mu.Lock()

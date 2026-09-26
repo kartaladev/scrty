@@ -150,6 +150,12 @@ func WithLogger(logger *slog.Logger) Option {
 // Default: none. Use it to surface a store outage that would otherwise leave
 // one key signing indefinitely.
 //
+// The error the hook receives carries fixed library text naming the failed
+// stage, never the store's own text; the store's error stays reachable
+// through errors.Is and errors.As, so a consumer who wants its full detail
+// inspects it deliberately or logs it inside their own implementation of
+// KeyStore.
+//
 // The hook runs synchronously on the background loop that failed, which fixes
 // what it may do:
 //

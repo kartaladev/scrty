@@ -25,6 +25,13 @@ import (
 // through WithIdleTimeout and WithAbsoluteTimeout, and a test moves time
 // through WithClock without waiting for it.
 //
+// A store's failure is returned behind fixed text of this package, because
+// the store's own text may quote values the library never handed it; the
+// store's error still matches through errors.Is and errors.As. A store that
+// answers with one of this package's sentinels — ErrSessionNotFound,
+// ErrSessionExpired, ErrSessionUnreadable — bare gets that same value back. A
+// consumer who wants the store's full error logs it inside their own Store.
+//
 // A Manager is safe for concurrent use as far as its store is: after
 // construction it holds no mutable state of its own beyond the lock that
 // serialises Rotate.
@@ -210,7 +217,7 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 	}
 
 	if err := m.store.Create(ctx, s); err != nil {
-		return nil, err
+		return nil, storeFailed(err, "session: the session could not be created")
 	}
 
 	return s, nil
@@ -218,7 +225,12 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 
 // Load returns the session with this identifier.
 func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
-	return m.store.Load(ctx, id)
+	s, err := m.store.Load(ctx, id)
+	if err != nil {
+		return nil, storeFailed(err, "session: the session could not be loaded")
+	}
+
+	return s, nil
 }
 
 // Touch records activity on s: it moves the last-access time to now and the
@@ -245,35 +257,45 @@ func (m *Manager) Touch(ctx context.Context, s *Session) error {
 	s.LastAccessedAt = now
 	s.IdleExpiresAt = idle
 
-	return m.store.Save(ctx, s)
+	return storeFailed(m.store.Save(ctx, s), "session: the session's activity could not be saved")
 }
 
 // Save persists changes made to s, and never re-creates a session that has
 // been deleted: a session that is no longer stored is ErrSessionNotFound.
 func (m *Manager) Save(ctx context.Context, s *Session) error {
-	return m.store.Save(ctx, s)
+	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }
 
 // Delete removes the session with this identifier.
 func (m *Manager) Delete(ctx context.Context, id string) error {
-	return m.store.Delete(ctx, id)
+	return storeFailed(m.store.Delete(ctx, id), "session: the session could not be deleted")
 }
 
 // DeleteByUser removes every session of this user, expired ones included: a
 // caller ending a user's sessions wants them gone, not filtered.
 func (m *Manager) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	return m.store.DeleteByUser(ctx, user)
+	return storeFailed(m.store.DeleteByUser(ctx, user), "session: the user's sessions could not be deleted")
 }
 
 // CountActiveByUser counts this user's unexpired sessions, which is what a
 // concurrent-session limit is written against.
 func (m *Manager) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
-	return m.store.CountActiveByUser(ctx, user)
+	n, err := m.store.CountActiveByUser(ctx, user)
+	if err != nil {
+		return n, storeFailed(err, "session: the user's active sessions could not be counted")
+	}
+
+	return n, nil
 }
 
 // DeleteExpired removes every expired session and reports how many went.
 func (m *Manager) DeleteExpired(ctx context.Context) (int, error) {
-	return m.store.DeleteExpired(ctx)
+	n, err := m.store.DeleteExpired(ctx)
+	if err != nil {
+		return n, storeFailed(err, "session: expired sessions could not be deleted")
+	}
+
+	return n, nil
 }
 
 // DeleteByExternalSession ends the sessions a provider established under this
@@ -283,13 +305,23 @@ func (m *Manager) DeleteExpired(ctx context.Context) (int, error) {
 // An empty issuer or an empty session identifier ends nothing and is not an
 // error.
 func (m *Manager) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
-	return m.store.DeleteByExternalSession(ctx, issuer, sessionID)
+	n, err := m.store.DeleteByExternalSession(ctx, issuer, sessionID)
+	if err != nil {
+		return n, storeFailed(err, "session: the provider session's sessions could not be deleted")
+	}
+
+	return n, nil
 }
 
 // DeleteByUserAndExternalIssuer ends this user's sessions from this issuer,
 // and reports how many went. An empty issuer ends nothing and is not an error.
 func (m *Manager) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
-	return m.store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	n, err := m.store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	if err != nil {
+		return n, storeFailed(err, "session: the user's sessions from the issuer could not be deleted")
+	}
+
+	return n, nil
 }
 
 // IdleTimeout reports how long a session survives with no activity, which is
@@ -315,13 +347,13 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // forever.
 //
 // A session the store no longer holds, or that is past either deadline, is
-// refused with the store's own error and nothing is written: rotation is a
-// move, not a way to bring a revoked session back under a fresh handle. That
-// is also what settles a race between two rotations of the same handle. They
-// are serialised on that identifier, so the second one finds the old entry
-// already gone and is refused with ErrSessionNotFound rather than minting a
-// second live handle for a session that has already moved. Rotations of
-// different sessions do not wait for each other.
+// refused with the store's sentinel, as itself, and nothing is written:
+// rotation is a move, not a way to bring a revoked session back under a fresh
+// handle. That is also what settles a race between two rotations of the same
+// handle. They are serialised on that identifier, so the second one finds the
+// old entry already gone and is refused with ErrSessionNotFound rather than
+// minting a second live handle for a session that has already moved.
+// Rotations of different sessions do not wait for each other.
 //
 // The limit of that guarantee is this process. The lock is a Manager's own,
 // so two managers over one shared durable store — two replicas, say — can
@@ -339,7 +371,7 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	defer unlock()
 
 	if _, err := m.store.Load(ctx, s.ID); err != nil {
-		return nil, err
+		return nil, storeFailed(err, "session: the session to rotate could not be loaded")
 	}
 
 	id, err := m.newIdentifier()
@@ -351,11 +383,11 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	rotated.ID = id
 
 	if err := m.store.Create(ctx, rotated); err != nil {
-		return nil, err
+		return nil, storeFailed(err, "session: the rotated session could not be created")
 	}
 
 	if err := m.store.Delete(ctx, s.ID); err != nil {
-		return nil, err
+		return nil, storeFailed(err, "session: the session rotated from could not be deleted")
 	}
 
 	return rotated, nil

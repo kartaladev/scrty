@@ -164,6 +164,8 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 	require.Eventually(t, func() bool { return report.hooks() >= 1 },
 		10*time.Second, 5*time.Millisecond,
 		"the reload failure reaches the consumer's error hook")
+	require.Eventually(t, func() bool { return recorder.written() >= 1 },
+		10*time.Second, 5*time.Millisecond, "the reload failure reaches the configured logger")
 
 	hooked, _ := report.snapshot()
 	assert.ErrorIs(t, hooked[0], errStoreUnreachable,
@@ -181,5 +183,10 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 	records := recorder.records(t)
 	require.NotEmpty(t, records, "the failure reaches the configured logger")
 	assert.Equal(t, "ERROR", records[0]["level"])
-	assert.Contains(t, records[0]["error"], errStoreUnreachable.Error())
+	assert.NotContains(t, records[0], "error",
+		"the record no longer carries the store's own error text")
+	assert.Equal(t, "signing-key-store", records[0]["reason"],
+		"the record names the failed dependency by a fixed reason")
+	assert.NotEmpty(t, records[0]["error_type"],
+		"the record carries the error's type, never its text")
 }

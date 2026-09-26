@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -138,7 +139,7 @@ func (t *VerifyThrottle) resolveLimiter() error {
 func (t *VerifyThrottle) Check(ctx context.Context, user identity.UserID) error {
 	exceeded, err := t.limiter.Exceeded(ctx, VerifyThrottleKey(user))
 	if err != nil {
-		t.sampled(ctx, slog.LevelError, msgLimiterError, reasonLimiterError)
+		t.sampledFailure(ctx, slog.LevelError, msgLimiterError, reasonLimiterError, err)
 
 		return ErrVerifyThrottled
 	}
@@ -167,7 +168,7 @@ func (t *VerifyThrottle) RecordFailure(ctx context.Context, user identity.UserID
 	// count. Check is left alone on purpose — refusing a question nobody is
 	// waiting for is right; declining to charge an answer already given is not.
 	if err := t.limiter.RecordFailure(context.WithoutCancel(ctx), VerifyThrottleKey(user)); err != nil {
-		t.sampled(ctx, slog.LevelError, msgRecordError, reasonRecordError)
+		t.sampledFailure(ctx, slog.LevelError, msgRecordError, reasonRecordError, err)
 	}
 }
 
@@ -206,6 +207,21 @@ func (t *VerifyThrottle) sampled(ctx context.Context, level slog.Level, msg, rea
 	t.logger.LogAttrs(ctx, level, msg,
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
+}
+
+// sampledFailure is sampled, for the reasons that name a limiter failure
+// rather than a verdict: it carries the failure's Go type through
+// diag.Failure in place of the bare reason attribute, never the limiter's own
+// error text. A consumer who wants that detail logs it inside their own
+// implementation of Limiter.
+func (t *VerifyThrottle) sampledFailure(ctx context.Context, level slog.Level, msg, reason string, err error) {
+	write, suppressed := t.sampler.Allow(reason, t.now())
+	if !write {
+		return
+	}
+
+	t.logger.LogAttrs(ctx, level, msg,
+		append(diag.Failure(reason, err), slog.Int("suppressed", suppressed))...)
 }
 
 // reportSuppressed accounts for counts the sampler is about to discard, so a

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -62,6 +63,11 @@ type Manager struct {
 // reading a nil logger plainly has, while a nil clock has no reading other than
 // a mistake — falling back to the wall clock would make a test whose clock
 // never advances look like one that does.
+//
+// A record of a failed store read or write carries a fixed reason and the
+// error's Go type, never the store's own text; a consumer who wants that
+// detail logs it inside their own implementation of Store. The token
+// identifier, a library-owned value rather than a secret, is kept.
 func NewManager(purpose string, opts ...Option) (*Manager, error) {
 	m := &Manager{
 		purpose:        strings.TrimSpace(purpose),
@@ -176,7 +182,7 @@ func (m *Manager) Issue(ctx context.Context, subject string, opts ...IssueOption
 	}
 
 	if err := m.store.Insert(ctx, tok); err != nil {
-		return "", Token{}, fmt.Errorf("onetime: store token: %w", err)
+		return "", Token{}, diag.Wrap(err, "onetime: store token")
 	}
 
 	return tokenID.String() + secretSeparator + secret, tok, nil
@@ -229,10 +235,11 @@ func (m *Manager) Check(ctx context.Context, presented, binding string) (Checked
 		// is not there is an ordinary refusal and says nothing about the
 		// store's health.
 		if !errors.Is(err, ErrTokenNotFound) {
-			m.logger.ErrorContext(ctx, "onetime: reading the token store failed",
-				slog.String("purpose", m.purpose),
-				slog.String("token_id", tokenID.String()),
-				slog.Any("error", err))
+			m.logger.LogAttrs(ctx, slog.LevelError, "onetime: reading the token store failed",
+				append([]slog.Attr{
+					slog.String("purpose", m.purpose),
+					slog.String("token_id", tokenID.String()),
+				}, diag.Failure("token-store", err)...)...)
 		}
 
 		return Checked{}, ErrInvalidToken
@@ -282,10 +289,11 @@ func (m *Manager) Consume(ctx context.Context, c Checked) error {
 
 	if err := m.store.Consume(ctx, c.token.ID, m.now()); err != nil {
 		if !errors.Is(err, ErrTokenNotFound) {
-			m.logger.ErrorContext(ctx, "onetime: marking the token consumed failed",
-				slog.String("purpose", m.purpose),
-				slog.String("token_id", c.token.ID.String()),
-				slog.Any("error", err))
+			m.logger.LogAttrs(ctx, slog.LevelError, "onetime: marking the token consumed failed",
+				append([]slog.Attr{
+					slog.String("purpose", m.purpose),
+					slog.String("token_id", c.token.ID.String()),
+				}, diag.Failure("token-store", err)...)...)
 		}
 
 		return ErrInvalidToken
@@ -353,7 +361,7 @@ func (m *Manager) IssuedCount(ctx context.Context, subject string) (int, error) 
 
 	n, err := m.store.CountRecentBySubject(ctx, m.purpose, subject, since)
 	if err != nil {
-		return 0, fmt.Errorf("onetime: count recent issuance: %w", err)
+		return 0, diag.Wrap(err, "onetime: count recent issuance")
 	}
 
 	return n, nil
@@ -382,7 +390,7 @@ func (m *Manager) PurgeExpired(ctx context.Context) (int, error) {
 
 	removed, err := reaper.DeleteExpiredBefore(ctx, m.purpose, m.now().Add(-m.issuanceWindow))
 	if err != nil {
-		return 0, fmt.Errorf("onetime: purge expired tokens: %w", err)
+		return 0, diag.Wrap(err, "onetime: purge expired tokens")
 	}
 
 	return removed, nil

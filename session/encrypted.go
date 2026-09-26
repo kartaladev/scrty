@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -23,6 +24,8 @@ import (
 // additional authenticated data to the ciphertext: Open has to fail when it is
 // given the same ciphertext with different additional data. That is what stops
 // a sealed value being moved from one session to another.
+//
+//go:generate mockgen -source=encrypted.go -package=session_test -destination=cipher_mock_test.go -typed
 type Cipher interface {
 	// Seal encrypts plaintext, authenticating additionalData alongside it
 	// without storing it.
@@ -43,6 +46,13 @@ type Cipher interface {
 // rotation's machinery, so it is not something a consumer configures.
 const aadPrefix = "scrty/session:external-id-token:"
 
+// textSessionUnreadableIDTokenNotOpened is ErrSessionUnreadable's own words,
+// kept as a constant (never ErrSessionUnreadable.Error(), which forbidigo
+// forbids outside a stated exception) so this fixed text is never a
+// dependency's error rendered at runtime. It must read exactly as
+// ErrSessionUnreadable.Error() does, followed by what additionally failed.
+const textSessionUnreadableIDTokenNotOpened = "session: session cannot be read: the provider ID token would not open"
+
 // encryptedStore seals Session.ExternalIDToken on the way to inner and opens
 // it on the way back.
 type encryptedStore struct {
@@ -57,6 +67,13 @@ type encryptedStore struct {
 // credential in its own right, and a store that sealed more would hand back
 // rows no query could filter. Every other field, and every other operation,
 // passes straight through.
+//
+// A failure of inner or of the cipher is returned behind fixed text of this
+// package — never naming the session identifier, which is the bearer
+// credential — and still matches the original error through errors.Is and
+// errors.As; a cipher that will not open a value is also
+// ErrSessionUnreadable. A sentinel of this package that inner returns bare
+// comes back as itself.
 //
 // The sealed value is bound to the session identifier, so an envelope moved to
 // another session's row will not open. An empty token is stored unsealed,
@@ -97,7 +114,7 @@ func (s *encryptedStore) sealed(sess *Session) (*Session, error) {
 
 	envelope, err := s.cipher.Seal([]byte(sess.ExternalIDToken), additionalData(sess.ID))
 	if err != nil {
-		return nil, fmt.Errorf("session: sealing the provider ID token of session %s: %w", sess.ID, err)
+		return nil, diag.Wrap(err, "session: the provider ID token of the session could not be sealed")
 	}
 
 	out := sess.clone()
@@ -112,7 +129,7 @@ func (s *encryptedStore) Create(ctx context.Context, sess *Session) error {
 		return err
 	}
 
-	return s.inner.Create(ctx, out)
+	return storeFailed(s.inner.Create(ctx, out), "session: the inner store could not create the session")
 }
 
 func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
@@ -121,7 +138,7 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 		return err
 	}
 
-	return s.inner.Save(ctx, out)
+	return storeFailed(s.inner.Save(ctx, out), "session: the inner store could not save the session")
 }
 
 // Load opens the stored ID token and returns the session with plaintext in it.
@@ -138,7 +155,7 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) {
 	sess, err := s.inner.Load(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, storeFailed(err, "session: the inner store could not load the session")
 	}
 	if sess.ExternalIDToken == "" {
 		return sess, nil
@@ -146,14 +163,14 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 
 	envelope, err := base64.RawURLEncoding.DecodeString(sess.ExternalIDToken)
 	if err != nil {
-		return nil, fmt.Errorf("%w: the stored provider ID token of session %s is not a valid envelope: %w",
-			ErrSessionUnreadable, id, err)
+		return nil, fmt.Errorf("%w: the stored provider ID token is not a valid envelope: %w",
+			ErrSessionUnreadable, err)
 	}
 
 	plaintext, err := s.cipher.Open(envelope, additionalData(sess.ID))
 	if err != nil {
-		return nil, fmt.Errorf("%w: the provider ID token of session %s would not open: %w",
-			ErrSessionUnreadable, id, err)
+		return nil, diag.Wrap(err, textSessionUnreadableIDTokenNotOpened,
+			ErrSessionUnreadable)
 	}
 
 	sess.ExternalIDToken = string(plaintext)
@@ -162,27 +179,35 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 }
 
 func (s *encryptedStore) Delete(ctx context.Context, id string) error {
-	return s.inner.Delete(ctx, id)
+	return storeFailed(s.inner.Delete(ctx, id), "session: the inner store could not delete the session")
 }
 
 func (s *encryptedStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	return s.inner.DeleteByUser(ctx, user)
+	return storeFailed(s.inner.DeleteByUser(ctx, user), "session: the inner store could not delete the user's sessions")
 }
 
 func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
-	return s.inner.CountActiveByUser(ctx, user)
+	n, err := s.inner.CountActiveByUser(ctx, user)
+
+	return n, storeFailed(err, "session: the inner store could not count the user's active sessions")
 }
 
 func (s *encryptedStore) DeleteExpired(ctx context.Context) (int, error) {
-	return s.inner.DeleteExpired(ctx)
+	n, err := s.inner.DeleteExpired(ctx)
+
+	return n, storeFailed(err, "session: the inner store could not delete expired sessions")
 }
 
 func (s *encryptedStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
-	return s.inner.DeleteByExternalSession(ctx, issuer, sessionID)
+	n, err := s.inner.DeleteByExternalSession(ctx, issuer, sessionID)
+
+	return n, storeFailed(err, "session: the inner store could not delete the provider session's sessions")
 }
 
 func (s *encryptedStore) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
-	return s.inner.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	n, err := s.inner.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+
+	return n, storeFailed(err, "session: the inner store could not delete the user's sessions from the issuer")
 }
 
 var _ Store = (*encryptedStore)(nil)

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -60,6 +61,16 @@ func (b *bearerToken) wire(c *Chain) {
 // It sets no WWW-Authenticate header. What a refusal looks like on the wire is
 // the consumer's error handling to decide, and a header written here would be
 // one the consumer cannot take back.
+//
+// A token that fails verification is recorded at debug with the verifier's
+// own text, kept on purpose: it names the check the token failed (expired,
+// wrong signature, wrong audience), which is what an operator chasing a
+// rejected client needs, and it is the library's protocol-failure text rather
+// than a store's. Every other dependency failure is recorded by a fixed reason
+// and its error's Go type, never its text, and a failed save of the session
+// comes back behind fixed text, its error still matching through errors.Is and
+// errors.As. A consumer who wants a store's full error logs it inside their
+// own implementation.
 func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	presented, ok := b.presented(ex.Request.Header("Authorization"))
 	if !ok {
@@ -74,7 +85,7 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 		// token failed, while a caller still matches the one uniform failure.
 		// The cause reaches the record below, never the client.
 		b.log.LogAttrs(ctx, slog.LevelDebug, msgBearerNotVerified,
-			slog.String("error", err.Error()))
+			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): token verification text at debug
 
 		return errors.Join(authenticate.ErrAuthenticationFailed, err)
 	}
@@ -88,8 +99,12 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 			// retired while sessions sealed under it were still live. The
 			// caller is answered "log in again", because that is the remedy
 			// and a 500 storm is not.
+			//
+			// The record carries a fixed reason and the error's Go type, never
+			// its text: the consumer's store may word the failure with the
+			// row it could not read.
 			b.log.LogAttrs(ctx, slog.LevelError, msgSessionUnreadable,
-				slog.String("error", err.Error()))
+				diag.Failure("session-store", err)...)
 		}
 
 		// Missing, expired and unreadable are the same answer: telling them

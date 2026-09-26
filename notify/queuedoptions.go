@@ -65,7 +65,10 @@ func WithQueueSendTimeout(d time.Duration) QueuedOption {
 // configures nothing still hears about mail that was never delivered.
 //
 // Records report a dropped message, a failed delivery and a panic in the
-// wrapped sender. None of them carries the message body or subject.
+// wrapped sender. None of them carries the message body, the subject or the
+// recipient; a failed delivery or a recovered panic carries a fixed reason and
+// a Go type in place of the inner sender's own error text or panic value — a
+// consumer who wants that detail logs it inside their own Sender.
 //
 // Each of those is a sign-in link that never arrives, and Send returned nil
 // long before, so a record discarded here is a failure nobody learns of at

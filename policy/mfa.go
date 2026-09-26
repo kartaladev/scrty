@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -169,6 +170,10 @@ func WithSameChannelEnrolment(mode SameChannelMode) MFAOption {
 // WithMFAPolicyLogger replaces where the policy writes its same-channel
 // warnings. The default is slog.Default.
 //
+// Its records name the user by the opaque reference in Input.User, on purpose,
+// with the first factor and the channel; they never carry a dependency's error
+// text.
+//
 // A nil logger is ignored rather than refused: it has an obvious safe reading —
 // the caller does not want to choose this policy's logger — and refusing it
 // would make configuring logging mandatory.
@@ -228,9 +233,10 @@ type mfaPolicy struct {
 //
 //   - a login that has already satisfied a second factor: allow;
 //   - an exempt first factor: allow;
-//   - an enrolment lookup that failed: deny, with a reason wrapping the
-//     failure, so a lost or unreadable enrolment never downgrades a user to a
-//     single factor;
+//   - an enrolment lookup that failed: deny, so a lost or unreadable enrolment
+//     never downgrades a user to a single factor. The reason is fixed text and
+//     wraps the lookup's error, reachable through errors.Is and errors.As but
+//     not repeated in the text;
 //   - enrolled on a channel other than the first factor's: challenge for MFA;
 //   - not enrolled: allow;
 //   - enrolled on the first factor's own channel: whatever
@@ -316,14 +322,14 @@ func (p *mfaPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 
 	enrolled, err := p.method.Enrolled(ctx, in.User)
 	if err != nil {
-		// Wrapped rather than replaced: a caller that reports this reason as
-		// its own error, and an operator reading the record it writes, both
-		// need to see what actually failed.
+		// Wrapped rather than replaced, so a caller can still match what
+		// failed; but under fixed text, because the lookup's error is the
+		// consumer's text and may quote what this package never saw.
 		return Decision{
 			Outcome: Deny,
-			Reason: fmt.Errorf(
+			Reason: diag.Wrap(err,
 				"policy: the second-factor enrolment could not be read, so this login "+
-					"cannot be completed on one factor: %w", err),
+					"cannot be completed on one factor"),
 		}
 	}
 

@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+//go:generate mockgen -destination=flowstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/oidc FlowStore
+
 // authorize answers a GET on the authorize prefix followed by a provider's
 // name: it starts a flow with that provider and redirects the browser to it.
 //
@@ -17,7 +19,9 @@ import (
 // The requested destination is passed to the manager as the client gave it and
 // is stored untrusted; the callback resolves it against the allowlist when it
 // is used. An unregistered name is the manager's ErrUnknownProvider, returned
-// unchanged, which the status table answers as not found.
+// unchanged, which the status table answers as not found. A flow store that
+// cannot begin the flow is refused with the manager's error, whose text is
+// fixed and never the store's; the store's error still matches by identity.
 func (i *oidcInterceptor) authorize(ex *Exchange, provider string) error {
 	auth, err := i.manager.Authorize(ex.Context(), provider, ex.Request.Query(DefaultOIDCNextParam))
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"mime"
@@ -12,7 +13,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/diag"
 )
+
+// errRcptStage tags an exchange failure that happened while presenting the
+// recipient to the server, so Send can log it under its own reason without
+// reading the error's text — a server's RCPT refusal routinely quotes the
+// recipient.
+var errRcptStage = errors.New("notify: rcpt refused")
 
 // DialFunc opens the connection to the SMTP server.
 //
@@ -114,15 +123,37 @@ func (s *SMTPSender) Timeout() time.Duration { return s.timeout }
 // in progress, mid-transfer included.
 //
 // A failure is logged to the configured logger. The record names the server
-// host, whether a recipient was given and the error, and never the subject or
-// the body: the body of a sign-in message is a live credential.
+// host, whether a recipient was given, and the failure through [diag.Failure]:
+// a fixed reason ("rcpt" when the server refused the recipient, "send"
+// otherwise) and the error's Go type — never the error's own text, the
+// subject or the body. A mail server's own RCPT refusal routinely quotes the
+// recipient, and the body of a sign-in message is a live credential; neither
+// reaches the record. A consumer who wants the server's own reply reaches it
+// deliberately, from the returned error, as the paragraph below describes.
+//
+// Every failure Send returns — the dial and each stage of the exchange
+// (the greeting, EHLO, STARTTLS, AUTH, MAIL FROM, RCPT, DATA and the message
+// itself) — comes back behind fixed library text naming the stage, never the
+// server's own reply: a mail server's rejection routinely quotes the
+// recipient or the sender in its wording. The failing stage's own error, a
+// dial's or a *textproto.Error from the server, is still reachable through
+// errors.Is and errors.As; an RCPT refusal is also still matched by
+// errors.Is against errRcptStage, which is what keeps the failure record's
+// reason "rcpt".
 func (s *SMTPSender) Send(ctx context.Context, msg Message) error {
 	err := s.send(ctx, msg)
 	if err != nil {
-		s.logger.LogAttrs(ctx, slog.LevelError, "notify: smtp send failed",
+		reason := "send"
+		if errors.Is(err, errRcptStage) {
+			reason = "rcpt"
+		}
+
+		attrs := append([]slog.Attr{
 			slog.String("host", s.host),
 			slog.Bool("has_recipient", msg.To != ""),
-			slog.Any("error", err))
+		}, diag.Failure(reason, err)...)
+
+		s.logger.LogAttrs(ctx, slog.LevelError, "notify: smtp send failed", attrs...)
 	}
 
 	return err
@@ -161,7 +192,7 @@ func (s *SMTPSender) send(ctx context.Context, msg Message) error {
 
 	conn, err := s.dial(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("notify: dial %s: %w", addr, err)
+		return diag.Wrap(err, fmt.Sprintf("notify: dial %s failed", addr))
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -200,7 +231,7 @@ func (s *SMTPSender) upgrade(c *smtp.Client) error {
 	}
 
 	if err := c.StartTLS(s.tlsConfig); err != nil {
-		return fmt.Errorf("notify: STARTTLS upgrade to %s failed: %w", s.host, err)
+		return diag.Wrap(err, fmt.Sprintf("notify: STARTTLS upgrade to %s failed", s.host))
 	}
 
 	return nil
@@ -215,12 +246,12 @@ func (s *SMTPSender) upgrade(c *smtp.Client) error {
 func (s *SMTPSender) exchange(conn net.Conn, from string, msg Message) error {
 	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
-		return fmt.Errorf("notify: smtp greeting from %s: %w", s.host, err)
+		return diag.Wrap(err, fmt.Sprintf("notify: the greeting from %s failed", s.host))
 	}
 	defer func() { _ = c.Close() }()
 
 	if err := c.Hello(ehloName); err != nil {
-		return fmt.Errorf("notify: EHLO to %s: %w", s.host, err)
+		return diag.Wrap(err, fmt.Sprintf("notify: EHLO to %s failed", s.host))
 	}
 
 	// Before AUTH and before any message data: credentials and a sign-in link
@@ -231,32 +262,36 @@ func (s *SMTPSender) exchange(conn net.Conn, from string, msg Message) error {
 
 	if s.auth != nil {
 		if err := c.Auth(s.auth); err != nil {
-			return fmt.Errorf("notify: AUTH to %s: %w", s.host, err)
+			return diag.Wrap(err, fmt.Sprintf("notify: AUTH to %s failed", s.host))
 		}
 	}
 
 	if err := c.Mail(from); err != nil {
-		return fmt.Errorf("notify: MAIL FROM: %w", err)
+		return diag.Wrap(err, "notify: the server refused the sender")
 	}
 
 	if err := c.Rcpt(msg.To); err != nil {
-		return fmt.Errorf("notify: RCPT TO: %w", err)
+		return diag.Wrap(err, "notify: the server refused the recipient", errRcptStage)
 	}
 
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("notify: DATA: %w", err)
+		return diag.Wrap(err, "notify: the server refused to accept message data")
 	}
 
 	if _, err := w.Write(build(from, msg)); err != nil {
-		return fmt.Errorf("notify: writing message: %w", err)
+		return diag.Wrap(err, "notify: writing the message failed")
 	}
 
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("notify: closing message: %w", err)
+		return diag.Wrap(err, "notify: the server refused the message")
 	}
 
-	return c.Quit()
+	if err := c.Quit(); err != nil {
+		return diag.Wrap(err, "notify: the server refused to end the session")
+	}
+
+	return nil
 }
 
 // build renders msg as the RFC 5322 message to hand to DATA.

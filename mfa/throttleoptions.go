@@ -42,6 +42,11 @@ func WithVerifyLogInterval(d time.Duration) ThrottleOption {
 // WithVerifyLogger replaces slog.Default as the destination for throttle
 // records. A nil logger is a configuration error; a consumer who wants silence
 // supplies a logger with a discarding handler, which says so at the wiring.
+//
+// A limiter-failure record carries a fixed reason ("limiter-error" or
+// "record-error") and the limiter's error's Go type, never its text; a
+// throttled record carries the reason alone. A consumer who wants the
+// limiter's own detail logs it inside their own implementation of Limiter.
 func WithVerifyLogger(l *slog.Logger) ThrottleOption {
 	return func(t *VerifyThrottle) { t.logger = l }
 }

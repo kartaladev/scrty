@@ -84,6 +84,14 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // does not hold. With the default client only https is allowed; a consumer
 // who needs http for a development provider supplies a client built with
 // outbound.WithAllowedSchemes("http") through WithOutboundClient.
+//
+// A record of a failed flow store carries a fixed reason and the error's Go
+// type, never the store's own text; a consumer who wants that detail logs it
+// inside their own implementation of FlowStore. Kept on purpose, and stated
+// here so an operator does not have to read the code: the library's own
+// protocol-failure text (token verification, provider discovery, key-set
+// retrieval and the token endpoint's response), and — in the broker's
+// identity-linking records — the email_domain of the identity being linked.
 func NewManager(registry *Registry, broker IdentityBroker, opts ...ManagerOption) (*Manager, error) {
 	if registry == nil || len(registry.names) == 0 {
 		return nil, fmt.Errorf("%w: a provider registry built by NewRegistry is required", ErrConfig)

@@ -20,4 +20,10 @@
 // mid-attempt must still be charged for it. A limiter that errors is read as a
 // source already over its limit. Failing closed is deliberate: the alternative
 // lifts every limit at exactly the moment something is wrong.
+//
+// A throttled source's address is named in its record on purpose: refusing an
+// attempt without saying whose would defeat the record's own point. A
+// limiter's own failure is recorded differently — a fixed reason and the
+// error's Go type, never the limiter's own text, which can quote a key or a
+// value the library never saw.
 package ratelimit

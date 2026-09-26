@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/notify"
@@ -335,10 +336,14 @@ const (
 // refused records err, an endpoint's refusal, and returns it unchanged. A nil
 // err is a request the endpoint answered, and nothing is written.
 //
-// The record names the endpoint and the refusal's fixed reason and nothing
-// else, sampled per endpoint and reason. A gate refusal is not recorded here:
-// it is the challenge the confined session is expected to meet, not a request
-// an endpoint turned down.
+// The record names the endpoint and the refusal's fixed reason, sampled per
+// endpoint and reason. When err is an *enrolmentFault — always a dependency's
+// answer, never the library's own decision — the record also carries
+// diag.Failure's error_type, the dependency's Go type and never its text; a
+// library refusal with no dependency behind it (a wrong code, an enrolled
+// user, the same channel twice) carries neither. A gate refusal is not
+// recorded here: it is the challenge the confined session is expected to
+// meet, not a request an endpoint turned down.
 func (i *enrolmentInterceptor) refused(ctx context.Context, endpoint string, err error) error {
 	if err == nil {
 		return nil
@@ -346,8 +351,18 @@ func (i *enrolmentInterceptor) refused(ctx context.Context, endpoint string, err
 
 	reason, level := refusalReason(err)
 
-	i.logSampled(ctx, level, "refused|"+endpoint+"|"+reason, msgEnrolmentRefused,
-		slog.String("endpoint", endpoint), slog.String("reason", reason))
+	attrs := []slog.Attr{slog.String("endpoint", endpoint)}
+
+	// A record names its reason once: diag.Failure writes it for a
+	// dependency's failure, and a plain attribute does for the rest.
+	var fault *enrolmentFault
+	if errors.As(err, &fault) {
+		attrs = append(attrs, diag.Failure(reason, fault.err)...)
+	} else {
+		attrs = append(attrs, slog.String("reason", reason))
+	}
+
+	i.logSampled(ctx, level, "refused|"+endpoint+"|"+reason, msgEnrolmentRefused, attrs...)
 
 	return err
 }
@@ -360,7 +375,7 @@ const msgEnrolmentRefused = "httpsec: an enrolment request was refused"
 // a wrong code, an unreadable one — is what users do, and informational.
 func refusalReason(err error) (string, slog.Level) {
 	var fault *enrolmentFault
-	if errors.As(err, &fault) && fault.reason != reasonRefused {
+	if errors.As(err, &fault) {
 		return fault.reason, slog.LevelError
 	}
 
@@ -433,30 +448,30 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session) error {
 
 	details, err := i.users.LoadByUserID(ctx, s.UserID)
 	if err != nil {
-		return &enrolmentFault{reason: reasonUserUnloadable, msg: msgUserUnloadable, cause: err}
+		return newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
 
 	label, err := i.label(ctx, details)
 	if err != nil {
-		return &enrolmentFault{reason: reasonLabelUnresolved, msg: msgLabelUnresolved, cause: err}
+		return newEnrolmentFault(reasonLabelUnresolved, msgLabelUnresolved, err)
 	}
 
 	provisioning, gen, err := i.method.BeginEnrolmentGeneration(ctx, s.UserID, label)
 	if errors.Is(err, mfa.ErrAlreadyEnrolled) {
 		// The store decides this refusal, and may word it itself.
-		return refusedAs(mfa.ErrAlreadyEnrolled, err)
+		return refusedAs(mfa.ErrAlreadyEnrolled, textMFAAlreadyEnrolled, err)
 	}
 
 	if err != nil {
 		// The method was handed the label, and its refusal may quote it —
 		// TOTP's refusal of a ':' does.
-		return &enrolmentFault{reason: reasonNotBegun, msg: msgNotBegun, cause: err}
+		return newEnrolmentFault(reasonNotBegun, msgNotBegun, err)
 	}
 
 	s.EnrolmentGeneration = gen
 
 	if err := i.sessions.Save(ctx, s); err != nil {
-		return &enrolmentFault{reason: reasonSessionUnsaved, msg: msgSessionUnsaved, cause: err}
+		return newEnrolmentFault(reasonSessionUnsaved, msgSessionUnsaved, err)
 	}
 
 	return writeEnrolmentDocument(ex, enrolmentBeginDocument{
@@ -484,7 +499,7 @@ type enrolmentBeginDocument struct {
 func writeEnrolmentDocument(ex *Exchange, body any) error {
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		return &enrolmentFault{reason: reasonNotWritten, msg: msgNotWritten, cause: err}
+		return newEnrolmentFault(reasonNotWritten, msgNotWritten, err)
 	}
 
 	ex.Writer.SetHeader("Content-Type", "application/json")
@@ -492,7 +507,7 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 	ex.Writer.WriteHeader(http.StatusOK)
 
 	if _, err := ex.Writer.Write(encoded); err != nil {
-		return &enrolmentFault{reason: reasonNotWritten, msg: msgNotWritten, cause: err}
+		return newEnrolmentFault(reasonNotWritten, msgNotWritten, err)
 	}
 
 	return nil
@@ -506,10 +521,8 @@ func writeEnrolmentDocument(ex *Exchange, body any) error {
 func (i *enrolmentInterceptor) throttled(ctx context.Context, l ratelimit.Limiter, key string) error {
 	exceeded, err := l.Exceeded(ctx, key)
 	if err != nil {
-		return &enrolmentFault{
-			reason: reasonLimiterUnavailable, msg: msgLimiterUndecided,
-			kind: mfa.ErrEnrolmentThrottled, cause: err,
-		}
+		return newEnrolmentFault(reasonLimiterUnavailable, msgLimiterUndecided, err,
+			mfa.ErrEnrolmentThrottled)
 	}
 
 	if exceeded {
@@ -604,10 +617,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
 
-			return refusedAs(mfa.ErrInvalidCode, err)
+			return refusedAs(mfa.ErrInvalidCode, textMFAInvalidCode, err)
 		}
 
-		return &enrolmentFault{reason: reasonNotProven, msg: msgNotProven, cause: err}
+		return newEnrolmentFault(reasonNotProven, msgNotProven, err)
 	}
 
 	if i.emailConfirmation {
@@ -616,7 +629,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 		if err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
 			i.voidEmailCode(ctx, s.UserID, gen)
 
-			return &enrolmentFault{reason: reasonSendRefused, msg: msgSendRefused, cause: err}
+			return newEnrolmentFault(reasonSendRefused, msgSendRefused, err)
 		}
 
 		ex.Writer.WriteHeader(http.StatusNoContent)
@@ -626,10 +639,10 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 
 	if err := i.method.CompleteEnrolment(ctx, s.UserID, gen); err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
-			return refusedAs(mfa.ErrInvalidCode, err)
+			return refusedAs(mfa.ErrInvalidCode, textMFAInvalidCode, err)
 		}
 
-		return &enrolmentFault{reason: reasonNotCompleted, msg: msgNotCompleted, cause: err}
+		return newEnrolmentFault(reasonNotCompleted, msgNotCompleted, err)
 	}
 
 	return i.completed(ex, s)
@@ -641,12 +654,13 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 // client that hangs up must not leave the code redeemable.
 //
 // A voiding that fails does not replace the send failure the request answers
-// with; it is logged, sampled, by a fixed reason and never by the failure's own
-// text, which a store may word with the user reference.
+// with; it is logged, sampled, through [diag.Failure] — the fixed reason and
+// the error's Go type, never the failure's own text, which a store may word
+// with the user reference.
 func (i *enrolmentInterceptor) voidEmailCode(ctx context.Context, user identity.UserID, gen id.ID) {
 	if err := mfa.VoidEmailCode(context.WithoutCancel(ctx), i.method, user, gen); err != nil {
 		i.logSampled(ctx, slog.LevelError, reasonNotVoided, msgEmailCodeNotVoided,
-			slog.String("reason", reasonNotVoided))
+			diag.Failure(reasonNotVoided, err)...)
 	}
 }
 
@@ -681,7 +695,7 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session) error
 	if saveErr != nil {
 		s.MFA = session.MFAEnrolmentPending
 
-		return &enrolmentFault{reason: reasonSessionUnsaved, msg: msgSessionUnsaved, cause: saveErr}
+		return newEnrolmentFault(reasonSessionUnsaved, msgSessionUnsaved, saveErr)
 	}
 
 	ex.Writer.WriteHeader(http.StatusNoContent)
@@ -741,12 +755,12 @@ const msgEnrolmentNotNotified = "httpsec: the user could not be notified of a co
 func (i *enrolmentInterceptor) contactOf(ctx context.Context, user identity.UserID) (string, error) {
 	details, err := i.users.LoadByUserID(ctx, user)
 	if err != nil {
-		return "", &enrolmentFault{reason: reasonUserUnloadable, msg: msgUserUnloadable, cause: err}
+		return "", newEnrolmentFault(reasonUserUnloadable, msgUserUnloadable, err)
 	}
 
 	to, err := i.contact(ctx, details)
 	if err != nil {
-		return "", &enrolmentFault{reason: reasonContactUnresolved, msg: msgContactUnresolved, cause: err}
+		return "", newEnrolmentFault(reasonContactUnresolved, msgContactUnresolved, err)
 	}
 
 	return to, nil
@@ -765,36 +779,43 @@ func (i *enrolmentInterceptor) contactOf(ctx context.Context, user identity.User
 // status and any mapping the consumer keeps are unchanged; a handler that
 // unwraps it and prints the cause prints what the consumer's own dependency
 // wrote.
+//
+// It is a thin wrapper around [diag.Fault], built by [diag.Wrap]: this
+// path's own reason, logged by [refusalReason] and notifyBound, stays local
+// to httpsec rather than joining diag's shared vocabulary.
 type enrolmentFault struct {
 	// reason is the fixed category the enrolment path logs the fault by.
 	reason string
-	msg    string
 
-	// kind is the library sentinel the refusal is, or nil.
-	kind  error
-	cause error
+	// msg is the fixed text the fault always reads as. It is kept here, not
+	// only in err, because diag.Wrap hands back a bare sentinel cause as it
+	// is, and this path's text must not change to the sentinel's when a
+	// dependency happens to fail with one.
+	msg string
+
+	// err is the *diag.Fault (or a bare library sentinel) that carries the
+	// sentinel and the cause.
+	err error
+}
+
+// newEnrolmentFault is reason's *enrolmentFault over diag.Wrap(cause, msg,
+// kinds...): msg is the fixed text a consumer's error handler sees, and
+// kinds, when given, are the library sentinels the refusal is answered as.
+func newEnrolmentFault(reason, msg string, cause error, kinds ...error) *enrolmentFault {
+	return &enrolmentFault{reason: reason, msg: msg, err: diag.Wrap(cause, msg, kinds...)}
 }
 
 func (f *enrolmentFault) Error() string { return f.msg }
 
-func (f *enrolmentFault) Unwrap() []error {
-	if f.kind == nil {
-		return []error{f.cause}
-	}
+func (f *enrolmentFault) Unwrap() error { return f.err }
 
-	return []error{f.kind, f.cause}
-}
-
-// refusedAs is the refusal kind, which err is or wraps, with kind's own text:
-// err itself when it is the bare sentinel, and otherwise a fault that keeps err
-// reachable, since a store that decides a refusal may word it with the user
-// reference or the address.
-func refusedAs(kind, err error) error {
-	if err == kind { //nolint:errorlint // the bare sentinel needs no wrapper
-		return kind
-	}
-
-	return &enrolmentFault{reason: reasonRefused, msg: kind.Error(), kind: kind, cause: err}
+// refusedAs is the refusal kind, with text matching kind's own words (given as
+// a constant, never kind.Error(), so this path's fixed text is never a
+// dependency's error rendered at runtime): err itself when it is the bare
+// sentinel, and otherwise a fault that keeps err reachable, since a store
+// that decides a refusal may word it with the user reference or the address.
+func refusedAs(kind error, text string, err error) error {
+	return diag.Wrap(err, text, kind)
 }
 
 // The reasons an enrolment fault is logged by, and the fixed text it is
@@ -811,7 +832,6 @@ const (
 	reasonNotCompleted       = "not-completed"
 	reasonNotWritten         = "not-written"
 	reasonNotVoided          = "not-voided"
-	reasonRefused            = "refused"
 	reasonUnknown            = "unknown"
 
 	msgUserUnloadable    = "httpsec: the enrolling user could not be loaded"
@@ -824,6 +844,16 @@ const (
 	msgNotProven         = "httpsec: the method could not record the device proof"
 	msgNotCompleted      = "httpsec: the method could not complete the enrolment"
 	msgNotWritten        = "httpsec: the enrolment response could not be written"
+
+	// The words of the sentinels refusedAs is called with, kept as constants
+	// so the fixed text a caller sees never comes from calling Error() on a
+	// dependency's error at runtime (forbidigo forbids that, save for the
+	// stated exceptions elsewhere): each string here must read exactly as
+	// its sentinel's own Error() does.
+	textMFAAlreadyEnrolled  = "mfa: this user already has a confirmed enrolment"
+	textMFAInvalidCode      = "mfa: invalid code"
+	textMFAEmailCodeInvalid = "mfa: invalid code: the emailed code is wrong or expired"
+	textCredentialsMissing  = "httpsec: missing or unreadable login credentials"
 )
 
 // enrolmentBodyLimit is how many request body bytes an enrolment endpoint
@@ -851,7 +881,7 @@ func postedField(r Request, name string) (string, error) {
 
 	if err != nil {
 		// The transport's failure, whose text is not the library's.
-		return "", refusedAs(ErrCredentialsMissing, err)
+		return "", refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
 	}
 
 	if !declaresForm(r.Header("Content-Type")) {
@@ -907,10 +937,10 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session)
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
 
-			return refusedAs(mfa.ErrEmailCodeInvalid, err)
+			return refusedAs(mfa.ErrEmailCodeInvalid, textMFAEmailCodeInvalid, err)
 		}
 
-		return &enrolmentFault{reason: reasonNotCompleted, msg: msgNotCompleted, cause: err}
+		return newEnrolmentFault(reasonNotCompleted, msgNotCompleted, err)
 	}
 
 	return i.completed(ex, s)

@@ -501,6 +501,13 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 // chain writes are refusals and outages, and silently dropping them is not a
 // configuration anyone asks for on purpose. Pass a logger over
 // slog.DiscardHandler to say so deliberately.
+//
+// A record of a failed consumer dependency never carries that dependency's
+// error text: it carries a fixed reason and the error's Go type, as the
+// package doc's "A dependency's failure never reaches a record or a returned
+// error's text" explains, with the deliberate exceptions it names. A consumer
+// who wants a dependency's own text logs it inside their own implementation of
+// the port that failed.
 func WithLogger(l *slog.Logger) Option {
 	return func(c *config) error {
 		if err := requireDep("WithLogger", "logger", l); err != nil {
@@ -519,6 +526,14 @@ func WithLogger(l *slog.Logger) Option {
 // configures neither gets one answer about how much guessing is too much. It
 // bounds one process: supply a limiter backed by storage the replicas share
 // when one limit has to hold across a fleet.
+//
+// A source that spends its allowance is recorded with the throttled address
+// itself, kept on purpose: an operator reading the record needs to know who
+// was throttled. A limiter that fails to answer at all is a different thing,
+// and is recorded by a fixed reason and the error's Go type, never its own
+// text, since a consumer's limiter may quote the bucket key — and with it an
+// address or a user reference — back. A consumer who wants that text logs it
+// inside their own implementation of ratelimit.Limiter.
 func WithRateLimiter(l ratelimit.Limiter) Option {
 	return func(c *config) error {
 		if err := requireDep("WithRateLimiter", "limiter", l); err != nil {
@@ -890,6 +905,17 @@ type BearerTokenOption func(*bearerToken) error
 // Default: the scheme DefaultBearerScheme, matched without regard to case, and
 // a token presented with no scheme at all is ignored. Requests carrying another
 // scheme, or no Authorization header, pass through untouched.
+//
+// A token that fails verification is recorded at debug with the verifier's own
+// text, kept on purpose: it is the library's own protocol-failure text, not a
+// dependency's, and names the check the token failed (expired, wrong
+// signature, wrong audience), which an operator chasing a rejected client
+// needs. Every other dependency failure — an unreadable session, a failed
+// save while marking a challenge — is recorded by a fixed reason and the
+// error's Go type, never its text, and a failed save is returned wrapped in
+// fixed library text, its error still matching through errors.Is and
+// errors.As. A consumer who wants a store's full error logs it inside their
+// own implementation of BearerTokenDeps.
 func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 	const option = "EnableBearerToken"
 

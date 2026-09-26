@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
 )
@@ -164,9 +165,15 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 // deleting sessions, loading the user, resolving the address or sending the
 // message — is returned after the removal, never swallowed, and the steps
 // after the failing one are not run; the caller retries the reset, which
-// removes an absent enrolment without error. The user's MFA requirement is untouched: with the enrolment path on,
-// their next login enters the enrolment-only state, and with it off they are
-// refused until enrolled out of band.
+// removes an absent enrolment without error. The user's MFA requirement is
+// untouched: with the enrolment path on, their next login enters the
+// enrolment-only state, and with it off they are refused until enrolled out of
+// band.
+//
+// A dependency's failure, the removal's included, comes back with fixed text
+// of the package's own naming the step, never the dependency's text, which may
+// quote the user's address. The dependency's error still matches through
+// errors.Is and errors.As.
 //
 // Every dependency and option is checked before anything is written: a missing
 // dependency that a step needs, or a nil WithResetMessage builder, is an
@@ -187,12 +194,12 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 	}
 
 	if err := deps.Enrolments.RemoveEnrolment(ctx, user); err != nil {
-		return fmt.Errorf("mfa: reset could not remove the enrolment: %w", err)
+		return diag.Wrap(err, "mfa: reset could not remove the enrolment")
 	}
 
 	if c.revokeSessions {
 		if err := deps.Sessions.DeleteByUser(ctx, user); err != nil {
-			return fmt.Errorf("mfa: reset removed the enrolment but could not end the sessions: %w", err)
+			return diag.Wrap(err, "mfa: reset removed the enrolment but could not end the sessions")
 		}
 	}
 
@@ -232,7 +239,7 @@ func (d ResetDeps) notify(
 ) error {
 	details, err := d.Users.LoadByUserID(ctx, user)
 	if err != nil {
-		return fmt.Errorf("mfa: reset could not load the user to notify: %w", err)
+		return diag.Wrap(err, "mfa: reset could not load the user to notify")
 	}
 
 	contact := d.Contact
@@ -242,13 +249,13 @@ func (d ResetDeps) notify(
 
 	to, err := contact(ctx, details)
 	if err != nil {
-		return fmt.Errorf("mfa: reset could not resolve the address to notify: %w", err)
+		return diag.Wrap(err, "mfa: reset could not resolve the address to notify")
 	}
 
 	subject, body := message(at)
 
 	if err := d.Sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
-		return fmt.Errorf("mfa: reset could not queue the notification: %w", err)
+		return diag.Wrap(err, "mfa: reset could not queue the notification")
 	}
 
 	return nil

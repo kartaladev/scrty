@@ -53,6 +53,17 @@ type OIDCOption func(*oidcInterceptor) error
 // be resolved.
 // RP-initiated logout is on (WithOIDCRPInitiatedLogout).
 //
+// A back-channel logout token that fails verification is answered as one
+// uniform refusal, and is recorded at WARN with the verifier's own text,
+// naming which rule failed (never a claim value): kept on purpose, since it is
+// the library's own protocol-failure text and not a dependency's. Every other
+// dependency failure behind these endpoints — the flow store, the handoff
+// store or its user loader, the link store, the session store — is recorded
+// by a fixed reason and the error's Go type, and returned to the caller behind
+// fixed library text with the dependency's error still reachable by
+// errors.Is and errors.As. A consumer who wants a dependency's own text logs
+// it inside their own implementation of the store or loader.
+//
 // The token generator is required (WithOIDCTokens) unless WithCallbackSuccess
 // is given: the library ships no signing key, and a redeemed code opens a
 // session its caller must be able to present, but WithCallbackSuccess issues

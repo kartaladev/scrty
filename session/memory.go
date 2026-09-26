@@ -2,7 +2,7 @@ package session
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"sync"
 	"time"
 
@@ -182,7 +182,7 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.records[sess.ID]; exists {
-		return fmt.Errorf("session: a session with identifier %s is already stored", sess.ID)
+		return errors.New("session: a session with this identifier is already stored")
 	}
 	s.records[sess.ID] = sess.clone()
 

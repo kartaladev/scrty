@@ -114,7 +114,14 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //   - the sender must not wait for delivery
 //     (WithEnrolmentSynchronousDelivery);
 //   - every endpoint refusal is logged by a fixed reason, at most once per
-//     reason per minute (WithEnrolmentLogInterval).
+//     reason per minute (WithEnrolmentLogInterval). A refusal a dependency
+//     caused — the user loader, a resolver, the method's store, the session
+//     manager, a limiter — also carries the error's Go type, never its own
+//     text, which may quote the user's address or reference; a consumer who
+//     wants that text logs it inside their own implementation of the
+//     dependency. A refusal with no dependency behind it (a wrong code, an
+//     enrolled user, the same channel twice) carries no type, since there is
+//     no dependency error to name.
 //
 // The emailed code's bounds are fixed, not defaults: 6 digits, accepted for 10
 // minutes after the device is proven, and for at most mfa.MaxEmailCodeFailures
@@ -127,7 +134,8 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 // voided (mfa.VoidEmailCode), so that proof can never complete and the user
 // begins again. The exception is a store that fails while voiding: the code
 // then keeps the attempts it has left, until it expires or a begin replaces
-// it, and the failure is logged by the fixed reason "not-voided".
+// it, and the failure is logged by the fixed reason "not-voided" and the
+// error's Go type, never the store's own text.
 //
 // The method enrolled is the one EnableMFA was given, which must implement
 // mfa.Enroller over a store that implements mfa.DeviceProofStore. New refuses

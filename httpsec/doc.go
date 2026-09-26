@@ -73,4 +73,32 @@
 // chain only. A framework that already owns how a request is refused keeps that
 // ownership: on gin the refusal goes to gin's error channel, and on fiber to
 // fiber's error handler.
+//
+// # A dependency's failure never reaches a record or a returned error's text
+//
+// When a consumer-supplied dependency fails — a store, a user loader, a
+// contact resolver, a sender, a rate limiter — this package writes neither the
+// dependency's error text nor a value it may quote into a log record or into
+// the text of an error it returns. A record instead carries a fixed reason
+// naming what failed and the error's Go type; a returned error carries fixed
+// library text of its own. In both cases the dependency's error stays
+// reachable: a record's message and WithLogger together tell an operator which
+// check failed and with what kind of error, and a returned error still matches
+// the original by errors.Is and errors.As, and StatusForError maps it exactly
+// as it would have mapped the dependency's own error. A consumer who wants the
+// dependency's full text — a row a store could not read, a bucket key a
+// limiter quoted back — logs it inside their own implementation of the port
+// the failure came from; that implementation is the only place that knows what
+// the text may contain.
+//
+// A few records are a deliberate exception, and keep the library's own text on
+// purpose because it is not a dependency's: EnableBearerToken's debug record
+// of a token that failed verification, so an operator can tell an expired
+// token from a wrong signature or a wrong audience; EnableOIDCLogin's WARN
+// record of a back-channel logout token that failed verification, naming the
+// rule it failed; and the OIDC manager's record of an invalid ID token. Each
+// is named again on the option or method that writes it. No other dependency
+// text, and no personal data beyond what a capability's own godoc names (the
+// throttled source address, the opaque user reference in MFA and policy
+// records), is ever added to a record.
 package httpsec

@@ -9,6 +9,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 // The accepted bcrypt cost band of a mapped password-hash claim, by default
@@ -113,7 +114,11 @@ func (b *Broker) checkPasswordClaims() error {
 	if b.passwordEncoder != nil {
 		probe, err := b.passwordEncoder.Encode("scrty password encoder probe")
 		if err != nil {
-			return fmt.Errorf("%w: WithPasswordEncoder: the encoder failed its probe: %w", ErrConfig, err)
+			// ErrConfig already matched regardless of cause: every failure of
+			// this probe is a construction error, so it is named as a kind
+			// here rather than left to match only when it happens to be the
+			// cause.
+			return diag.Wrap(err, fmt.Sprintf("%s: WithPasswordEncoder: the encoder failed its probe", ErrConfig), ErrConfig)
 		}
 		if !bcryptHash.Match(probe) {
 			return fmt.Errorf("%w: WithPasswordEncoder: the encoder does not produce bcrypt hashes, "+

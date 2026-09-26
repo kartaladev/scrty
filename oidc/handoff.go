@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -80,6 +81,11 @@ type HandoffManager struct {
 // reads time from time.Now (WithHandoffClock), names records with
 // id.NewV7Generator() (WithHandoffIDGenerator) and logs to slog.Default()
 // (WithHandoffLogger). Every error it returns wraps ErrConfig.
+//
+// A record of a redemption the store or users failed carries a fixed reason
+// and the error's Go type, never the dependency's own text; a consumer who
+// wants that detail logs it inside their own implementation of the store or
+// the loader.
 func NewHandoffManager(store HandoffStore, users identity.UserLoader, opts ...HandoffOption) (*HandoffManager, error) {
 	if nilcheck.IsNil(store) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("handoff store"))
@@ -163,7 +169,7 @@ func (h *HandoffManager) Issue(ctx context.Context, res CallbackResult) (string,
 		ExpiresAt:  now.Add(HandoffTTL),
 	}
 	if err := h.store.Insert(ctx, rec); err != nil {
-		return "", fmt.Errorf("oidc: storing a handoff code: %w", err)
+		return "", diag.Wrap(err, "oidc: storing a handoff code")
 	}
 
 	return tokenID + "." + secret, nil
@@ -228,57 +234,51 @@ type HandoffResult struct {
 // missing, disabled or mismatched user, a cancelled request, and a failure of
 // the store or the loader, including of the consume. A caller cannot tell them
 // apart; the cause is logged, at DEBUG for traffic that is simply wrong and at
-// ERROR for an outage, with a store's or loader's error scrubbed of
-// bcrypt-shaped text, the token id and the user reference before it is
-// logged. Any failure before the consume leaves the code
-// redeemable until it expires. No error and no log record carries the code or
+// ERROR for an outage, as a fixed reason (handoff-store or user-loader) and
+// the error's Go type, never the store's or loader's own text. Any failure
+// before the consume leaves the code redeemable until it expires. No error and no log record carries the code or
 // the ID token.
 func (h *HandoffManager) Redeem(ctx context.Context, code string, checks ...RedeemCheck) (HandoffResult, error) {
 	tokenID, secret, ok := parseHandoffCode(code)
 	if !ok {
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "malformed", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "malformed")
 	}
 
 	rec, err := h.store.FindByTokenID(ctx, tokenID)
 	switch {
 	case errors.Is(err, ErrHandoffNotFound):
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "unknown", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "unknown")
 	case err != nil:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelError, "store_find_failed",
-			redact(err, identifying{names: []string{tokenID}}))
+		return HandoffResult{}, h.refuseFailure(ctx, "handoff-store", "find", err)
 	case rec == nil:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelError, "store_returned_nil", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelError, "store_returned_nil")
 	}
 
 	if subtle.ConstantTimeCompare(handoffDigest(secret), rec.SecretHash) != 1 {
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "secret_mismatch", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "secret_mismatch")
 	}
 	now := h.now()
 	if !now.Before(rec.ExpiresAt) {
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired")
 	}
 	// Not what guarantees single use, which is the consume below; it only
 	// spares a replayed code the user load and the checks.
 	if rec.ConsumedAt != nil {
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "consumed", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "consumed")
 	}
-
-	// A consumer port's error may quote the token id, the user reference or a
-	// password hash; none of them reaches the log.
-	held := identifying{names: []string{tokenID, string(rec.UserID)}}
 
 	details, err := h.users.LoadByUserID(ctx, rec.UserID)
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_not_found", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_not_found")
 	case err != nil:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelError, "user_load_failed", redact(err, held))
+		return HandoffResult{}, h.refuseFailure(ctx, "user-loader", "", err)
 	case details == nil:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_not_found", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_not_found")
 	case !details.Active:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_inactive", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_inactive")
 	case details.ID != rec.UserID:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_mismatch", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "user_mismatch")
 	}
 
 	principal := *identity.PrincipalFromDetails(details)
@@ -293,14 +293,14 @@ func (h *HandoffManager) Redeem(ctx context.Context, code string, checks ...Rede
 
 	// A request nobody will read the answer to must not spend the code.
 	if ctx.Err() != nil {
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "request_cancelled", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "request_cancelled")
 	}
 	err = h.store.Consume(ctx, rec.TokenID, now)
 	switch {
 	case errors.Is(err, ErrHandoffNotFound):
-		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "consume_lost", nil)
+		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "consume_lost")
 	case err != nil:
-		return HandoffResult{}, h.refuse(ctx, slog.LevelError, "store_consume_failed", redact(err, held))
+		return HandoffResult{}, h.refuseFailure(ctx, "handoff-store", "consume", err)
 	}
 
 	return HandoffResult{
@@ -332,17 +332,42 @@ func parseHandoffCode(code string) (tokenID, secret string, ok bool) {
 }
 
 // refuse logs why a redemption failed, through the sampler, and returns
-// ErrInvalidHandoff. The record names the reason and, for an outage, the
-// store's or loader's error, already passed through redact by the caller;
-// never the code, the secret or the ID token.
-func (h *HandoffManager) refuse(ctx context.Context, level slog.Level, reason string, cause error) error {
-	write, suppressed := h.sampler.Allow("oidc.handoff."+reason, h.now())
+// ErrInvalidHandoff. The record names the reason; never the code, the secret
+// or the ID token.
+func (h *HandoffManager) refuse(ctx context.Context, level slog.Level, reason string) error {
+	return h.record(ctx, level, reason, slog.String("reason", reason))
+}
+
+// refuseFailure is refuse for a redemption stopped by a consumer-supplied
+// dependency's failure: the store or the user loader. op names which call
+// failed, for a reason more than one call site shares — "find" or "consume",
+// for handoff-store — so a recurring failure of one does not suppress a
+// record of the other under one sampling key; it is empty for a reason with
+// only one call site, and then the record carries no op attribute. The
+// record otherwise carries diag.Failure's reason, error_type and, for a
+// cancellation, cancelled=true, never the dependency's own text. A consumer
+// who wants that text logs it inside their own implementation of the store
+// or the loader.
+func (h *HandoffManager) refuseFailure(ctx context.Context, reason, op string, err error) error {
+	attrs := diag.Failure(reason, err)
+	key := reason
+	if op != "" {
+		attrs = append([]slog.Attr{slog.String("op", op)}, attrs...)
+		key = reason + ":" + op
+	}
+	return h.record(ctx, slog.LevelError, key, attrs...)
+}
+
+// record writes one refusal record through the sampler, keyed by key, and
+// returns ErrInvalidHandoff. attrs carry the reason attribute themselves, so
+// it is written exactly once whichever caller built them; key distinguishes
+// the sampling window from the reason attribute where a reason has more than
+// one call site (refuseFailure's op), and is otherwise the reason itself.
+func (h *HandoffManager) record(ctx context.Context, level slog.Level, key string, attrs ...slog.Attr) error {
+	write, suppressed := h.sampler.Allow("oidc.handoff."+key, h.now())
 	if write {
-		attrs := []slog.Attr{slog.String("reason", reason), slog.Int("suppressed", suppressed)}
-		if cause != nil {
-			attrs = append(attrs, slog.Any("error", cause))
-		}
-		h.log.LogAttrs(ctx, level, "oidc handoff redemption refused", attrs...)
+		h.log.LogAttrs(ctx, level, "oidc handoff redemption refused",
+			append(attrs, slog.Int("suppressed", suppressed))...)
 	}
 	return ErrInvalidHandoff
 }

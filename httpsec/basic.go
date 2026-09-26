@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -85,9 +86,12 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 
 	auth, err := b.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
 	if err != nil {
+		// The record carries a fixed reason and the attempt store's error
+		// type, never its text: a consumer who wants that detail logs it
+		// inside their own policy.AttemptStore.
 		if recErr := b.attempts.RecordFailure(ctx, username, now); recErr != nil {
 			b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-				slog.String("error", recErr.Error()))
+				diag.Failure("attempt-store", recErr)...)
 		}
 
 		b.challenge(ex)

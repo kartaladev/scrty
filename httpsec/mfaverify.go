@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -29,6 +30,7 @@ type MFAResult struct {
 type MFAResponder func(ex *Exchange, result MFAResult) error
 
 //go:generate mockgen -destination=mfamethod_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa Method
+//go:generate mockgen -destination=enrolmentstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa EnrolmentStore
 
 // DefaultMFAVerifyPath is the path the second-factor endpoint answers POST
 // requests on when the consumer names none. It is a constant rather than a
@@ -183,6 +185,11 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 // must not still answer requests after it, which is session fixation with extra
 // steps, and it is why this endpoint answers the request rather than passing it
 // on: the handle the caller should now be using is not the one they sent.
+//
+// A failed rotation or token issue comes back behind fixed text, never the
+// store's or the generator's own, with their error still reachable through
+// errors.Is and errors.As; the session manager words its store's failures so,
+// and the generator's is wrapped here.
 func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	was := *s
 	rollback := func() {
@@ -221,7 +228,7 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	// how completing a second factor came to sign a caller out.
 	tok, err := i.tokens.Generate(ex.Context(), rotated.ID, ex.Authentication.Principal)
 	if err != nil {
-		return err
+		return diag.Wrap(err, msgTokenNotIssued)
 	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated})

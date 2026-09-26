@@ -75,6 +75,13 @@ func WithSourceGuardKeyer(keyer *SourceKeyer) GuardOption {
 
 // WithSourceGuardLogger sets where the guard writes its refusal records.
 // Default: slog.Default.
+//
+// A record about a throttled source names its address on purpose — the point
+// of the record is to say who was refused. A record about the limiter itself
+// failing carries a fixed reason and the error's Go type instead of the
+// limiter's own text, which a dependency's error can quote along with values
+// the library never saw; a consumer who wants that detail logs it inside
+// their own Limiter.
 func WithSourceGuardLogger(logger *slog.Logger) GuardOption {
 	return func(g *SourceGuard) { g.logger = logger }
 }

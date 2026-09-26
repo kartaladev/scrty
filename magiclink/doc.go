@@ -30,7 +30,11 @@
 //
 // Every refusal is the same error, ErrInvalidLink, and no error and no log
 // record written here carries the token, the binding value or the submitted
-// address.
+// address. A dependency's own failure — the token store, the sender, the
+// address resolver, the redemption user loader, the random source a binding
+// nonce is drawn from — is recorded by a fixed reason and the error's Go
+// type, never by the error's own text: a consumer who wants that detail logs
+// it inside their own implementation of the port.
 //
 // # What the uniform result does not close
 //

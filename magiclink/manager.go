@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/onetime"
@@ -279,7 +280,7 @@ func (m *Manager) Request(ctx context.Context, address, next string) RequestResu
 		if err != nil {
 			m.logger.LogAttrs(ctx, slog.LevelError,
 				"magiclink: the random source failed and no link was issued",
-				slog.Any("error", err))
+				diag.Failure("random-source", err)...)
 
 			return RequestResult{}
 		}
@@ -299,7 +300,7 @@ func (m *Manager) Request(ctx context.Context, address, next string) RequestResu
 	count, err := m.tokens.IssuedCount(ctx, subject)
 	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: issuance count unavailable", slog.Any("error", err))
+			"magiclink: issuance count unavailable", diag.Failure("token-count", err)...)
 
 		return result
 	}
@@ -319,7 +320,7 @@ func (m *Manager) Request(ctx context.Context, address, next string) RequestResu
 	presented, _, err := m.tokens.Issue(ctx, subject, issueOpts...)
 	if err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: the link could not be issued", slog.Any("error", err))
+			"magiclink: the link could not be issued", diag.Failure("token-issue", err)...)
 
 		return result
 	}
@@ -333,7 +334,7 @@ func (m *Manager) Request(ctx context.Context, address, next string) RequestResu
 
 	if err := m.sender.Send(ctx, msg); err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: the sign-in message could not be sent", slog.Any("error", err))
+			"magiclink: the sign-in message could not be sent", diag.Failure("sender", err)...)
 	}
 
 	return result
@@ -356,7 +357,7 @@ func (m *Manager) resolve(ctx context.Context, address string) (*identity.Detail
 		return nil, false
 	case err != nil:
 		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: the submitted address could not be resolved", slog.Any("error", err))
+			"magiclink: the submitted address could not be resolved", diag.Failure("resolver", err)...)
 
 		return nil, false
 	case details == nil || !details.Active:
@@ -489,7 +490,7 @@ func (m *Manager) resolveRedemption(ctx context.Context, tok onetime.Token) (*id
 		return nil, ErrInvalidLink
 	case err != nil:
 		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: the link's user could not be loaded", slog.Any("error", err))
+			"magiclink: the link's user could not be loaded", diag.Failure("user-loader", err)...)
 
 		return nil, ErrInvalidLink
 	case details == nil || !details.Active:
@@ -539,8 +540,12 @@ func (m *Manager) redemptionError(ctx context.Context, err, refusal error) error
 		return ErrInvalidLink
 
 	default:
+		// Defensive: onetime.Redeem's documented contract returns only
+		// ErrInvalidToken or a check's own error, both handled above, so this
+		// branch is unreachable today. diag.Failure keeps it safe if that
+		// contract ever widens.
 		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: redeeming the link failed", slog.Any("error", err))
+			"magiclink: redeeming the link failed", diag.Failure("token-store", err)...)
 
 		return ErrInvalidLink
 	}

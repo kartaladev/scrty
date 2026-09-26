@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 // ErrSessionNotFound is what a store reports when there is no session to act
@@ -102,4 +103,23 @@ type Store interface {
 	// is not an error, so a caller with no issuer to hand cannot end that
 	// user's password sessions by accident.
 	DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error)
+}
+
+// storeFailed returns a store's failure with fixed text in place of the
+// store's own, which may quote values the library never handed it. The
+// store's error stays reachable through errors.Is and errors.As, so a caller
+// matching it, or a sentinel it wraps, still does.
+//
+// A sentinel of this package that the store returned bare — ErrSessionNotFound,
+// ErrSessionExpired or ErrSessionUnreadable — carries no store text and comes
+// back as itself, so nothing that matches on it changes. The sentinels are not
+// passed to diag.Wrap as kinds: a fault matches its kinds, and every other
+// store failure would then read as a missing or expired session.
+func storeFailed(err error, text string) error {
+	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text
+	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable {
+		return err
+	}
+
+	return diag.Wrap(err, text)
 }

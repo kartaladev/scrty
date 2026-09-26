@@ -19,6 +19,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -153,13 +154,14 @@ func (t *TOTP) Period() time.Duration { return t.period }
 // deliberately indistinguishable: telling them apart would say whether a user
 // exists and whether they have enrolled.
 //
-// A store failure is returned as itself, never as ErrInvalidCode, so a caller
+// A store failure is returned as an error, never as ErrInvalidCode, so a caller
 // can tell a refusal from an outage. It is also never reported as "not
-// enrolled".
+// enrolled". Its text is the package's own, never the store's, and the store's
+// error still matches through errors.Is and errors.As.
 func (t *TOTP) Verify(ctx context.Context, user identity.UserID, code string) error {
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
-		return err
+		return enrolmentStoreFailed(err, msgReadFailed)
 	}
 
 	if !ok || e.ConfirmedAt.IsZero() {
@@ -177,7 +179,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, code string) er
 
 	accepted, err := t.store.AcceptStep(ctx, user, step)
 	if err != nil {
-		return err
+		return enrolmentStoreFailed(err, "mfa: totp could not record the accepted step")
 	}
 
 	if !accepted {
@@ -195,11 +197,12 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, code string) er
 //
 // A store failure is an error, never a false: a false is read as "this user has
 // no second factor" and completes the login on its first factor. A pending
-// enrolment is also false — it was begun and never proved.
+// enrolment is also false — it was begun and never proved. The error's text is
+// the package's own; the store's error still matches by identity.
 func (t *TOTP) Enrolled(ctx context.Context, user identity.UserID) (bool, error) {
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
-		return false, err
+		return false, enrolmentStoreFailed(err, msgReadFailed)
 	}
 
 	return ok && !e.ConfirmedAt.IsZero(), nil
@@ -309,8 +312,11 @@ type Provisioning struct {
 //
 // Beginning again while an enrolment is pending replaces the pending secret.
 // Beginning for a user with a confirmed enrolment fails with ErrAlreadyEnrolled
-// and changes nothing: replacing a working second factor silently is how a user
-// is locked out of their own account. RemoveEnrolment is the explicit way.
+// — the store's own, returned as itself when the store returns it bare — and
+// changes nothing: replacing a working second factor silently is how a user is
+// locked out of their own account. RemoveEnrolment is the explicit way. Any
+// other store failure comes back with the package's own text, the store's
+// error still matching by identity.
 //
 // The secret is read before anything is written, so a random source that fails
 // leaves no half-made enrolment behind.
@@ -367,7 +373,7 @@ func (t *TOTP) BeginEnrolmentGeneration(
 		CreatedAt:  t.now(),
 		Generation: gen,
 	}); err != nil {
-		return Provisioning{}, id.Nil, err
+		return Provisioning{}, id.Nil, enrolmentStoreFailed(err, "mfa: totp could not store the pending enrolment")
 	}
 
 	t.record(ctx, slog.LevelInfo, msgEnrolmentBegun, user)
@@ -413,7 +419,8 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 // nothing. So does any enrolment whose device was proven on the enrolment
 // path, whatever the state of its emailed code: such an enrolment completes
 // only through the path, by Enroller.CompleteEnrolment or
-// Enroller.RedeemEmailCode. A store failure is returned as itself.
+// Enroller.RedeemEmailCode. A store failure is returned with the package's own
+// text, the store's error still matching by identity.
 //
 // Known limit: it reads the enrolment, then calls the store's Confirm, which
 // conditions on neither the generation nor the device proof. A device proof
@@ -426,7 +433,7 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code string) error {
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
-		return err
+		return enrolmentStoreFailed(err, msgReadFailed)
 	}
 
 	if !ok || !e.ConfirmedAt.IsZero() || !e.DeviceProvenAt.IsZero() || !e.EmailCodeUntil.IsZero() {
@@ -440,7 +447,7 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 
 	confirmed, err := t.store.Confirm(ctx, user, step, t.now())
 	if err != nil {
-		return err
+		return enrolmentStoreFailed(err, "mfa: totp could not confirm the enrolment")
 	}
 
 	if !confirmed {
@@ -461,10 +468,12 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 // first factor.
 //
 // Removing an enrolment the store does not hold is not an error: the caller
-// wanted it gone and it is gone. Afterwards the user may enrol again.
+// wanted it gone and it is gone. Afterwards the user may enrol again. A store
+// failure is returned with the package's own text, the store's error still
+// matching by identity.
 func (t *TOTP) RemoveEnrolment(ctx context.Context, user identity.UserID) error {
 	if err := t.store.Delete(ctx, user); err != nil {
-		return err
+		return enrolmentStoreFailed(err, "mfa: totp could not remove the enrolment")
 	}
 
 	t.record(ctx, slog.LevelInfo, msgEnrolmentRemoved, user)
@@ -490,12 +499,14 @@ const (
 // record writes one event about a user.
 //
 // Every record carries the method and the user reference, and a refusal carries
-// why. None of them is ever given the presented code, the emailed code, the
+// why. The user reference is kept on purpose: it is the consumer's opaque
+// identifier, and without it an operator could not tell whose factor changed.
+// None of them is ever given the presented code, the emailed code, the
 // enrolment secret or the provisioning URI: those are what an attacker who
 // reaches the logs would come for, and a record that named one would hand over
-// the second factor itself. Verification records are written at debug, because they are ordinary
-// traffic an attacker can drive; enrolment changes are written at info, because
-// they change what the account is protected by.
+// the second factor itself. Verification records are written at debug, because
+// they are ordinary traffic an attacker can drive; enrolment changes are
+// written at info, because they change what the account is protected by.
 func (t *TOTP) record(
 	ctx context.Context, level slog.Level, msg string, user identity.UserID, attrs ...slog.Attr,
 ) {
@@ -504,4 +515,41 @@ func (t *TOTP) record(
 			slog.String("method", t.Name()),
 			slog.String("user", string(user)),
 		}, attrs...)...)
+}
+
+// msgReadFailed is the text of an enrolment the store could not read.
+const msgReadFailed = "mfa: totp could not read the enrolment"
+
+// enrolmentStoreBare are the sentinels EnrolmentStore's contract lets a store
+// return bare: PutPending's ErrAlreadyEnrolled.
+var enrolmentStoreBare = []error{ErrAlreadyEnrolled}
+
+// enrolmentStoreFailed returns an EnrolmentStore failure with text of the
+// package's own in place of the store's, the store's error still reachable
+// through errors.Is and errors.As. A sentinel the contract lets the store
+// return bare comes back as itself, text included.
+//
+// The bare sentinels are not given to diag.Wrap as kinds: a kind is what every
+// failure is answered as, and a store outage is not ErrAlreadyEnrolled. A
+// store's own error that wraps a sentinel still matches it, through its cause.
+func enrolmentStoreFailed(err error, text string) error {
+	return storeFailed(err, text, enrolmentStoreBare)
+}
+
+// deviceProofStoreFailed is enrolmentStoreFailed for a DeviceProofStore, whose
+// contract names no sentinel a store returns bare.
+func deviceProofStoreFailed(err error, text string) error {
+	return storeFailed(err, text, nil)
+}
+
+// storeFailed returns err itself when it is exactly one of bare, and otherwise
+// err behind text.
+func storeFailed(err error, text string, bare []error) error {
+	for _, sentinel := range bare {
+		if err == sentinel { //nolint:errorlint // identity: only a bare sentinel passes through
+			return err
+		}
+	}
+
+	return diag.Wrap(err, text)
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/signingkey"
 )
 
@@ -19,6 +20,9 @@ type Generator interface {
 	// other than the configured one, and rather than issuing one that
 	// identifies nobody: an empty id, a nil principal and a principal with no
 	// username are each refused. No failure here matches ErrTokenInvalid.
+	// A key source's own crypto.Signer failing to sign comes back behind
+	// fixed library text; the signer's own error stays reachable through
+	// errors.Is and errors.As, but its text never is.
 	Generate(ctx context.Context, id string, p *identity.Principal) (string, error)
 
 	Verifier
@@ -123,7 +127,10 @@ func (g *generator) Generate(_ context.Context, id string, p *identity.Principal
 	signed, err := jwt.Sign(claims,
 		jwt.WithKey(cfg.signature, signer, jws.WithProtectedHeaders(headers)))
 	if err != nil {
-		return "", fmt.Errorf("token: sign: %w", err)
+		// The failure may be the consumer's own crypto.Signer refusing to
+		// sign — a KMS or HSM outage, say — so its error is kept reachable
+		// but never rendered into the text.
+		return "", diag.Wrap(err, "token: sign")
 	}
 
 	return string(signed), nil

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -166,6 +167,11 @@ func (s *QueuedSender) work() {
 // failure or a panic take the worker with it. A panicking delivery is logged
 // and the message is lost; it is not retried.
 //
+// Neither record carries the inner sender's own text: a failure is logged
+// through [diag.Failure] (reason "send"), and a recovered panic is logged as
+// reason "panic" with the recovered value's Go type, never the value itself —
+// a custom sender's panic value can quote exactly what its error text can.
+//
 // The timeout bounds an inner sender that honours context cancellation
 // mid-transfer. SMTPSender does. A custom sender that ignores its context can
 // occupy a worker for as long as it likes, and this is documented rather than
@@ -175,7 +181,8 @@ func (s *QueuedSender) deliver(q queued) {
 		if r := recover(); r != nil {
 			s.logger.LogAttrs(q.ctx, slog.LevelError,
 				"notify: sender panicked while delivering",
-				slog.Any("panic", r))
+				slog.String("reason", "panic"),
+				slog.String("value_type", fmt.Sprintf("%T", r)))
 		}
 	}()
 
@@ -184,7 +191,7 @@ func (s *QueuedSender) deliver(q queued) {
 
 	if err := s.inner.Send(ctx, q.msg); err != nil {
 		s.logger.LogAttrs(ctx, slog.LevelError,
-			"notify: delivery failed", slog.Any("error", err))
+			"notify: delivery failed", diag.Failure("send", err)...)
 	}
 }
 

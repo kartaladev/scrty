@@ -137,8 +137,10 @@ func TestGuardFailsClosedWhenTheLimiterCannotDecide(t *testing.T) {
 				require.Len(t, recs, 1, "a limiter outage was refused without a word about it")
 				assert.Equal(t, "WARN", recs[0]["level"],
 					"an outage that refuses live traffic was written below warning level")
-				assert.Contains(t, recs[0]["error"], errBackendDown.Error(),
+				assert.Equal(t, "limiter", recs[0]["reason"],
 					"the record does not name what went wrong")
+				assert.NotEmpty(t, recs[0]["error_type"],
+					"the record does not name the error's type")
 			},
 		},
 		{
@@ -276,8 +278,10 @@ func TestGuardChecksAndRecordsOnTheSameKey(t *testing.T) {
 
 		recs := logRecords(t, recorder)
 		require.Len(t, recs, 1, "a failure that went uncounted was never reported")
-		assert.Contains(t, recs[0]["error"], errBackendDown.Error(),
-			"the record does not carry the cause")
+		assert.Equal(t, "limiter", recs[0]["reason"],
+			"the record does not name what went wrong")
+		assert.NotEmpty(t, recs[0]["error_type"],
+			"the record does not name the error's type")
 	})
 
 	t.Run("a source that never came from a check records nothing", func(t *testing.T) {

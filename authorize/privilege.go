@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -137,8 +138,11 @@ func (a *PrivilegeAuthorizer) Authorize(ctx context.Context, attrs Attributes) e
 		// Anything else is an outage: the check did not happen. It is wrapped
 		// rather than turned into a denial, because a caller that logs denials
 		// as refused attempts would otherwise record a store failure as a
-		// caller trying something they may not do.
-		return fmt.Errorf("authorize: load privileges for role %q: %w", role.Name, err)
+		// caller trying something they may not do. The loader's own error is
+		// never rendered into the text — it can quote whatever the loader's
+		// backing store holds — but stays reachable through errors.Is and
+		// errors.As, so a consumer can still match it deliberately.
+		return diag.Wrap(err, "authorize: the role's privileges could not be loaded")
 	}
 
 	if a.satisfied(a.entryFor(granted, required), required) {

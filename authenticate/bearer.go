@@ -2,6 +2,8 @@ package authenticate
 
 import "github.com/kartaladev/scrty/identity"
 
+//go:generate mockgen -source=bearer.go -package=authenticate_test -destination=bearercredentials_mock_test.go -typed
+
 // BearerCredentials is the shape the bearer-token provider reads a token from.
 //
 // It is an interface rather than a concrete type so a consumer whose transport

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -123,6 +124,17 @@ func classifyAddress(addr string) (reason string, ok bool) {
 //
 // A refused check returns the zero Source, which keys nothing, so no failure
 // can be charged to a check that did not pass.
+//
+// Two records this function writes name what failed, deliberately: a source
+// throttled within its limit carries the throttled address itself
+// (source), kept on purpose, since an operator reading a throttle record
+// needs to know who was throttled — the rate-limiting capability's own
+// contract. A limiter that could not answer at all is a different thing: it
+// carries only a fixed reason ("limiter") and the failing error's Go type,
+// never the error's own text, because a consumer's limiter may quote the
+// bucket key back, and that key can carry the address or the user reference
+// that built it. A consumer who wants that detail logs it inside their own
+// implementation of ratelimit.Limiter.
 func sourceThrottled(
 	ctx context.Context,
 	g sourceGuard,
@@ -159,7 +171,7 @@ func sourceThrottled(
 		// real outage needs. So it is written every time, at debug.
 		log.LogAttrs(ctx, slog.LevelDebug,
 			"httpsec: the request ended before the rate limiter answered",
-			slog.String("flow", flow), slog.String("error", err.Error()))
+			append([]slog.Attr{slog.String("flow", flow)}, diag.Failure("limiter", err)...)...)
 
 		return ratelimit.Source{}, authenticate.ErrAuthenticationFailed
 
@@ -168,7 +180,7 @@ func sourceThrottled(
 		// is not, and one record per window says so.
 		logSampled(ctx, s, log, slog.LevelError, now, flow,
 			"httpsec: the rate limiter could not answer",
-			slog.String("flow", flow), slog.String("error", err.Error()))
+			append([]slog.Attr{slog.String("flow", flow)}, diag.Failure("limiter", err)...)...)
 
 		return ratelimit.Source{}, authenticate.ErrAuthenticationFailed
 	}

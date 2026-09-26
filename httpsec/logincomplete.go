@@ -7,6 +7,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -15,6 +16,12 @@ import (
 //go:generate mockgen -destination=policy_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/policy Policy
 //go:generate mockgen -destination=sessionstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/session Store
 //go:generate mockgen -destination=tokengenerator_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/token Generator
+
+// msgTokenNotIssued is the text an access token the consumer's generator could
+// not issue is refused with, at login and at the second factor alike.
+//
+//nolint:gosec // G101: an error message naming what failed, not a credential
+const msgTokenNotIssued = "httpsec: the access token could not be issued"
 
 // policyDenyReason is the error a deny is refused with.
 //
@@ -173,6 +180,13 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // consumer prompting for a second factor needs the credential the prompt will
 // be answered with.
 //
+// A dependency's failure comes back behind fixed text, never the dependency's
+// own, because that text may quote values the library never saw: the session
+// manager already words its store's failures so, and a token generator's error
+// is wrapped here. The dependency's error still matches through errors.Is and
+// errors.As, so the status it maps to is unchanged. A policy's reason is the
+// policy's own, and is returned as itself.
+//
 // With no policy engine wired the phase allows, which is the documented default
 // of WithPolicyEngine: a consumer who registers no policies rests on
 // authentication alone rather than on a phase that refuses everything.
@@ -234,10 +248,11 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	}
 
 	// The session identifier is the token's jti, which is how a later bearer
-	// request finds the session the token was issued for.
+	// request finds the session the token was issued for. The generator is the
+	// consumer's, so its error comes back behind fixed text.
 	tok, err := deps.tokens.Generate(ctx, s.ID, in.Principal)
 	if err != nil {
-		return "", err
+		return "", diag.Wrap(err, msgTokenNotIssued)
 	}
 
 	// Published on the challenge path too, so a consumer rendering the prompt

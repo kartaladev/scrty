@@ -9,6 +9,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/signingkey"
 )
 
@@ -19,7 +20,10 @@ type Verifier interface {
 	// Verify reports the claims of a token that passed every check. Every
 	// rejection is an error matching ErrTokenInvalid that wraps the cause; a
 	// failure to obtain the key set, and a context cancelled before the check
-	// finished, are returned as themselves and do not match it.
+	// finished, do not match it. A key-source failure comes back behind fixed
+	// library text rather than as itself, with the key source's own error
+	// still reachable through errors.Is and errors.As; a context cancellation
+	// is returned as itself.
 	//
 	// The token must be presented exactly as it was issued: one compact JWS,
 	// three unpadded base64url segments, and nothing around it. A re-encoded
@@ -86,8 +90,10 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	if err != nil {
 		// Not a rejection of the token: the keys could not be obtained. This
 		// deliberately does not match ErrTokenInvalid, so a key-service
-		// outage is never reported as a failed authentication.
-		return nil, fmt.Errorf("token: obtain key set: %w", err)
+		// outage is never reported as a failed authentication. The key
+		// source's own error is returned behind fixed library text; it stays
+		// reachable through errors.Is and errors.As, but its text never is.
+		return nil, diag.Wrap(err, "token: obtain key set")
 	}
 
 	// The port permits a nil result and an empty one alike, and a KMS- or

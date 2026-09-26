@@ -26,7 +26,7 @@
 
 1. **A dependency error wrapped several levels deep** (`fmt.Errorf("x: %w", fmt.Errorf("y: %w", storeErr))`). The record still carries only the fixed reason and the outermost type; `errors.Is` still finds the store's error. Test added to task 1.1.
 2. **A context cancellation from the dependency.** The record says `cancelled=true`, so an operator can tell a hang-up from an outage. Test added to task 1.1.
-3. **A dependency error that is exactly a library sentinel** (a store returning `session.ErrSessionNotFound` bare). It passes through unchanged, so existing matching and statuses hold. Test added to task 1.1, and a row in task 6.1.
+3. **A dependency error that is exactly a library sentinel** (a store returning `session.ErrSessionNotFound` bare). It passes through unchanged, so existing matching and statuses hold. Test added to task 1.1, a row in task 6.1, and a row in each of tasks 5.4–5.7 for every sentinel the package's dependency may return bare (design decision 8), and, in every fixture row, an assertion that the wrapped error matches no sentinel it did not match before: the bare sentinels pass through by identity and are never passed to `diag.Wrap` as kinds.
 4. **A consumer refusal check whose error text itself contains an address.** It is returned byte for byte; the library does not rewrite the consumer's words. Test added to task 6.1.
 5. **The opt-in username with sampling.** Two different usernames refused for the same reason in one window still produce one record (the username is not part of the sampling key). Test added to task 2.1.
 
@@ -40,13 +40,17 @@
 | `internal/diag/diag_test.go` (new) | helper tables | 1.1 |
 | `httpsec/mfaenrol.go` | `enrolmentFault`/`refusedAs` onto `diag` | 1.2 |
 | `authenticate/password.go`, `authenticate/options.go` (or where password options live) | username off by default; `WithUsernameInRefusalLogs`; loader failure record | 2.1, 2.2 |
-| `httpsec/login.go`, `basic.go`, `sessiontouch.go`, `oidc_callback.go`, `throttle.go` | log sites | 3.1 |
+| `httpsec/login.go`, `basic.go`, `sessiontouch.go`, `oidc_callback.go`, `bearer.go`, `logout.go`, `throttle.go` | log sites | 3.1 |
 | `notify/smtp.go`, `notify/queued.go` | failure records | 4.1 |
 | `magiclink/manager.go` | failure records | 4.2 |
 | `ratelimit/guard.go` | limiter-failure records | 4.3 |
 | `oidc/callback.go`, `oidc/handoff.go` | failure records | 5.1 |
 | `onetime/manager.go`, `apikey/manager.go`, `signingkey/rotate.go` | store-failure records | 5.2 |
 | `policy/mfarequirement.go`, `policy/lockout.go`, `policy/concurrent.go`, `policy/mfa.go` | record and reasons | 5.3 |
+| `policy/lockout.go`, `ratelimit/guard.go`, `notify/smtp.go`, `token/verifier.go`; `*/returned_errors_test.go` | returned errors of the smaller managers | 5.4 |
+| `session/manager.go`, `session/encrypted.go`; `session/returned_errors_test.go` | returned errors | 5.5 |
+| `mfa/totp.go`, `mfa/enroller.go`, `mfa/reset.go`; `mfa/returned_errors_test.go` | returned errors | 5.6 |
+| `onetime/manager.go`, `apikey/manager.go`, `signingkey/manager.go`, `oidc/authorize.go`, `oidc/callback.go`, `oidc/handoff.go`, `oidc/passwordclaim.go` (encoder probe), `authenticate/password.go`, `authenticate/jwt.go`; `*/returned_errors_test.go` | returned errors | 5.7 |
 | `httpsec/logincomplete.go`, `bearer.go`, `mfaverify.go`, `logout.go`, `oidc_authorize.go`, `oidc_callback.go`, `oidc_backchannel.go` | returned errors | 6.1 |
 | `test/httpsecconformance/redaction_scenarios.go` (new), `scenarios.go` | adapter scenario | 6.2 |
 | godoc across the packages above | consumer-detail note, deliberate fields | 7.1 |
@@ -61,8 +65,13 @@
 | C | 2.1, 2.2 | `authenticate/` | everything else | Sonnet | one option and one record, well specified |
 | D | 4.1–4.3 | `notify/`, `magiclink/`, `ratelimit/` | everything else | Sonnet | a stated pattern over listed sites |
 | E | 5.1–5.3 | `oidc/`, `onetime/`, `apikey/`, `signingkey/`, `policy/` | everything else | Sonnet (5.3 on Opus) | a stated pattern; 5.3 changes public policy reasons |
+| F1 | 5.4 | `policy/lockout.go`, `ratelimit/guard.go`, `notify/smtp.go`, `token/verifier.go`, their `returned_errors_test.go` | everything else | Sonnet | six sites, one pattern, sentinels named |
+| F2 | 5.5 | `session/` | everything else | Opus | an interface every other package calls; a wrap that drops a bare sentinel's identity passes local tests and changes statuses elsewhere |
+| F3 | 5.6 | `mfa/` | everything else | Opus | eighteen sites across the enrolment state machine; bare sentinels (`ErrNotEnrolled`, code refusals) must pass through |
+| G | 5.8, 6.1 rows | `authorize/privilege.go`, `authorize/returned_errors_test.go`, the two new rows in `httpsec/returned_errors_test.go` | everything else | Sonnet | one site, a stated pattern; found by the 6.1 review |
+| F4 | 5.7 | `onetime/`, `apikey/`, `signingkey/`, `oidc/` (not the broker's scrubbing), `authenticate/` | everything else | Sonnet | a stated pattern over listed sites |
 
-A runs first. Then B1, C, D and E run **in parallel** (no shared files). B2 runs after B1 (same package) and after E (it asserts statuses of policy reasons E rewraps). 7.1 is the last dispatch of each lane's package, folded into that lane's final dispatch; 7.2 is the main session's final gate. After each dispatch the main session runs its verification, then a fresh reviewer checks the diff.
+A runs first. Then B1, C, D and E run **in parallel** (no shared files). F1–F4 were added after E's review (design decision 8); they run **in parallel** with each other once E and D are clean, since they own the same packages. B2 runs after B1 (same package), after E (it asserts statuses of policy reasons E rewraps) and after F2 (its rows assert the text of session errors that F2 now wraps). Each F dispatch runs the whole core module's tests and reports, without fixing, any failure in a package it does not own. 7.1 is the last dispatch of each lane's package, folded into that lane's final dispatch; 7.2 is the main session's final gate. After each dispatch the main session runs its verification, then a fresh reviewer checks the diff.
 
 ---
 
@@ -205,9 +214,9 @@ Package godoc: the rule (design decision 1), and that a consumer keeps detail by
 
 ### Task 3.1: `httpsec` log sites
 
-**Files:** Modify `httpsec/login.go` (`recordFailure`, `resetFailures`), `basic.go` (attempt store), `sessiontouch.go`, `oidc_callback.go` (handoff issue record), `throttle.go` (both limiter records, keeping `source` and `flow`); Test `httpsec/failure_records_test.go` (new).
+**Files:** Modify `httpsec/login.go` (`recordFailure`, `resetFailures`), `basic.go` (attempt store), `sessiontouch.go`, `oidc_callback.go` (handoff issue record), `bearer.go` (unreadable-session record), `logout.go` (end-session step record), `throttle.go` (both limiter records, keeping `source` and `flow`); Test `httpsec/failure_records_test.go` (new).
 
-- [ ] **Step 1: Write the reproduction.** `TestHTTPSecFailureRecords`, one row per site, each driving the chain so the dependency (attempt store, session store, handoff issuer, limiter) returns the fixture error, with the chain's logger set to a capturing handler. Each row asserts the record exists, contains neither value, carries its `reason` (`attempt-store`, `session-store`, `handoff-issue`, `limiter`) and `error_type`, and for the limiter rows still carries `flow` (and `source` where it did).
+- [ ] **Step 1: Write the reproduction.** `TestHTTPSecFailureRecords`, one row per site, each driving the chain so the dependency (attempt store, session store, handoff issuer, limiter) returns the fixture error, with the chain's logger set to a capturing handler. Each row asserts the record exists, contains neither value, carries its `reason` (`attempt-store`, `session-store`, `handoff-issue`, `end-session`, `limiter`) exactly once and `error_type`, no record repeats a key, and the limiter rows still carry `flow`. One row drives a source over its limit and asserts the throttle record's `source` is the client address.
 - [ ] **Step 2: Run on unchanged code.** Expected: every row FAILS on the address. Record `REPRODUCED`.
 - [ ] **Step 3: Implement.** At each site replace `slog.String("error", err.Error())` with `diag.Failure("<reason>", err)...`, e.g.:
 
@@ -234,9 +243,9 @@ For the sampled limiter record in `throttle.go`, pass `slog.String("flow", flow)
 
 ### Task 4.2: Magic-link failure records
 
-**Files:** Modify `magiclink/manager.go` (issued-count, issue, send, resolver, user-loader records); Test `magiclink/failure_records_test.go` (new).
+**Files:** Modify `magiclink/manager.go` (issued-count, issue, send, resolver, user-loader and binding-nonce random-source records); Test `magiclink/failure_records_test.go` (new).
 
-- [ ] **Step 1: Write the reproduction.** `TestMagicLinkFailureRecords`, one row per dependency returning the fixture error, capturing logger; assert neither value and the `reason` (`token-count`, `token-issue`, `sender`, `resolver`, `user-loader`).
+- [ ] **Step 1: Write the reproduction.** `TestMagicLinkFailureRecords`, one row per dependency returning the fixture error, capturing logger; assert neither value and the `reason` (`token-count`, `token-issue`, `sender`, `resolver`, `user-loader`, and `random-source` for a `WithRandom` reader that fails).
 - [ ] **Step 2: Run on unchanged code.** Expected: FAIL.
 - [ ] **Step 3: Implement** with `diag.Failure`.
 - [ ] **Step 4: Run to verify it passes.** `go test -run TestMagicLinkFailureRecords -count=1 ./magiclink/ && go test -count=1 ./magiclink/`.
@@ -246,7 +255,7 @@ For the sampled limiter record in `throttle.go`, pass `slog.String("flow", flow)
 
 **Files:** Modify `ratelimit/guard.go`; Test `ratelimit/failure_records_test.go` (new).
 
-- [ ] **Step 1: Write the reproduction.** `TestGuardFailureRecords`: a limiter whose error names the key `magic-link|203.0.113.7` and the fixture address; the limiter-failure record carries `flow`, `reason=limiter`, `error_type`, and neither the key text nor the address; a throttled source still writes its record with `source`.
+- [ ] **Step 1: Write the reproduction.** `TestGuardFailureRecords`: a limiter whose error names the key `magic-link|203.0.113.7` and the fixture address; the limiter-failure records, from `Check` and from `RecordFailure`, carry `flow`, `reason=limiter`, `error_type`, and neither the key text nor the address; a throttled source still writes its record with `source`.
 - [ ] **Step 2: Run on unchanged code.** Expected: FAIL on the limiter row.
 - [ ] **Step 3: Implement** with `diag.Failure("limiter", err)`.
 - [ ] **Step 4: Run to verify it passes.** `go test -run TestGuardFailureRecords -count=1 ./ratelimit/ && go test -count=1 ./ratelimit/`.
@@ -254,11 +263,11 @@ For the sampled limiter record in `throttle.go`, pass `slog.String("flow", flow)
 
 ### Task 5.1: OIDC failure records
 
-**Files:** Modify `oidc/callback.go` (flow-store completion record), `oidc/handoff.go` (user-loader record at redemption); Test `oidc/failure_records_test.go` (new).
+**Files:** Modify `oidc/callback.go` (flow-store completion record), `oidc/handoff.go` (user-loader, store-find and store-consume records at redemption); Test `oidc/failure_records_test.go` (new).
 
-- [ ] **Step 1: Write the reproduction.** `TestCallbackFailureRecords` (a flow store whose `Complete` returns an error quoting the handle, the state and the fixture address) and `TestHandoffFailureRecords` (a user loader returning the fixture error, which the current value scrubbing misses because the username is not among its values). Assert neither value, nor the handle or state, in any record.
+- [ ] **Step 1: Write the reproduction.** `TestCallbackFailureRecords` (a flow store whose `Complete` returns an error quoting the handle, the state and the fixture address) and `TestHandoffFailureRecords` (rows: a user loader, a store `Find` and a store `Consume` returning the fixture error; the current value scrubbing misses the username, which is not among its values, and turns `u-123` into `[redacted]23`). Each record names `reason` once. Assert neither value, nor the handle or state, in any record.
 - [ ] **Step 2: Run on unchanged code.** Expected: FAIL.
-- [ ] **Step 3: Implement** with `diag.Failure("flow-store", err)` and `diag.Failure("user-loader", err)`. Leave `oidc/broker.go`'s `redact` untouched.
+- [ ] **Step 3: Implement** with `diag.Failure("flow-store", err)`, `diag.Failure("user-loader", err)` and `diag.Failure("handoff-store", err)`. Leave `oidc/broker.go`'s `redact` untouched.
 - [ ] **Step 4: Run to verify it passes.** `go test -run 'TestCallbackFailureRecords|TestHandoffFailureRecords' -count=1 ./oidc/ && go test -count=1 ./oidc/`.
 - [ ] **Step 5: Report.**
 
@@ -266,7 +275,7 @@ For the sampled limiter record in `throttle.go`, pass `slog.String("flow", flow)
 
 **Files:** Modify `onetime/manager.go`, `apikey/manager.go`, `signingkey/rotate.go`; Test one `failure_records_test.go` per package.
 
-- [ ] **Step 1: Write the reproduction.** One table per package with its store returning the fixture error; assert neither value in any record, the public identifier (`token_id`, `key_id`) still present where it was, and `reason=token-store` / `key-store` / `signing-key-store`.
+- [ ] **Step 1: Write the reproduction.** One table per package with its store returning the fixture error; assert neither value in any record, the public identifier (`token_id`, `key_id`) still present where it was, and `reason=token-store` / `key-store` / `signing-key-store`, with `error_type` naming the store's own error rather than the library's wrapping. `signingkey` also gets a row for a stored key that cannot be decoded: `reason=key-decode`, the key's `kid`, no key bytes.
 - [ ] **Step 2: Run on unchanged code.** Expected: FAIL in each.
 - [ ] **Step 3: Implement** with `diag.Failure`.
 - [ ] **Step 4: Run to verify it passes.** `go test -run 'Test.*StoreFailureRecords' -count=1 ./onetime/ ./apikey/ ./signingkey/`.
@@ -280,6 +289,140 @@ For the sampled limiter record in `throttle.go`, pass `slog.String("flow", flow)
 - [ ] **Step 2: Run on unchanged code.** Expected: FAIL on the text.
 - [ ] **Step 3: Implement** each reason as `diag.Wrap(err, "<policy>: <fixed text>", <sentinel>)`, keeping the text each reason uses today up to the `%w`; the record with `diag.Failure("enrolment-lookup", err)`.
 - [ ] **Step 4: Run to verify it passes.** `go test -run TestPolicyStoreFailureReasons -count=1 ./policy/ && go test -count=1 ./policy/`.
+- [ ] **Step 5: Report.**
+
+### Task 5.4: Errors the smaller managers return
+
+**Files:** Modify `policy/lockout.go` (`RecordFailure`, `Reset`, `PurgeExpired`), `ratelimit/guard.go` (`Check`), `notify/smtp.go` (the dial in `send`, and every exchange stage `exchange` returns: greeting, EHLO, STARTTLS, AUTH, MAIL, RCPT, DATA), `token/verifier.go` (the key-source call in `Verify`), `token/generator.go` (the signer's failure in `Generate`); Test `returned_errors_test.go` in each of the four packages (new).
+
+**Interfaces:** Consumes `diag.Wrap(err error, text string, kinds ...error) error`. Produces no new API; each method's returned error text changes, its identity does not.
+
+- [ ] **Step 1: Write the reproduction.** One table per package; each row calls the exported method with the dependency failing, and asserts on the returned error:
+
+```go
+var errFixture = errors.New("store: Key (username)=(alice@example.com) for user u-123")
+
+func TestLockoutReturnedErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		call   func(ctx context.Context, p *policy.AccountLockoutPolicy) error
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "recording a failure the store cannot write",
+			call: func(ctx context.Context, p *policy.AccountLockoutPolicy) error {
+				return p.RecordFailure(ctx, "alice@example.com")
+			},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "alice@example.com")
+				assert.NotContains(t, err.Error(), "u-123")
+				assert.ErrorIs(t, err, errFixture)
+			},
+		},
+		// Reset, PurgeExpired: the same shape.
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			p := newLockoutWithFailingStore(t, errFixture) // typed mockgen store, every method returning errFixture
+			tc.assert(t, tc.call(t.Context(), p))
+		})
+	}
+}
+```
+
+  The `ratelimit` table also asserts `errors.Is(err, ratelimit.ErrThrottled)`; the `token` table asserts every sentinel `Verify` matched before for a key-source failure. `notify` drives `SMTPSender.Send` with a dialer (`DialFunc`) failing with the fixture, and with the scripted server rejecting each stage with a reply quoting the fixture values (`550 5.1.1 <alice@example.com>: Recipient address rejected, user u-123`).
+- [ ] **Step 2: Run on unchanged code.** `go test -run 'Test.*ReturnedErrors' -count=1 ./policy/ ./ratelimit/ ./notify/ ./token/`. Expected: FAIL on `should not contain "alice@example.com"` in every row. A row that passes is reported and dropped.
+- [ ] **Step 3: Implement.** Each site becomes `diag.Wrap`, keeping its text up to the `%w`, e.g.:
+
+```go
+	if err := p.store.RecordFailure(ctx, username, p.now()); err != nil {
+		return diag.Wrap(err, "policy: record a failed attempt")
+	}
+```
+
+  `ratelimit` keeps its sentinel as a kind: `diag.Wrap(err, "ratelimit: throttled: the limiter could not be consulted", ErrThrottled)`, with the text chosen so it still reads as the throttle refusal it was. Godoc of each method says a dependency's error comes back with fixed text and matches by identity.
+- [ ] **Step 4: Run to verify it passes.** The same command, then `go test -race -count=1 ./policy/ ./ratelimit/ ./notify/ ./token/ ./httpsec/` (httpsec matches these by identity).
+- [ ] **Step 5: Report.**
+
+### Task 5.5: Errors `session` returns
+
+**Files:** Modify `session/manager.go` (`Create`, `Load`, `Touch`, `Save`, `Delete`, `DeleteByUser`, `CountActiveByUser`, `DeleteExpired`, `DeleteByExternalSession`, `DeleteByUserAndExternalIssuer`, `Rotate`), `session/encrypted.go` (every method passing the inner store's or the cipher's error); Test `session/returned_errors_test.go` (new).
+
+**Interfaces:** Consumes `diag.Wrap`. Produces: each method's error matches the store's error and every session sentinel it matched before; a store returning a session sentinel bare (`ErrSessionNotFound`, and any other the package defines for stores to return — list them with gopls references on the package's exported errors) gets that same value back.
+
+- [ ] **Step 1: Write the reproduction.** `TestSessionReturnedErrors`, one row per method, over a typed mockgen `Store` (and a failing `Cipher` for the encrypted-store rows) returning the fixture. Assert: text contains neither value; `errors.Is(err, errFixture)`. Add one row per session sentinel a store may return bare, asserting `assert.Same`-style identity (`err == session.ErrSessionNotFound`) and unchanged text. Every row also asserts the text carries no session identifier: `Session.ID` is the bearer credential, and `http-error-propagation` forbids a session handle in a refusal's text (the encrypted store's Seal, Open and invalid-envelope errors formatted it in).
+- [ ] **Step 2: Run on unchanged code.** `go test -run TestSessionReturnedErrors -count=1 ./session/`. Expected: the fixture rows FAIL on the text; the bare-sentinel rows pass (they pin what must not change).
+- [ ] **Step 3: Implement.** A package-level helper keeps the kinds in one place:
+
+```go
+// storeFailed hides a store's text behind fixed library text. A sentinel the
+// store returned bare comes back as itself; anything else is wrapped with no
+// kinds, since a kind would make every outage match that sentinel.
+func storeFailed(err error, text string) error {
+	for _, bare := range []error{ErrSessionNotFound, ErrSessionExpired, ErrSessionUnreadable} {
+		if err == bare { //nolint:errorlint // identity: only a bare sentinel carries no store text
+			return err
+		}
+	}
+
+	return diag.Wrap(err, text)
+}
+```
+
+  and each method returns `storeFailed(err, "session: the session could not be loaded")` and so on. Replace godoc saying "the store's own error" with "the store's error, behind fixed text, still matching by identity".
+- [ ] **Step 4: Run to verify it passes**, then `go test -race -count=1 ./...` in the core module. Report, without fixing, any failure outside `session/` (for example a test asserting a session error's old text).
+- [ ] **Step 5: Report.**
+
+### Task 5.6: Errors `mfa` returns
+
+**Files:** Modify `mfa/totp.go` (`Verify`, `Enrolled`, `BeginEnrolment`/`BeginEnrolmentGeneration`, `ConfirmEnrolment`, `RemoveEnrolment`), `mfa/enroller.go` (`ProveDevice`, `CompleteEnrolment`, `RedeemEmailCode`), `mfa/reset.go` (`ResetEnrolment`'s remover, revoker, loader, contact and sender); Test `mfa/returned_errors_test.go` (new).
+
+**Interfaces:** Consumes `diag.Wrap`. `VoidEmailCode` is unchanged: it passes the method's own contract error (design decision 8).
+
+- [ ] **Step 1: Write the reproduction.** `TestMFAReturnedErrors`, one row per method and dependency, in the shape of Task 5.4's table, over typed mockgen `EnrolmentStore`, `DeviceProofStore`, `EnrolmentRemover`, `SessionRevoker`, `identity.UserLoader` and `notify.Sender` doubles returning the fixture. Plus one row per `mfa` sentinel a store may return bare (`ErrNotEnrolled` and the others the store contracts name), asserting identity and unchanged text.
+- [ ] **Step 2: Run on unchanged code.** `go test -run TestMFAReturnedErrors -count=1 ./mfa/`. Expected: fixture rows FAIL on the text.
+- [ ] **Step 3: Implement** with one helper per store contract, as in Task 5.5, returning that contract's bare sentinels by identity and wrapping everything else with no kinds; fixed texts in the package's words (`"mfa: the enrolment could not be read"`, `"mfa: reset could not remove the enrolment"`, ...). Update godoc that says "a store failure is returned as itself".
+- [ ] **Step 4: Run to verify it passes**, then `go test -race -count=1 ./mfa/ ./httpsec/ ./policy/`.
+- [ ] **Step 5: Report.**
+
+### Task 5.7: Errors the remaining managers return
+
+**Files:** Modify `onetime/manager.go` (`Issue`, `IssuedCount`, `PurgeExpired`), `apikey/manager.go` (`Issue`, `List`, `Revoke`, `Rotate`), `signingkey/manager.go` (construction's `LoadAll` and `Store`), `oidc/authorize.go` (flow begin), `oidc/callback.go` (`completeFlow`, for `Callback`, which keeps `ErrFlowUnspent` joined, and `AbortFlow`), `oidc/handoff.go` (`Issue`), `oidc/passwordclaim.go` (the encoder probe `NewBroker` runs), `authenticate/password.go` (reference-hash probe; its credential cleanup cannot fail and is left alone), `authenticate/jwt.go` (credential cleanup); Test `returned_errors_test.go` per package (new).
+
+**Interfaces:** Consumes `diag.Wrap`. Unchanged: `oidc` broker scrubbing (`broker.go` `redact`, `provision.go`), `authenticate.Manager.Authenticate` (the consumer's authenticator's error), the JWT verifier's joined error (a stated exception).
+
+- [ ] **Step 1: Write the reproduction.** One table per package, in the shape of Task 5.4's, one row per method listed, with the dependency failing with the fixture. `apikey.Rotate`'s revoke-failure row asserts the key identifiers are still in the text and the fixture is not. `oidc.Callback`'s row asserts `errors.Is(err, oidc.ErrFlowUnspent)` still holds. Bare-sentinel rows for each store's not-found sentinel.
+- [ ] **Step 2: Run on unchanged code.** `go test -run 'Test.*ReturnedErrors' -count=1 ./onetime/ ./apikey/ ./signingkey/ ./oidc/ ./authenticate/`. Expected: FAIL on the text in every fixture row.
+- [ ] **Step 3: Implement** with `diag.Wrap`, keeping each text up to the `%w` and, for `apikey.Rotate`, formatting the identifiers into the fixed text before wrapping:
+
+```go
+	return diag.Wrap(err, fmt.Sprintf("apikey: rotated key %s was issued but %s could not be revoked", newID, oldID))
+```
+
+- [ ] **Step 4: Run to verify it passes**, then `go test -race -count=1` over the five packages and `./httpsec/`.
+- [ ] **Step 5: Report.**
+
+### Task 5.8: Errors `authorize` returns
+
+**Files:** Modify `authorize/privilege.go` (the `RoleLoader` failure in the privilege lookup); Test `authorize/returned_errors_test.go` (new), and two rows in `httpsec/returned_errors_test.go`.
+
+**Interfaces:** Consumes `diag.Wrap`. The consumer's own authorizers are unchanged (decision 5).
+
+- [ ] **Step 1: Write the reproduction.** `TestAuthorizeReturnedErrors`: a `PrivilegeAuthorizer` over a `RoleLoader` failing with the fixture; the returned error's text contains neither value, `errors.Is(err, errFixture)` holds, and it matches no `authorize` sentinel it did not match before. In `TestReturnedErrorsCarryFixedText`, a `ResourcePrivileges` guard over that authorizer: status 500 as at HEAD, no fixture text; and a login whose lockout policy's attempt store fails: text free of the fixture, `errors.Is` finds the fixture and `policy.ErrPolicyDenied`, status 403.
+- [ ] **Step 2: Run on unchanged code.** `go test -run TestAuthorizeReturnedErrors -count=1 ./authorize/`. Expected: FAIL on `should not contain "alice@example.com"` (the text reads `authorize: load privileges for role "editor": store: ...`). The attempt-store row passes already (task 5.3 fixed it at the policy) and is kept as the scenario's HTTP-level pin.
+- [ ] **Step 3: Implement.**
+
+```go
+	if err != nil {
+		return diag.Wrap(err, "authorize: the role's privileges could not be loaded")
+	}
+```
+
+- [ ] **Step 4: Run to verify it passes**, then `go test -race -count=1 ./authorize/ ./httpsec/`.
 - [ ] **Step 5: Report.**
 
 ### Task 6.1: Returned errors on the HTTP paths
@@ -324,6 +467,15 @@ For the sampled limiter record in `throttle.go`, pass `slog.String("flow", flow)
 
 - [ ] **Step 1:** In each component that logs a dependency failure, add to its constructor's or logger option's godoc: "Records of a failed dependency carry a fixed reason and the error's type, never its text; log inside your own implementation for full detail." Name the deliberate fields where they are logged: `ratelimit` (source address), `mfa` and `policy` (user reference), `oidc` (email domain; protocol-failure text), `httpsec` bearer (token verification text).
 - [ ] **Step 2:** `go doc` each package; `go vet ./...`.
+
+### Task 7.3: Lint guard
+
+**Files:** Modify `.golangci.yml` (root, and the nested modules' configs if they have their own); annotate `httpsec/bearer.go`, `httpsec/oidc_backchannel.go`, `oidc/callback.go`, `oidc/keycache.go`, `oidc/broker.go`, `oidc/mirror.go`, `oidc/provision.go`; replace sentinel-text uses in `httpsec/mfaenrol.go` and `session/encrypted.go` with constants.
+
+- [ ] **Step 1:** Add `forbidigo` with `analyze-types: true` and patterns `^error\.Error$` and `^slog\.Any$`, excluding `internal/diag`, `_test\.go` and the `test` module. Run `golangci-lint run ./...` and record every hit.
+- [ ] **Step 2:** Annotate each stated exception with `//nolint:forbidigo // <the exception and why>`; rewrite each sentinel-text use to a constant. Anything else flagged is a finding: report it rather than annotating it.
+- [ ] **Step 3:** Show the rule works: add `slog.Any("error", err)` to a non-exempt package, see it flagged, remove it.
+- [ ] **Step 4:** `golangci-lint run ./...` in every module: 0 issues; `go test -count=1 ./...` green.
 
 ### Task 7.2: Final gate and whole-branch review (main session)
 

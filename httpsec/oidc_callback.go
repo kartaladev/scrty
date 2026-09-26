@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/oidc"
 )
 
@@ -23,7 +24,7 @@ const (
 	callbackReasonProviderError = "provider-error"
 	callbackReasonUnboundError  = "unbound-provider-error"
 	callbackReasonNotLinked     = "not-linked"
-	callbackReasonIssueFailed   = "handoff-issue-failed"
+	callbackReasonIssueFailed   = "handoff-issue"
 )
 
 // callback answers a GET on the callback prefix followed by a provider's name:
@@ -98,7 +99,9 @@ func (i *oidcInterceptor) callback(ex *Exchange, provider string) error {
 // the cookie cleared and the provider's error text logged: an error link
 // carrying no state, or a wrong one, changes nothing, so it cannot cancel
 // someone else's login or write text of its choosing into the log. Either way
-// the answer is an invalid state; the provider's text is never returned.
+// the answer is an invalid state; the provider's text is never returned. A flow
+// store that cannot end the flow is refused with the manager's error, whose
+// text is fixed and never the store's.
 func (i *oidcInterceptor) providerError(ex *Exchange, provider, handle string) error {
 	state := ex.Request.Query("state")
 	if handle == "" || state == "" {
@@ -137,11 +140,20 @@ func (i *oidcInterceptor) providerError(ex *Exchange, provider, handle string) e
 // while carrying the same parameters and values. The redirect
 // is not cached and sends no referrer, because the URL carries a live
 // credential.
+//
+// A handoff store that refuses to issue the code is recorded by a fixed
+// reason and its error's Go type, never its text: a consumer's store may word
+// a failure with the row it tried to write. A consumer who wants that detail
+// logs it inside their own implementation of oidc.HandoffStore. The error
+// returned is the handoff manager's, whose text is fixed too, with the store's
+// error still reachable through errors.Is and errors.As.
 func (i *oidcInterceptor) conveyHandoff(ex *Exchange, provider string, res oidc.CallbackResult, next string) error {
 	code, err := i.handoffs.Issue(ex.Context(), res)
 	if err != nil {
-		i.logCallbackRefusal(ex, slog.LevelError, callbackReasonIssueFailed, provider,
-			slog.String("error", err.Error()))
+		// diag.Failure supplies the reason itself, so the record is written
+		// without logCallbackRefusal's own, which would name it twice.
+		i.logCallbackRecord(ex, slog.LevelError, callbackReasonIssueFailed, provider,
+			diag.Failure(callbackReasonIssueFailed, err)...)
 
 		return err
 	}
@@ -215,9 +227,18 @@ func (i *oidcInterceptor) logCallbackFailure(ex *Exchange, provider string, err 
 func (i *oidcInterceptor) logCallbackRefusal(
 	ex *Exchange, level slog.Level, reason, provider string, attrs ...slog.Attr,
 ) {
+	i.logCallbackRecord(ex, level, reason, provider,
+		append([]slog.Attr{slog.String("reason", reason)}, attrs...)...)
+}
+
+// logCallbackRecord is logCallbackRefusal without the reason attribute: the
+// record is still sampled by reason, and attrs must carry the reason
+// themselves, as diag.Failure's do.
+func (i *oidcInterceptor) logCallbackRecord(
+	ex *Exchange, level slog.Level, reason, provider string, attrs ...slog.Attr,
+) {
 	attrs = append([]slog.Attr{
 		slog.String("flow", oidcCallbackFlow),
-		slog.String("reason", reason),
 		slog.String("provider", provider),
 	}, attrs...)
 

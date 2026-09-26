@@ -264,6 +264,32 @@ func TestEnrolmentBegin(t *testing.T) {
 			},
 		},
 		{
+			// A limiter whose failure is the throttled sentinel itself is
+			// still a limiter that could not decide: the refusal keeps the
+			// path's own text, not the sentinel's.
+			name:  "a limiter that cannot decide, failing with the throttled sentinel itself",
+			first: factor.Password,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, mfa.ErrEnrolmentThrottled)
+				l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
+
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginLimiter(l)}
+			},
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, mfa.ErrEnrolmentThrottled)
+				assert.Equal(t,
+					"httpsec: the enrolment limiter could not decide, so the attempt is refused",
+					out.err.Error())
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				nothingBegun(t, h, s)
+			},
+		},
+		{
 			// Every call is counted, not only failures: each begin generates
 			// a secret and can lead to an email. The count survives a caller
 			// who hangs up.

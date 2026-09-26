@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -52,6 +53,11 @@ type Manager struct {
 // function is refused when nil, with one exception: a nil logger is ignored,
 // because "do not log from this component" is a reading a nil logger plainly
 // has, while a nil clock has no reading other than a mistake.
+//
+// A record of a failed store read or write carries a fixed reason and the
+// error's Go type, never the store's own text; a consumer who wants that
+// detail logs it inside their own implementation of Store. The key
+// identifier, a library-owned value rather than a secret, is kept.
 func NewManager(opts ...Option) (*Manager, error) {
 	m := &Manager{
 		store:  NewMemoryStore(),
@@ -169,7 +175,7 @@ func (m *Manager) Issue(
 	}
 
 	if err := m.store.Put(ctx, rec); err != nil {
-		return "", Key{}, fmt.Errorf("apikey: could not store the issued key: %w", err)
+		return "", Key{}, diag.Wrap(err, "apikey: could not store the issued key")
 	}
 
 	presented := m.opening + keyID.String() +
@@ -182,8 +188,16 @@ func (m *Manager) Issue(
 // included, so whoever manages a principal's keys sees all of them.
 //
 // No listed record carries a secret; there is no read of any record that does.
+//
+// A store failure comes back wrapped, with fixed text; a consumer who wants
+// its own detail logs it inside their own implementation of Store.
 func (m *Manager) List(ctx context.Context, principal identity.UserID) ([]Key, error) {
-	return m.store.List(ctx, principal)
+	keys, err := m.store.List(ctx, principal)
+	if err != nil {
+		return nil, diag.Wrap(err, "apikey: could not list the principal's keys")
+	}
+
+	return keys, nil
 }
 
 // Verify checks a presented key and returns the principal it authenticates.
@@ -219,7 +233,7 @@ func (m *Manager) Verify(ctx context.Context, presented string) (identity.Princi
 		// the same answer to whoever asked. Only the log tells them apart, and
 		// only for the operator reading it.
 		m.log(ctx, levelFor(err), "apikey: verification failed",
-			slog.String("key_id", keyID.String()), slog.Any("error", err))
+			append([]slog.Attr{slog.String("key_id", keyID.String())}, diag.Failure("key-store", err)...)...)
 
 		return identity.Principal{}, Key{}, ErrVerificationFailed
 	}
@@ -238,7 +252,7 @@ func (m *Manager) Verify(ctx context.Context, presented string) (identity.Princi
 	// could not record when it was last used.
 	if err := m.store.TouchLastUsed(ctx, rec.ID, now); err != nil {
 		m.log(ctx, slog.LevelWarn, "apikey: could not record last use",
-			slog.String("key_id", rec.ID.String()), slog.Any("error", err))
+			append([]slog.Attr{slog.String("key_id", rec.ID.String())}, diag.Failure("key-store", err)...)...)
 	}
 
 	rec.LastUsedAt = &now
@@ -281,8 +295,27 @@ func levelFor(err error) slog.Level {
 //
 // Revoking a key already revoked is not an error and does not move the time
 // first recorded. The first revocation is the one that happened.
+//
+// ErrKeyNotFound comes back exactly as the store returned it — the identity a
+// caller already matches on — and any other store failure comes back
+// wrapped, with fixed text; a consumer who wants its own detail logs it
+// inside their own implementation of Store.
 func (m *Manager) Revoke(ctx context.Context, keyID id.ID) error {
-	return m.store.Revoke(ctx, keyID, m.now())
+	return keyStoreFailed(m.store.Revoke(ctx, keyID, m.now()), "apikey: could not revoke the key")
+}
+
+// keyStoreFailed returns a Store's error as the manager returns it: nil as
+// nil; ErrKeyNotFound, the sentinel the Store contract names, exactly as the
+// store returned it, since a bare sentinel carries no dependency text; and any
+// other error wrapped with text and no sentinel, so an outage never reads as
+// not-found. A store error that itself wraps ErrKeyNotFound still matches it,
+// through the cause.
+func keyStoreFailed(err error, text string) error {
+	if err == ErrKeyNotFound { //nolint:errorlint // identity: a bare sentinel carries no dependency text
+		return err
+	}
+
+	return diag.Wrap(err, text)
 }
 
 // Rotate issues a replacement for the key with this identifier and revokes the
@@ -308,7 +341,7 @@ func (m *Manager) Revoke(ctx context.Context, keyID id.ID) error {
 func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) (string, Key, error) {
 	existing, err := m.store.Get(ctx, keyID)
 	if err != nil {
-		return "", Key{}, fmt.Errorf("apikey: could not read the key to rotate: %w", err)
+		return "", Key{}, keyStoreFailed(err, "apikey: could not read the key to rotate")
 	}
 
 	presented, rec, err := m.Issue(ctx, existing.Principal, existing.Name, existing.Scopes, lifetime)
@@ -317,9 +350,8 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 	}
 
 	if err := m.store.Revoke(ctx, keyID, m.now()); err != nil {
-		return "", Key{}, fmt.Errorf(
-			"apikey: rotated key %s was issued but %s could not be revoked: %w",
-			rec.ID, keyID, err)
+		return "", Key{}, diag.Wrap(err, fmt.Sprintf(
+			"apikey: rotated key %s was issued but %s could not be revoked", rec.ID, keyID))
 	}
 
 	return presented, rec, nil

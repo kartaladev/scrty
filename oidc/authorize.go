@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 // Authorization is where to send a browser to start a login, and the flow it
@@ -34,8 +36,10 @@ type Authorization struct {
 // allowlisting it is the caller's job.
 //
 // A name the registry does not hold is ErrUnknownProvider, and an unusable
-// provider is ErrDiscoveryFailed; neither stores a flow. A flow store refusal,
-// such as ErrFlowStoreFull, is returned wrapped.
+// provider is ErrDiscoveryFailed; neither stores a flow. A flow store
+// refusal, such as ErrFlowStoreFull, comes back wrapped with fixed library
+// text; the store's own error stays reachable by identity, so a consumer who
+// wants its own detail logs it inside their own implementation of FlowStore.
 func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authorization, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
@@ -63,7 +67,7 @@ func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authori
 		Provider: p.Name, State: state, Nonce: nonce, Verifier: verifier, Next: next, ExpiresAt: expires,
 	})
 	if err != nil {
-		return Authorization{}, fmt.Errorf("oidc: storing the login flow: %w", err)
+		return Authorization{}, diag.Wrap(err, "oidc: storing the login flow")
 	}
 
 	q := endpoint.Query()

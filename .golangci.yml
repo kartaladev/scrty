@@ -1,19 +1,44 @@
 version: "2"
 
+issues:
+  # Unlimited: a repeated forbidigo hit (error.Error, slog.Any) must never be
+  # hidden behind the default cap, or a regression could slip in unseen next
+  # to an already-annotated exception sharing the same fixed message text.
+  max-same-issues: 0
+
 linters:
   default: standard
   enable:
     - bodyclose
     - contextcheck
     - errorlint
+    - forbidigo
     - gosec
     - misspell
     - nilerr
     - noctx
     - revive
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^error\.Error$'
+          msg: a dependency's error text must not reach a record or returned error; use internal/diag
+        - pattern: '^slog\.Any$'
+          msg: use typed attrs; for errors use diag.Failure
   exclusions:
     paths:
       - testdata
+    rules:
+      - linters:
+          - forbidigo
+        path: _test\.go
+      - linters:
+          - forbidigo
+        path: ^internal/diag/
+      - linters:
+          - forbidigo
+        path: ^test/
 
 formatters:
   enable:

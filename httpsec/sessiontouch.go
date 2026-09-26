@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -48,7 +49,7 @@ func (s *sessionTouch) Intercept(ex *Exchange, next Next) error {
 		// ended makes a failure here ordinary. The absolute deadline still
 		// bounds the session either way.
 		s.log.LogAttrs(ctx, slog.LevelDebug, msgSessionNotTouched,
-			slog.String("error", tErr.Error()))
+			diag.Failure("session-store", tErr)...)
 	}
 
 	return err
@@ -57,4 +58,8 @@ func (s *sessionTouch) Intercept(ex *Exchange, next Next) error {
 // msgSessionNotTouched reports a write-back that did not land. It is at debug
 // rather than error because a session ended while its last request was in
 // flight fails here as a matter of course, and the outcome is unchanged.
+//
+// The record carries a fixed reason and the session store's error type, never
+// its text: a consumer whose store quotes a row's own wording back logs that
+// detail inside their own implementation of session.Store instead.
 const msgSessionNotTouched = "httpsec: session activity could not be recorded"

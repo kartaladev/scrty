@@ -451,7 +451,10 @@ func TestHandoffRedeem(t *testing.T) {
 			},
 		},
 		{
-			name: "a loader error's bcrypt-shaped text is redacted in the log",
+			// The loader's error text never reaches the log at all: the
+			// record carries a fixed reason and the error's type (see
+			// diagnostic-redaction), not a scrubbed copy of its text.
+			name: "a loader error's text never reaches the log",
 			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
 				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
 					Return(nil, errors.New("scan failed: row password="+handoffBcryptHash))
@@ -461,12 +464,13 @@ func TestHandoffRedeem(t *testing.T) {
 				loggedAt(t, f, "ERROR")
 				logs := f.logs.String()
 				assert.NotContains(t, logs, handoffBcryptHash, "a loader error's hash reaches the log")
-				assert.Contains(t, logs, "[redacted]")
-				assert.Contains(t, logs, "scan failed", "the rest of the loader error is kept")
+				assert.NotContains(t, logs, "scan failed", "the loader's own text reaches the log")
+				assert.Contains(t, logs, "reason=user-loader")
+				assert.Contains(t, logs, "error_type=")
 			},
 		},
 		{
-			name: "a consume error naming the user reference or quoting a hash is redacted in the log",
+			name: "a consume error's text never reaches the log",
 			store: func(t *testing.T, ctrl *gomock.Controller, mem *oidc.MemoryHandoffStore) oidc.HandoffStore {
 				s := delegating(t, ctrl, mem)
 				s.EXPECT().Consume(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -481,12 +485,14 @@ func TestHandoffRedeem(t *testing.T) {
 				loggedAt(t, f, "ERROR")
 				logs := f.logs.String()
 				assert.NotContains(t, logs, "user_ref=u-1", "a store error's user reference reaches the log")
-				assert.NotContains(t, logs, handoffBcryptHash)
-				assert.Contains(t, logs, "user_ref=[redacted]")
+				assert.NotContains(t, logs, handoffBcryptHash, "a store error's hash reaches the log")
+				assert.NotContains(t, logs, "update handoff", "the store's own text reaches the log")
+				assert.Contains(t, logs, "reason=handoff-store")
+				assert.Contains(t, logs, "error_type=")
 			},
 		},
 		{
-			name: "a find error quoting the token id is redacted in the log",
+			name: "a find error's text never reaches the log",
 			store: func(_ *testing.T, ctrl *gomock.Controller, _ *oidc.MemoryHandoffStore) oidc.HandoffStore {
 				s := NewMockHandoffStore(ctrl)
 				s.EXPECT().FindByTokenID(gomock.Any(), gomock.Any()).
@@ -498,7 +504,10 @@ func TestHandoffRedeem(t *testing.T) {
 			assert: func(t *testing.T, f *handoffRedeemFixture, res oidc.HandoffResult, err error) {
 				refusedAsInvalid(t, res, err)
 				loggedAt(t, f, "ERROR")
-				assert.Contains(t, f.logs.String(), "token_id=[redacted]")
+				logs := f.logs.String()
+				assert.NotContains(t, logs, "select handoff", "the store's own text reaches the log")
+				assert.Contains(t, logs, "reason=handoff-store")
+				assert.Contains(t, logs, "error_type=")
 				// The runner asserts the token id itself is absent.
 			},
 		},

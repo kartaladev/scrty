@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -65,6 +66,10 @@ func (l *logout) wire(c *Chain) {
 // Only POST, and only on the configured path: ending a session is a change,
 // and a logout a link could trigger is one another site can trigger for a
 // caller who never asked. Everything else passes through untouched.
+//
+// A session the store could not delete is refused behind fixed text, never the
+// store's own, and the store's error still matches through errors.Is and
+// errors.As.
 func (l *logout) Intercept(ex *Exchange, next Next) error {
 	if ex.Request.Method() != http.MethodPost || ex.Request.Path() != l.path {
 		return next(ex)
@@ -114,15 +119,18 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 //
 // A failure is logged and swallowed: the session is already deleted, and
 // answering an error would tell the client its logout did not happen. The log
-// names the provider and never the state, which is the client's.
+// names the provider and never the state, which is the client's, and records
+// the failure by a fixed reason and its Go type, never its text: the step may
+// word it with what its own store holds for the session.
 func (l *logout) endSessionURL(ex *Exchange) string {
 	ctx := ex.Context()
 
 	target, err := l.endSession.EndSessionURL(ctx, ex.Session, logoutState(ex.Request))
 	if err != nil {
-		l.log.WarnContext(ctx,
+		l.log.LogAttrs(ctx, slog.LevelWarn,
 			"httpsec: the session was ended but the provider's end-session URL could not be built",
-			slog.String("provider", ex.Session.ExternalProvider), slog.Any("error", err))
+			append([]slog.Attr{slog.String("provider", ex.Session.ExternalProvider)},
+				diag.Failure("end-session", err)...)...)
 
 		return ""
 	}

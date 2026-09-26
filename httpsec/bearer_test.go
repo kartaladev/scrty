@@ -250,7 +250,12 @@ func TestBearerToken(t *testing.T) {
 				r, ok := recordAt(h.logs.records(), slog.LevelDebug,
 					"httpsec: a bearer token did not verify")
 				require.True(t, ok, "an operator must be able to see which check the token failed")
-				assert.Positive(t, r.NumAttrs())
+
+				errAttr, ok := attrValue(r, "error")
+				require.True(t, ok, "the record must carry the verifier's own error text")
+				assert.Contains(t, errAttr.String(), "signature verification failed",
+					"an operator chasing a rejected client needs the verification failure's own "+
+						"text, which is the library's protocol-failure text and a deliberate exception")
 			},
 		},
 	}

@@ -60,7 +60,12 @@ func WithRandom(r io.Reader) TOTPOption {
 // confirmed or removed.
 //
 // No record carries a presented code, an enrolment secret or a provisioning
-// URI, whatever logger is given. A nil logger is a configuration error; a
+// URI, whatever logger is given. Every record names the method and, on purpose,
+// the user by the opaque identity.UserID reference the consumer supplied, so an
+// operator can tell whose second factor was used or changed; the reference is
+// the consumer's own identifier, not an address or a name. A failed store's
+// error text is never written; a consumer who wants it logs it inside their own
+// EnrolmentStore. A nil logger is a configuration error; a
 // consumer who wants silence supplies one with a discarding handler, which says
 // so at the wiring.
 func WithTOTPLogger(l *slog.Logger) TOTPOption {

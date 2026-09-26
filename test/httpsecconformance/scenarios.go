@@ -438,6 +438,7 @@ func Scenarios() []Scenario {
 		keySetEndpoint(),
 		contextPropagation(),
 		unattributableClientAddress(),
+		storeFailureTextStaysOutOfTheRefusal(),
 	}, append(oidcScenarios(), enrolmentScenarios()...)...)
 }
 

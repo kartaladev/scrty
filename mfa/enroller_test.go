@@ -1008,9 +1008,10 @@ func (c *completingEnroller) redeemed() int {
 }
 
 // TestVoidEmailCodeFailures pins how voiding reports what is not a refusal: a
-// store that cannot charge stops it and is reported as itself, and a method
-// that completes the enrolment on the never-matching code stops it and is
-// reported as broken. Neither is ErrEmailCodeInvalid.
+// store that cannot charge stops it, and the method's failure comes back still
+// matching the store's error; a method that completes the enrolment on the
+// never-matching code stops it and is reported as broken. Neither is
+// ErrEmailCodeInvalid.
 func TestVoidEmailCodeFailures(t *testing.T) {
 	t.Parallel()
 

@@ -359,11 +359,93 @@ func TestEnrolmentVoidFailureLogged(t *testing.T) {
 
 			notVoided := withReason(recordsNamed(logs, "httpsec: an undelivered enrolment code could not be voided"),
 				"not-voided")
-			assert.Len(t, notVoided, 1, "the voiding failure is logged by a fixed reason")
+			require.Len(t, notVoided, 1, "the voiding failure is logged by a fixed reason")
+
+			errType, ok := attrValue(notVoided[0], "error_type")
+			require.True(t, ok, "the record must carry the voiding failure's Go type, "+
+				"never its text")
+			assert.Equal(t, "*errors.errorString", errType.String())
 
 			noRecordCarries(t, logs, tc.hidden)
 			noRecordCarries(t, logs, string(testMFAUser))
 			noRecordCarries(t, logs, lastEmailedCode(t, o))
+		})
+	}
+}
+
+// TestEnrolmentRefusalRecordCarriesErrorType pins what the enrolment path's
+// general refusal record ("httpsec: an enrolment request was refused")
+// carries beyond the fixed reason: the failed dependency's Go type when a
+// dependency answered the refusal, and no error type at all when the refusal
+// is the library's own decision, with no dependency error behind it.
+func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		first   factor.Kind
+		prepare func(t *testing.T, h *enrolHarness)
+		reason  string
+		hasType bool
+	}
+
+	cases := []testCase{
+		{
+			name:  "a limiter outage is a dependency failure",
+			first: factor.Password,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).
+					Return(true, errors.New("mfaenrollogs_test: limiter store unreachable"))
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentBeginLimiter(l))
+			},
+			reason:  "limiter-unavailable",
+			hasType: true,
+		},
+		{
+			// A magic-link login arrived by email; a second factor emailed too
+			// would be the same factor twice. No dependency is asked before
+			// this refusal.
+			name:  "the same-channel refusal is the library's own decision",
+			first: factor.MagicLink,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				m := NewMockEnroller(gomock.NewController(t))
+				m.EXPECT().Name().Return("email-code").AnyTimes()
+				m.EXPECT().Channel().Return(factor.Email).AnyTimes()
+				m.EXPECT().SupportsEnrolmentPath().Return(true).AnyTimes()
+				m.EXPECT().BeginEnrolmentGeneration(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+				h.method = m
+			},
+			reason:  "same-channel",
+			hasType: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newEnrolHarness(t)
+			logs := &capturingHandler{}
+			h.extra = append(h.extra, httpsec.WithLogger(slog.New(logs)))
+
+			tc.prepare(t, h)
+
+			c := h.chain(t, h.enrolmentOnly(t, tc.first))
+			serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+
+			refused := withReason(recordsNamed(logs, msgEnrolmentRefused), tc.reason)
+			require.Len(t, refused, 1, "the refusal is recorded under its reason")
+
+			_, ok := attrValue(refused[0], "error_type")
+			assert.Equal(t, tc.hasType, ok,
+				"a dependency-caused refusal must carry the cause's Go type; "+
+					"a library refusal with no dependency behind it must not")
 		})
 	}
 }

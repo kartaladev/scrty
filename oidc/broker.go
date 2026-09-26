@@ -318,7 +318,7 @@ type redactedError struct {
 }
 
 func (e *redactedError) Error() string {
-	text := bcryptShaped.ReplaceAllString(e.err.Error(), redactedMark)
+	text := bcryptShaped.ReplaceAllString(e.err.Error(), redactedMark) //nolint:forbidigo // stated exception (design decision 6): the broker's own scrubbing of its cause's text
 	if e.values != nil {
 		text = e.values.Replace(text)
 	}

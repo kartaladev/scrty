@@ -87,6 +87,9 @@ const (
 	emailCodeSpace  = 1_000_000
 )
 
+// msgCompleteFailed is the text of a completion the store could not write.
+const msgCompleteFailed = "mfa: totp could not complete the enrolment"
+
 // errNoDeviceProofStore refuses an enrolment-path step on a method whose store
 // does not implement DeviceProofStore. It is a wiring mistake, not a wrong
 // code, so it is not ErrInvalidCode.
@@ -118,6 +121,8 @@ func (t *TOTP) SupportsEnrolmentPath() bool { return t.proofs != nil }
 // current pending one, and a device already proven are ErrInvalidCode. A store
 // failure, a random-source failure, an emailCodeTTL of zero or less with
 // emailCode true, and a store without DeviceProofStore are errors that are not.
+// A store failure carries the package's own text, never the store's, and the
+// store's error still matches by identity.
 func (t *TOTP) ProveDevice(
 	ctx context.Context, user identity.UserID, gen id.ID,
 	code string, emailCode bool, emailCodeTTL time.Duration,
@@ -132,7 +137,7 @@ func (t *TOTP) ProveDevice(
 
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
-		return "", err
+		return "", enrolmentStoreFailed(err, msgReadFailed)
 	}
 
 	if !ok || !onPendingGeneration(e, gen) {
@@ -167,7 +172,7 @@ func (t *TOTP) ProveDevice(
 
 	proven, err := t.proofs.ProveDevice(ctx, user, gen, step, codeBytes, codeUntil, now)
 	if err != nil {
-		return "", err
+		return "", deviceProofStoreFailed(err, "mfa: totp could not record the device proof")
 	}
 
 	if !proven {
@@ -201,7 +206,8 @@ func (t *TOTP) drawEmailCode() (string, error) {
 // Anything else is ErrInvalidCode, and nothing is written. Then it confirms in
 // one conditional write, which succeeds only where the device is proven and
 // the enrolment is not yet confirmed, so of concurrent completions of one
-// generation exactly one succeeds.
+// generation exactly one succeeds. A store failure is returned with the
+// package's own text, the store's error still matching by identity.
 //
 // So a proof that issued a code completes only through RedeemEmailCode,
 // whether the code is outstanding, expired or out of attempts, and email
@@ -218,7 +224,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
-		return err
+		return enrolmentStoreFailed(err, msgReadFailed)
 	}
 
 	switch {
@@ -234,7 +240,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 
 	completed, err := t.proofs.Complete(ctx, user, gen, t.now())
 	if err != nil {
-		return err
+		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
 
 	if !completed {
@@ -267,7 +273,8 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 // as the last allowed attempt still completes.
 //
 // Every refusal is ErrEmailCodeInvalid, and none completes anything. A store
-// failure is returned as itself.
+// failure is returned with the package's own text, the store's error still
+// matching by identity.
 func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id.ID, code string) error {
 	if t.proofs == nil {
 		return errNoDeviceProofStore
@@ -275,7 +282,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 
 	attempt, charged, err := t.proofs.ChargeEmailCode(ctx, user, gen, t.now())
 	if err != nil {
-		return err
+		return deviceProofStoreFailed(err, "mfa: totp could not charge an attempt against the emailed code")
 	}
 
 	if !charged {
@@ -286,7 +293,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
-		return err
+		return enrolmentStoreFailed(err, msgReadFailed)
 	}
 
 	if !ok || e.Generation != gen || len(code) != emailCodeDigits || !isASCIIDigits(code) {
@@ -305,7 +312,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 
 	completed, err := t.proofs.Complete(ctx, user, gen, t.now())
 	if err != nil {
-		return err
+		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
 
 	if !completed {

@@ -1,5 +1,7 @@
 package mfa
 
+//go:generate mockgen -source=store.go -destination=store_mock_test.go -package=mfa_test -typed
+
 import (
 	"context"
 	"time"

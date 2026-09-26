@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -85,6 +86,12 @@ func WithMFARequiredForAll() MFARequirementOption {
 
 // WithMFARequirementLogger replaces where the policy writes its refusal and
 // lookup-failure records. The default is slog.Default.
+//
+// Every record names the user by the opaque reference in Input.User, on
+// purpose. A lookup-failure record carries the fixed reason
+// "requirement-lookup" and the error's Go type, never its text; a consumer who
+// wants the lookup's full error logs it inside their own
+// identity.MFARequirementLookup.
 //
 // A nil logger is ignored rather than refused, so configuring logging stays
 // optional.
@@ -184,7 +191,8 @@ type mfaRequirementPolicy struct {
 //
 //  1. an exempt first factor: allow, before anything is looked up;
 //  2. is a second factor required? With WithMFARequiredForAll, yes, without
-//     consulting the lookup. A lookup that fails denies with its error;
+//     consulting the lookup. A lookup that fails denies, with a reason of fixed
+//     text that wraps the lookup's error without repeating it;
 //  3. not required: allow;
 //  4. the stateless-authentication phase, or no method configured: deny
 //     ErrMFARequired — there is no later point at which such a request could
@@ -193,7 +201,8 @@ type mfaRequirementPolicy struct {
 //  6. no usable enrolment — not enrolled, or enrolled only on the first
 //     factor's own channel: with the enrolment path on (WithMFAEnrolmentPath)
 //     and admitting this login, challenge ChallengeMFAEnrolment; otherwise deny
-//     ErrMFAEnrollmentRequired. A failed enrolment lookup denies either way;
+//     ErrMFAEnrollmentRequired. A failed enrolment lookup denies either way,
+//     with fixed text wrapping its error;
 //  7. the per-request phase: challenge for MFA;
 //  8. the post-authentication phase: allow, leaving the login challenge to the
 //     challenge policy;
@@ -314,9 +323,9 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 
 		return Decision{
 			Outcome: Deny,
-			Reason: fmt.Errorf(
+			Reason: diag.Wrap(err,
 				"policy: whether this user must use a second factor could not be read, and "+
-					"a requirement that cannot be read is not absent: %w", err),
+					"a requirement that cannot be read is not absent"),
 		}
 	}
 
@@ -351,9 +360,9 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	if err != nil {
 		return Decision{
 			Outcome: Deny,
-			Reason: fmt.Errorf(
+			Reason: diag.Wrap(err,
 				"policy: the second-factor enrolment of a user required to use one could not "+
-					"be read: %w", err),
+					"be read"),
 		}
 	}
 	if !usable {
@@ -443,10 +452,8 @@ func (p *mfaRequirementPolicy) denyEnrolment(ctx context.Context, in *Input, pha
 // user, because the lookup is either reachable or it is not, and keying it per
 // user would turn one outage into one record per user in the window.
 func (p *mfaRequirementPolicy) reportLookupFailure(ctx context.Context, in *Input, err error) {
-	attrs := []slog.Attr{
-		slog.String("user", string(in.User)),
-		slog.String("error", err.Error()),
-	}
+	attrs := append([]slog.Attr{slog.String("user", string(in.User))},
+		diag.Failure("requirement-lookup", err)...)
 
 	if ctx.Err() != nil {
 		p.logger.LogAttrs(ctx, slog.LevelDebug, msgRequirementLookupEnded, attrs...)

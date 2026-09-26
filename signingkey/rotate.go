@@ -2,10 +2,12 @@ package signingkey
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
+
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 // rotateAll mints and stores a new key for every configured algorithm. Each
@@ -17,8 +19,8 @@ import (
 // next tick. One algorithm failing does not stop the others.
 func (km *KeyManager) rotateAll(ctx context.Context) {
 	for _, alg := range km.algs {
-		if _, err := km.mintAndStore(ctx, alg); err != nil {
-			km.report(ctx, "rotate", alg, err)
+		if _, f := km.mintAndStore(ctx, alg); f != nil {
+			km.report(ctx, "rotate", alg, f)
 		}
 	}
 }
@@ -28,15 +30,20 @@ func (km *KeyManager) rotateAll(ctx context.Context) {
 // WithLogSampleWindow describes has already had one for this operation and
 // algorithm. The hook is never sampled.
 //
+// The record carries the failure's fixed reason and its cause's Go type
+// through diag.Failure, never the cause's text: a consumer who wants that
+// detail logs it inside their own implementation of KeyStore. The hook
+// receives the failure's full error.
+//
 // Both reach consumer code, so no caller may hold the keyring lock across it:
 // WithErrorHook promises a hook that GetSigner and VerificationKeys answer,
 // and either one
 // under the lock a caller already held would deadlock on the loop goroutine.
 // The hook also runs on that goroutine, so it may not call Start or Stop —
 // documented in WithErrorHook, because nothing here can enforce it.
-func (km *KeyManager) report(ctx context.Context, op string, alg Alg, err error) {
+func (km *KeyManager) report(ctx context.Context, op string, alg Alg, f *failure) {
 	if km.errorHook != nil {
-		km.errorHook(err)
+		km.errorHook(f.err)
 	}
 
 	write, suppressed := km.sampler.Allow(sampleKey(op, alg), km.clock.Now())
@@ -44,7 +51,32 @@ func (km *KeyManager) report(ctx context.Context, op string, alg Alg, err error)
 		return
 	}
 	km.logger.LogAttrs(ctx, slog.LevelError, "signingkey: "+op+" failed",
-		append(failureAttrs(op, alg, suppressed), slog.String("error", err.Error()))...)
+		slices.Concat(failureAttrs(op, alg, suppressed), f.attrs, diag.Failure(f.reason, f.cause))...)
+}
+
+// The fixed reasons a failure record names what failed by.
+const (
+	// reasonStore is the consumer's KeyStore failing a read or a write.
+	reasonStore = "signing-key-store"
+	// reasonDecode is a stored record this package cannot turn into a key.
+	reasonDecode = "key-decode"
+	// reasonGenerate is this package's own key generation failing, never a
+	// consumer dependency.
+	reasonGenerate = "key-generate"
+)
+
+// failure is one rotation or reload failure, as report needs it.
+type failure struct {
+	// err is the library's own error: what the hook receives and what
+	// construction returns.
+	err error
+	// reason is the fixed word the record names the failure by.
+	reason string
+	// cause is the failing dependency's own error, or the decoding error,
+	// whose Go type the record carries in place of err's wrapping.
+	cause error
+	// attrs are public identifiers of what failed, such as a key id.
+	attrs []slog.Attr
 }
 
 // reportSuppressed writes the counts the sampler would otherwise discard: a
@@ -97,7 +129,11 @@ func failureAttrs(op string, alg Alg, suppressed int) []slog.Attr {
 func (km *KeyManager) reload(ctx context.Context) {
 	recs, err := km.store.LoadAll(ctx)
 	if err != nil {
-		km.report(ctx, "reload", "", fmt.Errorf("signingkey: reload keys: %w", err))
+		km.report(ctx, "reload", "", &failure{
+			err:    diag.Wrap(err, "signingkey: reload keys"),
+			reason: reasonStore,
+			cause:  err,
+		})
 		return
 	}
 
@@ -118,7 +154,7 @@ func (km *KeyManager) reload(ctx context.Context) {
 	var fresh []*keyEntry
 	var failed []struct {
 		alg Alg
-		err error
+		f   *failure
 	}
 	for _, rec := range recs {
 		if _, have := held[rec.Kid]; have {
@@ -134,10 +170,22 @@ func (km *KeyManager) reload(ctx context.Context) {
 		}
 		entry, err := entryFromRecord(rec)
 		if err != nil {
+			// The record names the decoding error's own type, not the
+			// "decode key" wrapping every such error shares, and the public
+			// kid it belongs to; never the record's key material.
+			cause := errors.Unwrap(err)
+			if cause == nil {
+				cause = err
+			}
 			failed = append(failed, struct {
 				alg Alg
-				err error
-			}{alg: rec.Alg, err: err})
+				f   *failure
+			}{alg: rec.Alg, f: &failure{
+				err:    err,
+				reason: reasonDecode,
+				cause:  cause,
+				attrs:  []slog.Attr{slog.String("kid", rec.Kid)},
+			}})
 			continue
 		}
 		fresh = append(fresh, entry)
@@ -150,8 +198,8 @@ func (km *KeyManager) reload(ctx context.Context) {
 	km.repickCurrentLocked()
 	km.mu.Unlock()
 
-	for _, failure := range failed {
-		km.report(ctx, "reload", failure.alg, failure.err)
+	for _, failed := range failed {
+		km.report(ctx, "reload", failed.alg, failed.f)
 	}
 }
 

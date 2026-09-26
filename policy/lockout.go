@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -186,8 +187,9 @@ func (p *AccountLockoutPolicy) Window() time.Duration { return p.window }
 // special-cased: it is an identifier like any other, and a deployment that
 // records failures under it locks it like any other account.
 //
-// A store that cannot answer denies, with a reason wrapping its error. Failing
-// open would let an attacker who can break the store disable lockout
+// A store that cannot answer denies, with a reason of fixed text that matches
+// ErrPolicyDenied and wraps the store's error, reachable through errors.Is and
+// errors.As but not repeated in the text. Failing open would let an attacker who can break the store disable lockout
 // altogether, so the one thing this policy will not do is treat "I do not know"
 // as "nothing recorded".
 func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision {
@@ -210,13 +212,14 @@ func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		// Failing open here would make breaking the attempt store a way to
 		// disable lockout: an attacker who can take the store down gets an
 		// unlimited guessing rate, and the outage looks like a quiet morning.
-		// The refusal carries the cause so the outage is still diagnosable,
-		// and does not claim the account is locked, which it does not know.
+		// The refusal carries the cause by identity, not by text, so the outage
+		// is still diagnosable without the store's words reaching a log; and
+		// it does not claim the account is locked, which it does not know.
 		return Decision{
 			Outcome: Deny,
-			Reason: fmt.Errorf(
-				"%w: the attempt store could not say how often this identifier has failed: %w",
-				ErrPolicyDenied, err),
+			Reason: diag.Wrap(err,
+				"policy: denied by policy: the attempt store could not say how often this identifier has failed",
+				ErrPolicyDenied),
 		}
 	}
 
@@ -240,9 +243,11 @@ func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision
 //
 // A store that cannot record says so, and the caller must not treat that as
 // recorded: a failure nobody counted is a guess the attacker got for free.
+// The store's own error comes back behind fixed library text; it stays
+// reachable through errors.Is and errors.As, but its text never is.
 func (p *AccountLockoutPolicy) RecordFailure(ctx context.Context, username string) error {
 	if err := p.store.RecordFailure(ctx, username, p.now()); err != nil {
-		return fmt.Errorf("policy: record a failed attempt: %w", err)
+		return diag.Wrap(err, "policy: record a failed attempt")
 	}
 
 	return nil
@@ -251,9 +256,12 @@ func (p *AccountLockoutPolicy) RecordFailure(ctx context.Context, username strin
 // Reset clears username's failures, which is what a successful authentication
 // does: the account is back in good standing, and the failures before it must
 // not be able to lock it on the next mistyped password.
+//
+// The store's own error comes back behind fixed library text; it stays
+// reachable through errors.Is and errors.As, but its text never is.
 func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error {
 	if err := p.store.Reset(ctx, username); err != nil {
-		return fmt.Errorf("policy: clear failed attempts: %w", err)
+		return diag.Wrap(err, "policy: clear failed attempts")
 	}
 
 	return nil
@@ -273,6 +281,12 @@ func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error
 // among them — reports ErrReapUnsupported rather than a sweep that removed
 // nothing: in a metric those two are the same number, and only one of them
 // means the store is growing without bound.
+//
+// A reaper that cannot sweep has its own error returned behind fixed library
+// text; it stays reachable through errors.Is and errors.As, but its text
+// never is. ErrRetainSinceRequired — the sentinel a reaper reports for a zero
+// cutoff, which this policy never passes — is the one bare exception: it
+// comes back as itself, since it carries no dependency text of its own.
 func (p *AccountLockoutPolicy) PurgeExpired(ctx context.Context) (int, error) {
 	reaper, ok := p.store.(AttemptReaper)
 	if !ok {
@@ -281,7 +295,11 @@ func (p *AccountLockoutPolicy) PurgeExpired(ctx context.Context) (int, error) {
 
 	removed, err := reaper.DeleteAttemptsBefore(ctx, p.now().Add(-p.window))
 	if err != nil {
-		return 0, fmt.Errorf("policy: purge stale failed attempts: %w", err)
+		if err == ErrRetainSinceRequired { //nolint:errorlint // identity: a bare sentinel carries no store text
+			return 0, err
+		}
+
+		return 0, diag.Wrap(err, "policy: purge stale failed attempts")
 	}
 
 	return removed, nil

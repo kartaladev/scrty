@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -267,20 +268,28 @@ func declaresJSON(contentType string) bool {
 // Bookkeeping, not the decision: a store that cannot record must not turn a
 // wrong password into a server fault, and must not turn it into a success
 // either. The refusal the caller returns is the same eitherway.
+//
+// The record carries a fixed reason and the attempt store's error type, never
+// its text: a consumer whose store wraps a database error may quote a column
+// of the row the library never saw. A consumer who wants that detail logs it
+// inside their own policy.AttemptStore.
 func (l *formLogin) recordFailure(ctx context.Context, username string, now time.Time) {
 	if err := l.attempts.RecordFailure(ctx, username, now); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
-			slog.String("error", err.Error()))
+			diag.Failure("attempt-store", err)...)
 	}
 }
 
 // resetFailures clears what a successful login supersedes, logging a store
 // that could not: an account whose failures outlive the login that cleared
 // them locks a user who has just proved they are not guessing.
+//
+// As with recordFailure, the record names the fixed reason and the store's
+// error type, never its text.
 func (l *formLogin) resetFailures(ctx context.Context, username string) {
 	if err := l.attempts.Reset(ctx, username); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
-			slog.String("error", err.Error()))
+			diag.Failure("attempt-store", err)...)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -147,6 +148,10 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 // or the limiter could not answer. In every one of those cases the guarded call
 // must not run: the returned Source is the zero value, so nothing can be
 // recorded against a check that did not pass.
+//
+// A limiter that could not answer has its own error returned behind fixed
+// library text, never its own; ErrThrottled and the limiter's error both stay
+// reachable through errors.Is, so a caller's status mapping is unchanged.
 func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, error) {
 	addr, err := g.keyer.Key(clientAddr)
 	if err != nil {
@@ -164,7 +169,8 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 	if err != nil {
 		g.reportUnconsultableLimiter(ctx, src, err)
 
-		return Source{}, fmt.Errorf("%w: the limiter could not be consulted: %w", ErrThrottled, err)
+		return Source{}, diag.Wrap(err,
+			"ratelimit: too many failures from this source: the limiter could not be consulted", ErrThrottled)
 	}
 
 	if exceeded {
@@ -209,10 +215,9 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
 		// This path has no cancellation to blame: the guard stripped it before
 		// calling, so an error here is the limiter's own, and a failure that
 		// went uncounted is worth a record whatever the caller's context did.
+		attrs := append([]slog.Attr{slog.String("source", s.addr)}, diag.Failure("limiter", err)...)
 		g.sampled(ctx, slog.LevelWarn, msgNotRecorded,
-			sampleKey(sampleLimiterFailure, g.flow, ""),
-			slog.String("source", s.addr),
-			slog.String("error", err.Error()))
+			sampleKey(sampleLimiterFailure, g.flow, ""), attrs...)
 	}
 }
 
@@ -231,18 +236,19 @@ func (g *SourceGuard) Flush() { g.sampler.Flush() }
 // either up for that flow or it is not, and one record per window says so.
 func (g *SourceGuard) reportUnconsultableLimiter(ctx context.Context, s Source, err error) {
 	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
-		g.logger.LogAttrs(ctx, slog.LevelDebug, msgContextEnded,
+		attrs := append([]slog.Attr{
 			slog.String("flow", g.flow),
 			slog.String("source", s.addr),
-			slog.String("error", err.Error()))
+		}, diag.Failure("limiter", err)...)
+
+		g.logger.LogAttrs(ctx, slog.LevelDebug, msgContextEnded, attrs...)
 
 		return
 	}
 
+	attrs := append([]slog.Attr{slog.String("source", s.addr)}, diag.Failure("limiter", err)...)
 	g.sampled(ctx, slog.LevelWarn, msgLimiterUnavailable,
-		sampleKey(sampleLimiterFailure, g.flow, ""),
-		slog.String("source", s.addr),
-		slog.String("error", err.Error()))
+		sampleKey(sampleLimiterFailure, g.flow, ""), attrs...)
 }
 
 // sampled writes one record unless the sampler is holding this key's window

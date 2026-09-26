@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -17,8 +18,10 @@ import (
 // The two are deliberately one error to the caller. Telling them apart would
 // mean deciding, on the login path, whether an outage is a good enough reason
 // to hand out a session the cap may not allow. The cause of a failed count is
-// still there to be matched — the reason wraps it — so an operator can see an
-// outage in a log without a caller having to act on it.
+// still there to be matched — the reason wraps it, through errors.Is and
+// errors.As — so an operator can see an outage without a caller having to act
+// on it. The reason's text is fixed and never repeats the counter's error; a
+// consumer who wants that text logs it inside their own SessionCounter.
 var ErrTooManySessions = errors.New("policy: too many concurrent sessions")
 
 // SessionCounter reports how many unexpired sessions a user holds.
@@ -121,15 +124,18 @@ func (p *ConcurrentSessionPolicy) Phases() []Phase { return []Phase{PostAuthenti
 // login would establish is the one that must not be created, so a user holding
 // three of a permitted three is refused a fourth.
 //
-// A count that fails denies, with a reason wrapping both ErrTooManySessions and
-// the cause, so a caller can refuse on the first and an operator can read the
-// second.
+// A count that fails denies, with a reason of fixed text wrapping both
+// ErrTooManySessions and the cause, so a caller can refuse on the first and an
+// operator can match the second by identity or type. The counter's error text
+// is not repeated in the reason.
 func (p *ConcurrentSessionPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 	count, err := p.counter.CountActiveByUser(ctx, in.User)
 	if err != nil {
 		return Decision{
 			Outcome: Deny,
-			Reason:  fmt.Errorf("%w: counting the user's sessions failed: %w", ErrTooManySessions, err),
+			Reason: diag.Wrap(err,
+				"policy: too many concurrent sessions: counting the user's sessions failed",
+				ErrTooManySessions),
 		}
 	}
 

@@ -1,8 +1,9 @@
 package httpsec
 
 import (
-	"fmt"
 	"net/http"
+
+	"github.com/kartaladev/scrty/internal/diag"
 )
 
 //go:generate mockgen -destination=keysetprovider_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/httpsec KeySetProvider
@@ -22,7 +23,8 @@ const DefaultJWKSPath = "/.well-known/jwks.json"
 //
 // What it returns is served unchanged, so an implementation returns the public
 // half and nothing else: the bytes handed back are the bytes every client on
-// the internet reads.
+// the internet reads. An error it returns reaches the consumer's error handler
+// behind fixed text, matching by identity through errors.Is and errors.As.
 type KeySetProvider interface {
 	JWKS() ([]byte, error)
 }
@@ -50,8 +52,10 @@ func (j *jwksEndpoint) Intercept(ex *Exchange, next Next) error {
 	if err != nil {
 		// Propagated, not swallowed. An empty set served with a 200 would tell
 		// every client that every signature is invalid, and they would cache
-		// that answer; an error says the deployment has a problem.
-		return fmt.Errorf("httpsec: the public key set could not be read: %w", err)
+		// that answer; an error says the deployment has a problem. The text is
+		// fixed rather than the provider's own, which a consumer's key source
+		// may word with whatever it holds; its error stays reachable.
+		return diag.Wrap(err, "httpsec: the public key set could not be read")
 	}
 
 	ex.Writer.SetHeader("Content-Type", "application/json")

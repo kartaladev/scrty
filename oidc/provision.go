@@ -63,7 +63,7 @@ func (b *Broker) provision(ctx context.Context, ext ExternalIdentity) (*identity
 				"are refused until an operator inserts the link",
 			slog.String("provider", ext.Provider),
 			slog.String("email_domain", emailDomain(ext.Email)),
-			slog.String("error", err.Error()))
+			slog.String("error", err.Error())) //nolint:forbidigo // stated exception (design decision 6): err was already scrubbed by redact() above
 		return nil, fmt.Errorf("oidc: linking a provisioned user: %w", err)
 	}
 	return b.principalFor(ctx, ext, det), nil

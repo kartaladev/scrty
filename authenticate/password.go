@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -93,6 +94,15 @@ func WithPasswordAuthenticatorLogger(l *slog.Logger) PasswordOption {
 	}
 }
 
+// WithUsernameInRefusalLogs writes the submitted username in refusal records,
+// which by default carry the reason only.
+//
+// Users type email addresses, and sometimes passwords, into the username
+// field, and every unknown username then reaches the log.
+func WithUsernameInRefusalLogs() PasswordOption {
+	return func(a *passwordAuthenticator) { a.logUsername = true }
+}
+
 // RefusalLogFlusher reports every refusal a component has suppressed but not
 // yet counted in a written record.
 //
@@ -110,10 +120,12 @@ type RefusalLogFlusher interface {
 
 // The reasons a refusal is recorded under. They are the sampler's keys, so each
 // is held back independently: a flood of unknown usernames cannot bury the one
-// record saying the user store is down.
+// record saying the user store is down. reasonUserLoadFailed also names the
+// user loader in diag.Failure's record, so its value is the word an operator
+// sees, not a synonym for it.
 const (
 	reasonUnknownUser     = "unknown-user"
-	reasonUserLoadFailed  = "user-load-failed"
+	reasonUserLoadFailed  = "user-loader"
 	reasonWrongPassword   = "wrong-password"
 	reasonAccountInactive = "account-inactive"
 )
@@ -137,6 +149,10 @@ type passwordAuthenticator struct {
 	logger      *slog.Logger
 	logEvery    time.Duration
 	logEverySet bool
+
+	// logUsername writes the submitted username into a refusal record. Off by
+	// default; set by WithUsernameInRefusalLogs.
+	logUsername bool
 
 	// refusals holds back repeated refusal records. Its reporter writes to the
 	// same logger, so nothing it suppresses is lost.
@@ -163,6 +179,12 @@ type passwordAuthenticator struct {
 // literal hash in the source would be in one algorithm's format, and an encoder
 // for another algorithm reports no match for it without doing any work — which
 // is precisely the timing difference this reference hash exists to remove.
+//
+// A refusal record caused by the user loader carries a fixed reason and the
+// error's Go type, never its text: log inside your own implementation of the
+// user loader for full detail. Refusal records omit the submitted username
+// unless WithUsernameInRefusalLogs is set; see its documentation for why that
+// is not the default.
 func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...PasswordOption) (Authenticator, error) {
 	if nilcheck.IsNil(users) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("user loader"))
@@ -203,7 +225,10 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 
 	reference, err := a.enc.Encode(referencePassword)
 	if err != nil {
-		return nil, fmt.Errorf("%w: encoding the timing-equalisation reference hash: %w", ErrConfig, err)
+		// ErrConfig already matched regardless of cause: every failure of
+		// this probe is a construction error, so it is named as a kind here
+		// rather than left to match only when it happens to be the cause.
+		return nil, diag.Wrap(err, fmt.Sprintf("%s: encoding the timing-equalisation reference hash", ErrConfig), ErrConfig)
 	}
 	a.reference = reference
 
@@ -248,19 +273,25 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 		switch {
 		case err == nil, errors.Is(err, identity.ErrUserNotFound):
 			// Routine: someone mistyped a username, or is guessing at them.
-			a.refuse(ctx, slog.LevelDebug, reasonUnknownUser, creds.Username)
+			a.refuse(ctx, slog.LevelDebug, reasonUnknownUser, creds.Username,
+				slog.String("reason", reasonUnknownUser))
 		default:
 			// Not routine: the store could not answer, so nobody can log in
-			// and an operator has something to fix.
+			// and an operator has something to fix. diag.Failure names the
+			// failure and the error's Go type, never its text: the store's
+			// error can quote another column of the row, or a value the
+			// library never saw, and a consumer who wants that detail logs
+			// it inside their own implementation of the user loader.
 			a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
-				slog.String("error", err.Error()))
+				diag.Failure(reasonUserLoadFailed, err)...)
 		}
 
 		return nil, ErrAuthenticationFailed
 	}
 
 	if !a.enc.Match(presented, details.Password) {
-		a.refuse(ctx, slog.LevelDebug, reasonWrongPassword, creds.Username)
+		a.refuse(ctx, slog.LevelDebug, reasonWrongPassword, creds.Username,
+			slog.String("reason", reasonWrongPassword))
 
 		return nil, ErrAuthenticationFailed
 	}
@@ -271,7 +302,8 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 	if !details.Active {
 		// Worth an operator's attention: whoever this is holds the account's
 		// current password, so a disabled account is all that is stopping them.
-		a.refuse(ctx, slog.LevelWarn, reasonAccountInactive, creds.Username)
+		a.refuse(ctx, slog.LevelWarn, reasonAccountInactive, creds.Username,
+			slog.String("reason", reasonAccountInactive))
 
 		return nil, ErrAuthenticationFailed
 	}
@@ -308,21 +340,29 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 
 // refuse records one refusal, through the sampler.
 //
-// The record never carries the presented password, and never says more than the
-// reason it is keyed by: what a refusal reveals belongs in the log, not in the
-// error, and a record that quoted the secret would move the secret into every
-// system the logs are shipped to.
-func (a *passwordAuthenticator) refuse(ctx context.Context, level slog.Level, reason, username string, extra ...slog.Attr) {
+// The record never carries the presented password, and never says more than
+// the reason it is keyed by: what a refusal reveals belongs in the log, not in
+// the error, and a record that quoted the secret would move the secret into
+// every system the logs are shipped to. It also never carries the submitted
+// username, unless the consumer set WithUsernameInRefusalLogs: users type
+// email addresses, and sometimes passwords, into that field, and every
+// unknown username would otherwise reach the log.
+//
+// reason both keys the sampler and, where a caller does not supply its own
+// "reason" attribute in recordAttrs, is not written on the caller's behalf:
+// every call site names what it records, so a record built from
+// diag.Failure carries the one reason word that helper chose.
+func (a *passwordAuthenticator) refuse(ctx context.Context, level slog.Level, reason, username string, recordAttrs ...slog.Attr) {
 	write, suppressed := a.refusals.Allow(reason, time.Now())
 	if !write {
 		return
 	}
 
-	attrs := append([]slog.Attr{
-		slog.String("reason", reason),
-		slog.String("username", username),
-		slog.Int("suppressed", suppressed),
-	}, extra...)
+	attrs := append([]slog.Attr{}, recordAttrs...)
+	if a.logUsername {
+		attrs = append(attrs, slog.String("username", username))
+	}
+	attrs = append(attrs, slog.Int("suppressed", suppressed))
 
 	a.logger.LogAttrs(ctx, level, "authentication refused", attrs...)
 }

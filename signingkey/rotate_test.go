@@ -133,6 +133,17 @@ func (r *logRecorder) Write(p []byte) (int, error) {
 	return r.buf.Write(p)
 }
 
+// written reports how many records have been written so far. A test waits on
+// it, not on the error hook, before reading the records: the manager calls the
+// hook before it writes the record, so a hook having run does not mean the
+// record is there yet.
+func (r *logRecorder) written() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return bytes.Count(r.buf.Bytes(), []byte("\n"))
+}
+
 // records decodes every record written so far.
 func (r *logRecorder) records(t *testing.T) []map[string]any {
 	t.Helper()
@@ -265,8 +276,12 @@ func TestRotationFailureIsObservable(t *testing.T) {
 		assert.Contains(t, records[0], "msg")
 		assert.Equal(t, signingkey.EdDSA, records[0]["alg"],
 			"the record names the algorithm that failed to rotate")
-		assert.Contains(t, records[0]["error"], errStoreWrite.Error(),
-			"the record carries the store's error")
+		assert.NotContains(t, records[0], "error",
+			"the record no longer carries the store's own error text")
+		assert.Equal(t, "signing-key-store", records[0]["reason"],
+			"the record names the failed dependency by a fixed reason")
+		assert.NotEmpty(t, records[0]["error_type"],
+			"the record carries the error's type, never its text")
 	}
 
 	cases := []testCase{

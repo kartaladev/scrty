@@ -53,12 +53,26 @@ type script struct {
 	// offerSTARTTLS puts STARTTLS in the EHLO response.
 	offerSTARTTLS bool
 
+	// offerAUTH puts an AUTH line in the EHLO response, so a client that
+	// authenticates has a mechanism to attempt. StartTLS's own reissued EHLO
+	// after an upgrade offers it again, exactly as offerSTARTTLS does.
+	offerAUTH bool
+
 	// tlsConfig serves the upgrade. Nil with offerSTARTTLS true is a server
 	// that advertises STARTTLS and then cannot speak it.
 	tlsConfig *tls.Config
 
-	// rejectAt names a command the server answers with 550.
+	// rejectAt names a command the server answers with 550 instead of
+	// carrying on. "." is not a command: it names the DATA terminator, so a
+	// message can be accepted for transfer and only refused once it has been
+	// fully sent, the way a content filter routinely works.
 	rejectAt string
+
+	// rejectMsg is the text of the rejection, at rejectAt or at the DATA
+	// terminator. Empty means the generic "550 scripted rejection"; a case
+	// that must prove a server's own wording never reaches a log record or a
+	// returned error sets one that quotes an address.
+	rejectMsg string
 }
 
 func scriptOK() script {
@@ -85,6 +99,13 @@ func scriptBrokenTLS() script {
 
 func scriptRejectAt(cmd string) script {
 	return script{greet: "220 scripted ESMTP ready", rejectAt: cmd}
+}
+
+// scriptRejectAtWith is scriptRejectAt with the server's own rejection
+// wording, the way a real mail server routinely quotes the recipient in its
+// reply.
+func scriptRejectAtWith(cmd, msg string) script {
+	return script{greet: "220 scripted ESMTP ready", rejectAt: cmd, rejectMsg: msg}
 }
 
 func startScriptedServer(t *testing.T, scr script) *scriptedServer {
@@ -221,8 +242,20 @@ func (s *scriptedServer) serve(conn net.Conn) {
 			verb = strings.ToUpper(line[:i])
 		}
 
-		if s.scr.rejectAt != "" && verb == strings.ToUpper(s.scr.rejectAt) {
-			if !write("550 scripted rejection") {
+		// net/smtp falls back from a rejected EHLO to plain HELO on its own
+		// and returns the fallback's own outcome, so a script proving the
+		// EHLO stage fails must reject HELO too or the client recovers
+		// silently.
+		rejected := s.scr.rejectAt != "" && (verb == strings.ToUpper(s.scr.rejectAt) ||
+			(strings.ToUpper(s.scr.rejectAt) == "EHLO" && verb == "HELO"))
+
+		if rejected {
+			msg := s.scr.rejectMsg
+			if msg == "" {
+				msg = "550 scripted rejection"
+			}
+
+			if !write(msg) {
 				return
 			}
 
@@ -234,6 +267,10 @@ func (s *scriptedServer) serve(conn net.Conn) {
 			resp := []string{"250-scripted"}
 			if s.scr.offerSTARTTLS && !upgraded {
 				resp = append(resp, "250-STARTTLS")
+			}
+
+			if s.scr.offerAUTH {
+				resp = append(resp, "250-AUTH CRAM-MD5")
 			}
 
 			resp = append(resp, "250 OK")
@@ -304,7 +341,15 @@ func (s *scriptedServer) serve(conn net.Conn) {
 			s.data = payload.String()
 			s.mu.Unlock()
 
-			if !write("250 queued") {
+			reply := "250 queued"
+			if s.scr.rejectAt == "." {
+				reply = s.scr.rejectMsg
+				if reply == "" {
+					reply = "550 scripted rejection"
+				}
+			}
+
+			if !write(reply) {
 				return
 			}
 		case "QUIT":

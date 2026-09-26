@@ -100,7 +100,11 @@ func WithSynchronousDelivery() Option {
 // reading a nil logger plainly has.
 //
 // No record written by this package carries the token, the binding value or
-// the submitted address.
+// the submitted address. A dependency failure — the token store's count or
+// issue, the sender, the address resolver or the redemption user loader — is
+// recorded by a fixed reason and the error's Go type, never by the error's own
+// text; a consumer who wants that detail logs it inside their own
+// implementation of the port.
 func WithLogger(l *slog.Logger) Option {
 	return func(m *Manager) {
 		if l != nil {

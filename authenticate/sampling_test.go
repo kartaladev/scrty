@@ -133,20 +133,23 @@ func TestRefusalLogRecords(t *testing.T) {
 
 				assert.Equal(t, "DEBUG", record["level"])
 				assert.Equal(t, "unknown-user", record["reason"])
-				assert.Equal(t, "ada", record["username"])
+				assert.NotContains(t, record, "username",
+					"the username reached the log without the consumer opting in")
 			},
 		},
 		{
-			name:       "a user store that is down is an operator's problem, recorded at error with the cause",
+			name:       "a user store that is down is an operator's problem, recorded at error, naming the failure but not its text",
 			loadErr:    errBackendDown,
 			wantRecord: true,
 			assert: func(t *testing.T, record map[string]any) {
 				t.Helper()
 
 				assert.Equal(t, "ERROR", record["level"])
-				assert.Equal(t, "user-load-failed", record["reason"])
-				assert.Contains(t, record["error"], errBackendDown.Error(),
+				assert.Equal(t, "user-loader", record["reason"])
+				assert.NotEmpty(t, record["error_type"],
 					"the record does not name the failure an operator has to fix")
+				assert.NotContains(t, record, "error",
+					"the dependency's error text reached the log")
 			},
 		},
 		{

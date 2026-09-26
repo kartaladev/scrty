@@ -114,9 +114,13 @@ func WithSMTPDialer(d DialFunc) SMTPOption { return func(s *SMTPSender) { s.dial
 // slog.Default, captured when the sender is built, so a consumer who
 // configures nothing still hears about mail that was never delivered.
 //
-// Records name the server host and the error. They never carry the message
-// body or subject: the body of a sign-in message is a live credential, and a
-// log pipeline is not where it belongs.
+// Records name the server host and the failure by a fixed reason and the
+// error's Go type. They never carry the error's own text, the recipient, the
+// message body or the subject: a mail server's own reply routinely quotes the
+// recipient, and the body of a sign-in message is a live credential. The
+// returned error carries the same fixed text naming the stage that failed;
+// the server's reply stays reachable as its cause, through errors.As to
+// *textproto.Error, for a consumer who wants it deliberately.
 //
 // A consumer who wants this sender silent passes a logger over a discarding
 // handler, for example slog.New(slog.DiscardHandler). Silence is available,

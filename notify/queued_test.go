@@ -303,7 +303,9 @@ func TestQueuedSenderRecoversPanic(t *testing.T) {
 	require.NoError(t, s.Close(context.WithoutCancel(t.Context())))
 
 	assert.Equal(t, int64(2), calls.Load(), "the worker survives the panic and takes the next message")
-	assert.Contains(t, buf.String(), "inner sender exploded", "the panic is logged")
+	assert.Contains(t, buf.String(), `"reason":"panic"`, "the panic is logged")
+	assert.Contains(t, buf.String(), `"value_type":"string"`, "the panic's type is logged")
+	assert.NotContains(t, buf.String(), "inner sender exploded", "the panic's own value is not logged")
 }
 
 func TestQueuedSenderWorkers(t *testing.T) {

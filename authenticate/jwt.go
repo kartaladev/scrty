@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/token"
@@ -123,7 +124,7 @@ func (a *jwtAuthenticator) Authenticate(ctx context.Context, c identity.Credenti
 	// that carried it would spread it into every log and trace that records
 	// what authenticated the request.
 	if err := creds.Cleanup(); err != nil {
-		return nil, fmt.Errorf("authenticate: clearing the presented token: %w", err)
+		return nil, diag.Wrap(err, "authenticate: clearing the presented token")
 	}
 
 	return &Authentication{

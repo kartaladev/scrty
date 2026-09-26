@@ -69,7 +69,7 @@ var errNotAttempted = errors.New("oidc: fetch not attempted")
 // notAttemptedError marks err with errNotAttempted and keeps its message.
 type notAttemptedError struct{ err error }
 
-func (e notAttemptedError) Error() string   { return e.err.Error() }
+func (e notAttemptedError) Error() string   { return e.err.Error() } //nolint:forbidigo // stated exception (design decision 6): an Error() method delegating to its cause
 func (e notAttemptedError) Unwrap() []error { return []error{e.err, errNotAttempted} }
 
 func notAttempted(err error) error { return notAttemptedError{err: err} }
@@ -378,7 +378,7 @@ func (m *Manager) recordFailure(key string, e *cacheEntry, err error) ([]slog.At
 		slog.String("resource", resourceName(kind)),
 		slog.Int("failures", e.misses),
 		slog.Duration("window", window),
-		slog.String("error", err.Error()),
+		slog.String("error", err.Error()), //nolint:forbidigo // stated exception (design decision 6): key-set retrieval failure
 	}, true
 }
 
