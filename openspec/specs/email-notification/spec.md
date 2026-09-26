@@ -137,12 +137,16 @@ The defaults SHALL be 2 workers, a queue of 256 messages and a 30-second send ti
 - **WHEN** a queued sender is constructed with zero workers
 - **THEN** construction fails with a configuration error
 
-### Requirement: Send logs carry no message body
-Logs written by the built-in senders SHALL NOT contain the message body.
+### Requirement: Send logs carry no message body and no recipient
+Logs written by the built-in senders SHALL NOT contain the message body, the recipient address, or the text of a delivery failure, which a mail server's reply routinely quotes the recipient in. A failure record SHALL name the stage that failed and the error's type, as the diagnostic-redaction capability requires.
 
 #### Scenario: Failed delivery of a sign-in link
 - **WHEN** delivery of a message whose body contains a sign-in link fails
 - **THEN** no written log record contains the link
+
+#### Scenario: Recipient rejected
+- **WHEN** an SMTP server rejects the recipient with `550 5.1.1 <alice@example.com>: Recipient address rejected`
+- **THEN** no written log record contains `alice@example.com`
 
 ### Requirement: Delivery failures are reported by default
 The built-in senders SHALL write their failure records to the application's own default logger unless the consumer supplies another. A dropped queued message, a failed delivery and a recovered panic SHALL all be reported this way.
