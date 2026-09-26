@@ -67,18 +67,18 @@ func (f mfaRequirementOption) applyMFARequirement(p *mfaRequirementPolicy) { f(p
 //
 // # Enrol users before enabling it
 //
-// This option locks out every user who has not enrolled, and the library offers
-// them no way to enrol through the refusal. A user with no usable enrolment is
-// refused at every non-exempt login, and a refusal is all they get: there is no
-// enrolment step inside it, by design, because an enrolment offered to whoever
-// just presented a first factor is a second factor an attacker can enrol for
-// themselves.
+// By default this option locks out every user who has not enrolled. A user with
+// no usable enrolment is refused at every non-exempt login, and a refusal is all
+// they get: an enrolment offered to whoever just presented a first factor is a
+// second factor an attacker can enrol for themselves, so it is not offered
+// unless the consumer chooses to.
 //
-// So enrol users first — out of band, or through a session established by a
-// login this policy exempts — and enable this afterwards. The change
-// mfa-enrolment-path will add a path for a user who is already required to use
-// a second factor; until it lands, this limit is real and is stated here rather
-// than discovered in production.
+// So either enrol users first — out of band, or through a session established
+// by a login this policy exempts — and enable this afterwards, or turn on the
+// enrolment path with WithMFAEnrolmentPath, which sends such a user to a
+// confined enrolment session instead, and accept what that path documents it
+// gives a first factor. WithEnrolmentPathUntil closes the path again once the
+// rollout is done.
 func WithMFARequiredForAll() MFARequirementOption {
 	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.requiredForAll = true })
 }
@@ -149,6 +149,9 @@ type mfaRequirementPolicy struct {
 	now            func() time.Time
 	logInterval    time.Duration
 	sampler        *logsample.Sampler
+
+	// enrolment is the enrolment path, or nil while it is off.
+	enrolment *enrolmentPath
 }
 
 // NewMFARequirementPolicy returns the MFA requirement policy, which enforces
@@ -188,7 +191,9 @@ type mfaRequirementPolicy struct {
 //     answer a challenge;
 //  5. the per-request phase with the second factor already satisfied: allow;
 //  6. no usable enrolment — not enrolled, or enrolled only on the first
-//     factor's own channel: deny ErrMFAEnrollmentRequired;
+//     factor's own channel: with the enrolment path on (WithMFAEnrolmentPath)
+//     and admitting this login, challenge ChallengeMFAEnrolment; otherwise deny
+//     ErrMFAEnrollmentRequired. A failed enrolment lookup denies either way;
 //  7. the per-request phase: challenge for MFA;
 //  8. the post-authentication phase: allow, leaving the login challenge to the
 //     challenge policy;
@@ -201,14 +206,17 @@ type mfaRequirementPolicy struct {
 // Construction fails, wrapping ErrConfig, with ErrMFARequirementLookupMissing
 // when there is no lookup and no requirement for all — the policy could answer
 // nothing — and with ErrMFARequirementUnsatisfiable when a second factor is
-// required of everyone and no method was given to present one. An absent
-// argument here means nil or a non-nil interface holding a nil pointer.
+// required of everyone and no method was given to present one. It also fails,
+// wrapping ErrConfig, when the enrolment path's allowlist is empty or names a
+// kind that can never enter it (WithEnrolmentFirstFactors). An absent argument
+// here means nil or a non-nil interface holding a nil pointer.
 //
 // Defaults: the per-user lookup (WithMFARequiredForAll replaces it),
 // factor.Kind.MFAExempt (WithMFAExemption), the phase from the context
 // (WithMFARequirementPhaseSource), slog.Default (WithMFARequirementLogger),
-// time.Now (WithMFARequirementClock) and DefaultLogInterval for its sampled
-// records (WithMFARequirementLogInterval).
+// time.Now (WithMFARequirementClock), DefaultLogInterval for its sampled
+// records (WithMFARequirementLogInterval) and no enrolment path
+// (WithMFAEnrolmentPath).
 func NewMFARequirementPolicy(
 	required identity.MFARequirementLookup,
 	method MFAMethodLookup,
@@ -251,6 +259,12 @@ func NewMFARequirementPolicy(
 				"sampled", ErrConfig)
 	}
 
+	if p.enrolment != nil {
+		if err := p.enrolment.validate(); err != nil {
+			return nil, err
+		}
+	}
+
 	p.sampler = logsample.New(p.logInterval, logsample.WithReporter(p.reportSuppressed))
 
 	return p, nil
@@ -264,18 +278,27 @@ func (p *mfaRequirementPolicy) Phases() []Phase {
 	return []Phase{PostAuthentication, PerRequest, StatelessAuthentication}
 }
 
-// Evaluate answers for one request, in the order NewMFARequirementPolicy
-// documents. It reads the Input and never writes to it.
 // Challenges reports that this policy can ask for a second factor. It denies
 // more often than it challenges, but a required user who has a usable
 // enrolment is challenged rather than refused, and that challenge needs
 // enforcing like any other.
 //
+// With the enrolment path on (WithMFAEnrolmentPath) it also reports
+// ChallengeMFAEnrolment, so that a chain with no enrolment interceptor refuses
+// to assemble rather than leaving the challenge unenforced. With the path off
+// it never raises that kind, and does not declare it.
+//
 // A fresh slice every call, for the reason Challenger states.
 func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
-	return []ChallengeKind{ChallengeMFA}
+	if p.enrolment == nil {
+		return []ChallengeKind{ChallengeMFA}
+	}
+
+	return []ChallengeKind{ChallengeMFA, ChallengeMFAEnrolment}
 }
 
+// Evaluate answers for one request, in the order NewMFARequirementPolicy
+// documents. It reads the Input and never writes to it.
 func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 	// 1. An exempt first factor is decided before anything is looked up: a
 	// machine caller has nobody to prompt, and a federated login already
@@ -320,8 +343,10 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		return Decision{Outcome: Allow}
 	}
 
-	// 6. A user with no usable enrolment cannot be challenged, so the refusal
-	// says what is missing rather than repeating that a second factor is due.
+	// 6. A user with no usable enrolment cannot be challenged for a second
+	// factor. With the enrolment path on and the login admitted by it, they are
+	// challenged for enrolment instead; otherwise the refusal says what is
+	// missing rather than repeating that a second factor is due.
 	usable, err := p.hasUsableEnrolment(ctx, in)
 	if err != nil {
 		return Decision{
@@ -332,6 +357,12 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		}
 	}
 	if !usable {
+		// 6a. With the enrolment path on, a user it admits is sent to enrol
+		// rather than refused.
+		if p.enrolment != nil && p.enrolment.admits(in, phase, p.method) {
+			return Decision{Outcome: Challenge, Challenge: ChallengeMFAEnrolment}
+		}
+
 		return p.denyEnrolment(ctx, in, phaseName(phase, known))
 	}
 

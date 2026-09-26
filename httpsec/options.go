@@ -61,6 +61,11 @@ const (
 	defaultFailureWindow = 15 * time.Minute
 )
 
+// defaultEnrolmentLifetime is how long a session marked for an enrolment
+// challenge lives when nothing configured otherwise: long enough to scan a
+// code and read an email, short enough that a first factor alone buys little.
+const defaultEnrolmentLifetime = 15 * time.Minute
+
 // Option configures a chain.
 //
 // Every option either takes effect or is refused when the chain is built: none
@@ -91,6 +96,23 @@ type config struct {
 	logger  *slog.Logger
 	limiter ratelimit.Limiter
 
+	// enrolmentLifetime is how long a session marked for an enrolment
+	// challenge may live: its deadlines are lowered to at most this far from
+	// the mark. It starts at defaultEnrolmentLifetime and is replaced by the
+	// enrolment interceptor's own configuration.
+	enrolmentLifetime time.Duration
+
+	// consumerEnforced holds the challenge kinds of the consumer's own that
+	// WithChallengeEnforcer declared this chain enforces.
+	consumerEnforced map[policy.ChallengeKind]bool
+
+	// builtInGates holds the built-in challenge kinds whose own built-in gate
+	// is enabled on this chain, each recorded by the Enable option that
+	// registers that gate through enableGate. It is what makes a built-in kind
+	// count as enforced: an interceptor that merely occupies the gate's slot
+	// does not.
+	builtInGates map[policy.ChallengeKind]bool
+
 	// sessions is the manager the chain records activity through: the first one
 	// any enabled built-in was wired to. A deployment has one session store, so
 	// taking it from the built-ins costs the consumer no second declaration,
@@ -110,7 +132,7 @@ type config struct {
 	authzRules []authorize.Rule[Request]
 
 	// logoutPath is where logout answers, and is empty when the consumer
-	// enabled none. It is kept here because the MFA gate has to exempt it, and
+	// enabled none. It is kept here because the gates have to exempt it, and
 	// an exemption configured separately from the endpoint is one a consumer
 	// can move half of.
 	logoutPath string
@@ -144,6 +166,18 @@ type enabledBuiltIn struct {
 // way, in the order the consumer enabled them.
 func (c *config) enable(option string, check func() error) {
 	c.enabled = append(c.enabled, enabledBuiltIn{option: option, check: check})
+}
+
+// enableGate records that the built-in gate enforcing kind is enabled on this
+// chain. Only the Enable option that registers that gate calls it: EnableMFA
+// for ChallengeMFA, EnablePasswordChangeGate for ChallengePasswordChange, and
+// EnableMFAEnrolment for ChallengeMFAEnrolment.
+func (c *config) enableGate(kind policy.ChallengeKind) {
+	if c.builtInGates == nil {
+		c.builtInGates = make(map[policy.ChallengeKind]bool, len(builtInEnforcers))
+	}
+
+	c.builtInGates[kind] = true
 }
 
 // wire records what a built-in still has to be handed once the chain exists.
@@ -238,6 +272,8 @@ func New(opts ...Option) (*Chain, error) {
 		logger:          slog.Default(),
 		ipv6Prefix:      defaultIPv6SourcePrefix,
 		refusalInterval: defaultRefusalLogInterval,
+
+		enrolmentLifetime: defaultEnrolmentLifetime,
 	}
 
 	for _, opt := range opts {
@@ -273,6 +309,17 @@ func (c *config) build() (*Chain, error) {
 	// halves of it depend on options that may be applied after EnableMFA: the
 	// logout path it exempts, and the logger its throttle writes through.
 	if err := c.wireMFA(); err != nil {
+		return nil, err
+	}
+
+	// The password-change gate exempts the chain's logout, which may be
+	// configured after EnablePasswordChangeGate, so it is handed over here.
+	c.wirePasswordChange()
+
+	// The enrolment path takes the MFA method EnableMFA was given and the
+	// chain's sessions and logout path, any of which an option applied after
+	// EnableMFAEnrolment may still have set.
+	if err := c.wireMFAEnrolment(); err != nil {
 		return nil, err
 	}
 
@@ -317,14 +364,16 @@ func (c *config) build() (*Chain, error) {
 	c.register(stage, OrderAuthorizer)
 
 	chain := &Chain{
-		registrations:   c.ordered(),
-		engine:          c.engine,
-		logger:          c.logger,
-		limiter:         limiter,
-		ipv6Prefix:      c.ipv6Prefix,
-		errorHandler:    c.errorHandler,
-		refusalInterval: c.refusalInterval,
-		refusalReporter: c.refusalReporter,
+		registrations:     c.ordered(),
+		engine:            c.engine,
+		logger:            c.logger,
+		limiter:           limiter,
+		enrolmentLifetime: c.enrolmentLifetime,
+		enforced:          c.enforcedChallenges(),
+		ipv6Prefix:        c.ipv6Prefix,
+		errorHandler:      c.errorHandler,
+		refusalInterval:   c.refusalInterval,
+		refusalReporter:   c.refusalReporter,
 	}
 
 	// The sampler is built here rather than by the option, because the default
@@ -374,6 +423,13 @@ func (c *config) resolveLimiter() (ratelimit.Limiter, error) {
 //
 // A nil engine is refused: it would read as "no policies" while the consumer
 // believed their policies were running.
+//
+// Register every policy on e before the chain is built. Assembly checks that
+// each challenge a registered policy can raise has something on the chain to
+// enforce it, and can only see the policies registered by then. A policy added
+// afterwards escapes that check; a challenge it raises that nothing enforces is
+// refused at runtime instead, with an error wrapping ErrConfig, on every
+// request that raises it.
 func WithPolicyEngine(e *policy.Engine) Option {
 	return func(c *config) error {
 		if err := requireDep("WithPolicyEngine", "policy engine", e); err != nil {
@@ -381,6 +437,57 @@ func WithPolicyEngine(e *policy.Engine) Option {
 		}
 
 		c.engine = e
+		return nil
+	}
+}
+
+// WithChallengeEnforcer declares that this chain enforces kind, a challenge
+// kind of the consumer's own, through a gate the consumer registered with
+// RegisterInterceptor.
+//
+// Default: none. Without it, a chain whose policies declare a kind the library
+// does not know (through policy.Challenger) refuses to assemble, because a
+// challenge nothing enforces marks the session and serves it anyway. This
+// option is how a consumer who wrote both halves — the policy and its gate —
+// tells the chain the pairing exists. The chain takes the declaration on trust:
+// it cannot tell what the consumer's gate does.
+//
+// At login, a declared kind refuses with a ChallengeError like any other. Per
+// request, the bearer cannot mark it on the session, so it records it on the
+// exchange and continues: the declared gate, registered after the bearer,
+// reads it with Exchange.RaisedChallenge and refuses or resolves the request.
+// Declaring the kind is the consumer's statement that such a gate exists.
+//
+// A declared kind raised at login is refused with a ChallengeError carrying a
+// session and a token, but the session records nothing of it: the library has
+// no field for a kind it does not know, and the token's later requests reach
+// the consumer's gate only through the per-request phase. So the consumer's
+// policy must also raise the kind per request, or its gate never sees it and
+// the token issued with the refusal reaches everything the gate guards.
+//
+// It is for consumer kinds only. A built-in kind (ChallengeMFA,
+// ChallengePasswordChange, ChallengeMFAEnrolment) is enforced only by its own
+// built-in gate (EnableMFA, EnablePasswordChangeGate, EnableMFAEnrolment), and
+// declaring one here could only silence the check for it, so it is refused, as
+// is ChallengeNone. There is no option to switch the
+// check off.
+func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
+	return func(c *config) error {
+		if kind == policy.ChallengeNone {
+			return newConfigError("WithChallengeEnforcer was given ChallengeNone, which is not a challenge")
+		}
+
+		if b, ok := builtInEnforcers[kind]; ok {
+			return newConfigError("WithChallengeEnforcer was given %s, which the library enforces "+
+				"through its own gate: add %s instead", kind, b.option)
+		}
+
+		if c.consumerEnforced == nil {
+			c.consumerEnforced = make(map[policy.ChallengeKind]bool)
+		}
+
+		c.consumerEnforced[kind] = true
+
 		return nil
 	}
 }
@@ -932,6 +1039,7 @@ func EnableMFA(method mfa.Method, opts ...MFAOption) Option {
 		})
 
 		c.register(i, OrderMFAChallenge)
+		c.enableGate(policy.ChallengeMFA)
 
 		return nil
 	}
@@ -1476,6 +1584,11 @@ type PasswordChangeOption func(*passwordChangeGate) error
 // WithChangePasswordEndpoint to let a caller pay the debt without logging in
 // again. A request carrying no session passes the gate untouched.
 //
+// A POST to the chain's logout path always passes, so a caller owing a change
+// can end the session; the path is the one EnableLogout configured, read when
+// the chain is built, and nothing extra passes on a chain without logout.
+// There is no option to refuse it: refusing logout protects nothing.
+//
 // The session manager is required and is the one the marker is cleared in: a
 // gate that could not record the change would refuse the next request just the
 // same, and the caller would have changed their password for nothing.
@@ -1500,6 +1613,7 @@ func EnablePasswordChangeGate(sessions *session.Manager, opts ...PasswordChangeO
 
 		c.useSessions(sessions)
 		c.register(g, OrderPasswordChange)
+		c.enableGate(policy.ChallengePasswordChange)
 
 		return nil
 	}
@@ -1594,8 +1708,8 @@ func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
 			return requireDep(option, "session manager", d.Sessions)
 		})
 
-		// Recorded for the MFA gate, which exempts this path so a session
-		// stranded mid-challenge can still be ended. See wireMFA.
+		// Recorded for the gates, which exempt this path so a session stranded
+		// mid-challenge can still be ended. See wireMFA and wirePasswordChange.
 		c.logoutPath = l.path
 		c.logout = l
 

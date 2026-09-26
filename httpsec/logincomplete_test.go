@@ -592,3 +592,137 @@ func TestCompleteLoginOtherFirstFactor(t *testing.T) {
 // being the port the seam depends on, this stops compiling here rather than
 // somewhere an interceptor is wired.
 var _ token.Generator = (*MockGenerator)(nil)
+
+// TestCompleteLoginEnrolment pins what the login tail does with an enrolment
+// challenge: the session is created, marked enrolment-pending with its
+// deadlines lowered to the enrolment lifetime, and saved in that state before
+// any token for it exists. A token issued first would be a credential for a
+// full session, however briefly.
+func TestCompleteLoginEnrolment(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		lifetime time.Duration
+		assert   func(t *testing.T, start time.Time, abs time.Duration, saved *session.Session)
+	}
+
+	lowered := func(to time.Duration) func(t *testing.T, start time.Time, abs time.Duration, saved *session.Session) {
+		return func(t *testing.T, start time.Time, abs time.Duration, saved *session.Session) {
+			t.Helper()
+
+			assert.Equal(t, session.MFAEnrolmentPending, saved.MFA)
+			assert.True(t, saved.AbsoluteExpiresAt.Equal(start.Add(to)),
+				"the absolute deadline is lowered to the enrolment lifetime, got %s", saved.AbsoluteExpiresAt)
+			assert.False(t, saved.IdleExpiresAt.After(saved.AbsoluteExpiresAt),
+				"the idle deadline never outlives the absolute one")
+			assert.True(t, saved.EnrolmentOriginDeadline.Equal(start.Add(abs)),
+				"the marker records the deadline the upgrade may give back")
+		}
+	}
+
+	cases := []testCase{
+		{name: "the default lifetime", lifetime: 15 * time.Minute, assert: lowered(15 * time.Minute)},
+		{name: "a configured lifetime", lifetime: 5 * time.Minute, assert: lowered(5 * time.Minute)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			tokens := NewMockGenerator(ctrl)
+
+			sessions, err := session.NewManager(session.WithStore(store),
+				session.WithClock(func() time.Time { return start }))
+			require.NoError(t, err)
+
+			var saved session.Session
+
+			gomock.InOrder(
+				store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil),
+				store.EXPECT().Save(gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, s *session.Session) error {
+						saved = *s
+
+						return nil
+					}),
+				tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil),
+			)
+
+			ex := newExchange(t)
+			deps := httpsec.LoginTailDepsWithEnrolmentForTest(
+				challengingEngine(t, policy.ChallengeMFAEnrolment), sessions, tokens, tc.lifetime)
+
+			tok, err := httpsec.CompleteLoginForTest(ex, deps, httpsec.PostAuthenticationInputForTest(
+				testPrincipal(), factor.MagicLink, "", time.Time{}, start))
+
+			var ch *httpsec.ChallengeError
+			require.ErrorAs(t, err, &ch)
+			assert.Equal(t, policy.ChallengeMFAEnrolment, ch.Kind)
+			assert.Equal(t, "issued-token", ch.Token, "the client holds a credential for the confined session")
+			assert.Equal(t, "issued-token", tok)
+			require.NotNil(t, ch.Session)
+			assert.Equal(t, session.MFAEnrolmentPending, ch.Session.MFA)
+
+			tc.assert(t, start, sessions.AbsoluteTimeout(), &saved)
+		})
+	}
+}
+
+// TestCompleteLoginEnrolmentMagicLink pins the scenario end to end through a
+// real chain: a magic-link redemption of a required, unenrolled user, with the
+// enrolment path on, is refused with an enrolment challenge carrying a token
+// and a session stored in the enrolment-pending state.
+func TestCompleteLoginEnrolmentMagicLink(t *testing.T) {
+	t.Parallel()
+
+	start := time.Now()
+
+	h := newMagicLinkHarness(t)
+
+	sessions, err := session.NewManager(session.WithClock(func() time.Time { return start }))
+	require.NoError(t, err)
+	h.sessions = sessions
+
+	requesting := h.chain(t)
+	tok, nonce := h.link(t, requesting)
+
+	ctrl := gomock.NewController(t)
+	method := NewMockMFAMethodLookup(ctrl)
+	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+
+	requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, method,
+		policy.WithMFAEnrolmentPath())
+	require.NoError(t, err)
+
+	// Both gates the policy declares are recorded as enabled without being
+	// registered. What is under test is what the login tail stores, not what a
+	// gate does with it.
+	chain, err := httpsec.New(
+		httpsec.EnableMagicLink(h.manager, h.options()...),
+		httpsec.WithPolicyEngine(engineOf(t, requirement)),
+		httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
+		httpsec.EnableGateForTest(policy.ChallengeMFA),
+	)
+	require.NoError(t, err)
+
+	out := h.redeem(t, chain, tok, nonce)
+
+	var ch *httpsec.ChallengeError
+	require.ErrorAs(t, out.err, &ch)
+	assert.Equal(t, policy.ChallengeMFAEnrolment, ch.Kind)
+	assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+	assert.NotEmpty(t, ch.Token)
+
+	stored := h.openedSession(t)
+	assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "saved in that state before the token was issued")
+	assert.Equal(t, factor.MagicLink, stored.FirstFactor)
+	assert.True(t, stored.AbsoluteExpiresAt.Equal(start.Add(15*time.Minute)),
+		"with no lifetime configured the documented default applies, got %s", stored.AbsoluteExpiresAt)
+	assert.False(t, stored.EnrolmentOriginDeadline.IsZero(), "the enrolment-origin marker is set")
+}

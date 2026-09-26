@@ -144,6 +144,10 @@ type magicLinkHarness struct {
 	// linkOpts and engine are what a case wants configured differently.
 	linkOpts []httpsec.MagicLinkOption
 	engine   *policy.Engine
+
+	// chainOpts are further chain options a case needs, such as something to
+	// enforce the challenge its policy raises.
+	chainOpts []httpsec.Option
 }
 
 func newMagicLinkHarness(t *testing.T, managerOpts ...magiclink.Option) *magicLinkHarness {
@@ -233,7 +237,7 @@ func (h *magicLinkHarness) build() (*httpsec.Chain, error) {
 		opts = append(opts, httpsec.WithPolicyEngine(h.engine))
 	}
 
-	return httpsec.New(opts...)
+	return httpsec.New(append(opts, h.chainOpts...)...)
 }
 
 // activeSessions counts the sessions the flow established for the user a link

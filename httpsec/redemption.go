@@ -22,6 +22,10 @@ type policyOutcome struct {
 	decision  policy.Decision
 	denyErr   error
 	checkErr  error
+
+	// unenforcedErr is the configuration error a challenge of a kind nothing
+	// on the chain enforces was refused with, nil when there was none.
+	unenforcedErr error
 }
 
 // redemptionPolicyCheck builds the refusal check a redemption runs for a login
@@ -30,8 +34,14 @@ type policyOutcome struct {
 // The decision has to escape the check, because the check's return value alone
 // cannot distinguish "allowed" from "never ran" — and a redeemer that never ran
 // the checks would otherwise look exactly like one whose checks passed.
+//
+// enforced is the chain's enforcer set. A challenge of a kind outside it is
+// refused here, inside the check, so the redeemer stops before it spends the
+// credential: the login tail would refuse it anyway (see refuseUnenforced), and
+// refusing it only there would cost the user a credential for a wiring fault
+// that was never theirs.
 func redemptionPolicyCheck(
-	engine *policy.Engine, first factor.Kind, now func() time.Time,
+	engine *policy.Engine, enforced map[policy.ChallengeKind]bool, first factor.Kind, now func() time.Time,
 ) (redemptionCheck, *policyOutcome) {
 	out := &policyOutcome{}
 
@@ -60,8 +70,17 @@ func redemptionPolicyCheck(
 			return reason
 		}
 
-		// A challenge is not a refusal. The credential is spent, the session
-		// is created with the challenge pending, and the caller is prompted.
+		if d.Outcome == policy.Challenge {
+			if err := refuseUnenforced(enforced, d.Challenge); err != nil {
+				out.unenforcedErr = err
+
+				return err
+			}
+		}
+
+		// A challenge of an enforced kind is not a refusal. The credential is
+		// spent, the session is created with the challenge pending, and the
+		// caller is prompted.
 		return nil
 	}
 
@@ -99,8 +118,8 @@ func wrapChecks[C ~func(context.Context, identity.Principal, time.Time) error](
 	return wrapped
 }
 
-// guardRedemption refuses a redemption whose policy check was denied or
-// skipped.
+// guardRedemption refuses a redemption whose policy check was denied, raised a
+// challenge nothing on the chain enforces, or was skipped.
 //
 // "Never evaluated" is a denial rather than an allow: a redeemer that did not
 // run the checks has not shown the login is permitted, and the safe reading of
@@ -111,6 +130,10 @@ func wrapChecks[C ~func(context.Context, identity.Principal, time.Time) error](
 func guardRedemption(out *policyOutcome) error {
 	if !out.evaluated {
 		return policy.ErrPolicyDenied
+	}
+
+	if out.unenforcedErr != nil {
+		return out.unenforcedErr
 	}
 
 	if out.decision.Outcome != policy.Deny {

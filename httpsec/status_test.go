@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -53,6 +54,17 @@ func TestStatusForError(t *testing.T) {
 		{name: "second factor unsatisfiable", err: policy.ErrMFARequirementUnsatisfiable, want: 403},
 		{name: "second factor enrolment required", err: policy.ErrMFAEnrollmentRequired, want: 403},
 		{name: "second factor on the first factor's channel", err: policy.ErrSecondFactorSameChannel, want: 403},
+		{name: "invalid second-factor code", err: mfa.ErrInvalidCode, want: 401},
+		{name: "throttled second-factor verification", err: mfa.ErrVerifyThrottled, want: 401},
+		{name: "second-factor method on the first factor's channel", err: mfa.ErrSameChannel, want: 403},
+		{name: "already enrolled", err: mfa.ErrAlreadyEnrolled, want: 403},
+		{
+			name: "an invalid, expired or voided emailed code, answered by the invalid-code row",
+			err:  mfa.ErrEmailCodeInvalid,
+			want: 401,
+		},
+		{name: "throttled enrolment", err: mfa.ErrEnrolmentThrottled, want: 401},
+		{name: "wrapped invalid code", err: fmt.Errorf("verifying: %w", mfa.ErrInvalidCode), want: 401},
 		{name: "malformed login", err: httpsec.ErrCredentialsMissing, want: 400},
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
 		{name: "account locked", err: policy.ErrAccountLocked, want: 423},
@@ -81,6 +93,16 @@ func TestStatusForError(t *testing.T) {
 			name: "password-change challenge",
 			err:  &httpsec.ChallengeError{Kind: policy.ChallengePasswordChange},
 			want: 403,
+		},
+		{
+			name: "enrolment challenge",
+			err:  &httpsec.ChallengeError{Kind: policy.ChallengeMFAEnrolment},
+			want: 403,
+		},
+		{
+			name: "a consumer's own challenge kind",
+			err:  &httpsec.ChallengeError{Kind: policy.ChallengeKind(100)},
+			want: 401,
 		},
 		{
 			name: "a challenge reached through a wrap is still a challenge",
@@ -186,6 +208,15 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrInvalidAttributes":      authorize.ErrInvalidAttributes,
 		"authorize.ErrUnsupportedAttributes":  authorize.ErrUnsupportedAttributes,
 	},
+	"github.com/kartaladev/scrty/mfa": {
+		"mfa.ErrAlreadyEnrolled":    mfa.ErrAlreadyEnrolled,
+		"mfa.ErrConfig":             mfa.ErrConfig,
+		"mfa.ErrEmailCodeInvalid":   mfa.ErrEmailCodeInvalid,
+		"mfa.ErrEnrolmentThrottled": mfa.ErrEnrolmentThrottled,
+		"mfa.ErrInvalidCode":        mfa.ErrInvalidCode,
+		"mfa.ErrSameChannel":        mfa.ErrSameChannel,
+		"mfa.ErrVerifyThrottled":    mfa.ErrVerifyThrottled,
+	},
 	"github.com/kartaladev/scrty/oidc": {
 		"oidc.ErrConfig":              oidc.ErrConfig,
 		"oidc.ErrDiscoveryFailed":     oidc.ErrDiscoveryFailed,
@@ -263,6 +294,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"policy.ErrReapUnsupported":               "a maintenance-path fault, not a request refusal",
 		"policy.ErrRetainSinceRequired":           "a maintenance-path fault, not a request refusal",
 		"policy.ErrMFARequirementLookupMissing":   "a wiring fault, refused at construction",
+		"mfa.ErrConfig":                           "a wiring fault, refused at construction",
 		"oidc.ErrConfig":                          "a wiring fault, refused at construction",
 		"oidc.ErrExchangeFailed":                  "a provider failure, deliberately 500",
 		"oidc.ErrDiscoveryFailed":                 "a provider failure, deliberately 500",
@@ -277,6 +309,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 	for _, pkg := range []string{
 		"github.com/kartaladev/scrty/authenticate",
 		"github.com/kartaladev/scrty/authorize",
+		"github.com/kartaladev/scrty/mfa",
 		"github.com/kartaladev/scrty/oidc",
 		"github.com/kartaladev/scrty/policy",
 		"github.com/kartaladev/scrty/ratelimit",

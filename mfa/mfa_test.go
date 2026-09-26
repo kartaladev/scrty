@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
@@ -62,15 +63,34 @@ func TestMFASentinels(t *testing.T) {
 		mfa.ErrAlreadyEnrolled,
 		mfa.ErrSameChannel,
 		mfa.ErrVerifyThrottled,
+		mfa.ErrEmailCodeInvalid,
+		mfa.ErrEnrolmentThrottled,
+		mfa.ErrConfig,
 	}
 
 	for i, a := range sentinels {
 		for j, b := range sentinels {
-			if i != j {
+			// An emailed-code refusal is the invalid second-factor code
+			// refusal; TestEmailCodeInvalidIsInvalidCode pins that pair.
+			// Identity, not errors.Is: the pair is excluded by name.
+			if i != j && (a != mfa.ErrEmailCodeInvalid || b != mfa.ErrInvalidCode) { //nolint:errorlint // sentinel identity
 				assert.NotErrorIs(t, a, b)
 			}
 		}
 
 		assert.Contains(t, a.Error(), "mfa: ")
 	}
+}
+
+// TestEmailCodeInvalidIsInvalidCode pins that an emailed-code refusal is
+// identifiable as the invalid second-factor code refusal, so a caller mapping
+// ErrInvalidCode answers it the same way, while its own message still tells an
+// operator which code was refused.
+func TestEmailCodeInvalidIsInvalidCode(t *testing.T) {
+	t.Parallel()
+
+	require.ErrorIs(t, mfa.ErrEmailCodeInvalid, mfa.ErrInvalidCode)
+	assert.NotErrorIs(t, mfa.ErrInvalidCode, mfa.ErrEmailCodeInvalid,
+		"a device-code refusal is not an emailed-code one")
+	assert.Contains(t, mfa.ErrEmailCodeInvalid.Error(), "emailed code")
 }

@@ -29,6 +29,13 @@ type loginTailDeps struct {
 	engine   *policy.Engine
 	sessions *session.Manager
 	tokens   token.Generator
+
+	// enrolmentLifetime is how long a session marked for an enrolment
+	// challenge may live. The chain hands it to each first factor at assembly.
+	enrolmentLifetime time.Duration
+
+	// enforced holds the challenge kinds something on the chain enforces.
+	enforced map[policy.ChallengeKind]bool
 }
 
 // postAuthenticationInput builds the policy input for a login that has just
@@ -95,19 +102,63 @@ func WithCaller(ctx context.Context, a *authenticate.Authentication) context.Con
 	return identity.WithPrincipal(ctx, a.Principal)
 }
 
-// markChallengePending records on s that a challenge is owed, in the field the
-// gate enforcing it reads.
+// challengeMarker records on a session that a challenge is owed, in the fields
+// the gate enforcing it reads.
 //
-// A kind this package does not know marks nothing, and the caller still refuses
-// the request with the challenge: a challenge nothing can mark is one nothing
-// can satisfy, and serving the request instead would let an unrecognised
-// challenge read as an allow.
-func markChallengePending(s *session.Session, kind policy.ChallengeKind) {
+// sessions is the manager the session belongs to, whose clock an enrolment
+// mark's deadlines are drawn from, and enrolmentLifetime is how long an
+// enrolment-only session may live, handed over when the chain is built.
+type challengeMarker struct {
+	sessions          *session.Manager
+	enrolmentLifetime time.Duration
+}
+
+// refuseUnenforced refuses a challenge of a kind nothing on the chain
+// enforces, with a configuration error, before anything is marked.
+//
+// Chain assembly refuses a policy that declares such a kind, but it can only
+// read the policies registered when the chain is built. A policy added to the
+// engine afterwards escapes it, and a challenge it raises would otherwise be
+// marked on the session and then served: the gate that should refuse the
+// request is not there. Refusing the request instead makes the wiring mistake
+// visible on the first request that reaches it, and satisfies nothing it
+// should not.
+func refuseUnenforced(enforced map[policy.ChallengeKind]bool, kind policy.ChallengeKind) error {
+	if enforced[kind] {
+		return nil
+	}
+
+	if b, ok := builtInEnforcers[kind]; ok {
+		return newConfigError("a policy raised %s, a challenge for %s, but nothing on this "+
+			"chain enforces it: add %s, and register every policy before the chain is built "+
+			"so assembly checks it", kind, b.what, b.option)
+	}
+
+	return newConfigError("a policy raised %s, but nothing on this chain enforces it: "+
+		"register your gate for it and declare it with WithChallengeEnforcer, and register "+
+		"every policy before the chain is built so assembly checks it", kind)
+}
+
+// mark records kind on s, in memory; the caller persists it.
+//
+// An enrolment challenge sets the enrolment-pending state and its marker and
+// lowers the session's deadlines, in one change, so the session saved next is
+// already the short-lived, confined one.
+//
+// A kind this package does not know marks nothing: the session has no field
+// for it. By the time mark runs, refuseUnenforced has already refused such a
+// kind unless the consumer declared it with WithChallengeEnforcer. At login
+// the caller then refuses with the challenge; per request the bearer records
+// the kind on the exchange (Exchange.RaisedChallenge) and continues, and the
+// consumer's declared gate enforces it.
+func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 	switch kind {
 	case policy.ChallengeMFA:
 		s.MFA = session.MFAPending
 	case policy.ChallengePasswordChange:
 		s.PasswordChangePending = true
+	case policy.ChallengeMFAEnrolment:
+		m.sessions.MarkEnrolmentPending(s, m.enrolmentLifetime)
 	case policy.ChallengeNone:
 	}
 }
@@ -146,6 +197,14 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 		return "", policyDenyReason(d)
 	}
 
+	// Refused before the session exists, so an unenforced challenge leaves
+	// neither a marked session nor a token behind.
+	if d.Outcome == policy.Challenge {
+		if err := refuseUnenforced(deps.enforced, d.Challenge); err != nil {
+			return "", err
+		}
+	}
+
 	// The caller's own attributes first, then the first factor: a federated
 	// login records its provider session here, in the write that creates the
 	// session, so no request ever sees the session without it. The first
@@ -166,7 +225,8 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 		// be a credential for a session whose pending flag never persisted —
 		// that is, one that answers requests as though the challenge had been
 		// met.
-		markChallengePending(s, d.Challenge)
+		challengeMarker{sessions: deps.sessions, enrolmentLifetime: deps.enrolmentLifetime}.
+			mark(s, d.Challenge)
 
 		if err := deps.sessions.Save(ctx, s); err != nil {
 			return "", err

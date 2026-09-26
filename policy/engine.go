@@ -3,6 +3,7 @@ package policy
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
@@ -24,6 +25,12 @@ type Engine struct {
 	// policy which phases it runs in, and fixes the order a phase is evaluated
 	// in at the moment the consumer wrote it.
 	byPhase map[Phase][]Policy
+
+	// asked holds every policy registered for at least one phase, once, in
+	// registration order. byPhase is a map, so it cannot say which policy came
+	// first across phases; this can, and a policy asked in no phase is left
+	// out because it can raise nothing.
+	asked []Policy
 }
 
 // NewEngine returns an Engine holding policies, registered in the order given.
@@ -58,6 +65,12 @@ func NewEngine(policies ...Policy) (*Engine, error) {
 // not safe to call concurrently with EvaluatePhase. A consumer that must change
 // the rules of a running application builds a new Engine and swaps it in.
 //
+// Register every policy before handing the engine to a component that checks
+// its wiring at construction, such as an HTTP security chain. Such a check can
+// only see the policies registered by then, so a challenge a later policy can
+// raise, with nothing to enforce it, is found only when a request raises it,
+// rather than before the application serves.
+//
 // An absent policy — nil, or a non-nil interface holding a nil pointer, which
 // is what an unchecked constructor result hands over — is a configuration error
 // wrapping ErrConfig. It is refused rather than skipped because skipping it
@@ -71,8 +84,13 @@ func (e *Engine) Add(p Policy) error {
 				"making fewer checks than were written", ErrConfig)
 	}
 
-	for _, phase := range p.Phases() {
+	phases := p.Phases()
+	for _, phase := range phases {
 		e.byPhase[phase] = append(e.byPhase[phase], p)
+	}
+
+	if len(phases) > 0 {
+		e.asked = append(e.asked, p)
 	}
 
 	return nil
@@ -98,22 +116,37 @@ func (e *Engine) Add(p Policy) error {
 // It reads the registration index and is meant for wiring time, alongside Add,
 // rather than for the request path.
 func (e *Engine) CanChallenge(kind ChallengeKind) bool {
-	for _, policies := range e.byPhase {
-		for _, p := range policies {
-			c, ok := p.(Challenger)
-			if !ok {
-				continue
-			}
+	return slices.Contains(e.DeclaredChallenges(), kind)
+}
 
-			for _, declared := range c.Challenges() {
-				if declared == kind {
-					return true
-				}
+// DeclaredChallenges reports every challenge kind a registered policy can
+// raise, each once, in the order it was first declared across the policies in
+// registration order.
+//
+// It answers what CanChallenge answers, for every kind at once, so a component
+// that enforces challenges can check that each one has an enforcer rather than
+// asking about the kinds it happens to know. The same rules apply: a policy
+// that does not implement Challenger declares nothing, a policy registered for
+// no phase raises nothing, and ChallengeNone is never a challenge.
+//
+// It returns a fresh slice, and is meant for wiring time.
+func (e *Engine) DeclaredChallenges() []ChallengeKind {
+	var kinds []ChallengeKind
+
+	for _, p := range e.asked {
+		c, ok := p.(Challenger)
+		if !ok {
+			continue
+		}
+
+		for _, kind := range c.Challenges() {
+			if kind != ChallengeNone && !slices.Contains(kinds, kind) {
+				kinds = append(kinds, kind)
 			}
 		}
 	}
 
-	return false
+	return kinds
 }
 
 // EvaluatePhase asks the policies that declared phase, in the order they were

@@ -37,6 +37,18 @@ func passwordChangeChallengingEngine(t *testing.T) *policy.Engine {
 	return engineOf(t, p)
 }
 
+// passwordChangeGateFor is the password-change gate wired to a session manager
+// of its own, which is what a chain registering the password-age policy must
+// also enable for that policy's challenge to be enforced.
+func passwordChangeGateFor(t *testing.T) httpsec.Option {
+	t.Helper()
+
+	m, err := session.NewManager()
+	require.NoError(t, err)
+
+	return httpsec.EnablePasswordChangeGate(m)
+}
+
 // chainSessions is a session manager for a chain that needs one, supplied
 // through a built-in as a deployment would.
 func chainSessions(t *testing.T) httpsec.Option {
@@ -95,6 +107,8 @@ func TestChainRefusesUnenforcedMFAChallenge(t *testing.T) {
 				return []httpsec.Option{httpsec.WithPolicyEngine(mfaChallengingEngine(t))}
 			},
 			assert: func(t *testing.T, c *httpsec.Chain, err error) {
+				t.Helper()
+
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.Nil(t, c)
 				assert.Contains(t, strings.ToLower(err.Error()), "enablemfa",
@@ -114,8 +128,9 @@ func TestChainRefusesUnenforcedMFAChallenge(t *testing.T) {
 			assert: assembles,
 		},
 		{
-			// The interceptor may be a consumer's own. What the check asks is
-			// whether anything occupies the slot, not whose it is.
+			// Occupying the slot is not enforcing the challenge: the chain
+			// cannot tell what a consumer's interceptor does there, so only
+			// the built-in gate counts.
 			name: "the same policy with a consumer's own interceptor at the slot",
 			opts: func(t *testing.T) []httpsec.Option {
 				t.Helper()
@@ -128,7 +143,14 @@ func TestChainRefusesUnenforcedMFAChallenge(t *testing.T) {
 					httpsec.RegisterInterceptor(passes, httpsec.OrderMFAChallenge),
 				}
 			},
-			assert: assembles,
+			assert: func(t *testing.T, c *httpsec.Chain, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Nil(t, c)
+				assert.Contains(t, strings.ToLower(err.Error()), "enablemfa",
+					"the error names the gate that would enforce it")
+			},
 		},
 	}
 
@@ -155,12 +177,16 @@ func TestChainMFAChallengeRefusalScope(t *testing.T) {
 
 	cases := []testCase{
 		{
+			// Its own gate is enabled, because a chain that raises a password
+			// change nothing enforces is refused on that account; what is
+			// pinned here is that the second-factor refusal does not fire too.
 			name: "a policy that can only challenge for a password change",
 			opts: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
 				return []httpsec.Option{
 					httpsec.WithPolicyEngine(passwordChangeChallengingEngine(t)),
+					passwordChangeGateFor(t),
 				}
 			},
 		},
@@ -193,6 +219,7 @@ func TestChainMFAChallengeRefusalScope(t *testing.T) {
 
 				return []httpsec.Option{
 					httpsec.WithPolicyEngine(passwordChangeChallengingEngine(t)),
+					passwordChangeGateFor(t),
 					enableMFAFor(t),
 				}
 			},

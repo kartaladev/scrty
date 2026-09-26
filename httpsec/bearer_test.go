@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -93,6 +94,21 @@ func serveBearer(
 ) served {
 	t.Helper()
 
+	return serveBearerOn(t, h, e, req, nil, opts...)
+}
+
+// serveBearerOn is serveBearer with further chain options, such as something
+// to enforce the challenge the engine raises.
+func serveBearerOn(
+	t *testing.T,
+	h *authHarness,
+	e *policy.Engine,
+	req *http.Request,
+	extra []httpsec.Option,
+	opts ...httpsec.BearerTokenOption,
+) served {
+	t.Helper()
+
 	chainOpts := []httpsec.Option{
 		httpsec.WithLogger(h.logger()),
 		httpsec.EnableBearerToken(h.bearerTokenDeps(), opts...),
@@ -101,7 +117,7 @@ func serveBearer(
 		chainOpts = append(chainOpts, httpsec.WithPolicyEngine(e))
 	}
 
-	chain, err := httpsec.New(chainOpts...)
+	chain, err := httpsec.New(append(chainOpts, extra...)...)
 	require.NoError(t, err)
 
 	return serve(t, chain, req)
@@ -369,6 +385,7 @@ func TestBearerPerRequestPhase(t *testing.T) {
 	type testCase struct {
 		name   string
 		engine func(t *testing.T) *policy.Engine
+		opts   []httpsec.Option
 		assert func(t *testing.T, loaded *session.Session, s served)
 	}
 
@@ -409,6 +426,7 @@ func TestBearerPerRequestPhase(t *testing.T) {
 
 				return challengingIn(t, policy.PerRequest, policy.ChallengePasswordChange)
 			},
+			opts: []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengePasswordChange)},
 			assert: func(t *testing.T, loaded *session.Session, s served) {
 				require.NoError(t, s.err)
 				assert.True(t, s.handlerRan,
@@ -425,6 +443,7 @@ func TestBearerPerRequestPhase(t *testing.T) {
 
 				return challengingIn(t, policy.PerRequest, policy.ChallengeMFA)
 			},
+			opts: []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFA)},
 			assert: func(t *testing.T, loaded *session.Session, s served) {
 				require.NoError(t, s.err)
 				assert.True(t, s.handlerRan)
@@ -458,7 +477,8 @@ func TestBearerPerRequestPhase(t *testing.T) {
 				Return(storedUser(), nil).AnyTimes()
 			h.acceptsActivityWriteBack()
 
-			tc.assert(t, loaded, serveBearer(t, h, tc.engine(t), bearerRequest(t.Context(), "Bearer abc.def.ghi")))
+			tc.assert(t, loaded, serveBearerOn(t, h, tc.engine(t),
+				bearerRequest(t.Context(), "Bearer abc.def.ghi"), tc.opts))
 		})
 	}
 }
@@ -503,6 +523,74 @@ func TestBearerPerRequestInput(t *testing.T) {
 	assert.Equal(t, stored.PasswordChangedAt, seen.PasswordChangedAt,
 		"a password-age rule running per request has nothing to judge without this")
 	assert.False(t, seen.Now.IsZero())
+}
+
+// TestBearerPerRequestSeesSatisfiedSecondFactor pins that the per-request
+// phase is told whether the session already satisfied its second factor. A
+// per-request rule that requires MFA reads this field to decide whether to
+// challenge; a session that already gave its second factor must not be
+// challenged again on every subsequent request.
+func TestBearerPerRequestSeesSatisfiedSecondFactor(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		mfa    session.MFAState
+		assert func(t *testing.T, seen *policy.Input)
+	}
+
+	satisfied := func(t *testing.T, seen *policy.Input) {
+		t.Helper()
+
+		require.NotNil(t, seen)
+		assert.True(t, seen.MFASatisfied,
+			"a session that already gave its second factor must not be re-challenged")
+	}
+
+	notSatisfied := func(t *testing.T, seen *policy.Input) {
+		t.Helper()
+
+		require.NotNil(t, seen)
+		assert.False(t, seen.MFASatisfied)
+	}
+
+	cases := []testCase{
+		{name: "the second factor was satisfied", mfa: session.MFASatisfied, assert: satisfied},
+		{name: "the second factor is pending", mfa: session.MFAPending, assert: notSatisfied},
+		{name: "the second factor was never asked for", mfa: session.MFANone, assert: notSatisfied},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen *policy.Input
+
+			recorder := NewMockPolicy(gomock.NewController(t))
+			recorder.EXPECT().Name().Return("test: input recorder").AnyTimes()
+			recorder.EXPECT().Phases().Return([]policy.Phase{policy.PerRequest}).AnyTimes()
+			recorder.EXPECT().Evaluate(gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(_ context.Context, in *policy.Input) policy.Decision {
+					seen = in
+
+					return policy.Decision{Outcome: policy.Allow}
+				})
+
+			loaded := liveSession()
+			loaded.MFA = tc.mfa
+
+			h := newAuthHarness(t)
+			h.expectVerified()
+			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(loaded, nil)
+			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+			h.acceptsActivityWriteBack()
+
+			s := serveBearer(t, h, engineOf(t, recorder), bearerRequest(t.Context(), "Bearer abc.def.ghi"))
+			require.NoError(t, s.err)
+
+			tc.assert(t, seen)
+		})
+	}
 }
 
 // TestBearerTokenConstruction pins that a bearer configuration that could not
@@ -604,6 +692,279 @@ func TestBearerTokenConstruction(t *testing.T) {
 
 			chain, err := httpsec.New(tc.build(newAuthHarness(t))...)
 			tc.assert(t, chain, err)
+		})
+	}
+}
+
+// TestBearerMarksEnrolment pins the mid-session half of the enrolment path: a
+// full session whose user has become required, with nothing usable enrolled,
+// is marked enrolment-pending by the per-request phase, and the mark — state,
+// marker and lowered deadlines — is stored, whatever the gate inside the
+// bearer slot then does with the request.
+func TestBearerMarksEnrolment(t *testing.T) {
+	t.Parallel()
+
+	// confining stands in for the enrolment gate: it refuses an
+	// enrolment-pending session before anything inside it runs, the session
+	// touch step included.
+	confining := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if ex.Session != nil && ex.Session.MFA == session.MFAEnrolmentPending {
+			return &httpsec.ChallengeError{Kind: policy.ChallengeMFAEnrolment, Session: ex.Session}
+		}
+
+		return next(ex)
+	})
+
+	type testCase struct {
+		name string
+		opts []httpsec.Option
+
+		// pending marks the session enrolment-pending, and stores it, before
+		// the request.
+		pending bool
+
+		// saves is how many times the request stored the session.
+		assert func(t *testing.T, out served, saves int32)
+	}
+
+	cases := []testCase{
+		{
+			name: "marked in place and continued, persisted by the session touch",
+			opts: []httpsec.Option{
+				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
+				passThroughAt(httpsec.OrderMFAEnrolment),
+			},
+			assert: func(t *testing.T, out served, _ int32) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				require.True(t, out.handlerRan, "what occupies the enrolment slot lets it through")
+				assert.Equal(t, session.MFAEnrolmentPending, out.handled.Session.MFA)
+			},
+		},
+		{
+			name: "persisted even though the gate refuses before the touch step",
+			opts: []httpsec.Option{
+				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
+				httpsec.RegisterInterceptor(confining, httpsec.OrderMFAEnrolment),
+			},
+			assert: func(t *testing.T, out served, _ int32) {
+				t.Helper()
+
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ch)
+				assert.Equal(t, policy.ChallengeMFAEnrolment, ch.Kind)
+				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			name: "a session already in the state is not stored again by the bearer",
+			opts: []httpsec.Option{
+				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
+				passThroughAt(httpsec.OrderMFAEnrolment),
+			},
+			pending: true,
+			assert: func(t *testing.T, out served, saves int32) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				require.True(t, out.handlerRan)
+				assert.Equal(t, int32(1), saves,
+					"only the session touch stores it: marking it again changes nothing")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			start := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
+			clock := start
+
+			// The store judges expiry by the same clock as the manager, or the
+			// lowered deadline would be read against the wall clock.
+			store := &countingSaves{Store: session.NewMemoryStore(
+				session.WithMemoryStoreClock(func() time.Time { return clock }))}
+
+			sessions, err := session.NewManager(
+				session.WithClock(func() time.Time { return clock }), session.WithStore(store))
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			// Ten minutes into a full session the user becomes required.
+			clock = start.Add(10 * time.Minute)
+
+			if tc.pending {
+				sessions.MarkEnrolmentPending(s, 15*time.Minute)
+				require.NoError(t, sessions.Save(t.Context(), s))
+			}
+
+			store.saves.Store(0)
+
+			ctrl := gomock.NewController(t)
+			verifier := NewMockVerifier(ctrl)
+			verifier.EXPECT().Verify(gomock.Any(), gomock.Any()).
+				Return(token.NewClaims(testSubject, s.ID), nil)
+
+			users := NewMockUserLoader(ctrl)
+			users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+
+			chain, err := httpsec.New(append([]httpsec.Option{
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+					Verifier: verifier, Sessions: sessions, Users: users,
+				}),
+				httpsec.WithPolicyEngine(challengingIn(t, policy.PerRequest, policy.ChallengeMFAEnrolment)),
+			}, tc.opts...)...)
+			require.NoError(t, err)
+
+			out := serve(t, chain, bearerRequest(t.Context(), "Bearer abc.def.ghi"))
+			tc.assert(t, out, store.saves.Load())
+
+			stored, err := sessions.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "the mark is stored")
+			assert.True(t, stored.AbsoluteExpiresAt.Equal(clock.Add(15*time.Minute)),
+				"the deadline is lowered to the enrolment lifetime from the mark, got %s",
+				stored.AbsoluteExpiresAt)
+			assert.True(t, stored.EnrolmentOriginDeadline.Equal(start.Add(sessions.AbsoluteTimeout())),
+				"the marker records the full session's deadline")
+		})
+	}
+}
+
+// countingSaves counts the saves that reach the store it wraps, so a test can
+// pin how many times a request stored a session.
+type countingSaves struct {
+	session.Store
+
+	saves atomic.Int32
+}
+
+func (c *countingSaves) Save(ctx context.Context, s *session.Session) error {
+	c.saves.Add(1)
+
+	return c.Store.Save(ctx, s)
+}
+
+// TestBearerMarksEnrolmentSaveFails pins that a session whose enrolment mark
+// could not be stored is refused, not served on a mark that exists only in
+// memory and a deadline that was never lowered.
+func TestBearerMarksEnrolmentSaveFails(t *testing.T) {
+	t.Parallel()
+
+	errStore := errors.New("bearer_test: the session store is down")
+
+	h := newAuthHarness(t)
+	h.expectVerified()
+	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+	h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errStore).AnyTimes()
+
+	out := serveBearerOn(t, h, challengingIn(t, policy.PerRequest, policy.ChallengeMFAEnrolment),
+		bearerRequest(t.Context(), "Bearer abc.def.ghi"),
+		[]httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment)})
+
+	require.ErrorIs(t, out.err, errStore)
+	assert.False(t, out.handlerRan)
+}
+
+// TestBearerRecordsConsumerChallenge pins how a challenge kind of the
+// consumer's own, raised per request, reaches the gate the consumer declared
+// with WithChallengeEnforcer: the library cannot mark a kind it does not know,
+// so it records it on the exchange and lets the request continue to that gate.
+func TestBearerRecordsConsumerChallenge(t *testing.T) {
+	t.Parallel()
+
+	const terms policy.ChallengeKind = 100
+
+	type testCase struct {
+		name   string
+		engine func(t *testing.T) *policy.Engine
+
+		// extra is what the chain needs besides the consumer's declared gate,
+		// such as a built-in gate recorded as enabled.
+		extra []httpsec.Option
+
+		assert func(t *testing.T, out served, seen policy.ChallengeKind, stored *session.Session)
+	}
+
+	cases := []testCase{
+		{
+			// A built-in kind is marked on the session, where its own gate
+			// reads it. Recording it on the exchange too would hand a consumer
+			// gate a kind it was never declared for.
+			name: "a built-in kind raised with its gate enabled is not recorded",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return engineOf(t, raisingDeclared{kind: policy.ChallengeMFA, phase: policy.PerRequest})
+			},
+			extra: []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFA)},
+			assert: func(t *testing.T, out served, seen policy.ChallengeKind, stored *session.Session) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.Equal(t, policy.ChallengeNone, seen,
+					"only a consumer kind is recorded on the exchange")
+				assert.Equal(t, session.MFAPending, stored.MFA, "the built-in kind is marked on the session")
+			},
+		},
+		{
+			name: "a declared consumer kind is recorded and the request continues",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return engineOf(t, raisingDeclared{kind: terms, phase: policy.PerRequest})
+			},
+			assert: func(t *testing.T, out served, seen policy.ChallengeKind, stored *session.Session) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan, "the consumer's gate let it through")
+				assert.Equal(t, terms, seen, "the gate behind the bearer reads the raised kind")
+				assert.Equal(t, session.MFANone, stored.MFA, "no built-in mark stands in for it")
+				assert.False(t, stored.PasswordChangePending, "no built-in mark stands in for it")
+			},
+		},
+		{
+			name:   "nothing raised reads as ChallengeNone",
+			engine: func(t *testing.T) *policy.Engine { t.Helper(); return engineOf(t) },
+			assert: func(t *testing.T, out served, seen policy.ChallengeKind, _ *session.Session) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan)
+				assert.Equal(t, policy.ChallengeNone, seen)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+			h.expectVerified()
+
+			stored := liveSession()
+			h.expectLiveSessionAndUser(stored)
+
+			seen := policy.ChallengeKind(-1)
+			gate := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+				seen = ex.RaisedChallenge()
+				return next(ex)
+			})
+
+			out := serveBearerOn(t, h, tc.engine(t), bearerRequest(t.Context(), "Bearer abc.def.ghi"),
+				append([]httpsec.Option{
+					httpsec.WithChallengeEnforcer(terms),
+					httpsec.RegisterInterceptor(gate, httpsec.After(httpsec.OrderBearerToken)),
+				}, tc.extra...))
+
+			tc.assert(t, out, seen, stored)
 		})
 	}
 }

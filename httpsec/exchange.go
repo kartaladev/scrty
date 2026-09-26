@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -79,6 +80,10 @@ type Exchange struct {
 	// request and for one that established none.
 	Session *session.Session
 
+	// raised is the consumer challenge kind the per-request phase raised on
+	// this request, and ChallengeNone when it raised none.
+	raised policy.ChallengeKind
+
 	ctx context.Context
 }
 
@@ -109,6 +114,21 @@ func (e *Exchange) SetContext(ctx context.Context) {
 		e.ctx = ctx
 	}
 }
+
+// RaisedChallenge returns the challenge kind of the consumer's own that the
+// bearer's per-request policy phase raised on this request, and
+// policy.ChallengeNone when it raised none.
+//
+// It is how a gate declared with WithChallengeEnforcer learns the challenge it
+// enforces. The library cannot mark a kind it does not know on the session,
+// so it records it here and lets the request continue; the declared gate,
+// registered after the bearer, reads it and refuses or resolves the request.
+// Declaring a kind with WithChallengeEnforcer is the consumer's statement that
+// such a gate exists and reads this; the chain cannot check it.
+//
+// A built-in kind is never recorded here. It is marked on the session, where
+// its built-in gate reads it.
+func (e *Exchange) RaisedChallenge() policy.ChallengeKind { return e.raised }
 
 // Next runs the rest of the chain, ending in the downstream handler.
 type Next func(*Exchange) error

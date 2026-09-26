@@ -38,6 +38,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -124,6 +125,10 @@ type Effects struct {
 	// OIDC is the federated-login wiring of an OIDC scenario, and nil for
 	// every other scenario.
 	OIDC *OIDCFixture
+
+	// Enrolment is the enrolment path's wiring of an enrolment scenario, and
+	// nil for every other scenario.
+	Enrolment *EnrolmentFixture
 
 	// SessionID is the session Build pre-created, for the scenarios that need a
 	// request to arrive already authenticated. It is empty where none was.
@@ -433,7 +438,7 @@ func Scenarios() []Scenario {
 		keySetEndpoint(),
 		contextPropagation(),
 		unattributableClientAddress(),
-	}, oidcScenarios()...)
+	}, append(oidcScenarios(), enrolmentScenarios()...)...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.
@@ -457,6 +462,18 @@ func bearerOptions(e *Effects) []httpsec.Option {
 			Users:    fixtureUsers{},
 		}),
 	}
+}
+
+// mfaGateFor is the real second-factor gate the login-challenge scenario
+// needs wired in: a stand-in occupying the MFA slot no longer counts as
+// enforcing the challenge, so this builds the smallest real one.
+func mfaGateFor(t *testing.T) httpsec.Option {
+	t.Helper()
+
+	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example")
+	require.NoError(t, err)
+
+	return httpsec.EnableMFA(method, httpsec.WithMFATokens(fixtureTokens{}))
 }
 
 // sending is the request of a scenario whose request does not depend on what
@@ -784,9 +801,9 @@ func loginChallenge() Scenario {
 					// The policy can raise a second-factor challenge, so this
 					// chain has to carry something that enforces one: a chain
 					// that marks a challenge nothing acts on does not build.
-					// What enforces it is not this scenario's subject, so it is
-					// the smallest interceptor that occupies the slot.
-					enforcesTheChallenge()),
+					// A stand-in occupying the slot no longer counts, so this
+					// wires the real gate — the smallest one that does.
+					mfaGateFor(t)),
 				Effects: effects,
 			}
 		},
@@ -1142,16 +1159,6 @@ var (
 	_ policy.Challenger          = challengingPolicy{}
 	_ httpsec.KeySetProvider     = fixtureKeySet{}
 )
-
-// enforcesTheChallenge occupies the second-factor slot without doing anything,
-// which is all a chain needs to have a challenge enforced somewhere.
-func enforcesTheChallenge() httpsec.Option {
-	return httpsec.RegisterInterceptor(
-		httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
-			return next(ex)
-		}),
-		httpsec.OrderMFAChallenge)
-}
 
 // UnenforcedMFAChallenge is a policy that can ask a login for a second factor,
 // on a chain with nothing registered to enforce one.

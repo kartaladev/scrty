@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -26,6 +27,15 @@ var statusTable = []statusRow{
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
 
+	// A wrong second-factor code, at verification or enrolment, and the
+	// per-user throttles in front of them. The caller is asked to try again
+	// with a credential, which is what 401 says. An invalid, expired or voided
+	// emailed code is the same refusal as a wrong device code: its sentinel
+	// wraps mfa.ErrInvalidCode, so this row answers it too.
+	{mfa.ErrInvalidCode, http.StatusUnauthorized},
+	{mfa.ErrVerifyThrottled, http.StatusUnauthorized},
+	{mfa.ErrEnrolmentThrottled, http.StatusUnauthorized},
+
 	{ErrCredentialsMissing, http.StatusBadRequest},
 	{oidc.ErrInvalidLogoutToken, http.StatusBadRequest},
 	{ErrRequestTooLarge, http.StatusRequestEntityTooLarge},
@@ -41,6 +51,8 @@ var statusTable = []statusRow{
 	{policy.ErrMFARequirementUnsatisfiable, http.StatusForbidden},
 	{policy.ErrMFAEnrollmentRequired, http.StatusForbidden},
 	{policy.ErrSecondFactorSameChannel, http.StatusForbidden},
+	{mfa.ErrSameChannel, http.StatusForbidden},
+	{mfa.ErrAlreadyEnrolled, http.StatusForbidden},
 }
 
 // StatusForError maps a refusal to the status it is answered with.
@@ -53,7 +65,10 @@ var statusTable = []statusRow{
 // silent success.
 //
 // A challenge is checked first, so a challenge that also wraps a refusal
-// sentinel is answered as the challenge: the caller can still satisfy it.
+// sentinel is answered as the challenge: the caller can still satisfy it. A
+// password-change or enrolment challenge is 403, because the caller is
+// authenticated and must act rather than present credentials again; every other
+// kind, a consumer's own included, is 401.
 func StatusForError(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError
@@ -61,10 +76,12 @@ func StatusForError(err error) int {
 
 	var ch *ChallengeError
 	if errors.As(err, &ch) {
-		if ch.Kind == policy.ChallengePasswordChange {
+		switch ch.Kind {
+		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment:
 			return http.StatusForbidden
+		default:
+			return http.StatusUnauthorized
 		}
-		return http.StatusUnauthorized
 	}
 
 	for _, row := range statusTable {

@@ -9,6 +9,7 @@ require (
 	github.com/kartaladev/scrty/fibersec v0.0.0-00010101000000-000000000000
 	github.com/kartaladev/scrty/ginsec v0.0.0-00010101000000-000000000000
 	github.com/lestrrat-go/jwx/v4 v4.5.0
+	github.com/pquerna/otp v1.5.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mailpit v0.44.0
@@ -75,7 +76,6 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
-	github.com/pquerna/otp v1.5.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect

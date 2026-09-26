@@ -39,6 +39,15 @@ type Chain struct {
 	logger  *slog.Logger
 	limiter ratelimit.Limiter
 
+	// enrolmentLifetime is how long a session marked for an enrolment
+	// challenge may live, handed to every built-in that marks one.
+	enrolmentLifetime time.Duration
+
+	// enforced holds the challenge kinds something on this chain enforces,
+	// handed to every built-in that marks a raised challenge, so a kind raised
+	// at runtime that nothing enforces is refused rather than marked and served.
+	enforced map[policy.ChallengeKind]bool
+
 	ipv6Prefix int
 
 	// errorHandler is what a refusal is answered with, and nil means the
@@ -57,12 +66,30 @@ type Chain struct {
 // holding, for example from a shutdown hook, so counts held for a window that
 // will never close are not lost.
 //
-// It flushes this chain's own sampler and nothing else. The authenticate and
-// policy components sample their own records under their own options and expose
-// their own flush; reaching into them from here would make one call's meaning
-// depend on which of them a consumer happened to wire. A consumer who wants
-// exact counts everywhere flushes each of them itself.
-func (c *Chain) FlushRefusalLogs() { c.sampler.Flush() }
+// It flushes the chain's own sampler, which every built-in refusal record the
+// chain writes itself goes through, and the enrolment path's, which
+// EnableMFAEnrolment samples under its own interval. Nothing else is flushed:
+//
+//   - The authenticate and policy components a consumer builds sample their
+//     own records under their own options, and each exposes its own flush
+//     (authenticate.RefusalLogFlusher, policy.RefusalLogFlusher). Reaching into
+//     them from here would make one call's meaning depend on which of them a
+//     consumer happened to wire, so a consumer who wants exact counts
+//     everywhere flushes each of them itself.
+//   - The verification throttle EnableMFA builds, and the per-source guards
+//     the built-in endpoints are wired with, keep samplers of their own that
+//     this call does not reach, and no other call does either. Their own
+//     reporters report what they held back as later records age it out, but
+//     whatever they still hold when the process stops is not reported.
+func (c *Chain) FlushRefusalLogs() {
+	c.sampler.Flush()
+
+	for _, r := range c.registrations {
+		if i, ok := r.interceptor.(*enrolmentInterceptor); ok {
+			i.sampler.Flush()
+		}
+	}
+}
 
 // Assemble folds the chain around terminal and returns its outermost step.
 //
@@ -90,51 +117,97 @@ func (c *Chain) Assemble(terminal Next) Next {
 	return next
 }
 
-// registeredAt reports whether any interceptor occupies slot at.
-//
-// It asks about the slot rather than about a particular built-in, because what
-// enforces a challenge is whatever runs there: a consumer's own interceptor at
-// OrderMFAChallenge is as good an answer as EnableMFA.
-func (c *config) registeredAt(at Order) bool {
-	for _, r := range c.registrations {
-		if r.order == at {
-			return true
-		}
-	}
+// builtInEnforcer names the library's own gate for a challenge kind: the
+// option that enables it, and what the challenge asks for.
+type builtInEnforcer struct {
+	option string
 
-	return false
+	// what says in words what the challenge asks for, so the error reads
+	// without knowing the constant.
+	what string
+}
+
+// builtInEnforcers maps every challenge kind the library raises to the
+// built-in gate that enforces it.
+//
+// A kind counts as enforced only when that gate is enabled, never because
+// something else occupies the gate's slot: a consumer interceptor placed with
+// Before(OrderMFAChallenge) lands on OrderMFAEnrolment and would otherwise pass
+// for the enrolment gate while confining nothing. The chain cannot tell what an
+// arbitrary interceptor does, so it counts only the gates it knows.
+var builtInEnforcers = map[policy.ChallengeKind]builtInEnforcer{
+	policy.ChallengeMFA:            {option: "EnableMFA", what: "a second factor"},
+	policy.ChallengePasswordChange: {option: "EnablePasswordChangeGate", what: "a password change"},
+	policy.ChallengeMFAEnrolment:   {option: "EnableMFAEnrolment", what: "a second-factor enrolment"},
 }
 
 // refuseUnenforcedChallenges refuses a chain whose policies can raise a
-// second-factor challenge that nothing on it would enforce.
+// challenge that nothing on it would enforce.
 //
-// The per-request phase marks such a challenge pending on the session and lets
-// the request continue, because the gate at OrderMFAChallenge is what enforces
-// it and the verify endpoint behind that gate has to stay reachable. With
-// nothing registered there, every challenged session is marked and then served
-// anyway: the caller goes on with a second factor it never gave, and no error,
-// no status and no record says so.
+// A challenge raised per request is marked pending on the session and the
+// request continues, because the gate for that kind is what enforces it and
+// the endpoint that resolves it has to stay reachable. With no gate, every
+// challenged session is marked and then served anyway: the caller goes on
+// having satisfied nothing, and no error, no status and no record says so.
 //
 // That silence is why this is a construction error rather than a documented
 // caution. A chain that does not build serves no traffic, whereas a chain that
 // builds and quietly ignores a policy is indistinguishable, from the outside,
-// from one enforcing it.
+// from one enforcing it. There is no option to switch it off.
 //
-// A policy that does not declare its challenges is taken to raise none — see
+// Every kind a registered policy declares is checked against
+// enforcedChallenges: a built-in kind needs its built-in gate enabled, and a
+// kind the library does not know needs the consumer's WithChallengeEnforcer. A
+// policy that does not declare its challenges is taken to raise none — see
 // policy.Challenger, which says why, and what a consumer whose own policy
 // challenges has to do so that this check can see it.
 func (c *config) refuseUnenforcedChallenges() error {
-	if c.engine == nil || !c.engine.CanChallenge(policy.ChallengeMFA) {
+	if c.engine == nil {
 		return nil
 	}
 
-	if c.registeredAt(OrderMFAChallenge) {
-		return nil
+	enforced := c.enforcedChallenges()
+
+	for _, kind := range c.engine.DeclaredChallenges() {
+		if enforced[kind] {
+			continue
+		}
+
+		if b, ok := builtInEnforcers[kind]; ok {
+			return newConfigError("a registered policy can raise %s, a challenge for %s, but "+
+				"nothing on this chain enforces it: add %s, or remove the policy",
+				kind, b.what, b.option)
+		}
+
+		return newConfigError("a registered policy can raise %s, but nothing on this chain "+
+			"enforces it: register your gate for it and declare it with "+
+			"WithChallengeEnforcer, or remove the policy", kind)
 	}
 
-	return newConfigError("a registered policy can challenge for a second factor, but nothing " +
-		"on this chain enforces it: add EnableMFA, register an interceptor at " +
-		"OrderMFAChallenge, or remove the policy")
+	return nil
+}
+
+// enforcedChallenges is every challenge kind something on this chain
+// enforces: a built-in kind whose built-in gate is enabled, and each kind the
+// consumer declared with WithChallengeEnforcer.
+//
+// It is the one set both halves of the check read. The assembly check reads
+// the policies registered when the chain is built; the chain checks a
+// challenge raised at runtime against this same set, so a policy added to the
+// engine afterwards, which the assembly check never saw, still cannot raise a
+// challenge that is marked and then served.
+func (c *config) enforcedChallenges() map[policy.ChallengeKind]bool {
+	enforced := make(map[policy.ChallengeKind]bool, len(c.builtInGates)+len(c.consumerEnforced))
+
+	for kind := range c.builtInGates {
+		enforced[kind] = true
+	}
+
+	for kind := range c.consumerEnforced {
+		enforced[kind] = true
+	}
+
+	return enforced
 }
 
 // ordered returns the registrations sorted into the order they run in: by slot

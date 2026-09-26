@@ -71,6 +71,12 @@ func TestNewTOTP(t *testing.T) {
 			assert: configError,
 		},
 		{
+			name:   "nil identifier generator",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithTOTPIDGenerator(nil)},
+			assert: configError,
+		},
+		{
 			name:   "zero period",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithPeriod(0)},

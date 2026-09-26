@@ -471,3 +471,80 @@ func TestEngineDeniesAnUnrecognisedOutcome(t *testing.T) {
 		})
 	}
 }
+
+// TestEngineDeclaredChallenges pins the list a chain checks its enforcers
+// against: every kind a registered policy declares, once, in the order it was
+// first declared, and nothing from a policy that declares nothing or is asked
+// in no phase.
+func TestEngineDeclaredChallenges(t *testing.T) {
+	t.Parallel()
+
+	const terms policy.ChallengeKind = 100
+
+	both := []policy.Phase{policy.PostAuthentication, policy.PerRequest}
+
+	type testCase struct {
+		name     string
+		policies []policy.Policy
+		assert   func(t *testing.T, got []policy.ChallengeKind)
+	}
+
+	cases := []testCase{
+		{
+			name: "no policies declares nothing",
+			assert: func(t *testing.T, got []policy.ChallengeKind) {
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name:     "a policy that does not declare is read as raising nothing",
+			policies: []policy.Policy{stubPolicy{phases: both}},
+			assert: func(t *testing.T, got []policy.ChallengeKind) {
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name: "every declared kind once, in first-declared order",
+			policies: []policy.Policy{
+				challengingStub{stubPolicy: stubPolicy{phases: both},
+					kinds: []policy.ChallengeKind{policy.ChallengePasswordChange, terms}},
+				challengingStub{stubPolicy: stubPolicy{phases: both},
+					kinds: []policy.ChallengeKind{terms, policy.ChallengeMFA, policy.ChallengePasswordChange}},
+			},
+			assert: func(t *testing.T, got []policy.ChallengeKind) {
+				assert.Equal(t,
+					[]policy.ChallengeKind{policy.ChallengePasswordChange, terms, policy.ChallengeMFA}, got)
+			},
+		},
+		{
+			name: "a policy asked in no phase raises nothing whatever it declares",
+			policies: []policy.Policy{
+				challengingStub{kinds: []policy.ChallengeKind{policy.ChallengeMFA}},
+			},
+			assert: func(t *testing.T, got []policy.ChallengeKind) {
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name: "ChallengeNone is not a challenge",
+			policies: []policy.Policy{
+				challengingStub{stubPolicy: stubPolicy{phases: both},
+					kinds: []policy.ChallengeKind{policy.ChallengeNone, policy.ChallengeMFA}},
+			},
+			assert: func(t *testing.T, got []policy.ChallengeKind) {
+				assert.Equal(t, []policy.ChallengeKind{policy.ChallengeMFA}, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.policies...)
+			require.NoError(t, err)
+
+			tc.assert(t, e.DeclaredChallenges())
+		})
+	}
+}

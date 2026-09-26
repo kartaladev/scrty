@@ -219,6 +219,15 @@ const (
 	// ChallengePasswordChange asks for a new password before the caller goes
 	// any further.
 	ChallengePasswordChange
+
+	// ChallengeMFAEnrolment asks a user who must use a second factor, and has
+	// none they can use, to enrol one before going any further. Only the MFA
+	// requirement policy raises it, and only when WithMFAEnrolmentPath turned
+	// the enrolment path on.
+	//
+	// It is appended rather than inserted, because durable stores keep these
+	// values by number.
+	ChallengeMFAEnrolment
 )
 
 // String returns the constant's own name, so a log line reads "ChallengeMFA"
@@ -231,6 +240,8 @@ func (c ChallengeKind) String() string {
 		return "ChallengeMFA"
 	case ChallengePasswordChange:
 		return "ChallengePasswordChange"
+	case ChallengeMFAEnrolment:
+		return "ChallengeMFAEnrolment"
 	default:
 		return unnamed("ChallengeKind", int(c))
 	}

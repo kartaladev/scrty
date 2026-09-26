@@ -216,3 +216,18 @@ func TestRegisterInterceptor(t *testing.T) {
 type nilInterceptor struct{}
 
 func (*nilInterceptor) Intercept(ex *httpsec.Exchange, next httpsec.Next) error { return next(ex) }
+
+// TestOrderMFAEnrolment pins where the enrolment gate runs: immediately
+// outside the second-factor gate, so an enrolment-only session is refused
+// before anything at the second-factor slot, the verify endpoint included, can
+// answer it, and after every first factor has resolved the session.
+//
+// It is deliberately not one of builtInSlots: it is Before a named slot, which
+// is the one position the spacing rule leaves for exactly this.
+func TestOrderMFAEnrolment(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, httpsec.Before(httpsec.OrderMFAChallenge), httpsec.OrderMFAEnrolment)
+	assert.Greater(t, httpsec.OrderMFAEnrolment, httpsec.OrderBearerToken,
+		"the session it confines is resolved by then")
+}

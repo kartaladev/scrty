@@ -77,6 +77,14 @@ type formLogin struct {
 	engine *policy.Engine
 	log    *slog.Logger
 
+	// enrolmentLifetime is how long a session the login tail marks for an
+	// enrolment challenge may live, handed over by wire.
+	enrolmentLifetime time.Duration
+
+	// enforced holds the challenge kinds something on the chain enforces,
+	// handed over by wire; a raised kind outside it refuses the request.
+	enforced map[policy.ChallengeKind]bool
+
 	now func() time.Time
 
 	path          string
@@ -92,6 +100,8 @@ type formLogin struct {
 func (l *formLogin) wire(c *Chain) {
 	l.engine = c.engine
 	l.log = c.logger
+	l.enrolmentLifetime = c.enrolmentLifetime
+	l.enforced = c.enforced
 }
 
 // Intercept answers a login on the configured path and passes everything else
@@ -117,8 +127,8 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		Username: username,
 		Now:      now,
 	})
-	if pre.Outcome == policy.Deny {
-		return policyDenyReason(pre)
+	if err := refusePreAuthentication(pre, l.enforced); err != nil {
+		return err
 	}
 
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
@@ -133,9 +143,11 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ex.Authentication = auth
 
 	tok, err := completeLogin(ex, loginTailDeps{
-		engine:   l.engine,
-		sessions: l.sessions,
-		tokens:   l.tokens,
+		engine:            l.engine,
+		sessions:          l.sessions,
+		tokens:            l.tokens,
+		enrolmentLifetime: l.enrolmentLifetime,
+		enforced:          l.enforced,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now))
 	if err != nil {
@@ -279,6 +291,22 @@ const (
 	msgAttemptNotRecorded = "httpsec: a failed login attempt could not be recorded"
 	msgAttemptsNotReset   = "httpsec: failed login attempts could not be cleared"
 )
+
+// refusePreAuthentication is what the pre-authentication decision refuses
+// with, before a credential is checked: its deny, or a challenge of a kind
+// nothing on the chain enforces (see refuseUnenforced). A challenge of an
+// enforced kind refuses nothing here; the phase has no session to mark it on.
+func refusePreAuthentication(pre policy.Decision, enforced map[policy.ChallengeKind]bool) error {
+	switch pre.Outcome {
+	case policy.Deny:
+		return policyDenyReason(pre)
+	case policy.Challenge:
+		return refuseUnenforced(enforced, pre.Challenge)
+	case policy.Allow:
+	}
+
+	return nil
+}
 
 // evaluatePhase asks the engine for a phase's decision, allowing when no engine
 // is wired.

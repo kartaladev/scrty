@@ -4,6 +4,8 @@ import (
 	"io"
 	"log/slog"
 	"time"
+
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // TOTPOption configures the method NewTOTP returns. Every default that
@@ -63,4 +65,14 @@ func WithRandom(r io.Reader) TOTPOption {
 // so at the wiring.
 func WithTOTPLogger(l *slog.Logger) TOTPOption {
 	return func(t *TOTP) { t.logger = l }
+}
+
+// WithTOTPIDGenerator replaces id.NewV7Generator as the source of enrolment
+// generations, the identifier every begin gives its pending enrolment. A nil
+// generator is a construction error.
+//
+// A generation is not a secret: it binds a device proof and a completion to
+// one begin, and only needs to differ from every earlier one for the user.
+func WithTOTPIDGenerator(g id.Generator) TOTPOption {
+	return func(t *TOTP) { t.ids = g }
 }

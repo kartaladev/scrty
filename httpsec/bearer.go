@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -30,6 +31,14 @@ type bearerToken struct {
 	engine *policy.Engine
 	log    *slog.Logger
 
+	// enrolmentLifetime is how long a session marked for an enrolment
+	// challenge may live, handed over by wire.
+	enrolmentLifetime time.Duration
+
+	// enforced holds the challenge kinds something on the chain enforces,
+	// handed over by wire; a raised kind outside it refuses the request.
+	enforced map[policy.ChallengeKind]bool
+
 	now func() time.Time
 
 	scheme           string
@@ -41,6 +50,8 @@ type bearerToken struct {
 func (b *bearerToken) wire(c *Chain) {
 	b.engine = c.engine
 	b.log = c.logger
+	b.enrolmentLifetime = c.enrolmentLifetime
+	b.enforced = c.enforced
 }
 
 // Intercept authenticates a bearer token against a live session and a live
@@ -119,6 +130,7 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 		Principal:         principal,
 		Session:           s,
 		FirstFactor:       s.FirstFactor,
+		MFASatisfied:      s.MFA == session.MFASatisfied,
 		PasswordChangedAt: details.PasswordChangedAt,
 		Now:               now,
 	})
@@ -130,11 +142,50 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 		// Marked and continued, not refused here: the gate for this challenge
 		// enforces it at its own slot, and refusing at this one would also
 		// block the very endpoint the caller must reach to resolve it.
-		markChallengePending(s, d.Challenge)
+		if err := b.markChallenge(ctx, s, d.Challenge); err != nil {
+			return err
+		}
+
+		// A consumer kind has no field on the session to be marked in, so it
+		// is recorded where the gate the consumer declared for it reads it.
+		if _, builtIn := builtInEnforcers[d.Challenge]; !builtIn {
+			ex.raised = d.Challenge
+		}
 	case policy.Allow:
 	}
 
 	return next(ex)
+}
+
+// markChallenge records a per-request challenge on s.
+//
+// A session entering the enrolment-only state is saved here, before the
+// request goes on. That mark lowers the session's deadlines, and the gate that
+// enforces it refuses the request at a slot outside the session-touch step, so
+// a mark left for that step to persist would never be stored: the session
+// would keep its full lifetime while it is confined. A session already in the
+// state is not written again, since marking it changes nothing. A failed save
+// refuses the request rather than serving it on an unrecorded mark.
+//
+// The other kinds are marked in memory only, as before: the per-request phase
+// raises them again on every request, and they change no deadline.
+//
+// A kind nothing on the chain enforces is refused with a configuration error
+// before anything is marked; see refuseUnenforced.
+func (b *bearerToken) markChallenge(ctx context.Context, s *session.Session, kind policy.ChallengeKind) error {
+	if err := refuseUnenforced(b.enforced, kind); err != nil {
+		return err
+	}
+
+	entering := kind == policy.ChallengeMFAEnrolment && s.MFA != session.MFAEnrolmentPending
+
+	challengeMarker{sessions: b.sessions, enrolmentLifetime: b.enrolmentLifetime}.mark(s, kind)
+
+	if !entering {
+		return nil
+	}
+
+	return b.sessions.Save(ctx, s)
 }
 
 // presented reports the token an Authorization header carries, and whether this

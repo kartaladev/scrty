@@ -36,6 +36,10 @@ type basicAuth struct {
 	engine *policy.Engine
 	log    *slog.Logger
 
+	// enforced holds the challenge kinds something on the chain enforces,
+	// handed over by wire; a raised kind outside it refuses the request.
+	enforced map[policy.ChallengeKind]bool
+
 	now func() time.Time
 
 	realm string
@@ -46,6 +50,7 @@ type basicAuth struct {
 func (b *basicAuth) wire(c *Chain) {
 	b.engine = c.engine
 	b.log = c.logger
+	b.enforced = c.enforced
 }
 
 // Intercept authenticates a Basic credential and establishes no session.
@@ -74,8 +79,8 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 		Username: username,
 		Now:      now,
 	})
-	if pre.Outcome == policy.Deny {
-		return policyDenyReason(pre)
+	if err := refusePreAuthentication(pre, b.enforced); err != nil {
+		return err
 	}
 
 	auth, err := b.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))

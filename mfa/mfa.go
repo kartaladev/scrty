@@ -36,6 +36,29 @@ var ErrSameChannel = errors.New("mfa: the second factor arrives on the first fac
 // dependency failure into an open door.
 var ErrVerifyThrottled = errors.New("mfa: too many failed verifications for this user")
 
+// ErrConfig reports a configuration this package refuses: a dependency an
+// operation needs and was not given, where an explicit option is the way to
+// do without it.
+var ErrConfig = errors.New("mfa: invalid configuration")
+
+// ErrEmailCodeInvalid refuses an emailed enrolment code: a wrong one, a
+// malformed one, an expired one, one presented after its attempts ran out, and
+// one presented for a generation that is no longer current.
+//
+// The cases are deliberately indistinguishable, for the reason ErrInvalidCode's
+// are, and each has already been charged as an attempt by the time it is
+// returned.
+//
+// It wraps ErrInvalidCode, so a caller that maps the invalid second-factor code
+// refusal answers an emailed one the same way; its own message still tells an
+// operator which code was refused.
+var ErrEmailCodeInvalid = fmt.Errorf("%w: the emailed code is wrong or expired", ErrInvalidCode)
+
+// ErrEnrolmentThrottled refuses an enrolment step because this user has begun
+// or failed too many, or because the limiter could not say. Like
+// ErrVerifyThrottled, an undecidable limiter refuses rather than admits.
+var ErrEnrolmentThrottled = errors.New("mfa: too many enrolment attempts for this user")
+
 // Method is one way a user proves a second factor.
 //
 // # The channel

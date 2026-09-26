@@ -155,6 +155,7 @@ func TestMagicLinkPolicyCheck(t *testing.T) {
 	type testCase struct {
 		name   string
 		engine func(t *testing.T) *policy.Engine
+		opts   []httpsec.Option
 		assert func(t *testing.T, h *magicLinkHarness, c *httpsec.Chain, token, nonce string, out served)
 	}
 
@@ -198,6 +199,7 @@ func TestMagicLinkPolicyCheck(t *testing.T) {
 
 				return challengingEngine(t, policy.ChallengeMFA)
 			},
+			opts: []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFA)},
 			assert: func(t *testing.T, h *magicLinkHarness, c *httpsec.Chain, token, nonce string, out served) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, out.err, &ch)
@@ -235,6 +237,7 @@ func TestMagicLinkPolicyCheck(t *testing.T) {
 			token, nonce := h.link(t, requesting)
 
 			h.engine = tc.engine(t)
+			h.chainOpts = tc.opts
 			out := h.redeem(t, h.chain(t), token, nonce)
 
 			tc.assert(t, h, requesting, token, nonce, out)

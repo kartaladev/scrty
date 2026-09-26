@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -362,6 +364,148 @@ func TestPasswordChangeConstruction(t *testing.T) {
 
 			chain, err := httpsec.New(tc.build(newAuthHarness(t))...)
 			tc.assert(t, chain, err)
+		})
+	}
+}
+
+// carryingSession publishes s on every exchange, standing in for the first
+// factor that resolved it. It is registered immediately outside the
+// password-change slot, which is where a first factor would have run.
+func carryingSession(s *session.Session) httpsec.Option {
+	carrier := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		ex.Authentication = &authenticate.Authentication{Principal: testPrincipal(), Time: time.Now()}
+		ex.Session = s
+		ex.SetContext(httpsec.WithSession(httpsec.WithCaller(ex.Context(), ex.Authentication), s))
+
+		return next(ex)
+	})
+
+	return httpsec.RegisterInterceptor(carrier, httpsec.Before(httpsec.OrderPasswordChange))
+}
+
+// TestPasswordChangeGateLogout pins that a session owing a password change can
+// always end itself, wherever the consumer put logout, and that nothing else
+// gets through the gate on the strength of that exemption.
+//
+// The gate's slot is outside logout's, so without the exemption a caller
+// stranded mid-challenge could not log out — on a device that is not theirs,
+// the one thing they most need to do.
+func TestPasswordChangeGateLogout(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		logoutOpts []httpsec.LogoutOption
+		request    func(ctx context.Context) *http.Request
+		assert     func(t *testing.T, sessions *session.Manager, s *session.Session, out served)
+	}
+
+	loggedOut := func(t *testing.T, sessions *session.Manager, s *session.Session, out served) {
+		t.Helper()
+
+		var ch *httpsec.ChallengeError
+		require.NotErrorAs(t, out.err, &ch, "a pending session is not refused at logout")
+		require.NoError(t, out.err)
+		assert.Equal(t, http.StatusOK, out.rec.Code)
+
+		_, err := sessions.Load(t.Context(), s.ID)
+		require.Error(t, err, "the session is ended, pending challenge included")
+	}
+
+	refused := func(t *testing.T, sessions *session.Manager, s *session.Session, out served) {
+		t.Helper()
+
+		var ch *httpsec.ChallengeError
+		require.ErrorAs(t, out.err, &ch)
+		assert.Equal(t, policy.ChallengePasswordChange, ch.Kind)
+		assert.False(t, out.handlerRan)
+
+		_, err := sessions.Load(t.Context(), s.ID)
+		require.NoError(t, err, "a refused request ends nothing")
+	}
+
+	cases := []testCase{
+		{
+			name: "the default logout path",
+			request: func(ctx context.Context) *http.Request {
+				return formRequest(ctx, httpsec.DefaultLogoutPath, "")
+			},
+			assert: loggedOut,
+		},
+		{
+			name:       "a consumer logout path",
+			logoutOpts: []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/auth/sign-out")},
+			request: func(ctx context.Context) *http.Request {
+				return formRequest(ctx, "/auth/sign-out", "")
+			},
+			assert: loggedOut,
+		},
+		{
+			name: "a protected route is still refused",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, "/invoices", nil)
+			},
+			assert: refused,
+		},
+		{
+			// The exemption is the POST that logs out, not the path.
+			name: "a GET on the logout path is still refused",
+			request: func(ctx context.Context) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet, httpsec.DefaultLogoutPath, nil)
+			},
+			assert: refused,
+		},
+		{
+			name:       "the old default path once logout has moved is refused",
+			logoutOpts: []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/auth/sign-out")},
+			request: func(ctx context.Context) *http.Request {
+				return formRequest(ctx, httpsec.DefaultLogoutPath, "")
+			},
+			assert: refused,
+		},
+		{
+			name: "the resolve endpoint still clears the marker",
+			request: func(ctx context.Context) *http.Request {
+				return formRequest(ctx, testChangePasswordPath, "")
+			},
+			assert: func(t *testing.T, sessions *session.Manager, s *session.Session, out served) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusNoContent, out.rec.Code)
+
+				stored, err := sessions.Load(t.Context(), s.ID)
+				require.NoError(t, err)
+				assert.False(t, stored.PasswordChangePending, "the debt is paid and recorded as paid")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sessions, err := session.NewManager()
+			require.NoError(t, err)
+
+			s, err := sessions.Create(t.Context(), testPrincipal().ID)
+			require.NoError(t, err)
+			s.PasswordChangePending = true
+			require.NoError(t, sessions.Save(t.Context(), s))
+
+			chain, err := httpsec.New(
+				carryingSession(s),
+				httpsec.EnablePasswordChangeGate(sessions,
+					httpsec.WithChangePasswordEndpoint(testChangePasswordPath, func(ex *httpsec.Exchange) error {
+						ex.Writer.WriteHeader(http.StatusNoContent)
+
+						return nil
+					})),
+				httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions}, tc.logoutOpts...),
+			)
+			require.NoError(t, err)
+
+			tc.assert(t, sessions, s, serve(t, chain, tc.request(t.Context())))
 		})
 	}
 }

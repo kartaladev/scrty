@@ -499,3 +499,86 @@ func TestMFARequirementPhaseSourceOverride(t *testing.T) {
 		assert.Equal(t, policy.ChallengeMFA, d.Challenge)
 	})
 }
+
+// TestMFARequirementChallenges pins what the requirement policy declares it can
+// raise. The enrolment challenge is declared only when the path is on, so a
+// chain without the enrolment interceptor keeps assembling until a consumer
+// opts in, and refuses to assemble once they do.
+func TestMFARequirementChallenges(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []policy.MFARequirementOption
+		assert func(t *testing.T, kinds []policy.ChallengeKind)
+	}
+
+	cases := []testCase{
+		{
+			name: "path off declares the second-factor challenge only",
+			assert: func(t *testing.T, kinds []policy.ChallengeKind) {
+				assert.Equal(t, []policy.ChallengeKind{policy.ChallengeMFA}, kinds)
+			},
+		},
+		{
+			name: "path on also declares the enrolment challenge",
+			opts: []policy.MFARequirementOption{policy.WithMFAEnrolmentPath()},
+			assert: func(t *testing.T, kinds []policy.ChallengeKind) {
+				assert.ElementsMatch(t,
+					[]policy.ChallengeKind{policy.ChallengeMFA, policy.ChallengeMFAEnrolment}, kinds,
+					"a chain could assemble without the enforcer of a challenge this policy raises")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := mfaRequirementPolicyFor(t, nil, mfaMethod(t, factor.AuthenticatorApp, false, nil),
+				append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, tc.opts...)...)
+
+			challenger, ok := p.(policy.Challenger)
+			require.True(t, ok, "the requirement policy no longer declares its challenges")
+			tc.assert(t, challenger.Challenges())
+		})
+	}
+}
+
+// TestMFARequirementMidSessionEnrolment covers a user who becomes required
+// during a password session and has no enrolment. The next per-request
+// evaluation sends them to enrol with the path on, and refuses them with it
+// off, as before the path existed.
+func TestMFARequirementMidSessionEnrolment(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		pathOn bool
+		assert func(t *testing.T, d policy.Decision)
+	}
+
+	cases := []testCase{
+		{name: "path on challenges for enrolment", pathOn: true, assert: challengedForEnrolment},
+		{name: "path off refuses as before", assert: deniedForEnrolment},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []policy.MFARequirementOption
+			if tc.pathOn {
+				opts = append(opts, policy.WithMFAEnrolmentPath())
+			}
+
+			// The lookup is what a mid-session flag changes: it now answers
+			// "required" for a session that never satisfied a second factor.
+			p := mfaRequirementPolicyFor(t, mfaRequirementLookup(t, true, true, nil),
+				mfaMethod(t, factor.AuthenticatorApp, false, nil), opts...)
+
+			in := &policy.Input{User: mfaUser, FirstFactor: factor.Password, Now: mfaNow}
+			tc.assert(t, p.Evaluate(mfaPhaseContext(t, policy.PerRequest), in))
+		})
+	}
+}

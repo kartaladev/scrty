@@ -126,6 +126,89 @@ matching sessions without any browser involved.
 The full list, with the reasoning behind each one, is in the `oidc` package's "Limits" godoc
 (`go doc github.com/kartaladev/scrty/oidc`).
 
+## Letting required users enrol
+
+By default, a user who must use a second factor and has none is refused outright: enrolment is a
+Go API (`mfa.Enroller`) the consumer puts behind their own authorised route, reached however they
+choose. The enrolment path is the alternative: turned on explicitly, it lets such a user bind a
+second factor themselves, from a session confined to that one purpose, right after they sign in.
+
+Because a password alone would otherwise be enough to bind a second factor of an attacker's
+choosing, the path is off unless both halves are turned on together:
+
+```go
+requirement, err := policy.NewMFARequirementPolicy(requirementLookup, lookup,
+	policy.WithMFAEnrolmentPath(), // policy.WithEnrolmentFirstFactors, policy.WithEnrolmentPathUntil
+)
+
+chain, err := httpsec.New(
+	// ... your other chain options (login, sessions) ...
+	httpsec.EnableMFA(totp), // an mfa.Enroller, e.g. mfa.NewTOTP
+	httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
+		Users:  users,        // identity.UserLoader
+		Sender: queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
+	}),
+)
+```
+
+### Flow
+
+1. **Begin** (`POST /mfa/enrol/begin`) provisions a secret and returns it, with a QR-code URI, to
+   the confined session the login just received.
+2. **Confirm** (`POST /mfa/enrol/confirm`, form field `code`) proves the device with a code from
+   it. The device is proven, but the enrolment does not count yet.
+3. **Emailed code** (`POST /mfa/enrol/confirm-email`, form field `code`) — by default, an
+   out-of-band code is sent to the user's address once the device is proven, and entering it here
+   is what completes the enrolment. This is what stops a password holder from binding an
+   authenticator the account's owner never sees: the mailbox owner takes part in every binding.
+4. **Verify** (`POST /mfa/verify`, `httpsec.EnableMFA`'s own endpoint) resolves the session's
+   pending second-factor challenge with a fresh code, exactly as it would for an enrolment made
+   out of band. Only this step marks the session satisfied and rotates its handle.
+
+Every other request a confined session makes — the password-change endpoint, a consumer route,
+the authorizer, the handler — is refused with the enrolment challenge until verification succeeds;
+only logout is let through as well.
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Endpoint paths | `/mfa/enrol/begin`, `/mfa/enrol/confirm`, `/mfa/enrol/confirm-email` | `httpsec.WithEnrolmentBeginPath`, `WithEnrolmentConfirmPath`, `WithEnrolmentEmailConfirmPath` |
+| First factors admitted | `password`, `magic-link`, unrecorded | `policy.WithEnrolmentFirstFactors` |
+| Confined session lifetime | 15 minutes | `httpsec.WithEnrolmentSessionTTL` |
+| Begin limit | 5 per hour, per user, in-memory | `httpsec.WithEnrolmentBeginLimiter` |
+| Confirmation failure limit | 5 per 15 minutes, per user, in-memory | `httpsec.WithEnrolmentConfirmLimiter` |
+| Emailed-code confirmation | on | `httpsec.WithoutEmailConfirmation` |
+| Notification on completion | on | `httpsec.WithoutEnrolmentNotification` |
+| Contact address / provisioning label | the username | `httpsec.WithContactResolver` / `WithLabelResolver` |
+| Rollout deadline | none (path stays open) | `policy.WithEnrolmentPathUntil` |
+
+### Stated limits
+
+- **OIDC is off the first-factor allowlist.** A stolen provider account usually includes its
+  mailbox, so the emailed code would add no assurance, and the notification might reach the
+  attacker too. The same limit, less starkly, applies to `magic-link`, which is on the allowlist by
+  default: a consumer who finds that unacceptable takes it off.
+- **A password holder can spend a user's begin budget.** Every begin is counted, not only failed
+  ones, because it generates a secret and can send an email; whoever holds the password alone can
+  therefore lock a user out of the path for up to an hour.
+- **Confined sessions still count toward the concurrent-session cap**, when one is configured. Each
+  occupies a slot for at most the confined lifetime.
+- **The in-memory limiters are per replica.** A multi-replica deployment needing an exact,
+  shared count supplies its own `ratelimit.Limiter`.
+- **There is no route allowlist.** Every path a confined session may reach is a fixed option; there
+  is no way to add another. A consumer interceptor placed between the bearer slot and the gate
+  still runs, and sees the session's principal, exactly as it would for a session pending MFA.
+
+### A lost authenticator
+
+`mfa.ResetEnrolment` is the operator's undo: it removes the enrolment, ends every session of the
+user (so one already satisfied by the lost authenticator stops working), and notifies the user by
+default. It is a Go API, not an HTTP endpoint — put it behind whatever authorised administrative
+route the rest of the operator surface already uses. With the enrolment path on, the user's next
+login goes straight back into the confined state above; with it off, they are refused until
+enrolled out of band.
+
 ## Development
 
 ```sh

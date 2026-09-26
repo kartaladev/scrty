@@ -20,7 +20,10 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/id"
 )
+
+//go:generate mockgen -destination=idgenerator_mock_test.go -package=mfa_test -typed github.com/kartaladev/scrty/pkg/id Generator
 
 // TOTP is the built-in second-factor method: RFC 6238 time-based codes from an
 // authenticator app.
@@ -38,7 +41,12 @@ type TOTP struct {
 	period time.Duration
 	now    func() time.Time
 	random io.Reader
+	ids    id.Generator
 	logger *slog.Logger
+
+	// proofs is the store as a DeviceProofStore, or nil when it does not
+	// implement the port. It is decided once, at construction.
+	proofs DeviceProofStore
 }
 
 // NewTOTP builds the method for issuer.
@@ -49,14 +57,16 @@ type TOTP struct {
 // stored but never shown would be worse than none.
 //
 // Defaults: 6 digits (WithDigits, which also accepts 8), a 30-second step
-// (WithPeriod), time.Now (WithClock) and crypto/rand.Reader (WithRandom). store
+// (WithPeriod), time.Now (WithClock), crypto/rand.Reader (WithRandom) and
+// id.NewV7Generator for enrolment generations (WithTOTPIDGenerator). store
 // has no default — an enrolment store is the one thing this method cannot
 // invent, and NewMemoryEnrolmentStore is the obvious argument for a test or a
 // single process.
 //
 // Construction fails on an absent store, an empty issuer, an issuer containing
 // ':' — the separator of the provisioning URI's label — a digit count that is
-// neither 6 nor 8, a period of zero or less, and a nil clock or random source.
+// neither 6 nor 8, a period of zero or less, and a nil clock, random source or
+// identifier generator.
 // Each of those is a wiring mistake whose symptom would otherwise appear at the
 // first verification, a long way from its cause.
 func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, error) {
@@ -67,6 +77,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 		period: 30 * time.Second,
 		now:    time.Now,
 		random: rand.Reader,
+		ids:    id.NewV7Generator(),
 		logger: slog.Default(),
 	}
 
@@ -103,6 +114,12 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 	if t.logger == nil {
 		return nil, errors.New("mfa: totp logger must not be nil")
 	}
+
+	if nilcheck.IsNil(t.ids) {
+		return nil, errors.New("mfa: totp identifier generator must not be nil")
+	}
+
+	t.proofs, _ = t.store.(DeviceProofStore)
 
 	return t, nil
 }
@@ -300,33 +317,62 @@ type Provisioning struct {
 func (t *TOTP) BeginEnrolment(
 	ctx context.Context, user identity.UserID, accountLabel string,
 ) (Provisioning, error) {
+	p, _, err := t.BeginEnrolmentGeneration(ctx, user, accountLabel)
+
+	return p, err
+}
+
+// BeginEnrolmentGeneration is BeginEnrolment, also returning the generation
+// the new pending enrolment was stored on.
+//
+// Every call draws a new generation from the method's identifier generator
+// before anything is written, so a generator that fails, like a random source
+// that fails, stores nothing; so does a generator that returns the nil
+// identifier, which no device proof could ever match. The enrolment path
+// records the generation on the session that began, and proves and completes
+// only that generation.
+func (t *TOTP) BeginEnrolmentGeneration(
+	ctx context.Context, user identity.UserID, accountLabel string,
+) (Provisioning, id.ID, error) {
 	if accountLabel == "" {
-		return Provisioning{}, errors.New("mfa: totp enrolment requires an account label")
+		return Provisioning{}, id.Nil, errors.New("mfa: totp enrolment requires an account label")
 	}
 
 	if strings.Contains(accountLabel, ":") {
-		return Provisioning{}, fmt.Errorf(
+		return Provisioning{}, id.Nil, fmt.Errorf(
 			"mfa: totp account label must not contain ':', got %q", accountLabel)
 	}
 
 	secret := make([]byte, secretBytes)
 	if _, err := io.ReadFull(t.random, secret); err != nil {
-		return Provisioning{}, fmt.Errorf("mfa: totp could not read a secret: %w", err)
+		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not read a secret: %w", err)
+	}
+
+	gen, err := t.ids.NewID()
+	if err != nil {
+		return Provisioning{}, id.Nil, fmt.Errorf("mfa: totp could not draw an enrolment generation: %w", err)
+	}
+
+	// The nil generation matches nothing on the device-proof port, so an
+	// enrolment stored on it could never be proven or completed.
+	if gen == id.Nil {
+		return Provisioning{}, id.Nil, errors.New("mfa: totp identifier generator returned the nil identifier")
 	}
 
 	encoded := encodeSecret(secret)
 
 	if err := t.store.PutPending(ctx, Enrolment{
-		User:      user,
-		Secret:    secret,
-		CreatedAt: t.now(),
+		User:       user,
+		Secret:     secret,
+		CreatedAt:  t.now(),
+		Generation: gen,
 	}); err != nil {
-		return Provisioning{}, err
+		return Provisioning{}, id.Nil, err
 	}
 
 	t.record(ctx, slog.LevelInfo, msgEnrolmentBegun, user)
 
-	return Provisioning{Secret: encoded, URI: t.provisioningURI(accountLabel, encoded)}, nil
+	return Provisioning{Secret: encoded, URI: t.provisioningURI(accountLabel, encoded)}, gen, nil
 }
 
 // secretBytes is the length of a TOTP shared secret. RFC 4226 requires at least
@@ -364,14 +410,26 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 //
 // A wrong, malformed or out-of-window code, a user with nothing pending, and an
 // enrolment that is already confirmed all return ErrInvalidCode and change
-// nothing. A store failure is returned as itself.
+// nothing. So does any enrolment whose device was proven on the enrolment
+// path, whatever the state of its emailed code: such an enrolment completes
+// only through the path, by Enroller.CompleteEnrolment or
+// Enroller.RedeemEmailCode. A store failure is returned as itself.
+//
+// Known limit: it reads the enrolment, then calls the store's Confirm, which
+// conditions on neither the generation nor the device proof. A device proof
+// landing between that read and that write, or not yet visible to a store
+// whose reads may lag its writes, is not seen, and the enrolment is
+// confirmed with it. This call serves out-of-band enrolment through a
+// consumer's own route, which a session confined to the enrolment path cannot
+// reach; a consumer exposing both to one session should not offer this call
+// while an enrolment-path proof may be in flight.
 func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code string) error {
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
 		return err
 	}
 
-	if !ok || !e.ConfirmedAt.IsZero() {
+	if !ok || !e.ConfirmedAt.IsZero() || !e.DeviceProvenAt.IsZero() || !e.EmailCodeUntil.IsZero() {
 		return ErrInvalidCode
 	}
 
@@ -422,15 +480,20 @@ const (
 	msgEnrolmentBegun     = "mfa: totp enrolment begun"
 	msgEnrolmentConfirmed = "mfa: totp enrolment confirmed"
 	msgEnrolmentRemoved   = "mfa: totp enrolment removed"
+
+	msgEnrolmentDeviceProven = "mfa: totp enrolment device proven"
+	msgDeviceRefused         = "mfa: totp enrolment device code refused"
+	msgCompletionRefused     = "mfa: totp enrolment completion refused"
+	msgEmailCodeRefused      = "mfa: totp enrolment emailed code refused"
 )
 
 // record writes one event about a user.
 //
 // Every record carries the method and the user reference, and a refusal carries
-// why. None of them is ever given the presented code, the enrolment secret or
-// the provisioning URI: those are what an attacker who reaches the logs would
-// come for, and a record that named one would hand over the second factor
-// itself. Verification records are written at debug, because they are ordinary
+// why. None of them is ever given the presented code, the emailed code, the
+// enrolment secret or the provisioning URI: those are what an attacker who
+// reaches the logs would come for, and a record that named one would hand over
+// the second factor itself. Verification records are written at debug, because they are ordinary
 // traffic an attacker can drive; enrolment changes are written at info, because
 // they change what the account is protected by.
 func (t *TOTP) record(

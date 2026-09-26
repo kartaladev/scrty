@@ -63,6 +63,21 @@ const (
 	OrderAuthorizer Order = 900
 )
 
+// OrderMFAEnrolment is the second-factor enrolment gate and its endpoints. It
+// is Before(OrderMFAChallenge), immediately outside the second-factor gate, so
+// a session confined to enrolment is refused before anything at the
+// second-factor slot, the verify endpoint included, can answer it. It is the
+// one named slot not spaced from its neighbour, so that no other named slot
+// lies between the two gates.
+//
+// That does not mean nothing runs between them: a consumer interceptor
+// registered at Before(OrderMFAChallenge) shares this slot, and slot-mates run
+// in the order they were registered. Registered after EnableMFAEnrolment's
+// option, it runs between the two gates, after an enrolment-only session has
+// already been refused. Registered before it, it runs ahead of the enrolment
+// gate and sees such a session, as every interceptor outside the gate does.
+const OrderMFAEnrolment = OrderMFAChallenge - 1
+
 // Before is the slot immediately outside o, which runs just before it.
 func Before(o Order) Order { return o - 1 }
 

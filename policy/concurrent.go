@@ -57,6 +57,13 @@ type SessionCounter interface {
 // The cap bounds how many sessions a user accumulates, which is what it is for;
 // making it exact would mean a lock across every login in the deployment.
 //
+// An enrolment-only session, one confined to the second-factor enrolment path
+// (WithMFAEnrolmentPath), is a session like any other to the count: it counts
+// against the cap until its lowered absolute deadline, 15 minutes by default,
+// or until it is logged out. So whoever holds a required user's password can
+// occupy that user's slots by beginning enrolments that are never confirmed,
+// each for at most that lifetime.
+//
 // A ConcurrentSessionPolicy is safe for concurrent use and holds no state
 // between logins.
 type ConcurrentSessionPolicy struct {

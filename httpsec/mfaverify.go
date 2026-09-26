@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -165,23 +166,45 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 //
 // The state is set before the rotation, because Rotate writes the session as it
 // stands: setting the fields afterwards would persist a challenge that is still
-// pending under the new handle. It is restored if the rotation fails, so a
-// store outage leaves the caller exactly as it found them — challenge pending,
-// handle unchanged — rather than in memory satisfied and in the store not.
+// pending under the new handle. For a session that came through the enrolment
+// path, its deadlines are restored before the rotation for the same reason, so
+// the new handle carries the deadline a login would have had rather than the
+// enrolment-only one.
+//
+// Everything set here is put back if the restore or the rotation fails, so the
+// caller is left exactly as they were found — challenge pending, deadlines and
+// enrolment marker as they were, handle unchanged — rather than in memory
+// upgraded and in the store not. A session already past its lowered deadline
+// is refused as one that has ended, and is not rotated: the restore is what
+// finds that, and a rotation after it would move an expired session to a fresh
+// handle.
 //
 // The rotation itself is the point. A handle obtained before the second factor
 // must not still answer requests after it, which is session fixation with extra
 // steps, and it is why this endpoint answers the request rather than passing it
 // on: the handle the caller should now be using is not the one they sent.
 func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
-	state, satisfiedAt := s.MFA, s.MFASatisfiedAt
+	was := *s
+	rollback := func() {
+		s.MFA, s.MFASatisfiedAt = was.MFA, was.MFASatisfiedAt
+		s.AbsoluteExpiresAt, s.IdleExpiresAt = was.AbsoluteExpiresAt, was.IdleExpiresAt
+		s.EnrolmentOriginDeadline, s.EnrolmentGeneration = was.EnrolmentOriginDeadline, was.EnrolmentGeneration
+	}
 
 	s.MFA = session.MFASatisfied
 	s.MFASatisfiedAt = i.now()
 
+	if err := i.sessions.RestoreEnrolmentDeadlines(s); err != nil {
+		rollback()
+
+		// The session has ended, which to the caller is a session they no
+		// longer hold. The manager's own error stays reachable.
+		return errors.Join(ErrAuthenticationRequired, err)
+	}
+
 	rotated, err := i.sessions.Rotate(ex.Context(), s)
 	if err != nil {
-		s.MFA, s.MFASatisfiedAt = state, satisfiedAt
+		rollback()
 
 		return err
 	}

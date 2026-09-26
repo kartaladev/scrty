@@ -28,10 +28,37 @@ type passwordChangeGate struct {
 	// they registered none. Without one, only a new login clears the challenge.
 	path   string
 	change ChangePasswordFunc
+
+	// logoutPath is the chain's logout endpoint, handed over at assembly and
+	// never configured here, so a consumer who moves logout moves the gate's
+	// exemption with it. It is empty when the chain has no logout.
+	logoutPath string
+}
+
+// wirePasswordChange hands every password-change gate the chain's logout path.
+//
+// It runs at assembly rather than when EnablePasswordChangeGate is applied,
+// because EnableLogout, or the option that moves its path, may come after it.
+func (c *config) wirePasswordChange() {
+	_ = eachInterceptor(c, func(g *passwordChangeGate) error {
+		g.logoutPath = c.logoutPath
+
+		return nil
+	})
+}
+
+// isLogoutPost reports whether r is the chain's logout: a POST on exactly
+// logoutPath. An empty logoutPath is a chain without logout, which matches
+// nothing, so a gate on such a chain lets nothing extra through.
+func isLogoutPost(logoutPath string, r Request) bool {
+	return logoutPath != "" && r.Method() == http.MethodPost && r.Path() == logoutPath
 }
 
 // Intercept refuses any session that owes a password change, and lets the
 // consumer's resolve endpoint through so the debt can be paid.
+//
+// The chain's logout passes too, so a caller stranded mid-challenge can always
+// end the session; logging out pays no debt, it only ends what owed it.
 //
 // A request carrying no session passes: the gate guards sessions, and whether
 // an anonymous request may go on is the business of the authentication
@@ -42,6 +69,10 @@ func (g *passwordChangeGate) Intercept(ex *Exchange, next Next) error {
 	}
 
 	if ex.Session != nil && ex.Session.PasswordChangePending {
+		if isLogoutPost(g.logoutPath, ex.Request) {
+			return next(ex)
+		}
+
 		// No token: the caller already holds the credential this session was
 		// reached with, and a gate issues nothing.
 		return &ChallengeError{Kind: policy.ChallengePasswordChange, Session: ex.Session}

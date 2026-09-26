@@ -1,6 +1,8 @@
 package httpsec
 
 import (
+	"time"
+
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -47,5 +49,45 @@ func LoginTailDepsForTest(
 	sessions *session.Manager,
 	tokens token.Generator,
 ) loginTailDeps {
-	return loginTailDeps{engine: engine, sessions: sessions, tokens: tokens}
+	return loginTailDeps{engine: engine, sessions: sessions, tokens: tokens, enforced: everyBuiltInEnforced()}
+}
+
+// EnableGateForTest records the built-in gate for kind as enabled, exactly as
+// its Enable option does, without registering the gate itself. A test whose
+// policy raises kind uses it to pin what raising the kind does rather than what
+// the gate does with it; it is also how the enrolment kind is counted as
+// enforced before EnableMFAEnrolment exists.
+func EnableGateForTest(kind policy.ChallengeKind) Option {
+	return func(c *config) error {
+		c.enableGate(kind)
+		return nil
+	}
+}
+
+// everyBuiltInEnforced is the enforcer set of a chain with every built-in
+// gate enabled. The login-tail seams use it because the tests reaching the
+// tail through them pin its order, not the chain's enforcer check, which
+// TestUnenforcedChallengeAtRuntime pins through a whole chain.
+func everyBuiltInEnforced() map[policy.ChallengeKind]bool {
+	enforced := make(map[policy.ChallengeKind]bool, len(builtInEnforcers))
+	for kind := range builtInEnforcers {
+		enforced[kind] = true
+	}
+
+	return enforced
+}
+
+// LoginTailDepsWithEnrolmentForTest is LoginTailDepsForTest with the lifetime
+// an enrolment challenge marks the session for, which the chain otherwise
+// hands every login tail at assembly.
+func LoginTailDepsWithEnrolmentForTest(
+	engine *policy.Engine,
+	sessions *session.Manager,
+	tokens token.Generator,
+	enrolmentLifetime time.Duration,
+) loginTailDeps {
+	return loginTailDeps{
+		engine: engine, sessions: sessions, tokens: tokens,
+		enrolmentLifetime: enrolmentLifetime, enforced: everyBuiltInEnforced(),
+	}
 }

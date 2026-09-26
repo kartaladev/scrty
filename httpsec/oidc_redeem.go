@@ -34,7 +34,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		return oidc.ErrInvalidHandoff
 	}
 
-	check, out := redemptionPolicyCheck(i.engine, factor.OIDC, i.now)
+	check, out := redemptionPolicyCheck(i.engine, i.enforced, factor.OIDC, i.now)
 
 	res, err := i.redeemer.Redeem(ctx, code, oidc.RedeemCheck(check))
 	if err != nil {
@@ -63,9 +63,11 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// no request ever sees a federated session without it, and back-channel
 	// logout can find it from its first moment.
 	tok, err := completeLogin(ex, loginTailDeps{
-		engine:   i.engine,
-		sessions: i.sessions,
-		tokens:   i.tokens,
+		engine:            i.engine,
+		sessions:          i.sessions,
+		tokens:            i.tokens,
+		enrolmentLifetime: i.enrolmentLifetime,
+		enforced:          i.enforced,
 	}, postAuthenticationInput(&res.Principal, factor.OIDC, "", res.PasswordChangedAt, i.now()),
 		session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken))
 	if err != nil {

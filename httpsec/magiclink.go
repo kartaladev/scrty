@@ -101,6 +101,14 @@ type magicLinkInterceptor struct {
 	sampler *logsample.Sampler
 	guard   sourceGuard
 
+	// enrolmentLifetime is how long a session the login tail marks for an
+	// enrolment challenge may live, handed over by wire.
+	enrolmentLifetime time.Duration
+
+	// enforced holds the challenge kinds something on the chain enforces,
+	// handed over by wire; a raised kind outside it refuses the request.
+	enforced map[policy.ChallengeKind]bool
+
 	limiter   ratelimit.Limiter
 	redirects *origin.Allowlist
 
@@ -150,6 +158,8 @@ func (i *magicLinkInterceptor) wire(c *Chain) {
 	i.engine = c.engine
 	i.log = c.logger
 	i.sampler = c.sampler
+	i.enrolmentLifetime = c.enrolmentLifetime
+	i.enforced = c.enforced
 }
 
 // wireMagicLink builds what the magic-link endpoints cannot build until every
@@ -326,7 +336,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		nonce, _ = ex.Request.Cookie(i.cookieName)
 	}
 
-	check, out := redemptionPolicyCheck(i.engine, factor.MagicLink, i.now)
+	check, out := redemptionPolicyCheck(i.engine, i.enforced, factor.MagicLink, i.now)
 
 	// The policy check runs first and the consumer's own follow, in the order
 	// they were registered: magiclink stops at the first refusal, so a login
@@ -359,9 +369,11 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	ex.Writer.SetHeader("Referrer-Policy", "no-referrer")
 
 	tok, err := completeLogin(ex, loginTailDeps{
-		engine:   i.engine,
-		sessions: i.sessions,
-		tokens:   i.tokens,
+		engine:            i.engine,
+		sessions:          i.sessions,
+		tokens:            i.tokens,
+		enrolmentLifetime: i.enrolmentLifetime,
+		enforced:          i.enforced,
 	}, postAuthenticationInput(
 		&redemption.Principal, factor.MagicLink, "", redemption.PasswordChangedAt, i.now()))
 	if err != nil {

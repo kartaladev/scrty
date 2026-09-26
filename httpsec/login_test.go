@@ -406,6 +406,7 @@ func TestFormLoginSequence(t *testing.T) {
 	type testCase struct {
 		name   string
 		engine func(t *testing.T) *policy.Engine
+		opts   []httpsec.Option
 		wire   func(t *testing.T, h *authHarness)
 		assert func(t *testing.T, h *authHarness, s served)
 	}
@@ -425,6 +426,32 @@ func TestFormLoginSequence(t *testing.T) {
 				require.ErrorIs(t, s.err, policy.ErrAccountLocked)
 				assert.Equal(t, http.StatusLocked, httpsec.StatusForError(s.err))
 				assert.False(t, s.handlerRan)
+			},
+		},
+		{
+			// Pre-authentication has no session to mark a challenge on, so an
+			// enforced one refuses nothing there: the credential is checked
+			// and the login goes on. Only an unenforced kind is refused, which
+			// TestUnenforcedChallengeAtRuntime pins.
+			name: "a pre-authentication challenge of an enforced kind lets the login go on",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return challengingIn(t, policy.PreAuthentication, policy.ChallengePasswordChange)
+			},
+			opts: []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengePasswordChange)},
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
+				h.expectSessionOpened("issued-token")
+			},
+			assert: func(t *testing.T, _ *authHarness, s served) {
+				t.Helper()
+
+				var ch *httpsec.ChallengeError
+				require.NotErrorAs(t, s.err, &ch, "the phase has no session to challenge")
+				require.NoError(t, s.err)
+				assert.Equal(t, http.StatusOK, s.rec.Code)
 			},
 		},
 		{
@@ -519,6 +546,7 @@ func TestFormLoginSequence(t *testing.T) {
 
 				return challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA)
 			},
+			opts: []httpsec.Option{httpsec.EnableGateForTest(policy.ChallengeMFA)},
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectAuthenticated(testPrincipal())
 				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
@@ -556,7 +584,7 @@ func TestFormLoginSequence(t *testing.T) {
 				opts = append(opts, httpsec.WithPolicyEngine(e))
 			}
 
-			chain, err := httpsec.New(opts...)
+			chain, err := httpsec.New(append(opts, tc.opts...)...)
 			require.NoError(t, err)
 
 			tc.assert(t, h, serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")))

@@ -124,3 +124,39 @@ func TestTOTPVerifyRace(t *testing.T) {
 
 	assert.Equal(t, int64(1), accepted.Load(), "exactly one of sixteen may succeed")
 }
+
+// The code that proved a device on the enrolment path must never be accepted
+// again. The single-call confirm refuses a path-proven enrolment, but the
+// store's Confirm can still reach it (the stated limit of that call: a proof
+// landing between its read and its write) with the step before, which the
+// window admits; that must not move the recorded step backwards below the
+// proving one.
+func TestTOTPProvingCodeNotReplayableAfterConfirm(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
+	store := mfa.NewMemoryEnrolmentStore()
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return now }))
+	require.NoError(t, err)
+
+	_, gen, err := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice")
+	require.NoError(t, err)
+	e, _, err := store.Get(t.Context(), "u-1")
+	require.NoError(t, err)
+
+	proved, err := store.ProveDevice(t.Context(), "u-1", gen, now.Unix()/30, nil, time.Time{}, now)
+	require.NoError(t, err)
+	require.True(t, proved)
+
+	previous := codeAt(t, e.Secret, now.Add(-30*time.Second), 6, 30*time.Second)
+	require.ErrorIs(t, m.ConfirmEnrolment(t.Context(), "u-1", previous), mfa.ErrInvalidCode,
+		"a path-proven enrolment completes only through the path")
+
+	confirmed, err := store.Confirm(t.Context(), "u-1", now.Unix()/30-1, now)
+	require.NoError(t, err)
+	require.True(t, confirmed)
+
+	proving := codeAt(t, e.Secret, now, 6, 30*time.Second)
+	assert.Error(t, m.Verify(t.Context(), "u-1", proving),
+		"the code that proved the device was accepted again")
+}

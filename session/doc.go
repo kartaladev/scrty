@@ -13,11 +13,12 @@
 // revocation that loses that race.
 //
 // State the library owns — the first factor a login used, how far a
-// second-factor challenge has got, and whether a password change is owed — is
-// kept in fields of the record, never in the consumer's data map. That map
-// belongs to the consumer: it is stored and returned unchanged, and nothing
-// here reads it, so no key a consumer happens to choose can forge or erase a
-// challenge state.
+// second-factor challenge has got, whether the session came through MFA
+// enrolment and which enrolment it began, and whether a password change is
+// owed — is kept in fields of the record, never in the consumer's data map.
+// That map belongs to the consumer: it is stored and returned unchanged, and
+// nothing here reads it, so no key a consumer happens to choose can forge or
+// erase a challenge state.
 //
 // The default store is in-memory and lasts only as long as the process. A
 // sealing store wraps any other Store and encrypts the provider token a

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // MemoryEnrolmentStore keeps enrolments in this process and nowhere else.
@@ -22,8 +23,8 @@ import (
 // factor. A deployment that runs more than one replica, or that restarts, wants
 // a durable EnrolmentStore instead.
 //
-// It holds its own copy of every secret, in and out, so nothing a caller keeps
-// a reference to can reach stored state. It is safe for concurrent use.
+// It holds its own copy of every secret and emailed code, in and out, so
+// nothing a caller keeps a reference to can reach stored state. It is safe for concurrent use.
 type MemoryEnrolmentStore struct {
 	mu         sync.RWMutex
 	enrolments map[identity.UserID]Enrolment
@@ -38,7 +39,8 @@ func NewMemoryEnrolmentStore() *MemoryEnrolmentStore {
 	return &MemoryEnrolmentStore{enrolments: make(map[identity.UserID]Enrolment)}
 }
 
-// Get returns the user's enrolment, with its own copy of the secret.
+// Get returns the user's enrolment, with its own copies of the secret and the
+// emailed code.
 //
 // The bool is false only for a user this store holds nothing for. This store
 // cannot fail, so the error is always nil — a durable one returns its outage
@@ -57,7 +59,8 @@ func (s *MemoryEnrolmentStore) Get(
 	return copyEnrolment(e), true, nil
 }
 
-// PutPending stores e as a pending enrolment.
+// PutPending stores e as a pending enrolment on the generation e carries,
+// clearing any device proof and emailed code.
 //
 // The decision and the write happen under one lock, which is what a durable
 // store expresses as a conditional write: two concurrent begins cannot both
@@ -70,11 +73,14 @@ func (s *MemoryEnrolmentStore) PutPending(_ context.Context, e Enrolment) error 
 		return ErrAlreadyEnrolled
 	}
 
-	stored := copyEnrolment(e)
-	stored.ConfirmedAt = time.Time{}
-	stored.LastStep = 0
-
-	s.enrolments[e.User] = stored
+	// A begin keeps who, what and when, and starts everything else afresh:
+	// unconfirmed, no step spent, no device proof and no emailed code.
+	s.enrolments[e.User] = Enrolment{
+		User:       e.User,
+		Secret:     bytes.Clone(e.Secret),
+		CreatedAt:  e.CreatedAt,
+		Generation: e.Generation,
+	}
 
 	return nil
 }
@@ -82,7 +88,8 @@ func (s *MemoryEnrolmentStore) PutPending(_ context.Context, e Enrolment) error 
 // Confirm marks a pending enrolment confirmed and records the step its code
 // belonged to. An enrolment that is already confirmed reports false: there was
 // no pending enrolment to confirm, and silently re-confirming one would reset
-// the step that makes codes single-use.
+// the step that makes codes single-use. Confirming clears any outstanding
+// emailed code, and the recorded step only moves forward.
 func (s *MemoryEnrolmentStore) Confirm(
 	_ context.Context, user identity.UserID, step int64, at time.Time,
 ) (bool, error) {
@@ -95,7 +102,12 @@ func (s *MemoryEnrolmentStore) Confirm(
 	}
 
 	e.ConfirmedAt = at
-	e.LastStep = step
+	// An emailed code outstanding from a device proof can confirm nothing
+	// once the enrolment is confirmed, so it is not kept.
+	e.EmailCode = nil
+	// A device proof may already have recorded a later step; the recorded step
+	// only moves forward, or the proving code could be replayed.
+	e.LastStep = max(e.LastStep, step)
 	s.enrolments[user] = e
 
 	return true, nil
@@ -134,11 +146,98 @@ func (s *MemoryEnrolmentStore) Delete(_ context.Context, user identity.UserID) e
 	return nil
 }
 
-// copyEnrolment clones the one field that aliases: without it a caller holds a
-// slice into stored state, and writing through it would change a secret this
-// store believes it owns.
+// copyEnrolment clones the fields that alias: without it a caller holds a
+// slice into stored state, and writing through it would change a secret or an
+// emailed code this store believes it owns.
 func copyEnrolment(e Enrolment) Enrolment {
 	e.Secret = bytes.Clone(e.Secret)
+	e.EmailCode = bytes.Clone(e.EmailCode)
 
 	return e
+}
+
+var _ DeviceProofStore = (*MemoryEnrolmentStore)(nil)
+
+// ProveDevice records the device proof and the emailed code, if and only if
+// the user's enrolment is pending on gen, not yet proven, and step is later
+// than its recorded step.
+//
+// Every condition is evaluated and the write performed under one lock, which
+// is what a durable store expresses as one conditional UPDATE.
+func (s *MemoryEnrolmentStore) ProveDevice(
+	_ context.Context, user identity.UserID, gen id.ID,
+	step int64, code []byte, codeUntil, at time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.enrolments[user]
+	if !ok || !onPendingGeneration(e, gen) || !e.DeviceProvenAt.IsZero() || step <= e.LastStep {
+		return false, nil
+	}
+
+	e.LastStep = step
+	e.DeviceProvenAt = at
+	e.EmailCode, e.EmailCodeUntil, e.EmailCodeAttempts = bytes.Clone(code), codeUntil, 0
+	s.enrolments[user] = e
+
+	return true, nil
+}
+
+// Complete confirms the user's enrolment, if and only if it is pending on gen
+// and its device is proven.
+//
+// The condition is evaluated and the write performed under one lock, so of any
+// number of concurrent completions of one generation, exactly one reports true,
+// and a completion naming a generation that a later begin replaced reports
+// false.
+func (s *MemoryEnrolmentStore) Complete(
+	_ context.Context, user identity.UserID, gen id.ID, at time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.enrolments[user]
+	if !ok || !onPendingGeneration(e, gen) || e.DeviceProvenAt.IsZero() {
+		return false, nil
+	}
+
+	e.ConfirmedAt = at
+	e.EmailCode = nil
+	s.enrolments[user] = e
+
+	return true, nil
+}
+
+// ChargeEmailCode charges one attempt against the emailed code of the user's
+// enrolment on gen, if and only if it is pending on gen with its device
+// proven, its code is outstanding and unexpired at at, and fewer than
+// MaxEmailCodeFailures attempts have been charged.
+//
+// The conditions are evaluated and the count written under one lock, so of any
+// number of concurrent charges on one code, exactly MaxEmailCodeFailures are
+// charged and every other reports false.
+func (s *MemoryEnrolmentStore) ChargeEmailCode(
+	_ context.Context, user identity.UserID, gen id.ID, at time.Time,
+) (int, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.enrolments[user]
+	if !ok || !onPendingGeneration(e, gen) || e.DeviceProvenAt.IsZero() || e.EmailCode == nil ||
+		!at.Before(e.EmailCodeUntil) || e.EmailCodeAttempts >= MaxEmailCodeFailures {
+		return 0, false, nil
+	}
+
+	e.EmailCodeAttempts++
+	s.enrolments[user] = e
+
+	return e.EmailCodeAttempts, true, nil
+}
+
+// onPendingGeneration reports whether e is an unconfirmed enrolment on generation gen.
+// The nil generation matches nothing, so an enrolment stored without one can
+// never be proven or completed through the device-proof port.
+func onPendingGeneration(e Enrolment, gen id.ID) bool {
+	return gen != id.Nil && e.Generation == gen && e.ConfirmedAt.IsZero()
 }

@@ -52,6 +52,23 @@
 // No record written here carries a presented code, an enrolment secret or a
 // provisioning URI.
 //
+// # The enrolment path
+//
+// Enroller is what a method offers to be enrolled from a confined session:
+// begin on a new generation, prove the device, and complete — by default only
+// after a code emailed to the user's contact address has proven the mailbox.
+// Each step after the begin names the begin's generation, and the store decides
+// it by a conditional write on DeviceProofStore, so a proof made against one
+// provisioned secret can never confirm another. An emailed code is charged an
+// attempt before it is compared, so however many requests race, no more than
+// MaxEmailCodeFailures presented codes are ever compared against one. TOTP
+// implements Enroller; MemoryEnrolmentStore implements DeviceProofStore.
+// ContactResolver and LabelResolver default to UsernameAsAddress.
+//
+// ResetEnrolment is the operator's reset: remove the enrolment, end the user's
+// sessions, notify them — each of the last two on by default, off only by an
+// explicit option.
+//
 // # Defaults and ports
 //
 // Every default has an option that replaces it, and every option names the

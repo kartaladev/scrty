@@ -133,6 +133,14 @@ type oidcInterceptor struct {
 	sampler *logsample.Sampler
 	guard   sourceGuard
 
+	// enrolmentLifetime is how long a session the login tail marks for an
+	// enrolment challenge may live, handed over by wire.
+	enrolmentLifetime time.Duration
+
+	// enforced holds the challenge kinds something on the chain enforces,
+	// handed over by wire; a raised kind outside it refuses the request.
+	enforced map[policy.ChallengeKind]bool
+
 	// limiter, limit and window are what the redemption source guard is built
 	// from. A nil limiter means a dedicated in-memory one of limit per window.
 	limiter       ratelimit.Limiter
@@ -177,6 +185,8 @@ func (i *oidcInterceptor) wire(c *Chain) {
 	i.engine = c.engine
 	i.log = c.logger
 	i.sampler = c.sampler
+	i.enrolmentLifetime = c.enrolmentLifetime
+	i.enforced = c.enforced
 }
 
 // Intercept answers the federated-login endpoints and passes everything else

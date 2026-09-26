@@ -116,6 +116,11 @@ func TestChallengeKindString(t *testing.T) {
 			assert:    named("ChallengePasswordChange"),
 		},
 		{
+			name:      "mfa enrolment",
+			challenge: policy.ChallengeMFAEnrolment,
+			assert:    named("ChallengeMFAEnrolment"),
+		},
+		{
 			name:      "a value naming no challenge prints its number",
 			challenge: policy.ChallengeKind(4),
 			assert:    named("ChallengeKind(4)"),
@@ -127,6 +132,43 @@ func TestChallengeKindString(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, tc.challenge.String())
+		})
+	}
+}
+
+// TestChallengeKindValues pins the numbers behind the challenge kinds. Durable
+// stores keep them, so a kind is only ever appended: inserting one would
+// silently change what every stored value means.
+func TestChallengeKindValues(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		challenge policy.ChallengeKind
+		assert    func(t *testing.T, got policy.ChallengeKind)
+	}
+
+	valued := func(want int) func(t *testing.T, got policy.ChallengeKind) {
+		return func(t *testing.T, got policy.ChallengeKind) {
+			t.Helper()
+
+			assert.Equal(t, policy.ChallengeKind(want), got,
+				"a stored challenge kind would be read back as another")
+		}
+	}
+
+	cases := []testCase{
+		{name: "none", challenge: policy.ChallengeNone, assert: valued(0)},
+		{name: "mfa", challenge: policy.ChallengeMFA, assert: valued(1)},
+		{name: "password change", challenge: policy.ChallengePasswordChange, assert: valued(2)},
+		{name: "mfa enrolment is appended", challenge: policy.ChallengeMFAEnrolment, assert: valued(3)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.challenge)
 		})
 	}
 }

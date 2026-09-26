@@ -6,6 +6,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // MFAState is how far a second-factor challenge has got on one session.
@@ -28,11 +29,17 @@ const (
 
 	// MFASatisfied means a second factor was given and accepted.
 	MFASatisfied
+
+	// MFAEnrolmentPending means a first factor was accepted for a user who
+	// must use a second factor and has none; the session reaches only the
+	// enrolment endpoints and logout. It is appended after the other states,
+	// never inserted among them, because a durable store keeps the ordinal.
+	MFAEnrolmentPending
 )
 
 // String returns the constant's own name, so a log line reads "pending" rather
 // than "1". An unnamed value prints its number rather than passing itself off
-// as one of the three.
+// as one of the named states.
 func (s MFAState) String() string {
 	switch s {
 	case MFANone:
@@ -41,6 +48,8 @@ func (s MFAState) String() string {
 		return "pending"
 	case MFASatisfied:
 		return "satisfied"
+	case MFAEnrolmentPending:
+		return "enrolment-pending"
 	default:
 		return "MFAState(" + strconv.Itoa(int(s)) + ")"
 	}
@@ -72,8 +81,12 @@ type Session struct {
 	// AbsoluteExpiresAt.
 	IdleExpiresAt time.Time
 
-	// AbsoluteExpiresAt is the deadline nothing extends. A session in constant
-	// use still ends at the hour it was always going to end.
+	// AbsoluteExpiresAt is the deadline activity never extends. A session in
+	// constant use still ends at the hour it was always going to end.
+	// Manager.MarkEnrolmentPending lowers it for an enrolment-only session,
+	// and Manager.RestoreEnrolmentDeadlines gives it back on the upgrade, to no
+	// later than CreatedAt plus the absolute timeout and no later than the
+	// deadline held before the mark.
 	AbsoluteExpiresAt time.Time
 
 	// FirstFactor is the kind of factor the login that established this
@@ -96,6 +109,22 @@ type Session struct {
 	// Library-owned.
 	PasswordChangePending bool
 
+	// EnrolmentOriginDeadline is the enrolment-origin marker. A non-zero value
+	// means this session entered the second-factor flow through the enrolment
+	// path, which lowered its absolute deadline; the value is the absolute
+	// deadline the session held immediately before it was marked, the latest
+	// Manager.RestoreEnrolmentDeadlines may give back. The zero value means
+	// the session was never marked. It stays set after the enrolment is
+	// confirmed and the session moves to MFAPending, until the restore clears
+	// it on the upgrade. Library-owned.
+	EnrolmentOriginDeadline time.Time
+
+	// EnrolmentGeneration is the generation of the enrolment this session
+	// began, and is zero until it begins one. The enrolment steps act only
+	// while the pending enrolment's generation equals it, which ties them to
+	// the session that began it. Library-owned.
+	EnrolmentGeneration id.ID
+
 	// ExternalProvider names the identity provider a federated login came
 	// from, as the consumer configured it.
 	ExternalProvider string
@@ -116,9 +145,10 @@ type Session struct {
 
 	// Data is the consumer's own map. The library stores and returns it
 	// byte-for-byte, and never reads, adds, renames or removes an entry. No
-	// library state is kept in it: the first factor, the second-factor state
-	// and the password-change marker are fields above, so a consumer key can
-	// neither forge nor erase a challenge state.
+	// library state is kept in it: the first factor, the second-factor state,
+	// the enrolment marker and generation, and the password-change marker are
+	// fields above, so a consumer key can neither forge nor erase a challenge
+	// state.
 	//
 	// It is map[string]string rather than a map of arbitrary values because
 	// "returned unchanged" has to survive a durable store, where a number
