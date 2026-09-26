@@ -99,7 +99,7 @@ By default, when a signing-key or MFA enrolment store reads a value that opened 
 - **AND** a later read through a keyring containing only `k2` also returns the secret
 
 #### Scenario: Concurrent re-enrolment is kept
-- **WHEN** an enrolment sealed under a retired key is read, and the user re-enrols with a new secret before the re-seal is written
+- **WHEN** an unconfirmed enrolment sealed under a retired key is read, and a new pending enrolment with a new secret replaces it before the re-seal is written
 - **THEN** the stored secret is the new secret
 
 #### Scenario: Sessions are not rewritten on read

@@ -17,7 +17,7 @@ scrty SHALL provide a durable store for each security-state record type (session
 - **THEN** the second consumption is refused
 
 #### Scenario: Handoff subject round trip
-- **WHEN** a handoff is inserted with username subject `Alice@Example.com`, provider, issuer and external session id, and is found by its token id
+- **WHEN** a handoff is inserted with user reference `Alice@Example.com`, provider, issuer, external session id and next location, and is found by its token id
 - **THEN** every one of those values is returned exactly as inserted
 
 #### Scenario: Backends share one schema
@@ -88,7 +88,7 @@ Deleting external identity links by user reference SHALL remove every link belon
 - **THEN** the deletion reports 0 and no link is removed
 
 ### Requirement: MFA enrolment confirmation is recorded once
-An MFA enrolment SHALL start unconfirmed. Confirming it SHALL record the confirmation time only if the enrolment is still unconfirmed, and SHALL report whether this call confirmed it. Re-enrolling SHALL replace the secret and return the enrolment to unconfirmed, with no accepted time step.
+An MFA enrolment SHALL start unconfirmed. Confirming it SHALL record the confirmation time and the confirming time step only if the enrolment is still unconfirmed, and SHALL report whether this call confirmed it. Storing a new pending enrolment SHALL replace an unconfirmed enrolment's secret and clear its accepted time step. It SHALL be refused with the already-enrolled outcome when the user's enrolment is confirmed, leaving that enrolment unchanged. The check and the write SHALL be a single conditional write.
 
 #### Scenario: First confirmation
 - **WHEN** a new enrolment is confirmed at time T
@@ -99,12 +99,17 @@ An MFA enrolment SHALL start unconfirmed. Confirming it SHALL record the confirm
 - **THEN** the second confirmation is refused
 - **AND** the recorded confirmation time is unchanged
 
-#### Scenario: Re-enrolment resets confirmation
-- **WHEN** a confirmed enrolment with an accepted time step is re-enrolled with a new secret
-- **THEN** the enrolment reads as unconfirmed with no accepted time step
+#### Scenario: Pending enrolment replaced
+- **WHEN** an unconfirmed enrolment exists and a new pending enrolment with a new secret is stored for the same user
+- **THEN** the enrolment reads as unconfirmed with the new secret and no accepted time step
+
+#### Scenario: Confirmed enrolment not replaced
+- **WHEN** a confirmed enrolment exists and a new pending enrolment is stored for the same user
+- **THEN** the store refuses it with the already-enrolled outcome
+- **AND** the enrolment still reads as confirmed with its original secret
 
 ### Requirement: A TOTP time step is accepted at most once, in increasing order
-Recording an accepted TOTP time step for an enrolment SHALL succeed only when the step is greater than the last accepted step, or when no step has been accepted. The check and the update SHALL be a single conditional write. Concurrent attempts to record the same step SHALL result in exactly one success. A refused attempt SHALL leave the last accepted step unchanged.
+Recording an accepted TOTP time step for an enrolment SHALL succeed only when the enrolment is confirmed and the step is greater than the last accepted step. The check and the update SHALL be a single conditional write. Concurrent attempts to record the same step SHALL result in exactly one success. A refused attempt SHALL leave the last accepted step unchanged.
 
 #### Scenario: Replayed step
 - **WHEN** step 1000 is accepted and step 1000 is recorded again
@@ -113,6 +118,10 @@ Recording an accepted TOTP time step for an enrolment SHALL succeed only when th
 #### Scenario: Older step after a newer one
 - **WHEN** step 1001 is accepted and step 1000 is then recorded
 - **THEN** the attempt is refused and the last accepted step remains 1001
+
+#### Scenario: Unconfirmed enrolment
+- **WHEN** a step is recorded for an enrolment that has not been confirmed
+- **THEN** the attempt is refused
 
 #### Scenario: Concurrent verifications of one step
 - **WHEN** 8 callers record step 1002 for the same enrolment at the same time
@@ -133,8 +142,26 @@ Durable stores SHALL store user references as text, and SHALL return them byte f
 Data a consumer attaches to a session SHALL be stored and returned with the same keys and values. The store SHALL NOT interpret, add or remove consumer keys.
 
 #### Scenario: Session data round trip
-- **WHEN** a session is saved with data `{"tenant": "t-9", "flags": ["a", "b"]}` and loaded
-- **THEN** the loaded data equals `{"tenant": "t-9", "flags": ["a", "b"]}`
+- **WHEN** a session is saved with data `{"tenant": "t-9", "flags": "a,b", "": "empty key"}` and loaded
+- **THEN** the loaded data equals `{"tenant": "t-9", "flags": "a,b", "": "empty key"}`
+
+### Requirement: Session identifiers are never stored
+Durable session stores SHALL NOT store a session's identifier. They SHALL store a one-way digest of it, and SHALL find, save and delete a session by the digest of the identifier they are given. A generated identifier SHALL be the table's primary key. Creating a session whose identifier's digest is already stored SHALL be refused, and SHALL leave the stored session unchanged.
+
+#### Scenario: Identifier absent from the table
+- **WHEN** a session with identifier `SESSION-SENTINEL` is created and every column of its row is read out of band
+- **THEN** no column's value equals or contains `SESSION-SENTINEL`
+- **AND** loading the session by `SESSION-SENTINEL` returns it
+
+#### Scenario: Duplicate identifier
+- **WHEN** a session is created with an identifier already in use
+- **THEN** creation returns an error
+- **AND** the existing session loads unchanged
+
+#### Scenario: Save never re-creates a deleted session
+- **WHEN** a session is loaded, then deleted, and the loaded copy is saved
+- **THEN** saving returns the session-not-found error
+- **AND** loading the session afterwards returns the session-not-found error
 
 ### Requirement: Empty federation values never match
 Deleting sessions by external issuer and external session id, or by user and external issuer, SHALL return the number of sessions deleted, and SHALL delete nothing when a required issuer or session id argument is empty. It SHALL NOT match sessions whose federation values are empty. Matching by external session id SHALL always also require the issuer to match.

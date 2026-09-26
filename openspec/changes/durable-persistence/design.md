@@ -61,11 +61,11 @@ See proposal.md for why this change exists. The constraints that shape the appro
 |---|---|---|
 | core | `sqlstore` | `database/sql` adapters, `WithTx`, options |
 | core | `migrate` | embedded security-state set (`FS()`, `Dir`, default version table name) |
-| core | `seal` | `Cipher` and `Keyring` ports, envelope, AES-256-GCM default, the three sealing wrappers |
+| core | `seal` | `Cipher` and `Keyring` ports, envelope, AES-256-GCM default, the signing-key and MFA sealing wrappers, `SessionCipher` |
 | core | `internal/pgschema` | SQL text shared by `sqlstore` and `pgx` (identical `$n` SQL) |
 | `…/pgx` | `pgx` | native pgx v5 adapters over `pgxpool.Pool` / `pgx.Tx`, `WithTx` |
 | `…/gorm` | `gorm` | gorm adapters, `WithTx`, models |
-| `…/test` | `postgrestest`, `storetest` | `RunTestPostgres`, conformance suites |
+| `…/test` | `test` (root), `storetest` | `RunTestPostgres` in `testutils.go` beside `RunTestSMTP` and `RunTestKeycloak`, conformance suites |
 
 - **Row scanning:** each adapter keeps its own. Query text is shared only where the SQL is identical.
 - **Sealing logic:** it lives once, beside the store contracts, as wrappers that seal on write and open on read. Adapters compose them (decision 9), so the invariant is not restated per adapter.
@@ -78,19 +78,19 @@ Tables are created unqualified, in the connection's `search_path`. Each owning c
 
 | Table | Primary key | Unique | Sealed | Notes |
 |---|---|---|---|---|
-| `sessions` | `id uuid` | — | `external_id_token text NOT NULL DEFAULT ''` (base64url envelope; `''` = none) | `user_id text`; `data jsonb`; `external_provider`, `external_issuer`, `external_session_id text NOT NULL DEFAULT ''`; partial indexes `(external_issuer, external_session_id) WHERE external_session_id <> ''` and `(user_id, external_issuer) WHERE external_issuer <> ''` |
+| `sessions` | `id uuid` | `id_digest` | `external_id_token text NOT NULL DEFAULT ''` (base64url envelope; `''` = none) | `id_digest bytea`: SHA-256 of the session identifier, which is never stored (decision 10); `user_id text`; `data jsonb`; `external_provider`, `external_issuer`, `external_session_id text NOT NULL DEFAULT ''`; partial indexes `(external_issuer, external_session_id) WHERE external_session_id <> ''` and `(user_id, external_issuer) WHERE external_issuer <> ''` |
 | `signing_keys` | `id uuid` | `kid` | `private_key bytea NOT NULL` (envelope over PKCS8 DER) | public JWK not sealed: it is published |
 | `login_attempts` | `id uuid` | — | — | `username text`; indexes `(username, attempted_at)` and `(attempted_at)`; the second serves deletion, which cannot range-scan the composite, so the two must not be consolidated |
-| `mfa_enrolments` | `id uuid` | `user_id` | `secret text NOT NULL` (base64url envelope) | `confirmed_at timestamptz NULL`; `last_step bigint NULL` (last accepted TOTP time step); re-enrolment replaces the secret and resets both to `NULL` |
-| `api_keys` | `id uuid` | `key_id` | — | `user_id text`; `secret_hash bytea` one-way digest |
-| `one_time_tokens` | `id uuid` | `token_id` | — | `purpose`, `subject`; `secret_hash`, `binding_hash` digests; `consumed_at timestamptz NULL`; index `(purpose, subject)` |
-| `oidc_links` | `id uuid` | `(provider, issuer, subject)` | — | `user_id text` (the opaque user reference, compared byte for byte), indexed for deletion by user; `username`, `email text` kept for operators only, never used for lookup and never keyed on; `created_at` |
-| `oidc_flows` | `id uuid` | `handle` | — | `provider`, `state`, `nonce`, `verifier`, `next text` (untrusted, stored verbatim); `expires_at`; `completed_at NULL`; index `expires_at`. `Complete(handle, provider, state)` is one conditional `UPDATE … WHERE handle = $1 AND provider = $2 AND state = $3 AND completed_at IS NULL AND expires_at > now` |
-| `oidc_handoffs` | `id uuid` | `token_id` | — | `secret_hash` digest; `user_id text` (the user reference the code was issued for; redemption loads the user by it and checks the loaded reference still matches byte for byte); `next text` (untrusted, re-resolved through the redirect allowlist at redemption); `provider`, `issuer text`; `session_id`, `id_token text NOT NULL DEFAULT ''`; `consumed_at NULL`; index `expires_at`; no roles column (roles are resolved at redemption) |
+| `mfa_enrolments` | `id uuid` | `user_id` | `secret text NOT NULL` (base64url envelope) | `confirmed_at timestamptz NULL` (`NULL` = pending); `last_step bigint NOT NULL DEFAULT 0` (last accepted TOTP time step; the contract's zero value); `created_at`. A new pending enrolment replaces a pending one and resets `last_step`; a confirmed one is never replaced (`multi-factor-auth`) |
+| `api_keys` | `id uuid` (the key's own id) | — | — | `user_id text` (the principal); `name text`; `scopes jsonb` (ordered array); `secret_digest bytea` one-way digest; `expires_at`, `revoked_at`, `last_used_at timestamptz NULL`; `created_at` |
+| `one_time_tokens` | `id uuid` (the token's own id) | — | — | `purpose`, `subject`; `secret_hash`, `binding_hash` digests; `consumed_at timestamptz NULL`; index `(purpose, subject)` |
+| `oidc_links` | `id uuid` (the link's own id) | `(provider, issuer, subject)` | — | `user_id text` (the opaque user reference, compared byte for byte), indexed for deletion by user; `username`, `email text` kept for operators only, never used for lookup and never keyed on; `created_at` |
+| `oidc_flows` | `id uuid` | `handle` | — | `provider`, `state`, `nonce`, `verifier`, `next text` (untrusted, stored verbatim); `expires_at`; `completed_at NULL`; index `expires_at`. `handle` is minted by the store from `crypto/rand` and returned by `Begin`. `Complete(handle, provider, state)` is one conditional `UPDATE … WHERE handle = $1 AND provider = $2 AND state = $3 AND state <> '' AND completed_at IS NULL AND expires_at > $now`, with `$now` from the store's clock |
+| `oidc_handoffs` | `id uuid` (the record's own id) | `token_id` | — | `secret_hash` digest; `user_id text` (the user reference the code was issued for; redemption loads the user by it and checks the loaded reference still matches byte for byte); `next text` (untrusted, re-resolved through the redirect allowlist at redemption); `provider`, `issuer text`; `session_id`, `id_token text NOT NULL DEFAULT ''`; `consumed_at NULL`; index `expires_at`; no roles column (roles are resolved at redemption) |
 
 Rules and why:
-- **Primary keys** come from each store's `id.Generator`. Default: `id.NewV7Generator()`. Override: `WithIDGenerator` on every adapter.
-- **Natural keys** (`kid`, `key_id`, `token_id`, `handle`) are unique indexes, so their format stays with the owning capability.
+- **Primary keys.** Where the record already carries its own `id.ID` (one-time tokens, API keys, links, handoffs), that id is the primary key, stored as given. Where it carries none (sessions, signing keys, login attempts, MFA enrolments, flows), the store mints one from its `id.Generator`. Default: `id.NewV7Generator()`. Override: `WithIDGenerator` on those five stores' adapters.
+- **Natural keys** (`id_digest`, `kid`, `user_id` on enrolments, `token_id`, `handle`) are unique indexes, so their format stays with the owning capability.
 - **Tests:** the id-generation capability's native-`uuid` round-trip scenario is verified in this change's `test` module.
 - **Guard columns are nullable.** Every consumption guard (`consumed_at`, `completed_at`) is nullable, because a `NOT NULL` default makes `IS NULL` unsatisfiable and silently turns single use into multiple use. The migration file carries that comment, and a migration test pins it.
 - **Empty strings instead of NULL.** Absent federation and handoff values are `NOT NULL DEFAULT ''` rather than `NULL`, so every adapter scans plain strings.
@@ -109,19 +109,22 @@ Rules and why:
   - Every refusal is reported identically.
   - The state comparison is the database's, not constant-time. Timing a 32-byte comparison behind an index seek over a network is not a practical attack, and the atomicity is not negotiable.
 - **Link insert:** `INSERT … ON CONFLICT (provider, issuer, subject) DO NOTHING`. Zero rows affected maps to the owning capability's "already exists" sentinel. The stored link is never overwritten, because the last writer would otherwise own the external identity. An identical re-insert is refused too.
-- **MFA confirmation:** `UPDATE mfa_enrolments SET confirmed_at = $2 WHERE user_id = $1 AND confirmed_at IS NULL`. Zero rows affected means already confirmed, or no enrolment.
-- **TOTP step acceptance:** `UPDATE mfa_enrolments SET last_step = $2 WHERE user_id = $1 AND (last_step IS NULL OR last_step < $2)`.
+- **MFA confirmation:** `UPDATE mfa_enrolments SET confirmed_at = $3, last_step = $2 WHERE user_id = $1 AND confirmed_at IS NULL`. Zero rows affected means already confirmed, or no enrolment.
+- **TOTP step acceptance:** `UPDATE mfa_enrolments SET last_step = $2 WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2`.
   - Zero rows affected is a replay refusal.
   - Two concurrent verifications of the same step, or of an older step, cannot both succeed.
   - The `multi-factor-auth` capability validates the code against the secret before calling it.
 - **Deletions that report a count:** deleting links by user reference returns the number of links removed. Deleting sessions by user and external issuer, and by issuer and external session id, also returns counts.
-- **Upserts by design:** signing keys upsert by `kid`, enrolments upsert by `user_id`, and sessions upsert by `id`, as their contracts define.
+- **Session writes:** `Create` is `INSERT … ON CONFLICT (id_digest) DO NOTHING`, and zero rows affected is the duplicate refusal. `Save` is an `UPDATE` only, and zero rows affected is `session.ErrSessionNotFound`, so a save racing a logout never re-creates the session (`sessions`).
+- **Pending enrolment:** `PutPending` is `INSERT … ON CONFLICT (user_id) DO UPDATE SET secret = …, created_at = …, last_step = 0 WHERE mfa_enrolments.confirmed_at IS NULL`. Zero rows affected is `mfa.ErrAlreadyEnrolled`, and the confirmed enrolment is unchanged.
+- **API key revocation:** `UPDATE … SET revoked_at = COALESCE(revoked_at, $2) WHERE id = $1`. Zero rows affected is `apikey.ErrKeyNotFound`, and the first revocation time is kept.
+- **Upserts by design:** only signing keys upsert (by `kid`), as their contract defines.
 - **Override:** none. Atomicity is the guarantee. A consumer who needs other semantics implements the contract and runs the suites.
 - **Alternative rejected:** a read followed by a write. It passes every sequential test and permits double consumption or double linking under concurrency.
 
 ### 4. Time
 
-- **Session stores:** they use their configured clock for expiry checks and counts. Default: `time.Now`. Override: `WithClock`.
+- **Session and flow stores:** they use their configured clock, sessions for expiry checks, counts and `DeleteExpired`, flows for the expiry condition in `Complete`. Default: `time.Now`. Override: `WithClock`.
 - **Other stores:** they take the comparison time from the caller (deletion cutoffs, the consumption time, a login attempt's time).
 - **Precision:** stored times are UTC at microsecond precision. The suites compare with `time.Time.Equal`.
 
@@ -181,8 +184,7 @@ Constructors do not query the database.
 - **Override:** the consumer passes any name to goose's store, or to their own tool.
 
 **Applying.**
-- **Consumer's own tool:** the consumer runs the files with goose or any tool that reads the format. The documented goose recipe is `goose.NewProvider` with a store named after the version table, then `Up` or `DownTo`.
-- **Optional helper:** a helper wraps that recipe (`Up`, `DownTo`, `Status`) and takes a version-table option.
+- **Consumer's own tool:** the consumer runs the files with goose or any tool that reads the format. The documented goose recipe is `goose.NewProvider` with a store named after the version table, then `Up` or `DownTo`. No helper wraps it (see Open Questions).
 
 **Squashing and released files.**
 - **Before the first tag:** the set may be squashed, because no deployed database carries its history yet. Once a consumer exists, a squash would break deployments.
@@ -239,6 +241,11 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
   - `ErrUnknownKeyID` is distinct, because it signals an operator who removed a key that values still need.
 - **Replacing the default:** any `Cipher`, for example one backed by a key management service, replaces the AES-256-GCM implementation wholesale. No cloud SDK becomes a dependency.
 
+**Composition.**
+- **Sessions:** the durable session stores compose the existing `session.NewEncryptedStore` with `seal.SessionCipher(c)`, an adapter from `seal.Cipher` to `session.Cipher`. The sealing rule for sessions stays in one place, owned by `sessions`.
+- **Signing keys and MFA:** `seal` holds one wrapper per contract, sealing on write and opening on read. Re-seal on read calls a small exported port that each adapter implements with the conditional write, and that port writes nothing when a caller's transaction is ambient (decision 10).
+- **No unsealed durable store is exported:** each adapter's exported constructor for these three stores takes the cipher and returns the wrapped store. The unwrapped store is unexported.
+
 **Envelope.**
 - **Layout:** `magic(4) | keyIDLen(1) | keyID | nonce(12) | ciphertext‖tag`, with a random nonce for each seal.
 - **What the tag covers:** the magic turns "not a sealed value" into a clear error. The header is not covered by the GCM tag, but a tampered key id resolves to the wrong key (or `ErrUnknownKeyID`), and a tampered nonce fails the tag.
@@ -248,11 +255,12 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 
 | Sealed value | AAD |
 |---|---|
-| signing key | `"scrty:signing_key:" + kid` |
-| MFA secret | `"scrty:mfa_enrolment:" + user_id` |
-| session ID token | `"scrty:session_id_token:" + session id` |
+| signing key | `"scrty/signingkey:private:" + kid` |
+| MFA secret | `"scrty/mfa:secret:" + user_id` |
+| session ID token | `"scrty/session:external-id-token:" + session identifier`, the prefix the existing `session.NewEncryptedStore` already binds with |
 
 - **What it stops:** an attacker with `UPDATE` but no key who copies a known ciphertext into a victim's row. The per-table prefix also stops a value moving between tables.
+- **One scheme:** the signing-key and MFA prefixes follow the `scrty/<package>:<field>:` form the `sessions` wrapper already stores, so the three read as one convention.
 - **Stored format:** these strings are part of the stored format. Changing one makes every existing value unopenable, indistinguishable from tampering, so they are constants with a golden test.
 - **Known limit, stated:** the AAD covers only the sealed column, not the whole row. For example, the public JWK beside a sealed key is not bound to it.
 
@@ -265,7 +273,7 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 **Rotation.**
 - **Default:** when `Open` reports a key id other than the active one, the signing-key and MFA stores re-seal the value, ignoring any failure.
 - **Override:** `WithResealOnRead(false)`.
-- **Sessions are never re-sealed on read.** Their store's write is an upsert, so a re-seal racing a concurrent logout's delete would insert the session again. Sessions re-seal naturally on their next write and expire absolutely.
+- **Sessions are never re-sealed on read.** The `sessions` capability forbids a load from rewriting the record, and a load is the hottest path in the library. Sessions re-seal naturally on their next write and expire absolutely.
 - **Consequence, stated:** a retired key is provably unused only once every row sealed under it has been read or rewritten. Removing it earlier makes those rows fail closed with `ErrUnknownKeyID`.
 
 ### 10. Departures from the default design, and why
@@ -276,10 +284,11 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 | An own `WithTx` plus a resolver option on each adapter | (a) settled decision |
 | Adapters that hold sealed columns take the `Cipher` as a required constructor argument, and no unsealed constructor for those stores is exported | (a) constructors are the primary API and wiring mistakes must fail at construction, so a check that runs only inside DI wiring would never run for most consumers. (b) A design that seals through wrappers composed at wiring time must still export the unsealed store constructors. Any caller who uses those constructors directly stores plaintext, with nothing to stop or warn them |
 | The goose helper is not in the core module | (a) module-layout: `github.com/pressly/goose/v3` v3.28.0's `go.mod` requires `github.com/jackc/pgx/v5`, `github.com/go-sql-driver/mysql`, ClickHouse, MSSQL, Vertica, YDB and SQLite drivers. A core requirement on goose would put pgx in every core-only consumer's module graph, which the module-layout spec forbids |
-| Re-seal on read is a conditional write (`UPDATE … SET col = $new WHERE id = $1 AND col = $old`), not a re-run of the store's upsert | (b) A re-seal that reuses the store's upsert re-inserts a session deleted between the read and the re-seal, which is why sessions are never re-sealed on read. The same upsert re-seal on MFA enrolments has the same kind of failure: a re-enrolment committed between the read and the re-seal is overwritten with the old secret, and the error is discarded, so nothing reports it |
+| Re-seal on read is a conditional write (`UPDATE … SET col = $new WHERE id = $1 AND col = $old`), not a re-run of the store's upsert | (b) A re-seal that re-runs the store's write loses concurrent changes: on MFA enrolments, a new pending enrolment committed between the read and the re-seal is overwritten with the old secret, and the error is discarded, so nothing reports it |
 | Re-seal on read is skipped when the read runs inside a caller's transaction | (b) The re-seal discards its write failure, and a failed statement aborts a PostgreSQL transaction (the caller's next statement fails with 25P02, and `COMMIT` becomes a rollback, which is the reason multi-statement operations use savepoints in decision 5). A best-effort write could therefore silently discard the caller's unrelated work |
 | Re-seal on read can be switched off (`WithResealOnRead`) | (a) library-design: every default is replaceable |
 | The race and ambient-transaction suites are shared suites, run for every durable store, with a harness that declares its pool width | (a) this change's settled scope for store-conformance. A portable race case built on a bare store factory cannot size the connection pool, so it passes even against a read-then-write implementation. Declaring the pool width in the harness, and refusing a narrower pool, removes that gap |
+| Sessions are keyed by a SHA-256 digest of the session identifier (`id_digest`), behind a generated uuid primary key, and the identifier itself is never stored | (b) The session identifier is a live bearer credential (32 random bytes). Stored as the key, as it is by default, a database dump or read access to the table replays every live session, which defeats this change's goal that a dump is not usable. API keys, one-time tokens and handoff secrets are already stored only as digests. A plain SHA-256 suffices because the identifier carries 256 bits of entropy. The ID token's AAD still uses the plaintext identifier, which the wrapper holds in memory. Chosen by the user over the raw key |
 | Links can be deleted by user reference, and the number of links removed is returned | Addition required by the `identity-linking` capability (unlinking every external identity of a user) |
 | MFA enrolments record confirmation (`confirmed_at`) and the last accepted TOTP step (`last_step`). Both are set by conditional updates, and the step race has its own conformance suite | Addition required by the `multi-factor-auth` capability (unconfirmed enrolments must not act as a second factor, and a TOTP code must not be accepted twice) |
 
@@ -290,12 +299,12 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 - **Tests that live here:** the integration tests for the core `database/sql` adapters, the conformance runs against core's in-memory defaults, and the `pgx` and `gorm` adapter runs.
 - **Goose recipe:** a compiled `ExampleApplySecurityStateMigrations` shows the goose recipe, so CI keeps it compiling.
 
-**`postgrestest.RunTestPostgres(t *testing.T, opts ...Option) *sql.DB`**, with a DSN accessor for pgx and gorm tests:
-- **Container:** one container per call, on a pinned PostgreSQL 18 alpine image (exact minor tag) by default. Override: `WithImage`.
+**`test.RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn`**, in `test/testutils.go` as the `use-testcontainers` skill requires, returning `PostgresConn{DB *sql.DB; DSN string}` in the shape of the existing `SMTPConn` and `KeycloakConn`, so pgx and gorm tests open their own handle from `DSN`:
+- **Container:** one container per call, on a pinned PostgreSQL 18 alpine image (exact minor tag) by default. Override: `WithTestPostgresImage`.
 - **CI versions:** the oldest and newest community-supported majors, currently 15 and 18. 19 is added and becomes the default when it is generally available; 15 is dropped after its end of life on 11 Nov 2027.
-- **Migrations:** `WithMigrations(fsys, dir, versionTable)` applies a set with goose.
+- **Migrations:** `WithTestPostgresMigrations(fsys, dir, versionTable)` applies a set with goose.
 - **Cleanup:** it runs `DownTo(0)` and fails the test on error.
-- **Finalizers:** `WithFinalizeScripts(sql...)` runs scripts after rollback, in declared order under one cleanup, within a 30-second teardown budget.
+- **Finalizers:** `WithTestPostgresFinalizeScripts(sql...)` runs scripts after rollback, in declared order under one cleanup, within a 30-second teardown budget.
 
 **`storetest` suites.**
 
@@ -310,6 +319,7 @@ type DurableHarness[S any] struct {
 ```
 
 - **Portable suites:** one per store contract. The in-memory defaults, all three adapters and consumers' own stores run them.
+- **Where they live:** the OIDC suites already exist in `test/oidc` (`RunFlowStoreSuite`, `RunLinkStoreSuite`, `RunHandoffStoreSuite`) and stay there. This change adds `storetest` suites for the six contracts that have none yet (sessions, one-time tokens and their reaper, login attempts and their reaper, signing keys, MFA enrolments, API keys), each run against its in-memory default.
 - **Durable suites** (`RunConsumeRace`, `RunLinkInsertRace`, `RunStepAcceptRace`, `RunAmbientTx`, `RunSealedColumns`): every nil field fails the suite immediately. There is no skip, because an obligation that can be skipped is green in CI.
 - **Race suites:**
   - they start K records × N racers (defaults 50 × 8) off one barrier, because a single contended row serialises on PostgreSQL's row lock and hides a read-then-write almost every run;
@@ -342,8 +352,7 @@ type DurableHarness[S any] struct {
 
 ## Risks / Trade-offs
 
-- [This change is numbered before the changes that define the MFA, API key and OIDC store contracts] → See the apply-order recommendation in Open Questions.
-- [Unqualified table names in the consumer's `search_path` can collide with a consumer's own `sessions` or `api_keys` table] → The consumer can point the connection's `search_path` at a dedicated schema. This is an open question.
+- [Unqualified table names in the consumer's `search_path` can collide with a consumer's own `sessions` or `api_keys` table] → The consumer can point the connection's `search_path` at a dedicated schema (Open Questions).
 - [A single-statement write that fails unexpectedly inside a caller's transaction aborts it] → PostgreSQL semantics, stated on `WithTx`. Refusals never cause it, and multi-statement operations are contained.
 - [A retired key cannot be proven unused, and there is no batch re-seal] → Re-seal on read shrinks the set. The godoc says to keep retired keys until every row has been touched.
 - [A live session sealed under a removed key fails closed until its absolute expiry] → The session store reports it as unreadable, distinct from not found, so the `sessions` capability can make it a re-login rather than a server error.
@@ -357,13 +366,5 @@ Not applicable: this is a new library with no consumers and no tags. Once the fi
 ## Open Questions
 
 - **Goose helper: resolved.** No helper ships in any module. The recipe is documented and compiled as an `Example` in the `test` module (decision 11).
-- **Apply order. Recommendation: split.** This change would keep:
-  - the shared pieces: `seal`, the transaction plumbing, the migration conventions, the `test` module with `RunTestPostgres`;
-  - the harness, the transaction and sealed-column suites;
-  - the adapters and tables for contracts that already exist when it is applied: sessions, signing keys, login attempts and one-time tokens.
-
-  Each later change (`auth-methods` for MFA enrolments and API keys, `oidc-brokering` for links, flows and handoffs) would add its own adapters, its migration file and its suite runs, alongside the contract it defines.
-  - **Why split:** an adapter is never written ahead of its contract, and each contract's durable behaviour is reviewed with the change that motivates it.
-  - **Migration files:** before the first tag the set can be squashed into one file, so splitting costs nothing there.
-  - **The alternative:** keep this change whole and apply it after `auth-methods` and `oidc-brokering`. It also works, but it leaves those changes shipping in-memory stores only for a while, and it defers the durable proof of their contracts.
-  - **If split:** the specs here stay as written, and only the task breakdown moves.
+- **Apply order: resolved, kept whole.** When this change was drafted, the MFA, API key and OIDC contracts did not exist yet, so splitting it was recommended. By the time it was applied, `auth-methods` and `oidc-brokering` had been archived with their contracts and in-memory stores final. The alternative the recommendation named, which applies this change whole after them, is therefore the one taken, and every adapter here is written against an existing contract.
+- **Unqualified table names: resolved as a stated limit.** A consumer whose own tables collide points the connection's `search_path` at a dedicated schema. The migrations and stores stay unqualified, so the consumer can pick the schema at connection time.
