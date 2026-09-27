@@ -34,5 +34,5 @@ removes the decision from `design.md` instead of implementing it.
 
 ## 5. Final gate
 
-- [ ] 5.1 Main session: if `mfa-enrolment-path` has archived first, update this change's `multi-factor-auth` delta to carry its text of the verify requirement (and otherwise record in `mfa-enrolment-path` that its delta must carry this change's text), then `openspec validate request-input-and-log-flush --strict`.
+- [x] 5.1 Main session: if `mfa-enrolment-path` has archived first, update this change's `multi-factor-auth` delta to carry its text of the verify requirement (and otherwise record in `mfa-enrolment-path` that its delta must carry this change's text), then `openspec validate request-input-and-log-flush --strict`.
 - [ ] 5.2 Run across every module in `go.work`: `go test -race -count=1 ./...`, `go vet ./...`, `gofmt -l .` empty, and `golangci-lint run ./...` clean. Then run a whole-branch review against every requirement in this change's delta specs and resolve its findings before archive.

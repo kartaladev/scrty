@@ -7,6 +7,7 @@ The endpoint SHALL be given a token generator at construction, and a chain that 
 
 On a valid code the endpoint SHALL:
 - resolve the session's MFA challenge, which records the second-factor-satisfied time;
+- for a session that entered the MFA pending state through the enrolment path, restore its normal deadlines, as the `sessions` capability defines;
 - rotate the session handle;
 - write the response itself, through a replaceable responder that receives the rotated session;
 - answer with a success status without passing the request to later handlers.
@@ -19,6 +20,8 @@ whole response, for example to set a cookie instead.
 Rotation SHALL NOT strand the caller: a caller that completes its second factor SHALL be able to
 make an authenticated request afterwards without signing in again.
 
+A session SHALL become a full session through the enrolment path only by this endpoint: a confirmed enrolment alone SHALL NOT satisfy the challenge.
+
 On any failure the challenge SHALL stay pending, the handle SHALL be unchanged, and the error SHALL propagate to the consumer's error handling unchanged.
 
 #### Scenario: Successful verification
@@ -26,6 +29,14 @@ On any failure the challenge SHALL stay pending, the handle SHALL be unchanged, 
 - **THEN** the session reports no pending challenge and a second-factor-satisfied time
 - **AND** the previous session handle no longer loads
 - **AND** the response carries a credential naming the rotated session, so the next request authenticates
+
+#### Scenario: Upgrade from the enrolment path
+- **WHEN** a session created at 09:00 entered the enrolment path, confirmed its enrolment at 09:08, and posts a fresh valid code at 09:09 with a 12-hour absolute timeout
+- **THEN** the rotated session reports a satisfied second factor and an absolute deadline of 21:00
+
+#### Scenario: Confirmation alone is not a second factor
+- **WHEN** a session's enrolment has just been confirmed through the path and it requests `/invoices`
+- **THEN** an MFA challenge error is returned
 
 #### Scenario: The caller is not stranded by rotation
 - **WHEN** a bearer caller completes its second factor and then requests a protected route with the credential the verify response returned
