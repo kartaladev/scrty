@@ -181,7 +181,7 @@ When a session's recorded first factor has the same channel as the method, the v
 - **THEN** verification proceeds and succeeds
 
 ### Requirement: The verify endpoint resolves the challenge and rotates the session
-The verify endpoint SHALL match only POST requests to its path, and SHALL read the code from the `code` form field. The default path SHALL be `/mfa/totp`, replaceable by an option. A request with no session SHALL be refused as authentication required, and so SHALL a request whose session carries no resolved caller — the credential the endpoint issues names a principal, so a session without one cannot be answered. Both refusals SHALL happen before the code is read.
+The verify endpoint SHALL match only POST requests to its path, and SHALL read the code from the `code` field of a URL-encoded POST body only, never from the URL query. A body that carries no code, is not a URL-encoded form, or does not parse SHALL be refused as missing credentials before any code is checked, and SHALL NOT be counted against the verification throttle; the endpoint's documentation SHALL state that only a URL-encoded body is read. The default path SHALL be `/mfa/totp`, replaceable by an option. A request with no session SHALL be refused as authentication required, and so SHALL a request whose session carries no resolved caller — the credential the endpoint issues names a principal, so a session without one cannot be answered. Both refusals SHALL happen before the code is read.
 
 The endpoint SHALL be given a token generator at construction, and a chain that enables it without one SHALL fail to assemble: the endpoint's whole purpose on success is to hand back a credential for the rotated session, and it has none to issue without a generator.
 
@@ -247,6 +247,19 @@ On any failure the challenge SHALL stay pending, the handle SHALL be unchanged, 
 #### Scenario: Consumer path
 - **WHEN** the endpoint is configured with path `/auth/second-factor` and a pending session posts a valid code there
 - **THEN** the challenge is resolved
+
+#### Scenario: Code in the query string
+- **WHEN** a session with the MFA challenge pending posts to the verify path with a valid code in the query string and an empty body
+- **THEN** it is refused as missing credentials
+- **AND** the challenge stays pending and no failure is counted
+
+#### Scenario: Code in the query overrides nothing
+- **WHEN** a pending session posts a wrong code in the body and a valid code in the query string
+- **THEN** the invalid-code error propagates and the challenge stays pending
+
+#### Scenario: Unreadable body
+- **WHEN** a pending session posts a valid code as a multipart form
+- **THEN** it is refused as missing credentials, the challenge stays pending, and no failure is counted
 
 ### Requirement: A session with a pending MFA challenge reaches no protected handler
 A request whose session has the MFA challenge pending SHALL be refused with an MFA challenge error carrying that session. The refused request SHALL NOT reach later handlers. Two requests are exempt: the verify endpoint, and the logout endpoint, wherever it is placed in the chain relative to the gate. A session with a pending challenge SHALL always be able to log out, and logging out SHALL end that session, pending challenge included.

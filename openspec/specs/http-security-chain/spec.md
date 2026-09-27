@@ -383,6 +383,12 @@ A written record SHALL carry the count suppressed before it when that count is n
 - replace the reporter;
 - flush pending counts, for example at shutdown.
 
+Flushing the chain's refusal logs SHALL report the pending counts of every log sampler the chain holds, not only its own:
+- the samplers of the interceptors it built, including the second-factor verification throttle, the enrolment path and every per-flow source guard (the chain builds each guard itself; a consumer supplies at most the limiter behind it);
+- the samplers of every component it was given that can flush its refusal logs: the policies registered on its policy engine, the authenticators of form login and basic authentication, and the OIDC manager and handoff manager.
+
+A component the consumer holds but never gave the chain is not reached, and the chain's documentation SHALL say so and name the components that flush otherwise.
+
 The interval SHALL govern only the chain's own records. It SHALL NOT change which requests are refused, or how any other component samples its logs. A request that ended before the rate-limit check SHALL be logged at DEBUG, unsampled.
 
 #### Scenario: Flood from one source
@@ -404,6 +410,14 @@ The interval SHALL govern only the chain's own records. It SHALL NOT change whic
 #### Scenario: Sampling disabled
 - **WHEN** the interval is set to zero and a source is throttled 5 times
 - **THEN** five warnings are written
+
+#### Scenario: One flush reaches the components
+- **WHEN** a chain with form login, the second-factor verify endpoint, a magic-link source guard and OIDC login holds suppressed counts in the password authenticator, the verification throttle, the guard and the OIDC manager, and the chain's refusal logs are flushed
+- **THEN** each of those components' reporters receives its pending count
+
+#### Scenario: Registered policy flushed
+- **WHEN** a second-factor policy registered on the chain's engine has suppressed refusals and the chain's refusal logs are flushed
+- **THEN** the policy's reporter receives its pending count
 
 ### Requirement: Redemption flows plug into named seams
 The chain SHALL provide the seams that interceptors from other capabilities use, without those interceptors being part of this capability:
