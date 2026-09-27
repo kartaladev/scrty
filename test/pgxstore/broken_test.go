@@ -2,18 +2,11 @@ package pgxstore_test
 
 import (
 	"context"
-	"errors"
-	"os"
-	"os/exec"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
@@ -24,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -32,158 +26,148 @@ import (
 // that variant alone.
 const brokenVar = "PGXSTORE_BROKEN"
 
-// brokenVariant is a durable store carrying one deliberate defect, the run
-// that must fail, and the case of it that must catch the defect.
-type brokenVariant struct {
-	name      string
-	run       func(t *testing.T)
-	failsCase string
-	// failsWith, when set, is text the child's output must carry.
-	failsWith string
-}
-
 // brokenVariants are the defects the pgx runs must catch. None of them is
 // exported from the pgx module: each is built here, over the exported store
 // or through the pool.
-var brokenVariants = []brokenVariant{
+var brokenVariants = []storefix.BrokenVariant{
 	{
-		name: "session-save-upserts",
-		run: func(t *testing.T) {
+		Name: "session-save-upserts",
+		Run: func(t *testing.T) {
 			db := migrated(t)
-			c := testCipher(t)
+			c := storefix.TestCipher(t)
 			t.Run("pgx", func(t *testing.T) {
 				storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
-					return saveUpsertsStore{newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(now))}
+					return storefix.SaveUpsertsStore{Store: newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(now))}
 				})
 			})
 		},
-		failsCase: "saving a deleted session is not found and does not bring it back",
+		FailsCase: "saving a deleted session is not found and does not bring it back",
 	},
 	{
-		name: "onetime-read-then-write-consume",
-		run: func(t *testing.T) {
+		Name: "onetime-read-then-write-consume",
+		Run: func(t *testing.T) {
 			h := durableHarness(migrated(t),
 				func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) readThenWriteConsume {
 					return readThenWriteConsume{OneTimeStore: newOneTimeStore(t, pool, opts...), pool: pool}
 				})
 			t.Run("pgx", func(t *testing.T) {
-				storetest.RunConsumeRace(t, h, consumeRace[readThenWriteConsume]())
+				storetest.RunConsumeRace(t, h, storefix.ConsumeRace[readThenWriteConsume]())
 			})
 		},
-		failsCase: "exactly one consumption wins per record",
-		failsWith: "more than one successful consumption",
+		FailsCase: "exactly one consumption wins per record",
+		FailsWith: "more than one successful consumption",
 	},
 	{
-		name: "signingkey-identity-cipher",
-		run: func(t *testing.T) {
+		Name: "signingkey-identity-cipher",
+		Run: func(t *testing.T) {
 			db := migrated(t)
 			h := durableHarness(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) signingkey.KeyStore {
-				return newSigningKeyStore(t, pool, identityCipher{}, opts...)
+				return newSigningKeyStore(t, pool, storefix.IdentityCipher{}, opts...)
 			})
 			t.Run("pgx", func(t *testing.T) {
 				// The keyring the suite hands over is ignored: every store
 				// "seals" through the identity cipher.
-				storetest.RunSealedColumns(t, h, sealedSigningKeys(db,
+				storetest.RunSealedColumns(t, h, storefix.SealedSigningKeys(db.Pool,
 					func(t *testing.T, pool *pgxpool.Pool, _ seal.Cipher) signingkey.KeyStore {
-						return newSigningKeyStore(t, pool, identityCipher{})
+						return newSigningKeyStore(t, pool, storefix.IdentityCipher{})
 					}))
 			})
 		},
-		failsCase: "the stored value, decoded, does not hold the plaintext",
-		failsWith: "the column holds the plaintext",
+		FailsCase: "the stored value, decoded, does not hold the plaintext",
+		FailsWith: "the column holds the plaintext",
 	},
 	{
-		name: "mfa-identity-cipher",
-		run: func(t *testing.T) {
+		Name: "mfa-identity-cipher",
+		Run: func(t *testing.T) {
 			db := migrated(t)
 			h := durableHarness(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) mfa.EnrolmentStore {
-				return newEnrolmentStore(t, pool, identityCipher{}, opts...)
+				return newEnrolmentStore(t, pool, storefix.IdentityCipher{}, opts...)
 			})
 			t.Run("pgx", func(t *testing.T) {
-				storetest.RunSealedColumns(t, h, sealedEnrolments(db,
+				storetest.RunSealedColumns(t, h, storefix.SealedEnrolments(db.Pool,
 					func(t *testing.T, pool *pgxpool.Pool, _ seal.Cipher) mfa.EnrolmentStore {
-						return newEnrolmentStore(t, pool, identityCipher{})
+						return newEnrolmentStore(t, pool, storefix.IdentityCipher{})
 					}))
 			})
 		},
-		failsCase: "the stored value, decoded, does not hold the plaintext",
-		failsWith: "the decoded column holds the plaintext",
+		FailsCase: "the stored value, decoded, does not hold the plaintext",
+		FailsWith: "the decoded column holds the plaintext",
 	},
 	{
-		name: "signingkey-missing-aad-cipher",
-		run: func(t *testing.T) {
+		Name: "signingkey-missing-aad-cipher",
+		Run: func(t *testing.T) {
 			db := migrated(t)
-			c := missingAADCipher{testCipher(t)}
+			c := storefix.MissingAADCipher{Cipher: storefix.TestCipher(t)}
 			h := durableHarness(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) signingkey.KeyStore {
 				return newSigningKeyStore(t, pool, c, opts...)
 			})
 			t.Run("pgx", func(t *testing.T) {
-				storetest.RunSealedColumns(t, h, sealedSigningKeys(db,
+				storetest.RunSealedColumns(t, h, storefix.SealedSigningKeys(db.Pool,
 					func(t *testing.T, pool *pgxpool.Pool, c seal.Cipher) signingkey.KeyStore {
-						return newSigningKeyStore(t, pool, missingAADCipher{c})
+						return newSigningKeyStore(t, pool, storefix.MissingAADCipher{Cipher: c})
 					}))
 			})
 		},
-		failsCase: "a sealed value copied to another record does not open there",
+		FailsCase: "a sealed value copied to another record does not open there",
 	},
 	{
-		name: "mfa-missing-aad-cipher",
-		run: func(t *testing.T) {
+		Name: "mfa-missing-aad-cipher",
+		Run: func(t *testing.T) {
 			db := migrated(t)
-			c := missingAADCipher{testCipher(t)}
+			c := storefix.MissingAADCipher{Cipher: storefix.TestCipher(t)}
 			h := durableHarness(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) mfa.EnrolmentStore {
 				return newEnrolmentStore(t, pool, c, opts...)
 			})
 			t.Run("pgx", func(t *testing.T) {
 				// Every store the suite builds seals through the default
 				// cipher over the suite's keyring, with the AAD dropped.
-				storetest.RunSealedColumns(t, h, sealedEnrolments(db,
+				storetest.RunSealedColumns(t, h, storefix.SealedEnrolments(db.Pool,
 					func(t *testing.T, pool *pgxpool.Pool, c seal.Cipher) mfa.EnrolmentStore {
-						return newEnrolmentStore(t, pool, missingAADCipher{c})
+						return newEnrolmentStore(t, pool, storefix.MissingAADCipher{Cipher: c})
 					}))
 			})
 		},
-		failsCase: "a sealed value copied to another record does not open there",
+		FailsCase: "a sealed value copied to another record does not open there",
 	},
 	{
-		name: "mfa-read-then-write-accept-step",
-		run: func(t *testing.T) {
-			c := testCipher(t)
+		Name: "mfa-read-then-write-accept-step",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
 			h := durableHarness(migrated(t),
 				func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) readThenWriteAcceptStep {
 					return readThenWriteAcceptStep{EnrolmentStore: newEnrolmentStore(t, pool, c, opts...), pool: pool}
 				})
 			t.Run("pgx", func(t *testing.T) {
-				storetest.RunStepAcceptRace(t, h, stepRace[readThenWriteAcceptStep]())
+				storetest.RunStepAcceptRace(t, h, storefix.StepRace[readThenWriteAcceptStep]())
 			})
 		},
-		failsCase: "exactly one acceptance of a step wins per record",
-		failsWith: "more than one successful acceptance of a step",
+		FailsCase: "exactly one acceptance of a step wins per record",
+		FailsWith: "more than one successful acceptance of a step",
 	},
 	{
-		name: "link-upsert-insert",
-		run: func(t *testing.T) {
+		Name: "link-upsert-insert",
+		Run: func(t *testing.T) {
 			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) upsertLinkInsert {
 				return upsertLinkInsert{LinkStore: newLinkStore(t, pool, opts...), pool: pool}
 			})
 			t.Run("pgx", func(t *testing.T) {
-				storetest.RunLinkInsertRace(t, h, linkRace[upsertLinkInsert]())
+				storetest.RunLinkInsertRace(t, h, storefix.LinkRace[upsertLinkInsert]())
 			})
 		},
-		failsCase: "exactly one insert wins per record",
-		failsWith: "more than one successful insert",
+		FailsCase: "exactly one insert wins per record",
+		FailsWith: "more than one successful insert",
 	},
 	{
-		name: "session-store-bypasses-the-transaction",
-		run: func(t *testing.T) {
-			c := testCipher(t)
+		Name: "session-store-bypasses-the-transaction",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
 			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, _ ...pgxstore.Option) session.Store {
 				return newSessionStore(t, pool, c, pgxstore.WithTxResolver(noTransaction))
 			})
-			t.Run("pgx", func(t *testing.T) { storetest.RunAmbientTx(t, h, sessionAmbient()) })
+			t.Run("pgx", func(t *testing.T) { storetest.RunAmbientTx(t, h, storefix.SessionAmbient()) })
 		},
-		failsCase: "a write inside a rolled back transaction is discarded",
-		failsWith: "the store did not write in it",
+		FailsCase: "a write inside a rolled back transaction is discarded",
+		FailsWith: "the store did not write in it",
 	},
 }
 
@@ -224,18 +208,6 @@ func (s readThenWriteAcceptStep) AcceptStep(ctx context.Context, user identity.U
 	return err == nil, err
 }
 
-// saveUpsertsStore creates a session its Save does not find, so a save racing
-// a logout writes the revoked session back.
-type saveUpsertsStore struct{ session.Store }
-
-func (s saveUpsertsStore) Save(ctx context.Context, sess *session.Session) error {
-	err := s.Store.Save(ctx, sess)
-	if errors.Is(err, session.ErrSessionNotFound) {
-		return s.Create(ctx, sess)
-	}
-	return err
-}
-
 // readThenWriteConsume consumes by reading the token, checking it is unspent,
 // and then updating it unconditionally: two racers can both read "unspent"
 // and both write.
@@ -260,59 +232,15 @@ func (s readThenWriteConsume) Consume(ctx context.Context, tokenID id.ID, at tim
 // the child half of TestSuitesCatchBrokenPgxStores. Without a variant named it
 // skips.
 func TestBrokenPgxStore(t *testing.T) {
-	name, named := os.LookupEnv(brokenVar)
-	if !named {
-		t.Skipf("no variant named in %s; run through TestSuitesCatchBrokenPgxStores", brokenVar)
-	}
-
-	for _, v := range brokenVariants {
-		if v.name == name {
-			t.Logf("variant under test: %q", name)
-			v.run(t)
-			return
-		}
-	}
-	t.Fatalf("no broken variant is named %q", name)
+	storefix.RunBrokenChild(t, brokenVar, "TestSuitesCatchBrokenPgxStores", brokenVariants)
 }
 
-// failedCase matches a failed case of the child's pgx run.
-var failedCase = regexp.MustCompile(`--- FAIL: TestBrokenPgxStore/pgx/(\S+)`)
-
-// TestSuitesCatchBrokenPgxStores checks that the suites the pgx runs use fail
-// against each broken variant, at the case guarding its defect. Each variant
-// runs in its own process, because a failing suite reports through its own
-// *testing.T and would fail this test with it.
+// TestSuitesCatchBrokenPgxStores checks that the suites the pgx runs use
+// fail against each broken variant, at the case guarding its defect. Each
+// variant runs in its own process, because a failing suite reports through its
+// own *testing.T and would fail this test with it.
 func TestSuitesCatchBrokenPgxStores(t *testing.T) {
 	t.Parallel()
 
-	for _, v := range brokenVariants {
-		t.Run(v.name, func(t *testing.T) {
-			t.Parallel()
-
-			//nolint:gosec // G204: this test binary re-executed with fixed arguments
-			cmd := exec.CommandContext(t.Context(), os.Args[0],
-				"-test.run=^TestBrokenPgxStore$", "-test.count=1", "-test.v", "-test.timeout=5m")
-			cmd.Env = append(os.Environ(), brokenVar+"="+v.name)
-			out, err := cmd.CombinedOutput()
-			output := string(out)
-
-			// The child names its variant, so it skips only when
-			// RunTestPostgres does: Docker is unavailable outside CI.
-			if strings.Contains(output, "--- SKIP: TestBrokenPgxStore") {
-				t.Skipf("the child skipped, so nothing was checked:\n%s", output)
-			}
-			require.Error(t, err, "the suite passed a store carrying the %s defect:\n%s", v.name, output)
-
-			var failed []string
-			for _, m := range failedCase.FindAllStringSubmatch(output, -1) {
-				failed = append(failed, m[1])
-			}
-			t.Logf("cases failed by %s: %v", v.name, failed)
-			assert.Contains(t, failed, strings.ReplaceAll(v.failsCase, " ", "_"),
-				"the suite failed, but not at the case that guards this defect:\n%s", output)
-			if v.failsWith != "" {
-				assert.Contains(t, output, v.failsWith, "the failure does not report the violation")
-			}
-		})
-	}
+	storefix.CatchBrokenVariants(t, brokenVar, "TestBrokenPgxStore", "pgx", brokenVariants)
 }

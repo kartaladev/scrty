@@ -6,6 +6,7 @@ import (
 
 	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -42,8 +43,8 @@ func NewAttemptStore(db *gormdb.DB, opts ...Option) (*AttemptStore, error) {
 func (s *AttemptStore) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	const op = "record login failure"
 
-	if err := checkStorable(op, textField{"username", username}); err != nil {
-		return err
+	if err := storekit.CheckStorable(storekit.Text("username", username)); err != nil {
+		return failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
@@ -54,7 +55,8 @@ func (s *AttemptStore) RecordFailure(ctx context.Context, username string, at ti
 	if err != nil {
 		return failed(op, err)
 	}
-	if err := q.Create(&loginAttemptRow{ID: rowID, Username: username, AttemptedAt: ts(at)}).Error; err != nil {
+	row := loginAttemptRow{ID: rowID, Username: username, AttemptedAt: storekit.Time(at)}
+	if err := q.Create(&row).Error; err != nil {
 		return failed(op, err)
 	}
 
@@ -63,7 +65,7 @@ func (s *AttemptStore) RecordFailure(ctx context.Context, username string, at ti
 
 // Reset clears username's failures; one with none is not an error.
 func (s *AttemptStore) Reset(ctx context.Context, username string) error {
-	if !storable(username) {
+	if !storekit.Storable(username) {
 		return nil
 	}
 
@@ -76,7 +78,7 @@ func (s *AttemptStore) Reset(ctx context.Context, username string) error {
 func (s *AttemptStore) FailureCount(ctx context.Context, username string, since time.Time) (int, error) {
 	const op = "count login failures"
 
-	if !storable(username) {
+	if !storekit.Storable(username) {
 		return 0, nil
 	}
 
@@ -85,7 +87,9 @@ func (s *AttemptStore) FailureCount(ctx context.Context, username string, since 
 		return 0, failed(op, err)
 	}
 	var n int64
-	err = q.Model(&loginAttemptRow{}).Where("username = ? AND attempted_at > ?", username, ts(since)).Count(&n).Error
+	err = q.Model(&loginAttemptRow{}).
+		Where("username = ? AND attempted_at > ?", username, storekit.Time(since)).
+		Count(&n).Error
 	if err != nil {
 		return 0, failed(op, err)
 	}
@@ -101,7 +105,8 @@ func (s *AttemptStore) DeleteAttemptsBefore(ctx context.Context, retainSince tim
 		return 0, policy.ErrRetainSinceRequired
 	}
 
-	return deleteWhere[loginAttemptRow](ctx, s.c, "purge login failures", "attempted_at < ?", ts(retainSince))
+	return deleteWhere[loginAttemptRow](ctx, s.c, "purge login failures",
+		"attempted_at < ?", storekit.Time(retainSince))
 }
 
 var (

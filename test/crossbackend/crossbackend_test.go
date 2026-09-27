@@ -7,7 +7,6 @@ package crossbackend_test
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"testing"
 	"time"
@@ -33,6 +32,7 @@ import (
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // crossBackendPoolSize is how many connections a pool opened in this package
@@ -113,16 +113,7 @@ func openGormDB(t *testing.T, dsn string) *gormdb.DB {
 func testCipher(t *testing.T) seal.Cipher {
 	t.Helper()
 
-	key := make([]byte, seal.KeySize)
-	_, err := rand.Read(key)
-	require.NoError(t, err)
-
-	kr, err := seal.NewKeyring(seal.WithEncryptionKey("k1", key))
-	require.NoError(t, err)
-	c, err := seal.NewAEADCipher(kr)
-	require.NoError(t, err)
-
-	return c
+	return storefix.CipherOf(t, seal.WithEncryptionKey("k1", storefix.SealKey(t)))
 }
 
 // crossBackendID derives a stable identifier from seed: unique per seed and

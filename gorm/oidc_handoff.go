@@ -7,6 +7,7 @@ import (
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/oidc"
 )
 
@@ -49,16 +50,16 @@ func NewHandoffStore(db *gormdb.DB, opts ...Option) (*HandoffStore, error) {
 func (s *HandoffStore) Insert(ctx context.Context, rec oidc.HandoffRecord) error {
 	const op = "insert handoff"
 
-	if rec.ID.IsZero() {
-		return errZeroID(op, "handoff")
+	if err := storekit.CheckID(rec.ID, "handoff"); err != nil {
+		return failed(op, err)
 	}
-	if err := checkStorable(op,
-		textField{"token id", rec.TokenID}, textField{"user reference", string(rec.UserID)},
-		textField{"provider", rec.Provider}, textField{"issuer", rec.Issuer},
-		textField{"session id", rec.SessionID}, textField{"ID token", rec.IDToken},
-		textField{"next location", rec.Next},
+	if err := storekit.CheckStorable(
+		storekit.Text("token id", rec.TokenID), storekit.Text("user reference", string(rec.UserID)),
+		storekit.Text("provider", rec.Provider), storekit.Text("issuer", rec.Issuer),
+		storekit.Text("session id", rec.SessionID), storekit.Text("ID token", rec.IDToken),
+		storekit.Text("next location", rec.Next),
 	); err != nil {
-		return err
+		return failed(op, err)
 	}
 
 	q, _, err := s.c.conn(ctx)
@@ -68,15 +69,15 @@ func (s *HandoffStore) Insert(ctx context.Context, rec oidc.HandoffRecord) error
 	err = q.Create(&handoffRow{
 		ID:         rec.ID,
 		TokenID:    rec.TokenID,
-		SecretHash: orEmpty(rec.SecretHash),
+		SecretHash: storekit.OrEmpty(rec.SecretHash),
 		UserID:     string(rec.UserID),
 		Provider:   rec.Provider,
 		Issuer:     rec.Issuer,
 		SessionID:  rec.SessionID,
 		IDToken:    rec.IDToken,
 		Next:       rec.Next,
-		ExpiresAt:  ts(rec.ExpiresAt),
-		CreatedAt:  ts(rec.CreatedAt),
+		ExpiresAt:  storekit.Time(rec.ExpiresAt),
+		CreatedAt:  storekit.Time(rec.CreatedAt),
 		ConsumedAt: tsPtr(rec.ConsumedAt),
 	}).Error
 	if err != nil {
@@ -91,7 +92,7 @@ func (s *HandoffStore) Insert(ctx context.Context, rec oidc.HandoffRecord) error
 func (s *HandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc.HandoffRecord, error) {
 	const op = "find handoff"
 
-	if !storable(tokenID) {
+	if !storekit.Storable(tokenID) {
 		return nil, oidc.ErrHandoffNotFound
 	}
 
@@ -123,12 +124,13 @@ func (s *HandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc
 // unconsumed: one conditional UPDATE, whose zero rows affected is
 // oidc.ErrHandoffNotFound. An empty token id matches nothing.
 func (s *HandoffStore) Consume(ctx context.Context, tokenID string, at time.Time) error {
-	if !storable(tokenID) {
+	if !storekit.Storable(tokenID) {
 		return oidc.ErrHandoffNotFound
 	}
 
 	return updateOrRefuse[handoffRow](ctx, s.c, "consume handoff", oidc.ErrHandoffNotFound,
-		map[string]any{"consumed_at": ts(at)}, "token_id = ? AND token_id <> '' AND consumed_at IS NULL", tokenID)
+		map[string]any{"consumed_at": storekit.Time(at)},
+		"token_id = ? AND token_id <> '' AND consumed_at IS NULL", tokenID)
 }
 
 // DeleteExpired removes records that expired strictly before before and
@@ -139,7 +141,7 @@ func (s *HandoffStore) DeleteExpired(ctx context.Context, before time.Time) (int
 		return 0, oidc.ErrRetainSinceRequired
 	}
 
-	return deleteWhere[handoffRow](ctx, s.c, "purge expired handoffs", "expires_at < ?", ts(before))
+	return deleteWhere[handoffRow](ctx, s.c, "purge expired handoffs", "expires_at < ?", storekit.Time(before))
 }
 
 var _ oidc.HandoffStore = (*HandoffStore)(nil)

@@ -22,6 +22,7 @@ import (
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // recordingPool is the connection pool beneath a *gorm.DB: every statement
@@ -115,8 +116,8 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	t.Parallel()
 
 	d := migratedDB(t)
-	keys := newTestKeys(t)
-	c := keys.rotated(t)
+	keys := storefix.NewKeys(t)
+	c := keys.Rotated(t)
 	pool := &recordingPool{db: d.conn.DB}
 	recorded, err := gormdb.Open(postgres.New(postgres.Config{Conn: pool}), &gormdb.Config{DisableAutomaticPing: true})
 	require.NoError(t, err)
@@ -171,25 +172,25 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 
 	cases := []testCase{
 		{name: "session create", run: with(func(ctx context.Context, s storeSet) error {
-			return s.sessions.Create(ctx, durableSession("stmt-sid-create", now))
+			return s.sessions.Create(ctx, storefix.DurableSession("stmt-sid-create", now))
 		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session create of a stored identifier", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.sessions.Create(ctx, durableSession("stmt-sid-dup", now)))
+			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now)))
 			started()
-			err := counted.sessions.Create(ctx, durableSession("stmt-sid-dup", now))
+			err := counted.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now))
 			require.Error(t, err)
 			return nil
 		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session save", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.sessions.Create(ctx, durableSession("stmt-sid-save", now)))
+			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-save", now)))
 			started()
-			return counted.sessions.Save(ctx, durableSession("stmt-sid-save", now))
+			return counted.sessions.Save(ctx, storefix.DurableSession("stmt-sid-save", now))
 		}, assert: one(`UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14 WHERE id_digest = $15`)},
 		{name: "session save of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
-			return s.sessions.Save(ctx, durableSession("stmt-sid-gone", now))
+			return s.sessions.Save(ctx, storefix.DurableSession("stmt-sid-gone", now))
 		}), assert: refused(session.ErrSessionNotFound, `UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14 WHERE id_digest = $15`)},
 		{name: "session load", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.sessions.Create(ctx, durableSession("stmt-sid-load", now)))
+			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-load", now)))
 			started()
 			return ignoring(counted.sessions.Load(ctx, "stmt-sid-load"))
 		}, assert: one(`SELECT * FROM "sessions" WHERE id_digest = $1 LIMIT $2`)},
@@ -213,21 +214,21 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`DELETE FROM "sessions" WHERE user_id = $1 AND external_issuer = $2 AND external_issuer <> ''`)},
 
 		{name: "one-time insert", run: with(func(ctx context.Context, s storeSet) error {
-			return s.tokens.Insert(ctx, raceToken(0x50000))
+			return s.tokens.Insert(ctx, storefix.RaceToken(0x50000))
 		}), assert: one(`INSERT INTO "one_time_tokens" ("id","purpose","subject","secret_hash","binding_hash","issued_at","expires_at","consumed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("id") DO NOTHING`)},
 		{name: "one-time find", run: with(func(ctx context.Context, s storeSet) error {
-			return ignoring(s.tokens.FindByID(ctx, raceToken(0x5000f).ID))
+			return ignoring(s.tokens.FindByID(ctx, storefix.RaceToken(0x5000f).ID))
 		}), assert: refused(onetime.ErrTokenNotFound, `SELECT * FROM "one_time_tokens" WHERE id = $1 LIMIT $2`)},
 		{name: "one-time consume", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.tokens.Insert(ctx, raceToken(0x50001)))
+			require.NoError(t, seed.tokens.Insert(ctx, storefix.RaceToken(0x50001)))
 			started()
-			return counted.tokens.Consume(ctx, raceToken(0x50001).ID, now)
+			return counted.tokens.Consume(ctx, storefix.RaceToken(0x50001).ID, now)
 		}, assert: one(`UPDATE "one_time_tokens" SET "consumed_at"=$1 WHERE id = $2 AND consumed_at IS NULL`)},
 		{name: "one-time consume of a spent token", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.tokens.Insert(ctx, raceToken(0x50002)))
-			require.NoError(t, seed.tokens.Consume(ctx, raceToken(0x50002).ID, now))
+			require.NoError(t, seed.tokens.Insert(ctx, storefix.RaceToken(0x50002)))
+			require.NoError(t, seed.tokens.Consume(ctx, storefix.RaceToken(0x50002).ID, now))
 			started()
-			return counted.tokens.Consume(ctx, raceToken(0x50002).ID, now)
+			return counted.tokens.Consume(ctx, storefix.RaceToken(0x50002).ID, now)
 		}, assert: refused(onetime.ErrTokenNotFound, `UPDATE "one_time_tokens" SET "consumed_at"=$1 WHERE id = $2 AND consumed_at IS NULL`)},
 		{name: "one-time count", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.tokens.CountRecentBySubject(ctx, "p", "stmt-subject", now))
@@ -250,21 +251,21 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`DELETE FROM "login_attempts" WHERE attempted_at < $1`)},
 
 		{name: "signing key store", run: with(func(ctx context.Context, s storeSet) error {
-			return s.keys.Store(ctx, signingKey("stmt-kid", []byte("PKCS8")))
+			return s.keys.Store(ctx, storefix.SigningKey("stmt-kid", []byte("PKCS8")))
 		}), assert: one(`INSERT INTO "signing_keys" ("id","kid","alg","private_key","public_jwk","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("kid") DO UPDATE SET "alg"="excluded"."alg","private_key"="excluded"."private_key","public_jwk"="excluded"."public_jwk","created_at"="excluded"."created_at"`)},
 		{name: "signing key store replacing a kid", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.keys.Store(ctx, signingKey("stmt-kid-replaced", []byte("PKCS8-OLD"))))
+			require.NoError(t, seed.keys.Store(ctx, storefix.SigningKey("stmt-kid-replaced", []byte("PKCS8-OLD"))))
 			started()
-			return counted.keys.Store(ctx, signingKey("stmt-kid-replaced", []byte("PKCS8-NEW")))
+			return counted.keys.Store(ctx, storefix.SigningKey("stmt-kid-replaced", []byte("PKCS8-NEW")))
 		}, assert: one(`INSERT INTO "signing_keys" ("id","kid","alg","private_key","public_jwk","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("kid") DO UPDATE SET "alg"="excluded"."alg","private_key"="excluded"."private_key","public_jwk"="excluded"."public_jwk","created_at"="excluded"."created_at"`)},
 		{name: "signing key load", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.keys.LoadAll(ctx))
 		}), assert: one(`SELECT * FROM "signing_keys" ORDER BY created_at, kid`)},
 
 		{name: "signing key load re-sealing two keys sealed under a retired key: the read, then one conditional update per key", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
-			retired := newSigningKeyStore(t, d.db, keys.underK1(t))
-			require.NoError(t, retired.Store(ctx, signingKey("stmt-kid-reseal-1", []byte("PKCS8-1"))))
-			require.NoError(t, retired.Store(ctx, signingKey("stmt-kid-reseal-2", []byte("PKCS8-2"))))
+			retired := newSigningKeyStore(t, d.db, keys.UnderK1(t))
+			require.NoError(t, retired.Store(ctx, storefix.SigningKey("stmt-kid-reseal-1", []byte("PKCS8-1"))))
+			require.NoError(t, retired.Store(ctx, storefix.SigningKey("stmt-kid-reseal-2", []byte("PKCS8-2"))))
 			started()
 			return ignoring(counted.keys.LoadAll(ctx))
 		}, assert: statements(nil,
@@ -273,32 +274,32 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			`UPDATE "signing_keys" SET "private_key"=$1 WHERE kid = $2 AND private_key = $3`)},
 
 		{name: "MFA begin", run: with(func(ctx context.Context, s storeSet) error {
-			return s.enrolments.PutPending(ctx, pending("stmt-mfa-begin", "TOTP"))
+			return s.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-begin", "TOTP"))
 		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","last_step"=$7 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA begin over a confirmed enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.enrolments.PutPending(ctx, pending("stmt-mfa-confirmed", "TOTP")))
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", 1000, now)))
 			started()
-			return counted.enrolments.PutPending(ctx, pending("stmt-mfa-confirmed", "TOTP-OTHER"))
+			return counted.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP-OTHER"))
 		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","last_step"=$7 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA get", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.enrolments.PutPending(ctx, pending("stmt-mfa-get", "TOTP")))
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-get", "TOTP")))
 			started()
 			return flag(ignoringTwo(counted.enrolments.Get(ctx, "stmt-mfa-get")))
 		}, assert: one(`SELECT * FROM "mfa_enrolments" WHERE user_id = $1 LIMIT $2`)},
 		{name: "MFA confirm", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.enrolments.PutPending(ctx, pending("stmt-mfa-confirm", "TOTP")))
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
 			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", 1000, now))
 		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND confirmed_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.enrolments.PutPending(ctx, pending("stmt-mfa-step", "TOTP")))
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", 1000, now)))
 			started()
 			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-step", 1001))
 		}, assert: one(`UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND confirmed_at IS NOT NULL AND last_step < $3`)},
 		{name: "MFA accept of a step already accepted", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.enrolments.PutPending(ctx, pending("stmt-mfa-stale", "TOTP")))
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-stale", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-stale", 1000, now)))
 			started()
 			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", 1000))
@@ -307,41 +308,41 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			return s.enrolments.Delete(ctx, "stmt-mfa-delete")
 		}), assert: one(`DELETE FROM "mfa_enrolments" WHERE user_id = $1`)},
 		{name: "MFA get re-sealing a secret sealed under a retired key: the read, then one conditional update", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
-			require.NoError(t, newEnrolmentStore(t, d.db, keys.underK1(t)).PutPending(ctx, pending("stmt-mfa-reseal", "TOTP")))
+			require.NoError(t, newEnrolmentStore(t, d.db, keys.UnderK1(t)).PutPending(ctx, storefix.Pending("stmt-mfa-reseal", "TOTP")))
 			started()
 			return flag(ignoringTwo(counted.enrolments.Get(ctx, "stmt-mfa-reseal")))
 		}, assert: statements(nil, `SELECT * FROM "mfa_enrolments" WHERE user_id = $1 LIMIT $2`, `UPDATE "mfa_enrolments" SET "secret"=$1 WHERE user_id = $2 AND secret = $3`)},
 
 		{name: "API key put", run: with(func(ctx context.Context, s storeSet) error {
-			return s.apiKeys.Put(ctx, apiKey(0x500, "stmt-svc"))
+			return s.apiKeys.Put(ctx, storefix.APIKey(0x500, "stmt-svc"))
 		}), assert: one(`INSERT INTO "api_keys" ("id","user_id","name","scopes","secret_digest","expires_at","revoked_at","last_used_at","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`)},
 		{name: "API key get", run: with(func(ctx context.Context, s storeSet) error {
-			return ignoring(s.apiKeys.Get(ctx, apiKey(0x501, "").ID))
+			return ignoring(s.apiKeys.Get(ctx, storefix.APIKey(0x501, "").ID))
 		}), assert: refused(apikey.ErrKeyNotFound, `SELECT * FROM "api_keys" WHERE id = $1 LIMIT $2`)},
 		{name: "API key revoke", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.apiKeys.Put(ctx, apiKey(0x502, "stmt-svc")))
+			require.NoError(t, seed.apiKeys.Put(ctx, storefix.APIKey(0x502, "stmt-svc")))
 			started()
-			return counted.apiKeys.Revoke(ctx, apiKey(0x502, "").ID, now)
+			return counted.apiKeys.Revoke(ctx, storefix.APIKey(0x502, "").ID, now)
 		}, assert: one(`UPDATE "api_keys" SET "revoked_at"=COALESCE(revoked_at, $1) WHERE id = $2`)},
 		{name: "API key revoke of an unknown key", run: with(func(ctx context.Context, s storeSet) error {
-			return s.apiKeys.Revoke(ctx, apiKey(0x503, "").ID, now)
+			return s.apiKeys.Revoke(ctx, storefix.APIKey(0x503, "").ID, now)
 		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "revoked_at"=COALESCE(revoked_at, $1) WHERE id = $2`)},
 		{name: "API key touch", run: with(func(ctx context.Context, s storeSet) error {
-			return s.apiKeys.TouchLastUsed(ctx, apiKey(0x504, "").ID, now)
+			return s.apiKeys.TouchLastUsed(ctx, storefix.APIKey(0x504, "").ID, now)
 		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "last_used_at"=$1 WHERE id = $2`)},
 		{name: "API key list", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.apiKeys.List(ctx, "stmt-svc"))
 		}), assert: one(`SELECT * FROM "api_keys" WHERE user_id = $1 ORDER BY created_at, id`)},
 
 		{name: "link insert", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
-			l := link(t, "corp", "https://stmt.example", "s-insert", "stmt-user")
+			l := storefix.Link(t, "corp", "https://stmt.example", "s-insert", "stmt-user")
 			started()
 			return counted.links.Insert(ctx, l)
 		}, assert: one(`INSERT INTO "oidc_links" ("id","provider","issuer","subject","user_id","username","email","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("provider","issuer","subject") DO NOTHING`)},
 		{name: "link insert of a linked identity", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.links.Insert(ctx, link(t, "corp", "https://stmt.example", "s-dup", "u1")))
+			require.NoError(t, seed.links.Insert(ctx, storefix.Link(t, "corp", "https://stmt.example", "s-dup", "u1")))
 			started()
-			return counted.links.Insert(ctx, link(t, "corp", "https://stmt.example", "s-dup", "u2"))
+			return counted.links.Insert(ctx, storefix.Link(t, "corp", "https://stmt.example", "s-dup", "u2"))
 		}, assert: refused(oidc.ErrLinkExists, `INSERT INTO "oidc_links" ("id","provider","issuer","subject","user_id","username","email","created_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT ("provider","issuer","subject") DO NOTHING`)},
 		{name: "link find", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.links.FindByExternal(ctx, "corp", "https://stmt.example", "s-missing"))
@@ -351,10 +352,10 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`DELETE FROM "oidc_links" WHERE user_id = $1 AND user_id <> ''`)},
 
 		{name: "flow begin", run: with(func(ctx context.Context, s storeSet) error {
-			return ignoring(s.flows.Begin(ctx, flow("p1", "stmt-state-begin")))
+			return ignoring(s.flows.Begin(ctx, storefix.Flow("p1", "stmt-state-begin")))
 		}), assert: one(`INSERT INTO "oidc_flows" ("id","handle","provider","state","nonce","verifier","next","expires_at","completed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`)},
 		{name: "flow complete", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			h, err := seed.flows.Begin(ctx, flow("p1", "stmt-state-complete"))
+			h, err := seed.flows.Begin(ctx, storefix.Flow("p1", "stmt-state-complete"))
 			require.NoError(t, err)
 			started()
 			return ignoring(counted.flows.Complete(ctx, h, "p1", "stmt-state-complete"))
@@ -363,11 +364,11 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			return ignoring(s.flows.Complete(ctx, "stmt-no-such-handle", "p1", "s"))
 		}), assert: refused(oidc.ErrInvalidState, `UPDATE oidc_flows SET completed_at = $4 WHERE handle = $1 AND provider = $2 AND state = $3 AND $3 <> '' AND completed_at IS NULL AND expires_at > $4 RETURNING provider, state, nonce, verifier, next, expires_at`)},
 		{name: "flow purge", run: with(func(ctx context.Context, s storeSet) error {
-			return ignoring(s.flows.DeleteExpired(ctx, oidcStart))
+			return ignoring(s.flows.DeleteExpired(ctx, storefix.OIDCStart))
 		}), assert: one(`DELETE FROM "oidc_flows" WHERE expires_at < $1`)},
 
 		{name: "handoff insert", run: func(ctx context.Context, t *testing.T, _, counted storeSet, started func()) error {
-			rec := handoff(t, "stmt-token-insert")
+			rec := storefix.Handoff(t, "stmt-token-insert")
 			started()
 			return counted.handoffs.Insert(ctx, rec)
 		}, assert: one(`INSERT INTO "oidc_handoffs" ("id","token_id","secret_hash","user_id","provider","issuer","session_id","id_token","next","expires_at","created_at","consumed_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`)},
@@ -375,7 +376,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			return ignoring(s.handoffs.FindByTokenID(ctx, "stmt-token-missing"))
 		}), assert: refused(oidc.ErrHandoffNotFound, `SELECT * FROM "oidc_handoffs" WHERE token_id = $1 AND token_id <> '' LIMIT $2`)},
 		{name: "handoff consume", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
-			require.NoError(t, seed.handoffs.Insert(ctx, handoff(t, "stmt-token-consume")))
+			require.NoError(t, seed.handoffs.Insert(ctx, storefix.Handoff(t, "stmt-token-consume")))
 			started()
 			return counted.handoffs.Consume(ctx, "stmt-token-consume", now)
 		}, assert: one(`UPDATE "oidc_handoffs" SET "consumed_at"=$1 WHERE token_id = $2 AND token_id <> '' AND consumed_at IS NULL`)},
@@ -383,7 +384,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			return s.handoffs.Consume(ctx, "stmt-token-missing", now)
 		}), assert: refused(oidc.ErrHandoffNotFound, `UPDATE "oidc_handoffs" SET "consumed_at"=$1 WHERE token_id = $2 AND token_id <> '' AND consumed_at IS NULL`)},
 		{name: "handoff purge", run: with(func(ctx context.Context, s storeSet) error {
-			return ignoring(s.handoffs.DeleteExpired(ctx, oidcStart))
+			return ignoring(s.handoffs.DeleteExpired(ctx, storefix.OIDCStart))
 		}), assert: one(`DELETE FROM "oidc_handoffs" WHERE expires_at < $1`)},
 	}
 

@@ -16,6 +16,7 @@ import (
 
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // recordingLogger is a consumer's gorm logger at its most verbose: it records
@@ -69,7 +70,7 @@ func TestStores_LogNothing(t *testing.T) {
 	t.Parallel()
 
 	d := migratedDB(t)
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 	at := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	// operations runs every operation of every store, successful and refused,
@@ -81,8 +82,8 @@ func TestStores_LogNothing(t *testing.T) {
 		tokens := newOneTimeStore(t, db, opts...)
 		attempts := newAttemptStore(t, db, opts...)
 
-		sid := logCanary + "-" + newID(t).String()
-		sess := durableSession(sid, at)
+		sid := logCanary + "-" + storefix.NewID(t).String()
+		sess := storefix.DurableSession(sid, at)
 		sess.UserID = logCanary
 		_ = sessions.Create(ctx, sess)
 		_ = sessions.Create(ctx, sess)
@@ -96,13 +97,13 @@ func TestStores_LogNothing(t *testing.T) {
 		_ = sessions.DeleteByUser(ctx, logCanary)
 		_, _ = sessions.DeleteExpired(ctx)
 
-		tok := raceToken(0)
-		tok.ID = newID(t)
+		tok := storefix.RaceToken(0)
+		tok.ID = storefix.NewID(t)
 		tok.Subject = logCanary
 		_ = tokens.Insert(ctx, tok)
 		_ = tokens.Insert(ctx, tok)
 		_, _ = tokens.FindByID(ctx, tok.ID)
-		_, _ = tokens.FindByID(ctx, newID(t))
+		_, _ = tokens.FindByID(ctx, storefix.NewID(t))
 		_ = tokens.Consume(ctx, tok.ID, at)
 		_ = tokens.Consume(ctx, tok.ID, at)
 		_, _ = tokens.CountRecentBySubject(ctx, tok.Purpose, logCanary, at)
@@ -114,56 +115,56 @@ func TestStores_LogNothing(t *testing.T) {
 		_, _ = attempts.DeleteAttemptsBefore(ctx, at)
 
 		keys := newSigningKeyStore(t, db, c, opts...)
-		kid := logCanary + "-" + newID(t).String()
-		_ = keys.Store(ctx, signingKey(kid, []byte(logCanary)))
-		_ = keys.Store(ctx, signingKey(kid, []byte(logCanary)))
+		kid := logCanary + "-" + storefix.NewID(t).String()
+		_ = keys.Store(ctx, storefix.SigningKey(kid, []byte(logCanary)))
+		_ = keys.Store(ctx, storefix.SigningKey(kid, []byte(logCanary)))
 		_, _ = keys.LoadAll(ctx)
 
 		enrolments := newEnrolmentStore(t, db, c, opts...)
-		user := identity.UserID(logCanary + "-" + newID(t).String())
-		_ = enrolments.PutPending(ctx, pending(user, logCanary))
+		user := identity.UserID(logCanary + "-" + storefix.NewID(t).String())
+		_ = enrolments.PutPending(ctx, storefix.Pending(user, logCanary))
 		_, _, _ = enrolments.Get(ctx, user)
 		_, _ = enrolments.Confirm(ctx, user, 1000, at)
 		_, _ = enrolments.Confirm(ctx, user, 1000, at)
-		_ = enrolments.PutPending(ctx, pending(user, logCanary))
+		_ = enrolments.PutPending(ctx, storefix.Pending(user, logCanary))
 		_, _ = enrolments.AcceptStep(ctx, user, 1001)
 		_, _ = enrolments.AcceptStep(ctx, user, 1001)
 		_ = enrolments.Delete(ctx, user)
 
 		apiKeys := newAPIKeyStore(t, db, opts...)
-		key := apiKey(0, logCanary)
-		key.ID, key.Name, key.Scopes = newID(t), logCanary, []string{logCanary}
+		key := storefix.APIKey(0, logCanary)
+		key.ID, key.Name, key.Scopes = storefix.NewID(t), logCanary, []string{logCanary}
 		_ = apiKeys.Put(ctx, key)
 		_ = apiKeys.Put(ctx, key)
 		_, _ = apiKeys.Get(ctx, key.ID)
 		_ = apiKeys.Revoke(ctx, key.ID, at)
 		_ = apiKeys.TouchLastUsed(ctx, key.ID, at)
-		_ = apiKeys.Revoke(ctx, newID(t), at)
+		_ = apiKeys.Revoke(ctx, storefix.NewID(t), at)
 		_, _ = apiKeys.List(ctx, logCanary)
 
 		links := newLinkStore(t, db, opts...)
-		l := link(t, logCanary, logCanary, logCanary+"-"+newID(t).String(), logCanary)
+		l := storefix.Link(t, logCanary, logCanary, logCanary+"-"+storefix.NewID(t).String(), logCanary)
 		_ = links.Insert(ctx, l)
 		_ = links.Insert(ctx, l)
 		_, _ = links.FindByExternal(ctx, l.Provider, l.Issuer, l.Subject)
 		_, _ = links.DeleteByUser(ctx, logCanary)
 
-		flows := newFlowStore(t, db, append(opts, gormstore.WithClock(func() time.Time { return oidcStart }))...)
-		f := flow(logCanary, logCanary+"-"+newID(t).String())
+		flows := newFlowStore(t, db, append(opts, gormstore.WithClock(func() time.Time { return storefix.OIDCStart }))...)
+		f := storefix.Flow(logCanary, logCanary+"-"+storefix.NewID(t).String())
 		h, _ := flows.Begin(ctx, f)
 		_, _ = flows.Complete(ctx, h, logCanary, f.State)
 		_, _ = flows.Complete(ctx, h, logCanary, f.State)
-		_, _ = flows.DeleteExpired(ctx, oidcStart)
+		_, _ = flows.DeleteExpired(ctx, storefix.OIDCStart)
 
 		handoffs := newHandoffStore(t, db, opts...)
-		rec := handoff(t, logCanary+"-"+newID(t).String())
+		rec := storefix.Handoff(t, logCanary+"-"+storefix.NewID(t).String())
 		rec.UserID = logCanary
 		_ = handoffs.Insert(ctx, rec)
 		_ = handoffs.Insert(ctx, rec)
 		_, _ = handoffs.FindByTokenID(ctx, rec.TokenID)
 		_ = handoffs.Consume(ctx, rec.TokenID, at)
 		_ = handoffs.Consume(ctx, rec.TokenID, at)
-		_, _ = handoffs.DeleteExpired(ctx, oidcStart)
+		_, _ = handoffs.DeleteExpired(ctx, storefix.OIDCStart)
 	}
 
 	type testCase struct {
@@ -222,7 +223,7 @@ func TestStores_LogNothing(t *testing.T) {
 		},
 		{
 			name: "failing operations log nothing",
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			run: func(t *testing.T, ctx context.Context, db *gormdb.DB) {
 				operations(t, ctx, db)
 			},

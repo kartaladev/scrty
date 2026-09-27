@@ -2,8 +2,6 @@ package gorm
 
 import (
 	"context"
-	"encoding/base64"
-	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/seal"
 )
@@ -59,7 +58,7 @@ func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.Enrolm
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCipher(c); err != nil {
+	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
 		return nil, err
 	}
 
@@ -77,16 +76,11 @@ func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.Enrolm
 // is why it is not exported.
 type enrolmentStore struct{ c *config }
 
-// secretText is how a sealed secret is stored in the text column.
-func secretText(sealed []byte) string {
-	return base64.RawURLEncoding.EncodeToString(sealed)
-}
-
 // Get returns the user's enrolment, its secret still sealed: one SELECT.
 func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
 	const op = "get MFA enrolment"
 
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return mfa.Enrolment{}, false, nil
 	}
 
@@ -95,9 +89,9 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		return mfa.Enrolment{}, false, err
 	}
 
-	sealed, err := base64.RawURLEncoding.DecodeString(row.Secret)
+	sealed, err := storekit.SecretFromText(row.Secret)
 	if err != nil {
-		return mfa.Enrolment{}, false, failed(op, errors.New("the stored secret is not base64url"))
+		return mfa.Enrolment{}, false, failed(op, err)
 	}
 
 	return mfa.Enrolment{
@@ -117,8 +111,8 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
 	const op = "store pending MFA enrolment"
 
-	if err := checkStorable(op, textField{"user reference", string(e.User)}); err != nil {
-		return err
+	if err := storekit.CheckStorable(storekit.Text("user reference", string(e.User))); err != nil {
+		return failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
@@ -132,8 +126,8 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 	row := enrolmentRow{
 		ID:        rowID,
 		UserID:    string(e.User),
-		Secret:    secretText(e.Secret),
-		CreatedAt: ts(e.CreatedAt),
+		Secret:    storekit.SecretText(e.Secret),
+		CreatedAt: storekit.Time(e.CreatedAt),
 	}
 	res := q.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}},
@@ -155,12 +149,12 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 // never moving the recorded step backwards: one conditional UPDATE, whose
 // zero rows affected reports false.
 func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
 	n, err := updateWhere[enrolmentRow](ctx, s.c, "confirm MFA enrolment",
-		map[string]any{"confirmed_at": ts(at), "last_step": gormdb.Expr("GREATEST(last_step, ?)", step)},
+		map[string]any{"confirmed_at": storekit.Time(at), "last_step": gormdb.Expr("GREATEST(last_step, ?)", step)},
 		"user_id = ? AND confirmed_at IS NULL", string(user))
 
 	return n > 0, err
@@ -170,7 +164,7 @@ func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step
 // recorded step is strictly lower: one conditional UPDATE, whose zero rows
 // affected reports false.
 func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
@@ -183,7 +177,7 @@ func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, s
 
 // Delete removes the user's enrolment; an absent one is not an error.
 func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
@@ -197,7 +191,8 @@ func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error
 // writes nothing.
 func (s *enrolmentStore) ResealEnrolmentSecret(ctx context.Context, user identity.UserID, old, resealed []byte) error {
 	return resealWhere[enrolmentRow](ctx, s.c, "re-seal MFA secret",
-		map[string]any{"secret": secretText(resealed)}, "user_id = ? AND secret = ?", string(user), secretText(old))
+		map[string]any{"secret": storekit.SecretText(resealed)},
+		"user_id = ? AND secret = ?", string(user), storekit.SecretText(old))
 }
 
 var (

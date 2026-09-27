@@ -101,6 +101,17 @@ func TestNewTOTP(t *testing.T) {
 			assert: configError,
 		},
 		{
+			// *failAfterReader implements io.Reader through a pointer receiver,
+			// so a nil one passed to WithRandom is an interface holding a nil
+			// pointer: `t.random == nil` misses it, and only the reflect-based
+			// check the constructor now uses catches it before the first draw
+			// reads from a nil receiver.
+			name:   "a typed-nil random source",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithRandom((*failAfterReader)(nil))},
+			assert: configError,
+		},
+		{
 			name:   "a nil logger",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithTOTPLogger(nil)},

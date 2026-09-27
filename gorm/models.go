@@ -21,8 +21,8 @@ import (
 // An integer is an int64 whatever its column's width, so a value the column
 // cannot hold is an error from PostgreSQL, never truncated in Go.
 //
-// Times are stored UTC, truncated to the microsecond (see ts), and a nullable
-// time is a *time.Time, NULL for nil.
+// Times are stored UTC, truncated to the microsecond (see storekit.Time), and
+// a nullable time is a *time.Time, NULL for nil.
 
 // sessionRow is a row of the sessions table. The session identifier is never
 // stored: IDDigest is its SHA-256, and ID a primary key the store mints.

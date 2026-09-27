@@ -2,9 +2,7 @@ package sqlstore_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
@@ -12,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/apikey"
-	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -26,30 +24,6 @@ func newAPIKeyStore(t *testing.T, db *sql.DB, opts ...sqlstore.Option) *sqlstore
 	require.NoError(t, err)
 
 	return s
-}
-
-// apiKey is the key numbered n, issued to principal.
-func apiKey(n int, principal identity.UserID) apikey.Key {
-	digest := sha256.Sum256(fmt.Appendf(nil, "api-key-%d", n))
-
-	return apikey.Key{
-		ID:           id.MustParse(fmt.Sprintf("01926a4e-0000-7000-8000-%012x", 0x300000+n)),
-		Principal:    principal,
-		Name:         fmt.Sprintf("key %d", n),
-		Scopes:       []string{"read"},
-		SecretDigest: digest[:],
-		CreatedAt:    time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC),
-	}
-}
-
-// keyRowExists selects whether the key $1 is committed.
-const keyRowExists = `SELECT EXISTS (SELECT 1 FROM api_keys WHERE id = $1)`
-
-// apiKeyPresent reports whether key n is committed, read out of band.
-func apiKeyPresent(t *testing.T, raw *sql.DB, n int) bool {
-	t.Helper()
-
-	return exists(t, raw, keyRowExists, apiKey(n, "").ID)
 }
 
 func TestAPIKeyStore(t *testing.T) {
@@ -77,7 +51,7 @@ func TestNewAPIKeyStore(t *testing.T) {
 	}
 
 	refused := refusedConfig[*sqlstore.APIKeyStore]
-	accepted := acceptedConfig[*sqlstore.APIKeyStore]
+	accepted := storefix.AcceptedConfig[*sqlstore.APIKeyStore]
 
 	cases := []testCase{
 		{name: "a handle is all it needs", db: db, assert: accepted},
@@ -119,7 +93,7 @@ func TestAPIKeyStore_NilScopes(t *testing.T) {
 
 	db := migratedDB(t).DB
 	ctx := t.Context()
-	key := apiKey(10, "svc-no-scopes")
+	key := storefix.APIKey(10, "svc-no-scopes")
 	key.Scopes = nil
 	require.NoError(t, newAPIKeyStore(t, db).Put(ctx, key))
 
@@ -155,10 +129,10 @@ func TestAPIKeyStore_Resolver(t *testing.T) {
 				s := newAPIKeyStore(t, db,
 					sqlstore.WithTxResolver(func(context.Context) (sqlstore.DBTX, bool) { return tx, true }))
 
-				require.NoError(t, s.Put(ctx, apiKey(1, "svc")))
-				assert.False(t, existsCtx(ctx, t, db, keyRowExists, apiKey(1, "").ID), "the insert ran outside the resolver's transaction")
+				require.NoError(t, s.Put(ctx, storefix.APIKey(1, "svc")))
+				assert.False(t, storefix.ExistsCtx(ctx, t, db, storefix.KeyRowExists, storefix.APIKey(1, "").ID), "the insert ran outside the resolver's transaction")
 				require.NoError(t, tx.Rollback())
-				assert.False(t, existsCtx(ctx, t, db, keyRowExists, apiKey(1, "").ID), "the insert survived the rollback")
+				assert.False(t, storefix.ExistsCtx(ctx, t, db, storefix.KeyRowExists, storefix.APIKey(1, "").ID), "the insert survived the rollback")
 			},
 		},
 		{
@@ -168,10 +142,10 @@ func TestAPIKeyStore_Resolver(t *testing.T) {
 				s := newAPIKeyStore(t, db,
 					sqlstore.WithTxResolver(func(context.Context) (sqlstore.DBTX, bool) { return nil, false }))
 
-				require.NoError(t, s.Put(sqlstore.WithTx(ctx, attached), apiKey(2, "svc")))
-				assert.True(t, existsCtx(ctx, t, db, keyRowExists, apiKey(2, "").ID), "the insert is not visible at once")
+				require.NoError(t, s.Put(sqlstore.WithTx(ctx, attached), storefix.APIKey(2, "svc")))
+				assert.True(t, storefix.ExistsCtx(ctx, t, db, storefix.KeyRowExists, storefix.APIKey(2, "").ID), "the insert is not visible at once")
 				require.NoError(t, attached.Rollback())
-				assert.True(t, existsCtx(ctx, t, db, keyRowExists, apiKey(2, "").ID), "the insert ran in the attached transaction")
+				assert.True(t, storefix.ExistsCtx(ctx, t, db, storefix.KeyRowExists, storefix.APIKey(2, "").ID), "the insert ran in the attached transaction")
 			},
 		},
 	}

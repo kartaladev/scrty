@@ -2,9 +2,6 @@ package gormstore_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
-	"fmt"
 	"testing"
 	"time"
 
@@ -15,6 +12,7 @@ import (
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -33,41 +31,6 @@ func newOneTimeStore(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) *gor
 	require.NoError(t, err)
 
 	return s
-}
-
-// raceToken is the i-th token a race seeds, unspent and valid for an hour.
-func raceToken(i int) onetime.Token {
-	secret := sha256.Sum256(fmt.Appendf(nil, "secret-%d", i))
-	issued := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
-
-	return onetime.Token{
-		ID:         id.MustParse(fmt.Sprintf("01926a4e-0000-7000-8000-%012x", 0x100000+i)),
-		Purpose:    "race",
-		Subject:    fmt.Sprintf("subject-%d", i),
-		SecretHash: secret[:],
-		IssuedAt:   issued,
-		ExpiresAt:  issued.Add(time.Hour),
-	}
-}
-
-// consumeRace is the race over consume, of any store that consumes like the
-// one-time token store: Seed inserts token i through s, and Attempt consumes
-// it, the refusal mapped to (false, nil).
-func consumeRace[S onetime.Store]() storetest.Race[S] {
-	return storetest.Race[S]{
-		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
-			tok := raceToken(i)
-			require.NoError(t, s.Insert(ctx, tok))
-			return tok.ID.String()
-		},
-		Attempt: func(ctx context.Context, s S, key string, _ int) (bool, error) {
-			err := s.Consume(ctx, id.MustParse(key), time.Now())
-			if errors.Is(err, onetime.ErrTokenNotFound) {
-				return false, nil
-			}
-			return err == nil, err
-		},
-	}
 }
 
 func TestOneTimeStore(t *testing.T) {
@@ -90,7 +53,7 @@ func TestOneTimeStore_ConsumeRace(t *testing.T) {
 	})
 
 	t.Run("gorm", func(t *testing.T) {
-		storetest.RunConsumeRace(t, h, consumeRace[*gormstore.OneTimeStore]())
+		storetest.RunConsumeRace(t, h, storefix.ConsumeRace[*gormstore.OneTimeStore]())
 	})
 }
 
@@ -120,7 +83,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				return db
 			},
 			assert: func(t *testing.T, ctx context.Context, s *gormstore.OneTimeStore) {
-				err := s.Consume(ctx, raceToken(1).ID, time.Now())
+				err := s.Consume(ctx, storefix.RaceToken(1).ID, time.Now())
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
 				// A closed *sql.DB under gorm reports database/sql's own
@@ -135,7 +98,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				return unreachableDB(t)
 			},
 			assert: func(t *testing.T, ctx context.Context, s *gormstore.OneTimeStore) {
-				err := s.Consume(ctx, raceToken(1).ID, time.Now())
+				err := s.Consume(ctx, storefix.RaceToken(1).ID, time.Now())
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
 				assert.ErrorContains(t, err, "gorm: consume one-time token")
@@ -144,9 +107,9 @@ func TestOneTimeStore_Failures(t *testing.T) {
 		{
 			name: "a consume under a cancelled context fails with the cancellation, never as not found",
 			db:   shared,
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context, s *gormstore.OneTimeStore) {
-				err := s.Consume(ctx, raceToken(2).ID, time.Now())
+				err := s.Consume(ctx, storefix.RaceToken(2).ID, time.Now())
 				require.ErrorIs(t, err, context.Canceled)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
 			},
@@ -155,7 +118,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 			name: "an unbound token's binding is stored NULL, and an empty one empty",
 			db:   shared,
 			assert: func(t *testing.T, ctx context.Context, s *gormstore.OneTimeStore) {
-				unbound, empty := raceToken(4), raceToken(5)
+				unbound, empty := storefix.RaceToken(4), storefix.RaceToken(5)
 				unbound.BindingHash, empty.BindingHash = nil, []byte{}
 				require.NoError(t, s.Insert(ctx, unbound))
 				require.NoError(t, s.Insert(ctx, empty))
@@ -174,7 +137,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 			name: "stored times are truncated to the microsecond",
 			db:   shared,
 			assert: func(t *testing.T, ctx context.Context, s *gormstore.OneTimeStore) {
-				tok := raceToken(3)
+				tok := storefix.RaceToken(3)
 				tok.IssuedAt = time.Date(2026, 9, 15, 10, 0, 0, 123456789, time.UTC)
 				tok.ExpiresAt = tok.IssuedAt.Add(time.Hour)
 				require.NoError(t, s.Insert(ctx, tok))
@@ -215,7 +178,7 @@ func TestNewOneTimeStore(t *testing.T) {
 	}
 
 	refused := refusedConfig[*gormstore.OneTimeStore]
-	accepted := acceptedConfig[*gormstore.OneTimeStore]
+	accepted := storefix.AcceptedConfig[*gormstore.OneTimeStore]
 
 	cases := []testCase{
 		{name: "a handle is all it needs", db: db, assert: accepted},

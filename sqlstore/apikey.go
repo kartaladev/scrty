@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -46,21 +47,21 @@ func NewAPIKeyStore(db *sql.DB, opts ...Option) (*APIKeyStore, error) {
 func (s *APIKeyStore) Put(ctx context.Context, rec apikey.Key) error {
 	const op = "store API key"
 
-	fields := []textField{{"principal", string(rec.Principal)}, {"name", rec.Name}}
+	fields := []storekit.Field{storekit.Text("principal", string(rec.Principal)), storekit.Text("name", rec.Name)}
 	for _, scope := range rec.Scopes {
-		fields = append(fields, textField{"scope", scope})
+		fields = append(fields, storekit.Text("scope", scope))
 	}
-	if err := checkStorable(op, fields...); err != nil {
-		return err
+	if err := storekit.CheckStorable(fields...); err != nil {
+		return failed(op, err)
 	}
-	scopes, err := json.Marshal(orNone(rec.Scopes))
+	scopes, err := json.Marshal(storekit.OrNone(rec.Scopes))
 	if err != nil {
 		return failed(op, err)
 	}
 
 	_, err = s.c.exec(ctx, op, pgschema.APIKeyInsert, rec.ID, string(rec.Principal), rec.Name, string(scopes),
-		orEmpty(rec.SecretDigest), nullTsPtr(rec.ExpiresAt), nullTsPtr(rec.RevokedAt), nullTsPtr(rec.LastUsedAt),
-		ts(rec.CreatedAt))
+		storekit.OrEmpty(rec.SecretDigest), nullTsPtr(rec.ExpiresAt), nullTsPtr(rec.RevokedAt),
+		nullTsPtr(rec.LastUsedAt), storekit.Time(rec.CreatedAt))
 
 	return err
 }
@@ -88,19 +89,21 @@ func (s *APIKeyStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error) 
 
 // Revoke marks the key revoked at at, keeping an earlier revocation.
 func (s *APIKeyStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
-	return s.c.execOrRefuse(ctx, "revoke API key", apikey.ErrKeyNotFound, pgschema.APIKeyRevoke, keyID, ts(at))
+	return s.c.execOrRefuse(ctx, "revoke API key", apikey.ErrKeyNotFound, pgschema.APIKeyRevoke,
+		keyID, storekit.Time(at))
 }
 
 // TouchLastUsed records a successful verification of the key at at.
 func (s *APIKeyStore) TouchLastUsed(ctx context.Context, keyID id.ID, at time.Time) error {
-	return s.c.execOrRefuse(ctx, "record API key use", apikey.ErrKeyNotFound, pgschema.APIKeyTouch, keyID, ts(at))
+	return s.c.execOrRefuse(ctx, "record API key use", apikey.ErrKeyNotFound, pgschema.APIKeyTouch,
+		keyID, storekit.Time(at))
 }
 
 // List returns every key of principal, oldest first.
 func (s *APIKeyStore) List(ctx context.Context, principal identity.UserID) ([]apikey.Key, error) {
 	const op = "list API keys"
 
-	if !storable(string(principal)) {
+	if !storekit.Storable(string(principal)) {
 		return []apikey.Key{}, nil
 	}
 	q, _, _, err := s.c.conn(ctx)

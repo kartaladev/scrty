@@ -2,18 +2,14 @@ package gorm
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"time"
 
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/oidc"
 )
-
-// flowHandleBytes is how many random bytes a flow handle carries.
-const flowHandleBytes = 32
 
 // FlowStore keeps OIDC login flows, between Authorize and Callback, in the
 // oidc_flows table the migrate package creates. It implements oidc.FlowStore,
@@ -57,21 +53,20 @@ func NewFlowStore(db *gormdb.DB, opts ...Option) (*FlowStore, error) {
 func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
 	const op = "begin login flow"
 
-	if err := checkStorable(op,
-		textField{"provider", f.Provider}, textField{"state", f.State}, textField{"nonce", f.Nonce},
-		textField{"verifier", f.Verifier}, textField{"next location", f.Next},
+	if err := storekit.CheckStorable(
+		storekit.Text("provider", f.Provider), storekit.Text("state", f.State), storekit.Text("nonce", f.Nonce),
+		storekit.Text("verifier", f.Verifier), storekit.Text("next location", f.Next),
 	); err != nil {
-		return "", err
+		return "", failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
 		return "", failed(op, err)
 	}
-	var raw [flowHandleBytes]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	handle, err := storekit.NewFlowHandle()
+	if err != nil {
 		return "", failed(op, err)
 	}
-	handle := base64.RawURLEncoding.EncodeToString(raw[:])
 
 	q, _, err := s.c.conn(ctx)
 	if err != nil {
@@ -85,7 +80,7 @@ func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
 		Nonce:     f.Nonce,
 		Verifier:  f.Verifier,
 		Next:      f.Next,
-		ExpiresAt: ts(f.ExpiresAt),
+		ExpiresAt: storekit.Time(f.ExpiresAt),
 	}).Error
 	if err != nil {
 		return "", failed(op, err)
@@ -101,7 +96,7 @@ func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
 func (s *FlowStore) Complete(ctx context.Context, handle, provider, state string) (oidc.Flow, error) {
 	const op = "complete login flow"
 
-	if !storable(handle, provider, state) {
+	if !storekit.Storable(handle, provider, state) {
 		return oidc.Flow{}, oidc.ErrInvalidState
 	}
 
@@ -110,7 +105,7 @@ func (s *FlowStore) Complete(ctx context.Context, handle, provider, state string
 		return oidc.Flow{}, failed(op, err)
 	}
 	var row flowRow
-	res := q.Raw(pgschema.FlowComplete, handle, provider, state, ts(s.c.now())).Scan(&row)
+	res := q.Raw(pgschema.FlowComplete, handle, provider, state, storekit.Time(s.c.now())).Scan(&row)
 	if res.Error != nil {
 		return oidc.Flow{}, failed(op, res.Error)
 	}
@@ -136,7 +131,7 @@ func (s *FlowStore) DeleteExpired(ctx context.Context, before time.Time) (int, e
 		return 0, oidc.ErrRetainSinceRequired
 	}
 
-	return deleteWhere[flowRow](ctx, s.c, "purge expired login flows", "expires_at < ?", ts(before))
+	return deleteWhere[flowRow](ctx, s.c, "purge expired login flows", "expires_at < ?", storekit.Time(before))
 }
 
 var _ oidc.FlowStore = (*FlowStore)(nil)

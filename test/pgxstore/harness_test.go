@@ -12,21 +12,17 @@ package pgxstore_test
 
 import (
 	"context"
-	"crypto/rand"
-	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/migrate"
 	pgxstore "github.com/kartaladev/scrty/pgx"
-	"github.com/kartaladev/scrty/seal"
-	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -108,15 +104,6 @@ func emptied(t *testing.T, db database, table string) *pgxpool.Pool {
 	return db.Pool
 }
 
-// cancelled is a table's ctx modifier for a case whose context is already
-// cancelled.
-func cancelled(ctx context.Context) context.Context {
-	cctx, cancel := context.WithCancel(ctx)
-	cancel()
-
-	return cctx
-}
-
 // unreachablePool is a pool on a server that is not there. Constructors never
 // touch the database, and the pool does not connect until used, so it builds
 // any store; an operation on it fails.
@@ -129,69 +116,7 @@ func unreachablePool(t *testing.T) *pgxpool.Pool {
 // refusedConfig asserts a constructor refused its configuration with exactly
 // text, and returned no store.
 func refusedConfig[S any](text string) func(t *testing.T, s S, err error) {
-	return func(t *testing.T, s S, err error) {
-		t.Helper()
-		require.ErrorIs(t, err, pgxstore.ErrConfig)
-		assert.EqualError(t, err, "pgx: invalid configuration: "+text)
-		assert.Nil(t, s)
-	}
-}
-
-// acceptedConfig asserts a constructor returned a store.
-func acceptedConfig[S any](t *testing.T, s S, err error) {
-	t.Helper()
-	require.NoError(t, err)
-	assert.NotNil(t, s)
-}
-
-// sealKey returns a fresh random key of the size the default cipher takes.
-func sealKey(t *testing.T) []byte {
-	t.Helper()
-
-	key := make([]byte, seal.KeySize)
-	_, err := rand.Read(key)
-	require.NoError(t, err)
-
-	return key
-}
-
-// testKeys is a pair of keys: k1, retired, and k2, active.
-type testKeys struct{ k1, k2 []byte }
-
-func newTestKeys(t *testing.T) testKeys {
-	t.Helper()
-
-	return testKeys{k1: sealKey(t), k2: sealKey(t)}
-}
-
-// cipherOf returns the default cipher over a keyring built from opts.
-func cipherOf(t *testing.T, opts ...seal.KeyringOption) seal.Cipher {
-	t.Helper()
-
-	kr, err := seal.NewKeyring(opts...)
-	require.NoError(t, err)
-	c, err := seal.NewAEADCipher(kr)
-	require.NoError(t, err)
-
-	return c
-}
-
-// underK1 seals under k1 alone.
-func (k testKeys) underK1(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k1", k.k1))
-}
-
-// rotated seals under k2 and still opens what k1 sealed.
-func (k testKeys) rotated(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k2", k.k2), seal.WithRetiredEncryptionKey("k1", k.k1))
-}
-
-// onlyK2 seals and opens under k2 alone: what k1 sealed does not open.
-func (k testKeys) onlyK2(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k2", k.k2))
+	return storefix.RefusedConfig[S](pgxstore.ErrConfig, "pgx", text)
 }
 
 // beginTx begins a transaction of pool for a table case, and rolls it back at
@@ -205,13 +130,6 @@ func beginTx(ctx context.Context, t *testing.T, pool *pgxpool.Pool) pgx.Tx {
 	t.Cleanup(func() { _ = tx.Rollback(context.WithoutCancel(ctx)) })
 
 	return tx
-}
-
-// testCipher is the cipher a test uses when the keys do not matter: k2
-// active, k1 retired.
-func testCipher(t *testing.T) seal.Cipher {
-	t.Helper()
-	return newTestKeys(t).rotated(t)
 }
 
 // storeFactory builds a store of type S over pool with opts, failing t when
@@ -259,21 +177,8 @@ func durableHarness[S any](db database, newWith storeFactory[S]) storetest.Durab
 		},
 		BeginForeign: func(t *testing.T) (context.Context, func() error) {
 			t.Helper()
-			return beginForeign(t, db.DB)
+			return storefix.BeginSQLStoreTx(t, db.DB)
 		},
 		PoolSize: int(pool.Config().MaxConns),
 	}
-}
-
-// beginForeign begins a database/sql transaction on db and attaches it with
-// sqlstore.WithTx: a live transaction on the same database, attached the way
-// the database/sql stores take one, which the pgx stores must not see. A store
-// that wrote in it would lose its write to the rollback.
-func beginForeign(t *testing.T, db *sql.DB) (context.Context, func() error) {
-	t.Helper()
-
-	tx, err := db.BeginTx(t.Context(), nil)
-	require.NoError(t, err)
-
-	return sqlstore.WithTx(t.Context(), tx), tx.Rollback
 }

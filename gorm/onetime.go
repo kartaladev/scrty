@@ -8,6 +8,7 @@ import (
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -48,8 +49,10 @@ func NewOneTimeStore(db *gormdb.DB, opts ...Option) (*OneTimeStore, error) {
 func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 	const op = "insert one-time token"
 
-	if err := checkStorable(op, textField{"purpose", tok.Purpose}, textField{"subject", tok.Subject}); err != nil {
-		return err
+	if err := storekit.CheckStorable(
+		storekit.Text("purpose", tok.Purpose), storekit.Text("subject", tok.Subject),
+	); err != nil {
+		return failed(op, err)
 	}
 
 	q, _, err := s.c.conn(ctx)
@@ -60,11 +63,11 @@ func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 		ID:         tok.ID,
 		Purpose:    tok.Purpose,
 		Subject:    tok.Subject,
-		SecretHash: orEmpty(tok.SecretHash),
+		SecretHash: storekit.OrEmpty(tok.SecretHash),
 		// An unbound token keeps its binding NULL, never an empty value.
 		BindingHash: tok.BindingHash,
-		IssuedAt:    ts(tok.IssuedAt),
-		ExpiresAt:   ts(tok.ExpiresAt),
+		IssuedAt:    storekit.Time(tok.IssuedAt),
+		ExpiresAt:   storekit.Time(tok.ExpiresAt),
 		ConsumedAt:  nullTs(tok.ConsumedAt),
 	}
 	res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row)
@@ -118,7 +121,8 @@ func (s *OneTimeStore) Consume(ctx context.Context, tokenID id.ID, at time.Time)
 	if err != nil {
 		return failed(op, err)
 	}
-	res := q.Model(&oneTimeTokenRow{}).Where("id = ? AND consumed_at IS NULL", tokenID).Update("consumed_at", ts(at))
+	res := q.Model(&oneTimeTokenRow{}).Where("id = ? AND consumed_at IS NULL", tokenID).
+		Update("consumed_at", storekit.Time(at))
 	if res.Error != nil {
 		return failed(op, res.Error)
 	}
@@ -136,7 +140,7 @@ func (s *OneTimeStore) CountRecentBySubject(
 ) (int, error) {
 	const op = "count recent one-time tokens"
 
-	if !storable(purpose, subject) {
+	if !storekit.Storable(purpose, subject) {
 		return 0, nil
 	}
 
@@ -146,7 +150,7 @@ func (s *OneTimeStore) CountRecentBySubject(
 	}
 	var n int64
 	err = q.Model(&oneTimeTokenRow{}).
-		Where("purpose = ? AND subject = ? AND issued_at >= ?", purpose, subject, ts(since)).
+		Where("purpose = ? AND subject = ? AND issued_at >= ?", purpose, subject, storekit.Time(since)).
 		Count(&n).Error
 	if err != nil {
 		return 0, failed(op, err)
@@ -164,7 +168,7 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 	if retainSince.IsZero() {
 		return 0, onetime.ErrRetainSinceRequired
 	}
-	if !storable(purpose) {
+	if !storekit.Storable(purpose) {
 		return 0, nil
 	}
 
@@ -172,7 +176,8 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 	if err != nil {
 		return 0, failed(op, err)
 	}
-	res := q.Where("purpose = ? AND expires_at <= ? AND issued_at < ?", purpose, ts(s.c.now()), ts(retainSince)).
+	res := q.Where("purpose = ? AND expires_at <= ? AND issued_at < ?",
+		purpose, storekit.Time(s.c.now()), storekit.Time(retainSince)).
 		Delete(&oneTimeTokenRow{})
 	if res.Error != nil {
 		return 0, failed(op, res.Error)

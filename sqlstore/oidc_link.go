@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/oidc"
 )
 
@@ -48,7 +48,7 @@ func NewLinkStore(db *sql.DB, opts ...Option) (*LinkStore, error) {
 // FindByExternal returns the link of the external identity, or
 // oidc.ErrLinkNotFound.
 func (s *LinkStore) FindByExternal(ctx context.Context, provider, issuer, subject string) (*oidc.Link, error) {
-	if !storable(provider, issuer, subject) {
+	if !storekit.Storable(provider, issuer, subject) {
 		return nil, oidc.ErrLinkNotFound
 	}
 
@@ -74,25 +74,27 @@ func (s *LinkStore) FindByExternal(ctx context.Context, provider, issuer, subjec
 func (s *LinkStore) Insert(ctx context.Context, l oidc.Link) error {
 	const op = "insert link"
 
-	if l.ID.IsZero() {
-		return fmt.Errorf("sqlstore: %s: the link id is zero", op)
+	if err := storekit.CheckID(l.ID, "link"); err != nil {
+		return failed(op, err)
 	}
 
-	if err := checkStorable(op,
-		textField{"provider", l.Provider}, textField{"issuer", l.Issuer}, textField{"subject", l.Subject},
-		textField{"user reference", string(l.UserID)}, textField{"username", l.Username}, textField{"email", l.Email},
+	if err := storekit.CheckStorable(
+		storekit.Text("provider", l.Provider), storekit.Text("issuer", l.Issuer),
+		storekit.Text("subject", l.Subject),
+		storekit.Text("user reference", string(l.UserID)), storekit.Text("username", l.Username),
+		storekit.Text("email", l.Email),
 	); err != nil {
-		return err
+		return failed(op, err)
 	}
 
 	return s.c.execOrRefuse(ctx, op, oidc.ErrLinkExists, pgschema.LinkInsert, l.ID, l.Provider, l.Issuer, l.Subject,
-		string(l.UserID), l.Username, l.Email, ts(l.CreatedAt))
+		string(l.UserID), l.Username, l.Email, storekit.Time(l.CreatedAt))
 }
 
 // DeleteByUser removes every link of user and reports how many it removed.
 // An empty reference removes nothing.
 func (s *LinkStore) DeleteByUser(ctx context.Context, user identity.UserID) (int, error) {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return 0, nil
 	}
 

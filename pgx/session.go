@@ -2,7 +2,6 @@ package pgx
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 )
@@ -58,7 +58,7 @@ func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCipher(c); err != nil {
+	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
 		return nil, err
 	}
 
@@ -74,43 +74,16 @@ func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session
 // ExternalIDToken as given, which is why it is not exported.
 type sessionStore struct{ c *config }
 
-// sessionDigest is the key a session is stored and found under.
-func sessionDigest(sessionID string) []byte {
-	sum := sha256.Sum256([]byte(sessionID))
-	return sum[:]
-}
-
 // sessionColumns returns the values of sess's columns from user_id to data,
 // in the order SessionUpdate takes them, or the refusal of a session this
 // store cannot hold without altering it.
 func sessionColumns(op string, sess *session.Session) ([]any, error) {
-	if !sess.EnrolmentOriginDeadline.IsZero() {
-		return nil, fmt.Errorf("pgx: %s: the enrolment-origin marker is not supported by this store", op)
-	}
-	if !sess.EnrolmentGeneration.IsZero() {
-		return nil, fmt.Errorf("pgx: %s: the enrolment generation is not supported by this store", op)
+	if err := storekit.CheckSession(sess); err != nil {
+		return nil, failed(op, err)
 	}
 
-	if err := checkStorable(op,
-		textField{"user reference", string(sess.UserID)},
-		textField{"first factor", string(sess.FirstFactor)},
-		textField{"external provider", sess.ExternalProvider},
-		textField{"external issuer", sess.ExternalIssuer},
-		textField{"external session identifier", sess.ExternalSessionID},
-		textField{"external ID token", sess.ExternalIDToken},
-	); err != nil {
-		return nil, err
-	}
-	// json.Marshal would replace invalid UTF-8 with U+FFFD, and jsonb refuses
-	// an escaped NUL, so the data is judged before it is marshalled. The
-	// marshalled text is sent as a string, which pgx passes to jsonb as is
+	// The marshalled text is sent as a string, which pgx passes to jsonb as is
 	// rather than marshalling it again.
-	for k, v := range sess.Data {
-		if !storable(k, v) {
-			return nil, errUnstorable(op, "session data")
-		}
-	}
-
 	data := sess.Data
 	if data == nil {
 		data = map[string]string{}
@@ -121,8 +94,9 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 	}
 
 	return []any{
-		string(sess.UserID), ts(sess.CreatedAt), ts(sess.LastAccessedAt), ts(sess.IdleExpiresAt),
-		ts(sess.AbsoluteExpiresAt), string(sess.FirstFactor), int64(sess.MFA), nullTs(sess.MFASatisfiedAt),
+		string(sess.UserID), storekit.Time(sess.CreatedAt), storekit.Time(sess.LastAccessedAt),
+		storekit.Time(sess.IdleExpiresAt), storekit.Time(sess.AbsoluteExpiresAt), string(sess.FirstFactor),
+		int64(sess.MFA), nullTs(sess.MFASatisfiedAt),
 		sess.PasswordChangePending, sess.ExternalProvider, sess.ExternalIssuer, sess.ExternalSessionID,
 		sess.ExternalIDToken, string(encoded),
 	}, nil
@@ -141,7 +115,8 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 		return failed(op, err)
 	}
 
-	n, err := s.c.exec(ctx, op, pgschema.SessionInsert, append([]any{uuidArg(rowID), sessionDigest(sess.ID)}, cols...)...)
+	n, err := s.c.exec(ctx, op, pgschema.SessionInsert,
+		append([]any{uuidArg(rowID), storekit.SessionDigest(sess.ID)}, cols...)...)
 	if err != nil {
 		return err
 	}
@@ -160,7 +135,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	if err != nil {
 		return err
 	}
-	n, err := s.c.exec(ctx, op, pgschema.SessionUpdate, append([]any{sessionDigest(sess.ID)}, cols...)...)
+	n, err := s.c.exec(ctx, op, pgschema.SessionUpdate, append([]any{storekit.SessionDigest(sess.ID)}, cols...)...)
 	if err != nil {
 		return err
 	}
@@ -186,7 +161,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		created, last time.Time
 		idle, abs     time.Time
 	)
-	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{sessionDigest(sessionID)},
+	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
 		&sess.ExternalIDToken, &encoded)
@@ -223,14 +198,14 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 // Delete removes the session with this identifier; one not there is not an
 // error.
 func (s *sessionStore) Delete(ctx context.Context, sessionID string) error {
-	_, err := s.c.exec(ctx, "delete session", pgschema.SessionDelete, sessionDigest(sessionID))
+	_, err := s.c.exec(ctx, "delete session", pgschema.SessionDelete, storekit.SessionDigest(sessionID))
 	return err
 }
 
 // DeleteByUser removes every session of user, expired ones included. A user
 // reference PostgreSQL text cannot hold matches nothing.
 func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
@@ -241,24 +216,24 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 
 // CountActiveByUser counts user's sessions unexpired by the store's clock.
 func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return 0, nil
 	}
 
 	return s.c.count(ctx, "count user's active sessions", pgschema.SessionCountActive,
-		string(user), ts(s.c.now()))
+		string(user), storekit.Time(s.c.now()))
 }
 
 // DeleteExpired removes every session expired by the store's clock.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
-	n, err := s.c.exec(ctx, "delete expired sessions", pgschema.SessionDeleteExpired, ts(s.c.now()))
+	n, err := s.c.exec(ctx, "delete expired sessions", pgschema.SessionDeleteExpired, storekit.Time(s.c.now()))
 	return int(n), err
 }
 
 // DeleteByExternalSession removes the sessions of issuer and provider session
 // sessionID. An empty argument matches nothing.
 func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
-	if !storable(issuer, sessionID) {
+	if !storekit.Storable(issuer, sessionID) {
 		return 0, nil
 	}
 
@@ -273,7 +248,7 @@ func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sess
 func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	ctx context.Context, user identity.UserID, issuer string,
 ) (int, error) {
-	if !storable(string(user), issuer) {
+	if !storekit.Storable(string(user), issuer) {
 		return 0, nil
 	}
 

@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/oidc"
 )
 
@@ -51,22 +51,22 @@ func NewHandoffStore(db *sql.DB, opts ...Option) (*HandoffStore, error) {
 func (s *HandoffStore) Insert(ctx context.Context, rec oidc.HandoffRecord) error {
 	const op = "insert handoff"
 
-	if rec.ID.IsZero() {
-		return fmt.Errorf("sqlstore: %s: the handoff id is zero", op)
+	if err := storekit.CheckID(rec.ID, "handoff"); err != nil {
+		return failed(op, err)
 	}
 
-	if err := checkStorable(op,
-		textField{"token id", rec.TokenID}, textField{"user reference", string(rec.UserID)},
-		textField{"provider", rec.Provider}, textField{"issuer", rec.Issuer},
-		textField{"session id", rec.SessionID}, textField{"ID token", rec.IDToken},
-		textField{"next location", rec.Next},
+	if err := storekit.CheckStorable(
+		storekit.Text("token id", rec.TokenID), storekit.Text("user reference", string(rec.UserID)),
+		storekit.Text("provider", rec.Provider), storekit.Text("issuer", rec.Issuer),
+		storekit.Text("session id", rec.SessionID), storekit.Text("ID token", rec.IDToken),
+		storekit.Text("next location", rec.Next),
 	); err != nil {
-		return err
+		return failed(op, err)
 	}
 
-	_, err := s.c.exec(ctx, op, pgschema.HandoffInsert, rec.ID, rec.TokenID, orEmpty(rec.SecretHash),
+	_, err := s.c.exec(ctx, op, pgschema.HandoffInsert, rec.ID, rec.TokenID, storekit.OrEmpty(rec.SecretHash),
 		string(rec.UserID), rec.Provider, rec.Issuer, rec.SessionID, rec.IDToken, rec.Next,
-		ts(rec.ExpiresAt), ts(rec.CreatedAt), nullTsPtr(rec.ConsumedAt))
+		storekit.Time(rec.ExpiresAt), storekit.Time(rec.CreatedAt), nullTsPtr(rec.ConsumedAt))
 
 	return err
 }
@@ -74,7 +74,7 @@ func (s *HandoffStore) Insert(ctx context.Context, rec oidc.HandoffRecord) error
 // FindByTokenID returns the record of tokenID, consumed or not, or
 // oidc.ErrHandoffNotFound.
 func (s *HandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc.HandoffRecord, error) {
-	if !storable(tokenID) {
+	if !storekit.Storable(tokenID) {
 		return nil, oidc.ErrHandoffNotFound
 	}
 
@@ -102,11 +102,12 @@ func (s *HandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc
 // Consume marks the record of tokenID consumed at at, only while it is
 // unconsumed.
 func (s *HandoffStore) Consume(ctx context.Context, tokenID string, at time.Time) error {
-	if !storable(tokenID) {
+	if !storekit.Storable(tokenID) {
 		return oidc.ErrHandoffNotFound
 	}
 
-	return s.c.execOrRefuse(ctx, "consume handoff", oidc.ErrHandoffNotFound, pgschema.HandoffConsume, tokenID, ts(at))
+	return s.c.execOrRefuse(ctx, "consume handoff", oidc.ErrHandoffNotFound, pgschema.HandoffConsume,
+		tokenID, storekit.Time(at))
 }
 
 // DeleteExpired removes records that expired strictly before before and
@@ -117,7 +118,7 @@ func (s *HandoffStore) DeleteExpired(ctx context.Context, before time.Time) (int
 		return 0, oidc.ErrRetainSinceRequired
 	}
 
-	n, err := s.c.exec(ctx, "purge expired handoffs", pgschema.HandoffDeleteExpired, ts(before))
+	n, err := s.c.exec(ctx, "purge expired handoffs", pgschema.HandoffDeleteExpired, storekit.Time(before))
 
 	return int(n), err
 }

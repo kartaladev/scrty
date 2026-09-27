@@ -2,8 +2,6 @@ package pgx
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"errors"
 	"time"
 
@@ -11,11 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/oidc"
 )
-
-// flowHandleBytes is how many random bytes a flow handle carries.
-const flowHandleBytes = 32
 
 // FlowStore keeps OIDC login flows, between Authorize and Callback, in the
 // oidc_flows table the migrate package creates. It implements oidc.FlowStore,
@@ -56,24 +52,23 @@ func NewFlowStore(pool *pgxpool.Pool, opts ...Option) (*FlowStore, error) {
 func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
 	const op = "begin login flow"
 
-	if err := checkStorable(op,
-		textField{"provider", f.Provider}, textField{"state", f.State}, textField{"nonce", f.Nonce},
-		textField{"verifier", f.Verifier}, textField{"next location", f.Next},
+	if err := storekit.CheckStorable(
+		storekit.Text("provider", f.Provider), storekit.Text("state", f.State), storekit.Text("nonce", f.Nonce),
+		storekit.Text("verifier", f.Verifier), storekit.Text("next location", f.Next),
 	); err != nil {
-		return "", err
+		return "", failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
 		return "", failed(op, err)
 	}
-	var raw [flowHandleBytes]byte
-	if _, err := rand.Read(raw[:]); err != nil {
+	handle, err := storekit.NewFlowHandle()
+	if err != nil {
 		return "", failed(op, err)
 	}
-	handle := base64.RawURLEncoding.EncodeToString(raw[:])
 
 	if _, err := s.c.exec(ctx, op, pgschema.FlowInsert, uuidArg(rowID), handle, f.Provider, f.State, f.Nonce,
-		f.Verifier, f.Next, ts(f.ExpiresAt)); err != nil {
+		f.Verifier, f.Next, storekit.Time(f.ExpiresAt)); err != nil {
 		return "", err
 	}
 
@@ -83,14 +78,14 @@ func (s *FlowStore) Begin(ctx context.Context, f oidc.Flow) (string, error) {
 // Complete completes the flow named by handle and returns it, or refuses
 // with oidc.ErrInvalidState.
 func (s *FlowStore) Complete(ctx context.Context, handle, provider, state string) (oidc.Flow, error) {
-	if !storable(handle, provider, state) {
+	if !storekit.Storable(handle, provider, state) {
 		return oidc.Flow{}, oidc.ErrInvalidState
 	}
 
 	var f oidc.Flow
 	var expires time.Time
 	err := s.c.queryRow(ctx, "complete login flow", pgschema.FlowComplete,
-		[]any{handle, provider, state, ts(s.c.now())},
+		[]any{handle, provider, state, storekit.Time(s.c.now())},
 		&f.Provider, &f.State, &f.Nonce, &f.Verifier, &f.Next, &expires)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return oidc.Flow{}, oidc.ErrInvalidState
@@ -111,7 +106,7 @@ func (s *FlowStore) DeleteExpired(ctx context.Context, before time.Time) (int, e
 		return 0, oidc.ErrRetainSinceRequired
 	}
 
-	n, err := s.c.exec(ctx, "purge expired login flows", pgschema.FlowDeleteExpired, ts(before))
+	n, err := s.c.exec(ctx, "purge expired login flows", pgschema.FlowDeleteExpired, storekit.Time(before))
 
 	return int(n), err
 }

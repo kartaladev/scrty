@@ -3,30 +3,21 @@ package sqlstore_test
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"errors"
-	"slices"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
-
-// sessionAAD is the additional data package session binds a provider ID
-// token to, followed by the session identifier.
-const sessionAAD = "scrty/session:external-id-token:"
 
 // newSessionStore builds the session store over db, failing t on a refusal.
 func newSessionStore(t *testing.T, db *sql.DB, c seal.Cipher, opts ...sqlstore.Option) session.Store {
@@ -42,7 +33,7 @@ func TestSessionStore(t *testing.T) {
 	t.Parallel()
 
 	db := migratedDB(t).DB
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 
 	t.Run("sqlstore", func(t *testing.T) {
 		storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
@@ -51,60 +42,17 @@ func TestSessionStore(t *testing.T) {
 	})
 }
 
-// sealedSessions is the sealed-column suite's view of the session store,
-// built by newWith over a cipher.
-func sealedSessions(
-	db *sql.DB, newWith func(t *testing.T, db *sql.DB, c seal.Cipher) session.Store,
-) storetest.Sealed[session.Store] {
-	return storetest.Sealed[session.Store]{
-		Encoding: storetest.SealedBase64URL,
-		Rotation: storetest.UnchangedOnRead,
-		NewWithKeyring: func(t *testing.T, kr seal.Keyring) session.Store {
-			c, err := seal.NewAEADCipher(kr)
-			require.NoError(t, err)
-			return newWith(t, db, c)
-		},
-		Put: func(ctx context.Context, s session.Store, owner string, secret []byte) error {
-			sess := durableSession(owner, time.Now())
-			sess.ExternalIDToken = string(secret)
-			return s.Create(ctx, sess)
-		},
-		Get: func(ctx context.Context, s session.Store, owner string) ([]byte, bool, error) {
-			sess, err := s.Load(ctx, owner)
-			if errors.Is(err, session.ErrSessionNotFound) {
-				return nil, false, nil
-			}
-			if err != nil {
-				return nil, false, err
-			}
-			return []byte(sess.ExternalIDToken), true, nil
-		},
-		RawColumn: func(t *testing.T, raw *sql.DB, owner string) []byte {
-			var col sql.NullString
-			require.NoError(t, raw.QueryRowContext(t.Context(),
-				`SELECT external_id_token FROM sessions WHERE id_digest = $1`, digest(owner)).Scan(&col))
-			return []byte(col.String)
-		},
-		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE sessions
-SET external_id_token = (SELECT external_id_token FROM sessions WHERE id_digest = $1) WHERE id_digest = $2`,
-				digest(from), digest(to))
-			require.NoError(t, err)
-		},
-	}
-}
-
 func TestSessionStore_SealedColumns(t *testing.T) {
 	t.Parallel()
 
 	conn := migratedDB(t)
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 	h := durableHarness(conn, func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
 		return newSessionStore(t, db, c, opts...)
 	})
 
 	t.Run("sqlstore", func(t *testing.T) {
-		storetest.RunSealedColumns(t, h, sealedSessions(conn.DB,
+		storetest.RunSealedColumns(t, h, storefix.SealedSessions(conn.DB,
 			func(t *testing.T, db *sql.DB, c seal.Cipher) session.Store {
 				return newSessionStore(t, db, c)
 			}))
@@ -115,7 +63,7 @@ func TestNewSessionStore(t *testing.T) {
 	t.Parallel()
 
 	db := unreachableDB(t)
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 
 	type testCase struct {
 		name   string
@@ -126,7 +74,7 @@ func TestNewSessionStore(t *testing.T) {
 	}
 
 	refused := refusedConfig[session.Store]
-	accepted := acceptedConfig[session.Store]
+	accepted := storefix.AcceptedConfig[session.Store]
 
 	cases := []testCase{
 		{name: "a handle and a cipher are all it needs", db: db, cipher: c, assert: accepted},
@@ -141,7 +89,7 @@ func TestNewSessionStore(t *testing.T) {
 		{
 			name:   "a typed-nil cipher is refused",
 			db:     db,
-			cipher: (*countingCipher)(nil),
+			cipher: (*storefix.CountingCipher)(nil),
 			assert: refused("the cipher is nil"),
 		},
 		{name: "a missing handle is refused", cipher: c, assert: refused("the database handle is nil")},
@@ -164,127 +112,27 @@ func TestNewSessionStore(t *testing.T) {
 	}
 }
 
-// durableSession returns a federated session with identifier sid, holding a
-// provider ID token, valid from now for an hour.
-func durableSession(sid string, now time.Time) *session.Session {
-	return &session.Session{
-		ID:                sid,
-		UserID:            identity.UserID("u-" + sid),
-		CreatedAt:         now,
-		LastAccessedAt:    now,
-		IdleExpiresAt:     now.Add(5 * time.Minute),
-		AbsoluteExpiresAt: now.Add(time.Hour),
-		ExternalProvider:  "corp",
-		ExternalIssuer:    "https://idp.example",
-		ExternalSessionID: "sid-" + sid,
-		ExternalIDToken:   "ID-TOKEN-" + sid,
-		Data:              map[string]string{"tenant": "t-9"},
-	}
-}
-
-// digest is the key a session is stored under.
-func digest(sid string) []byte {
-	sum := sha256.Sum256([]byte(sid))
-	return sum[:]
-}
-
-// sessionRow is the stored row of session sid as JSON, or "" when there is
-// none.
-func sessionRow(ctx context.Context, t *testing.T, db *sql.DB, sid string) string {
-	t.Helper()
-
-	var row sql.NullString
-	err := db.QueryRowContext(ctx,
-		`SELECT row_to_json(s)::text FROM sessions s WHERE id_digest = $1`, digest(sid)).Scan(&row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ""
-	}
-	require.NoError(t, err)
-
-	return row.String
-}
-
-// errorTexts is the text of err and of every error it wraps.
-func errorTexts(err error) []string {
-	if err == nil {
-		return nil
-	}
-
-	texts := []string{err.Error()}
-	switch u := err.(type) { //nolint:errorlint // walking the tree itself
-	case interface{ Unwrap() error }:
-		texts = append(texts, errorTexts(u.Unwrap())...)
-	case interface{ Unwrap() []error }:
-		for _, e := range u.Unwrap() {
-			texts = append(texts, errorTexts(e)...)
-		}
-	}
-
-	return texts
-}
-
-// assertNamesOnly requires some error in err's tree to name field, and none to
-// carry any of values.
-func assertNamesOnly(t *testing.T, err error, field string, values ...string) {
-	t.Helper()
-
-	texts := errorTexts(err)
-	assert.True(t, slices.ContainsFunc(texts, func(text string) bool { return strings.Contains(text, field) }),
-		"no error names %q: %q", field, texts)
-	for _, text := range texts {
-		for _, v := range values {
-			assert.NotContains(t, text, v, "an error carries a value")
-		}
-	}
-}
-
-// countingCipher records the additional data every Seal and Open is given,
-// and delegates to the default cipher.
-type countingCipher struct {
-	seal.Cipher
-
-	mu    sync.Mutex
-	seals []string
-	opens []string
-}
-
-func (c *countingCipher) Seal(plaintext, aad []byte) ([]byte, error) {
-	c.mu.Lock()
-	c.seals = append(c.seals, string(aad))
-	c.mu.Unlock()
-
-	return c.Cipher.Seal(plaintext, aad)
-}
-
-func (c *countingCipher) Open(sealed, aad []byte) ([]byte, string, error) {
-	c.mu.Lock()
-	c.opens = append(c.opens, string(aad))
-	c.mu.Unlock()
-
-	return c.Cipher.Open(sealed, aad)
-}
-
 func TestSessionStore_Durable(t *testing.T) {
 	t.Parallel()
 
 	db := migratedDB(t).DB
-	keys := newTestKeys(t)
+	keys := storefix.NewKeys(t)
 	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
 	at := func(clock time.Time) sqlstore.Option { return sqlstore.WithClock(func() time.Time { return clock }) }
 
 	// store seals under both keys, k2 active, and reads the clock at now.
-	store := newSessionStore(t, db, keys.rotated(t), at(now))
+	store := newSessionStore(t, db, keys.Rotated(t), at(now))
 
 	// enrolmentMarked is sid's session, with the enrolment-origin marker set.
 	enrolmentMarked := func(sid string) *session.Session {
-		s := durableSession(sid, now)
+		s := storefix.DurableSession(sid, now)
 		s.EnrolmentOriginDeadline = now.Add(12 * time.Hour)
 		return s
 	}
 	// enrolmentGenerated is sid's session, having begun an enrolment.
 	generation := id.MustParse("01926a4e-0000-7000-8000-00000000abcd")
 	enrolmentGenerated := func(sid string) *session.Session {
-		s := durableSession(sid, now)
+		s := storefix.DurableSession(sid, now)
 		s.EnrolmentGeneration = generation
 		return s
 	}
@@ -297,22 +145,22 @@ func TestSessionStore_Durable(t *testing.T) {
 		return func(t *testing.T, ctx context.Context) {
 			err := store.Create(ctx, sess)
 			require.Error(t, err)
-			assertNamesOnly(t, err, field, append(values, sess.ID)...)
-			assert.Empty(t, sessionRow(ctx, t, db, sess.ID), "a refused create wrote a row")
+			storefix.AssertNamesOnly(t, err, field, append(values, sess.ID)...)
+			assert.Empty(t, storefix.SessionRow(ctx, t, db, sess.ID), "a refused create wrote a row")
 		}
 	}
 	// refusedSave creates a clean session sid, then saves marked over it,
 	// which the store must refuse, naming field, and leave the row unchanged.
 	refusedSave := func(marked *session.Session, field string, values ...string) func(t *testing.T, ctx context.Context) {
 		return func(t *testing.T, ctx context.Context) {
-			require.NoError(t, store.Create(ctx, durableSession(marked.ID, now)))
-			before := sessionRow(ctx, t, db, marked.ID)
+			require.NoError(t, store.Create(ctx, storefix.DurableSession(marked.ID, now)))
+			before := storefix.SessionRow(ctx, t, db, marked.ID)
 
 			marked.LastAccessedAt = now.Add(time.Minute)
 			err := store.Save(ctx, marked)
 			require.Error(t, err)
-			assertNamesOnly(t, err, field, append(values, marked.ID)...)
-			assert.Equal(t, before, sessionRow(ctx, t, db, marked.ID), "a refused save changed the row")
+			storefix.AssertNamesOnly(t, err, field, append(values, marked.ID)...)
+			assert.Equal(t, before, storefix.SessionRow(ctx, t, db, marked.ID), "a refused save changed the row")
 		}
 	}
 
@@ -327,7 +175,7 @@ func TestSessionStore_Durable(t *testing.T) {
 			name: "session identifiers are never stored",
 			assert: func(t *testing.T, ctx context.Context) {
 				const sid = "SESSION-SENTINEL"
-				sess := durableSession(sid, now)
+				sess := storefix.DurableSession(sid, now)
 				// Only the identifier carries the sentinel.
 				sess.UserID, sess.ExternalSessionID, sess.ExternalIDToken = "u-sentinel", "sid-sentinel", "token"
 				require.NoError(t, store.Create(ctx, sess))
@@ -347,13 +195,13 @@ func TestSessionStore_Durable(t *testing.T) {
 			name: "a session with an unreadable ID token is unreadable, not missing",
 			assert: func(t *testing.T, ctx context.Context) {
 				const sid = "sess-tampered"
-				require.NoError(t, store.Create(ctx, durableSession(sid, now)))
+				require.NoError(t, store.Create(ctx, storefix.DurableSession(sid, now)))
 
 				garbage := make([]byte, 64)
 				_, err := rand.Read(garbage)
 				require.NoError(t, err)
 				_, err = db.ExecContext(ctx, `UPDATE sessions SET external_id_token = $2 WHERE id_digest = $1`,
-					digest(sid), base64.RawURLEncoding.EncodeToString(garbage))
+					storefix.Digest(sid), base64.RawURLEncoding.EncodeToString(garbage))
 				require.NoError(t, err)
 
 				got, err := store.Load(ctx, sid)
@@ -366,52 +214,52 @@ func TestSessionStore_Durable(t *testing.T) {
 			name: "sessions are not rewritten on read, and stay deleted",
 			assert: func(t *testing.T, ctx context.Context) {
 				const sid = "sess-retired-key"
-				require.NoError(t, newSessionStore(t, db, keys.underK1(t), at(now)).Create(ctx, durableSession(sid, now)))
-				before := sessionRow(ctx, t, db, sid)
+				require.NoError(t, newSessionStore(t, db, keys.UnderK1(t), at(now)).Create(ctx, storefix.DurableSession(sid, now)))
+				before := storefix.SessionRow(ctx, t, db, sid)
 
 				got, err := store.Load(ctx, sid)
 				require.NoError(t, err)
 				assert.Equal(t, "ID-TOKEN-"+sid, got.ExternalIDToken)
-				assert.Equal(t, before, sessionRow(ctx, t, db, sid), "the load rewrote the row")
+				assert.Equal(t, before, storefix.SessionRow(ctx, t, db, sid), "the load rewrote the row")
 
 				require.NoError(t, store.Delete(ctx, sid))
 				_, err = store.Load(ctx, sid)
 				require.ErrorIs(t, err, session.ErrSessionNotFound)
-				assert.Empty(t, sessionRow(ctx, t, db, sid))
+				assert.Empty(t, storefix.SessionRow(ctx, t, db, sid))
 			},
 		},
 		{
 			name: "the consumer's cipher seals and opens with the session's additional data",
 			assert: func(t *testing.T, ctx context.Context) {
 				const sid = "sess-counted"
-				counting := &countingCipher{Cipher: keys.rotated(t)}
+				counting := &storefix.CountingCipher{Cipher: keys.Rotated(t)}
 				s := newSessionStore(t, db, counting, at(now))
 
-				require.NoError(t, s.Create(ctx, durableSession(sid, now)))
+				require.NoError(t, s.Create(ctx, storefix.DurableSession(sid, now)))
 				_, err := s.Load(ctx, sid)
 				require.NoError(t, err)
 
-				assert.Equal(t, []string{sessionAAD + sid}, counting.seals)
-				assert.Equal(t, []string{sessionAAD + sid}, counting.opens)
+				assert.Equal(t, []string{storefix.SessionAAD + sid}, counting.Seals())
+				assert.Equal(t, []string{storefix.SessionAAD + sid}, counting.Opens())
 			},
 		},
 		{
 			name: "the consumer's clock drives expiry",
 			assert: func(t *testing.T, ctx context.Context) {
 				const sid = "sess-clock"
-				require.NoError(t, store.Create(ctx, durableSession(sid, now)))
+				require.NoError(t, store.Create(ctx, storefix.DurableSession(sid, now)))
 
 				_, err := store.Load(ctx, sid)
 				require.NoError(t, err, "at 12:00 a session idle until 12:05 loads")
 
-				later := newSessionStore(t, db, keys.rotated(t), at(now.Add(6*time.Minute)))
+				later := newSessionStore(t, db, keys.Rotated(t), at(now.Add(6*time.Minute)))
 				_, err = later.Load(ctx, sid)
 				require.ErrorIs(t, err, session.ErrSessionExpired, "at 12:06 it is expired")
 			},
 		},
 		{
 			name: "a load under a cancelled context fails with the cancellation, never as not found",
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context) {
 				_, err := store.Load(ctx, "sess-never")
 				require.ErrorIs(t, err, context.Canceled)

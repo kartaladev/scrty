@@ -11,19 +11,17 @@ package sqlstore_test
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver the replicas open
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -71,15 +69,6 @@ func openReplica(t *testing.T, dsn string) *sql.DB {
 	return db
 }
 
-// cancelled is a table's ctx modifier for a case whose context is already
-// cancelled.
-func cancelled(ctx context.Context) context.Context {
-	cctx, cancel := context.WithCancel(ctx)
-	cancel()
-
-	return cctx
-}
-
 // unreachableDB is a handle on a server that is not there. Constructors never
 // touch the database, so it builds any store; an operation on it fails.
 func unreachableDB(t *testing.T) *sql.DB {
@@ -91,76 +80,7 @@ func unreachableDB(t *testing.T) *sql.DB {
 // refusedConfig asserts a constructor refused its configuration with exactly
 // text, and returned no store.
 func refusedConfig[S any](text string) func(t *testing.T, s S, err error) {
-	return func(t *testing.T, s S, err error) {
-		t.Helper()
-		require.ErrorIs(t, err, sqlstore.ErrConfig)
-		assert.EqualError(t, err, "sqlstore: invalid configuration: "+text)
-		assert.Nil(t, s)
-	}
-}
-
-// acceptedConfig asserts a constructor returned a store.
-func acceptedConfig[S any](t *testing.T, s S, err error) {
-	t.Helper()
-	require.NoError(t, err)
-	assert.NotNil(t, s)
-}
-
-// sealKey returns a fresh random key of the size the default cipher takes.
-func sealKey(t *testing.T) []byte {
-	t.Helper()
-
-	key := make([]byte, seal.KeySize)
-	_, err := rand.Read(key)
-	require.NoError(t, err)
-
-	return key
-}
-
-// testKeys is a pair of keys: k1, retired, and k2, active.
-type testKeys struct{ k1, k2 []byte }
-
-func newTestKeys(t *testing.T) testKeys {
-	t.Helper()
-
-	return testKeys{k1: sealKey(t), k2: sealKey(t)}
-}
-
-// cipher returns the default cipher over a keyring built from opts.
-func cipherOf(t *testing.T, opts ...seal.KeyringOption) seal.Cipher {
-	t.Helper()
-
-	kr, err := seal.NewKeyring(opts...)
-	require.NoError(t, err)
-	c, err := seal.NewAEADCipher(kr)
-	require.NoError(t, err)
-
-	return c
-}
-
-// underK1 seals under k1 alone.
-func (k testKeys) underK1(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k1", k.k1))
-}
-
-// rotated seals under k2 and still opens what k1 sealed.
-func (k testKeys) rotated(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k2", k.k2), seal.WithRetiredEncryptionKey("k1", k.k1))
-}
-
-// onlyK2 seals and opens under k2 alone: what k1 sealed does not open.
-func (k testKeys) onlyK2(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k2", k.k2))
-}
-
-// testCipher is the cipher a test uses when the keys do not matter: k2
-// active, k1 retired.
-func testCipher(t *testing.T) seal.Cipher {
-	t.Helper()
-	return newTestKeys(t).rotated(t)
+	return storefix.RefusedConfig[S](sqlstore.ErrConfig, "sqlstore", text)
 }
 
 // storeFactory builds a store of type S over db with opts, failing t when the

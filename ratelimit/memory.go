@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
 // perReplicaWarning is written once per limiter, on first use.
@@ -93,7 +95,7 @@ func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*M
 	if l.window <= 0 {
 		return nil, fmt.Errorf("%w: a window of %s counts no failure at all", ErrConfig, l.window)
 	}
-	if l.clock == nil {
+	if nilcheck.IsNil(l.clock) {
 		return nil, fmt.Errorf("%w: the clock is nil, so no failure could be stamped", ErrConfig)
 	}
 	if l.logger == nil {

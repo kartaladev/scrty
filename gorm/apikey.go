@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -47,14 +48,14 @@ func NewAPIKeyStore(db *gormdb.DB, opts ...Option) (*APIKeyStore, error) {
 func (s *APIKeyStore) Put(ctx context.Context, rec apikey.Key) error {
 	const op = "store API key"
 
-	fields := []textField{{"principal", string(rec.Principal)}, {"name", rec.Name}}
+	fields := []storekit.Field{storekit.Text("principal", string(rec.Principal)), storekit.Text("name", rec.Name)}
 	for _, scope := range rec.Scopes {
-		fields = append(fields, textField{"scope", scope})
+		fields = append(fields, storekit.Text("scope", scope))
 	}
-	if err := checkStorable(op, fields...); err != nil {
-		return err
+	if err := storekit.CheckStorable(fields...); err != nil {
+		return failed(op, err)
 	}
-	scopes, err := json.Marshal(orNone(rec.Scopes))
+	scopes, err := json.Marshal(storekit.OrNone(rec.Scopes))
 	if err != nil {
 		return failed(op, err)
 	}
@@ -68,11 +69,11 @@ func (s *APIKeyStore) Put(ctx context.Context, rec apikey.Key) error {
 		UserID:       string(rec.Principal),
 		Name:         rec.Name,
 		Scopes:       string(scopes),
-		SecretDigest: orEmpty(rec.SecretDigest),
+		SecretDigest: storekit.OrEmpty(rec.SecretDigest),
 		ExpiresAt:    tsPtr(rec.ExpiresAt),
 		RevokedAt:    tsPtr(rec.RevokedAt),
 		LastUsedAt:   tsPtr(rec.LastUsedAt),
-		CreatedAt:    ts(rec.CreatedAt),
+		CreatedAt:    storekit.Time(rec.CreatedAt),
 	}).Error
 	if err != nil {
 		return failed(op, err)
@@ -107,14 +108,14 @@ func (s *APIKeyStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error) 
 // is apikey.ErrKeyNotFound.
 func (s *APIKeyStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
 	return updateOrRefuse[apiKeyRow](ctx, s.c, "revoke API key", apikey.ErrKeyNotFound,
-		map[string]any{"revoked_at": gormdb.Expr("COALESCE(revoked_at, ?)", ts(at))}, "id = ?", keyID)
+		map[string]any{"revoked_at": gormdb.Expr("COALESCE(revoked_at, ?)", storekit.Time(at))}, "id = ?", keyID)
 }
 
 // TouchLastUsed records a successful verification of the key at at: one
 // UPDATE, whose zero rows affected is apikey.ErrKeyNotFound.
 func (s *APIKeyStore) TouchLastUsed(ctx context.Context, keyID id.ID, at time.Time) error {
 	return updateOrRefuse[apiKeyRow](ctx, s.c, "record API key use", apikey.ErrKeyNotFound,
-		map[string]any{"last_used_at": ts(at)}, "id = ?", keyID)
+		map[string]any{"last_used_at": storekit.Time(at)}, "id = ?", keyID)
 }
 
 // List returns every key of principal, oldest first, the id breaking ties:
@@ -122,7 +123,7 @@ func (s *APIKeyStore) TouchLastUsed(ctx context.Context, keyID id.ID, at time.Ti
 func (s *APIKeyStore) List(ctx context.Context, principal identity.UserID) ([]apikey.Key, error) {
 	const op = "list API keys"
 
-	if !storable(string(principal)) {
+	if !storekit.Storable(string(principal)) {
 		return []apikey.Key{}, nil
 	}
 	q, _, err := s.c.conn(ctx)

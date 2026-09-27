@@ -2,9 +2,6 @@ package pgxstore_test
 
 import (
 	"context"
-	"crypto/sha256"
-	"database/sql"
-	"fmt"
 	"testing"
 	"time"
 
@@ -14,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/apikey"
-	"github.com/kartaladev/scrty/identity"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -28,30 +25,6 @@ func newAPIKeyStore(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) *
 	require.NoError(t, err)
 
 	return s
-}
-
-// apiKey is the key numbered n, issued to principal.
-func apiKey(n int, principal identity.UserID) apikey.Key {
-	digest := sha256.Sum256(fmt.Appendf(nil, "api-key-%d", n))
-
-	return apikey.Key{
-		ID:           id.MustParse(fmt.Sprintf("01926a4e-0000-7000-8000-%012x", 0x300000+n)),
-		Principal:    principal,
-		Name:         fmt.Sprintf("key %d", n),
-		Scopes:       []string{"read"},
-		SecretDigest: digest[:],
-		CreatedAt:    time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC),
-	}
-}
-
-// keyRowExists selects whether the key $1 is committed.
-const keyRowExists = `SELECT EXISTS (SELECT 1 FROM api_keys WHERE id = $1)`
-
-// apiKeyPresent reports whether key n is committed, read out of band.
-func apiKeyPresent(t *testing.T, raw *sql.DB, n int) bool {
-	t.Helper()
-
-	return exists(t, raw, keyRowExists, apiKey(n, "").ID.String())
 }
 
 func TestAPIKeyStore(t *testing.T) {
@@ -79,7 +52,7 @@ func TestNewAPIKeyStore(t *testing.T) {
 	}
 
 	refused := refusedConfig[*pgxstore.APIKeyStore]
-	accepted := acceptedConfig[*pgxstore.APIKeyStore]
+	accepted := storefix.AcceptedConfig[*pgxstore.APIKeyStore]
 
 	cases := []testCase{
 		{name: "a pool is all it needs", pool: pool, assert: accepted},
@@ -127,7 +100,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 
 	present := func(ctx context.Context, t *testing.T, n int) bool {
 		t.Helper()
-		return existsCtx(ctx, t, db.DB, keyRowExists, apiKey(n, "").ID.String())
+		return storefix.ExistsCtx(ctx, t, db.DB, storefix.KeyRowExists, storefix.APIKey(n, "").ID.String())
 	}
 
 	cases := []testCase{
@@ -138,7 +111,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 				s := newAPIKeyStore(t, db.Pool,
 					pgxstore.WithTxResolver(func(context.Context) (pgx.Tx, bool) { return tx, true }))
 
-				require.NoError(t, s.Put(ctx, apiKey(1, "svc")))
+				require.NoError(t, s.Put(ctx, storefix.APIKey(1, "svc")))
 				assert.False(t, present(ctx, t, 1), "the insert ran outside the resolver's transaction")
 				require.NoError(t, tx.Rollback(ctx))
 				assert.False(t, present(ctx, t, 1), "the insert survived the rollback")
@@ -151,7 +124,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 				s := newAPIKeyStore(t, db.Pool,
 					pgxstore.WithTxResolver(func(context.Context) (pgx.Tx, bool) { return nil, false }))
 
-				require.NoError(t, s.Put(pgxstore.WithTx(ctx, attached), apiKey(2, "svc")))
+				require.NoError(t, s.Put(pgxstore.WithTx(ctx, attached), storefix.APIKey(2, "svc")))
 				assert.True(t, present(ctx, t, 2), "the insert is not visible at once")
 				require.NoError(t, attached.Rollback(ctx))
 				assert.True(t, present(ctx, t, 2), "the insert ran in the attached transaction")
@@ -161,7 +134,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 			name: "a key whose revocation time is infinite is an error, never unrevoked",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newAPIKeyStore(t, db.Pool)
-				key := apiKey(3, "svc-infinite")
+				key := storefix.APIKey(3, "svc-infinite")
 				require.NoError(t, s.Put(ctx, key))
 				_, err := db.DB.ExecContext(ctx, `UPDATE api_keys SET revoked_at = 'infinity' WHERE id = $1`,
 					key.ID.String())
@@ -177,7 +150,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 		{
 			name: "a key holding text PostgreSQL cannot store is refused without echoing it",
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				key := apiKey(4, "svc")
+				key := storefix.APIKey(4, "svc")
 				key.Scopes = []string{"read", "bad\x00canary-3c9e"}
 				err := newAPIKeyStore(t, db.Pool).Put(ctx, key)
 				require.Error(t, err)
@@ -188,7 +161,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 		{
 			name: "a key issued with no scopes stores an empty JSON array, never null",
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				key := apiKey(10, "svc-no-scopes")
+				key := storefix.APIKey(10, "svc-no-scopes")
 				key.Scopes = nil
 				require.NoError(t, newAPIKeyStore(t, db.Pool).Put(ctx, key))
 
@@ -200,9 +173,9 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 		},
 		{
 			name: "a revocation under a cancelled context fails with the cancellation, never as not found",
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				err := newAPIKeyStore(t, db.Pool).Revoke(ctx, apiKey(5, "").ID, time.Now())
+				err := newAPIKeyStore(t, db.Pool).Revoke(ctx, storefix.APIKey(5, "").ID, time.Now())
 				require.ErrorIs(t, err, context.Canceled)
 				assert.NotErrorIs(t, err, apikey.ErrKeyNotFound)
 			},

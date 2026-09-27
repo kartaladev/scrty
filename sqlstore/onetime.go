@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -46,8 +47,10 @@ func NewOneTimeStore(db *sql.DB, opts ...Option) (*OneTimeStore, error) {
 func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 	const op = "insert one-time token"
 
-	if err := checkStorable(op, textField{"purpose", tok.Purpose}, textField{"subject", tok.Subject}); err != nil {
-		return err
+	if err := storekit.CheckStorable(
+		storekit.Text("purpose", tok.Purpose), storekit.Text("subject", tok.Subject),
+	); err != nil {
+		return failed(op, err)
 	}
 
 	// An unbound token keeps its binding NULL, never an empty value.
@@ -55,8 +58,9 @@ func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 	if tok.BindingHash != nil {
 		binding = tok.BindingHash
 	}
-	n, err := s.c.exec(ctx, op, pgschema.OneTimeInsert, tok.ID, tok.Purpose, tok.Subject, orEmpty(tok.SecretHash), binding,
-		ts(tok.IssuedAt), ts(tok.ExpiresAt), nullTs(tok.ConsumedAt))
+	n, err := s.c.exec(ctx, op, pgschema.OneTimeInsert, tok.ID, tok.Purpose, tok.Subject,
+		storekit.OrEmpty(tok.SecretHash), binding, storekit.Time(tok.IssuedAt), storekit.Time(tok.ExpiresAt),
+		nullTs(tok.ConsumedAt))
 	if err != nil {
 		return err
 	}
@@ -92,7 +96,7 @@ func (s *OneTimeStore) FindByID(ctx context.Context, tokenID id.ID) (*onetime.To
 func (s *OneTimeStore) Consume(ctx context.Context, tokenID id.ID, at time.Time) error {
 	const op = "consume one-time token"
 
-	n, err := s.c.exec(ctx, op, pgschema.OneTimeConsume, tokenID, ts(at))
+	n, err := s.c.exec(ctx, op, pgschema.OneTimeConsume, tokenID, storekit.Time(at))
 	if err != nil {
 		return err
 	}
@@ -108,12 +112,12 @@ func (s *OneTimeStore) Consume(ctx context.Context, tokenID id.ID, at time.Time)
 func (s *OneTimeStore) CountRecentBySubject(
 	ctx context.Context, purpose, subject string, since time.Time,
 ) (int, error) {
-	if !storable(purpose, subject) {
+	if !storekit.Storable(purpose, subject) {
 		return 0, nil
 	}
 
 	return s.c.count(ctx, "count recent one-time tokens", pgschema.OneTimeCountRecent,
-		purpose, subject, ts(since))
+		purpose, subject, storekit.Time(since))
 }
 
 // DeleteExpiredBefore removes purpose's tokens expired by the store's clock
@@ -123,12 +127,12 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 	if retainSince.IsZero() {
 		return 0, onetime.ErrRetainSinceRequired
 	}
-	if !storable(purpose) {
+	if !storekit.Storable(purpose) {
 		return 0, nil
 	}
 
 	n, err := s.c.exec(ctx, "purge expired one-time tokens", pgschema.OneTimeDeleteExpiredBefore,
-		purpose, ts(s.c.now()), ts(retainSince))
+		purpose, storekit.Time(s.c.now()), storekit.Time(retainSince))
 
 	return int(n), err
 }

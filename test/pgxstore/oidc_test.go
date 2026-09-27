@@ -2,12 +2,8 @@ package pgxstore_test
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
-	"errors"
-	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/oidc"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -51,118 +48,6 @@ func newHandoffStore(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) 
 	require.NoError(t, err)
 
 	return s
-}
-
-// oidcStart is when every OIDC record here was made.
-var oidcStart = time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
-
-// mustNewID mints a fresh identifier, failing t when it cannot.
-func mustNewID(t *testing.T) id.ID {
-	t.Helper()
-
-	v, err := id.NewV7Generator().NewID()
-	require.NoError(t, err)
-
-	return v
-}
-
-// link is a link of provider's subject at issuer to user, under a fresh id.
-func link(t *testing.T, provider, issuer, subject string, user identity.UserID) oidc.Link {
-	t.Helper()
-
-	return oidc.Link{
-		ID: mustNewID(t), Provider: provider, Issuer: issuer, Subject: subject,
-		UserID: user, Username: "user-of-" + subject, Email: subject + "@example.com", CreatedAt: oidcStart,
-	}
-}
-
-// flow is a flow for provider and state, expiring ten minutes after
-// oidcStart.
-func flow(provider, state string) oidc.Flow {
-	return oidc.Flow{
-		Provider: provider, State: state, Nonce: "nonce-" + state, Verifier: "verifier-" + state,
-		Next: "/next?of=" + state, ExpiresAt: oidcStart.Add(10 * time.Minute),
-	}
-}
-
-// handoff is a record for tokenID under a fresh id, issued at oidcStart and
-// expiring a minute later.
-func handoff(t *testing.T, tokenID string) oidc.HandoffRecord {
-	t.Helper()
-
-	sum := sha256.Sum256([]byte("secret-of-" + tokenID))
-
-	return oidc.HandoffRecord{
-		ID: mustNewID(t), TokenID: tokenID, SecretHash: sum[:], UserID: "u-" + identity.UserID(tokenID),
-		Provider: "corp", Issuer: "https://corp.example", SessionID: "sid-" + tokenID,
-		IDToken: "header.payload.signature", Next: "/home",
-		CreatedAt: oidcStart, ExpiresAt: oidcStart.Add(time.Minute),
-	}
-}
-
-// testClock is a clock a test advances by hand. It is safe for concurrent
-// use.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
-
-// linkRace is the race over link inserts: record i is the subject
-// race-subject-i, which Seed does not insert, and every racer inserts it for
-// a user of its own, the refusal mapped to (false, nil).
-func linkRace[S oidc.LinkStore]() storetest.Race[S] {
-	gen := id.NewV7Generator()
-	return storetest.Race[S]{
-		Seed: func(_ context.Context, _ *testing.T, _ S, i int) string {
-			return fmt.Sprintf("race-subject-%d", i)
-		},
-		Attempt: func(ctx context.Context, s S, key string, racer int) (bool, error) {
-			linkID, err := gen.NewID()
-			if err != nil {
-				return false, err
-			}
-			err = s.Insert(ctx, oidc.Link{
-				ID: linkID, Provider: "corp", Issuer: "https://race.example", Subject: key,
-				UserID: identity.UserID(fmt.Sprintf("u-%d", racer)), CreatedAt: oidcStart,
-			})
-			if errors.Is(err, oidc.ErrLinkExists) {
-				return false, nil
-			}
-			return err == nil, err
-		},
-	}
-}
-
-// handoffRace is the race over handoff consumption: Seed inserts the record
-// race-token-i, and every racer consumes it, the refusal mapped to
-// (false, nil).
-func handoffRace[S oidc.HandoffStore]() storetest.Race[S] {
-	return storetest.Race[S]{
-		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
-			rec := handoff(t, fmt.Sprintf("race-token-%d", i))
-			require.NoError(t, s.Insert(ctx, rec))
-			return rec.TokenID
-		},
-		Attempt: func(ctx context.Context, s S, key string, _ int) (bool, error) {
-			err := s.Consume(ctx, key, time.Now())
-			if errors.Is(err, oidc.ErrHandoffNotFound) {
-				return false, nil
-			}
-			return err == nil, err
-		},
-	}
 }
 
 func TestLinkStore(t *testing.T) {
@@ -209,7 +94,7 @@ func TestLinkStore_InsertRace(t *testing.T) {
 	})
 
 	t.Run("pgx", func(t *testing.T) {
-		storetest.RunLinkInsertRace(t, h, linkRace[*pgxstore.LinkStore]())
+		storetest.RunLinkInsertRace(t, h, storefix.LinkRace[*pgxstore.LinkStore]())
 	})
 }
 
@@ -221,7 +106,7 @@ func TestHandoffStore_ConsumeRace(t *testing.T) {
 	})
 
 	t.Run("pgx", func(t *testing.T) {
-		storetest.RunConsumeRace(t, h, handoffRace[*pgxstore.HandoffStore]())
+		storetest.RunConsumeRace(t, h, storefix.HandoffRace[*pgxstore.HandoffStore]())
 	})
 }
 
@@ -248,7 +133,7 @@ func TestNewOIDCStores(t *testing.T) {
 		return pgxstore.NewHandoffStore(pool, opts...)
 	}
 	refused := refusedConfig[any]
-	accepted := acceptedConfig[any]
+	accepted := storefix.AcceptedConfig[any]
 	generator := pgxstore.WithIDGenerator(id.NewV7Generator())
 	clock := pgxstore.WithClock(time.Now)
 
@@ -308,9 +193,9 @@ func TestOIDCStores_Durable(t *testing.T) {
 	}
 
 	// clockedFlows is a flow store whose clock starts at oidcStart.
-	clockedFlows := func(t *testing.T, pool *pgxpool.Pool) (*pgxstore.FlowStore, *testClock) {
+	clockedFlows := func(t *testing.T, pool *pgxpool.Pool) (*pgxstore.FlowStore, *storefix.Clock) {
 		t.Helper()
-		clock := &testClock{now: oidcStart}
+		clock := storefix.NewClock(storefix.OIDCStart)
 		return newFlowStore(t, pool, pgxstore.WithClock(clock.Now)), clock
 	}
 	// countLinks counts the links at issuer, out of band.
@@ -334,8 +219,8 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a refused link insert does not overwrite the stored link",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newLinkStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, link(t, "corp", "https://overwrite.example", "s-1", "u1")))
-				require.ErrorIs(t, s.Insert(ctx, link(t, "corp", "https://overwrite.example", "s-1", "u2")), oidc.ErrLinkExists)
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "corp", "https://overwrite.example", "s-1", "u1")))
+				require.ErrorIs(t, s.Insert(ctx, storefix.Link(t, "corp", "https://overwrite.example", "s-1", "u2")), oidc.ErrLinkExists)
 
 				got, err := s.FindByExternal(ctx, "corp", "https://overwrite.example", "s-1")
 				require.NoError(t, err)
@@ -346,9 +231,9 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a refused link insert's error text carries neither the subject nor the user",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newLinkStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, link(t, "corp", "https://text.example", "subject-9f2c", "user-4d1e")))
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "corp", "https://text.example", "subject-9f2c", "user-4d1e")))
 
-				err := s.Insert(ctx, link(t, "corp", "https://text.example", "subject-9f2c", "user-4d1e"))
+				err := s.Insert(ctx, storefix.Link(t, "corp", "https://text.example", "subject-9f2c", "user-4d1e"))
 				require.ErrorIs(t, err, oidc.ErrLinkExists)
 				assert.NotContains(t, err.Error(), "subject-9f2c")
 				assert.NotContains(t, err.Error(), "user-4d1e")
@@ -358,9 +243,9 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "deleting a user's links removes all of them, reports the count, and keeps another user's",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newLinkStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, link(t, "corp", "https://delete.example", "s-1", "del-u1")))
-				require.NoError(t, s.Insert(ctx, link(t, "social", "https://delete.example", "s-9", "del-u1")))
-				require.NoError(t, s.Insert(ctx, link(t, "corp", "https://delete.example", "s-2", "del-u2")))
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "corp", "https://delete.example", "s-1", "del-u1")))
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "social", "https://delete.example", "s-9", "del-u1")))
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "corp", "https://delete.example", "s-2", "del-u2")))
 
 				n, err := s.DeleteByUser(ctx, "del-u1")
 				require.NoError(t, err)
@@ -375,8 +260,8 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "deleting the links of an empty user reference removes nothing and reports 0",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newLinkStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, link(t, "corp", "https://empty.example", "s-1", "")))
-				require.NoError(t, s.Insert(ctx, link(t, "corp", "https://empty.example", "s-2", "someone")))
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "corp", "https://empty.example", "s-1", "")))
+				require.NoError(t, s.Insert(ctx, storefix.Link(t, "corp", "https://empty.example", "s-2", "someone")))
 
 				n, err := s.DeleteByUser(ctx, "")
 				require.NoError(t, err)
@@ -388,7 +273,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a link holding text PostgreSQL cannot store is refused without echoing it",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				err := newLinkStore(t, db.Pool).Insert(ctx,
-					link(t, "corp", "https://nul.example", "sub\x00canary-81aa", "u1"))
+					storefix.Link(t, "corp", "https://nul.example", "sub\x00canary-81aa", "u1"))
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, oidc.ErrLinkExists)
 				assert.NotContains(t, err.Error(), "canary-81aa")
@@ -398,7 +283,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 		{
 			name: "a zero-id link insert is refused before any statement, and nothing is written",
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				l := link(t, "corp", "https://zeroid.example", "s-zero", "u1")
+				l := storefix.Link(t, "corp", "https://zeroid.example", "s-zero", "u1")
 				l.ID = id.Nil
 				err := newLinkStore(t, db.Pool).Insert(ctx, l)
 				require.Error(t, err)
@@ -409,7 +294,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a completion with a wrong state is refused and does not burn the flow",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, _ := clockedFlows(t, db.Pool)
-				f := flow("p1", "s1")
+				f := storefix.Flow("p1", "s1")
 				h, err := s.Begin(ctx, f)
 				require.NoError(t, err)
 
@@ -424,7 +309,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a completion at a wrong provider is refused and does not burn the flow",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, _ := clockedFlows(t, db.Pool)
-				h, err := s.Begin(ctx, flow("p1", "s1"))
+				h, err := s.Begin(ctx, storefix.Flow("p1", "s1"))
 				require.NoError(t, err)
 
 				_, err = s.Complete(ctx, h, "p2", "s1")
@@ -437,7 +322,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "an expired flow is refused as an unknown handle is, and stays uncompleted",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, clock := clockedFlows(t, db.Pool)
-				h, err := s.Begin(ctx, flow("p1", "s-expired"))
+				h, err := s.Begin(ctx, storefix.Flow("p1", "s-expired"))
 				require.NoError(t, err)
 				clock.Advance(10 * time.Minute)
 
@@ -456,7 +341,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a completion with an empty handle or an empty state is refused without a statement error",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, _ := clockedFlows(t, db.Pool)
-				h, err := s.Begin(ctx, flow("p1", "s-empty"))
+				h, err := s.Begin(ctx, storefix.Flow("p1", "s-empty"))
 				require.NoError(t, err)
 
 				_, err = s.Complete(ctx, "", "p1", "s-empty")
@@ -471,7 +356,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a flow begun with an empty state never completes, even with an empty state",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, _ := clockedFlows(t, db.Pool)
-				h, err := s.Begin(ctx, flow("p1", ""))
+				h, err := s.Begin(ctx, storefix.Flow("p1", ""))
 				require.NoError(t, err)
 
 				_, err = s.Complete(ctx, h, "p1", "")
@@ -482,9 +367,9 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "handles are minted from 32 random bytes, base64url, and differ",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, _ := clockedFlows(t, db.Pool)
-				h1, err := s.Begin(ctx, flow("p1", "s-handle-1"))
+				h1, err := s.Begin(ctx, storefix.Flow("p1", "s-handle-1"))
 				require.NoError(t, err)
-				h2, err := s.Begin(ctx, flow("p1", "s-handle-2"))
+				h2, err := s.Begin(ctx, storefix.Flow("p1", "s-handle-2"))
 				require.NoError(t, err)
 
 				assert.NotEqual(t, h1, h2)
@@ -498,8 +383,8 @@ func TestOIDCStores_Durable(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				fixed := id.MustParse("00000000-0000-4000-8000-00000000f10e")
 				s := newFlowStore(t, db.Pool,
-					pgxstore.WithIDGenerator(generatorFunc(func() (id.ID, error) { return fixed, nil })))
-				h, err := s.Begin(ctx, flow("p1", "s-generated"))
+					pgxstore.WithIDGenerator(storefix.GeneratorFunc(func() (id.ID, error) { return fixed, nil })))
+				h, err := s.Begin(ctx, storefix.Flow("p1", "s-generated"))
 				require.NoError(t, err)
 
 				var stored string
@@ -510,7 +395,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 		},
 		{
 			name: "a completion under a cancelled context fails with the cancellation, not a refusal",
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s, _ := clockedFlows(t, db.Pool)
 				_, err := s.Complete(ctx, "some-handle", "p1", "s1")
@@ -522,7 +407,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a handoff's subject round-trips byte for byte",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newHandoffStore(t, db.Pool)
-				rec := handoff(t, "tok-round-trip")
+				rec := storefix.Handoff(t, "tok-round-trip")
 				rec.UserID, rec.Provider, rec.Issuer = "Alice@Example.com", "Corp IdP", "https://Corp.example/"
 				rec.SessionID, rec.Next = " sid-Ω ", "/after?x=1&y=ü"
 				require.NoError(t, s.Insert(ctx, rec))
@@ -540,8 +425,8 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a second consumption is refused and the first consumption time is kept",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newHandoffStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, handoff(t, "tok-twice")))
-				t1 := oidcStart.Add(10 * time.Second)
+				require.NoError(t, s.Insert(ctx, storefix.Handoff(t, "tok-twice")))
+				t1 := storefix.OIDCStart.Add(10 * time.Second)
 				require.NoError(t, s.Consume(ctx, "tok-twice", t1))
 
 				require.ErrorIs(t, s.Consume(ctx, "tok-twice", t1.Add(time.Second)), oidc.ErrHandoffNotFound)
@@ -555,7 +440,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "a handoff whose consumption time is infinite is an error, never unconsumed",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newHandoffStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, handoff(t, "tok-infinite")))
+				require.NoError(t, s.Insert(ctx, storefix.Handoff(t, "tok-infinite")))
 				_, err := db.DB.ExecContext(ctx,
 					`UPDATE oidc_handoffs SET consumed_at = 'infinity' WHERE token_id = 'tok-infinite'`)
 				require.NoError(t, err)
@@ -570,9 +455,9 @@ func TestOIDCStores_Durable(t *testing.T) {
 			name: "an empty token id is refused as unknown, even when a record holds one",
 			assert: func(t *testing.T, ctx context.Context, db database) {
 				s := newHandoffStore(t, db.Pool)
-				require.NoError(t, s.Insert(ctx, handoff(t, "")))
+				require.NoError(t, s.Insert(ctx, storefix.Handoff(t, "")))
 
-				require.ErrorIs(t, s.Consume(ctx, "", oidcStart), oidc.ErrHandoffNotFound)
+				require.ErrorIs(t, s.Consume(ctx, "", storefix.OIDCStart), oidc.ErrHandoffNotFound)
 				_, err := s.FindByTokenID(ctx, "")
 				require.ErrorIs(t, err, oidc.ErrHandoffNotFound)
 
@@ -585,7 +470,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 		{
 			name: "a zero-id handoff insert is refused before any statement, and nothing is written",
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				rec := handoff(t, "tok-zero-id")
+				rec := storefix.Handoff(t, "tok-zero-id")
 				rec.ID = id.Nil
 				err := newHandoffStore(t, db.Pool).Insert(ctx, rec)
 				require.Error(t, err)
@@ -594,9 +479,9 @@ func TestOIDCStores_Durable(t *testing.T) {
 		},
 		{
 			name: "a consumption under a cancelled context fails with the cancellation, not a refusal",
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				err := newHandoffStore(t, db.Pool).Consume(ctx, "tok-cancelled", oidcStart)
+				err := newHandoffStore(t, db.Pool).Consume(ctx, "tok-cancelled", storefix.OIDCStart)
 				require.ErrorIs(t, err, context.Canceled)
 				assert.NotErrorIs(t, err, oidc.ErrHandoffNotFound)
 			},

@@ -1,6 +1,7 @@
 package magiclink_test
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -9,8 +10,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/magiclink"
 	"github.com/kartaladev/scrty/notify"
+	"github.com/kartaladev/scrty/onetime"
 )
 
 func TestNewMagicLinkManager(t *testing.T) {
@@ -129,6 +132,19 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 				assert.Nil(t, m)
 			},
 		},
+		{
+			// A plain `== nil` check misses this: the interface carries a type
+			// descriptor for *recordingSender even though the pointer itself is
+			// nil, so the comparison is false and construction would otherwise
+			// succeed — only for Send to panic on the nil receiver at first use.
+			name:   "a typed nil sender is refused the same as an absent one",
+			sender: func(_ *testing.T) notify.Sender { return (*recordingSender)(nil) },
+			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, magiclink.ErrConfig)
+				assert.Nil(t, m)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -176,6 +192,15 @@ func TestMagicLinkOptions(t *testing.T) {
 		{name: "nil renderer", opts: []magiclink.Option{magiclink.WithRenderer(nil)}, assert: configError},
 		{name: "nil random source", opts: []magiclink.Option{magiclink.WithRandom(nil)}, assert: configError},
 		{
+			// (*bytes.Buffer)(nil) implements io.Reader through a pointer
+			// receiver, so the interface WithRandom stores is non-nil even
+			// though the pointer is: a plain `== nil` check would accept it
+			// and only panic once a request tries to read from it.
+			name:   "typed nil random source is refused the same as no random source",
+			opts:   []magiclink.Option{magiclink.WithRandom((*bytes.Buffer)(nil))},
+			assert: configError,
+		},
+		{
 			name: "a consumer confirm path is accepted",
 			opts: []magiclink.Option{magiclink.WithConfirmPath("/auth/link")},
 			assert: func(t *testing.T, m *magiclink.Manager, err error) {
@@ -206,19 +231,55 @@ func TestMagicLinkOptions(t *testing.T) {
 func TestMagicLinkManagerRequiresItsPorts(t *testing.T) {
 	t.Parallel()
 
-	t.Run("no token manager", func(t *testing.T) {
-		t.Parallel()
-
-		m, err := magiclink.NewManager(nil, stubLoader{}, &recordingSender{}, "https://app.example.com")
-		require.ErrorIs(t, err, magiclink.ErrConfig)
+	configError := func(t *testing.T, m *magiclink.Manager, err error) {
+		require.Error(t, err)
+		assert.ErrorIs(t, err, magiclink.ErrConfig)
 		assert.Nil(t, m)
-	})
+	}
 
-	t.Run("no user loader", func(t *testing.T) {
-		t.Parallel()
+	type testCase struct {
+		name   string
+		tokens func(t *testing.T) *onetime.Manager
+		users  identity.UserLoader
+		assert func(t *testing.T, m *magiclink.Manager, err error)
+	}
 
-		m, err := magiclink.NewManager(testTokens(t), nil, &recordingSender{}, "https://app.example.com")
-		require.ErrorIs(t, err, magiclink.ErrConfig)
-		assert.Nil(t, m)
-	})
+	validTokens := func(t *testing.T) *onetime.Manager { return testTokens(t) }
+
+	// A nil *mutableLoader satisfies identity.UserLoader through pointer
+	// receivers, so the interface field carries a type descriptor even though
+	// the pointer is nil — a plain `== nil` check misses it and construction
+	// would otherwise succeed, for the loader to panic on its nil receiver at
+	// first use.
+	var nilTypedLoader *mutableLoader
+
+	cases := []testCase{
+		{
+			name:   "no token manager",
+			tokens: func(*testing.T) *onetime.Manager { return nil },
+			users:  stubLoader{},
+			assert: configError,
+		},
+		{
+			name:   "no user loader",
+			tokens: validTokens,
+			users:  nil,
+			assert: configError,
+		},
+		{
+			name:   "a typed nil user loader is refused the same as an absent one",
+			tokens: validTokens,
+			users:  nilTypedLoader,
+			assert: configError,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m, err := magiclink.NewManager(tc.tokens(t), tc.users, &recordingSender{}, "https://app.example.com")
+			tc.assert(t, m, err)
+		})
+	}
 }

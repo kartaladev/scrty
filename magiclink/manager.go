@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/onetime"
@@ -104,10 +105,10 @@ func NewManager(
 	if m.tokens == nil {
 		return nil, fmt.Errorf("%w: a one-time token manager is required", ErrConfig)
 	}
-	if m.users == nil {
+	if nilcheck.IsNil(m.users) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("user loader"))
 	}
-	if m.sender == nil {
+	if nilcheck.IsNil(m.sender) {
 		return nil, fmt.Errorf("%w: a message sender is required", ErrConfig)
 	}
 	if err := requireNonBlocking(m.sender, m.acceptSyncDelivery); err != nil {
@@ -131,7 +132,7 @@ func NewManager(
 	if m.renderer == nil {
 		return nil, fmt.Errorf("%w: WithRenderer was given no renderer", ErrConfig)
 	}
-	if m.random == nil {
+	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: WithRandom was given no random source", ErrConfig)
 	}
 

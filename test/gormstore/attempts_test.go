@@ -2,7 +2,6 @@ package gormstore_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -46,30 +46,6 @@ func TestAttemptStore(t *testing.T) {
 	})
 }
 
-// generatorFunc is a consumer's id generator.
-type generatorFunc func() (id.ID, error)
-
-func (g generatorFunc) NewID() (id.ID, error) { return g() }
-
-// attemptIDs returns the ids of username's stored failures, as text.
-func attemptIDs(ctx context.Context, t *testing.T, db *sql.DB, username string) []string {
-	t.Helper()
-
-	rows, err := db.QueryContext(ctx, `SELECT id::text FROM login_attempts WHERE username = $1`, username)
-	require.NoError(t, err)
-	defer func() { _ = rows.Close() }()
-
-	var ids []string
-	for rows.Next() {
-		var s string
-		require.NoError(t, rows.Scan(&s))
-		ids = append(ids, s)
-	}
-	require.NoError(t, rows.Err())
-
-	return ids
-}
-
 func TestAttemptStore_IDs(t *testing.T) {
 	t.Parallel()
 
@@ -91,7 +67,7 @@ func TestAttemptStore_IDs(t *testing.T) {
 			username: "default-generator",
 			assert: func(t *testing.T, err error, username string) {
 				require.NoError(t, err)
-				ids := attemptIDs(t.Context(), t, raw, username)
+				ids := storefix.AttemptIDs(t.Context(), t, raw, username)
 				require.Len(t, ids, 1)
 				assert.Equal(t, byte('7'), ids[0][14], "id %s is not version 7", ids[0])
 			},
@@ -99,23 +75,23 @@ func TestAttemptStore_IDs(t *testing.T) {
 		{
 			name:     "a consumer generator's id is the one stored",
 			username: "consumer-generator",
-			opts: []gormstore.Option{gormstore.WithIDGenerator(generatorFunc(func() (id.ID, error) {
+			opts: []gormstore.Option{gormstore.WithIDGenerator(storefix.GeneratorFunc(func() (id.ID, error) {
 				return id.MustParse("00000000-0000-4000-8000-000000000001"), nil
 			}))},
 			assert: func(t *testing.T, err error, username string) {
 				require.NoError(t, err)
-				assert.Equal(t, []string{"00000000-0000-4000-8000-000000000001"}, attemptIDs(t.Context(), t, raw, username))
+				assert.Equal(t, []string{"00000000-0000-4000-8000-000000000001"}, storefix.AttemptIDs(t.Context(), t, raw, username))
 			},
 		},
 		{
 			name:     "a generator failure is returned wrapped, and nothing is written",
 			username: "failing-generator",
-			opts: []gormstore.Option{gormstore.WithIDGenerator(generatorFunc(func() (id.ID, error) {
+			opts: []gormstore.Option{gormstore.WithIDGenerator(storefix.GeneratorFunc(func() (id.ID, error) {
 				return id.Nil, errGenerator
 			}))},
 			assert: func(t *testing.T, err error, username string) {
 				require.ErrorIs(t, err, errGenerator)
-				assert.Empty(t, attemptIDs(t.Context(), t, raw, username))
+				assert.Empty(t, storefix.AttemptIDs(t.Context(), t, raw, username))
 			},
 		},
 		{
@@ -124,7 +100,7 @@ func TestAttemptStore_IDs(t *testing.T) {
 			assert: func(t *testing.T, err error, _ string) {
 				require.Error(t, err)
 				assert.NotContains(t, err.Error(), "canary-41")
-				assert.Empty(t, attemptIDs(t.Context(), t, raw, "a"), "the username was truncated at the NUL byte")
+				assert.Empty(t, storefix.AttemptIDs(t.Context(), t, raw, "a"), "the username was truncated at the NUL byte")
 			},
 		},
 		{
@@ -133,7 +109,7 @@ func TestAttemptStore_IDs(t *testing.T) {
 			assert: func(t *testing.T, err error, _ string) {
 				require.Error(t, err)
 				assert.NotContains(t, err.Error(), "canary-42")
-				assert.Empty(t, attemptIDs(t.Context(), t, raw, "caf�-canary-42"), "the username was altered")
+				assert.Empty(t, storefix.AttemptIDs(t.Context(), t, raw, "caf�-canary-42"), "the username was altered")
 			},
 		},
 	}
@@ -185,12 +161,12 @@ func TestAttemptStore_Refusals(t *testing.T) {
 				require.NoError(t, s.RecordFailure(txCtx, "after-refusal", at),
 					"the refusal aborted the caller's transaction")
 				require.NoError(t, tx.Commit().Error)
-				assert.Len(t, attemptIDs(ctx, t, d.conn.DB, "after-refusal"), 1)
+				assert.Len(t, storefix.AttemptIDs(ctx, t, d.conn.DB, "after-refusal"), 1)
 			},
 		},
 		{
 			name: "a count under a cancelled context fails with the cancellation, never as zero",
-			ctx:  cancelled,
+			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context) {
 				_, err := s.FailureCount(ctx, "alice", time.Time{})
 				require.ErrorIs(t, err, context.Canceled)
@@ -225,7 +201,7 @@ func TestNewAttemptStore(t *testing.T) {
 	}
 
 	refused := refusedConfig[*gormstore.AttemptStore]
-	accepted := acceptedConfig[*gormstore.AttemptStore]
+	accepted := storefix.AcceptedConfig[*gormstore.AttemptStore]
 
 	cases := []testCase{
 		{name: "a handle is all it needs", db: db, assert: accepted},

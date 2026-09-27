@@ -7,6 +7,7 @@ import (
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/signingkey"
 )
@@ -42,7 +43,7 @@ func NewSigningKeyStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (signingke
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCipher(c); err != nil {
+	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
 		return nil, err
 	}
 
@@ -65,8 +66,10 @@ type signingKeyStore struct{ c *config }
 func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) error {
 	const op = "store signing key"
 
-	if err := checkStorable(op, textField{"key id", rec.Kid}, textField{"algorithm", string(rec.Alg)}); err != nil {
-		return err
+	if err := storekit.CheckStorable(
+		storekit.Text("key id", rec.Kid), storekit.Text("algorithm", string(rec.Alg)),
+	); err != nil {
+		return failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
@@ -81,9 +84,9 @@ func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) erro
 		ID:         rowID,
 		Kid:        rec.Kid,
 		Alg:        string(rec.Alg),
-		PrivateKey: orEmpty(rec.Private),
-		PublicJWK:  orEmpty(rec.PublicJWK),
-		CreatedAt:  ts(rec.CreatedAt),
+		PrivateKey: storekit.OrEmpty(rec.Private),
+		PublicJWK:  storekit.OrEmpty(rec.PublicJWK),
+		CreatedAt:  storekit.Time(rec.CreatedAt),
 	}
 	err = q.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "kid"}},

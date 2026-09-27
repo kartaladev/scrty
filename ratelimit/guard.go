@@ -130,7 +130,7 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 	if g.logger == nil {
 		return nil, fmt.Errorf("%w: the logger is nil, so refusals would go unreported", ErrConfig)
 	}
-	if g.clock == nil {
+	if nilcheck.IsNil(g.clock) {
 		return nil, fmt.Errorf("%w: the clock is nil, so refusal records could not be sampled", ErrConfig)
 	}
 

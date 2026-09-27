@@ -3,13 +3,13 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/seal"
 )
@@ -58,7 +58,7 @@ func NewEnrolmentStore(db *sql.DB, c seal.Cipher, opts ...Option) (mfa.Enrolment
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCipher(c); err != nil {
+	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
 		return nil, err
 	}
 
@@ -76,16 +76,11 @@ func NewEnrolmentStore(db *sql.DB, c seal.Cipher, opts ...Option) (mfa.Enrolment
 // is why it is not exported.
 type enrolmentStore struct{ c *config }
 
-// secretText is how a sealed secret is stored in the text column.
-func secretText(sealed []byte) string {
-	return base64.RawURLEncoding.EncodeToString(sealed)
-}
-
 // Get returns the user's enrolment, its secret still sealed.
 func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
 	const op = "get MFA enrolment"
 
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return mfa.Enrolment{}, false, nil
 	}
 
@@ -103,9 +98,9 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		return mfa.Enrolment{}, false, err
 	}
 
-	sealed, err := base64.RawURLEncoding.DecodeString(secret)
+	sealed, err := storekit.SecretFromText(secret)
 	if err != nil {
-		return mfa.Enrolment{}, false, failed(op, errors.New("the stored secret is not base64url"))
+		return mfa.Enrolment{}, false, failed(op, err)
 	}
 	e.Secret, e.ConfirmedAt, e.CreatedAt = sealed, fromNull(confirmed), created.UTC()
 
@@ -117,8 +112,8 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
 	const op = "store pending MFA enrolment"
 
-	if err := checkStorable(op, textField{"user reference", string(e.User)}); err != nil {
-		return err
+	if err := storekit.CheckStorable(storekit.Text("user reference", string(e.User))); err != nil {
+		return failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
@@ -126,16 +121,16 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 	}
 
 	return s.c.execOrRefuse(ctx, op, mfa.ErrAlreadyEnrolled, pgschema.EnrolmentPutPending,
-		rowID, string(e.User), secretText(e.Secret), ts(e.CreatedAt))
+		rowID, string(e.User), storekit.SecretText(e.Secret), storekit.Time(e.CreatedAt))
 }
 
 // Confirm confirms the user's pending enrolment at at, recording step.
 func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
-	n, err := s.c.exec(ctx, "confirm MFA enrolment", pgschema.EnrolmentConfirm, string(user), step, ts(at))
+	n, err := s.c.exec(ctx, "confirm MFA enrolment", pgschema.EnrolmentConfirm, string(user), step, storekit.Time(at))
 
 	return n > 0, err
 }
@@ -143,7 +138,7 @@ func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step
 // AcceptStep records step for user where the enrolment is confirmed and its
 // recorded step is lower.
 func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
@@ -154,7 +149,7 @@ func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, s
 
 // Delete removes the user's enrolment; an absent one is not an error.
 func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
@@ -167,7 +162,7 @@ func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error
 // it still holds old. Inside a caller's transaction it writes nothing.
 func (s *enrolmentStore) ResealEnrolmentSecret(ctx context.Context, user identity.UserID, old, resealed []byte) error {
 	return s.c.execOutsideTx(ctx, "re-seal MFA secret", pgschema.EnrolmentReseal,
-		string(user), secretText(old), secretText(resealed))
+		string(user), storekit.SecretText(old), storekit.SecretText(resealed))
 }
 
 var (

@@ -2,8 +2,6 @@ package gormstore_test
 
 import (
 	"context"
-	"database/sql"
-	"slices"
 	"testing"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -29,74 +28,11 @@ func newSigningKeyStore(t *testing.T, db *gormdb.DB, c seal.Cipher, opts ...gorm
 	return s
 }
 
-// keyCreated is when every key here was generated; kids break the tie.
-var keyCreated = time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
-
-// signingKey is a record for kid holding private material private.
-func signingKey(kid string, private []byte) signingkey.Record {
-	return signingkey.Record{
-		Kid:       kid,
-		Alg:       "ES256",
-		Private:   private,
-		PublicJWK: []byte(`{"kty":"EC","kid":"` + kid + `"}`),
-		CreatedAt: keyCreated,
-	}
-}
-
-// privateColumn is kid's private_key column as stored.
-func privateColumn(ctx context.Context, t *testing.T, db *sql.DB, kid string) []byte {
-	t.Helper()
-
-	var b []byte
-	require.NoError(t, db.QueryRowContext(ctx,
-		`SELECT private_key FROM signing_keys WHERE kid = $1`, kid).Scan(&b))
-
-	return b
-}
-
-// sealedSigningKeys is the sealed-column suite's view of the signing-key
-// store, built by newWith over a cipher on db.
-func sealedSigningKeys(
-	db *gormdb.DB, newWith func(t *testing.T, db *gormdb.DB, c seal.Cipher) signingkey.KeyStore,
-) storetest.Sealed[signingkey.KeyStore] {
-	return storetest.Sealed[signingkey.KeyStore]{
-		Encoding: storetest.SealedBytes,
-		Rotation: storetest.ResealOnRead,
-		NewWithKeyring: func(t *testing.T, kr seal.Keyring) signingkey.KeyStore {
-			c, err := seal.NewAEADCipher(kr)
-			require.NoError(t, err)
-			return newWith(t, db, c)
-		},
-		Put: func(ctx context.Context, s signingkey.KeyStore, owner string, secret []byte) error {
-			return s.Store(ctx, signingKey(owner, secret))
-		},
-		Get: func(ctx context.Context, s signingkey.KeyStore, owner string) ([]byte, bool, error) {
-			recs, err := s.LoadAll(ctx)
-			if err != nil {
-				return nil, false, err
-			}
-			i := slices.IndexFunc(recs, func(r signingkey.Record) bool { return r.Kid == owner })
-			if i < 0 {
-				return nil, false, nil
-			}
-			return recs[i].Private, true, nil
-		},
-		RawColumn: func(t *testing.T, raw *sql.DB, owner string) []byte {
-			return privateColumn(t.Context(), t, raw, owner)
-		},
-		CopySealed: func(t *testing.T, raw *sql.DB, from, to string) {
-			_, err := raw.ExecContext(t.Context(), `UPDATE signing_keys
-SET private_key = (SELECT private_key FROM signing_keys WHERE kid = $1) WHERE kid = $2`, from, to)
-			require.NoError(t, err)
-		},
-	}
-}
-
 func TestSigningKeyStore(t *testing.T) {
 	t.Parallel()
 
 	d := migratedDB(t)
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
@@ -109,13 +45,13 @@ func TestSigningKeyStore_SealedColumns(t *testing.T) {
 	t.Parallel()
 
 	d := migratedDB(t)
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 	h := durableHarness(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) signingkey.KeyStore {
 		return newSigningKeyStore(t, db, c, opts...)
 	})
 
 	t.Run("gorm", func(t *testing.T) {
-		storetest.RunSealedColumns(t, h, sealedSigningKeys(d.db,
+		storetest.RunSealedColumns(t, h, storefix.SealedSigningKeys(d.db,
 			func(t *testing.T, db *gormdb.DB, c seal.Cipher) signingkey.KeyStore {
 				return newSigningKeyStore(t, db, c)
 			}))
@@ -126,7 +62,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 	t.Parallel()
 
 	db := unreachableDB(t)
-	c := testCipher(t)
+	c := storefix.TestCipher(t)
 
 	type testCase struct {
 		name   string
@@ -137,7 +73,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 	}
 
 	refused := refusedConfig[signingkey.KeyStore]
-	accepted := acceptedConfig[signingkey.KeyStore]
+	accepted := storefix.AcceptedConfig[signingkey.KeyStore]
 
 	cases := []testCase{
 		{name: "a handle and a cipher are all it needs", db: db, cipher: c, assert: accepted},
@@ -152,7 +88,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 			assert: accepted,
 		},
 		{name: "a missing cipher is refused", db: db, assert: refused("the cipher is nil")},
-		{name: "a typed nil cipher is refused", db: db, cipher: (*gatedCipher)(nil), assert: refused("the cipher is nil")},
+		{name: "a typed nil cipher is refused", db: db, cipher: (*storefix.GatedCipher)(nil), assert: refused("the cipher is nil")},
 		{name: "a missing handle is refused", cipher: c, assert: refused("the database handle is nil")},
 		{
 			name:   "a clock does not apply to signing keys",
@@ -179,25 +115,25 @@ func TestSigningKeyStore_Sealed(t *testing.T) {
 	type testCase struct {
 		name   string
 		ctx    func(ctx context.Context) context.Context
-		assert func(t *testing.T, ctx context.Context, d database, keys testKeys)
+		assert func(t *testing.T, ctx context.Context, d database, keys storefix.Keys)
 	}
 
 	// storedUnderK1 stores kid through a store sealing under k1 alone, and
 	// returns its sealed column.
-	storedUnderK1 := func(t *testing.T, ctx context.Context, d database, keys testKeys, kid string) []byte {
+	storedUnderK1 := func(t *testing.T, ctx context.Context, d database, keys storefix.Keys, kid string) []byte {
 		t.Helper()
-		require.NoError(t, newSigningKeyStore(t, d.db, keys.underK1(t)).Store(ctx, signingKey(kid, []byte("PKCS8-"+kid))))
-		return privateColumn(ctx, t, d.conn.DB, kid)
+		require.NoError(t, newSigningKeyStore(t, d.db, keys.UnderK1(t)).Store(ctx, storefix.SigningKey(kid, []byte("PKCS8-"+kid))))
+		return storefix.PrivateColumn(ctx, t, d.conn.DB, kid)
 	}
 
 	cases := []testCase{
 		{
 			name: "the private key column does not hold the key, and the store reads it back",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
-				s := newSigningKeyStore(t, d.db, keys.rotated(t))
-				require.NoError(t, s.Store(ctx, signingKey("kid-1", []byte("PKCS8-SENTINEL"))))
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				s := newSigningKeyStore(t, d.db, keys.Rotated(t))
+				require.NoError(t, s.Store(ctx, storefix.SigningKey("kid-1", []byte("PKCS8-SENTINEL"))))
 
-				assert.NotContains(t, string(privateColumn(ctx, t, d.conn.DB, "kid-1")), "PKCS8-SENTINEL")
+				assert.NotContains(t, string(storefix.PrivateColumn(ctx, t, d.conn.DB, "kid-1")), "PKCS8-SENTINEL")
 				recs, err := s.LoadAll(ctx)
 				require.NoError(t, err)
 				require.Len(t, recs, 1)
@@ -206,10 +142,10 @@ func TestSigningKeyStore_Sealed(t *testing.T) {
 		},
 		{
 			name: "one unreadable key of three fails the whole load and returns no keys",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
-				s := newSigningKeyStore(t, d.db, keys.rotated(t))
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				s := newSigningKeyStore(t, d.db, keys.Rotated(t))
 				for _, kid := range []string{"kid-a", "kid-b", "kid-c"} {
-					require.NoError(t, s.Store(ctx, signingKey(kid, []byte("PKCS8-"+kid))))
+					require.NoError(t, s.Store(ctx, storefix.SigningKey(kid, []byte("PKCS8-"+kid))))
 				}
 				// Flip the last byte of one key's tag.
 				_, err := d.conn.DB.ExecContext(ctx, `UPDATE signing_keys
@@ -226,14 +162,14 @@ WHERE kid = 'kid-b'`)
 		},
 		{
 			name: "a read outside a transaction re-seals a key under the active key",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
 				before := storedUnderK1(t, ctx, d, keys, "kid-reseal")
 
-				_, err := newSigningKeyStore(t, d.db, keys.rotated(t)).LoadAll(ctx)
+				_, err := newSigningKeyStore(t, d.db, keys.Rotated(t)).LoadAll(ctx)
 				require.NoError(t, err)
 
-				assert.NotEqual(t, before, privateColumn(ctx, t, d.conn.DB, "kid-reseal"), "the read did not re-seal")
-				recs, err := newSigningKeyStore(t, d.db, keys.onlyK2(t)).LoadAll(ctx)
+				assert.NotEqual(t, before, storefix.PrivateColumn(ctx, t, d.conn.DB, "kid-reseal"), "the read did not re-seal")
+				recs, err := newSigningKeyStore(t, d.db, keys.OnlyK2(t)).LoadAll(ctx)
 				require.NoError(t, err, "the re-sealed key does not open under the active key alone")
 				require.Len(t, recs, 1)
 				assert.Equal(t, []byte("PKCS8-kid-reseal"), recs[0].Private)
@@ -241,54 +177,54 @@ WHERE kid = 'kid-b'`)
 		},
 		{
 			name: "a read inside a transaction attached with WithTx rewrites nothing",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
 				before := storedUnderK1(t, ctx, d, keys, "kid-in-tx")
 
 				tx := beginGorm(ctx, t, d.db)
-				recs, err := newSigningKeyStore(t, d.db, keys.rotated(t)).LoadAll(gormstore.WithTx(ctx, tx))
+				recs, err := newSigningKeyStore(t, d.db, keys.Rotated(t)).LoadAll(gormstore.WithTx(ctx, tx))
 				require.NoError(t, err)
 				require.Len(t, recs, 1)
 				require.NoError(t, tx.Commit().Error)
 
-				assert.Equal(t, before, privateColumn(ctx, t, d.conn.DB, "kid-in-tx"), "the read inside a transaction re-sealed")
+				assert.Equal(t, before, storefix.PrivateColumn(ctx, t, d.conn.DB, "kid-in-tx"), "the read inside a transaction re-sealed")
 			},
 		},
 		{
 			name: "a read inside a transaction a resolver reports rewrites nothing",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
 				before := storedUnderK1(t, ctx, d, keys, "kid-resolved")
 
 				tx := beginGorm(ctx, t, d.db)
-				s := newSigningKeyStore(t, d.db, keys.rotated(t), gormstore.WithTxResolver(resolving(tx)))
+				s := newSigningKeyStore(t, d.db, keys.Rotated(t), gormstore.WithTxResolver(resolving(tx)))
 				_, err := s.LoadAll(ctx)
 				require.NoError(t, err)
 				require.NoError(t, tx.Commit().Error)
 
-				assert.Equal(t, before, privateColumn(ctx, t, d.conn.DB, "kid-resolved"),
+				assert.Equal(t, before, storefix.PrivateColumn(ctx, t, d.conn.DB, "kid-resolved"),
 					"the read inside a transaction re-sealed")
 			},
 		},
 		{
 			name: "with re-sealing turned off a read rewrites nothing",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
 				before := storedUnderK1(t, ctx, d, keys, "kid-off")
 
-				_, err := newSigningKeyStore(t, d.db, keys.rotated(t), gormstore.WithResealOnRead(false)).LoadAll(ctx)
+				_, err := newSigningKeyStore(t, d.db, keys.Rotated(t), gormstore.WithResealOnRead(false)).LoadAll(ctx)
 				require.NoError(t, err)
 
-				assert.Equal(t, before, privateColumn(ctx, t, d.conn.DB, "kid-off"), "the read re-sealed")
+				assert.Equal(t, before, storefix.PrivateColumn(ctx, t, d.conn.DB, "kid-off"), "the read re-sealed")
 			},
 		},
 		{
 			name: "a store of a kid already stored replaces the key and keeps its row",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
-				s := newSigningKeyStore(t, d.db, keys.rotated(t))
-				require.NoError(t, s.Store(ctx, signingKey("kid-replaced", []byte("PKCS8-OLD"))))
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				s := newSigningKeyStore(t, d.db, keys.Rotated(t))
+				require.NoError(t, s.Store(ctx, storefix.SigningKey("kid-replaced", []byte("PKCS8-OLD"))))
 				var before string
 				require.NoError(t, d.conn.DB.QueryRowContext(ctx,
 					`SELECT id::text FROM signing_keys WHERE kid = 'kid-replaced'`).Scan(&before))
 
-				replaced := signingKey("kid-replaced", []byte("PKCS8-NEW"))
+				replaced := storefix.SigningKey("kid-replaced", []byte("PKCS8-NEW"))
 				replaced.Alg = "EdDSA"
 				require.NoError(t, s.Store(ctx, replaced))
 
@@ -305,20 +241,20 @@ WHERE kid = 'kid-b'`)
 		},
 		{
 			name: "a kid PostgreSQL text cannot hold is refused without echoing it",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
-				err := newSigningKeyStore(t, d.db, keys.rotated(t)).
-					Store(ctx, signingKey("kid\x00canary-5e1f", []byte("PKCS8")))
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				err := newSigningKeyStore(t, d.db, keys.Rotated(t)).
+					Store(ctx, storefix.SigningKey("kid\x00canary-5e1f", []byte("PKCS8")))
 				require.Error(t, err)
 				assert.NotContains(t, err.Error(), "canary-5e1f")
-				assert.False(t, existsCtx(ctx, t, d.conn.DB, `SELECT EXISTS (SELECT 1 FROM signing_keys)`), "nothing is written")
+				assert.False(t, storefix.ExistsCtx(ctx, t, d.conn.DB, `SELECT EXISTS (SELECT 1 FROM signing_keys)`), "nothing is written")
 			},
 		},
 		{
 			name: "a re-seal does not replace material a concurrent store wrote under the same kid",
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
 				storedUnderK1(t, ctx, d, keys, "kid-race")
 
-				gated := newGatedCipher(keys.rotated(t))
+				gated := storefix.NewGatedCipher(keys.Rotated(t))
 				reader := newSigningKeyStore(t, d.db, gated)
 				type load struct {
 					recs []signingkey.Record
@@ -330,10 +266,10 @@ WHERE kid = 'kid-b'`)
 					done <- load{recs, err}
 				}()
 
-				<-gated.opening
-				writer := newSigningKeyStore(t, d.db, keys.rotated(t))
-				require.NoError(t, writer.Store(ctx, signingKey("kid-race", []byte("PKCS8-NEW"))))
-				close(gated.release)
+				<-gated.Opening()
+				writer := newSigningKeyStore(t, d.db, keys.Rotated(t))
+				require.NoError(t, writer.Store(ctx, storefix.SigningKey("kid-race", []byte("PKCS8-NEW"))))
+				gated.Release()
 				got := <-done
 				require.NoError(t, got.err)
 				require.Len(t, got.recs, 1)
@@ -347,9 +283,9 @@ WHERE kid = 'kid-b'`)
 		},
 		{
 			name: "a load under a cancelled context fails with the cancellation",
-			ctx:  cancelled,
-			assert: func(t *testing.T, ctx context.Context, d database, keys testKeys) {
-				recs, err := newSigningKeyStore(t, d.db, keys.rotated(t)).LoadAll(ctx)
+			ctx:  storefix.Cancelled,
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				recs, err := newSigningKeyStore(t, d.db, keys.Rotated(t)).LoadAll(ctx)
 				require.ErrorIs(t, err, context.Canceled)
 				assert.Nil(t, recs)
 			},
@@ -367,19 +303,7 @@ WHERE kid = 'kid-b'`)
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
 			}
-			tc.assert(t, ctx, d, newTestKeys(t))
+			tc.assert(t, ctx, d, storefix.NewKeys(t))
 		})
 	}
 }
-
-// identityCipher "seals" by returning its input: a store over it keeps the
-// plaintext, which the sealed-column suite must catch.
-type identityCipher struct{}
-
-func (identityCipher) Seal(plaintext, _ []byte) ([]byte, error) { return slices.Clone(plaintext), nil }
-
-func (identityCipher) Open(sealed, _ []byte) ([]byte, string, error) {
-	return slices.Clone(sealed), "k2", nil
-}
-
-func (identityCipher) ActiveKeyID() (string, error) { return "k2", nil }

@@ -458,8 +458,10 @@ func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 	if ctr != nil {
 		t.Cleanup(func() {
 			// Not t.Context(): it is already cancelled by the time cleanup
-			// runs, and Terminate would fail before it removed anything.
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// runs, and Terminate would fail before it removed anything. The
+			// budget must exceed Docker's own stop grace period (10s), or a
+			// container that needs all of it under load fails the test here.
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			if err := ctr.Terminate(cleanupCtx); err != nil {
 				t.Errorf("failed to terminate PostgreSQL container: %s", err)

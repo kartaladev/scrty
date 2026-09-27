@@ -86,6 +86,18 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 			assert:  refused,
 		},
 		{
+			// *fakeClock (defined in memory_test.go) implements Clock through a
+			// pointer receiver, so a nil one is an interface holding a nil
+			// pointer: `== nil` misses it, and only the reflect-based check the
+			// constructor now uses catches it before the first refusal sample
+			// reads from a nil receiver.
+			name:    "a typed nil clock",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardClock((*fakeClock)(nil))},
+			assert:  refused,
+		},
+		{
 			name:    "a flow name and a limiter are all a guard needs",
 			flow:    testFlow,
 			limiter: workingLimiter,

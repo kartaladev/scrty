@@ -3,15 +3,9 @@ package gormstore_test
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -24,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -32,25 +27,15 @@ import (
 // that variant alone.
 const brokenVar = "GORMSTORE_BROKEN"
 
-// brokenVariant is a durable store carrying one deliberate defect, the run
-// that must fail, and the case of it that must catch the defect.
-type brokenVariant struct {
-	name      string
-	run       func(t *testing.T)
-	failsCase string
-	// failsWith, when set, is text the child's output must carry.
-	failsWith string
-}
-
 // brokenVariants are the defects the gorm runs must catch. None of them is
 // exported from the gorm module: each is built here, over the exported store
 // or through the test's own *gorm.DB.
-var brokenVariants = []brokenVariant{
+var brokenVariants = []storefix.BrokenVariant{
 	{
-		name: "session-save-is-gorm-save",
-		run: func(t *testing.T) {
+		Name: "session-save-is-gorm-save",
+		Run: func(t *testing.T) {
 			d := migratedDB(t)
-			c := testCipher(t)
+			c := storefix.TestCipher(t)
 			t.Run("gorm", func(t *testing.T) {
 				storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
 					db := emptied(t, d, "sessions")
@@ -58,133 +43,133 @@ var brokenVariants = []brokenVariant{
 				})
 			})
 		},
-		failsCase: "saving a deleted session is not found and does not bring it back",
+		FailsCase: "saving a deleted session is not found and does not bring it back",
 	},
 	{
-		name: "onetime-read-then-write-consume",
-		run: func(t *testing.T) {
+		Name: "onetime-read-then-write-consume",
+		Run: func(t *testing.T) {
 			h := durableHarness(migratedDB(t),
 				func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) readThenWriteConsume {
 					return readThenWriteConsume{OneTimeStore: newOneTimeStore(t, db, opts...), db: db}
 				})
 			t.Run("gorm", func(t *testing.T) {
-				storetest.RunConsumeRace(t, h, consumeRace[readThenWriteConsume]())
+				storetest.RunConsumeRace(t, h, storefix.ConsumeRace[readThenWriteConsume]())
 			})
 		},
-		failsCase: "exactly one consumption wins per record",
-		failsWith: "more than one successful consumption",
+		FailsCase: "exactly one consumption wins per record",
+		FailsWith: "more than one successful consumption",
 	},
 	{
-		name: "signingkey-identity-cipher",
-		run: func(t *testing.T) {
+		Name: "signingkey-identity-cipher",
+		Run: func(t *testing.T) {
 			d := migratedDB(t)
 			h := durableHarness(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) signingkey.KeyStore {
-				return newSigningKeyStore(t, db, identityCipher{}, opts...)
+				return newSigningKeyStore(t, db, storefix.IdentityCipher{}, opts...)
 			})
 			t.Run("gorm", func(t *testing.T) {
 				// The keyring the suite hands over is ignored: every store
 				// "seals" through the identity cipher.
-				storetest.RunSealedColumns(t, h, sealedSigningKeys(d.db,
+				storetest.RunSealedColumns(t, h, storefix.SealedSigningKeys(d.db,
 					func(t *testing.T, db *gormdb.DB, _ seal.Cipher) signingkey.KeyStore {
-						return newSigningKeyStore(t, db, identityCipher{})
+						return newSigningKeyStore(t, db, storefix.IdentityCipher{})
 					}))
 			})
 		},
-		failsCase: "the stored value, decoded, does not hold the plaintext",
-		failsWith: "the column holds the plaintext",
+		FailsCase: "the stored value, decoded, does not hold the plaintext",
+		FailsWith: "the column holds the plaintext",
 	},
 	{
-		name: "signingkey-missing-aad-cipher",
-		run: func(t *testing.T) {
+		Name: "signingkey-missing-aad-cipher",
+		Run: func(t *testing.T) {
 			d := migratedDB(t)
-			c := missingAADCipher{testCipher(t)}
+			c := storefix.MissingAADCipher{Cipher: storefix.TestCipher(t)}
 			h := durableHarness(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) signingkey.KeyStore {
 				return newSigningKeyStore(t, db, c, opts...)
 			})
 			t.Run("gorm", func(t *testing.T) {
-				storetest.RunSealedColumns(t, h, sealedSigningKeys(d.db,
+				storetest.RunSealedColumns(t, h, storefix.SealedSigningKeys(d.db,
 					func(t *testing.T, db *gormdb.DB, c seal.Cipher) signingkey.KeyStore {
-						return newSigningKeyStore(t, db, missingAADCipher{c})
+						return newSigningKeyStore(t, db, storefix.MissingAADCipher{Cipher: c})
 					}))
 			})
 		},
-		failsCase: "a sealed value copied to another record does not open there",
+		FailsCase: "a sealed value copied to another record does not open there",
 	},
 	{
-		name: "mfa-identity-cipher",
-		run: func(t *testing.T) {
+		Name: "mfa-identity-cipher",
+		Run: func(t *testing.T) {
 			d := migratedDB(t)
 			h := durableHarness(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) mfa.EnrolmentStore {
-				return newEnrolmentStore(t, db, identityCipher{}, opts...)
+				return newEnrolmentStore(t, db, storefix.IdentityCipher{}, opts...)
 			})
 			t.Run("gorm", func(t *testing.T) {
-				storetest.RunSealedColumns(t, h, sealedEnrolments(d.db,
+				storetest.RunSealedColumns(t, h, storefix.SealedEnrolments(d.db,
 					func(t *testing.T, db *gormdb.DB, _ seal.Cipher) mfa.EnrolmentStore {
-						return newEnrolmentStore(t, db, identityCipher{})
+						return newEnrolmentStore(t, db, storefix.IdentityCipher{})
 					}))
 			})
 		},
-		failsCase: "the stored value, decoded, does not hold the plaintext",
-		failsWith: "the decoded column holds the plaintext",
+		FailsCase: "the stored value, decoded, does not hold the plaintext",
+		FailsWith: "the decoded column holds the plaintext",
 	},
 	{
-		name: "mfa-missing-aad-cipher",
-		run: func(t *testing.T) {
+		Name: "mfa-missing-aad-cipher",
+		Run: func(t *testing.T) {
 			d := migratedDB(t)
-			c := missingAADCipher{testCipher(t)}
+			c := storefix.MissingAADCipher{Cipher: storefix.TestCipher(t)}
 			h := durableHarness(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) mfa.EnrolmentStore {
 				return newEnrolmentStore(t, db, c, opts...)
 			})
 			t.Run("gorm", func(t *testing.T) {
 				// Every store the suite builds seals through the default
 				// cipher over the suite's keyring, with the AAD dropped.
-				storetest.RunSealedColumns(t, h, sealedEnrolments(d.db,
+				storetest.RunSealedColumns(t, h, storefix.SealedEnrolments(d.db,
 					func(t *testing.T, db *gormdb.DB, c seal.Cipher) mfa.EnrolmentStore {
-						return newEnrolmentStore(t, db, missingAADCipher{c})
+						return newEnrolmentStore(t, db, storefix.MissingAADCipher{Cipher: c})
 					}))
 			})
 		},
-		failsCase: "a sealed value copied to another record does not open there",
+		FailsCase: "a sealed value copied to another record does not open there",
 	},
 	{
-		name: "mfa-read-then-write-accept-step",
-		run: func(t *testing.T) {
-			c := testCipher(t)
+		Name: "mfa-read-then-write-accept-step",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
 			h := durableHarness(migratedDB(t),
 				func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) readThenWriteAcceptStep {
 					return readThenWriteAcceptStep{EnrolmentStore: newEnrolmentStore(t, db, c, opts...), db: db}
 				})
 			t.Run("gorm", func(t *testing.T) {
-				storetest.RunStepAcceptRace(t, h, stepRace[readThenWriteAcceptStep]())
+				storetest.RunStepAcceptRace(t, h, storefix.StepRace[readThenWriteAcceptStep]())
 			})
 		},
-		failsCase: "exactly one acceptance of a step wins per record",
-		failsWith: "more than one successful acceptance of a step",
+		FailsCase: "exactly one acceptance of a step wins per record",
+		FailsWith: "more than one successful acceptance of a step",
 	},
 	{
-		name: "link-upsert-insert",
-		run: func(t *testing.T) {
+		Name: "link-upsert-insert",
+		Run: func(t *testing.T) {
 			h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) upsertLinkInsert {
 				return upsertLinkInsert{LinkStore: newLinkStore(t, db, opts...), db: db}
 			})
 			t.Run("gorm", func(t *testing.T) {
-				storetest.RunLinkInsertRace(t, h, linkRace[upsertLinkInsert]())
+				storetest.RunLinkInsertRace(t, h, storefix.LinkRace[upsertLinkInsert]())
 			})
 		},
-		failsCase: "exactly one insert wins per record",
-		failsWith: "more than one successful insert",
+		FailsCase: "exactly one insert wins per record",
+		FailsWith: "more than one successful insert",
 	},
 	{
-		name: "session-store-bypasses-the-transaction",
-		run: func(t *testing.T) {
-			c := testCipher(t)
+		Name: "session-store-bypasses-the-transaction",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
 			h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, _ ...gormstore.Option) session.Store {
 				return newSessionStore(t, db, c, gormstore.WithTxResolver(noTransaction))
 			})
-			t.Run("gorm", func(t *testing.T) { storetest.RunAmbientTx(t, h, sessionAmbient()) })
+			t.Run("gorm", func(t *testing.T) { storetest.RunAmbientTx(t, h, storefix.SessionAmbient()) })
 		},
-		failsCase: "a write inside a rolled back transaction is discarded",
-		failsWith: "the store did not write in it",
+		FailsCase: "a write inside a rolled back transaction is discarded",
+		FailsWith: "the store did not write in it",
 	},
 }
 
@@ -222,7 +207,7 @@ func (s gormSaveStore) Save(ctx context.Context, sess *session.Session) error {
 	}
 	return s.db.WithContext(ctx).Save(&savedSession{
 		ID:                rowID,
-		IDDigest:          digest(sess.ID),
+		IDDigest:          storefix.Digest(sess.ID),
 		UserID:            string(sess.UserID),
 		CreatedAt:         sess.CreatedAt,
 		LastAccessedAt:    sess.LastAccessedAt,
@@ -301,23 +286,8 @@ func (s upsertLinkInsert) Insert(ctx context.Context, l oidc.Link) error {
 // the child half of TestSuitesCatchBrokenGormStores. Without a variant named it
 // skips.
 func TestBrokenGormStore(t *testing.T) {
-	name, named := os.LookupEnv(brokenVar)
-	if !named {
-		t.Skipf("no variant named in %s; run through TestSuitesCatchBrokenGormStores", brokenVar)
-	}
-
-	for _, v := range brokenVariants {
-		if v.name == name {
-			t.Logf("variant under test: %q", name)
-			v.run(t)
-			return
-		}
-	}
-	t.Fatalf("no broken variant is named %q", name)
+	storefix.RunBrokenChild(t, brokenVar, "TestSuitesCatchBrokenGormStores", brokenVariants)
 }
-
-// failedCase matches a failed case of the child's gorm run.
-var failedCase = regexp.MustCompile(`--- FAIL: TestBrokenGormStore/gorm/(\S+)`)
 
 // TestSuitesCatchBrokenGormStores checks that the suites the gorm runs use
 // fail against each broken variant, at the case guarding its defect. Each
@@ -326,34 +296,5 @@ var failedCase = regexp.MustCompile(`--- FAIL: TestBrokenGormStore/gorm/(\S+)`)
 func TestSuitesCatchBrokenGormStores(t *testing.T) {
 	t.Parallel()
 
-	for _, v := range brokenVariants {
-		t.Run(v.name, func(t *testing.T) {
-			t.Parallel()
-
-			//nolint:gosec // G204: this test binary re-executed with fixed arguments
-			cmd := exec.CommandContext(t.Context(), os.Args[0],
-				"-test.run=^TestBrokenGormStore$", "-test.count=1", "-test.v", "-test.timeout=5m")
-			cmd.Env = append(os.Environ(), brokenVar+"="+v.name)
-			out, err := cmd.CombinedOutput()
-			output := string(out)
-
-			// The child names its variant, so it skips only when
-			// RunTestPostgres does: Docker is unavailable outside CI.
-			if strings.Contains(output, "--- SKIP: TestBrokenGormStore") {
-				t.Skipf("the child skipped, so nothing was checked:\n%s", output)
-			}
-			require.Error(t, err, "the suite passed a store carrying the %s defect:\n%s", v.name, output)
-
-			var failed []string
-			for _, m := range failedCase.FindAllStringSubmatch(output, -1) {
-				failed = append(failed, m[1])
-			}
-			t.Logf("cases failed by %s: %v", v.name, failed)
-			assert.Contains(t, failed, strings.ReplaceAll(v.failsCase, " ", "_"),
-				"the suite failed, but not at the case that guards this defect:\n%s", output)
-			if v.failsWith != "" {
-				assert.Contains(t, output, v.failsWith, "the failure does not report the violation")
-			}
-		})
-	}
+	storefix.CatchBrokenVariants(t, brokenVar, "TestBrokenGormStore", "gorm", brokenVariants)
 }

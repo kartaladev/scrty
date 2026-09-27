@@ -2,7 +2,6 @@ package gorm
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 )
@@ -55,7 +55,7 @@ func NewSessionStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (session.Stor
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCipher(c); err != nil {
+	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
 		return nil, err
 	}
 
@@ -71,38 +71,11 @@ func NewSessionStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (session.Stor
 // ExternalIDToken as given, which is why it is not exported.
 type sessionStore struct{ c *config }
 
-// sessionDigest is the key a session is stored and found under.
-func sessionDigest(sessionID string) []byte {
-	sum := sha256.Sum256([]byte(sessionID))
-	return sum[:]
-}
-
 // sessionRecord returns sess as a row, without its primary key, or the
 // refusal of a session this store cannot hold without altering it.
 func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
-	if !sess.EnrolmentOriginDeadline.IsZero() {
-		return sessionRow{}, fmt.Errorf("gorm: %s: the enrolment-origin marker is not supported by this store", op)
-	}
-	if !sess.EnrolmentGeneration.IsZero() {
-		return sessionRow{}, fmt.Errorf("gorm: %s: the enrolment generation is not supported by this store", op)
-	}
-
-	if err := checkStorable(op,
-		textField{"user reference", string(sess.UserID)},
-		textField{"first factor", string(sess.FirstFactor)},
-		textField{"external provider", sess.ExternalProvider},
-		textField{"external issuer", sess.ExternalIssuer},
-		textField{"external session identifier", sess.ExternalSessionID},
-		textField{"external ID token", sess.ExternalIDToken},
-	); err != nil {
-		return sessionRow{}, err
-	}
-	// json.Marshal would replace invalid UTF-8 with U+FFFD, and jsonb refuses
-	// an escaped NUL, so the data is judged before it is marshalled.
-	for k, v := range sess.Data {
-		if !storable(k, v) {
-			return sessionRow{}, errUnstorable(op, "session data")
-		}
+	if err := storekit.CheckSession(sess); err != nil {
+		return sessionRow{}, failed(op, err)
 	}
 
 	data := sess.Data
@@ -115,12 +88,12 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 	}
 
 	return sessionRow{
-		IDDigest:              sessionDigest(sess.ID),
+		IDDigest:              storekit.SessionDigest(sess.ID),
 		UserID:                string(sess.UserID),
-		CreatedAt:             ts(sess.CreatedAt),
-		LastAccessedAt:        ts(sess.LastAccessedAt),
-		IdleExpiresAt:         ts(sess.IdleExpiresAt),
-		AbsoluteExpiresAt:     ts(sess.AbsoluteExpiresAt),
+		CreatedAt:             storekit.Time(sess.CreatedAt),
+		LastAccessedAt:        storekit.Time(sess.LastAccessedAt),
+		IdleExpiresAt:         storekit.Time(sess.IdleExpiresAt),
+		AbsoluteExpiresAt:     storekit.Time(sess.AbsoluteExpiresAt),
 		FirstFactor:           string(sess.FirstFactor),
 		MFAState:              int64(sess.MFA),
 		MFASatisfiedAt:        nullTs(sess.MFASatisfiedAt),
@@ -202,7 +175,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, failed(op, err)
 	}
 	var row sessionRow
-	err = q.Where("id_digest = ?", sessionDigest(sessionID)).Take(&row).Error
+	err = q.Where("id_digest = ?", storekit.SessionDigest(sessionID)).Take(&row).Error
 	if errors.Is(err, gormdb.ErrRecordNotFound) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -244,14 +217,14 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 // Delete removes the session with this identifier; one not there is not an
 // error.
 func (s *sessionStore) Delete(ctx context.Context, sessionID string) error {
-	_, err := deleteWhere[sessionRow](ctx, s.c, "delete session", "id_digest = ?", sessionDigest(sessionID))
+	_, err := deleteWhere[sessionRow](ctx, s.c, "delete session", "id_digest = ?", storekit.SessionDigest(sessionID))
 	return err
 }
 
 // DeleteByUser removes every session of user, expired ones included. A user
 // reference PostgreSQL text cannot hold matches nothing.
 func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
@@ -264,7 +237,7 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	const op = "count user's active sessions"
 
-	if !storable(string(user)) {
+	if !storekit.Storable(string(user)) {
 		return 0, nil
 	}
 
@@ -272,7 +245,7 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	if err != nil {
 		return 0, failed(op, err)
 	}
-	now := ts(s.c.now())
+	now := storekit.Time(s.c.now())
 	var n int64
 	err = q.Model(&sessionRow{}).
 		Where("user_id = ? AND idle_expires_at > ? AND absolute_expires_at > ?", string(user), now, now).
@@ -286,7 +259,7 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 
 // DeleteExpired removes every session expired by the store's clock.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
-	now := ts(s.c.now())
+	now := storekit.Time(s.c.now())
 	return deleteWhere[sessionRow](ctx, s.c, "delete expired sessions", "idle_expires_at <= ? OR absolute_expires_at <= ?", now, now)
 }
 
@@ -294,7 +267,7 @@ func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 // sessionID. An empty argument matches nothing: the absent federation values
 // are stored as empty text, and the statement's own condition excludes them.
 func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
-	if !storable(issuer, sessionID) {
+	if !storekit.Storable(issuer, sessionID) {
 		return 0, nil
 	}
 
@@ -308,7 +281,7 @@ func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sess
 func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	ctx context.Context, user identity.UserID, issuer string,
 ) (int, error) {
-	if !storable(string(user), issuer) {
+	if !storekit.Storable(string(user), issuer) {
 		return 0, nil
 	}
 

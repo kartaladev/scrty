@@ -164,6 +164,7 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 		name   string
 		limit  int
 		window time.Duration
+		opts   []ratelimit.MemoryOption
 		assert func(t *testing.T, l *ratelimit.MemoryLimiter, err error)
 	}
 
@@ -173,11 +174,24 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 		assert.Nil(t, l, "a refused configuration still handed back a limiter")
 	}
 
+	// *fakeClock implements Clock through a pointer receiver, so a nil one
+	// passed to WithMemoryLimiterClock is an interface holding a nil pointer:
+	// `== nil` misses it, and only the reflect-based check the constructor now
+	// uses catches it before the first sweep reads from a nil receiver.
+	var nilClock *fakeClock
+
 	cases := []testCase{
 		{name: "a limit of zero throttles everyone", limit: 0, window: testWindow, assert: refused},
 		{name: "a negative limit throttles everyone", limit: -1, window: testWindow, assert: refused},
 		{name: "a window of zero counts nothing", limit: testLimit, window: 0, assert: refused},
 		{name: "a negative window counts nothing", limit: testLimit, window: -time.Second, assert: refused},
+		{
+			name:   "a typed nil clock is refused the same as an absent one",
+			limit:  testLimit,
+			window: testWindow,
+			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterClock(nilClock)},
+			assert: refused,
+		},
 		{
 			name:   "the smallest limiter that can work is accepted",
 			limit:  1,
@@ -193,8 +207,8 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			l, err := ratelimit.NewMemoryLimiter(tc.limit, tc.window,
-				ratelimit.WithMemoryLimiterLogger(discardLogger()))
+			opts := append([]ratelimit.MemoryOption{ratelimit.WithMemoryLimiterLogger(discardLogger())}, tc.opts...)
+			l, err := ratelimit.NewMemoryLimiter(tc.limit, tc.window, opts...)
 			tc.assert(t, l, err)
 		})
 	}

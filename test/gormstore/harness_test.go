@@ -12,21 +12,16 @@ package gormstore_test
 
 import (
 	"context"
-	"crypto/rand"
-	"database/sql"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
-	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -86,43 +81,6 @@ func emptied(t *testing.T, d database, table string) *gormdb.DB {
 	return d.db
 }
 
-// cancelled is a table's ctx modifier for a case whose context is already
-// cancelled.
-func cancelled(ctx context.Context) context.Context {
-	cctx, cancel := context.WithCancel(ctx)
-	cancel()
-
-	return cctx
-}
-
-// newID mints a fresh identifier, failing t when the generator fails.
-func newID(t *testing.T) id.ID {
-	t.Helper()
-
-	v, err := id.NewV7Generator().NewID()
-	require.NoError(t, err)
-
-	return v
-}
-
-// exists reports whether query, a SELECT EXISTS over args, is true, read out
-// of band.
-func exists(t *testing.T, raw *sql.DB, query string, args ...any) bool {
-	t.Helper()
-
-	return existsCtx(t.Context(), t, raw, query, args...)
-}
-
-// existsCtx is exists under ctx.
-func existsCtx(ctx context.Context, t *testing.T, raw *sql.DB, query string, args ...any) bool {
-	t.Helper()
-
-	var found bool
-	require.NoError(t, raw.QueryRowContext(ctx, query, args...).Scan(&found))
-
-	return found
-}
-
 // beginGorm begins a transaction on db under ctx, rolled back at cleanup
 // unless the case commits or rolls it back first.
 func beginGorm(ctx context.Context, t *testing.T, db *gormdb.DB) *gormdb.DB {
@@ -151,76 +109,7 @@ func unreachableDB(t *testing.T) *gormdb.DB {
 // refusedConfig asserts a constructor refused its configuration with exactly
 // text, and returned no store.
 func refusedConfig[S any](text string) func(t *testing.T, s S, err error) {
-	return func(t *testing.T, s S, err error) {
-		t.Helper()
-		require.ErrorIs(t, err, gormstore.ErrConfig)
-		assert.EqualError(t, err, "gorm: invalid configuration: "+text)
-		assert.Nil(t, s)
-	}
-}
-
-// acceptedConfig asserts a constructor returned a store.
-func acceptedConfig[S any](t *testing.T, s S, err error) {
-	t.Helper()
-	require.NoError(t, err)
-	assert.NotNil(t, s)
-}
-
-// sealKey returns a fresh random key of the size the default cipher takes.
-func sealKey(t *testing.T) []byte {
-	t.Helper()
-
-	key := make([]byte, seal.KeySize)
-	_, err := rand.Read(key)
-	require.NoError(t, err)
-
-	return key
-}
-
-// testKeys is a pair of keys: k1, retired, and k2, active.
-type testKeys struct{ k1, k2 []byte }
-
-func newTestKeys(t *testing.T) testKeys {
-	t.Helper()
-
-	return testKeys{k1: sealKey(t), k2: sealKey(t)}
-}
-
-// cipherOf returns the default cipher over a keyring built from opts.
-func cipherOf(t *testing.T, opts ...seal.KeyringOption) seal.Cipher {
-	t.Helper()
-
-	kr, err := seal.NewKeyring(opts...)
-	require.NoError(t, err)
-	c, err := seal.NewAEADCipher(kr)
-	require.NoError(t, err)
-
-	return c
-}
-
-// underK1 seals under k1 alone.
-func (k testKeys) underK1(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k1", k.k1))
-}
-
-// rotated seals under k2 and still opens what k1 sealed.
-func (k testKeys) rotated(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k2", k.k2), seal.WithRetiredEncryptionKey("k1", k.k1))
-}
-
-// onlyK2 seals and opens under k2 alone: what k1 sealed does not open.
-func (k testKeys) onlyK2(t *testing.T) seal.Cipher {
-	t.Helper()
-	return cipherOf(t, seal.WithEncryptionKey("k2", k.k2))
-}
-
-// testCipher is the cipher a test uses when the keys do not matter: k2
-// active, k1 retired.
-func testCipher(t *testing.T) seal.Cipher {
-	t.Helper()
-	return newTestKeys(t).rotated(t)
+	return storefix.RefusedConfig[S](gormstore.ErrConfig, "gorm", text)
 }
 
 // storeFactory builds a store of type S over db with opts, failing t when the
@@ -262,22 +151,8 @@ func durableHarness[S any](d database, newWith storeFactory[S]) storetest.Durabl
 		},
 		BeginForeign: func(t *testing.T) (context.Context, func() error) {
 			t.Helper()
-			return beginForeign(t, d.conn.DB)
+			return storefix.BeginSQLStoreTx(t, d.conn.DB)
 		},
 		PoolSize: poolSize,
 	}
-}
-
-// beginForeign begins a database/sql transaction on raw, the same database,
-// and attaches it with sqlstore.WithTx: to the gorm stores, exactly what
-// another backend's attachment is, a live transaction on the same database in
-// a context value they cannot see. A store that wrote in it would lose its
-// write to the rollback.
-func beginForeign(t *testing.T, raw *sql.DB) (context.Context, func() error) {
-	t.Helper()
-
-	tx, err := raw.BeginTx(t.Context(), nil)
-	require.NoError(t, err)
-
-	return sqlstore.WithTx(t.Context(), tx), tx.Rollback
 }

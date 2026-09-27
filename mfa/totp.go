@@ -108,7 +108,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 		return nil, fmt.Errorf("mfa: totp period must be positive, got %s", t.period)
 	}
 
-	if t.now == nil || t.random == nil {
+	if t.now == nil || nilcheck.IsNil(t.random) {
 		return nil, errors.New("mfa: totp clock and random source must not be nil")
 	}
 

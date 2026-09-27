@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/policy"
 )
 
@@ -42,22 +43,22 @@ func NewAttemptStore(db *sql.DB, opts ...Option) (*AttemptStore, error) {
 func (s *AttemptStore) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	const op = "record login failure"
 
-	if err := checkStorable(op, textField{"username", username}); err != nil {
-		return err
+	if err := storekit.CheckStorable(storekit.Text("username", username)); err != nil {
+		return failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
 		return failed(op, err)
 	}
 
-	_, err = s.c.exec(ctx, op, pgschema.AttemptInsert, rowID, username, ts(at))
+	_, err = s.c.exec(ctx, op, pgschema.AttemptInsert, rowID, username, storekit.Time(at))
 
 	return err
 }
 
 // Reset clears username's failures; one with none is not an error.
 func (s *AttemptStore) Reset(ctx context.Context, username string) error {
-	if !storable(username) {
+	if !storekit.Storable(username) {
 		return nil
 	}
 
@@ -68,11 +69,11 @@ func (s *AttemptStore) Reset(ctx context.Context, username string) error {
 
 // FailureCount counts username's failures recorded strictly after since.
 func (s *AttemptStore) FailureCount(ctx context.Context, username string, since time.Time) (int, error) {
-	if !storable(username) {
+	if !storekit.Storable(username) {
 		return 0, nil
 	}
 
-	return s.c.count(ctx, "count login failures", pgschema.AttemptCountSince, username, ts(since))
+	return s.c.count(ctx, "count login failures", pgschema.AttemptCountSince, username, storekit.Time(since))
 }
 
 // DeleteAttemptsBefore removes every failure recorded strictly before
@@ -83,7 +84,7 @@ func (s *AttemptStore) DeleteAttemptsBefore(ctx context.Context, retainSince tim
 		return 0, policy.ErrRetainSinceRequired
 	}
 
-	n, err := s.c.exec(ctx, "purge login failures", pgschema.AttemptDeleteBefore, ts(retainSince))
+	n, err := s.c.exec(ctx, "purge login failures", pgschema.AttemptDeleteBefore, storekit.Time(retainSince))
 
 	return int(n), err
 }

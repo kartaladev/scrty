@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/signingkey"
 )
@@ -42,7 +43,7 @@ func NewSigningKeyStore(db *sql.DB, c seal.Cipher, opts ...Option) (signingkey.K
 	if err != nil {
 		return nil, err
 	}
-	if err := requireCipher(c); err != nil {
+	if err := storekit.RequireCipher(c, ErrConfig); err != nil {
 		return nil, err
 	}
 
@@ -64,16 +65,18 @@ type signingKeyStore struct{ c *config }
 func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) error {
 	const op = "store signing key"
 
-	if err := checkStorable(op, textField{"key id", rec.Kid}, textField{"algorithm", rec.Alg}); err != nil {
-		return err
+	if err := storekit.CheckStorable(
+		storekit.Text("key id", rec.Kid), storekit.Text("algorithm", rec.Alg),
+	); err != nil {
+		return failed(op, err)
 	}
 	rowID, err := s.c.ids.NewID()
 	if err != nil {
 		return failed(op, err)
 	}
 
-	_, err = s.c.exec(ctx, op, pgschema.SigningKeyUpsert, rowID, rec.Kid, rec.Alg, orEmpty(rec.Private),
-		orEmpty(rec.PublicJWK), ts(rec.CreatedAt))
+	_, err = s.c.exec(ctx, op, pgschema.SigningKeyUpsert, rowID, rec.Kid, rec.Alg, storekit.OrEmpty(rec.Private),
+		storekit.OrEmpty(rec.PublicJWK), storekit.Time(rec.CreatedAt))
 
 	return err
 }
