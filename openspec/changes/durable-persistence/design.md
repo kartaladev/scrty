@@ -68,6 +68,9 @@ See proposal.md for why this change exists. The constraints that shape the appro
 | `…/test` | `test` (root), `storetest` | `RunTestPostgres` in `testutils.go` beside `RunTestSMTP` and `RunTestKeycloak`, conformance suites |
 
 - **Row scanning:** each adapter keeps its own. Query text is shared only where the SQL is identical.
+- **gorm statements are counted:** decision 5 does not count statements per backend in general, because SQL written by hand is reviewed as one statement. gorm is the exception: its builder can add a `BEGIN`/`COMMIT` around a write, a `SELECT` before an update, or hook statements, none visible in the store code. The gorm adapter's tests therefore record every statement reaching the pool and pin the exact statement for each operation.
+- **gorm logging and hooks:** gorm's default logger prints SQL with bound values (user references, digests, sealed values), so every gorm store operation runs on a session with `logger.Discard`, `SkipDefaultTransaction` (else gorm wraps each write in its own transaction, a second statement) and `SkipHooks`. Limit, stated in the gorm package doc: callbacks and plugins a consumer registers on their own `*gorm.DB` still run and see bound values; scrty cannot remove them without discarding the consumer's configuration.
+- **pgx and non-finite timestamps:** pgx scans PostgreSQL `infinity` as a valid zero time; the pgx stores refuse a non-finite timestamp as an error, as `database/sql` does, so a guard column holding `infinity` is never read as "not yet consumed". A flow whose `expires_at` was set to `infinity` out of band is completed by `Complete` and then fails the returned row's scan, in both `database/sql` and pgx: the single-use flow is spent and the login fails as a database error. That is accepted as fail-closed; guarding with `isfinite(expires_at)` would instead report corruption as a refusal, which decision 7 forbids.
 - **Sealing logic:** it lives once, beside the store contracts, as wrappers that seal on write and open on read. Adapters compose them (decision 9), so the invariant is not restated per adapter.
 - **Default:** a `database/sql` consumer gets no pgx, gorm, goose or test dependency.
 - **Override:** a consumer requires the module for their access style.
@@ -78,25 +81,31 @@ Tables are created unqualified, in the connection's `search_path`. Each owning c
 
 | Table | Primary key | Unique | Sealed | Notes |
 |---|---|---|---|---|
-| `sessions` | `id uuid` | `id_digest` | `external_id_token text NOT NULL DEFAULT ''` (base64url envelope; `''` = none) | `id_digest bytea`: SHA-256 of the session identifier, which is never stored (decision 10); `user_id text`; `data jsonb`; `external_provider`, `external_issuer`, `external_session_id text NOT NULL DEFAULT ''`; partial indexes `(external_issuer, external_session_id) WHERE external_session_id <> ''` and `(user_id, external_issuer) WHERE external_issuer <> ''` |
+| `sessions` | `id uuid` | `id_digest` | `external_id_token text NOT NULL DEFAULT ''` (base64url envelope; `''` = none) | `id_digest bytea`: SHA-256 of the session identifier, which is never stored (decision 10); `user_id text`; `data jsonb`; `external_provider`, `external_issuer`, `external_session_id text NOT NULL DEFAULT ''`; index `user_id` (deletion and counts by user); partial indexes `(external_issuer, external_session_id) WHERE external_session_id <> ''` and `(user_id, external_issuer) WHERE external_issuer <> ''`; one index on `idle_expires_at` and one on `absolute_expires_at`, not a composite, because `DeleteExpired` matches `idle_expires_at <= $1 OR absolute_expires_at <= $1` and a composite cannot seek on its second column |
 | `signing_keys` | `id uuid` | `kid` | `private_key bytea NOT NULL` (envelope over PKCS8 DER) | public JWK not sealed: it is published |
 | `login_attempts` | `id uuid` | — | — | `username text`; indexes `(username, attempted_at)` and `(attempted_at)`; the second serves deletion, which cannot range-scan the composite, so the two must not be consolidated |
 | `mfa_enrolments` | `id uuid` | `user_id` | `secret text NOT NULL` (base64url envelope) | `confirmed_at timestamptz NULL` (`NULL` = pending); `last_step bigint NOT NULL DEFAULT 0` (last accepted TOTP time step; the contract's zero value); `created_at`. A new pending enrolment replaces a pending one and resets `last_step`; a confirmed one is never replaced (`multi-factor-auth`) |
-| `api_keys` | `id uuid` (the key's own id) | — | — | `user_id text` (the principal); `name text`; `scopes jsonb` (ordered array); `secret_digest bytea` one-way digest; `expires_at`, `revoked_at`, `last_used_at timestamptz NULL`; `created_at` |
-| `one_time_tokens` | `id uuid` (the token's own id) | — | — | `purpose`, `subject`; `secret_hash`, `binding_hash` digests; `consumed_at timestamptz NULL`; index `(purpose, subject)` |
+| `api_keys` | `id uuid` (the key's own id) | — | — | `user_id text` (the principal); `name text`; `scopes jsonb` (ordered array); `secret_digest bytea` one-way digest; `expires_at`, `revoked_at`, `last_used_at timestamptz NULL`; `created_at`; index `user_id` (listing by principal) |
+| `one_time_tokens` | `id uuid` (the token's own id) | — | — | `purpose`, `subject`; `secret_hash bytea NOT NULL`; `binding_hash bytea NULL` (`NULL` = unbound: the contract distinguishes an absent binding from an empty one, so it round-trips as nil, never as an empty value); `consumed_at timestamptz NULL`; indexes `(purpose, subject)` and `(purpose, expires_at)` (the reaper deletes by purpose and expiry) |
 | `oidc_links` | `id uuid` (the link's own id) | `(provider, issuer, subject)` | — | `user_id text` (the opaque user reference, compared byte for byte), indexed for deletion by user; `username`, `email text` kept for operators only, never used for lookup and never keyed on; `created_at` |
-| `oidc_flows` | `id uuid` | `handle` | — | `provider`, `state`, `nonce`, `verifier`, `next text` (untrusted, stored verbatim); `expires_at`; `completed_at NULL`; index `expires_at`. `handle` is minted by the store from `crypto/rand` and returned by `Begin`. `Complete(handle, provider, state)` is one conditional `UPDATE … WHERE handle = $1 AND provider = $2 AND state = $3 AND state <> '' AND completed_at IS NULL AND expires_at > $now`, with `$now` from the store's clock |
+| `oidc_flows` | `id uuid` | `handle` | — | `provider`, `state`, `nonce`, `verifier`, `next text` (untrusted, stored verbatim); `expires_at`; `completed_at NULL`; index `expires_at`. `handle` is minted by the store from `crypto/rand` and returned by `Begin`. `Complete(handle, provider, state)` is one conditional `UPDATE … WHERE handle = $1 AND provider = $2 AND state = $3 AND state <> '' AND completed_at IS NULL AND expires_at > $now`, with `$now` from the store's clock. Limit, stated: unlike the in-memory store's size cap, the durable flow table is bounded only by expiry deletion (`expiry-sweeping`) and the consumer's rate limiting of the authorize endpoint, since a row count check would be a second statement and a race |
 | `oidc_handoffs` | `id uuid` (the record's own id) | `token_id` | — | `secret_hash` digest; `user_id text` (the user reference the code was issued for; redemption loads the user by it and checks the loaded reference still matches byte for byte); `next text` (untrusted, re-resolved through the redirect allowlist at redemption); `provider`, `issuer text`; `session_id`, `id_token text NOT NULL DEFAULT ''`; `consumed_at NULL`; index `expires_at`; no roles column (roles are resolved at redemption) |
 
 Rules and why:
 - **Primary keys.** Where the record already carries its own `id.ID` (one-time tokens, API keys, links, handoffs), that id is the primary key, stored as given. Where it carries none (sessions, signing keys, login attempts, MFA enrolments, flows), the store mints one from its `id.Generator`. Default: `id.NewV7Generator()`. Override: `WithIDGenerator` on those five stores' adapters.
 - **Natural keys** (`id_digest`, `kid`, `user_id` on enrolments, `token_id`, `handle`) are unique indexes, so their format stays with the owning capability.
+- **A record's own id must be unique and non-zero.** The in-memory link and handoff stores key by their natural keys and ignore `ID`, so the `test/oidc` suites never varied it: every link carried the zero id and every handoff the same one. Stored as the primary key, those collide. Every production caller (the broker, the handoff manager) already mints a fresh id per record, so the contract is clarified rather than changed: the `oidc` port godoc states that `ID` identifies the record and must be unique and non-zero; the `test/oidc` suites give each record its own id; and the durable link and handoff stores refuse a zero id with an error before any statement, rather than letting a second one surface as a raw constraint error (decision 7).
 - **Tests:** the id-generation capability's native-`uuid` round-trip scenario is verified in this change's `test` module.
 - **Guard columns are nullable.** Every consumption guard (`consumed_at`, `completed_at`) is nullable, because a `NOT NULL` default makes `IS NULL` unsatisfiable and silently turns single use into multiple use. The migration file carries that comment, and a migration test pins it.
 - **Empty strings instead of NULL.** Absent federation and handoff values are `NOT NULL DEFAULT ''` rather than `NULL`, so every adapter scans plain strings.
 - **Empty arguments never match.** Deletions by issuer or session id carry `$n <> ''` guards, so an empty argument never matches unfederated rows.
 - **Issuer always leads session matching.** A session id is unique only within its issuer, so a match on the session id alone would let one provider end another provider's sessions.
 - **Consumer-owned session data** is `jsonb`, written and returned unchanged.
+- **Values PostgreSQL text cannot hold are refused, never altered.** `text` and `jsonb` cannot hold a NUL byte, and `json.Marshal` would silently replace invalid UTF-8 with U+FFFD. A durable store handed a user reference, session data or any other consumer string containing either returns an error, whose text does not echo the value, and writes nothing. It never truncates or rewrites the value. The portable suites accept either outcome, an exact round trip (the in-memory stores) or a refusal, and fail a store that alters the value. This is a stated limit of the PostgreSQL stores (library-design rule 4), documented on each durable constructor.
+- **Enrolment-path fields are not in this set.** `mfa-enrolment-path` added fields to `session.Session` (the enrolment-origin marker and the enrolment generation) and to `mfa.Enrolment` (the generation, the device-proven time and the emailed code with its expiry and attempt count) after this table model was written. That change's own design settles that this set lands without them, and that it squashes the columns into the initial migration afterwards, test-first. Until then:
+  - the durable MFA enrolment stores do not implement `mfa.DeviceProofStore`, so `EnableMFAEnrolment` fails at construction over them, and the fields are neither stored nor returned;
+  - the durable session stores refuse, with an error and without writing, a `Create` or `Save` of a session whose enrolment-origin marker or enrolment generation is set. Dropping the marker silently would release a session confined to enrolment from its confinement, which library-design forbids (a limit is stated, never silently relaxed). This reaches only a consumer who pairs durable sessions with an MFA store that does implement the port;
+  - the portable suites do not assert those fields. `mfa-enrolment-path` extends them when it adds the columns.
 
 ### 3. Single use and uniqueness are enforced by the write
 
@@ -109,7 +118,7 @@ Rules and why:
   - Every refusal is reported identically.
   - The state comparison is the database's, not constant-time. Timing a 32-byte comparison behind an index seek over a network is not a practical attack, and the atomicity is not negotiable.
 - **Link insert:** `INSERT … ON CONFLICT (provider, issuer, subject) DO NOTHING`. Zero rows affected maps to the owning capability's "already exists" sentinel. The stored link is never overwritten, because the last writer would otherwise own the external identity. An identical re-insert is refused too.
-- **MFA confirmation:** `UPDATE mfa_enrolments SET confirmed_at = $3, last_step = $2 WHERE user_id = $1 AND confirmed_at IS NULL`. Zero rows affected means already confirmed, or no enrolment.
+- **MFA confirmation:** `UPDATE mfa_enrolments SET confirmed_at = $3, last_step = GREATEST(last_step, $2) WHERE user_id = $1 AND confirmed_at IS NULL` (the `multi-factor-auth` contract never moves the recorded step backwards). Zero rows affected means already confirmed, or no enrolment.
 - **TOTP step acceptance:** `UPDATE mfa_enrolments SET last_step = $2 WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2`.
   - Zero rows affected is a replay refusal.
   - Two concurrent verifications of the same step, or of an older step, cannot both succeed.
@@ -124,9 +133,9 @@ Rules and why:
 
 ### 4. Time
 
-- **Session and flow stores:** they use their configured clock, sessions for expiry checks, counts and `DeleteExpired`, flows for the expiry condition in `Complete`. Default: `time.Now`. Override: `WithClock`.
+- **Session, flow and one-time token stores:** they use their configured clock, sessions for expiry checks, counts and `DeleteExpired`, flows for the expiry condition in `Complete`, and the one-time token reaper for "expired now", which its contract judges at call time. Default: `time.Now`. Override: `WithClock`. The portable session and one-time suites therefore hand their factory the clock they advance.
 - **Other stores:** they take the comparison time from the caller (deletion cutoffs, the consumption time, a login attempt's time).
-- **Precision:** stored times are UTC at microsecond precision. The suites compare with `time.Time.Equal`.
+- **Precision:** stored times are UTC at microsecond precision. The suites compare with `time.Time.Equal`, and their precision cases accept a time kept exactly, truncated or rounded to the microsecond (PostgreSQL rounds text-format input; pgx truncates), and refuse anything coarser.
 
 ### 5. Ambient transactions
 
@@ -146,12 +155,8 @@ Each adapter resolves the handle to run each operation on, in this order:
 
 Containment:
 - **Refusals** are expressed as zero rows affected, never as a failed statement, so they never abort the caller's transaction.
-- **Multi-statement operations** run inside a savepoint when a transaction is ambient, and inside their own transaction otherwise:
-  - `sqlstore` issues `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` / `RELEASE` itself, with names from a process-local counter, never from input;
-  - pgx uses `Tx.Begin`;
-  - gorm uses `SavePoint`/`RollbackTo`.
-- **Why savepoints:** PostgreSQL aborts the whole transaction on the first failed statement, so without one the caller's `COMMIT` becomes a rollback. `ROLLBACK TO SAVEPOINT` is the one statement an aborted transaction still accepts.
-- **Limit, stated in the `WithTx` godoc:** an unexpected backend error on a single-statement write inside a caller's transaction aborts that transaction, as PostgreSQL defines.
+- **Multi-statement operations: none exist, and the helper is deferred.** Under decision 3 every store operation is one statement, and re-seal writes are skipped inside a caller's transaction (decision 10). The spec's rule stands: an operation that performs more than one statement undoes only its own statements on failure and leaves the caller's transaction usable. Because no operation needs it, no containment helper ships and the untestable scenario is dropped. The first change that adds a multi-statement operation adds the helper with "Multi-statement failure is contained" as its red test: `sqlstore` issuing `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` / `RELEASE` with names from a process-local counter (never from input), pgx a nested `Tx.Begin`, gorm `SavePoint`/`RollbackTo`. Why savepoints: PostgreSQL aborts the whole transaction on the first failed statement, so without one the caller's `COMMIT` becomes a rollback, and `ROLLBACK TO SAVEPOINT` is the one statement an aborted transaction still accepts. The whole-branch review of every change touching these stores checks that no multi-statement operation lands without it. Decided with the user over two alternatives: building the helper now behind a test-only hook (dead code in three adapters, and a public test-only surface, since the PostgreSQL tests live in another module), and pinning "one statement per operation" with statement-counting drivers per backend (machinery that pins an implementation detail).
+- **Limit, stated in the `WithTx` godoc:** any statement a store runs inside a caller's transaction that fails for an unexpected reason, a read (for example a statement timeout) as much as a write, aborts that transaction, as PostgreSQL defines. Refusals never do.
 - **No transaction across backends.** A transaction attached for one adapter is invisible to the others. Consumers pick one backend per deployment. A conformance scenario pins this.
 
 ### 6. Construction-time validation
@@ -159,9 +164,12 @@ Containment:
 Every adapter constructor returns `(store, error)`. It rejects:
 - a nil base handle;
 - a nil option value;
-- for stores with sealed columns, a nil `Cipher` (decision 9).
+- for stores with sealed columns, a nil `Cipher` (decision 9);
+- an option the store does not honour. Each adapter shares one `Option` type, but each store declares the options it honours (`WithIDGenerator` only on the five minting stores, `WithClock` only on the session, flow and one-time token stores, `WithResealOnRead` only on the signing-key and MFA stores, `WithTxResolver` on every store). Any other option is a configuration error naming the option, never silently ignored: `WithClock` handed to the signing-key store is a wiring mistake the consumer should hear about at start-up.
 
 Constructors do not query the database.
+
+At run time, a transaction resolver that reports a transaction but returns a nil handle (including a typed nil) is refused with an error before any statement, never a panic; the store wraps it with the operation name.
 
 ### 7. Errors
 
@@ -193,8 +201,8 @@ Constructors do not query the database.
 
 **Rollback verified.**
 - **At cleanup:** `RunTestPostgres` rolls a set back with `DownTo(0)`, not with a single `Down`, which undoes only the most recent migration. A rollback error fails the test with `t.Errorf`; it is not merely logged.
-- **Leftover tables:** the set's own test adds a finalizer, run after rollback, that fails when any non-goose table remains and names it. `IF EXISTS` would otherwise hide a table the `Down` forgot.
-- **Per-migration down sections:** each migration's `Down` is also executed on its own against a migrated database, since a full rollback can mask a `Down` that forgot a column on a table a later `Down` drops.
+- **Leftover tables:** the set's own test turns on the helper's leftover-table check (`WithTestPostgresLeftoverTableCheck`), which runs after rollback and the finalize scripts, and fails naming any table that remains other than the registered version tables. `IF EXISTS` would otherwise hide a table the `Down` forgot.
+- **Per-migration down sections:** each migration's `Down` is also executed on its own against a migrated database, since a full rollback can mask a `Down` that forgot a column on a table a later `Down` drops. goose's SQL parser is an internal package, so the test extracts the `Down` section itself; the extractor handles the shape this set uses (one statement per line, no `StatementBegin`/`StatementEnd` in a `Down`) and says so.
 
 ### 9. Secrets at rest
 
@@ -226,9 +234,11 @@ type Keyring interface {
 func NewKeyring(opts ...KeyringOption) (Keyring, error)
 func WithEncryptionKey(id string, key []byte) KeyringOption        // seals and opens; exactly one
 func WithRetiredEncryptionKey(id string, key []byte) KeyringOption // opens only; zero or more
-func NewAEADCipher(kr Keyring) Cipher                              // AES-256-GCM
+func NewAEADCipher(kr Keyring) (Cipher, error)                     // AES-256-GCM
 var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 ```
+
+- **The default cipher is validated at construction.** `NewAEADCipher` returns `ErrInvalidConfiguration` for a nil (or typed-nil) keyring, rather than reporting it on the first `Seal` or `Open`. That call may be hours after start-up, on the first MFA enrolment, and library-design requires a wiring mistake to fail before traffic. Every `Seal`, `Open` and `ActiveKeyID` still re-checks what a consumer keyring returns: a key that is not 32 bytes is refused, never used as AES-128 or AES-192, and an active id outside the allowed set is refused.
 
 - **Active and retired keys are named separately.** A "first key wins" rule is how the wrong key ends up sealing production data.
 - **Keyring validation:** `NewKeyring` returns `ErrInvalidConfiguration` for:
@@ -248,7 +258,8 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 
 **Envelope.**
 - **Layout:** `magic(4) | keyIDLen(1) | keyID | nonce(12) | ciphertext‖tag`, with a random nonce for each seal.
-- **What the tag covers:** the magic turns "not a sealed value" into a clear error. The header is not covered by the GCM tag, but a tampered key id resolves to the wrong key (or `ErrUnknownKeyID`), and a tampered nonce fails the tag.
+- **What the tag covers:** the magic turns "not a sealed value" into a clear error. The GCM additional data is the header (`magic | keyIDLen | keyID`) followed by the row binding, so a rewritten key id fails the tag even when the keyring returns the same bytes for two ids. `NewKeyring` refuses such a ring, but the `Keyring` port cannot hold a consumer's ring to it. A tampered nonce also fails the tag.
+- **Limit, stated:** a key id rewritten to an id the keyring does not hold is reported as `ErrUnknownKeyID` before any tag check, and the id reported with it is read from the stored value, which an attacker with write access controls. The id is limited to `[A-Za-z0-9._-]{1,64}` and never appears in error text. The godoc on `ErrUnknownKeyID` says an operator must not treat it as proof that a key was removed.
 - **Encoding per column:** `bytea` for signing keys. MFA secrets and session ID tokens are stored base64url-encoded in text columns.
 
 **Row binding (AAD).**
@@ -285,7 +296,7 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 | Adapters that hold sealed columns take the `Cipher` as a required constructor argument, and no unsealed constructor for those stores is exported | (a) constructors are the primary API and wiring mistakes must fail at construction, so a check that runs only inside DI wiring would never run for most consumers. (b) A design that seals through wrappers composed at wiring time must still export the unsealed store constructors. Any caller who uses those constructors directly stores plaintext, with nothing to stop or warn them |
 | The goose helper is not in the core module | (a) module-layout: `github.com/pressly/goose/v3` v3.28.0's `go.mod` requires `github.com/jackc/pgx/v5`, `github.com/go-sql-driver/mysql`, ClickHouse, MSSQL, Vertica, YDB and SQLite drivers. A core requirement on goose would put pgx in every core-only consumer's module graph, which the module-layout spec forbids |
 | Re-seal on read is a conditional write (`UPDATE … SET col = $new WHERE id = $1 AND col = $old`), not a re-run of the store's upsert | (b) A re-seal that re-runs the store's write loses concurrent changes: on MFA enrolments, a new pending enrolment committed between the read and the re-seal is overwritten with the old secret, and the error is discarded, so nothing reports it |
-| Re-seal on read is skipped when the read runs inside a caller's transaction | (b) The re-seal discards its write failure, and a failed statement aborts a PostgreSQL transaction (the caller's next statement fails with 25P02, and `COMMIT` becomes a rollback, which is the reason multi-statement operations use savepoints in decision 5). A best-effort write could therefore silently discard the caller's unrelated work |
+| Re-seal on read is skipped when the read runs inside a caller's transaction | (b) The re-seal discards its write failure, and a failed statement aborts a PostgreSQL transaction (the caller's next statement fails with 25P02, and `COMMIT` becomes a rollback, which is why decision 5 requires any future multi-statement operation to run in a savepoint). A best-effort write could therefore silently discard the caller's unrelated work |
 | Re-seal on read can be switched off (`WithResealOnRead`) | (a) library-design: every default is replaceable |
 | The race and ambient-transaction suites are shared suites, run for every durable store, with a harness that declares its pool width | (a) this change's settled scope for store-conformance. A portable race case built on a bare store factory cannot size the connection pool, so it passes even against a read-then-write implementation. Declaring the pool width in the harness, and refusing a narrower pool, removes that gap |
 | Sessions are keyed by a SHA-256 digest of the session identifier (`id_digest`), behind a generated uuid primary key, and the identifier itself is never stored | (b) The session identifier is a live bearer credential (32 random bytes). Stored as the key, as it is by default, a database dump or read access to the table replays every live session, which defeats this change's goal that a dump is not usable. API keys, one-time tokens and handoff secrets are already stored only as digests. A plain SHA-256 suffices because the identifier carries 256 bits of entropy. The ID token's AAD still uses the plaintext identifier, which the wrapper holds in memory. Chosen by the user over the raw key |
@@ -297,14 +308,15 @@ var ErrDecryptionFailed, ErrUnknownKeyID, ErrInvalidConfiguration error
 `github.com/kartaladev/scrty/test`, Go 1.27, created by `identity-and-tokens` and extended here.
 - **No other scrty module imports it**, test files included (module-layout).
 - **Tests that live here:** the integration tests for the core `database/sql` adapters, the conformance runs against core's in-memory defaults, and the `pgx` and `gorm` adapter runs.
-- **Goose recipe:** a compiled `ExampleApplySecurityStateMigrations` shows the goose recipe, so CI keeps it compiling.
+- **Goose recipe:** a compiled `ExampleSet` (documenting `migrate.Set`) shows the goose recipe, so CI keeps it compiling. An example must name an existing identifier, or `go vet`'s `tests` analyzer, which `go test` runs by default, fails the package; no `ApplySecurityStateMigrations` exists, because no helper ships.
 
 **`test.RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn`**, in `test/testutils.go` as the `use-testcontainers` skill requires, returning `PostgresConn{DB *sql.DB; DSN string}` in the shape of the existing `SMTPConn` and `KeycloakConn`, so pgx and gorm tests open their own handle from `DSN`:
 - **Container:** one container per call, on a pinned PostgreSQL 18 alpine image (exact minor tag) by default. Override: `WithTestPostgresImage`.
 - **CI versions:** the oldest and newest community-supported majors, currently 15 and 18. 19 is added and becomes the default when it is generally available; 15 is dropped after its end of life on 11 Nov 2027.
 - **Migrations:** `WithTestPostgresMigrations(fsys, dir, versionTable)` applies a set with goose.
 - **Cleanup:** it runs `DownTo(0)` and fails the test on error.
-- **Finalizers:** `WithTestPostgresFinalizeScripts(sql...)` runs scripts after rollback, in declared order under one cleanup, within a 30-second teardown budget.
+- **Finalizers:** `WithTestPostgresFinalizeScripts(sql...)` runs scripts after rollback, in declared order under one cleanup, within a 30-second teardown budget. The leftover-table check exempts exactly the version tables of the sets the helper applied, not a name pattern. A pattern would flag a consumer's version table after a complete rollback, and would silently pass a real table that happens to match it.
+- **No silent skip in CI:** when Docker is unavailable, the helper skips the test locally, as the other container helpers do. When the `CI` environment variable is set, it fails the test instead, so a CI runner with a broken Docker daemon cannot pass the whole PostgreSQL lane without running it.
 
 **`storetest` suites.**
 
@@ -320,16 +332,20 @@ type DurableHarness[S any] struct {
 
 - **Portable suites:** one per store contract. The in-memory defaults, all three adapters and consumers' own stores run them.
 - **Where they live:** the OIDC suites already exist in `test/oidc` (`RunFlowStoreSuite`, `RunLinkStoreSuite`, `RunHandoffStoreSuite`) and stay there. This change adds `storetest` suites for the six contracts that have none yet (sessions, one-time tokens and their reaper, login attempts and their reaper, signing keys, MFA enrolments, API keys), each run against its in-memory default.
+- **Optional capabilities:** a portable suite runs its reaper cases only when the store implements the reaper, and otherwise logs that they did not run, since a consumer's store may leave the reaper out. scrty's own adapters must implement it, so their runs pass `storetest.RequireReaper()`, which turns a missing reaper into a failure; the exported adapter types also carry compile-time assertions.
 - **Durable suites** (`RunConsumeRace`, `RunLinkInsertRace`, `RunStepAcceptRace`, `RunAmbientTx`, `RunSealedColumns`): every nil field fails the suite immediately. There is no skip, because an obligation that can be skipped is green in CI.
 - **Race suites:**
   - they start K records × N racers (defaults 50 × 8) off one barrier, because a single contended row serialises on PostgreSQL's row lock and hides a read-then-write almost every run;
-  - they fail when `PoolSize < N`, because racers queueing for connections on the client side never reach the database together.
+  - they fail when `PoolSize < N`, because racers queueing for connections on the client side never reach the database together;
+  - racers alternate between two store instances on the same database, each with its own connection pool (`DurableHarness.NewReplica`, required). Single use must hold across replicas, and a store that serialises in Go under a lock held by one instance passes a race confined to that instance. Limit, stated: both instances run in the test's process, so a lock shared by the whole process (a package-level mutex) is not caught; real replicas are separate processes, where such a lock guards only one of them. A racer that ignores its context is abandoned after twice the race timeout; a harness whose cleanup waits for every connection (`pgxpool.Pool.Close`) bounds that wait.
+- **Naming the backend in failures:** a suite names its case through `t.Run`. The backend is named by the caller: every scrty run wraps its suite calls in `t.Run("<backend>", …)` (`memory`, `sqlstore`, `pgx`, `gorm`), so a failure reads `TestX/<backend>/<case>`. This keeps the suites' signatures, including the OIDC suites another change owns, unchanged.
 - **Sealed-column suites:**
   - they read the raw column and assert the plaintext is absent;
   - for base64url text columns they decode first and compare the decoded bytes, since base64 alone already defeats a substring check;
   - they copy a sealed MFA secret into another user's row and assert the open fails;
   - they reopen with a keyring lacking the key and assert an error, never absence;
-  - they re-seal under a new active key and prove where the value landed by opening it with a keyring that holds only the new key.
+  - they re-seal under a new active key and prove where the value landed by opening it with a keyring that holds only the new key;
+  - each failure case asserts its reason, not just an error: a copied value fails with `seal.ErrDecryptionFailed` read through a keyring holding every key, and a missing key fails with `seal.ErrUnknownKeyID`. Otherwise a store that loads its whole table (signing keys) fails the copy case for an unrelated reason.
 - **Every suite has been seen to fail.** Each durable suite is run once against a deliberately broken variant kept in the adapter's tests:
   - a read-then-write consume;
   - an upsert link insert;
@@ -353,7 +369,7 @@ type DurableHarness[S any] struct {
 ## Risks / Trade-offs
 
 - [Unqualified table names in the consumer's `search_path` can collide with a consumer's own `sessions` or `api_keys` table] → The consumer can point the connection's `search_path` at a dedicated schema (Open Questions).
-- [A single-statement write that fails unexpectedly inside a caller's transaction aborts it] → PostgreSQL semantics, stated on `WithTx`. Refusals never cause it, and multi-statement operations are contained.
+- [A single-statement write that fails unexpectedly inside a caller's transaction aborts it] → PostgreSQL semantics, stated on `WithTx`. Refusals never cause it, and no store operation performs more than one statement (decision 5).
 - [A retired key cannot be proven unused, and there is no batch re-seal] → Re-seal on read shrinks the set. The godoc says to keep retired keys until every row has been touched.
 - [A live session sealed under a removed key fails closed until its absolute expiry] → The session store reports it as unreadable, distinct from not found, so the `sessions` capability can make it a re-login rather than a server error.
 - [Three adapters triple the maintenance of every contract] → Shared SQL text and shared suites keep the differences to scanning and handle types.

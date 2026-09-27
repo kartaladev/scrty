@@ -4,5 +4,7 @@ use (
 	.
 	./fibersec
 	./ginsec
+	./gorm
+	./pgx
 	./test
 )

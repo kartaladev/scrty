@@ -47,6 +47,8 @@ var integrationModules = []string{
 	"github.com/jackc/pgx",
 	"github.com/go-co-op/gocron",
 	"github.com/samber/do",
+	"github.com/pressly/goose",
+	"github.com/testcontainers/testcontainers-go/modules/postgres",
 }
 
 type requirement struct {

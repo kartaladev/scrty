@@ -1,10 +1,11 @@
 // Package nilcheck detects the nil a plain comparison misses.
 //
-// Every constructor in scrty refuses a port it was handed as nil, and they all
-// ask this one function so that they all refuse the same set of values. It is
-// internal because the answer is only ever needed while checking wiring, and
-// exporting it would make a detail of how those checks are written part of what
-// consumers depend on.
+// Constructors in scrty that refuse a port handed to them as nil ask this one
+// function, so that they all refuse the same set of values. The
+// same check guards a few values a consumer hands in at run time, such as the
+// handle a transaction resolver returns. It is internal because exporting it
+// would make a detail of how those checks are written part of what consumers
+// depend on.
 package nilcheck
 
 import "reflect"

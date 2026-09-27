@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // linkSuiteIssuer is the issuer most rows link under.
@@ -22,11 +23,21 @@ const linkSuiteIssuer = "https://corp.example"
 // starts.
 const linkSuiteRacers = 8
 
+// linkSuiteIDs mints the suite's link ids: unique and non-zero, as a durable
+// store's own primary key requires, since a link is stored under its own id
+// (see oidc.Link.ID).
+var linkSuiteIDs = id.NewV7Generator()
+
 // linkSuiteLink returns a link for provider corp's subject at issuer, naming
-// user.
+// user, under a fresh id.
 func linkSuiteLink(issuer, subject string, user identity.UserID) oidc.Link {
+	linkID, err := linkSuiteIDs.NewID()
+	if err != nil {
+		panic(err)
+	}
+
 	return oidc.Link{
-		Provider: "corp", Issuer: issuer, Subject: subject,
+		ID: linkID, Provider: "corp", Issuer: issuer, Subject: subject,
 		UserID: user, Username: "alice", Email: "alice@corp.example",
 		CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
 	}

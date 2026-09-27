@@ -101,6 +101,10 @@ type EnrolmentStore interface {
 	// one. It returns ErrAlreadyEnrolled when a confirmed enrolment exists,
 	// decided by the write.
 	//
+	// The stored enrolment is pending with no accepted time step: its
+	// confirmation time and last accepted step are cleared whatever e holds,
+	// so a replaced pending enrolment keeps no step spent against its secret.
+	//
 	// It starts the generation e carries: the stored enrolment takes
 	// e.Generation, and its device proof, emailed code, code expiry and attempt
 	// count are cleared whatever e holds, so nothing proven against an earlier

@@ -245,11 +245,6 @@ A refusal (already consumed, already exists, not found, bindings not met) inside
 - **THEN** the commit succeeds
 - **AND** sessions S and T both exist
 
-#### Scenario: Multi-statement failure is contained
-- **WHEN** a multi-statement store operation fails partway inside a caller's transaction, and the caller then writes another record and commits
-- **THEN** the commit succeeds with the caller's other writes
-- **AND** none of the failed operation's statements took effect
-
 ### Requirement: No transaction spans backends
 A transaction attached through one backend SHALL be ignored by the stores of every other backend.
 

@@ -26,7 +26,7 @@
 - AAD strings are stored format: `scrty/signingkey:private:` + kid, `scrty/mfa:secret:` + user reference, `scrty/session:external-id-token:` + session identifier (already in `session/encrypted.go:44`).
 - Migration files never contain goose's no-transaction annotation text, not even in a comment.
 - Test-first on every task (`golang-tdd.md`): red step seen and read, for the intended reason; table tests in the `assert`-closure form with `t.Context()` (`table-test`); PostgreSQL only through `RunTestPostgres` (`use-testcontainers`); no mocks of the database.
-- Never copy or cite the predecessor (`legacy-reference.md`). Defect claims need a failing test (`defect-claims.md`).
+- The project rule on reference material applies to every task. Defect claims need a failing test (`defect-claims.md`).
 - Implementers never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`, and never edit `openspec/`.
 
 ## Review Focus
@@ -58,7 +58,7 @@ seal/
 internal/pgschema/
   sessions.go onetime.go attempts.go signingkeys.go mfa.go apikeys.go oidc.go   SQL constants
 sqlstore/
-  doc.go tx.go options.go savepoint.go errors.go
+  doc.go tx.go options.go errors.go
   session.go onetime.go attempts.go signingkey.go mfa.go apikey.go oidc_link.go oidc_flow.go oidc_handoff.go
 pgx/   go.mod doc.go tx.go options.go + the same nine store files
 gorm/  go.mod doc.go tx.go options.go models.go + the same nine store files
@@ -66,7 +66,7 @@ test/
   testutils.go                            + RunTestPostgres, PostgresConn, WithTestPostgres* options
   testutils_postgres_test.go              helper tests
   migrate_securitystate_test.go           group 2
-  example_migrate_test.go                 ExampleApplySecurityStateMigrations
+  example_migrate_test.go                 ExampleSet (the goose recipe; an example must name an existing identifier)
   storetest/
     harness.go race.go ambient.go sealed.go
     session_suite.go onetime_suite.go attempts_suite.go signingkey_suite.go mfa_suite.go apikey_suite.go
@@ -88,17 +88,17 @@ Lanes and their sequential dispatches. Different lanes run in parallel only wher
 | B (parallel with A after 1.1 lands) | 3.1–3.3 | Opus | security-critical crypto and envelope parsing |
 | C (after A) | 2.1–2.5 | Sonnet | schema from a stated table model, tests stated here |
 | D (after B) | 3.4–3.5 | Opus | fail-closed and re-seal ordering |
-| E (after A, C) | 4.1–4.2 | Opus | transaction and savepoint semantics other lanes compile against |
+| E (after A, C) | 4.1–4.2 | Opus | transaction semantics other lanes compile against |
 | F (after A; parallel with D, E) | 5.1–5.4 | Sonnet | portable suites against stated contracts |
 | G (after F) | 5.5–5.6 | Opus | barrier race engine and ambient-transaction suite |
 | H1 (after D, E, G) | 6.1–6.4 | Opus | sealed stores, digest keys, conditional writes |
 | H2 | 6.5–6.8 | Opus | MFA races, OIDC atomicity, ambient transaction |
 | I1, I2 (after H2; parallel with J) | 7.1–7.2, 7.3–7.4 | Opus | backend semantics differ (pgx.Tx nesting, error types) |
-| J1, J2 (after H2; parallel with I) | 8.1–8.2, 8.3–8.4 | Opus | gorm savepoints and RowsAffected pitfalls |
+| J1, J2 (after H2; parallel with I) | 8.1–8.2, 8.3–8.4 | Opus | gorm transaction handling and RowsAffected pitfalls |
 | K | 9.1–9.3 | Sonnet | tests over finished adapters |
 | — | 9.4 | main session + reviewer | final gate |
 
-File ownership: A owns `go.work`, every `go.mod`, `layout_guard_test.go`, `test/testutils.go`, CI. C owns `migrate/`, `test/migrate_*`. B and D own `seal/`. E owns `sqlstore/{tx,options,savepoint,errors}.go` and `internal/pgschema/`. F and G own `test/storetest/`. H owns the `sqlstore` store files, `internal/pgschema` store SQL, and `test/sqlstore/`. I owns `pgx/` and `test/pgxstore/`. J owns `gorm/` and `test/gormstore/`. K owns `test/crossbackend/`.
+File ownership: A owns `go.work`, every `go.mod`, `layout_guard_test.go`, `test/testutils.go`, CI. C owns `migrate/`, `test/migrate_*`. B and D own `seal/`. E owns `sqlstore/{tx,options,errors}.go` and `internal/pgschema/`. F and G own `test/storetest/`. H owns the `sqlstore` store files, `internal/pgschema` store SQL, and `test/sqlstore/`. I owns `pgx/` and `test/pgxstore/`. J owns `gorm/` and `test/gormstore/`. K owns `test/crossbackend/`.
 
 ---
 
@@ -341,11 +341,11 @@ Fixture `good/00001_probe.sql`: `-- +goose Up` / `CREATE TABLE probe_a (id uuid 
 **Files:** Modify `test/testutils.go`; Test `test/testutils_postgres_test.go`; fixture `test/testdata/migrations/forgets_table/00001_two.sql` (Up creates `probe_a`, `probe_b`; Down drops only `probe_a`).
 
 **Interfaces:**
-- Produces: `func WithTestPostgresFinalizeScripts(sql ...string) TestOption`; `const LeftoverTablesScript` — a `DO $$ … RAISE EXCEPTION 'tables left behind: %', string_agg(...)` over `pg_tables WHERE schemaname = current_schema() AND tablename NOT LIKE 'goose%'`.
+- Produces: `func WithTestPostgresFinalizeScripts(sql ...string) TestOption`; `func WithTestPostgresLeftoverTableCheck() TestOption` — after rollback and the finalize scripts, on the same 30-second context, query `pg_tables WHERE schemaname = current_schema()` excluding exactly the version tables of the sets registered through `WithTestPostgresMigrations` (bound as `$n` parameters, never concatenated), and `tb.Errorf("tables left behind: %s", names)` when any remain. No name pattern is exempted (design D11): `goose%` would flag a consumer version table such as `auth_schema_versions` after a complete rollback, and would pass a real table named `goose_…`.
 
-- [ ] **Step 1: Add a case** to `TestPostgresTeardown`: `dir: "testdata/migrations/forgets_table"`, finalizers `[]string{LeftoverTablesScript}`, assert `errs` has one entry containing `probe_b` and not `probe_a`. Add a case with two finalizers that each `INSERT INTO finalize_log` (created by the first) and assert order through a third out-of-band read before teardown ends (the recorder collects `RAISE NOTICE`-free proof by having the second script fail with `'second'` only if the first's row is missing).
-- [ ] **Step 2: Run**, red: no finalizer runs, so no error names `probe_b`.
-- [ ] **Step 3: Implement**: after rollback, run each script in declared order on the same 30-second context; `tb.Errorf("finalize script %d: %v", i, err)` on error. Document on `WithTestPostgresFinalizeScripts` that scripts run after rollback in declared order.
+- [ ] **Step 1: Add cases** to `TestPostgresTeardown` (fields `leftoverTableCheck bool`, `versionTable string`): `dir: "testdata/migrations/forgets_table"`, `leftoverTableCheck: true`, assert `errs` has one entry containing `probe_b` and not `probe_a`; `dir: "testdata/migrations/good"`, `versionTable: "auth_schema_versions"`, `leftoverTableCheck: true`, assert `errs` is empty; a fixture leaving `goose_like_but_real` behind, assert it is named; `forgets_table` with finalizer `DROP TABLE probe_b` and the check on, assert `errs` is empty (the check runs after the scripts). Add a case with two finalizers that each `INSERT INTO finalize_log` (created by the first) and assert order through a third out-of-band read before teardown ends (the recorder collects `RAISE NOTICE`-free proof by having the second script fail with `'second'` only if the first's row is missing).
+- [ ] **Step 2: Run**, red: no finalizer or check runs, so no error names `probe_b`; with a `goose%` exemption the `auth_schema_versions` and `goose_like_but_real` cases fail; with the check before the scripts the last case reports `probe_b`.
+- [ ] **Step 3: Implement**: after rollback, run each script in declared order on the same 30-second context; `tb.Errorf("finalize script %d: %v", i, err)` on error. Then run the leftover-table check when enabled. Document on `WithTestPostgresFinalizeScripts` that scripts run after rollback in declared order, and on both options that rollback, scripts and the check share one 30-second budget.
 - [ ] **Step 4: See green.** **Step 5: Hand back.**
 
 ### Task 1.5: PostgreSQL 15 and 18 in CI
@@ -392,7 +392,7 @@ func migrated(t *testing.T) *sql.DB {
 	set := migrate.SecurityState()
 	return test.RunTestPostgres(t,
 		test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable),
-		test.WithTestPostgresFinalizeScripts(test.LeftoverTablesScript),
+		test.WithTestPostgresLeftoverTableCheck(),
 	).DB
 }
 
@@ -488,7 +488,9 @@ CREATE TABLE sessions (
 CREATE INDEX sessions_external_session ON sessions (external_issuer, external_session_id) WHERE external_session_id <> '';
 CREATE INDEX sessions_user_issuer ON sessions (user_id, external_issuer) WHERE external_issuer <> '';
 CREATE INDEX sessions_user ON sessions (user_id);
-CREATE INDEX sessions_expiry ON sessions (idle_expires_at, absolute_expires_at);
+-- One index per deadline: DeleteExpired matches either, and a composite cannot seek on its second column.
+CREATE INDEX sessions_idle_expiry ON sessions (idle_expires_at);
+CREATE INDEX sessions_absolute_expiry ON sessions (absolute_expires_at);
 
 CREATE TABLE signing_keys (
     id          uuid PRIMARY KEY,
@@ -538,7 +540,7 @@ CREATE TABLE one_time_tokens (
     purpose      text NOT NULL,
     subject      text NOT NULL,
     secret_hash  bytea NOT NULL,
-    binding_hash bytea NOT NULL,
+    binding_hash bytea,  -- NULL means unbound: an absent binding is not an empty one
     issued_at    timestamptz NOT NULL,
     expires_at   timestamptz NOT NULL,
     -- Nullable guard with no default: single use is "consumed_at IS NULL".
@@ -640,7 +642,7 @@ Check the `session.Session` fields (`session/session.go:54`) and the `signingkey
   - full rollback: `DownTo(0)`; no security-state table; `goose_security_state` records no applied version above 0;
   - table already dropped: `DROP TABLE oidc_links`, then `DownTo(0)` succeeds;
   - re-apply after rollback: `DownTo(0)`, `Up`, all nine tables exist;
-  - each Down on its own: for every migration file, parse its `-- +goose Down` section with goose's parser (`sqlparser.ParseSQLMigration(r, sqlparser.DirectionDown, false)`), execute it against a freshly migrated database, and assert that the tables its Up created are gone and every other table remains. With one file, that is all nine gone and `goose_security_state` intact.
+  - each Down on its own: for every migration file, extract its `-- +goose Down` section with a small test helper `runDownSection` (goose's `sqlparser` is an internal package and cannot be imported; the helper handles this set's shape — one statement per line, no `StatementBegin`/`StatementEnd` in a `Down` — and its doc comment says so), execute it against a freshly migrated database, and assert that the tables its Up created are gone and every other table remains. With one file, that is all nine gone and `goose_security_state` intact.
 - [ ] **Step 2: Red:** first run the failing-migration case against a fixture that marks 00002 as running outside a transaction (fixture only, not the security-state set) and see `half_a` survive. That proves the assertion notices. Then restore the fixture.
 - [ ] **Step 3: See green.** **Step 4: Hand back.**
 
@@ -651,7 +653,9 @@ Check the `session.Session` fields (`session/session.go:54`) and the `signingkey
 - [ ] **Step 1: Write** `TestGooseDirect` (apply with `goose.NewProvider` and version table `app_security_versions`; every table, column and index from 2.1 and 2.2 exists, checked by reusing the 2.2 queries; then `DownTo(0)`, no security-state table remains) and:
 
 ```go
-func ExampleApplySecurityStateMigrations() {
+// ExampleSet: go vet's tests analyzer (run by go test) rejects an example named
+// after an identifier that does not exist, and no ApplySecurityStateMigrations exists.
+func ExampleSet() {
 	db, err := sql.Open("pgx", os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal(err)
@@ -724,7 +728,7 @@ type Cipher interface {
 	Open(sealed, aad []byte) (plaintext []byte, keyID string, err error)
 	ActiveKeyID() (string, error)
 }
-func NewAEADCipher(kr Keyring) Cipher
+func NewAEADCipher(kr Keyring) (Cipher, error) // ErrInvalidConfiguration for a nil keyring (design D9)
 // envelope: magic "SCS1" | keyIDLen(1) | keyID | nonce(12) | ciphertext‖tag
 ```
 
@@ -838,32 +842,40 @@ var ErrConfig = errors.New("sqlstore: invalid configuration")
 type Option func(*config) // shared by every store
 func WithTxResolver(r TxResolver) Option
 func WithIDGenerator(g id.Generator) Option  // honoured by the five minting stores
-func WithClock(now func() time.Time) Option  // honoured by session and flow stores
+func WithClock(now func() time.Time) Option  // honoured by session, flow and one-time token stores (design D4)
 
-// internal: conn resolves resolver → context → base, and reports whether a
-// caller's transaction is ambient.
-func (c *config) conn(ctx context.Context) (q DBTX, tx *sql.Tx, ambient bool)
+func WithResealOnRead(on bool) Option        // honoured by signing-key and MFA stores; default on
+var ErrNilTransaction error                  // a resolver reported a transaction with a nil handle
+
+// internal: conn resolves resolver → context → base, reports whether a caller's
+// transaction is ambient, and refuses a resolver's nil handle (design D6).
+func (c *config) conn(ctx context.Context) (q DBTX, tx *sql.Tx, ambient bool, err error)
+// newConfig refuses options the store does not honour (design D6). WithTxResolver is
+// always honoured; a store names the rest in one line, e.g. the session store:
+//   newConfig(db, opts, optIDGenerator, optClock)
+// one-time: optClock; attempts: optIDGenerator; signing key and MFA:
+// optIDGenerator, optResealOnRead; OIDC flow: optIDGenerator, optClock;
+// API key, OIDC link, OIDC handoff: none.
+func newConfig(base *sql.DB, opts []Option, honours ...optionKind) (*config, error)
 ```
 
 - [ ] **Step 1: Write** `TestConfigConn` (table: no resolver or context → base, `ambient=false`; context tx → that tx, `ambient=true`; resolver reports a tx → resolver wins over context; resolver reports false → base even with a context tx, since the resolver replaces the context lookup) using a fake `DBTX` identity type for the resolver case and `*sql.Tx` zero values compared by pointer for the context case. `TestNewConfig` table: `WithTxResolver(nil)`, `WithIDGenerator(nil)`, `WithClock(nil)` → `ErrConfig`.
 - [ ] **Step 2: Red** on stubs. **Step 3: Implement.** **Step 4: See green.** **Step 5: Hand back.**
 
-### Task 4.2: Savepoint containment and construction validation
+### Task 4.2: Construction validation
 
-**Files:** Create `sqlstore/savepoint.go`; Modify `sqlstore/options.go`; Test `test/sqlstore/savepoint_test.go`, `sqlstore/options_test.go`.
+**Files:** Modify `sqlstore/options.go`; Test `sqlstore/options_test.go`.
 
 **Interfaces:**
 - Produces:
 
 ```go
-// inUnit runs fn in a savepoint when a caller's tx is ambient, otherwise in its own tx.
-func (c *config) inUnit(ctx context.Context, fn func(q DBTX) error) error
-// newConfig validates base and options; sealed stores also pass requireCipher.
-func newConfig(base *sql.DB, opts []Option) (*config, error)
+// newConfig validates base and options, and never touches the database.
+func newConfig(base *sql.DB, opts []Option, honours ...optionKind) (*config, error)
 ```
 
-The savepoint name is `scrty_sp_<n>` from an `atomic.Uint64`. `inUnit` issues `SAVEPOINT`, then either `RELEASE SAVEPOINT` or `ROLLBACK TO SAVEPOINT` followed by `RELEASE`.
-- [ ] **Step 1: Write** in core `TestNewConfig`: nil base → `ErrConfig`. **Containment is pending a decision:** under D3, every store operation is a single statement, and re-seal writes are skipped inside a caller's transaction. So no operation exists for `inUnit` to contain, and the scenario "Multi-statement failure is contained" has no code to exercise. The dispatch implements construction validation only, and does not add `inUnit`, until the main session records a decision in design.md and tasks.md (see the change's open item).
+No savepoint helper (design D5): every store operation is one statement under D3, and re-seal writes are skipped inside a caller's transaction, so there is nothing to contain. The first multi-statement operation, in whatever change adds it, brings the helper and the "Multi-statement failure is contained" scenario as its red test.
+- [ ] **Step 1: Write** in `TestNewConfig`: nil base → `ErrConfig`; nil option, `WithTxResolver(nil)`, `WithIDGenerator(nil)` (and typed nil), `WithClock(nil)` → `ErrConfig`; defaults are the base handle, `id.NewV7Generator()` and `time.Now`. Sealed stores check their cipher in their own constructors (6.1, 6.4, 6.5).
 - [ ] **Step 2: Red** on `newConfig(nil, nil)` returning a config. **Step 3: Implement.** **Step 4: See green.** **Step 5: Hand back.**
 
 ---
@@ -908,7 +920,9 @@ func requirePool(t testing.TB, pool, racers int) // "pool of %d connections cann
 
 ```go
 func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time.Time) session.Store)
-func RunOneTimeStoreSuite(t *testing.T, newStore func(t *testing.T) onetime.Store) // reaper cases run when the store implements onetime.Reaper
+func RunOneTimeStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time.Time) onetime.Store, opts ...SuiteOption) // reaper cases run when the store implements onetime.Reaper; RequireReaper() fails when it does not
+type SuiteOption func(*suiteConfig)
+func RequireReaper() SuiteOption // scrty's adapters pass it; consumers may leave it out (design D11)
 ```
 
 The clock handed in is a `*fakeClock` the suite advances; the factory must build the store on it.
@@ -967,7 +981,7 @@ func TestSuitesCatchBrokenStores(t *testing.T) {
 **Files:** Create `test/storetest/attempts_suite.go`, `test/storetest/signingkey_suite.go`; Modify `memory_test.go`, `broken_test.go`.
 
 **Interfaces:**
-- Produces: `func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.AttemptStore)`, where reaper cases run only when the store implements `policy.AttemptReaper` and report `t.Log("store does not implement AttemptReaper")` otherwise; `func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingkey.KeyStore)`.
+- Produces: `func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.AttemptStore, opts ...SuiteOption)`, where reaper cases run only when the store implements `policy.AttemptReaper` and report `t.Log("store does not implement AttemptReaper")` otherwise, or fail under `RequireReaper()`; `func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingkey.KeyStore)`.
 - [ ] **Step 1: Write the cases.** Attempts:
   - `FailureCount` counts strictly after `since`, so an attempt at `since` is excluded;
   - `Reset` clears one user only;
@@ -1016,7 +1030,8 @@ type Race[S any] struct {
 	// Seed creates record i and returns the key racers contend on.
 	Seed func(ctx context.Context, t *testing.T, s S, i int) string
 	// Attempt performs one racing call; won reports success, and a refusal is (false, nil).
-	Attempt func(ctx context.Context, s S, key string) (won bool, err error)
+	// racer (0..Racers-1) lets a link-insert race give each racer its own user.
+	Attempt func(ctx context.Context, s S, key string, racer int) (won bool, err error)
 }
 func RunConsumeRace[S any](t *testing.T, h DurableHarness[S], r Race[S])
 func RunLinkInsertRace[S any](t *testing.T, h DurableHarness[S], r Race[S])
@@ -1038,7 +1053,8 @@ All three share one engine, `runRace`. It seeds records × racers goroutines tha
 type Ambient[S any] struct {
 	Write   func(ctx context.Context, s S, i int) error    // write record i
 	Present func(t *testing.T, raw *sql.DB, i int) bool   // out of band
-	Refuse  func(ctx context.Context, s S) error           // a refusal; must return a refusal sentinel
+	Refuse  func(ctx context.Context, s S) error           // a refusal; must return Refusal
+	Refusal error                                          // errors.Is sentinel, required
 }
 func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S])
 // cases: rollback discards; commit keeps; refusal then Write then commit keeps both writes;
@@ -1049,14 +1065,17 @@ type Sealed[S any] struct {
 	NewWithKeyring func(t *testing.T, kr seal.Keyring) S
 	Put            func(ctx context.Context, s S, owner string, secret []byte) error
 	Get            func(ctx context.Context, s S, owner string) (secret []byte, present bool, err error)
-	RawSealed      func(t *testing.T, raw *sql.DB, owner string) []byte // decoded envelope bytes
+	RawColumn      func(t *testing.T, raw *sql.DB, owner string) []byte // as stored; the suite decodes per Encoding
 	CopySealed     func(t *testing.T, raw *sql.DB, from, to string)
-	Stored         string // the raw column's value is also checked as stored text, before decoding
+	Encoding       SealedEncoding // SealedBytes (signing keys) | SealedBase64URL (MFA, session ID token)
+	Rotation       SealedRotation // ResealOnRead (signing keys, MFA) | UnchangedOnRead (sessions, design D9)
 }
 func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S])
 // cases: plaintext "SENTINEL-SECRET" absent from raw text and decoded bytes; copy victim→attacker,
 // Get(attacker) errors; keyring lacking k1 → error and present=false; reseal: sealed under k1,
-// read via ring {active k2, retired k1}, then Get via ring {k2} returns the secret.
+// read via ring {active k2, retired k1}, then Get via ring {k2} returns the secret (ResealOnRead),
+// or the raw column is byte-identical after the read (UnchangedOnRead). The copy case runs last,
+// because a row that no longer opens fails a signing-key LoadAll of the whole table.
 ```
 
 - [ ] **Step 1: Write** `TestAmbientInputs` and `TestSealedInputs` (re-exec guard: `Raw` nil → names `DurableHarness.Raw`, the spec's "Missing out-of-band access"; `Sealed.CopySealed` nil → names it).
@@ -1113,15 +1132,16 @@ func TestSessionStore(t *testing.T) {
 }
 ```
 
-  `harness_test.go` holds `migratedDB(t) *sql.DB` (RunTestPostgres plus the security-state set), `testCipher(t)` (keyring with active `k2` and retired `k1`), and `durableHarness[S](t, newWith func(db *sql.DB, opts ...sqlstore.Option) S) storetest.DurableHarness[S]`, which fills `Raw`, `Begin` (`db.BeginTx` + `sqlstore.WithTx`), `BeginResolved` (a store built with `WithTxResolver(func(context.Context) (sqlstore.DBTX, bool) { return tx, true })`), `BeginForeign` (a `pgxpool` tx attached with `pgx.WithTx`, from the pgx module, available once 7.1 lands; until then it `t.Fatal`s with "pgx backend not yet available", which keeps 6.8's foreign case red until 7.1) and `PoolSize: 32`. Then add the table `TestSessionStore_Durable` with the rows:
+  `harness_test.go` holds `migratedDB(t) *sql.DB` (RunTestPostgres plus the security-state set), `testCipher(t)` (keyring with active `k2` and retired `k1`), and `durableHarness[S](t, newWith func(db *sql.DB, opts ...sqlstore.Option) S) storetest.DurableHarness[S]`, which fills `Raw`, `NewReplica` (a second store on the same database opened through its own `*sql.DB` from the helper's DSN, so racers split across two pools; design D11), `Begin` (`db.BeginTx` + `sqlstore.WithTx`), `BeginResolved` (a store built with `WithTxResolver(func(context.Context) (sqlstore.DBTX, bool) { return tx, true })`), `BeginForeign` (a `pgxpool` tx on the same database held in a context value `sqlstore` cannot see — exactly what another backend's attachment looks like to it; 7.1 may swap in `pgx.WithTx`) and `PoolSize: 32`. Then add the table `TestSessionStore_Durable` with the rows:
   - Session identifiers are never stored: out of band `SELECT row_to_json(s)::text FROM sessions s` does not contain `SESSION-SENTINEL`, and `Load("SESSION-SENTINEL")` works;
   - Session with unreadable ID token: tamper `external_id_token` out of band → `errors.Is(err, session.ErrSessionUnreadable)`;
   - Sessions are not rewritten on read: sealed under `k1`, `Load` with ring {k2, k1}, the raw column is unchanged; `Delete`, then `Load` → not found;
   - Cipher missing: `NewSessionStore(db, nil)` → `sqlstore.ErrConfig`;
   - Missing handle: `NewSessionStore(nil, c)` → `ErrConfig`;
-  - Consumer cipher used: a counting `seal.Cipher` sees one `Seal` and one `Open`, both with AAD `"scrty/session:external-id-token:" + id`.
+  - Consumer cipher used: a counting `seal.Cipher` sees one `Seal` and one `Open`, both with AAD `"scrty/session:external-id-token:" + id`;
+  - Enrolment-path fields refused (design D2, "Enrolment-path fields are not in this set"): `Create` of a session with a non-zero `EnrolmentOriginDeadline` returns an error and out of band the table holds no row; the same for a non-zero `EnrolmentGeneration`; `Save` of a stored session with either field set returns an error and the stored row is unchanged. The error text names the field, never its value or the session identifier.
 - [ ] **Step 2: Red:** a stub `NewSessionStore` that returns `ErrConfig` → the suite fails at construction; that is compile-clean and fails for a stated reason. Better red: implement `Save` as an upsert first and see the suite's "save after delete" case fail, then correct it. Report both outputs.
-- [ ] **Step 3: Implement.** `NewSessionStore` validates, builds the unexported `sessionStore`, and returns `session.NewEncryptedStore(inner, seal.SessionCipher(c))`.
+- [ ] **Step 3: Implement.** `Create` and `Save` check `EnrolmentOriginDeadline.IsZero()` and `EnrolmentGeneration.IsZero()` before any statement and return `errors.New("sqlstore: <op> session: enrolment-origin marker not supported by this store")` (resp. "enrolment generation"). `NewSessionStore` validates, builds the unexported `sessionStore`, and returns `session.NewEncryptedStore(inner, seal.SessionCipher(c))`.
 - [ ] **Step 4: See green** `go test -run 'TestSessionStore' -count=1 ./sqlstore/` in `./test`. **Step 5: Hand back.**
 
 ### Task 6.2: `sqlstore` one-time token store and reaper
@@ -1141,7 +1161,7 @@ DELETE FROM one_time_tokens WHERE purpose = $1 AND expires_at <= $2 AND issued_a
 
 The reaper's "now" is the store clock (`WithClock`, default `time.Now`): the contract judges expiry at call time. Confirm against `onetime/memory.go` before implementing, and report if the memory store uses something else.
 - [ ] **Step 1: Write**:
-  - `RunOneTimeStoreSuite` over the store;
+  - `RunOneTimeStoreSuite` over the store with `storetest.RequireReaper()`, and `var _ interface{ onetime.Store; onetime.Reaper } = (*sqlstore.OneTimeStore)(nil)`;
   - `RunConsumeRace` with `Seed` inserting token i and `Attempt` = `Consume` mapping `ErrTokenNotFound` → `(false, nil)`;
   - the broken guard `brokenReadThenWriteConsume` (`FindByID`, check `ConsumedAt.IsZero()`, then `UPDATE … WHERE id=$1` unconditionally), run through the re-exec guard and asserting the inner output contains "more than one successful";
   - `TestOneTimeStore_Failures` table:
@@ -1157,7 +1177,7 @@ The reaper's "now" is the store clock (`WithClock`, default `time.Now`): the con
 **Interfaces:** `func NewAttemptStore(db *sql.DB, opts ...Option) (*AttemptStore, error)` implementing `policy.AttemptStore` and `policy.AttemptReaper`.
 
 SQL: `INSERT INTO login_attempts (id, username, attempted_at) VALUES ($1,$2,$3)`; `DELETE FROM login_attempts WHERE username=$1`; `SELECT count(*) FROM login_attempts WHERE username=$1 AND attempted_at > $2`; `DELETE FROM login_attempts WHERE attempted_at < $1` (zero cutoff refused before the statement).
-- [ ] **Step 1: Write**: `RunAttemptStoreSuite`, and `TestAttemptStore_IDs` table:
+- [ ] **Step 1: Write**: `RunAttemptStoreSuite` with `storetest.RequireReaper()` (and `var _ policy.AttemptReaper = (*sqlstore.AttemptStore)(nil)`), and `TestAttemptStore_IDs` table:
   - Default generator: the stored id's version nibble is 7 (`SELECT id::text`, char 14 = `7`);
   - Consumer generator: a fixed generator returning `00000000-0000-4000-8000-000000000001` → that id is stored;
   - Generator failure: the generator errors → `errors.Is(err, genErr)` and `count(*) = 0`;
@@ -1204,7 +1224,7 @@ WHERE mfa_enrolments.confirmed_at IS NULL
 -- EnrolmentGet
 SELECT secret, confirmed_at, last_step, created_at FROM mfa_enrolments WHERE user_id = $1
 -- EnrolmentConfirm
-UPDATE mfa_enrolments SET confirmed_at = $3, last_step = $2 WHERE user_id = $1 AND confirmed_at IS NULL
+UPDATE mfa_enrolments SET confirmed_at = $3, last_step = GREATEST(last_step, $2) WHERE user_id = $1 AND confirmed_at IS NULL
 -- EnrolmentAcceptStep
 UPDATE mfa_enrolments SET last_step = $2 WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2
 -- EnrolmentDelete
@@ -1325,7 +1345,10 @@ func WithIDGenerator(g id.Generator) Option
 func WithClock(now func() time.Time) Option
 func WithResealOnRead(on bool) Option
 var ErrConfig = errors.New("pgx: invalid configuration")
+var ErrNilTransaction error // resolver reported a transaction with a nil handle
 ```
+
+As in 4.1 (design D6): each store declares the options it honours and refuses the others with `ErrConfig` naming the option; `conn` returns `ErrNilTransaction` for a resolver's nil handle, never panicking.
 
 The base handle is `*pgxpool.Pool`. `id.ID` values are passed as their `String()` (pgx does not use `driver.Valuer` for uuid by default), and scanned through `pgtype.UUID` then `id.ID(u.Bytes)`. Put this in two helpers, `uuidArg` and `scanID`, tested in `pgx/uuid_test.go`.
 - [ ] **Step 1: Write** `TestConfigConn` (same table shape as 4.1, with the pgx types), `TestNewConfig` (nil pool, nil resolver, nil generator, nil clock → `ErrConfig`) and `TestUUIDHelpers` (round trip through `pgtype.UUID`). **Step 2: Red** on stubs. **Step 3: Implement.** **Step 4: See green.** **Step 5: Hand back.**
@@ -1371,7 +1394,7 @@ The base handle is `*pgxpool.Pool`. `id.ID` values are passed as their `String()
 
 ---
 
-### Task 8.1: `gorm` handle resolution, containment and validation
+### Task 8.1: `gorm` handle resolution and validation
 
 **Files:** Create `gorm/tx.go`, `gorm/options.go`, `gorm/errors.go`, `gorm/models.go`; Test `gorm/tx_test.go`.
 
@@ -1385,6 +1408,7 @@ func WithIDGenerator(g id.Generator) Option
 func WithClock(now func() time.Time) Option
 func WithResealOnRead(on bool) Option
 var ErrConfig = errors.New("gorm: invalid configuration")
+var ErrNilTransaction error // resolver reported a transaction with a nil handle; as in 4.1, options a store does not honour are refused (design D6)
 // models: one struct per table with explicit `gorm:"column:…;type:…"` tags and
 // TableName() methods; no AutoMigrate anywhere; id.ID columns use a
 // gorm-compatible type implementing sql.Scanner/driver.Valuer (id.ID already does).
@@ -1466,15 +1490,15 @@ Pin gorm's zero-value trap: without `Select`, `Updates` skips `false`/`0`/`""`, 
 
 ### Task 9.3: Suite failures name the case and the backend
 
-**Files:** Modify `test/storetest/harness.go` (every suite wraps its cases in `t.Run(backendName+"/"+caseName)`, where the backend name comes from a new `Harness.Name string` field); Test `test/storetest/broken_test.go`.
+**Files:** Test `test/storetest/broken_test.go` (or a new guard beside the handoff runs).
 
-This adds `Name` to `Harness`. Every run from 5.2 onward sets it (`"memory"`, `"sqlstore"`, `"pgx"`, `"gorm"`), and a missing `Name` fails like any other required input. Because this touches every run, do it at the end of dispatch G if possible. The task stays numbered 9.3 because its scenario is verified here.
-- [ ] **Step 1: Write** a re-exec guard over the handoff suite with `zeroConsumedAt`, a variant returning `ConsumedAt` as the zero value. The inner output must contain `--- FAIL: …/zeroConsumedAt/` and the case name `consume records the time`.
-- [ ] **Step 2: Red:** before the naming change the output lacks the backend segment. **Step 3: Implement.** **Step 4: See green.** **Step 5: Hand back.**
+The backend is named by the caller (design D11, "Naming the backend in failures"): every scrty run wraps its suite calls in `t.Run("<backend>", …)`, and the suites name their cases through `t.Run`. No `Harness.Name` field is added, so no suite signature changes, the OIDC suites in `test/oidc` included.
+- [ ] **Step 1: Write** a re-exec guard over `oidctest.RunHandoffStoreSuite` wrapped in `t.Run("sqlstore", …)`, against a store variant returning a zero consumption time. The inner output must contain `--- FAIL: ` followed by a path holding both the `sqlstore` segment and the case that checks the consumption time.
+- [ ] **Step 2: Red:** first run the guard with the `t.Run("sqlstore", …)` wrapper removed, and see it fail because the backend segment is missing. **Step 3: Restore the wrapper.** **Step 4: See green.** **Step 5: Hand back.**
 
 ### Task 9.4: Whole-branch review and final gate
 
-- [ ] **Step 1:** The main session dispatches a fresh reviewer (edits nothing) against every requirement and scenario in the four delta specs, and against D1–D12. Each finding is `REPRODUCED` with a failing test, or `UNREPRODUCED` with a reason.
+- [ ] **Step 1:** The main session dispatches a fresh reviewer (edits nothing) against every requirement and scenario in the four delta specs, and against D1–D12, including a check that every store operation on every backend issues exactly one statement (D5: no containment helper exists, so a second statement would break the requirement "Refusals and contained failures leave the caller's transaction usable"). Each finding is `REPRODUCED` with a failing test, or `UNREPRODUCED` with a reason.
 - [ ] **Step 2:** Findings go back to fresh dispatches of the owning lane.
 - [ ] **Step 3:** The main session runs `make check` (every workspace module), `SCRTY_TEST_POSTGRES_IMAGE=postgres:15.N-alpine make test`, and `gofmt -l .` (empty), then reads the output.
 - [ ] **Step 4:** The main session ticks the tasks in `tasks.md` and commits.
@@ -1483,6 +1507,6 @@ This adds `Name` to `Harness`. Every run from 5.2 onward sets it (`"memory"`, `"
 
 ## Self-Review Notes
 
-- **Coverage.** Every scenario in the four delta specs maps to a named test row above. The only scenario whose code is not certain to exist is "Multi-statement failure is contained" (security-state-stores). No store operation in D3 needs more than one statement, so 4.2 carries an explicit stop-and-report point instead of inventing a multi-statement operation to contain.
+- **Coverage.** Every scenario in the four delta specs maps to a named test row above. "Multi-statement failure is contained" was dropped from security-state-stores with the user's agreement (D5): no store operation needs more than one statement, so the helper is deferred to the first change that adds one, and 9.4's review checks that none has slipped in.
 - **Placeholders knowingly left.** Pinned image minors (`15.N`, `18.N`) and the latest pgx/gorm versions are resolved at implementation time with `docker manifest inspect` and `go list -m -versions`. Pinning a guessed version would be worse.
 - **Type consistency.** Every backend exports `NewSessionStore`, `NewOneTimeStore`, `NewAttemptStore`, `NewSigningKeyStore`, `NewEnrolmentStore`, `NewAPIKeyStore`, `NewLinkStore`, `NewFlowStore`, `NewHandoffStore`, `WithTx`, `WithTxResolver`, `WithIDGenerator`, `WithClock`, `WithResealOnRead` and `ErrConfig`, in its own package. `seal` exports `NewSigningKeyStore` and `NewEnrolmentStore` as the wrappers; the adapters call them.

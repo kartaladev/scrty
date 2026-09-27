@@ -10,12 +10,17 @@ permissions:
 
 jobs:
   check:
-    name: make check (Go ${{ matrix.go }})
+    name: make check (Go ${{ matrix.go }}, ${{ matrix.postgres }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         go: ["1.27.x"]
+        # The oldest and newest community-supported PostgreSQL majors, pinned
+        # to exact minors. The test helper defaults to the newest.
+        postgres: ["postgres:15.19-alpine", "postgres:18.6-alpine"]
+    env:
+      SCRTY_TEST_POSTGRES_IMAGE: ${{ matrix.postgres }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6

@@ -29,13 +29,26 @@ var handoffSuiteNow = handoffSuiteIssued.Add(time.Hour)
 // row starts.
 const handoffSuiteRacers = 8
 
+// handoffSuiteID derives the id a record for tokenID is stored under: unique
+// per token id and non-zero, as a durable store's own primary key requires
+// (see oidc.HandoffRecord.ID). It is a pure function of tokenID, so every
+// call for the same tokenID agrees, including the calls handoffSuiteRecord
+// makes to build the record a case compares a find against.
+func handoffSuiteID(tokenID string) id.ID {
+	sum := sha256.Sum256([]byte("handoff-id-of-" + tokenID))
+	var v id.ID
+	copy(v[:], sum[:16])
+
+	return v
+}
+
 // handoffSuiteRecord returns a record for tokenID, issued at
 // handoffSuiteIssued and expiring a minute later.
 func handoffSuiteRecord(tokenID string) oidc.HandoffRecord {
 	sum := sha256.Sum256([]byte("secret-of-" + tokenID))
 
 	return oidc.HandoffRecord{
-		ID:         id.MustParse("01926a4e-0000-7000-8000-0000000000aa"),
+		ID:         handoffSuiteID(tokenID),
 		TokenID:    tokenID,
 		SecretHash: sum[:],
 		UserID:     "u-1",

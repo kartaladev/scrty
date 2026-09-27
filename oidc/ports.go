@@ -78,6 +78,13 @@ type IdentityBroker interface {
 // The key is Provider, Issuer and Subject together. Username and Email are a
 // record of what they were when the link was made, never used to resolve it.
 type Link struct {
+	// ID identifies this link, never its external identity or user
+	// reference. It is minted by the caller, not the store: the library's
+	// own Broker mints one (WithBrokerIDGenerator names its source, default
+	// id.NewV7Generator) before every Insert. It must be unique and
+	// non-zero; a store may refuse a zero ID rather than mint one of its
+	// own, since a store cannot tell a zero value that was never meant as
+	// an identifier from a genuine one.
 	ID                        id.ID
 	Provider, Issuer, Subject string
 	UserID                    identity.UserID
@@ -97,7 +104,8 @@ type LinkStore interface {
 	FindByExternal(ctx context.Context, provider, issuer, subject string) (*Link, error)
 
 	// Insert stores l, or returns ErrLinkExists when its external identity is
-	// already linked.
+	// already linked. l.ID must be unique and non-zero (see Link.ID); a
+	// store may refuse a zero ID.
 	Insert(ctx context.Context, l Link) error
 
 	// DeleteByUser removes every link to user and returns how many it removed.
@@ -109,6 +117,13 @@ type LinkStore interface {
 // The code itself is never stored: TokenID finds the record and SecretHash
 // verifies the secret half. IDToken is kept for RP-initiated logout.
 type HandoffRecord struct {
+	// ID identifies this record, never TokenID or the secret it hashes. It
+	// is minted by the caller, not the store: the library's own
+	// HandoffManager mints one (WithHandoffIDGenerator names its source,
+	// default id.NewV7Generator) before every Insert. It must be unique and
+	// non-zero; a store may refuse a zero ID rather than mint one of its
+	// own, since a store cannot tell a zero value that was never meant as
+	// an identifier from a genuine one.
 	ID                                         id.ID
 	TokenID                                    string
 	SecretHash                                 []byte
@@ -124,7 +139,8 @@ type HandoffRecord struct {
 // library's own implementation is NewMemoryHandoffStore, which holds codes for
 // one process only.
 type HandoffStore interface {
-	// Insert stores rec.
+	// Insert stores rec. rec.ID must be unique and non-zero (see
+	// HandoffRecord.ID); a store may refuse a zero ID.
 	Insert(ctx context.Context, rec HandoffRecord) error
 
 	// FindByTokenID returns the record, or ErrHandoffNotFound. It returns a

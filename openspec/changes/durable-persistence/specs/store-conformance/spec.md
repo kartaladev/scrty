@@ -109,7 +109,7 @@ The suite SHALL be shown to fail against a cipher that returns its input unchang
 - **THEN** the read returns an error and does not report the user as not enrolled
 
 ### Requirement: The PostgreSQL test helper isolates tests and verifies rollback
-The test module SHALL provide a helper that gives each call an isolated PostgreSQL database in a real PostgreSQL server. When asked, it SHALL apply a migration set. When migrations were applied, it SHALL at test cleanup roll them all the way back to zero, and SHALL fail the test when that rollback errors. Cleanup scripts registered with the helper SHALL run after the rollback, in the order they were declared, and the security-state set's own test SHALL use one to fail when any table from the set is left behind. The helper SHALL be usable only from test code.
+The test module SHALL provide a helper that gives each call an isolated PostgreSQL database in a real PostgreSQL server. When asked, it SHALL apply a migration set. When migrations were applied, it SHALL at test cleanup roll them all the way back to zero, and SHALL fail the test when that rollback errors. Cleanup scripts registered with the helper SHALL run after the rollback, in the order they were declared. The helper SHALL offer a leftover-table check, run after the rollback and the cleanup scripts, that fails the test naming any table left behind other than the version tables of the sets it applied, and the security-state set's own test SHALL use it. The helper SHALL be usable only from test code.
 
 #### Scenario: Isolated databases
 - **WHEN** two tests each obtain a database from the helper and write a session with the same identifier
