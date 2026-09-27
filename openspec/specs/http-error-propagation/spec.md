@@ -49,9 +49,10 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | Refusal | Status |
 |---|---|
 | authentication required (this capability's, and the authorization capability's own), authentication failed, session idle, throttled source | 401 |
-| challenge of kind password change | 403 |
+| challenge of kind password change, challenge of kind second-factor enrolment | 403 |
 | challenge of any other kind | 401 |
-| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first | 403 |
+| invalid second-factor code, throttled second-factor verification or enrolment | 401 |
+| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled | 403 |
 | malformed login, invalid federated logout token | 400 |
 | unknown identity provider named in a federated login or logout path | 404 |
 | request too large | 413 |
@@ -59,7 +60,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | too many sessions | 429 |
 | any other error | 500 |
 
-Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own.
+Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code SHALL be identifiable as the invalid second-factor code refusal.
 
 #### Scenario: Wrapped sentinel
 - **WHEN** an error wraps the access-denied refusal with extra context
@@ -75,6 +76,26 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 
 #### Scenario: Password-change challenge
 - **WHEN** the error is a challenge of kind password change
+- **THEN** the mapping returns 403
+
+#### Scenario: Enrolment challenge
+- **WHEN** the error is a challenge of kind second-factor enrolment
+- **THEN** the mapping returns 403
+
+#### Scenario: Invalid second-factor code
+- **WHEN** the error is the invalid second-factor code refusal returned by the verify endpoint
+- **THEN** the mapping returns 401
+
+#### Scenario: Expired emailed code
+- **WHEN** the error is the refusal of an expired emailed enrolment code
+- **THEN** the mapping returns 401
+
+#### Scenario: Throttled enrolment
+- **WHEN** the error is the throttled refusal of an enrolment begin
+- **THEN** the mapping returns 401
+
+#### Scenario: Already enrolled
+- **WHEN** the error is the already-enrolled refusal
 - **THEN** the mapping returns 403
 
 #### Scenario: Unrecognised error
