@@ -54,6 +54,14 @@ func (b *basicAuth) wire(c *Chain) {
 	b.enforced = c.enforced
 }
 
+// flushRefusalLogs reports what the authenticator is holding back, when it
+// keeps refusal logs of its own; one that does not has nothing to report.
+func (b *basicAuth) flushRefusalLogs() {
+	if f, ok := b.authn.(authenticate.RefusalLogFlusher); ok {
+		_ = f.FlushRefusalLogs() // documented never to fail: its reporter only logs
+	}
+}
+
 // Intercept authenticates a Basic credential and establishes no session.
 func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 	header := ex.Request.Header("Authorization")

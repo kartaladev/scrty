@@ -26,7 +26,7 @@
 1. **A code in both body and query on fiber.** The body wins after 2.1, and the verify endpoint never reads the query at all after 1.1. Test added to task 1.2 (the conformance scenario runs a wrong body code plus a valid query code on every adapter and expects `ErrInvalidCode`).
 2. **A locked-out user posting an unreadable body.** The throttle's check still runs first, so the answer is the throttle refusal, not 400. Test added to task 1.1.
 3. **A policy registered for two phases.** `Engine.FlushRefusalLogs` flushes it once, from `asked`, not once per phase. Test added to task 4.1.
-4. **A chain whose source guard was supplied by the consumer and shared with another chain.** Both chains flushing reports the pending count once. Test added to task 4.2.
+4. **A component shared by two chains.** The chain builds every source guard itself, so the shared case is a consumer component given to two chains — an authenticator behind form login on one chain and Basic on another, or one limiter behind two chains' guards. Both chains flushing reports the pending count once. Test added to task 4.2 (rows "a limiter shared by two chains" and "an authenticator shared by two chains").
 5. **An OIDC chain with `WithCallbackSuccess` and no handoff manager.** The flush skips the nil handoff manager without panicking. Test added to task 4.2.
 
 ---
@@ -293,9 +293,9 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 - [ ] **Step 1: Write the failing test.** `TestFlushRefusalLogsReachesComponents`: one chain per row, each component configured with a one-hour log interval and a counting reporter (or a capturing slog handler), refusals driven through the chain until each has suppressed at least one record, then a single `chain.FlushRefusalLogs()`:
   - the verification throttle (wrong codes past the first);
   - a chain-built magic-link source guard (throttled source);
-  - a consumer-supplied source guard (`WithMagicLinkSourceGuard` or the equivalent option; `go doc ./httpsec | grep -i guard`), and Review Focus 4: the same guard shared by two chains, both flushed → the pending count reported once;
+  - a source guard built over a consumer-supplied limiter (`WithMagicLinkLimiter`, `WithHandoffLimiter` or `WithAPIKeyLimiter`; there is no option to supply a guard itself), and Review Focus 4: a component shared by two chains, both flushed → the pending count reported once;
   - the password authenticator of form login;
-  - a lockout policy on the engine;
+  - a second-factor policy on the engine (the lockout policy keeps no sampler);
   - the OIDC manager and handoff manager;
   - Review Focus 5: an OIDC chain with `WithCallbackSuccess` and no handoff manager → no panic.
   Each row asserts its component's reporter received its pending count.

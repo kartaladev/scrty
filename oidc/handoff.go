@@ -371,3 +371,20 @@ func (h *HandoffManager) record(ctx context.Context, level slog.Level, key strin
 	}
 	return ErrInvalidHandoff
 }
+
+// FlushRefusalLogs reports every refusal record the handoff manager's sampler
+// has suppressed but not yet counted, then forgets every key, so the next
+// redemption refused for a reason already reported is written again rather
+// than held back. It always returns nil; the signature matches the shape
+// authenticate.RefusalLogFlusher and policy.RefusalLogFlusher already use.
+//
+// It is safe to call at shutdown, including while redemptions are still in
+// flight, and safe to call more than once: a second flush with nothing new
+// pending reports nothing. Call it directly, or let
+// httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
+// was given (oidc.Manager.FlushRefusalLogs).
+func (h *HandoffManager) FlushRefusalLogs() error {
+	h.sampler.Flush()
+
+	return nil
+}

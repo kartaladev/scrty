@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -439,7 +440,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, append(oidcScenarios(), enrolmentScenarios()...)...)
+	}, slices.Concat(oidcScenarios(), enrolmentScenarios(), requestScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.

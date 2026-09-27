@@ -189,6 +189,25 @@ func (i *oidcInterceptor) wire(c *Chain) {
 	i.enforced = c.enforced
 }
 
+// flushRefusalLogs reports what the redemption source guard, the OIDC manager
+// (and through it a broker that can flush) and the handoff manager are holding
+// back. A login conveyed by WithCallbackSuccess has neither a guard nor a
+// handoff manager, so each is flushed only when it exists.
+func (i *oidcInterceptor) flushRefusalLogs() {
+	if i.guard != nil {
+		i.guard.Flush()
+	}
+
+	// Both are documented never to fail: their reporters only log.
+	if i.manager != nil {
+		_ = i.manager.FlushRefusalLogs()
+	}
+
+	if i.handoffs != nil {
+		_ = i.handoffs.FlushRefusalLogs()
+	}
+}
+
 // Intercept answers the federated-login endpoints and passes everything else
 // through.
 //

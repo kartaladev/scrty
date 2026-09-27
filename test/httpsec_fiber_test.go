@@ -45,6 +45,10 @@ func (fiberAdapter) Serve(
 			return fibersec.ErrorHandler(fc, err)
 		},
 
+		// Above the 32 MiB form cap, so the oversized-upload scenario reaches
+		// the chain instead of fiber's default 4 MiB refusal.
+		BodyLimit: 64 << 20,
+
 		// The four settings fiber needs before a forwarded address may be
 		// believed. The in-memory transport's peer is the trusted proxy, which
 		// is the same shape as a proxy reaching the app over a Unix socket.

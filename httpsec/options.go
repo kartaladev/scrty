@@ -646,9 +646,9 @@ type LoginOption func(*formLogin) error
 // The credential is bound from the parsed POST body and from nothing else. A
 // credential in the URL query never authenticates, because a query string is
 // already written into every access log, proxy log and browser history that saw
-// the URL, and into the Referer the next page sends. Request.FormValue keeps
-// net/http's own semantics, which merge the query into the form, for the
-// consumer interceptors that legitimately read a query parameter; only this
+// the URL, and into the Referer the next page sends. Request.FormValue looks in
+// the posted form first and falls back to the URL query, on every adapter, for
+// the consumer interceptors that legitimately read a query parameter; only this
 // binding narrows.
 //
 // Two narrowings follow from that, and both are deliberate:
@@ -1003,12 +1003,23 @@ type MFAOption func(*mfaInterceptor) error
 // EnableMFA verifies a second factor at the MFA slot, and holds every session
 // that owes one.
 //
-// Defaults: the endpoint answers POST requests on DefaultMFAVerifyPath and
-// reads the code from the "code" form field (WithMFAVerifyPath); failed
-// verifications are counted per user reference by an in-memory limiter of 5
-// failures per 15 minutes (WithMFAVerifyLimiter); and the records those
-// refusals write are sampled over one minute (WithMFALogInterval). A consumer
-// who wires nothing else gets all three.
+// Defaults: the endpoint answers POST requests on DefaultMFAVerifyPath
+// (WithMFAVerifyPath); failed verifications are counted per user reference by
+// an in-memory limiter of 5 failures per 15 minutes (WithMFAVerifyLimiter);
+// and the records those refusals write are sampled over one minute
+// (WithMFALogInterval). A consumer who wires nothing else gets all three.
+//
+// The endpoint reads only the "code" field of an
+// "application/x-www-form-urlencoded" POST body. A code in the URL query is
+// never read, because a URL reaches access logs, proxy logs and the Referer
+// header the next page sends. A body that carries no code, is not such a form
+// (multipart and JSON included) or does not parse is refused with
+// ErrCredentialsMissing (400), and one over 4 KiB with ErrRequestTooLarge
+// (413); neither is counted against the verification limiter, because no code
+// was presented. The limiter is still consulted first, so a user it already
+// refuses gets its refusal rather than 400. This is a limit, not a default:
+// there is no option to read another encoding; a consumer who must accept one
+// puts an interceptor of their own in front of the endpoint.
 //
 // The method is required, and one reporting no channel is refused here. An
 // empty channel equals the channel of an unrecorded first factor, so every

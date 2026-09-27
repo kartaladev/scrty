@@ -38,6 +38,9 @@ const sampleKeySeparator = "|"
 type sourceGuard interface {
 	Check(ctx context.Context, clientAddr string) (ratelimit.Source, error)
 	RecordFailure(ctx context.Context, s ratelimit.Source)
+
+	// Flush reports the refusal counts the guard's sampler is holding back.
+	Flush()
 }
 
 // The real guard satisfies the seam, so a change to either is a compile error

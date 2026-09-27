@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"slices"
 	"time"
 
@@ -152,6 +151,14 @@ func (i *enrolmentInterceptor) wire(c *Chain) {
 // read as though that user accounted for all of them.
 func (i *enrolmentInterceptor) logSampled(ctx context.Context, level slog.Level, key, msg string, attrs ...slog.Attr) {
 	logSampled(ctx, i.sampler, i.log, level, i.now(), key, msg, attrs...)
+}
+
+// flushRefusalLogs reports what the enrolment path's own sampler is holding
+// back.
+func (i *enrolmentInterceptor) flushRefusalLogs() {
+	if i.sampler != nil {
+		i.sampler.Flush()
+	}
 }
 
 // reportSuppressed writes what the sampler held back for key and is about to
@@ -855,53 +862,6 @@ const (
 	textMFAEmailCodeInvalid = "mfa: invalid code: the emailed code is wrong or expired"
 	textCredentialsMissing  = "httpsec: missing or unreadable login credentials"
 )
-
-// enrolmentBodyLimit is how many request body bytes an enrolment endpoint
-// reads. A code is a few bytes; nothing an endpoint reads comes near it.
-const enrolmentBodyLimit int64 = 4 << 10
-
-// postedField reads name from the POST body, and only from it.
-//
-// Request.FormValue carries net/http's semantics, which merge the URL query
-// into the form; a code in a URL has already reached access logs, proxy logs
-// and the Referer the next page sends. So the query is not consulted, and a
-// body is read as a form only when it declares
-// "application/x-www-form-urlencoded".
-//
-// A value the endpoint cannot read — a body that is not such a form, multipart
-// included, one that does not parse, or one without the field or with it empty
-// — is ErrCredentialsMissing, never an empty value: a code nobody could read
-// was not presented, so it must not be judged, or charged, as a wrong one. A
-// body over the limit is ErrRequestTooLarge.
-func postedField(r Request, name string) (string, error) {
-	body, err := r.Body(enrolmentBodyLimit)
-	if errors.Is(err, ErrRequestTooLarge) {
-		return "", ErrRequestTooLarge
-	}
-
-	if err != nil {
-		// The transport's failure, whose text is not the library's.
-		return "", refusedAs(ErrCredentialsMissing, textCredentialsMissing, err)
-	}
-
-	if !declaresForm(r.Header("Content-Type")) {
-		return "", ErrCredentialsMissing
-	}
-
-	values, err := url.ParseQuery(string(body))
-	if err != nil {
-		// A body that parses only in part yields nothing: a field read from
-		// the half that parsed is not what the client sent.
-		return "", ErrCredentialsMissing
-	}
-
-	value := values.Get(name)
-	if value == "" {
-		return "", ErrCredentialsMissing
-	}
-
-	return value, nil
-}
 
 // redeemEmailCode completes the enrolment with the code emailed when this
 // session's device was proven.

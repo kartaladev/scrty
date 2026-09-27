@@ -28,11 +28,38 @@ type Request interface {
 	QueryValues(name string) []string
 
 	Cookie(name string) (value string, ok bool)
+
+	// FormValue reads a submitted field. Every adapter the library provides
+	// looks in the posted form first and falls back to the URL query. The
+	// library's own credential reads never use FormValue; they read the body
+	// — apart from the OIDC authorization response, whose code and state the
+	// protocol delivers in the query (see oidc_callback.go).
+	//
+	// Only POST, PUT and PATCH carry a posted form, and only a body whose
+	// Content-Type parses as "application/x-www-form-urlencoded" or as
+	// "multipart/form-data" with a boundary. At most 10 MiB of a URL-encoded
+	// body and 32 MiB of a multipart one is read; a larger body, a content type
+	// that does not parse, or a body that does not parse as a whole answers
+	// from the query. A consumer that needs a field from a larger upload parses
+	// the body itself. A multipart read holds up to about twice its cap in
+	// memory while it parses, 64 MiB: the buffered body and the parts parsed
+	// from it. The posted form is parsed once per request.
+	//
+	// Reading a field never changes what Body answers: a later Body call
+	// applies its own limit to the whole body, and the handler still reads it.
 	FormValue(name string) string
 
-	// Body returns at most limit bytes of the request body, buffered so a
-	// later reader still sees it, and ErrRequestTooLarge when the body is
-	// longer. It never returns a body it did not fully read.
+	// Body returns the whole request body when it is at most limit bytes long,
+	// buffered so a later reader still sees it, and ErrRequestTooLarge when the
+	// body is longer. It never returns a body it did not fully read.
+	//
+	// Each call applies its own limit, whatever an earlier call read or
+	// refused: an earlier, larger read does not widen a later, smaller one,
+	// and a refused read leaves the body readable, so a later, larger read can
+	// succeed. The body is read from the network once.
+	//
+	// The returned bytes are the caller's own copy: changing them changes
+	// neither what a later call answers nor what the handler reads.
 	Body(limit int64) ([]byte, error)
 
 	// ClientIP is the address the request is attributed to, or "" when the

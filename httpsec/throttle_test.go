@@ -84,6 +84,7 @@ func TestSourceAddressRefusal(t *testing.T) {
 type throttleGuard interface {
 	Check(ctx context.Context, clientAddr string) (ratelimit.Source, error)
 	RecordFailure(ctx context.Context, s ratelimit.Source)
+	Flush()
 }
 
 // discardLogger keeps a test's own output clean: what these tests pin is the
@@ -275,6 +276,9 @@ func (g *recordingGuard) RecordFailure(ctx context.Context, _ ratelimit.Source) 
 	g.recordedCall++
 	g.recordedErr = ctx.Err()
 }
+
+// Flush holds nothing to report: the spy samples no refusals.
+func (g *recordingGuard) Flush() {}
 
 // TestRecordSourceFailureSurvivesDisconnect pins the guarantee behind the
 // "client disconnects after guessing" scenario: the attempt was made, so it is

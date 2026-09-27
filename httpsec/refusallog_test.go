@@ -12,11 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/logsample"
-	"github.com/kartaladev/scrty/policy"
 )
 
 // capturingHandler keeps every record written through it, so a test asserts on
@@ -319,93 +316,4 @@ func TestRefusalLogUnsampledDebug(t *testing.T) {
 		assert.Equal(t, slog.LevelDebug, r.Level, "record %d is not a debug record", i)
 		assert.False(t, hasAttr(r, "suppressed"), "record %d was sampled", i)
 	}
-}
-
-// TestFlushRefusalLogsScope pins that the chain flushes its own sampler and
-// nothing else.
-//
-// authenticate and policy each sample under their own option and expose their
-// own flush. Reaching into them from here would make one call govern three
-// subsystems, so what a consumer gets from this call would depend on which of
-// them they happened to wire — and a consumer who wanted only the chain's
-// counts would have no way to ask for them. The settled answer is that no
-// shared flusher is declared: the chain drains the sampler it owns, and the
-// counts the other subsystems hold stay theirs until the consumer flushes them.
-func TestFlushRefusalLogsScope(t *testing.T) {
-	t.Parallel()
-
-	// A policy that refuses every login it is given, wired into an engine the
-	// chain evaluates through: a magic-link login whose only enrolled second
-	// factor arrives by email is two factors on one channel, so it is refused
-	// and the refusal is sampled under the policy's own window.
-	method := NewMockMFAMethodLookup(gomock.NewController(t))
-	method.EXPECT().Channel().Return(factor.Email).AnyTimes()
-	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
-
-	var policyLog capturingHandler
-
-	p, err := policy.NewMFAPolicy(method,
-		policy.WithMFAPolicyLogger(slog.New(&policyLog)),
-		policy.WithMFAPolicyLogInterval(time.Hour))
-	require.NoError(t, err)
-
-	engine, err := policy.NewEngine(p)
-	require.NoError(t, err)
-
-	var (
-		chainLog capturingHandler
-		calls    []reporterCall
-	)
-
-	// The policy above can raise a second-factor challenge, so the chain must
-	// count its gate as enabled — a chain that marks a challenge nothing acts
-	// on is refused at construction. What enforces it is not this test's
-	// subject, so the gate is recorded without being registered.
-	c, err := httpsec.New(
-		httpsec.WithPolicyEngine(engine),
-		httpsec.EnableGateForTest(policy.ChallengeMFA),
-		httpsec.WithLogger(slog.New(&chainLog)),
-		httpsec.WithRefusalLogReporter(func(key string, suppressed int) {
-			calls = append(calls, reporterCall{key: key, suppressed: suppressed})
-		}),
-	)
-	require.NoError(t, err)
-
-	const chainKey = "login|198.51.100.7"
-
-	for range 4 {
-		httpsec.LogSampledForTest(t.Context(), httpsec.SamplerForTest(c), slog.New(&chainLog),
-			slog.LevelWarn, time.Now(), chainKey, "httpsec: source throttled")
-	}
-
-	login := &policy.Input{
-		User:        identity.UserID("u-1"),
-		FirstFactor: factor.MagicLink,
-		Now:         time.Now(),
-	}
-	for range 4 {
-		d := engine.EvaluatePhase(t.Context(), policy.PostAuthentication, login)
-		require.Equal(t, policy.Deny, d.Outcome, "the policy under test stopped refusing")
-	}
-
-	require.Len(t, policyLog.records(), 1,
-		"the policy wrote one record and is holding the other three")
-
-	c.FlushRefusalLogs()
-
-	require.Len(t, calls, 1, "the chain did not report the counts its own sampler held")
-	assert.Equal(t, reporterCall{key: chainKey, suppressed: 3}, calls[0])
-
-	assert.Len(t, policyLog.records(), 1,
-		"the chain drained a sampler that is not its own: the policy's held counts were written")
-
-	// The counts really were pending, so the assertion above is about what the
-	// chain left alone rather than about a policy that had nothing to report.
-	flusher, ok := p.(policy.RefusalLogFlusher)
-	require.True(t, ok, "the policy offers no way to report what it suppressed")
-	require.NoError(t, flusher.FlushRefusalLogs())
-
-	records := policyLog.records()
-	require.Len(t, records, 2, "the consumer's own flush released what the policy was holding")
-	assert.Equal(t, int64(3), suppressedCount(t, records[1]))
 }

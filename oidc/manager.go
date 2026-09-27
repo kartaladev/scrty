@@ -229,6 +229,26 @@ func (m *Manager) reportSuppressed(key string, suppressed int) {
 		slog.Int("suppressed", suppressed))
 }
 
+// FlushRefusalLogs reports every refusal record the manager's own sampler has
+// suppressed but not yet counted, then forgets every key. When the identity
+// broker the manager was built with can flush its own refusal logs, this
+// reaches it too and returns what its flush returns; a broker that cannot
+// flush is skipped, and the call still returns nil.
+//
+// It is safe to call at shutdown, including while logins are still in
+// flight, and safe to call more than once: a second flush with nothing new
+// pending reports nothing. Call it directly, or let
+// httpsec.Chain.FlushRefusalLogs reach it through EnableOIDCLogin.
+func (m *Manager) FlushRefusalLogs() error {
+	m.sampler.Flush()
+
+	if f, ok := m.broker.(interface{ FlushRefusalLogs() error }); ok {
+		return f.FlushRefusalLogs()
+	}
+
+	return nil
+}
+
 // Providers returns the registered provider names in registration order. The
 // returned slice is the caller's own.
 func (m *Manager) Providers() []string { return m.registry.Names() }

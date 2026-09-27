@@ -311,6 +311,13 @@ func (i *magicLinkInterceptor) readRequest(r Request) (address, next string) {
 	return address, next
 }
 
+// flushRefusalLogs reports what the redemption source guard is holding back.
+func (i *magicLinkInterceptor) flushRefusalLogs() {
+	if i.guard != nil {
+		i.guard.Flush()
+	}
+}
+
 // consume answers a POST to the consume path.
 //
 // The source is checked before the token is read, so a throttled scanner costs

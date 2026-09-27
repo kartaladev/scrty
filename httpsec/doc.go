@@ -39,18 +39,20 @@
 // refuses a caller that has just been authenticated, indistinguishably from a
 // missing credential.
 //
-// # The login binding reads the body, and only the body
+// # A credential field reads the body, and only the body
 //
-// Form login binds its credential from the parsed POST body. A credential in
-// the URL query never authenticates, because a query string reaches access
-// logs, proxy logs and the Referer header. Request.FormValue keeps net/http's
-// own semantics, which merge the query into the form, for consumer
-// interceptors that legitimately read a query parameter; only the login binding
-// narrows. The narrowing carries two consequences, both deliberate: a body is
-// read as a form only when it declares "application/x-www-form-urlencoded", so
-// a "multipart/form-data" login is refused with ErrCredentialsMissing rather
-// than parsed; and a urlencoded body that does not parse yields no credential
-// at all, rather than the pairs that did parse before the error.
+// Form login, the MFA verify endpoint and the MFA enrolment endpoints each
+// bind a credential field from the parsed POST body. A credential in the URL
+// query never authenticates, because a query string reaches access logs,
+// proxy logs and the Referer header. Request.FormValue looks in the posted
+// form first and falls back to the URL query, on every adapter, for consumer
+// interceptors that legitimately read a query parameter; only these
+// credential reads narrow to the body alone. The narrowing carries two
+// consequences, both deliberate: a body is read as a form only when it
+// declares "application/x-www-form-urlencoded", so a "multipart/form-data"
+// submission is refused with ErrCredentialsMissing rather than parsed; and a
+// urlencoded body that does not parse yields no credential at all, rather
+// than the pairs that did parse before the error.
 //
 // # Failing closed
 //

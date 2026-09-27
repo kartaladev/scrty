@@ -90,6 +90,13 @@ func (c *config) wireMFA() error {
 	})
 }
 
+// flushRefusalLogs reports what the verification throttle is holding back.
+func (i *mfaInterceptor) flushRefusalLogs() {
+	if i.throttle != nil {
+		_ = i.throttle.FlushRefusalLogs() // documented never to fail
+	}
+}
+
 // Intercept is both halves of the second factor: the verify endpoint on its
 // own path, and the gate for everything else.
 //
@@ -125,10 +132,16 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     it, counting it or verifying it would all be wrong. The challenge stays
 //     pending and nothing is recorded: the user has not failed anything, the
 //     deployment has.
-//  3. The throttle, before the code is checked, so guessing costs attempts
-//     rather than time.
-//  4. The code itself. A failure is recorded against the user and the error is
-//     returned unchanged, so a consumer sees mfa's own sentinel.
+//  3. The throttle, before the code is even read, so guessing costs attempts
+//     rather than time, and a locked-out user learns nothing from a body the
+//     endpoint cannot read.
+//  4. The code itself, read from the "code" field of a URL-encoded POST body
+//     and never from the URL. A body that carries none, is not such a form or
+//     does not parse is ErrCredentialsMissing, and one over the limit is
+//     ErrRequestTooLarge; neither is counted, because no code was presented.
+//     A code that was read and is wrong is recorded against the user, and the
+//     method's error is returned unchanged, so a consumer sees mfa's own
+//     sentinel.
 //  5. Success: resolve, rotate, publish, answer.
 func (i *mfaInterceptor) verify(ex *Exchange) error {
 	s := ex.Session
@@ -155,7 +168,12 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	if err := i.method.Verify(ctx, user, ex.Request.FormValue("code")); err != nil {
+	code, err := postedField(ex.Request, "code")
+	if err != nil {
+		return err
+	}
+
+	if err := i.method.Verify(ctx, user, code); err != nil {
 		i.throttle.RecordFailure(ctx, user)
 
 		return err

@@ -7,10 +7,12 @@ package fibersec_test
 // package's own source — so folding them in would hide what they check.
 
 import (
+	"bytes"
 	"context"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -47,6 +49,7 @@ type observed struct {
 	states   []string
 	errors   []string
 	form     string
+	formX    string
 	clientIP string
 
 	cookie      string
@@ -69,6 +72,7 @@ func observe(r httpsec.Request, limit int64) observed {
 		states:      r.QueryValues("state"),
 		errors:      r.QueryValues("error"),
 		form:        r.FormValue("username"),
+		formX:       r.FormValue("x"),
 		clientIP:    r.ClientIP(),
 		cookie:      cookie,
 		cookieFound: found,
@@ -166,6 +170,98 @@ func TestFiberExchange(t *testing.T) {
 			},
 		},
 		{
+			// FormValue's precedence: the posted form wins over the same field
+			// in the query, on every adapter the library provides.
+			name: "a posted form field wins over the same field in the query",
+			request: func(ctx context.Context) *http.Request {
+				req := bodyRequest(ctx, "x=body")
+				req.URL.RawQuery = "x=query"
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "body", got.formX)
+			},
+		},
+		{
+			name: "a field only in the query is read",
+			request: func(ctx context.Context) *http.Request {
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login?x=query", nil)
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "query", got.formX)
+			},
+		},
+		{
+			// fiber's own FormValue searches the query before a multipart body;
+			// this is the row that would catch a regression back to that order.
+			name: "a multipart form field wins over the same field in the query",
+			request: func(ctx context.Context) *http.Request {
+				body, contentType := multipartField("x", "body")
+
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/login?x=query", strings.NewReader(body))
+				req.Header.Set("Content-Type", contentType)
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "body", got.formX)
+			},
+		},
+		{
+			// fasthttp's posted arguments read the body whatever the method;
+			// only POST, PUT and PATCH carry a form, matching net/http.
+			name: "a GET with a body reads the query",
+			request: func(ctx context.Context) *http.Request {
+				req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/login?x=query", strings.NewReader("x=body"))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "query", got.formX)
+			},
+		},
+		{
+			name: "a DELETE with a body reads the query",
+			request: func(ctx context.Context) *http.Request {
+				req := httptest.NewRequestWithContext(ctx, http.MethodDelete, "/login?x=query", strings.NewReader("x=body"))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "query", got.formX)
+			},
+		},
+		{
+			name: "a PUT with a body reads the body",
+			request: func(ctx context.Context) *http.Request {
+				req := httptest.NewRequestWithContext(ctx, http.MethodPut, "/login?x=query", strings.NewReader("x=body"))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "body", got.formX)
+			},
+		},
+		{
+			name: "a PATCH with a body reads the body",
+			request: func(ctx context.Context) *http.Request {
+				req := httptest.NewRequestWithContext(ctx, http.MethodPatch, "/login?x=query", strings.NewReader("x=body"))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+				return req
+			},
+			assert: func(t *testing.T, got observed) {
+				assert.Equal(t, "body", got.formX)
+			},
+		},
+		{
 			name: "a body at the limit is accepted",
 			request: func(ctx context.Context) *http.Request {
 				return bodyRequest(ctx, strings.Repeat("a", int(loginBodyLimit)))
@@ -213,6 +309,240 @@ func TestFiberExchange(t *testing.T) {
 			tc.assert(t, got)
 		})
 	}
+}
+
+// TestFiberRequestFormValueEdges holds the rows on which the adapters once
+// disagreed, or on which a field read once changed what a later body read
+// sees. httpsec's TestHTTPRequestFormValueEdges carries the same rows with
+// the same answers: a row changed here is changed there.
+//
+// The app's BodyLimit is raised above the largest row, because fiber's own 4
+// MiB default would refuse those bodies before any handler ran.
+func TestFiberRequestFormValueEdges(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		request func() (body, contentType string)
+		act     func(r httpsec.Request) formRead
+		assert  func(t *testing.T, got formRead)
+	}
+
+	cases := []testCase{
+		{
+			name:    "an upper-case form media type is a form",
+			request: fixedBody("x=body", "APPLICATION/X-WWW-FORM-URLENCODED"),
+			act:     readFieldX,
+			assert:  answers("body"),
+		},
+		{
+			name:    "a form media type with parameters is a form",
+			request: fixedBody("x=body", "application/x-www-form-urlencoded; charset=UTF-8"),
+			act:     readFieldX,
+			assert:  answers("body"),
+		},
+		{
+			name:    "a media type that only begins with the form's is not a form",
+			request: fixedBody("x=body", "application/x-www-form-urlencodedX"),
+			act:     readFieldX,
+			assert:  answers("query"),
+		},
+		{
+			name:    "a content type that does not parse is not a form",
+			request: fixedBody("x=body", "application/x-www-form-urlencoded; bad"),
+			act:     readFieldX,
+			assert:  answers("query"),
+		},
+		{
+			name:    "a malformed escape in the field answers the query",
+			request: fixedBody("x=%zz", "application/x-www-form-urlencoded"),
+			act:     readFieldX,
+			assert:  answers("query"),
+		},
+		{
+			name:    "a malformed escape anywhere in the body answers the query",
+			request: fixedBody("y=%zz&x=body", "application/x-www-form-urlencoded"),
+			act:     readFieldX,
+			assert:  answers("query"),
+		},
+		{
+			name:    "a semicolon separator answers the query",
+			request: fixedBody("x=body;y=1", "application/x-www-form-urlencoded"),
+			act:     readFieldX,
+			assert:  answers("query"),
+		},
+		{
+			name: "an upper-case multipart media type is a form",
+			request: func() (string, string) {
+				body, contentType := multipartBody("x", "body", 0)
+				return body, strings.Replace(contentType, "multipart/form-data", "MULTIPART/FORM-DATA", 1)
+			},
+			act:    readFieldX,
+			assert: answers("body"),
+		},
+		{
+			name: "a multipart body without a boundary answers the query",
+			request: func() (string, string) {
+				body, _ := multipartBody("x", "body", 0)
+				return body, "multipart/form-data"
+			},
+			act:    readFieldX,
+			assert: answers("query"),
+		},
+		{
+			name:    "a field read after a refused body read still reads the field",
+			request: fixedBody("x=body&pad=aaaaaaaaaa", "application/x-www-form-urlencoded"),
+			act: func(r httpsec.Request) formRead {
+				_, err := r.Body(8)
+				return formRead{value: r.FormValue("x"), bodyErr: err}
+			},
+			assert: func(t *testing.T, got formRead) {
+				require.ErrorIs(t, got.bodyErr, httpsec.ErrRequestTooLarge)
+				assert.Equal(t, "body", got.value)
+			},
+		},
+		{
+			name:    "a field read does not widen a later body limit",
+			request: fixedBody("x=body&pad="+strings.Repeat("a", 8<<10), "application/x-www-form-urlencoded"),
+			act:     fieldThenBody(4 << 10),
+			assert: func(t *testing.T, got formRead) {
+				assert.Equal(t, "body", got.value)
+				require.ErrorIs(t, got.bodyErr, httpsec.ErrRequestTooLarge)
+				assert.Empty(t, got.body)
+			},
+		},
+		{
+			name:    "a larger body read then a smaller one is refused",
+			request: fixedBody("x=body&pad="+strings.Repeat("a", 8<<10), "application/x-www-form-urlencoded"),
+			act:     bodyTwice(false, 64<<10, 4<<10),
+			assert: func(t *testing.T, got formRead) {
+				require.NoError(t, got.firstBodyErr)
+				require.ErrorIs(t, got.bodyErr, httpsec.ErrRequestTooLarge)
+				assert.Empty(t, got.body)
+			},
+		},
+		{
+			name:    "a refused smaller body read then a larger one is read",
+			request: fixedBody("x=body&pad=aaaaaaaaaa", "application/x-www-form-urlencoded"),
+			act:     bodyTwice(false, 8, 1<<20),
+			assert: func(t *testing.T, got formRead) {
+				require.ErrorIs(t, got.firstBodyErr, httpsec.ErrRequestTooLarge)
+				require.NoError(t, got.bodyErr)
+				assert.Equal(t, "x=body&pad=aaaaaaaaaa", string(got.body))
+			},
+		},
+		{
+			name:    "a field read, a larger body read, then a smaller one is refused",
+			request: fixedBody("x=body&pad="+strings.Repeat("a", 8<<10), "application/x-www-form-urlencoded"),
+			act:     bodyTwice(true, 64<<10, 4<<10),
+			assert: func(t *testing.T, got formRead) {
+				assert.Equal(t, "body", got.value)
+				require.NoError(t, got.firstBodyErr)
+				require.ErrorIs(t, got.bodyErr, httpsec.ErrRequestTooLarge)
+				assert.Empty(t, got.body)
+			},
+		},
+		{
+			name:    "a URL-encoded body of exactly 10 MiB is read",
+			request: fixedBody(paddedForm(10<<20), "application/x-www-form-urlencoded"),
+			act:     fieldThenBody(64 << 20),
+			assert: func(t *testing.T, got formRead) {
+				assert.Equal(t, "body", got.value)
+				require.NoError(t, got.bodyErr)
+				assert.Len(t, got.body, 10<<20)
+			},
+		},
+		{
+			name:    "a URL-encoded body over 10 MiB answers the query and stays whole",
+			request: fixedBody(paddedForm(10<<20+1), "application/x-www-form-urlencoded"),
+			act:     fieldThenBody(64 << 20),
+			assert: func(t *testing.T, got formRead) {
+				assert.Equal(t, "query", got.value)
+				require.NoError(t, got.bodyErr)
+				assert.Len(t, got.body, 10<<20+1)
+			},
+		},
+		{
+			name: "a multipart body over 32 MiB answers the query and stays whole",
+			request: func() (string, string) {
+				return multipartBody("x", "body", 32<<20)
+			},
+			act: fieldThenBody(64 << 20),
+			assert: func(t *testing.T, got formRead) {
+				assert.Equal(t, "query", got.value)
+				require.NoError(t, got.bodyErr)
+				assert.Greater(t, len(got.body), 32<<20)
+				assert.True(t, bytes.HasSuffix(got.body, []byte("--\r\n")), "the upload's closing boundary was read")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				got  formRead
+				read bool
+			)
+
+			app := fiber.New(fiber.Config{BodyLimit: 64 << 20})
+			app.All("/form", func(fc fiber.Ctx) error {
+				got, read = tc.act(fibersec.NewRequest(fc)), true
+
+				return fc.SendStatus(http.StatusNoContent)
+			})
+
+			body, contentType := tc.request()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/form?x=query", strings.NewReader(body))
+			req.Header.Set("Content-Type", contentType)
+
+			res := serve(t, app, req)
+			require.Equal(t, http.StatusNoContent, res.status)
+			require.True(t, read, "the handler read the request")
+
+			tc.assert(t, got)
+		})
+	}
+}
+
+// TestFiberRequestFormParsedOnce pins that the posted form is parsed once per
+// request, as the net/http adapter parses it: a second field read, through the
+// same adapter or a new one over the same request, answers from the first
+// parse rather than parsing the body again, and the next request is parsed
+// afresh.
+func TestFiberRequestFormParsedOnce(t *testing.T) {
+	t.Parallel()
+
+	// Recorded in the handler and asserted out here: a failed assertion inside
+	// it would stop fiber's own goroutine rather than the test.
+	var first, again, fresh []string
+
+	app := fiber.New()
+	app.Post("/form", func(fc fiber.Ctx) error {
+		r := fibersec.NewRequest(fc)
+		first = append(first, r.FormValue("x"))
+
+		// A body the form was not parsed from: a second parse would read it.
+		fc.Request().SetBody([]byte("x=reparsed"))
+
+		again = append(again, r.FormValue("x"))
+		fresh = append(fresh, fibersec.NewRequest(fc).FormValue("x"))
+
+		return fc.SendStatus(http.StatusNoContent)
+	})
+
+	for _, body := range []string{"x=one", "x=two"} {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/form", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		res := serve(t, app, req)
+		require.Equal(t, http.StatusNoContent, res.status)
+	}
+
+	assert.Equal(t, []string{"one", "two"}, first, "each request's form is parsed from its own body")
+	assert.Equal(t, []string{"one", "two"}, again, "a second read through the same adapter answers the first parse")
+	assert.Equal(t, []string{"one", "two"}, fresh, "a read through a new adapter over the same request answers the first parse")
 }
 
 // TestFiberRequestBodyCopy pins that the body leaves the adapter copied.
@@ -456,4 +786,109 @@ func bodyRequest(ctx context.Context, body string) *http.Request {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	return req
+}
+
+// multipartField builds a one-field multipart body and the content type that
+// names its boundary.
+func multipartField(name, value string) (body, contentType string) {
+	var buf bytes.Buffer
+
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField(name, value); err != nil {
+		panic(err)
+	}
+
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+
+	return buf.String(), w.FormDataContentType()
+}
+
+// formRead is what one edge row read through the abstraction. It is recorded
+// inside the request and asserted after it, so the same rows run unchanged on
+// an adapter whose request is released when the request ends.
+type formRead struct {
+	value        string
+	body         []byte
+	bodyErr      error
+	firstBodyErr error
+}
+
+// bodyTwice reads field "x" when readField is set, then the body under first,
+// then under second, and reports the second read with the first's error.
+func bodyTwice(readField bool, first, second int64) func(r httpsec.Request) formRead {
+	return func(r httpsec.Request) formRead {
+		var value string
+		if readField {
+			value = r.FormValue("x")
+		}
+
+		_, firstErr := r.Body(first)
+		body, err := r.Body(second)
+
+		return formRead{value: value, body: body, bodyErr: err, firstBodyErr: firstErr}
+	}
+}
+
+// readFieldX reads field "x" and nothing else.
+func readFieldX(r httpsec.Request) formRead { return formRead{value: r.FormValue("x")} }
+
+// fieldThenBody reads field "x", then the body under limit.
+func fieldThenBody(limit int64) func(r httpsec.Request) formRead {
+	return func(r httpsec.Request) formRead {
+		value := r.FormValue("x")
+		body, err := r.Body(limit)
+
+		return formRead{value: value, body: body, bodyErr: err}
+	}
+}
+
+// answers asserts the field read answered want.
+func answers(want string) func(t *testing.T, got formRead) {
+	return func(t *testing.T, got formRead) {
+		t.Helper()
+		assert.Equal(t, want, got.value)
+	}
+}
+
+// fixedBody is a request body and content type given as they are.
+func fixedBody(body, contentType string) func() (string, string) {
+	return func() (string, string) { return body, contentType }
+}
+
+// paddedForm is a URL-encoded body of exactly size bytes whose first field is
+// x=body.
+func paddedForm(size int) string {
+	const head = "x=body&pad="
+
+	return head + strings.Repeat("a", size-len(head))
+}
+
+// multipartBody is a multipart body carrying field name=value and, when
+// fileSize is positive, a file part of fileSize bytes after it.
+func multipartBody(name, value string, fileSize int) (body, contentType string) {
+	var buf bytes.Buffer
+
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField(name, value); err != nil {
+		panic(err)
+	}
+
+	if fileSize > 0 {
+		part, err := w.CreateFormFile("upload", "upload.bin")
+		if err != nil {
+			panic(err)
+		}
+
+		if _, err := part.Write(bytes.Repeat([]byte("a"), fileSize)); err != nil {
+			panic(err)
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		panic(err)
+	}
+
+	return buf.String(), w.FormDataContentType()
 }

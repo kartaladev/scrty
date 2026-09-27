@@ -2,6 +2,8 @@ package fibersec
 
 import (
 	"bytes"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 
@@ -65,10 +67,123 @@ func (r request) QueryValues(name string) []string {
 	return values
 }
 
-// FormValue reads a submitted field. fiber searches the query string, the
-// posted form and any multipart form, in that order, and parses the multipart
-// form under the app's own BodyLimit.
-func (r request) FormValue(name string) string { return r.c.FormValue(name) }
+// The caps a field read parses a posted form under, the same as the net/http
+// adapter's: the standard library's own defaults for a URL-encoded body and
+// for a multipart one. A body over its cap is not parsed at all, and the
+// field is answered from the query.
+const (
+	formURLEncodedCap = 10 << 20 // 10 MiB
+	formMultipartCap  = 32 << 20 // 32 MiB
+)
+
+// FormValue reads a submitted field with the precedence every adapter shares:
+// the posted form first — URL-encoded or multipart — and the URL query only
+// when the posted form does not carry the field at all. A field present in
+// the posted form with an empty value still counts as present, and a field
+// repeated in it answers its first value. It deliberately does not call
+// fiber's own FormValue, which searches the query first.
+//
+// The posted form is read only for POST, PUT and PATCH, matching net/http:
+// fasthttp's posted arguments and parsed multipart form read the body whatever
+// the method, so without this check a GET or DELETE carrying a body would
+// answer from it instead of from the query, unlike every other adapter.
+//
+// A body is a posted form only when its Content-Type parses, by
+// mime.ParseMediaType, as "application/x-www-form-urlencoded" (in any case,
+// with any parameters) or as "multipart/form-data" with a boundary. At most 10
+// MiB of a URL-encoded body and 32 MiB of a multipart one is parsed, inside
+// the app's own BodyLimit, which fiber applies before any handler runs; a
+// larger body, a content type that does not parse, or a body that does not
+// parse as a whole — url.ParseQuery rejecting any one pair, a ';' separator
+// included, or a malformed multipart envelope — answers from the query, as if
+// no form had been posted. The body is judged as sent, not decoded from a
+// Content-Encoding, as the net/http adapter judges it.
+//
+// This is the net/http adapter's rule, and it is why the body is parsed here
+// with the standard library rather than through fasthttp's posted arguments,
+// which match the media type by case-sensitive prefix and accept malformed
+// pairs. Reading a field changes nothing Body later answers: Body checks each
+// caller's own limit.
+//
+// The posted form is parsed once per request, on the first field read, and
+// kept in the request's locals under a key only this package can name, so
+// every adapter over the same request answers from the same parse. A multipart
+// parse holds up to its 32 MiB cap of parts in memory on top of the body
+// fasthttp has already buffered, so up to about 64 MiB in all; an app that
+// cannot afford that per request lowers fiber's BodyLimit.
+func (r request) FormValue(name string) string {
+	switch r.c.Method() {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		if vs, ok := r.postedForm()[name]; ok && len(vs) > 0 {
+			return vs[0]
+		}
+	}
+
+	return string(r.c.Request().URI().QueryArgs().Peek(name))
+}
+
+// postedFormKey is the locals key the parsed posted form is kept under. Its
+// type is unexported, so no consumer's key can collide with it.
+type postedFormKey struct{}
+
+// parsedForm is a posted form already parsed, nil values included, so a body
+// that is not a form is not parsed again either.
+type parsedForm struct{ values url.Values }
+
+// postedForm is the posted form, parsed on the request's first field read.
+func (r request) postedForm() url.Values {
+	if p, ok := r.c.Locals(postedFormKey{}).(*parsedForm); ok {
+		return p.values
+	}
+
+	p := &parsedForm{values: r.parsePostedForm()}
+	r.c.Locals(postedFormKey{}, p)
+
+	return p.values
+}
+
+// parsePostedForm parses the body as the form its content type names, under
+// that form's cap, and answers nil for anything FormValue does not read as a
+// form. Every value is a copy, never a view into the buffer fasthttp reuses.
+func (r request) parsePostedForm() url.Values {
+	mediaType, params, err := mime.ParseMediaType(r.c.Get(fiber.HeaderContentType))
+	if err != nil {
+		return nil
+	}
+
+	body := r.c.Request().Body()
+
+	switch mediaType {
+	case "application/x-www-form-urlencoded":
+		if len(body) > formURLEncodedCap {
+			return nil
+		}
+
+		values, err := url.ParseQuery(string(body))
+		if err != nil {
+			return nil
+		}
+
+		return values
+
+	case "multipart/form-data":
+		boundary, ok := params["boundary"]
+		if !ok || len(body) > formMultipartCap {
+			return nil
+		}
+
+		form, err := multipart.NewReader(bytes.NewReader(body), boundary).ReadForm(formMultipartCap)
+		if err != nil {
+			return nil
+		}
+		defer func() { _ = form.RemoveAll() }()
+
+		return form.Value
+
+	default:
+		return nil
+	}
+}
 
 // Cookie cannot tell an empty cookie from an absent one: fiber answers "" for
 // both, and nothing in fiber's request API distinguishes them. The package
@@ -81,6 +196,11 @@ func (r request) Cookie(name string) (string, bool) {
 }
 
 // Body returns the body fiber has already buffered, bounded by limit.
+//
+// Each call applies its own limit, whatever an earlier call read or refused:
+// an earlier, larger read does not widen a later, smaller one, and a refused
+// read leaves the body as it was, so a later, larger read can succeed. fasthttp
+// has read the body from the network once, before any handler ran.
 //
 // It is a length check rather than a bounded read, because by the time a
 // handler runs fasthttp has read the whole request: there is nothing left to

@@ -12,7 +12,7 @@ A written record SHALL carry the count suppressed before it when that count is n
 - flush pending counts, for example at shutdown.
 
 Flushing the chain's refusal logs SHALL report the pending counts of every log sampler the chain holds, not only its own:
-- the samplers of the interceptors it built, including the second-factor verification throttle, the enrolment path and every per-flow source guard, whether the chain built the guard or was given it;
+- the samplers of the interceptors it built, including the second-factor verification throttle, the enrolment path and every per-flow source guard (the chain builds each guard itself; a consumer supplies at most the limiter behind it);
 - the samplers of every component it was given that can flush its refusal logs: the policies registered on its policy engine, the authenticators of form login and basic authentication, and the OIDC manager and handoff manager.
 
 A component the consumer holds but never gave the chain is not reached, and the chain's documentation SHALL say so and name the components that flush otherwise.
@@ -44,5 +44,5 @@ The interval SHALL govern only the chain's own records. It SHALL NOT change whic
 - **THEN** each of those components' reporters receives its pending count
 
 #### Scenario: Registered policy flushed
-- **WHEN** a lockout policy registered on the chain's engine has suppressed refusals and the chain's refusal logs are flushed
+- **WHEN** a second-factor policy registered on the chain's engine has suppressed refusals and the chain's refusal logs are flushed
 - **THEN** the policy's reporter receives its pending count

@@ -62,8 +62,9 @@ func NewEngine(policies ...Policy) (*Engine, error) {
 //
 // It is for use while the application is being wired, before it serves: it
 // writes the engine's registration index, which every evaluation reads, and is
-// not safe to call concurrently with EvaluatePhase. A consumer that must change
-// the rules of a running application builds a new Engine and swaps it in.
+// not safe to call concurrently with EvaluatePhase or FlushRefusalLogs. A
+// consumer that must change the rules of a running application builds a new
+// Engine and swaps it in.
 //
 // Register every policy before handing the engine to a component that checks
 // its wiring at construction, such as an HTTP security chain. Such a check can
@@ -147,6 +148,21 @@ func (e *Engine) DeclaredChallenges() []ChallengeKind {
 	}
 
 	return kinds
+}
+
+// FlushRefusalLogs asks every registered policy that keeps a refusal-log
+// sampler to report what it has suppressed. It walks e.asked, so a policy
+// registered for several phases is flushed once, not once per phase; a
+// policy that does not implement RefusalLogFlusher is skipped. It is safe to
+// call at shutdown while requests are still evaluated, since each policy's
+// own flush is documented to be, and safe to call more than once: a policy
+// with nothing new pending reports nothing.
+func (e *Engine) FlushRefusalLogs() {
+	for _, p := range e.asked {
+		if f, ok := p.(RefusalLogFlusher); ok {
+			_ = f.FlushRefusalLogs() // documented never to fail
+		}
+	}
 }
 
 // EvaluatePhase asks the policies that declared phase, in the order they were

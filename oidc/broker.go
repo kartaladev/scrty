@@ -253,6 +253,24 @@ func (b *Broker) reportSuppressed(key string, suppressed int) {
 		slog.Int("suppressed", suppressed))
 }
 
+// FlushRefusalLogs reports every refusal record the broker's sampler has
+// suppressed but not yet counted, then forgets every key, so the next
+// refusal of a reason already reported is written again rather than held
+// back. It always returns nil; the signature matches the shape
+// authenticate.RefusalLogFlusher and policy.RefusalLogFlusher already use.
+//
+// It is safe to call at shutdown, including while logins are still in
+// flight, and safe to call more than once: a second flush with nothing new
+// pending reports nothing. Call it directly, or let
+// httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
+// was given (oidc.Manager.FlushRefusalLogs), when the manager's broker is
+// this one.
+func (b *Broker) FlushRefusalLogs() error {
+	b.sampler.Flush()
+
+	return nil
+}
+
 // bcryptShaped matches a bcrypt hash anywhere in a string.
 var bcryptShaped = regexp.MustCompile(`\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}`)
 

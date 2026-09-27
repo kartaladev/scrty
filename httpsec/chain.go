@@ -62,32 +62,58 @@ type Chain struct {
 	sampler *logsample.Sampler
 }
 
-// FlushRefusalLogs reports every suppressed refusal count the chain is still
-// holding, for example from a shutdown hook, so counts held for a window that
-// will never close are not lost.
+// refusalLogFlusher is implemented by an interceptor that holds a component
+// keeping a refusal-log sampler of its own, so FlushRefusalLogs can reach it
+// without knowing which built-in it is.
+type refusalLogFlusher interface{ flushRefusalLogs() }
+
+// FlushRefusalLogs reports every suppressed refusal count the chain can reach,
+// for example from a shutdown hook, so counts held for a window that will never
+// close are not lost. Each component reports through its own reporter or
+// logger, exactly as its own flush does.
 //
-// It flushes the chain's own sampler, which every built-in refusal record the
-// chain writes itself goes through, and the enrolment path's, which
-// EnableMFAEnrolment samples under its own interval. Nothing else is flushed:
+// It reaches:
 //
-//   - The authenticate and policy components a consumer builds sample their
-//     own records under their own options, and each exposes its own flush
-//     (authenticate.RefusalLogFlusher, policy.RefusalLogFlusher). Reaching into
-//     them from here would make one call's meaning depend on which of them a
-//     consumer happened to wire, so a consumer who wants exact counts
-//     everywhere flushes each of them itself.
-//   - The verification throttle EnableMFA builds, and the per-source guards
-//     the built-in endpoints are wired with, keep samplers of their own that
-//     this call does not reach, and no other call does either. Their own
-//     reporters report what they held back as later records age it out, but
-//     whatever they still hold when the process stops is not reported.
+//  1. The chain's own sampler (WithRefusalLogInterval, WithRefusalLogReporter).
+//  2. The enrolment path of EnableMFAEnrolment.
+//  3. The verification throttle EnableMFA builds.
+//  4. The per-source guards of EnableAPIKey, EnableMagicLink and handoff
+//     redemption under EnableOIDCLogin, whether built over the default limiter
+//     or over one the consumer supplied.
+//  5. The authenticator given to EnableFormLogin or EnableBasicAuth, when it
+//     implements authenticate.RefusalLogFlusher.
+//  6. The oidc.Manager given to EnableOIDCLogin, which in turn flushes its
+//     identity broker when that can flush, and the oidc.HandoffManager given
+//     beside it, when there is one.
+//  7. The policy engine given to WithPolicyEngine, which flushes every
+//     registered policy implementing policy.RefusalLogFlusher, including one
+//     registered after the chain was built.
+//
+// The chain's own sampler is flushed first and the policy engine last; items 2
+// to 6 are reached through the registered built-ins holding them, in the order
+// the chain runs those built-ins.
+//
+// A flush reports what is pending and forgets it, so calling this more than
+// once, flushing a component directly as well, or flushing two chains that
+// share a component reports each suppressed count once.
+//
+// It does not reach:
+//
+//   - A component the consumer holds but never gave the chain, such as an
+//     authenticator used only outside it. The consumer flushes that itself.
+//   - A signingkey.KeyManager, which is not a chain dependency and flushes its
+//     own refusal logs when its background loops stop.
 func (c *Chain) FlushRefusalLogs() {
 	c.sampler.Flush()
 
 	for _, r := range c.registrations {
-		if i, ok := r.interceptor.(*enrolmentInterceptor); ok {
-			i.sampler.Flush()
+		if f, ok := r.interceptor.(refusalLogFlusher); ok {
+			f.flushRefusalLogs()
 		}
+	}
+
+	if c.engine != nil {
+		c.engine.FlushRefusalLogs()
 	}
 }
 

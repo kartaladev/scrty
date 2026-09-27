@@ -105,6 +105,14 @@ func (l *formLogin) wire(c *Chain) {
 	l.enforced = c.enforced
 }
 
+// flushRefusalLogs reports what the authenticator is holding back, when it
+// keeps refusal logs of its own; one that does not has nothing to report.
+func (l *formLogin) flushRefusalLogs() {
+	if f, ok := l.authn.(authenticate.RefusalLogFlusher); ok {
+		_ = f.FlushRefusalLogs() // documented never to fail: its reporter only logs
+	}
+}
+
 // Intercept answers a login on the configured path and passes everything else
 // through untouched.
 func (l *formLogin) Intercept(ex *Exchange, next Next) error {
@@ -194,13 +202,13 @@ func (l *formLogin) bind(r Request) (string, []byte, error) {
 // bindForm reads the credentials out of the parsed POST body, and only out of
 // it.
 //
-// Request.FormValue carries net/http's semantics, which merge the URL query
-// into the form. A credential accepted from a query string is a credential
-// already written into every access log, proxy log and browser history that
-// saw the URL, and into the Referer the next page sends. A login is a body, so
-// the query is not consulted here at all — Request.FormValue keeps its own
-// semantics for the consumer interceptors that legitimately read a query
-// parameter.
+// Request.FormValue looks in the posted form first and falls back to the URL
+// query, on every adapter. A credential accepted from a query string is a
+// credential already written into every access log, proxy log and browser
+// history that saw the URL, and into the Referer the next page sends. A login
+// is a body, so the query is not consulted here at all — this reader does not
+// use FormValue, unlike the consumer interceptors that legitimately read a
+// query parameter through it.
 //
 // A body that does not declare itself a form is left to bindJSON, and one that
 // does not parse yields no credential rather than half of one: a pair the
@@ -216,17 +224,6 @@ func (l *formLogin) bindForm(r Request, body []byte) (string, string) {
 	}
 
 	return values.Get(l.usernameParam), values.Get(l.passwordParam)
-}
-
-// declaresForm reports whether a content type names the URL-encoded form
-// media type, ignoring parameters such as a charset.
-func declaresForm(contentType string) bool {
-	media, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
-	}
-
-	return media == "application/x-www-form-urlencoded"
 }
 
 // bindJSON reads the credentials from a body that declares itself JSON.
