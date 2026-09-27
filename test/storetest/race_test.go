@@ -24,7 +24,10 @@ func TestRaceInputs(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name    string
+		name string
+		// rule is the race suite whose defaults apply; the zero rule is
+		// the single-winner races' (consume, insert, step, complete).
+		rule    raceRule
 		harness func(h *DurableHarness[struct{}])
 		race    func(r *Race[struct{}])
 		assert  func(t *testing.T, failures []string, p raceParams)
@@ -110,6 +113,57 @@ func TestRaceInputs(t *testing.T) {
 			race:    func(r *Race[struct{}]) { r.Racers = 1 },
 			assert:  failsWith("storetest: Race.Racers must be at least 2, or zero for the default of 8"),
 		},
+		{
+			name:    "a charge race runs 50 records of 20 racers within 30s by default",
+			rule:    chargeRule,
+			harness: func(h *DurableHarness[struct{}]) { h.PoolSize = 20 },
+			race:    func(*Race[struct{}]) {},
+			assert: func(t *testing.T, failures []string, p raceParams) {
+				assert.Empty(t, failures)
+				assert.Equal(t, raceParams{records: 50, racers: 20, timeout: 30 * time.Second}, p)
+			},
+		},
+		{
+			name:    "a charge race's default 20 racers fail a pool of 16",
+			rule:    chargeRule,
+			harness: noChange,
+			race:    func(*Race[struct{}]) {},
+			assert:  failsWith("storetest: a pool of 16 connections cannot exercise a race of 20 racers"),
+		},
+		{
+			name:    "a charge race's racers are overridable",
+			rule:    chargeRule,
+			harness: noChange,
+			race:    func(r *Race[struct{}]) { r.Racers = 6 },
+			assert: func(t *testing.T, failures []string, p raceParams) {
+				assert.Empty(t, failures)
+				assert.Equal(t, raceParams{records: 50, racers: 6, timeout: 30 * time.Second}, p)
+			},
+		},
+		{
+			name:    "a charge race of 5 racers fails naming its minimum of 6, as 5 racers cannot exceed 5 wins",
+			rule:    chargeRule,
+			harness: noChange,
+			race:    func(r *Race[struct{}]) { r.Racers = 5 },
+			assert:  failsWith("storetest: Race.Racers must be at least 6, or zero for the default of 20"),
+		},
+		{
+			name:    "a charge race's single racer fails naming its minimum of 6 and its default of 20",
+			rule:    chargeRule,
+			harness: noChange,
+			race:    func(r *Race[struct{}]) { r.Racers = 1 },
+			assert:  failsWith("storetest: Race.Racers must be at least 6, or zero for the default of 20"),
+		},
+		{
+			name:    "a completion race runs 8 racers by default, as the scenario of 8 callers does",
+			rule:    completeRule,
+			harness: noChange,
+			race:    func(*Race[struct{}]) {},
+			assert: func(t *testing.T, failures []string, p raceParams) {
+				assert.Empty(t, failures)
+				assert.Equal(t, raceParams{records: 50, racers: 8, timeout: 30 * time.Second}, p)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -121,7 +175,8 @@ func TestRaceInputs(t *testing.T) {
 			tc.race(&r)
 
 			var p raceParams
-			failures := runRecorded(t, func(tb testing.TB) { p = requireRace(tb, h, r) })
+			rule := tc.rule.withDefaults()
+			failures := runRecorded(t, func(tb testing.TB) { p = requireRace(tb, h, r, rule) })
 			tc.assert(t, failures, p)
 		})
 	}

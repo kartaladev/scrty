@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kartaladev/scrty/mfa"
 )
 
 // The race suites' defaults. Many records, not one: a single contended row
@@ -16,6 +19,11 @@ import (
 const (
 	defaultRaceRecords = 50
 	defaultRaceRacers  = 8
+
+	// defaultChargeRacers is RunChargeRace's default racer count: enough
+	// more than mfa.MaxEmailCodeFailures that a store charging past the cap
+	// under contention wins visibly more often than it may.
+	defaultChargeRacers = 20
 
 	// defaultRaceTimeout bounds a race whose Race.Timeout is zero. A healthy
 	// race of the default size ends in well under a second; the bound is
@@ -34,8 +42,11 @@ type Race[S any] struct {
 
 	// Racers is how many callers race for each record, and so how many
 	// connections the pool must be able to open at once
-	// (DurableHarness.PoolSize). Zero means the default of 8; one is refused,
-	// as a single caller races nobody.
+	// (DurableHarness.PoolSize). Zero means the race's default: 8, or 20 for
+	// RunChargeRace. Fewer racers than one more than the wins the race allows
+	// per record are refused, naming that minimum, as they could never show a
+	// store letting too many win: two for the single-winner races, and
+	// mfa.MaxEmailCodeFailures+1 for RunChargeRace.
 	Racers int
 
 	// Timeout bounds the racing. Every racer's context carries a deadline
@@ -61,6 +72,15 @@ type Race[S any] struct {
 	// existing or already accepted. Any error is unexpected and fails the
 	// suite. It runs on its own goroutine, so it must not call t.
 	Attempt func(ctx context.Context, s S, key string, racer int) (won bool, err error)
+
+	// Check, when set, asserts what record key holds once its race is over:
+	// the end state a race whose winners were counted right may still get
+	// wrong, such as a count that took the right wins but stored another
+	// number. It runs after every racer of every record has returned, one
+	// record after another, on the store Seed wrote through, and may fail t.
+	// It does not run when a racer was abandoned at the timeout, as that
+	// racer may still be writing. Nil means only the winners are checked.
+	Check func(ctx context.Context, t *testing.T, s S, key string)
 }
 
 // RunConsumeRace holds a single-use store, such as one-time tokens or
@@ -83,7 +103,7 @@ type Race[S any] struct {
 func RunConsumeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, "exactly one consumption wins per record", "consumption")
+	runRace(t, h, r, consumeRule)
 }
 
 // RunLinkInsertRace holds a store with unique inserts, such as external
@@ -97,7 +117,7 @@ func RunConsumeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 func RunLinkInsertRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, "exactly one insert wins per record", "insert")
+	runRace(t, h, r, insertRule)
 }
 
 // RunStepAcceptRace holds an MFA enrolment store to accepting each TOTP time
@@ -110,7 +130,83 @@ func RunLinkInsertRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 func RunStepAcceptRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 	t.Helper()
 
-	runRace(t, h, r, "exactly one acceptance of a step wins per record", "acceptance of a step")
+	runRace(t, h, r, stepRule)
+}
+
+// RunCompleteRace holds an MFA enrolment store to completing each enrolment
+// generation once: Racers callers complete the same proven generation at
+// once for each of Records independent pending enrolments, and exactly one
+// completion of each must succeed. Seed begins an enrolment on a generation
+// of its own and proves its device, and returns a key Attempt can recover
+// both the user and the generation from; Attempt returns what
+// mfa.DeviceProofStore.Complete reports. storefix.CompleteRace is such a race.
+//
+// Its inputs are checked as RunConsumeRace checks them.
+func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+	t.Helper()
+
+	runRace(t, h, r, completeRule)
+}
+
+// RunChargeRace holds an MFA enrolment store to capping the attempts charged
+// against one emailed code: Racers callers charge the same outstanding code
+// at once for each of Records independent proven enrolments, and exactly
+// mfa.MaxEmailCodeFailures charges of each must succeed, however many race.
+// Seed begins an enrolment, proves its device with an emailed code that is
+// still outstanding when Attempt charges it, and returns a key Attempt can
+// recover the user and the generation from; Attempt reports the bool
+// mfa.DeviceProofStore.ChargeEmailCode returns. storefix.ChargeRace is such
+// a race.
+//
+// Racers defaults to 20 here, so a zero Racers needs a pool of 20
+// connections, and must otherwise be at least mfa.MaxEmailCodeFailures+1, so
+// a store with no cap can win more charges than allowed. Its inputs are
+// otherwise checked as RunConsumeRace checks them.
+func RunChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+	t.Helper()
+
+	runRace(t, h, r, chargeRule)
+}
+
+// raceRule is what one race suite requires of each record: the subtest name
+// it reports under, the noun its failures call the operation, how many
+// racers of a record must win (zero means one), and the racer count a zero
+// Race.Racers means (zero means defaultRaceRacers).
+type raceRule struct {
+	name, noun string
+	wins       int
+	racers     int
+}
+
+// The rules of the race suites.
+var (
+	consumeRule  = raceRule{name: "exactly one consumption wins per record", noun: "consumption"}
+	insertRule   = raceRule{name: "exactly one insert wins per record", noun: "insert"}
+	stepRule     = raceRule{name: "exactly one acceptance of a step wins per record", noun: "acceptance of a step"}
+	completeRule = raceRule{name: "exactly one completion wins per record", noun: "completion"}
+	chargeRule   = raceRule{
+		name:   "exactly the allowed number of charges win per code",
+		noun:   "charge",
+		wins:   mfa.MaxEmailCodeFailures,
+		racers: defaultChargeRacers,
+	}
+)
+
+// minRacers is the fewest racers that can show rule broken: one more than
+// the wins it allows, so a store letting every racer win wins too many.
+func (rule raceRule) minRacers() int {
+	return rule.wins + 1
+}
+
+// withDefaults returns rule with its zero wins and racers made explicit.
+func (rule raceRule) withDefaults() raceRule {
+	if rule.wins == 0 {
+		rule.wins = 1
+	}
+	if rule.racers == 0 {
+		rule.racers = defaultRaceRacers
+	}
+	return rule
 }
 
 // raceParams are a race's record and racer counts and its timeout, with the
@@ -121,9 +217,10 @@ type raceParams struct {
 }
 
 // requireRace fails t at once when h or r is missing an input or the pool is
-// too narrow for the racers, and returns the race's parameters with the
-// defaults applied.
-func requireRace[S any](t testing.TB, h DurableHarness[S], r Race[S]) raceParams {
+// too narrow for the racers, or when r.Racers is below rule's minimum, and
+// returns the race's parameters with the defaults applied, a zero r.Racers
+// taking rule.racers. rule must have its defaults applied.
+func requireRace[S any](t testing.TB, h DurableHarness[S], r Race[S], rule raceRule) raceParams {
 	t.Helper()
 
 	h.requireWith(t,
@@ -140,9 +237,10 @@ func requireRace[S any](t testing.TB, h DurableHarness[S], r Race[S]) raceParams
 	}
 	switch {
 	case p.racers == 0:
-		p.racers = defaultRaceRacers
-	case p.racers < 2:
-		t.Fatalf("storetest: Race.Racers must be at least 2, or zero for the default of %d", defaultRaceRacers)
+		p.racers = rule.racers
+	case p.racers < rule.minRacers():
+		t.Fatalf("storetest: Race.Racers must be at least %d, or zero for the default of %d",
+			rule.minRacers(), rule.racers)
 	}
 	switch {
 	case p.timeout == 0:
@@ -169,14 +267,16 @@ type raceOutcome struct {
 // until all of them are blocked on one barrier, and releases them together
 // by closing it. Once every racer has returned, or twice the timeout has
 // passed, it fails for each record with any racer error or racer that did
-// not return in time, and for each record without exactly one winner,
-// calling the operation noun.
-func runRace[S any](t *testing.T, h DurableHarness[S], r Race[S], name, noun string) {
+// not return in time, and for each record whose winners are not exactly
+// rule.wins, calling the operation rule.noun. When every racer returned, it
+// then runs r.Check, if set, on each record through h.New's store.
+func runRace[S any](t *testing.T, h DurableHarness[S], r Race[S], rule raceRule) {
 	t.Helper()
 
-	p := requireRace(t, h, r)
+	rule = rule.withDefaults()
+	p := requireRace(t, h, r, rule)
 
-	t.Run(name, func(t *testing.T) {
+	t.Run(rule.name, func(t *testing.T) {
 		// Racers alternate between two instances on one database, by racer
 		// index, so single use must hold across replicas and not only
 		// under a lock of one instance. Records are seeded through the
@@ -225,13 +325,14 @@ func runRace[S any](t *testing.T, h DurableHarness[S], r Race[S], name, noun str
 		}()
 		abandon := time.NewTimer(2 * p.timeout)
 		defer abandon.Stop()
+		allReturned := false
 		select {
 		case <-finished:
+			allReturned = true
 		case <-abandon.C:
 		}
 
 		mu.Lock()
-		defer mu.Unlock()
 		for i, record := range outcomes {
 			for racer, o := range record {
 				if !o.returned {
@@ -239,14 +340,22 @@ func runRace[S any](t *testing.T, h DurableHarness[S], r Race[S], name, noun str
 						"the attempt had not returned by twice the race timeout of %s and was abandoned", p.timeout)
 				}
 			}
-			reportRecord(t, i, keys[i], noun, record)
+			reportRecord(t, i, keys[i], rule, record)
+		}
+		mu.Unlock()
+
+		if r.Check == nil || !allReturned {
+			return
+		}
+		for _, key := range keys {
+			r.Check(t.Context(), t, stores[0], key)
 		}
 	})
 }
 
 // reportRecord fails t for one record's outcomes: for any racer error, and
-// unless exactly one racer won.
-func reportRecord(t *testing.T, i int, key, noun string, record []raceOutcome) {
+// unless exactly rule.wins racers won.
+func reportRecord(t *testing.T, i int, key string, rule raceRule, record []raceOutcome) {
 	t.Helper()
 
 	wins, failed := 0, 0
@@ -268,10 +377,22 @@ func reportRecord(t *testing.T, i int, key, noun string, record []raceOutcome) {
 			i, key, failed, len(record), first)
 	}
 	switch {
-	case wins > 1:
-		t.Errorf("record %d (key %q): more than one successful %s: %d of %d racers won",
-			i, key, noun, wins, len(record))
+	case wins > rule.wins:
+		t.Errorf("record %d (key %q): more than %s successful %s: %d of %d racers won",
+			i, key, countWord(rule.wins), rule.noun, wins, len(record))
 	case wins == 0:
-		t.Errorf("record %d (key %q): no successful %s: none of %d racers won", i, key, noun, len(record))
+		t.Errorf("record %d (key %q): no successful %s: none of %d racers won", i, key, rule.noun, len(record))
+	case wins < rule.wins:
+		t.Errorf("record %d (key %q): fewer than %s successful %s: %d of %d racers won",
+			i, key, countWord(rule.wins), rule.noun, wins, len(record))
 	}
+}
+
+// countWord spells one as a word, as the single-winner races always have,
+// and any other count in digits.
+func countWord(n int) string {
+	if n == 1 {
+		return "one"
+	}
+	return strconv.Itoa(n)
 }

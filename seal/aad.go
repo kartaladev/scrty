@@ -1,6 +1,9 @@
 package seal
 
-import "github.com/kartaladev/scrty/identity"
+import (
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
+)
 
 // The additional authenticated data each sealed column is bound to. A value
 // opens only with the exact data it was sealed with, so a sealed value copied
@@ -20,6 +23,11 @@ const (
 
 	// AADMFASecretPrefix is followed by the enrolled user's reference.
 	AADMFASecretPrefix = "scrty/mfa:secret:" //nolint:gosec // G101: an additional-data prefix, not a credential
+
+	// AADMFAEmailCodePrefix is followed by the enrolment's generation, in its
+	// canonical 36-character text form, a ':' and the user reference, byte
+	// for byte.
+	AADMFAEmailCodePrefix = "scrty/mfa:email-code:"
 )
 
 // SigningKeyAAD returns the additional data a signing key's private material
@@ -33,4 +41,11 @@ func SigningKeyAAD(kid string) []byte {
 // never trimmed or case-folded.
 func MFASecretAAD(user identity.UserID) []byte {
 	return []byte(AADMFASecretPrefix + string(user))
+}
+
+// MFAEmailCodeAAD returns the additional data an emailed enrolment code is
+// sealed against. The fixed-length generation precedes the free-form user
+// reference, so no two (generation, user) pairs share additional data.
+func MFAEmailCodeAAD(gen id.ID, user identity.UserID) []byte {
+	return []byte(AADMFAEmailCodePrefix + gen.String() + ":" + string(user))
 }

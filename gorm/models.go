@@ -22,7 +22,9 @@ import (
 // cannot hold is an error from PostgreSQL, never truncated in Go.
 //
 // Times are stored UTC, truncated to the microsecond (see storekit.Time), and
-// a nullable time is a *time.Time, NULL for nil.
+// a nullable time is a *time.Time, NULL for nil. A nullable identifier is an
+// *id.ID, NULL for nil: id.ID itself writes the nil identifier as the all-zero
+// UUID, not NULL, and cannot scan NULL.
 
 // sessionRow is a row of the sessions table. The session identifier is never
 // stored: IDDigest is its SHA-256, and ID a primary key the store mints.
@@ -43,6 +45,11 @@ type sessionRow struct {
 	ExternalSessionID     string     `gorm:"column:external_session_id;type:text"`
 	ExternalIDToken       string     `gorm:"column:external_id_token;type:text"`
 	Data                  string     `gorm:"column:data;type:jsonb"`
+	// EnrolmentOriginDeadline is NULL for a session not marked
+	// enrolment-only, and EnrolmentGeneration NULL for one that has begun
+	// no enrolment.
+	EnrolmentOriginDeadline *time.Time `gorm:"column:enrolment_origin_deadline;type:timestamptz"`
+	EnrolmentGeneration     *id.ID     `gorm:"column:enrolment_generation;type:uuid"`
 }
 
 // TableName is the table the migration creates for sessions.
@@ -93,14 +100,22 @@ func (signingKeyRow) TableName() string { return "signing_keys" }
 
 // enrolmentRow is a row of the mfa_enrolments table, one per user, keyed by a
 // primary key the store mints. Secret is the sealed secret, base64url-encoded;
-// a nil ConfirmedAt is a pending enrolment.
+// a nil ConfirmedAt is a pending enrolment. The enrolment path's fields are
+// nullable: a nil Generation is an enrolment with no generation, which no
+// conditional write matches; a nil DeviceProvenAt an unproven device; a nil
+// EmailCode, the sealed code base64url-encoded, no outstanding code.
 type enrolmentRow struct {
-	ID          id.ID      `gorm:"column:id;type:uuid;primaryKey"`
-	UserID      string     `gorm:"column:user_id;type:text"`
-	Secret      string     `gorm:"column:secret;type:text"`
-	ConfirmedAt *time.Time `gorm:"column:confirmed_at;type:timestamptz"`
-	LastStep    int64      `gorm:"column:last_step;type:bigint"`
-	CreatedAt   time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
+	ID                id.ID      `gorm:"column:id;type:uuid;primaryKey"`
+	UserID            string     `gorm:"column:user_id;type:text"`
+	Secret            string     `gorm:"column:secret;type:text"`
+	ConfirmedAt       *time.Time `gorm:"column:confirmed_at;type:timestamptz"`
+	LastStep          int64      `gorm:"column:last_step;type:bigint"`
+	CreatedAt         time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
+	Generation        *id.ID     `gorm:"column:generation;type:uuid"`
+	DeviceProvenAt    *time.Time `gorm:"column:device_proven_at;type:timestamptz"`
+	EmailCode         *string    `gorm:"column:email_code;type:text"`
+	EmailCodeUntil    *time.Time `gorm:"column:email_code_until;type:timestamptz"`
+	EmailCodeAttempts int64      `gorm:"column:email_code_attempts;type:integer"`
 }
 
 // TableName is the table the migration creates for MFA enrolments.

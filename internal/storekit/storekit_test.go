@@ -146,18 +146,14 @@ func TestCheckSession(t *testing.T) {
 			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
-			name: "the enrolment-origin marker",
-			sess: session.Session{UserID: "alice", EnrolmentOriginDeadline: now},
-			assert: func(t *testing.T, err error) {
-				require.EqualError(t, err, "the enrolment-origin marker is not supported by this store")
-			},
+			name:   "a session carrying the enrolment-origin marker is accepted",
+			sess:   session.Session{UserID: "alice", EnrolmentOriginDeadline: now},
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
-			name: "the enrolment generation",
-			sess: session.Session{UserID: "alice", EnrolmentGeneration: id.MustParse("0190a6f1-7c3b-7e2a-9a4d-3c1f2b5e6d7f")},
-			assert: func(t *testing.T, err error) {
-				require.EqualError(t, err, "the enrolment generation is not supported by this store")
-			},
+			name:   "a session carrying an enrolment generation is accepted",
+			sess:   session.Session{UserID: "alice", EnrolmentGeneration: id.MustParse("0190a6f1-7c3b-7e2a-9a4d-3c1f2b5e6d7f")},
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "an unstorable column",
@@ -184,24 +180,15 @@ func TestCheckSession(t *testing.T) {
 			},
 		},
 		{
-			name: "the marker together with the generation and a bad column names the marker",
+			name: "the marker and the generation together with a bad column name the column",
 			sess: session.Session{
 				UserID:                  "a\x00b",
 				EnrolmentOriginDeadline: now,
 				EnrolmentGeneration:     id.MustParse("0190a6f1-7c3b-7e2a-9a4d-3c1f2b5e6d7f"),
 			},
 			assert: func(t *testing.T, err error) {
-				require.EqualError(t, err, "the enrolment-origin marker is not supported by this store")
-			},
-		},
-		{
-			name: "the generation together with a bad column names the generation",
-			sess: session.Session{
-				UserID:              "a\x00b",
-				EnrolmentGeneration: id.MustParse("0190a6f1-7c3b-7e2a-9a4d-3c1f2b5e6d7f"),
-			},
-			assert: func(t *testing.T, err error) {
-				require.EqualError(t, err, "the enrolment generation is not supported by this store")
+				require.EqualError(t, err,
+					"the user reference holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
 			},
 		},
 		{

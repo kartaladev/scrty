@@ -40,6 +40,12 @@ func WithPeriod(d time.Duration) TOTPOption {
 // It exists for tests, which must pin the time step a code belongs to, and for
 // a deployment whose notion of now comes from somewhere other than the process
 // clock.
+//
+// This clock also sets an emailed enrolment code's expiry and the instant each
+// attempt is charged at. A sealing enrolment store decides by its own clock
+// whether that code has expired and is no longer opened (seal.WithClock, and
+// WithClock on the durable stores): give it the same clock, or a store clock
+// running ahead reads a live code as none and a correct code is refused.
 func WithClock(now func() time.Time) TOTPOption {
 	return func(t *TOTP) { t.now = now }
 }

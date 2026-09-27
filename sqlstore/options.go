@@ -108,8 +108,14 @@ func WithIDGenerator(g id.Generator) Option {
 
 // WithClock replaces the time source of the stores that judge time themselves:
 // the session store (expiry, counts and DeleteExpired), the OIDC flow store
-// (the expiry condition of Complete) and the one-time token store's reaper.
-// The default is time.Now.
+// (the expiry condition of Complete), the one-time token store's reaper, and
+// the MFA enrolment store (whether an emailed code's EmailCodeUntil has
+// passed, so it is no longer opened on read). The default is time.Now.
+//
+// For the MFA enrolment store, give it the same clock as the enrolling method
+// (mfa.WithClock for TOTP), which sets the code's expiry and charges each
+// attempt: a store clock running ahead reads a live code as none, and a
+// correct code is then charged an attempt and refused.
 //
 // Given to any other store, which takes its times from the caller, it is a
 // configuration error. A nil clock is a configuration error rather than a

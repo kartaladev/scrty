@@ -51,21 +51,33 @@ type provingEnrolmentStore struct {
 	proofs mfa.DeviceProofStore
 }
 
-// NewEnrolmentStore wraps inner so an MFA secret is sealed by c before it is
-// stored and opened when it is read. The secret is the only field sealed:
-// every other field and every other operation passes straight through, and
-// the secret inner receives is the raw sealed value, which a store with a
-// text column encodes itself.
+// NewEnrolmentStore wraps inner so an MFA secret, and the code emailed on the
+// enrolment path, are sealed by c before they are stored and opened when they
+// are read. They are the only fields sealed: every other field and every other
+// operation passes straight through, and the values inner receives are the
+// raw sealed bytes, which a store with a text column encodes itself.
 //
 // The secret is bound to the user reference (MFASecretAAD), byte for byte, so
-// a secret copied to another user's enrolment will not open there.
+// a secret copied to another user's enrolment will not open there. The
+// emailed code is bound to the enrolment's generation and the user reference
+// (MFAEmailCodeAAD), so a code copied to another user, into the secret, or
+// carried into a later generation will not open there either.
 //
-// Get fails closed: a secret that will not open is returned as an error with
-// the found flag false, never as an absent enrolment, which a caller would
-// read as "no second factor" and let the login through on its first. The
-// error matches the cipher's own (ErrDecryptionFailed or ErrUnknownKeyID
-// from the default cipher) through errors.Is and errors.As. An absent
-// enrolment is absent without consulting the cipher.
+// Get fails closed: a secret or an unexpired emailed code that will not open
+// is returned as an error with the found flag false, never as an absent
+// enrolment, which a caller would read as "no second factor" and let the
+// login through on its first. The error matches the cipher's own
+// (ErrDecryptionFailed or ErrUnknownKeyID from the default cipher) through
+// errors.Is and errors.As. An absent enrolment is absent without consulting
+// the cipher.
+//
+// An emailed code whose EmailCodeUntil has passed (the store's clock is at or
+// after it) is not opened: Get returns it as no code, with EmailCodeUntil and
+// every other field kept, so the enrolment still records that a code was
+// issued. An expired code can no longer be charged or redeemed, and an
+// abandoned one stays stored; opening it would let an ordinary key rotation
+// that removes its key fail every read of the user's enrolment. The clock
+// defaults to time.Now; WithClock replaces it.
 //
 // A failure of c or of inner is returned behind fixed text that names no user
 // and carries none of the failing error's text, and still matches that error
@@ -75,16 +87,23 @@ type provingEnrolmentStore struct {
 // By default a read that opens a secret under a key other than the active
 // one re-seals it under the active key and hands the old and new values to r.
 // A failed re-seal, or a cipher that cannot say which key is active, never
-// fails the read. WithResealOnRead(false) turns re-sealing off.
+// fails the read. WithResealOnRead(false) turns re-sealing off. The emailed
+// code is never re-sealed: it lives for minutes, so a code under a retired key
+// still in the ring opens and is left as stored, and once it expires it is no
+// longer opened at all. A key removed from the ring while a code it sealed is
+// still unexpired fails that user's reads closed until the code expires or a
+// new begin replaces it; wait out the code lifetime after retiring a key
+// before removing it.
 //
 // When inner also implements mfa.DeviceProofStore, so does the returned store,
-// passing those operations through, so the enrolment path stays available.
+// sealing ProveDevice's code and passing the rest through, so the enrolment
+// path stays available. A cipher failure sealing the code records no proof.
 // When inner does not, neither does the returned store.
 //
 // A nil inner store or a nil cipher, typed nil included, or a nil option is a
 // configuration error matching ErrInvalidConfiguration, and so is a nil r
-// unless re-sealing on read is turned off. With re-sealing off, r is not used
-// and may be nil.
+// unless re-sealing on read is turned off, and a nil clock given to
+// WithClock. With re-sealing off, r is not used and may be nil.
 func NewEnrolmentStore(
 	inner mfa.EnrolmentStore, r EnrolmentResealer, c Cipher, opts ...Option,
 ) (mfa.EnrolmentStore, error) {
@@ -95,7 +114,7 @@ func NewEnrolmentStore(
 		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no cipher", ErrInvalidConfiguration)
 	}
 
-	o, err := newOptions("MFA enrolment", !nilcheck.IsNil(r), opts)
+	o, err := newOptions("MFA enrolment", !nilcheck.IsNil(r), true, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +127,8 @@ func NewEnrolmentStore(
 	return s, nil
 }
 
-// Get reads the user's enrolment and opens its secret.
+// Get reads the user's enrolment and opens its secret and its unexpired
+// emailed code.
 func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
 	e, found, err := s.inner.Get(ctx, user)
 	if err != nil {
@@ -131,6 +151,22 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	}
 
 	e.Secret = plaintext
+
+	switch {
+	case e.EmailCode == nil:
+	case !s.opts.now().Before(e.EmailCodeUntil):
+		// Expired: it can no longer be charged or redeemed, and completion
+		// reads EmailCodeUntil, not the code. Opening it would let a key
+		// removed since it was sealed fail every read of an abandoned code.
+		e.EmailCode = nil
+	default:
+		code, _, err := s.cipher.Open(e.EmailCode, MFAEmailCodeAAD(e.Generation, user))
+		if err != nil {
+			return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored emailed MFA code could not be opened")
+		}
+
+		e.EmailCode = code
+	}
 
 	return e, true, nil
 }
@@ -179,11 +215,22 @@ func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error
 	return enrolmentFailed(s.inner.Delete(ctx, user), "seal: the inner store could not delete the MFA enrolment")
 }
 
-// ProveDevice passes through to the inner store's device proofs.
+// ProveDevice seals the emailed code, when there is one, against the
+// generation and the user, and passes the proof to the inner store's device
+// proofs. Nothing is stored when sealing fails.
 func (s provingEnrolmentStore) ProveDevice(
 	ctx context.Context, user identity.UserID, gen id.ID,
 	step int64, code []byte, codeUntil, at time.Time,
 ) (bool, error) {
+	if code != nil {
+		sealed, err := s.cipher.Seal(code, MFAEmailCodeAAD(gen, user))
+		if err != nil {
+			return false, diag.Wrap(err, "seal: the emailed MFA code could not be sealed")
+		}
+
+		code = sealed
+	}
+
 	ok, err := s.proofs.ProveDevice(ctx, user, gen, step, code, codeUntil, at)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not record the device proof")

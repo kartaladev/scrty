@@ -51,6 +51,12 @@ type Enrolment struct {
 	// Complete, Confirm or PutPending: never on expiry or when its attempts
 	// run out. An expired or exhausted code stays, and ChargeEmailCode refuses
 	// it.
+	//
+	// A reader may still see nil for a code the store keeps: a sealing store
+	// (seal.NewEnrolmentStore) does not open a code whose EmailCodeUntil has
+	// passed, and reads it back as nil with EmailCodeUntil kept. That the
+	// proof issued a code is therefore recorded by EmailCodeUntil, never by
+	// this field, and a caller deciding whether a code was issued reads that.
 	EmailCode []byte
 
 	// EmailCodeUntil is when EmailCode stops being accepted. Non-zero records

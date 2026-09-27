@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 )
 
@@ -35,6 +36,17 @@ import (
 // reports false, each without writing, so of concurrent verifications of one
 // step exactly one succeeds, on this process or on another replica.
 //
+// The returned store implements mfa.DeviceProofStore, so the enrolment path
+// runs over it. PutPending starts the enrolment's generation, clearing any
+// device proof and emailed code; ProveDevice, Complete and ChargeEmailCode are
+// each one conditional statement with every condition in its WHERE clause, so
+// of concurrent completions of one generation exactly one succeeds, and of
+// concurrent charges against one code no more than mfa.MaxEmailCodeFailures
+// do. The nil generation is bound as NULL, stored and compared, so it matches
+// no enrolment, not even one stored without a generation. The emailed code is
+// sealed with c too, bound to the user reference and the generation, in its
+// own base64url column; it is never re-sealed on read.
+//
 // By default a read re-seals, under c's active key, a secret that opened under
 // a retired one, with one conditional update that replaces the stored value
 // only while it still holds the value that was read, so a new pending
@@ -42,23 +54,23 @@ import (
 // transaction re-seals nothing, since a failed write there would abort the
 // caller's transaction. WithResealOnRead(false) turns re-sealing off.
 //
+// A read judges an emailed code's expiry with the store's clock: a code whose
+// EmailCodeUntil has passed is not opened, and is returned as no code, with
+// EmailCodeUntil kept. The default is time.Now; WithClock replaces it.
+//
 // It honours WithTxResolver, WithIDGenerator (default id.NewV7Generator, for
-// the rows' primary keys) and WithResealOnRead (default on), and refuses any
-// other option.
+// the rows' primary keys), WithClock (default time.Now) and WithResealOnRead
+// (default on), and refuses any other option.
 //
 // Limits, stated:
-//   - The enrolment path's fields (the generation, the device-proof time and
-//     the emailed code with its expiry and attempt count) have no columns
-//     yet. The store neither stores nor returns them, and does not implement
-//     mfa.DeviceProofStore, so the enrolment path is refused at construction
-//     over it rather than running without its proofs.
 //   - PostgreSQL text cannot hold a NUL byte or invalid UTF-8. A begin for a
 //     user reference holding either is refused with an error that names the
 //     field, never the value, and nothing is written; a read, confirmation,
-//     step or deletion for such a reference matches nothing.
+//     step, device proof, completion, charge or deletion for such a
+//     reference matches nothing.
 //   - Stored times are UTC, truncated to the microsecond.
 func NewEnrolmentStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (mfa.EnrolmentStore, error) {
-	cfg, err := newConfig(pool, opts, optIDGenerator, optResealOnRead)
+	cfg, err := newConfig(pool, opts, optIDGenerator, optClock, optResealOnRead)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +79,7 @@ func NewEnrolmentStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (mfa.E
 	}
 
 	inner := &enrolmentStore{c: cfg}
-	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithResealOnRead(cfg.resealOnRead))
+	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithClock(cfg.now), seal.WithResealOnRead(cfg.resealOnRead))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
@@ -80,7 +92,8 @@ func NewEnrolmentStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (mfa.E
 // is why it is not exported.
 type enrolmentStore struct{ c *config }
 
-// Get returns the user's enrolment, its secret still sealed.
+// Get returns the user's enrolment, its secret and emailed code still
+// sealed.
 func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
 	const op = "get MFA enrolment"
 
@@ -92,9 +105,15 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		secret    string
 		confirmed pgtype.Timestamptz
 		created   time.Time
+		gen       pgtype.UUID
+		proven    pgtype.Timestamptz
+		code      pgtype.Text
+		codeUntil pgtype.Timestamptz
+		attempts  int64
 		e         = mfa.Enrolment{User: user}
 	)
-	err := s.c.queryRow(ctx, op, pgschema.EnrolmentGet, []any{string(user)}, &secret, &confirmed, &e.LastStep, &created)
+	err := s.c.queryRow(ctx, op, pgschema.EnrolmentGet, []any{string(user)},
+		&secret, &confirmed, &e.LastStep, &created, &gen, &proven, &code, &codeUntil, &attempts)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return mfa.Enrolment{}, false, nil
 	}
@@ -106,15 +125,28 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	if err != nil {
 		return mfa.Enrolment{}, false, failed(op, err)
 	}
+	if code.Valid {
+		if e.EmailCode, err = storekit.SecretFromText(code.String); err != nil {
+			return mfa.Enrolment{}, false, failed(op, err)
+		}
+	}
 	if e.ConfirmedAt, err = fromNull(confirmed); err != nil {
 		return mfa.Enrolment{}, false, failed(op, err)
 	}
+	if e.DeviceProvenAt, err = fromNull(proven); err != nil {
+		return mfa.Enrolment{}, false, failed(op, err)
+	}
+	if e.EmailCodeUntil, err = fromNull(codeUntil); err != nil {
+		return mfa.Enrolment{}, false, failed(op, err)
+	}
 	e.Secret, e.CreatedAt = sealed, created.UTC()
+	e.Generation, e.EmailCodeAttempts = nullableID(gen), int(attempts)
 
 	return e, true, nil
 }
 
-// PutPending stores e as the user's pending enrolment, refusing with
+// PutPending stores e as the user's pending enrolment on e's generation,
+// clearing any device proof and emailed code, refusing with
 // mfa.ErrAlreadyEnrolled when a confirmed one exists.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
 	const op = "store pending MFA enrolment"
@@ -128,7 +160,8 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 	}
 
 	return s.c.execOrRefuse(ctx, op, mfa.ErrAlreadyEnrolled, pgschema.EnrolmentPutPending,
-		uuidArg(rowID), string(e.User), storekit.SecretText(e.Secret), storekit.Time(e.CreatedAt))
+		uuidArg(rowID), string(e.User), storekit.SecretText(e.Secret), storekit.Time(e.CreatedAt),
+		nullID(e.Generation))
 }
 
 // Confirm confirms the user's pending enrolment at at, recording step.
@@ -165,6 +198,62 @@ func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error
 	return err
 }
 
+// ProveDevice records the device proof of the user's enrolment on gen, with
+// its emailed code, as it is given (sealed by the wrapper), in one
+// conditional update.
+func (s *enrolmentStore) ProveDevice(
+	ctx context.Context, user identity.UserID, gen id.ID,
+	step int64, code []byte, codeUntil, at time.Time,
+) (bool, error) {
+	if !storekit.Storable(string(user)) {
+		return false, nil
+	}
+
+	var stored any
+	if code != nil {
+		stored = storekit.SecretText(code)
+	}
+	n, err := s.c.exec(ctx, "prove MFA device", pgschema.EnrolmentProveDevice,
+		string(user), nullID(gen), step, stored, nullTs(codeUntil), storekit.Time(at))
+
+	return n > 0, err
+}
+
+// Complete confirms the user's proven enrolment on gen at at, in one
+// conditional update.
+func (s *enrolmentStore) Complete(ctx context.Context, user identity.UserID, gen id.ID, at time.Time) (bool, error) {
+	if !storekit.Storable(string(user)) {
+		return false, nil
+	}
+
+	n, err := s.c.exec(ctx, "complete MFA enrolment", pgschema.EnrolmentComplete,
+		string(user), nullID(gen), storekit.Time(at))
+
+	return n > 0, err
+}
+
+// ChargeEmailCode charges one attempt against the emailed code of the user's
+// enrolment on gen at at, in one conditional update that returns the count.
+func (s *enrolmentStore) ChargeEmailCode(
+	ctx context.Context, user identity.UserID, gen id.ID, at time.Time,
+) (int, bool, error) {
+	if !storekit.Storable(string(user)) {
+		return 0, false, nil
+	}
+
+	var attempts int64
+	err := s.c.queryRow(ctx, "charge emailed MFA code", pgschema.EnrolmentChargeEmailCode,
+		[]any{string(user), nullID(gen), storekit.Time(at), mfa.MaxEmailCodeFailures}, &attempts)
+	if errors.Is(err, pgxv5.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+
+	return int(attempts), true, nil
+}
+
 // ResealEnrolmentSecret replaces the user's secret with resealed only while
 // it still holds old. Inside a caller's transaction it writes nothing.
 func (s *enrolmentStore) ResealEnrolmentSecret(ctx context.Context, user identity.UserID, old, resealed []byte) error {
@@ -174,5 +263,6 @@ func (s *enrolmentStore) ResealEnrolmentSecret(ctx context.Context, user identit
 
 var (
 	_ mfa.EnrolmentStore     = (*enrolmentStore)(nil)
+	_ mfa.DeviceProofStore   = (*enrolmentStore)(nil)
 	_ seal.EnrolmentResealer = (*enrolmentStore)(nil)
 )

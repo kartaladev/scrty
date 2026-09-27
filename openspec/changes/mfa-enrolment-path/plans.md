@@ -8,14 +8,14 @@
 
 **Tech Stack:** Go 1.27, the core module `github.com/kartaladev/scrty` (`policy`, `session`, `mfa`, `httpsec`, `notify`, `ratelimit`, `pkg/id`, `pkg/logsample`), the `test` module for framework conformance and durable suites, and uber-go/mock (`mockgen --typed`).
 
-**Spec:** `openspec/changes/mfa-enrolment-path/`: `proposal.md`, `design.md` (decisions 1–17), `specs/{multi-factor-auth,security-policy,sessions,http-security-chain,http-error-propagation,oidc-login}/spec.md`, `tasks.md`. Plan task numbers are `tasks.md` numbers.
+**Spec:** `openspec/changes/mfa-enrolment-path/`: `proposal.md`, `design.md` (decisions 1–17), `specs/{multi-factor-auth,security-policy,sessions,http-security-chain,http-error-propagation,oidc-login,security-state-stores,secrets-at-rest}/spec.md`, `tasks.md`. Plan task numbers are `tasks.md` numbers.
 
 ## Global Constraints
 
 - Test-first on every task: write the test, run it, see it fail **for the intended reason** (a compile error is not a red step), implement, see it pass (`.claude/rules/golang-tdd.md`).
 - Table tests use the `table-test` skill's `assert` closure form, a `ctx` modifier where context matters, and `t.Context()`; mocks come from the `use-mockgen` skill (`//go:generate mockgen ... -typed`), placed as that skill says; PostgreSQL through `test.RunTestPostgres` (`use-testcontainers`).
 - Library design: every option's godoc names the default it replaces; every wiring mistake is a construction error from `httpsec.New` or the relevant constructor; no option silently governs two subsystems.
-- Defect claims: the three reproductions (tasks 3.3, 4.1, 4.3) are the first red step of their task. If the reproduction passes on unchanged code, stop and report; do not implement the departure.
+- Defect claims: the three reproductions (tasks 3.3, 4.1, 4.3) are the first red step of their task. Group 6 adds two, both `UNREPRODUCED` in design decision 10: the sealing wrapper passes the emailed code through unsealed (task 6.4 step 2), and a zero generation matches an enrolment stored without one (task 6.3's "nil generation" row, then each adapter's run of it in 6.4–6.6). If the reproduction passes on unchanged code, stop and report; do not implement the departure.
 - Never log a presented code, the emailed code, a TOTP secret, a provisioning URI or a contact address.
 - New exported names spell "Enrolment". `policy.ErrMFAEnrollmentRequired` keeps its spelling.
 - Append new enum values (`policy.ChallengeMFAEnrolment`, `session.MFAEnrolmentPending`); never insert, because durable stores keep ordinals.
@@ -31,6 +31,9 @@
 3. **A malformed emailed code** (spaces, 5 or 7 digits, non-ASCII digits) is refused as the invalid-code error and counted as a wrong code. It is never trimmed or normalised into a match. Test added to task 5.5.
 4. **Option order.** `EnableMFAEnrolment` is given before `EnableLogout`, or a logout path is set after it. The gate still exempts the final logout path, because it is handed over at assembly as the MFA gate's is. Test added to task 5.2.
 5. **A username containing `:`** under the default label resolver. Begin fails with TOTP's label error and stores nothing; it never produces a half-made enrolment. The godoc of the default resolver says so. Test added to task 5.3.
+6. **An enrolment with no generation on a durable store.** A consumer's out-of-band `PutPending` with `id.Nil`, then any of the three writes with `id.Nil`. `id.ID.Value()` writes the all-zero UUID, so a naive `generation = $2` matches it; every write must refuse. Row "nil generation" in task 6.3's suite, which every adapter runs.
+7. **A zeroing update through gorm.** gorm skips zero fields in a struct update, so a device proof or a new begin that must write `email_code_attempts = 0` or `email_code = NULL` would silently keep the old values. The "A new pending enrolment starts a new generation" row fails for such a store; task 6.6 writes with maps.
+8. **A key rotation while an emailed code is outstanding.** The code is not re-sealed on read. A read under a retired key still in the keyring opens it and leaves it unchanged; a removed key fails closed, and the user begins again, since begin does not read the enrolment. Rows in task 6.4 step 1.
 
 ---
 
@@ -62,7 +65,12 @@
 | `httpsec/mfaverify.go` | restore before rotate | 5.6 |
 | `httpsec/mfaenrol*_test.go` (new) | per-task tests | 5.1–5.8 |
 | `test/httpsecconformance/enrolment_scenarios.go` (new), `scenarios.go` | framework scenarios | 5.9 |
-| durable adapters (paths as `durable-persistence` archives them) | columns, port, suites | 6.x |
+| `migrate/securitystate/20260926000000_security_state.sql`, `test/migrate_securitystate_test.go` | enrolment and session columns | 6.2 |
+| `test/storetest/` (`deviceproof_suite.go` new, `race.go`, suites, broken variants), `test/internal/storefix/races.go` | durable conformance | 6.3 |
+| `seal/aad.go`, `seal/mfa.go` | emailed code sealed, bound to generation and user | 6.4 |
+| `internal/pgschema/{mfa,sessions}.go`, `sqlstore/{mfa,session}.go`, `test/sqlstore/`, `test/internal/storefix/sealed.go` | `database/sql` side | 6.4 |
+| `pgx/{mfa,session}.go`, `test/pgxstore/` | pgx side | 6.5 |
+| `gorm/{models,mfa,session}.go`, `test/gormstore/`, `test/crossbackend/crossbackend_test.go` | gorm side, cross-backend row | 6.6 |
 
 ## Dispatch Lanes (for the main session)
 
@@ -76,10 +84,12 @@ The lanes follow file ownership and the call graph. Lanes A, B and C are separat
 | D1 | 4.1–4.4 | `httpsec/passwordchange.go`, `chain.go`, `status.go`, `order.go`, `logincomplete.go`, `bearer.go`, `options.go` (their sections), `policy/engine.go` (+ test), and every existing test chain the new check breaks | `httpsec/mfaenrol*`, `mfaverify.go` | Opus | changes an interface other lanes compile against |
 | D2 | 5.1–5.4 | `httpsec/mfaenrol.go`, `mfaenroloptions.go`, their tests | files of D1 | Opus | security gate and wiring checks |
 | D3 | 5.5–5.9 | `httpsec/mfaenrol.go` (emailed code, logs), `mfaverify.go`, `test/httpsecconformance/` | files of D1 | Opus | check-then-consume and upgrade |
-| E | 6.2–6.6 | durable adapters, `storetest` | core packages | Opus | durable conditional writes and sealing |
+| E1 | 6.2 ∥ 6.3 (two agents, parallel) | 6.2: the migration and its schema test; 6.3: `test/storetest/`, `test/internal/storefix/races.go` | adapters, `seal/` | 6.2 Sonnet, 6.3 Opus | 6.2 is a pinned schema edit; 6.3 is race suites and broken variants |
+| E2 | 6.4 | `seal/aad.go`, `seal/mfa.go`, `internal/pgschema/`, `sqlstore/`, `test/sqlstore/`, `test/internal/storefix/sealed.go` | `pgx/`, `gorm/`, `test/storetest/` | Opus | sealing binding and conditional writes every later adapter reuses |
+| E3 | 6.5 ∥ 6.6 (two agents, parallel) | 6.5: `pgx/`, `test/pgxstore/`; 6.6: `gorm/`, `test/gormstore/`, `test/crossbackend/` | `internal/pgschema/`, `seal/`, `sqlstore/` | Opus | the same writes on two drivers with different NULL rules |
 | F | 7.1 | godoc and README | code | Sonnet | documentation against stated limits |
 
-D1, D2 and D3 are sequential dispatches of one lane. After each dispatch, the main session runs the listed verification commands, then a fresh reviewer checks the diff against the requirements the dispatch covers.
+D1, D2 and D3 are sequential dispatches of one lane. E1, E2 and E3 are sequential waves (E2 needs 6.2's columns and 6.3's suites; E3 needs 6.4's statements and seal wrapper); within E1 and E3 the two agents run in parallel. After each dispatch, the main session runs the listed verification commands, then a fresh reviewer checks the diff against the requirements the dispatch covers.
 
 ---
 
@@ -1069,70 +1079,256 @@ func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 
 ---
 
-### Task 6.1: Durable deltas (main session)
+### Task 6.1: Durable deltas (main session) — done
 
-- [ ] **Step 1:** Confirm `openspec/changes/archive/*-durable-persistence` exists and that `openspec/specs/security-state-stores/spec.md` and `openspec/specs/secrets-at-rest/spec.md` are promoted.
-- [ ] **Step 2:** Run `/opsx:update mfa-enrolment-path` to add:
-  - a `security-state-stores` ADDED requirement "Device proof and completion are recorded once per generation", with scenarios for each write's conditions and the 8-racer completion;
-  - a `security-state-stores` MODIFIED "MFA enrolment confirmation is recorded once", where a new pending enrolment also clears the device proof and the emailed code;
-  - a `secrets-at-rest` ADDED "The emailed enrolment code is sealed with its own binding", with scenarios for the code copied into the secret column, and into another user's row, failing to open.
-- [ ] **Step 3:** Update this plan's group 6 with the file paths the archived tree actually has.
-- [ ] **Step 4:** `openspec validate mfa-enrolment-path --strict`.
+`durable-persistence` is archived (`openspec/changes/archive/2026-09-27-durable-persistence`) and its specs are promoted. This change now carries `specs/security-state-stores/spec.md` and `specs/secrets-at-rest/spec.md`, and `openspec validate mfa-enrolment-path --strict` passes. Tasks 6.2–6.6 below implement those two deltas. Their requirements, by name:
+
+- `security-state-stores`: "MFA enrolment confirmation is recorded once" (modified: new generation on `PutPending`, proof and code cleared; `Confirm` clears the code and never lowers the step), "Enrolment device proof, completion and emailed-code attempts are decided by the write" (added), "Enrolment-path session state survives a durable store" (added).
+- `secrets-at-rest`: "Long-lived secrets are stored sealed", "A sealed value is bound to its row", "A value that cannot be opened fails closed", "Retired-key values are re-sealed on read without disturbing concurrent writes" (all modified for the emailed code).
+
+#### Group 6 facts every dispatch needs
+
+Two items below are `UNREPRODUCED` claims (design decision 10), not established defects: **Sealing** (the wrapper passes the code through) and **The nil generation**. Each is proven only by the red step named for it. A dispatch whose red step passes on unchanged code stops and reports, and the main session removes or narrows the claim instead of implementing the fix.
+
+- **Schema:** one file, `migrate/securitystate/20260926000000_security_state.sql`, edited in place (no tag yet). Its pin is `TestSecurityStateMigrations_Schema` in `test/migrate_securitystate_test.go`.
+- **Shared SQL:** `internal/pgschema/mfa.go` and `internal/pgschema/sessions.go` hold the statement text that `sqlstore` and `pgx` both use. `gorm` builds its own in `gorm/mfa.go`, `gorm/session.go`, with its models in `gorm/models.go`.
+- **Sealing:** every durable enrolment store is `seal.NewEnrolmentStore(inner, inner, c, ...)` over an unsealed inner store. The wrapper already exposes `mfa.DeviceProofStore` when the inner store has it (`provingEnrolmentStore` in `seal/mfa.go`), but **passes `ProveDevice`'s code through unsealed, and `Get` returns `EmailCode` as stored**. Sealing the code is therefore the wrapper's job, done once in the `seal` package, not three times in the adapters. The session side is `session.NewEncryptedStore(inner, seal.SessionCipher(c))`; the new session fields are not secrets and are not sealed.
+- **Text encoding:** sealed values sit in `text` columns base64url-encoded, through `storekit.SecretText` / `storekit.SecretFromText` (`internal/storekit`). The emailed code follows the secret: `email_code text NULL`, NULL meaning none.
+- **The nil generation.** `id.ID.Value()` writes `id.Nil` as the all-zero UUID string, not NULL. A WHERE clause `generation = $2` would then match an enrolment stored with no generation when the caller also passes none, which breaks "an absent generation matches no enrolment". Every adapter therefore writes a zero `id.ID` as SQL NULL (column nullable) and passes a zero generation to the three writes as NULL, so `generation = NULL` matches nothing. `id.ID.Scan(nil)` returns an error, so scan the nullable uuid columns through `sql.Null[id.ID]` (or the driver's equivalent) and use `id.Nil` when not valid, as `sqlstore` does after 6.4.
+- **After 6.4 (landed):** `internal/pgschema` statements are widened (`EnrolmentPutPending` takes `$5`; the session insert and update take the marker and generation), so `test/pgxstore` and `test/crossbackend` fail until 6.5 lands. `internal/storekit.CheckSession` still refuses a session carrying the marker or generation; `sqlstore/session.go` works around it by judging a copy with those two fields cleared. Task 6.5 owns removing that refusal and the workaround. The nil-generation subtest path is `TestEnrolmentStore/<backend>_device_proofs/nil_generation`; the pattern `TestEnrolmentStore/.*nil_generation` does not reach it.
+- **Suites** live in the `test` module: `test/storetest/{mfa_suite,session_suite,race,sealed}.go`, broken variants in `test/storetest/broken_*_test.go` and `test/internal/storefix/`, and memory runs in `test/storetest/memory_test.go`. Each adapter wires them in `test/{sqlstore,pgxstore,gormstore}/{mfa,session,broken}_test.go`. Cross-backend cases are the table in `test/crossbackend/crossbackend_test.go` (`TestCrossBackend`).
+- **Existing suite gaps, deliberate:** `session_suite.go` and `mfa_suite.go` each carry a comment saying the enrolment-path fields are "asserted by the enrolment-path suite extension, not here". 6.3 writes that extension and removes those comments.
 
 ### Task 6.2: Migration columns
 
-**Files:** the initial security-state migration (from 6.1), and its schema-pinning test.
+**Model:** Sonnet — a well-specified schema edit with a pinning test.
 
-- [ ] **Step 1: Write the failing schema test.** Assert the columns:
-  - `mfa_enrolments`: `generation uuid NOT NULL`, `device_proven_at timestamptz NULL`, `email_code bytea NULL`, `email_code_until timestamptz NULL`, `email_code_attempts smallint NOT NULL DEFAULT 0`;
-  - `sessions`: `enrolment_origin boolean NOT NULL DEFAULT false`, `enrolment_generation uuid NULL`.
-- [ ] **Step 2: Run to verify it fails.** `cd test && go test -run TestSecurityStateSchema -count=1 ./...`. Expected: FAIL, column not found.
-- [ ] **Step 3: Implement** by editing the initial migration in place (free before a tag). Keep `mfa_state`'s ordinals.
-- [ ] **Step 4: Run to verify it passes. Report.**
+**Files:**
+- Modify: `migrate/securitystate/20260926000000_security_state.sql` (`mfa_enrolments`, `sessions`)
+- Test: `test/migrate_securitystate_test.go` (`TestSecurityStateMigrations_Schema`)
+
+**Interfaces — Produces** (every later task reads these names):
+
+| Table | Column | Type |
+|---|---|---|
+| `mfa_enrolments` | `generation` | `uuid NULL` (NULL = no generation; never matched) |
+| `mfa_enrolments` | `device_proven_at` | `timestamptz NULL` |
+| `mfa_enrolments` | `email_code` | `text NULL` (base64url sealed envelope; NULL = none) |
+| `mfa_enrolments` | `email_code_until` | `timestamptz NULL` |
+| `mfa_enrolments` | `email_code_attempts` | `integer NOT NULL DEFAULT 0` |
+| `sessions` | `enrolment_origin_deadline` | `timestamptz NULL` (NULL = not marked) |
+| `sessions` | `enrolment_generation` | `uuid NULL` |
+
+`sessions.mfa_state smallint` is unchanged; `session.MFAEnrolmentPending` is ordinal 3, after `MFASatisfied`.
+
+- [ ] **Step 1: Write the failing test.** Extend the column table `TestSecurityStateMigrations_Schema` already checks with the seven rows above: type, nullability, and the default of `email_code_attempts`. Add a row asserting `mfa_state`'s type is still `smallint`.
+- [ ] **Step 2: Run to verify it fails.** `cd test && go test -run TestSecurityStateMigrations_Schema -count=1 .` Expected: FAIL, naming the first missing column (for example `mfa_enrolments.generation`). A Docker or compile error is not the red step.
+- [ ] **Step 3: Implement.** Add the columns to the two `CREATE TABLE` statements, each with a one-line comment matching the file's style:
+
+```sql
+    -- Enrolment path. NULL generation = none, and matches no conditional write.
+    generation          uuid NULL,
+    device_proven_at    timestamptz NULL,
+    email_code          text NULL, -- base64url envelope, NULL = none
+    email_code_until    timestamptz NULL,
+    email_code_attempts integer NOT NULL DEFAULT 0,
+```
+
+```sql
+    -- The absolute deadline held before an enrolment mark; NULL = not marked.
+    enrolment_origin_deadline timestamptz NULL,
+    enrolment_generation      uuid NULL,
+```
+
+  The down migration drops tables, so it needs nothing.
+- [ ] **Step 4: Run to verify it passes.** Same command, then `cd test && go test -run 'TestSecurityStateMigrations|TestGooseDirect|TestPopulatedMigrationAddsNotNullColumn' -count=1 . ./crossbackend/`. Expected: PASS.
+- [ ] **Step 5: Report** the columns added and the failing line seen in step 2.
 
 ### Task 6.3: Conformance suites
 
-**Files:** `storetest` MFA enrolment and session suites (from 6.1).
+**Model:** Opus — race suites and broken variants whose failure must name the defect, and a mistake here would pass every store.
 
-- [ ] **Step 1:** Add `RunDeviceProofSuite(t, harness)`. It covers the rows of 3.2, the race of 3.3, a forward-only step (device proof at step N, then the single-call `Confirm` at step N-1, then `AcceptStep(N)` must report false, as `TestTOTPProvingCodeNotReplayableAfterConfirm` pins for the memory store), and `RunCompleteRace` (8 racers × 50 records, exactly one success each). For stores implementing `mfa.DeviceProofStore` it runs; others are skipped with a message naming the missing port. Add the enrolment state, marker and generation to the session round-trip case.
-- [ ] **Step 2:** Run against broken variants kept beside the suite (a generation-blind `Complete`; a `Confirm` that overwrites the step; a session store that drops `EnrolmentOriginDeadline`). Expected: FAIL, naming the case.
-- [ ] **Step 3:** Run against the memory stores. `cd test && go test -run 'TestMFAEnrolmentSuite|TestSessionSuite' -count=1 ./storetest/...`. Expected: PASS.
-- [ ] **Step 4: Report.**
+**Files:**
+- Create: `test/storetest/deviceproof_suite.go` (`RunDeviceProofSuite`)
+- Modify: `test/storetest/race.go` (add `RunCompleteRace`, `RunChargeRace`; give `runRace` a wins-per-record parameter, default 1)
+- Modify: `test/storetest/mfa_suite.go` (the modified confirmation requirement's rows; remove the "not here" comment)
+- Modify: `test/storetest/session_suite.go` (the enrolment fields; remove the "not here" comment)
+- Modify: `test/storetest/memory_test.go`, `test/storetest/broken_mfa_test.go`, `test/storetest/broken_session_test.go`, `test/storetest/broken_race_test.go`
+- Modify: `test/internal/storefix/races.go` (`CompleteRace`, `ChargeRace`)
+- Must not touch: any adapter (`sqlstore/`, `pgx/`, `gorm/`, `seal/`), `test/{sqlstore,pgxstore,gormstore}/` (6.4–6.6 wire the suites there), the migration (6.2).
 
-### Task 6.4: `database/sql` stores
+**Interfaces — Produces:**
 
-- [ ] **Step 1:** Run the extended suites and the new sealed-column case against the `sqlstore` enrolment and session stores. Expected: the proof suite skipped or failing (port missing), the session round trip failing (marker dropped), and the sealed-code case failing.
-- [ ] **Step 2: Implement.** Each write is one conditional UPDATE:
+```go
+// RunDeviceProofSuite holds a store implementing mfa.DeviceProofStore to the
+// security-state-stores requirement "Enrolment device proof, completion and
+// emailed-code attempts are decided by the write". newStore returns an
+// isolated store; now is the fixed time the rows are written against.
+func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEnrolmentStore)
 
-```sql
--- ProveDevice
-UPDATE mfa_enrolments
-   SET device_proven_at = $4, last_step = $5, email_code = $6, email_code_until = $7, email_code_attempts = 0
- WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL
-   AND device_proven_at IS NULL AND last_step < $5;
--- Complete
-UPDATE mfa_enrolments SET confirmed_at = $3, email_code = NULL
- WHERE user_id = $1 AND generation = $2 AND device_proven_at IS NOT NULL AND confirmed_at IS NULL;
--- ChargeEmailCode
-UPDATE mfa_enrolments
-   SET email_code_attempts = email_code_attempts + 1
- WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL
-   AND device_proven_at IS NOT NULL AND email_code IS NOT NULL
-   AND email_code_until > $3 AND email_code_attempts < 5
-RETURNING email_code_attempts;
+// DeviceProofEnrolmentStore is what the suite needs: both ports on one store.
+type DeviceProofEnrolmentStore interface {
+	mfa.EnrolmentStore
+	mfa.DeviceProofStore
+}
+
+// RunCompleteRace: Racers completions of one proven generation per record; exactly one wins.
+func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S])
+// RunChargeRace: Racers charges of one outstanding code per record; exactly
+// mfa.MaxEmailCodeFailures win. Racers defaults to 20 for this race.
+func RunChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S])
 ```
 
-`PutPending`'s upsert sets `generation` and nulls the proof columns. The emailed code is sealed with an AAD distinct from the secret's, for example the constant `scrty/mfa:email-code:` plus the user reference, added beside the existing AAD constants with a golden test. Session columns are read and written with the rest of the row.
-- [ ] **Step 3: Run to verify it passes.** `cd test && go test -run 'TestSQLStore.*(MFA|Session)' -count=1 ./...`.
-- [ ] **Step 4: Report.**
+`storefix.CompleteRace[S DeviceProofEnrolmentStore]()` and `storefix.ChargeRace[S ...]()` return the `Race` inputs (Seed: `PutPending` on a fresh generation, then `ProveDevice`; Attempt: `Complete` or `ChargeEmailCode`), as `storefix.StepRace` does for steps.
+
+- [ ] **Step 1: Write the device-proof suite** as one table in the `table-test` skill's `assert` form, each row seeding with `PutPending` and the port's writes, then asserting the returned `bool` and the enrolment `Get` returns. The rows (each named after its spec scenario where there is one):
+  - proof on the current generation: true; `DeviceProvenAt`, `LastStep`, `EmailCode`, `EmailCodeUntil` recorded, attempts 0;
+  - "Device proof on a stale generation": false, no proof time;
+  - "Device proven twice": second false, step stays 1000;
+  - proof at a step not later than the recorded one: false;
+  - proof on a confirmed enrolment: false;
+  - **nil generation** (reproduces the `UNREPRODUCED` zero-generation claim; the memory store is expected to pass it, the `nilGenerationMatches` variant to fail it, and each adapter to fail it until its NULL binding lands — an adapter that passes it before is reported, not changed): an enrolment stored by `PutPending` with `Generation: id.Nil`, then `ProveDevice`, `Complete` and `ChargeEmailCode` each passing `id.Nil`: all false, nothing changed;
+  - "Completion before device proof": false, unconfirmed;
+  - "A newer begin invalidates an earlier proof": proof on G1, `PutPending` G2, `Complete(G1)`: false, unconfirmed;
+  - completion on the proven generation: true, `ConfirmedAt` set, `EmailCode` nil, `EmailCodeUntil` **kept**;
+  - charge: true with count 1, 2, … 5, then false with count 0 and the code still stored ("Concurrent charges" in its sequential form);
+  - "Expired code is not charged": false; code and expiry still stored;
+  - charge with no code issued (proof with nil code): false;
+  - "A new pending enrolment starts a new generation" (modified requirement): after proof with a code, `PutPending` G2 reads generation G2, zero proof time, nil code, zero expiry, attempts 0;
+  - "Confirmation keeps a later device-proof step": proof at step 1001, then `Confirm(step 1000)`: true, `LastStep` 1001, `EmailCode` nil; then `AcceptStep(1001)` false.
+
+  Put the last two rows in `RunEnrolmentStoreSuite` only when the store implements `mfa.DeviceProofStore` (they need `ProveDevice` to seed); leave the rest of that suite unchanged.
+- [ ] **Step 2: Extend the session suite.** A round-trip row saving a session with `MFA: session.MFAEnrolmentPending`, `EnrolmentOriginDeadline: suiteStart.Add(12*time.Hour)` and a fixed `EnrolmentGeneration`, asserting all three back ("Enrolment-only session round trip"); an unmarked session reading zero marker and `id.Nil` ("Unmarked session"); a marked session saved again with both cleared reading them cleared ("Marker cleared on upgrade"). Remove the "not here" comments in both suites.
+- [ ] **Step 3: Add the races.** Generalise `runRace` with the expected wins per record (the existing three pass 1, unchanged). `RunCompleteRace` expects 1; `RunChargeRace` expects `mfa.MaxEmailCodeFailures` and defaults `Racers` to 20. Add `storefix.CompleteRace` and `storefix.ChargeRace`.
+- [ ] **Step 4: Add broken variants and see each new case fail.** In `broken_mfa_test.go`, beside the existing variants, wrap `mfa.NewMemoryEnrolmentStore()`:
+  - `generationBlindComplete`: `Complete` ignores `gen`;
+  - `stepOverwritingConfirm`: `Confirm` sets `LastStep = step`;
+  - `chargeWithoutCap`: `ChargeEmailCode` never refuses on the count;
+  - `nilGenerationMatches`: treats `id.Nil` as a match.
+
+  In `broken_session_test.go`, a memory session store that drops `EnrolmentOriginDeadline` on save. Wire them into `TestSuitesCatchBrokenStores` so each is expected to fail. Run `cd test && go test -run 'TestSuitesCatchBrokenStores|TestBrokenStoreConformance' -count=1 ./storetest/`. Expected: each variant reported caught, with the failing assertion naming the row (for example "A newer begin invalidates an earlier proof: Complete must report false"). Record that output.
+- [ ] **Step 5: Run against the memory stores.** Add `RunDeviceProofSuite` to `TestMemoryEnrolmentStore`. Run `cd test && go test -race -run 'TestMemory(Enrolment|Session)Store|TestSuitesCatchBrokenStores|TestRaceInputs' -count=1 ./storetest/`. Expected: PASS. Then `cd test && go vet ./storetest/ ./internal/... && gofmt -l storetest internal`.
+- [ ] **Step 6: Report** the suite and race names, the broken-variant output from step 4, and the final run.
+
+### Task 6.4: `seal` wrapper and `database/sql` stores
+
+**Model:** Opus — sealing binding, fail-closed reads and single-statement conditional writes.
+
+**Dispatch:** one agent, two parts in order: the `seal` part (core module) first, then `sqlstore`.
+
+**Files:**
+- Modify: `seal/aad.go` (constant and function), `seal/mfa.go` (`provingEnrolmentStore.ProveDevice` seals; `enrolmentStore.Get` opens the code), tests in `seal/aad_test.go`, `seal/mfa_test.go`
+- Modify: `internal/pgschema/mfa.go`, `internal/pgschema/sessions.go`
+- Modify: `sqlstore/mfa.go`, `sqlstore/session.go`
+- Modify: `test/internal/storefix/sealed.go` (`SealedEmailCodes`), `test/sqlstore/mfa_test.go`, `test/sqlstore/session_test.go`, `test/sqlstore/broken_test.go`
+- Must not touch: `pgx/`, `gorm/`, `test/pgxstore/`, `test/gormstore/`, `test/storetest/` (6.3's), the migration.
+
+**Interfaces — Produces:**
+
+```go
+// seal/aad.go
+// AADMFAEmailCodePrefix is followed by the generation, in its canonical
+// 36-character text form, a ':' and the user reference, byte for byte.
+AADMFAEmailCodePrefix = "scrty/mfa:email-code:"
+
+// MFAEmailCodeAAD returns the additional data an emailed enrolment code is
+// sealed against. The fixed-length generation precedes the free-form user
+// reference, so no two (generation, user) pairs share additional data.
+func MFAEmailCodeAAD(gen id.ID, user identity.UserID) []byte
+```
+
+`internal/pgschema` gains `EnrolmentProveDevice`, `EnrolmentComplete`, `EnrolmentChargeEmailCode`, and widened `EnrolmentPutPending`, `EnrolmentGet`, `EnrolmentConfirm`, plus the session statements' two new columns. 6.5 reuses them verbatim.
+
+- [ ] **Step 1: Seal — write the failing tests** in `seal/mfa_test.go`, table form with the package's existing mocks: `ProveDevice` hands the inner store a code that is not the plaintext and opens only with `MFAEmailCodeAAD(gen, user)`; `ProveDevice` with a nil code hands nil and calls no cipher; `Get` returns the plaintext code; `Get` of a code that will not open returns an error and `found == false` ("Emailed code unreadable"); `Get` never re-seals the code, even with re-seal on and a retired key ("Emailed code is not rewritten on read"); a cipher failure sealing the code stores nothing. In `seal/aad_test.go`, a `TestAADGolden` row for `MFAEmailCodeAAD` and a row showing it differs from `MFASecretAAD` for the same user.
+- [ ] **Step 2: Run to verify it fails (reproduces the `UNREPRODUCED` sealing claim).** `go test -run 'TestEnrolmentStore_|TestNewEnrolmentStore|TestAADGolden' -count=1 ./seal/`. If the plaintext-code rows pass on the unchanged wrapper, stop and report: the claim was wrong. Expected: FAIL because the code reaches the inner store in plaintext (the assertion names it), not because of a compile error. Add the function signature first if needed, so the red step is behavioural.
+- [ ] **Step 3: Implement the seal part.**
+
+```go
+func (s provingEnrolmentStore) ProveDevice(
+	ctx context.Context, user identity.UserID, gen id.ID,
+	step int64, code []byte, codeUntil, at time.Time,
+) (bool, error) {
+	if code != nil {
+		sealed, err := s.cipher.Seal(code, MFAEmailCodeAAD(gen, user))
+		if err != nil {
+			return false, diag.Wrap(err, "seal: the emailed MFA code could not be sealed")
+		}
+		code = sealed
+	}
+	ok, err := s.proofs.ProveDevice(ctx, user, gen, step, code, codeUntil, at)
+	return ok, enrolmentFailed(err, "seal: the inner store could not record the device proof")
+}
+```
+
+  In `Get`, after the secret opens: when `e.EmailCode != nil`, open it with `MFAEmailCodeAAD(e.Generation, user)`; failure returns the zero enrolment, `false` and a wrapped error with fixed text; no re-seal. Update the `NewEnrolmentStore` godoc: the emailed code is sealed too, bound to generation and user, never re-sealed on read. Run `go test -count=1 ./seal/ && go vet ./seal/`.
+- [ ] **Step 4: sqlstore — see the suites fail.** Wire in `test/sqlstore/mfa_test.go`: `RunDeviceProofSuite` inside `TestEnrolmentStore`, `TestEnrolmentStore_CompleteRace` and `TestEnrolmentStore_ChargeRace` beside `TestEnrolmentStore_StepAcceptRace`, and a second `RunSealedColumns` run with `storefix.SealedEmailCodes(...)` in `TestEnrolmentStore_SealedColumns`. `SealedEmailCodes` seeds through `PutPending` plus `ProveDevice` on a fixed generation, reads and copies the `email_code` column, and adds two out-of-band copies of its own: into the owner's `secret` column ("Emailed code copied into the secret column"), and back onto the same user after a `PutPending` on a new generation ("Emailed code carried into a new generation"). Run `cd test && go test -run 'TestEnrolmentStore|TestSessionStore' -count=1 ./sqlstore/`. Expected: FAIL. The device-proof suite fails because the store lacks the port (the suite's type assertion names `mfa.DeviceProofStore`), and the session row fails with `EnrolmentOriginDeadline` zero.
+- [ ] **Step 5: Implement sqlstore.** Statements in `internal/pgschema/mfa.go` (`$` numbering as below; every condition is in the WHERE clause, never in a preceding read):
+
+```sql
+-- EnrolmentPutPending: $1 id, $2 user_id, $3 secret, $4 created_at, $5 generation (NULL for id.Nil)
+INSERT INTO mfa_enrolments (id, user_id, secret, confirmed_at, last_step, created_at, generation)
+VALUES ($1, $2, $3, NULL, 0, $4, $5)
+ON CONFLICT (user_id) DO UPDATE
+   SET secret = EXCLUDED.secret, last_step = 0, created_at = EXCLUDED.created_at,
+       generation = EXCLUDED.generation, device_proven_at = NULL,
+       email_code = NULL, email_code_until = NULL, email_code_attempts = 0
+ WHERE mfa_enrolments.confirmed_at IS NULL
+-- EnrolmentConfirm: clears the code, never lowers the step
+UPDATE mfa_enrolments SET confirmed_at = $3, last_step = GREATEST(last_step, $2), email_code = NULL
+ WHERE user_id = $1 AND confirmed_at IS NULL
+-- EnrolmentProveDevice: $1 user, $2 gen, $3 step, $4 code, $5 until, $6 at
+UPDATE mfa_enrolments
+   SET last_step = $3, device_proven_at = $6, email_code = $4, email_code_until = $5, email_code_attempts = 0
+ WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL
+   AND device_proven_at IS NULL AND last_step < $3
+-- EnrolmentComplete: $1 user, $2 gen, $3 at
+UPDATE mfa_enrolments SET confirmed_at = $3, email_code = NULL
+ WHERE user_id = $1 AND generation = $2 AND device_proven_at IS NOT NULL AND confirmed_at IS NULL
+-- EnrolmentChargeEmailCode: $1 user, $2 gen, $3 at, $4 cap (mfa.MaxEmailCodeFailures)
+UPDATE mfa_enrolments SET email_code_attempts = email_code_attempts + 1
+ WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL
+   AND device_proven_at IS NOT NULL AND email_code IS NOT NULL
+   AND email_code_until > $3 AND email_code_attempts < $4
+RETURNING email_code_attempts
+```
+
+  **Zero-generation red step, in order:** first bind the generation as the plain `id.ID` value and run `cd test && go test -run 'TestEnrolmentStore/.*nil_generation' -count=1 ./sqlstore/`. Expected: FAIL, a write reporting true for `id.Nil`. Record the output; if it passes, stop and report. Only then bind NULL as below and re-run.
+
+  Keep `PutPending`'s existing already-enrolled detection as it is today. A zero `id.ID` is bound as `nil` (NULL) in every statement; a NULL `generation` scans to `id.Nil`. `EnrolmentGet` selects the five new columns; `email_code` goes through `storekit.SecretFromText`/`SecretText` as `secret` does. `ChargeEmailCode` maps `sql.ErrNoRows` to `(0, false, nil)`. Session statements in `internal/pgschema/sessions.go` read and write `enrolment_origin_deadline` (NULL for zero time) and `enrolment_generation` (NULL for `id.Nil`). Add `_ mfa.DeviceProofStore = (*enrolmentStore)(nil)` beside the existing assertions. Each method runs through the store's existing exec helper, so it joins an attached transaction as `Confirm` does.
+- [ ] **Step 6: Run to verify it passes.** `cd test && go test -race -run 'TestEnrolmentStore|TestSessionStore|TestSuitesCatchBrokenSQLStores' -count=1 ./sqlstore/`, then `cd test && go test -count=1 ./sqlstore/ ./storetest/`, then in the root `go test -count=1 ./seal/ ./sqlstore/ ./internal/... && go vet ./... && gofmt -l .`. Expected: PASS, empty gofmt.
+- [ ] **Step 7: Report** files changed, test names, the red output at steps 2 and 4, and the final runs.
 
 ### Task 6.5: `pgx` stores
 
-- [ ] **Steps 1–4:** As in 6.4, using the shared SQL text in `internal/pgschema`. Run `cd test && go test -run 'TestPgx.*(MFA|Session)' -count=1 ./...`.
+**Model:** Opus — the same conditional writes on another driver, where NULL binding differs.
 
-### Task 6.6: `gorm` stores
+**Runs in parallel with 6.6**, after 6.4 lands: no shared files.
 
-- [ ] **Steps 1–4:** As in 6.4, with the conditional updates as `Where(...).Updates(...)` checking `RowsAffected == 1`, and the fail counter through `gorm.Expr`. Run `cd test && go test -run 'TestGorm.*(MFA|Session)' -count=1 ./...`.
+**Files:**
+- Modify: `pgx/mfa.go`, `pgx/session.go`
+- Modify: `test/pgxstore/mfa_test.go`, `test/pgxstore/session_test.go`, `test/pgxstore/broken_test.go`
+- Must not touch: `internal/pgschema/` (use 6.4's statements verbatim; if one does not fit pgx, stop and report), `seal/`, `sqlstore/`, `gorm/`, `test/gormstore/`, `test/crossbackend/`.
+
+- [ ] **Step 1: See the suites fail.** Wire the device-proof suite, the two races and the `SealedEmailCodes` run into `test/pgxstore/mfa_test.go`, as 6.4 step 4 did for `sqlstore`. Run `cd test && go test -run 'TestEnrolmentStore|TestSessionStore' -count=1 ./pgxstore/`. Expected: FAIL for the missing port and the dropped session marker.
+- [ ] **Step 2: Implement** `ProveDevice`, `Complete` and `ChargeEmailCode` on the pgx enrolment store with the `internal/pgschema` statements. Do the zero-generation red step first, as 6.4 step 5 describes: bind the plain `id.ID`, see `cd test && go test -run 'TestEnrolmentStore/pgx_device_proofs/nil_generation' -count=1 ./pgxstore/` fail (or stop and report if it passes), then bind NULL. Add the new columns in `Get`, `PutPending` and the session statements. pgx binds `id.ID` through `driver.Valuer`, so pass a zero generation as an untyped `nil`, and scan the nullable uuid into a `*id.ID` or a `pgtype.UUID` and convert. `ChargeEmailCode` maps `pgx.ErrNoRows` to `(0, false, nil)`. Add the compile-time port assertion.
+- [ ] **Step 3: Run to verify it passes.** `cd test && go test -race -run 'TestEnrolmentStore|TestSessionStore|TestSuitesCatchBroken' -count=1 ./pgxstore/`, then `cd pgx && go vet ./... && gofmt -l .`.
+- [ ] **Step 4: Report** as 6.4 step 7.
+
+### Task 6.6: `gorm` stores and the cross-backend row
+
+**Model:** Opus — gorm's zero-value update rules make a silent partial write easy.
+
+**Runs in parallel with 6.5**, after 6.4 lands.
+
+**Files:**
+- Modify: `gorm/models.go`, `gorm/mfa.go`, `gorm/session.go`
+- Modify: `test/gormstore/mfa_test.go`, `test/gormstore/session_test.go`, `test/gormstore/broken_test.go`, `test/crossbackend/crossbackend_test.go`
+- Must not touch: `internal/pgschema/`, `seal/`, `sqlstore/`, `pgx/`, `test/pgxstore/`.
+
+- [ ] **Step 1: See the suites fail.** Wire the suites into `test/gormstore/` as in 6.4 step 4. Add a `TestCrossBackend` row "enrolment fields shared across backends": save an enrolment-pending session with a marker and a generation through each backend and load it through each other ("Backends share the enrolment fields"); prove a device with a sealed code through one backend's enrolment store and charge it through another's. Run `cd test && go test -run 'TestEnrolmentStore|TestSessionStore' -count=1 ./gormstore/ && go test -run TestCrossBackend -count=1 ./crossbackend/`. Expected: FAIL. The cross-backend row fails at least on gorm; once 6.5 has landed, pgx and sqlstore already agree.
+- [ ] **Step 2: Implement.** Zero-generation red step first, as 6.4 step 5 describes: write the conditions with the plain `id.ID`, see `cd test && go test -run 'TestEnrolmentStore/gorm_device_proofs/nil_generation' -count=1 ./gormstore/` fail (or stop and report if it passes), then pass a zero generation as `nil`. Add the fields to the models, with `*time.Time` and `*id.ID` (or a nullable wrapper) for the nullable columns, so that a zero value is written as NULL. Each conditional write is `Model(&enrolmentModel{}).Where("user_id = ? AND generation = ? AND ...", ...).Updates(map[string]any{...})`, using a **map**, never a struct, so that zeroing columns (`email_code_attempts: 0`, `email_code: nil`) is written. It reports `RowsAffected == 1`. A zero generation is passed as `nil`. `ChargeEmailCode` uses `gorm.Expr("email_code_attempts + 1")` with `Clauses(clause.Returning{Columns: []clause.Column{{Name: "email_code_attempts"}}})`. `Confirm` gains `email_code: nil` and `last_step: gorm.Expr("GREATEST(last_step, ?)", step)`. Add the port assertion.
+- [ ] **Step 3: Run to verify it passes.** `cd test && go test -race -run 'TestEnrolmentStore|TestSessionStore|TestSuitesCatchBroken' -count=1 ./gormstore/ && go test -run TestCrossBackend -count=1 ./crossbackend/`, then `cd gorm && go vet ./... && gofmt -l .`.
+- [ ] **Step 4: Report** as 6.4 step 7.
 
 ---
 

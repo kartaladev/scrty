@@ -166,6 +166,16 @@ func TestNewSigningKeyStore(t *testing.T) {
 			assert:   refused,
 		},
 		{
+			// Signing keys have no expiry the store judges, so a clock
+			// would be silently ignored; it is refused instead.
+			name:     "a clock is refused: the signing-key store judges no time",
+			inner:    signingkey.NewInMemoryKeyStore(),
+			resealer: true,
+			cipher:   c,
+			opts:     []seal.Option{seal.WithClock(time.Now)},
+			assert:   refused,
+		},
+		{
 			name:          "a typed-nil resealer is refused",
 			inner:         signingkey.NewInMemoryKeyStore(),
 			resealerValue: typedNilResealer,

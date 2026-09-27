@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 )
 
@@ -31,6 +32,19 @@ import (
 // reports false, each without writing, so of concurrent verifications of one
 // step exactly one succeeds, on this process or on another replica.
 //
+// The returned store implements mfa.DeviceProofStore, so the enrolment path
+// runs over it. PutPending starts the enrolment's generation, clearing any
+// device proof and emailed code; ProveDevice, Complete and ChargeEmailCode are
+// each one conditional statement with every condition in its WHERE clause, so
+// of concurrent completions of one generation exactly one succeeds, and of
+// concurrent charges against one code no more than mfa.MaxEmailCodeFailures
+// do. Every write that clears a column names it in a map or an explicit
+// assignment, never a struct, whose zero fields gorm would leave out. The nil
+// generation is stored and compared as NULL, so it matches no enrolment, not
+// even one stored without a generation. The emailed code is sealed with c
+// too, bound to the user reference and the generation, in its own base64url
+// column; it is never re-sealed on read.
+//
 // By default a read re-seals, under c's active key, a secret that opened under
 // a retired one, with one conditional update that replaces the stored value
 // only while it still holds the value that was read, so a new pending
@@ -38,23 +52,23 @@ import (
 // transaction re-seals nothing, since a failed write there would abort the
 // caller's transaction. WithResealOnRead(false) turns re-sealing off.
 //
+// A read judges an emailed code's expiry with the store's clock: a code whose
+// EmailCodeUntil has passed is not opened, and is returned as no code, with
+// EmailCodeUntil kept. The default is time.Now; WithClock replaces it.
+//
 // It honours WithTxResolver, WithIDGenerator (default id.NewV7Generator, for
-// the rows' primary keys) and WithResealOnRead (default on), and refuses any
-// other option.
+// the rows' primary keys), WithClock (default time.Now) and WithResealOnRead
+// (default on), and refuses any other option.
 //
 // Limits, stated:
-//   - The enrolment path's fields (the generation, the device-proof time and
-//     the emailed code with its expiry and attempt count) have no columns
-//     yet. The store neither stores nor returns them, and does not implement
-//     mfa.DeviceProofStore, so the enrolment path is refused at construction
-//     over it rather than running without its proofs.
 //   - PostgreSQL text cannot hold a NUL byte or invalid UTF-8. A begin for a
 //     user reference holding either is refused with an error that names the
 //     field, never the value, and nothing is written; a read, confirmation,
-//     step or deletion for such a reference matches nothing.
+//     step, device proof, completion, charge or deletion for such a
+//     reference matches nothing.
 //   - Stored times are UTC, truncated to the microsecond.
 func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.EnrolmentStore, error) {
-	cfg, err := newConfig(db, opts, optIDGenerator, optResealOnRead)
+	cfg, err := newConfig(db, opts, optIDGenerator, optClock, optResealOnRead)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +77,7 @@ func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.Enrolm
 	}
 
 	inner := &enrolmentStore{c: cfg}
-	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithResealOnRead(cfg.resealOnRead))
+	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithClock(cfg.now), seal.WithResealOnRead(cfg.resealOnRead))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
@@ -76,7 +90,8 @@ func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.Enrolm
 // is why it is not exported.
 type enrolmentStore struct{ c *config }
 
-// Get returns the user's enrolment, its secret still sealed: one SELECT.
+// Get returns the user's enrolment, its secret and emailed code still sealed:
+// one SELECT.
 func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment, bool, error) {
 	const op = "get MFA enrolment"
 
@@ -93,21 +108,38 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	if err != nil {
 		return mfa.Enrolment{}, false, failed(op, err)
 	}
+	var code []byte
+	if row.EmailCode != nil {
+		if code, err = storekit.SecretFromText(*row.EmailCode); err != nil {
+			return mfa.Enrolment{}, false, failed(op, err)
+		}
+	}
+	var gen id.ID
+	if row.Generation != nil {
+		gen = *row.Generation
+	}
 
 	return mfa.Enrolment{
-		User:        user,
-		Secret:      sealed,
-		ConfirmedAt: fromNull(row.ConfirmedAt),
-		LastStep:    row.LastStep,
-		CreatedAt:   row.CreatedAt.UTC(),
+		User:              user,
+		Secret:            sealed,
+		ConfirmedAt:       fromNull(row.ConfirmedAt),
+		LastStep:          row.LastStep,
+		CreatedAt:         row.CreatedAt.UTC(),
+		Generation:        gen,
+		DeviceProvenAt:    fromNull(row.DeviceProvenAt),
+		EmailCode:         code,
+		EmailCodeUntil:    fromNull(row.EmailCodeUntil),
+		EmailCodeAttempts: int(row.EmailCodeAttempts),
 	}, true, nil
 }
 
-// PutPending stores e as the user's pending enrolment, refusing with
-// mfa.ErrAlreadyEnrolled when a confirmed one exists: one INSERT … ON
-// CONFLICT (user_id) DO UPDATE … WHERE mfa_enrolments.confirmed_at IS NULL,
-// which keeps the row's id and clears its accepted step, and whose zero rows
-// affected is the refusal.
+// PutPending stores e as the user's pending enrolment on e's generation,
+// refusing with mfa.ErrAlreadyEnrolled when a confirmed one exists: one
+// INSERT … ON CONFLICT (user_id) DO UPDATE … WHERE
+// mfa_enrolments.confirmed_at IS NULL, which keeps the row's id, clears its
+// accepted step, device proof and emailed code with its expiry and attempts,
+// and whose zero rows affected is the refusal. Every cleared column is an
+// explicit assignment, so no zero value is left out of the write.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
 	const op = "store pending MFA enrolment"
 
@@ -124,15 +156,20 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 		return failed(op, err)
 	}
 	row := enrolmentRow{
-		ID:        rowID,
-		UserID:    string(e.User),
-		Secret:    storekit.SecretText(e.Secret),
-		CreatedAt: storekit.Time(e.CreatedAt),
+		ID:         rowID,
+		UserID:     string(e.User),
+		Secret:     storekit.SecretText(e.Secret),
+		CreatedAt:  storekit.Time(e.CreatedAt),
+		Generation: nullID(e.Generation),
 	}
 	res := q.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}},
-		DoUpdates: append(clause.AssignmentColumns([]string{"secret", "created_at"}),
-			clause.Assignment{Column: clause.Column{Name: "last_step"}, Value: 0}),
+		DoUpdates: append(clause.AssignmentColumns([]string{"secret", "created_at", "generation"}),
+			clause.Assignment{Column: clause.Column{Name: "last_step"}, Value: 0},
+			clause.Assignment{Column: clause.Column{Name: "device_proven_at"}, Value: nil},
+			clause.Assignment{Column: clause.Column{Name: "email_code"}, Value: nil},
+			clause.Assignment{Column: clause.Column{Name: "email_code_until"}, Value: nil},
+			clause.Assignment{Column: clause.Column{Name: "email_code_attempts"}, Value: 0}),
 		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "mfa_enrolments.confirmed_at IS NULL"}}},
 	}).Create(&row)
 	if res.Error != nil {
@@ -146,15 +183,20 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 }
 
 // Confirm confirms the user's pending enrolment at at, recording step and
-// never moving the recorded step backwards: one conditional UPDATE, whose
-// zero rows affected reports false.
+// never moving the recorded step backwards, and clears its emailed code,
+// keeping the code's expiry: one conditional UPDATE, whose zero rows affected
+// reports false.
 func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
 	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
 	n, err := updateWhere[enrolmentRow](ctx, s.c, "confirm MFA enrolment",
-		map[string]any{"confirmed_at": storekit.Time(at), "last_step": gormdb.Expr("GREATEST(last_step, ?)", step)},
+		map[string]any{
+			"confirmed_at": storekit.Time(at),
+			"last_step":    gormdb.Expr("GREATEST(last_step, ?)", step),
+			"email_code":   nil,
+		},
 		"user_id = ? AND confirmed_at IS NULL", string(user))
 
 	return n > 0, err
@@ -186,6 +228,112 @@ func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error
 	return err
 }
 
+// ProveDevice records the device proof of the user's enrolment on gen, with
+// its emailed code as it is given (sealed by the wrapper): one conditional
+// UPDATE, written from a map so that the cleared attempt count and a nil code
+// are written rather than skipped as zero values. Its zero rows affected
+// reports false: gen is not the pending enrolment's generation, the device is
+// already proven, or step is not later than the recorded one.
+func (s *enrolmentStore) ProveDevice(
+	ctx context.Context, user identity.UserID, gen id.ID,
+	step int64, code []byte, codeUntil, at time.Time,
+) (bool, error) {
+	if !storekit.Storable(string(user)) {
+		return false, nil
+	}
+
+	var stored any
+	if code != nil {
+		stored = storekit.SecretText(code)
+	}
+	n, err := updateWhere[enrolmentRow](ctx, s.c, "prove MFA device",
+		map[string]any{
+			"last_step":           step,
+			"device_proven_at":    storekit.Time(at),
+			"email_code":          stored,
+			"email_code_until":    nullTs(codeUntil),
+			"email_code_attempts": 0,
+		},
+		"user_id = ? AND generation = ? AND confirmed_at IS NULL AND device_proven_at IS NULL AND last_step < ?",
+		string(user), genArg(gen), step)
+
+	return n > 0, err
+}
+
+// Complete confirms the user's proven enrolment on gen at at and clears its
+// emailed code, keeping the code's expiry: one conditional UPDATE, whose zero
+// rows affected reports false.
+func (s *enrolmentStore) Complete(ctx context.Context, user identity.UserID, gen id.ID, at time.Time) (bool, error) {
+	if !storekit.Storable(string(user)) {
+		return false, nil
+	}
+
+	n, err := updateWhere[enrolmentRow](ctx, s.c, "complete MFA enrolment",
+		map[string]any{"confirmed_at": storekit.Time(at), "email_code": nil},
+		"user_id = ? AND generation = ? AND device_proven_at IS NOT NULL AND confirmed_at IS NULL",
+		string(user), genArg(gen))
+
+	return n > 0, err
+}
+
+// ChargeEmailCode charges one attempt against the emailed code of the user's
+// enrolment on gen at at: one conditional UPDATE … RETURNING the count after
+// the write. It charges only where the enrolment is pending on gen, proven,
+// holds a code not expired at at, and has fewer than
+// mfa.MaxEmailCodeFailures attempts charged; otherwise it reports false.
+func (s *enrolmentStore) ChargeEmailCode(
+	ctx context.Context, user identity.UserID, gen id.ID, at time.Time,
+) (int, bool, error) {
+	const op = "charge emailed MFA code"
+
+	if !storekit.Storable(string(user)) {
+		return 0, false, nil
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return 0, false, failed(op, err)
+	}
+	var row enrolmentRow
+	res := q.Model(&row).
+		Clauses(clause.Returning{Columns: []clause.Column{{Name: "email_code_attempts"}}}).
+		Where("user_id = ? AND generation = ? AND confirmed_at IS NULL"+
+			" AND device_proven_at IS NOT NULL AND email_code IS NOT NULL"+
+			" AND email_code_until > ? AND email_code_attempts < ?",
+			string(user), genArg(gen), storekit.Time(at), mfa.MaxEmailCodeFailures).
+		Updates(map[string]any{"email_code_attempts": gormdb.Expr("email_code_attempts + 1")})
+	if res.Error != nil {
+		return 0, false, failed(op, res.Error)
+	}
+	if res.RowsAffected != 1 {
+		return 0, false, nil
+	}
+
+	return int(row.EmailCodeAttempts), true, nil
+}
+
+// genArg is gen as compared with the generation column: NULL for the nil
+// identifier. id.ID's own Value sends the nil identifier as the all-zero
+// UUID, which "generation = ?" would match on a row stored without a
+// generation; NULL matches nothing.
+func genArg(gen id.ID) any {
+	if gen.IsZero() {
+		return nil
+	}
+
+	return gen
+}
+
+// nullID is v as stored in a nullable uuid column: nil, NULL, for the nil
+// identifier, never the all-zero UUID.
+func nullID(v id.ID) *id.ID {
+	if v.IsZero() {
+		return nil
+	}
+
+	return &v
+}
+
 // ResealEnrolmentSecret replaces the user's secret with resealed only while
 // it still holds old: one conditional UPDATE. Inside a caller's transaction it
 // writes nothing.
@@ -197,5 +345,6 @@ func (s *enrolmentStore) ResealEnrolmentSecret(ctx context.Context, user identit
 
 var (
 	_ mfa.EnrolmentStore     = (*enrolmentStore)(nil)
+	_ mfa.DeviceProofStore   = (*enrolmentStore)(nil)
 	_ seal.EnrolmentResealer = (*enrolmentStore)(nil)
 )

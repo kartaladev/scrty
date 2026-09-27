@@ -129,9 +129,12 @@ The full list, with the reasoning behind each one, is in the `oidc` package's "L
 ## Letting required users enrol
 
 By default, a user who must use a second factor and has none is refused outright: enrolment is a
-Go API (`mfa.Enroller`) the consumer puts behind their own authorised route, reached however they
-choose. The enrolment path is the alternative: turned on explicitly, it lets such a user bind a
-second factor themselves, from a session confined to that one purpose, right after they sign in.
+Go API (`BeginEnrolment` / `ConfirmEnrolment` on the method, e.g. `mfa.TOTP`) the consumer puts
+behind their own authorised route, reached however they choose. The enrolment path is the
+alternative: turned on explicitly, it lets such a user bind a second factor themselves, from a
+session confined to that one purpose, right after they sign in. The path needs the method to
+implement `mfa.Enroller` over a store that keeps device proofs; `httpsec.EnableMFAEnrolment`
+checks that for you.
 
 Because a password alone would otherwise be enough to bind a second factor of an attacker's
 choosing, the path is off unless both halves are turned on together:
@@ -161,7 +164,7 @@ chain, err := httpsec.New(
    out-of-band code is sent to the user's address once the device is proven, and entering it here
    is what completes the enrolment. This is what stops a password holder from binding an
    authenticator the account's owner never sees: the mailbox owner takes part in every binding.
-4. **Verify** (`POST /mfa/verify`, `httpsec.EnableMFA`'s own endpoint) resolves the session's
+4. **Verify** (`POST /mfa/totp`, `httpsec.EnableMFA`'s own endpoint) resolves the session's
    pending second-factor challenge with a fresh code, exactly as it would for an enrolment made
    out of band. Only this step marks the session satisfied and rotates its handle.
 

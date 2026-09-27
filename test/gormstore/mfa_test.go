@@ -2,6 +2,7 @@ package gormstore_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	gormdb "gorm.io/gorm"
 
 	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
@@ -40,6 +42,24 @@ func TestEnrolmentStore(t *testing.T) {
 			return newEnrolmentStore(t, emptied(t, d, "mfa_enrolments"), c)
 		})
 	})
+	t.Run("gorm device proofs", func(t *testing.T) {
+		storetest.RunDeviceProofSuite(t, func(t *testing.T) storetest.DeviceProofEnrolmentStore {
+			return storetest.RequireDeviceProof(t, newEnrolmentStore(t, emptied(t, d, "mfa_enrolments"), c))
+		})
+	})
+}
+
+// provingHarness is the durable harness over the enrolment store as the
+// enrolment path's races need it: with its device-proof port.
+func provingHarness(t *testing.T) storetest.DurableHarness[storetest.DeviceProofEnrolmentStore] {
+	t.Helper()
+
+	c := storefix.TestCipher(t)
+
+	return durableHarness(migratedDB(t),
+		func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) storetest.DeviceProofEnrolmentStore {
+			return storetest.RequireDeviceProof(t, newEnrolmentStore(t, db, c, opts...))
+		})
 }
 
 func TestEnrolmentStore_StepAcceptRace(t *testing.T) {
@@ -52,6 +72,26 @@ func TestEnrolmentStore_StepAcceptRace(t *testing.T) {
 
 	t.Run("gorm", func(t *testing.T) {
 		storetest.RunStepAcceptRace(t, h, storefix.StepRace[mfa.EnrolmentStore]())
+	})
+}
+
+func TestEnrolmentStore_CompleteRace(t *testing.T) {
+	t.Parallel()
+
+	h := provingHarness(t)
+
+	t.Run("gorm", func(t *testing.T) {
+		storetest.RunCompleteRace(t, h, storefix.CompleteRace[storetest.DeviceProofEnrolmentStore]())
+	})
+}
+
+func TestEnrolmentStore_ChargeRace(t *testing.T) {
+	t.Parallel()
+
+	h := provingHarness(t)
+
+	t.Run("gorm", func(t *testing.T) {
+		storetest.RunChargeRace(t, h, storefix.ChargeRace[storetest.DeviceProofEnrolmentStore]())
 	})
 }
 
@@ -69,6 +109,14 @@ func TestEnrolmentStore_SealedColumns(t *testing.T) {
 			func(t *testing.T, db *gormdb.DB, c seal.Cipher) mfa.EnrolmentStore {
 				return newEnrolmentStore(t, db, c)
 			}))
+	})
+	t.Run("gorm emailed code", func(t *testing.T) {
+		codes := storefix.SealedEmailCodes(d.db,
+			func(t *testing.T, db *gormdb.DB, c seal.Cipher) mfa.EnrolmentStore {
+				return newEnrolmentStore(t, db, c)
+			})
+		storetest.RunSealedColumns(t, h, codes)
+		storefix.RunEmailCodeBindings(t, d.conn.DB, codes)
 	})
 }
 
@@ -105,20 +153,20 @@ func TestNewEnrolmentStore(t *testing.T) {
 		{name: "a typed nil cipher is refused", db: db, cipher: (*storefix.GatedCipher)(nil), assert: refused("the cipher is nil")},
 		{name: "a missing handle is refused", cipher: c, assert: refused("the database handle is nil")},
 		{
-			name:   "a clock does not apply to MFA enrolments",
+			name:   "it honours a clock, which decides an emailed code's expiry",
 			db:     db,
 			cipher: c,
 			opts:   []gormstore.Option{gormstore.WithClock(time.Now)},
-			assert: refused("WithClock does not apply to this store"),
+			assert: accepted,
 		},
 		{
-			name:   "the store does not offer the enrolment path, whose fields it cannot keep",
+			name:   "the store offers the enrolment path",
 			db:     db,
 			cipher: c,
 			assert: func(t *testing.T, s mfa.EnrolmentStore, err error) {
 				require.NoError(t, err)
 				_, proves := s.(mfa.DeviceProofStore)
-				assert.False(t, proves, "the durable store must not implement mfa.DeviceProofStore yet")
+				assert.True(t, proves, "the durable store must implement mfa.DeviceProofStore")
 			},
 		},
 	}
@@ -230,6 +278,24 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 					PutPending(ctx, storefix.Pending("missing-key", "TOTP-SECRET")))
 
 				e, ok, err := newEnrolmentStore(t, d.db, keys.OnlyK2(t)).Get(ctx, "missing-key")
+				refusedOpen(t, e, ok, err, seal.ErrUnknownKeyID)
+			},
+		},
+		{
+			// The code's expiry is in the past by the wall clock, so with the
+			// default clock the store would treat it as already expired and
+			// never try to open it. An injected clock still before the
+			// expiry it decided by must be the one the wrapper consults, not
+			// the wall clock: it must still try to open the code, and fail
+			// closed once k1 is gone.
+			name: "WithClock, not the wall clock, decides whether an emailed code is opened",
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				user := identity.UserID("clock-injected")
+				until := proveUnderK1(ctx, t, d.db, keys, user, time.Now().Add(-time.Hour))
+
+				before := until.Add(-time.Minute)
+				s := newEnrolmentStore(t, d.db, keys.OnlyK2(t), gormstore.WithClock(func() time.Time { return before }))
+				e, ok, err := s.Get(ctx, user)
 				refusedOpen(t, e, ok, err, seal.ErrUnknownKeyID)
 			},
 		},
@@ -378,6 +444,34 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 			},
 		},
 		{
+			name: "a charge on a database that cannot answer is an error, never a refusal",
+			assert: func(t *testing.T, ctx context.Context, _ database, keys storefix.Keys) {
+				p := storetest.RequireDeviceProof(t, newEnrolmentStore(t, unreachableDB(t), keys.Rotated(t)))
+				count, charged, err := p.ChargeEmailCode(ctx, "unreachable-charge", id.Nil, time.Now())
+				require.Error(t, err)
+				assert.False(t, charged, "a failed charge must not read as refused")
+				assert.Zero(t, count)
+			},
+		},
+		{
+			name: "a device proof on a database that cannot answer is an error, never a refusal",
+			assert: func(t *testing.T, ctx context.Context, _ database, keys storefix.Keys) {
+				p := storetest.RequireDeviceProof(t, newEnrolmentStore(t, unreachableDB(t), keys.Rotated(t)))
+				proven, err := p.ProveDevice(ctx, "unreachable-prove", id.Nil, 1000, []byte("314159"), time.Now().Add(10*time.Minute), time.Now())
+				require.Error(t, err)
+				assert.False(t, proven, "a failed device proof must not read as refused")
+			},
+		},
+		{
+			name: "a completion on a database that cannot answer is an error, never a refusal",
+			assert: func(t *testing.T, ctx context.Context, _ database, keys storefix.Keys) {
+				p := storetest.RequireDeviceProof(t, newEnrolmentStore(t, unreachableDB(t), keys.Rotated(t)))
+				completed, err := p.Complete(ctx, "unreachable-complete", id.Nil, time.Now())
+				require.Error(t, err)
+				assert.False(t, completed, "a failed completion must not read as refused")
+			},
+		},
+		{
 			name: "a lookup under a cancelled context fails with the cancellation, never absence",
 			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
@@ -385,6 +479,56 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				require.ErrorIs(t, err, context.Canceled)
 				assert.False(t, ok, "a cancelled lookup must not read as not enrolled")
 				assert.Zero(t, e)
+			},
+		},
+		{
+			// A proven enrolment with no generation, as an out-of-band begin
+			// through PutPending with id.Nil leaves it once a proof is
+			// written beside it: the nil generation must match it in none
+			// of the three writes.
+			name: "an enrolment begun without a generation is never proven, completed or charged through the nil generation",
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				s := newEnrolmentStore(t, d.db, keys.Rotated(t))
+				require.NoError(t, s.PutPending(ctx, storefix.Pending("nil-gen-begun", "TOTP-SECRET")))
+				assertNilGenerationRefused(ctx, t, d.conn.DB, s, "nil-gen-begun")
+			},
+		},
+		{
+			// The all-zero UUID written into the column out of band is what
+			// id.Nil would be bound as if it were sent as its text.
+			name: "an enrolment holding the all-zero generation is never matched by the nil generation",
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				s := newEnrolmentStore(t, d.db, keys.Rotated(t))
+				require.NoError(t, s.PutPending(ctx, storefix.Pending("nil-gen-zero", "TOTP-SECRET")))
+				_, err := d.conn.DB.ExecContext(ctx,
+					`UPDATE mfa_enrolments SET generation = '00000000-0000-0000-0000-000000000000' WHERE user_id = $1`,
+					"nil-gen-zero")
+				require.NoError(t, err)
+				assertNilGenerationRefused(ctx, t, d.conn.DB, s, "nil-gen-zero")
+			},
+		},
+		{
+			// ProveDevice writes a validly sealed code and a future expiry;
+			// taking device_proven_at back to NULL out of band, leaving the
+			// rest untouched, isolates "device_proven_at IS NOT NULL" as the
+			// only condition standing between the charge and this row.
+			name: "a charge against an outstanding, unexpired code with no device proof is refused",
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				assertOutOfBandChargeRefused(ctx, t, d, keys, "charge-unproven",
+					`UPDATE mfa_enrolments SET device_proven_at = NULL WHERE user_id = $1`,
+					"a charge against an unproven enrolment must be refused")
+			},
+		},
+		{
+			// Confirming the row out of band, without going through
+			// Complete, leaves the sealed code and its future expiry in
+			// place; the only reason left for the charge to be refused is
+			// "confirmed_at IS NULL".
+			name: "a charge against a confirmed enrolment's outstanding, unexpired code is refused",
+			assert: func(t *testing.T, ctx context.Context, d database, keys storefix.Keys) {
+				assertOutOfBandChargeRefused(ctx, t, d, keys, "charge-confirmed",
+					`UPDATE mfa_enrolments SET confirmed_at = device_proven_at + interval '1 hour' WHERE user_id = $1`,
+					"a charge against a confirmed enrolment must be refused")
 			},
 		},
 		{
@@ -414,4 +558,115 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 			tc.assert(t, ctx, d, storefix.NewKeys(t))
 		})
 	}
+}
+
+// assertOutOfBandChargeRefused begins user's enrolment on a fresh generation
+// and proves its device with an outstanding, unexpired code, then runs
+// tamper, with user as $1, out of band, and requires a charge on that
+// generation to be refused, reporting why, and to leave the row unchanged.
+func assertOutOfBandChargeRefused(
+	ctx context.Context, t *testing.T, d database, keys storefix.Keys, user identity.UserID, tamper, why string,
+) {
+	t.Helper()
+
+	s := newEnrolmentStore(t, d.db, keys.Rotated(t))
+	p := storetest.RequireDeviceProof(t, s)
+	g, err := id.NewV7Generator().NewID()
+	require.NoError(t, err)
+
+	e := storefix.Pending(user, "TOTP-SECRET")
+	e.Generation = g
+	require.NoError(t, s.PutPending(ctx, e))
+
+	provenAt := storefix.EnrolmentBegun.Add(time.Minute)
+	until := storefix.EnrolmentBegun.Add(11 * time.Minute)
+	proven, err := p.ProveDevice(ctx, user, g, 1000, []byte("314159"), until, provenAt)
+	require.NoError(t, err)
+	require.True(t, proven)
+
+	_, err = d.conn.DB.ExecContext(ctx, tamper, string(user))
+	require.NoError(t, err)
+	before := enrolmentRow(ctx, t, d.conn.DB, user)
+
+	count, charged, err := p.ChargeEmailCode(ctx, user, g, provenAt.Add(time.Minute))
+	require.NoError(t, err)
+	assert.False(t, charged, why)
+	assert.Zero(t, count)
+	assert.Equal(t, before, enrolmentRow(ctx, t, d.conn.DB, user), "a refused charge changed the row")
+}
+
+// assertNilGenerationRefused requires the three device-proof writes naming
+// the nil generation to be refused against user's enrolment, and to leave its
+// row unchanged: first a proof of the pending enrolment, then, with a proof
+// and an outstanding code written beside it out of band, a completion and a
+// charge.
+func assertNilGenerationRefused(
+	ctx context.Context, t *testing.T, db *sql.DB, s mfa.EnrolmentStore, user identity.UserID,
+) {
+	t.Helper()
+
+	p := storetest.RequireDeviceProof(t, s)
+	at := storefix.EnrolmentBegun.Add(time.Minute)
+
+	proven, err := p.ProveDevice(ctx, user, id.Nil, 1000, []byte("314159"), at.Add(10*time.Minute), at)
+	require.NoError(t, err)
+	assert.False(t, proven, "a proof naming the nil generation matched an enrolment without one")
+
+	_, err = db.ExecContext(ctx, `UPDATE mfa_enrolments
+SET device_proven_at = $2, email_code = 'b3V0LW9mLWJhbmQ', email_code_until = $3 WHERE user_id = $1`,
+		string(user), at, at.Add(10*time.Minute))
+	require.NoError(t, err)
+	before := enrolmentRow(ctx, t, db, user)
+
+	completed, err := p.Complete(ctx, user, id.Nil, at)
+	require.NoError(t, err)
+	assert.False(t, completed, "a completion naming the nil generation matched an enrolment without one")
+
+	count, charged, err := p.ChargeEmailCode(ctx, user, id.Nil, at)
+	require.NoError(t, err)
+	assert.False(t, charged, "a charge naming the nil generation matched an enrolment without one")
+	assert.Zero(t, count)
+
+	assert.Equal(t, before, enrolmentRow(ctx, t, db, user), "a refused write changed the row")
+}
+
+// enrolmentRow is user's enrolment row as JSON, read out of band.
+func enrolmentRow(ctx context.Context, t *testing.T, db *sql.DB, user identity.UserID) string {
+	t.Helper()
+
+	var row string
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT row_to_json(e)::text FROM mfa_enrolments e WHERE user_id = $1`, string(user)).Scan(&row))
+
+	return row
+}
+
+// proveUnderK1 begins user's enrolment and proves its device with an emailed
+// code expiring at until, both under k1 alone, then reads it once through the
+// rotated keyring, which re-seals the secret under k2 and leaves the code
+// under k1, as an ordinary rotation does before k1 is removed. It returns the
+// code's expiry as stored.
+func proveUnderK1(
+	ctx context.Context, t *testing.T, db *gormdb.DB, keys storefix.Keys, user identity.UserID, until time.Time,
+) time.Time {
+	t.Helper()
+
+	g, err := id.NewV7Generator().NewID()
+	require.NoError(t, err)
+	e := storefix.Pending(user, "TOTP-SECRET")
+	e.Generation = g
+
+	s := newEnrolmentStore(t, db, keys.UnderK1(t))
+	require.NoError(t, s.PutPending(ctx, e))
+	until = until.UTC().Truncate(time.Microsecond)
+	proven, err := storetest.RequireDeviceProof(t, s).
+		ProveDevice(ctx, user, g, 1000, []byte("314159"), until, until.Add(-10*time.Minute))
+	require.NoError(t, err)
+	require.True(t, proven)
+
+	_, ok, err := newEnrolmentStore(t, db, keys.Rotated(t)).Get(ctx, user)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	return until
 }

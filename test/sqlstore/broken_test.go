@@ -128,6 +128,40 @@ var brokenVariants = []storefix.BrokenVariant{
 		FailsCase: "a sealed value copied to another record does not open there",
 	},
 	{
+		Name: "mfa-email-code-identity-cipher",
+		Run: func(t *testing.T) {
+			conn := migratedDB(t)
+			h := durableHarness(conn, func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) mfa.EnrolmentStore {
+				return newEnrolmentStore(t, db, storefix.IdentityCipher{}, opts...)
+			})
+			t.Run("sqlstore", func(t *testing.T) {
+				storetest.RunSealedColumns(t, h, storefix.SealedEmailCodes(conn.DB,
+					func(t *testing.T, db *sql.DB, _ seal.Cipher) mfa.EnrolmentStore {
+						return newEnrolmentStore(t, db, storefix.IdentityCipher{})
+					}))
+			})
+		},
+		FailsCase: "the stored value, decoded, does not hold the plaintext",
+		FailsWith: "the decoded column holds the plaintext",
+	},
+	{
+		Name: "mfa-email-code-missing-aad-cipher",
+		Run: func(t *testing.T) {
+			conn := migratedDB(t)
+			c := storefix.MissingAADCipher{Cipher: storefix.TestCipher(t)}
+			h := durableHarness(conn, func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) mfa.EnrolmentStore {
+				return newEnrolmentStore(t, db, c, opts...)
+			})
+			t.Run("sqlstore", func(t *testing.T) {
+				storetest.RunSealedColumns(t, h, storefix.SealedEmailCodes(conn.DB,
+					func(t *testing.T, db *sql.DB, c seal.Cipher) mfa.EnrolmentStore {
+						return newEnrolmentStore(t, db, storefix.MissingAADCipher{Cipher: c})
+					}))
+			})
+		},
+		FailsCase: "a sealed value copied to another record does not open there",
+	},
+	{
 		Name: "mfa-read-then-write-accept-step",
 		Run: func(t *testing.T) {
 			c := storefix.TestCipher(t)

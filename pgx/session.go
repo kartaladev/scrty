@@ -37,6 +37,10 @@ import (
 // session.ErrSessionNotFound when the session is gone, so a save racing a
 // logout never brings the session back.
 //
+// The enrolment-origin marker and the enrolment generation are kept in
+// columns of their own, NULL when the session carries neither, so a session
+// confined to MFA enrolment stays confined when it is loaded again.
+//
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
 //
@@ -48,11 +52,6 @@ import (
 //     session whose user reference, first factor, provider fields or data
 //     hold either is refused with an error that names the field, never the
 //     value, and nothing is written; the value is never altered.
-//   - The enrolment-origin marker and the enrolment generation have no
-//     columns yet. A Create or Save of a session carrying either is refused
-//     with an error naming the field, and nothing is written, rather than
-//     dropping the marker, which would release a session confined to MFA
-//     enrolment.
 func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session.Store, error) {
 	cfg, err := newConfig(pool, opts, optIDGenerator, optClock)
 	if err != nil {
@@ -74,9 +73,9 @@ func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session
 // ExternalIDToken as given, which is why it is not exported.
 type sessionStore struct{ c *config }
 
-// sessionColumns returns the values of sess's columns from user_id to data,
-// in the order SessionUpdate takes them, or the refusal of a session this
-// store cannot hold without altering it.
+// sessionColumns returns the values of sess's columns from user_id to
+// enrolment_generation, in the order SessionUpdate takes them, or the refusal
+// of a session this store cannot hold without altering it.
 func sessionColumns(op string, sess *session.Session) ([]any, error) {
 	if err := storekit.CheckSession(sess); err != nil {
 		return nil, failed(op, err)
@@ -99,6 +98,7 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		int64(sess.MFA), nullTs(sess.MFASatisfiedAt),
 		sess.PasswordChangePending, sess.ExternalProvider, sess.ExternalIssuer, sess.ExternalSessionID,
 		sess.ExternalIDToken, string(encoded),
+		nullTs(sess.EnrolmentOriginDeadline), nullID(sess.EnrolmentGeneration),
 	}, nil
 }
 
@@ -158,13 +158,15 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		mfaState      int64
 		mfaSatisfied  pgtype.Timestamptz
 		encoded       []byte
+		origin        pgtype.Timestamptz
+		generation    pgtype.UUID
 		created, last time.Time
 		idle, abs     time.Time
 	)
 	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
-		&sess.ExternalIDToken, &encoded)
+		&sess.ExternalIDToken, &encoded, &origin, &generation)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -189,6 +191,10 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	if sess.MFASatisfiedAt, err = fromNull(mfaSatisfied); err != nil {
 		return nil, failed(op, err)
 	}
+	if sess.EnrolmentOriginDeadline, err = fromNull(origin); err != nil {
+		return nil, failed(op, err)
+	}
+	sess.EnrolmentGeneration = nullableID(generation)
 	sess.CreatedAt, sess.LastAccessedAt = created.UTC(), last.UTC()
 	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = idle.UTC(), abs.UTC()
 

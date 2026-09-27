@@ -34,6 +34,11 @@ import (
 // session.ErrSessionNotFound when the session is gone, so a save racing a
 // logout never brings the session back.
 //
+// The enrolment path's session state is stored and returned whole: the
+// enrolment-origin marker, NULL when the session is not marked, and the
+// enrolment generation, NULL when the session has begun no enrolment. Neither
+// is a secret, and neither is sealed.
+//
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
 //
@@ -45,11 +50,6 @@ import (
 //     session whose user reference, first factor, provider fields or data
 //     hold either is refused with an error that names the field, never the
 //     value, and nothing is written; the value is never altered.
-//   - The enrolment-origin marker and the enrolment generation have no
-//     columns yet. A Create or Save of a session carrying either is refused
-//     with an error naming the field, and nothing is written, rather than
-//     dropping the marker, which would release a session confined to MFA
-//     enrolment.
 func NewSessionStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (session.Store, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optClock)
 	if err != nil {
@@ -103,6 +103,9 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		ExternalSessionID:     sess.ExternalSessionID,
 		ExternalIDToken:       sess.ExternalIDToken,
 		Data:                  string(encoded),
+		// NULL when the session is not marked, or has begun no enrolment.
+		EnrolmentOriginDeadline: nullTs(sess.EnrolmentOriginDeadline),
+		EnrolmentGeneration:     nullID(sess.EnrolmentGeneration),
 	}, nil
 }
 
@@ -189,20 +192,24 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	}
 
 	sess := session.Session{
-		ID:                    sessionID,
-		UserID:                identity.UserID(row.UserID),
-		CreatedAt:             row.CreatedAt.UTC(),
-		LastAccessedAt:        row.LastAccessedAt.UTC(),
-		IdleExpiresAt:         row.IdleExpiresAt.UTC(),
-		AbsoluteExpiresAt:     row.AbsoluteExpiresAt.UTC(),
-		FirstFactor:           factor.Kind(row.FirstFactor),
-		MFA:                   session.MFAState(row.MFAState),
-		MFASatisfiedAt:        fromNull(row.MFASatisfiedAt),
-		PasswordChangePending: row.PasswordChangePending,
-		ExternalProvider:      row.ExternalProvider,
-		ExternalIssuer:        row.ExternalIssuer,
-		ExternalSessionID:     row.ExternalSessionID,
-		ExternalIDToken:       row.ExternalIDToken,
+		ID:                      sessionID,
+		UserID:                  identity.UserID(row.UserID),
+		CreatedAt:               row.CreatedAt.UTC(),
+		LastAccessedAt:          row.LastAccessedAt.UTC(),
+		IdleExpiresAt:           row.IdleExpiresAt.UTC(),
+		AbsoluteExpiresAt:       row.AbsoluteExpiresAt.UTC(),
+		FirstFactor:             factor.Kind(row.FirstFactor),
+		MFA:                     session.MFAState(row.MFAState),
+		MFASatisfiedAt:          fromNull(row.MFASatisfiedAt),
+		PasswordChangePending:   row.PasswordChangePending,
+		ExternalProvider:        row.ExternalProvider,
+		ExternalIssuer:          row.ExternalIssuer,
+		ExternalSessionID:       row.ExternalSessionID,
+		ExternalIDToken:         row.ExternalIDToken,
+		EnrolmentOriginDeadline: fromNull(row.EnrolmentOriginDeadline),
+	}
+	if row.EnrolmentGeneration != nil {
+		sess.EnrolmentGeneration = *row.EnrolmentGeneration
 	}
 	if err := json.Unmarshal([]byte(row.Data), &sess.Data); err != nil {
 		return nil, failed(op, err)

@@ -8,16 +8,19 @@ package crossbackend_test
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gormpg "gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/factor"
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
@@ -185,6 +188,32 @@ func (b backends) sessionStore(t *testing.T, name string) session.Store {
 	}
 }
 
+// clockedSessionStore is sessionStore, wired to clock instead of time.Now, so
+// a test can move a durable store's own expiry judgement without waiting for
+// it: each backend's session store judges expiry against its own clock
+// option, separately from whatever session.Manager it is wrapped in.
+func (b backends) clockedSessionStore(t *testing.T, name string, clock func() time.Time) session.Store {
+	t.Helper()
+
+	switch name {
+	case "sqlstore":
+		s, err := sqlstore.NewSessionStore(b.conn.DB, b.cipher, sqlstore.WithClock(clock))
+		require.NoError(t, err)
+		return s
+	case "pgx":
+		s, err := pgxstore.NewSessionStore(b.pool, b.cipher, pgxstore.WithClock(clock))
+		require.NoError(t, err)
+		return s
+	case "gorm":
+		s, err := gormstore.NewSessionStore(b.gdb, b.cipher, gormstore.WithClock(clock))
+		require.NoError(t, err)
+		return s
+	default:
+		t.Fatalf("unknown backend %q", name)
+		return nil
+	}
+}
+
 // oneTimeStore builds the one-time token store of the named backend.
 func (b backends) oneTimeStore(t *testing.T, name string) onetime.Store {
 	t.Helper()
@@ -277,6 +306,23 @@ func (b backends) enrolmentStore(t *testing.T, name string) mfa.EnrolmentStore {
 		t.Fatalf("unknown backend %q", name)
 		return nil
 	}
+}
+
+// rawEmailCode reads the enrolment path's emailed-code column directly, out
+// of band of every backend's own decoding, over the one PostgreSQL database
+// every backend shares. It is how a test tells the column was really sealed,
+// not merely re-typed: the raw envelope must never equal the plaintext code
+// a caller proves the device with.
+func (b backends) rawEmailCode(t *testing.T, user identity.UserID) string {
+	t.Helper()
+
+	var raw sql.NullString
+	err := b.conn.DB.QueryRowContext(t.Context(),
+		"SELECT email_code FROM mfa_enrolments WHERE user_id = $1", string(user)).Scan(&raw)
+	require.NoError(t, err)
+	require.True(t, raw.Valid, "email_code must be set once the device is proven with email confirmation on")
+
+	return raw.String
 }
 
 // linkStore builds the OIDC link store of the named backend.
@@ -457,6 +503,8 @@ func TestCrossBackend(t *testing.T) {
 		{name: "transaction attached for gorm, invisible to others", run: testTransactionAttachedFor("gorm")},
 		{name: "state survives a process restart", run: testSurvivesRestart},
 		{name: "another replica sees a consumption", run: testAnotherReplicaSeesConsumption},
+		{name: "enrolment fields shared across backends", run: testEnrolmentFieldsShared},
+		{name: "enrolment flow through session.Manager and mfa.TOTP", run: testEnrolmentDurableFlow},
 	}
 
 	for _, tc := range cases {
@@ -596,4 +644,181 @@ func testAnotherReplicaSeesConsumption(t *testing.T, b backends) {
 	second := b.oneTimeStore(t, "pgx")
 	err := second.Consume(t.Context(), tok.ID, time.Now())
 	require.ErrorIs(t, err, onetime.ErrTokenNotFound, "a second replica must see the first consumption")
+}
+
+// testEnrolmentFieldsShared proves every ordered pair of backends agrees on
+// the enrolment path's durable fields ("Backends share the enrolment
+// fields"): an enrolment-only session carrying its enrolment-origin marker
+// and generation, saved through the writer, loads through the reader with
+// all three equal; and a device proven with an emailed code, sealed, through
+// the writer's enrolment store is read back with the same code through the
+// reader's, which also charges an attempt against it.
+func testEnrolmentFieldsShared(t *testing.T, b backends) {
+	t.Helper()
+
+	for _, writer := range backendNames {
+		for _, reader := range backendNames {
+			if writer == reader {
+				continue
+			}
+
+			t.Run(writer+"_writes_"+reader+"_reads", func(t *testing.T) {
+				t.Parallel()
+
+				ctx := t.Context()
+				seed := "enrolment-" + writer + "-" + reader
+				gen := crossBackendID("generation-" + seed)
+
+				sess := crossBackendSession(seed)
+				sess.MFA = session.MFAEnrolmentPending
+				deadline := time.Now().UTC().Add(12 * time.Hour).Truncate(time.Microsecond)
+				sess.EnrolmentOriginDeadline = deadline
+				sess.EnrolmentGeneration = gen
+				require.NoError(t, b.sessionStore(t, writer).Create(ctx, sess))
+
+				got, err := b.sessionStore(t, reader).Load(ctx, seed)
+				require.NoError(t, err)
+				assert.Equal(t, session.MFAEnrolmentPending, got.MFA)
+				assertInstant(t, "EnrolmentOriginDeadline", deadline, got.EnrolmentOriginDeadline)
+				assert.Equal(t, gen, got.EnrolmentGeneration)
+
+				user := identity.UserID("u-" + seed)
+				begun := time.Now().UTC().Truncate(time.Microsecond)
+				w := b.enrolmentStore(t, writer)
+				require.NoError(t, w.PutPending(ctx, mfa.Enrolment{
+					User: user, Secret: []byte("TOTP-SECRET"), CreatedAt: begun, Generation: gen,
+				}))
+				proofs, ok := w.(mfa.DeviceProofStore)
+				require.True(t, ok, "the %s enrolment store must implement mfa.DeviceProofStore", writer)
+				proven, err := proofs.ProveDevice(ctx, user, gen, 1000, []byte("314159"), begun.Add(10*time.Minute), begun)
+				require.NoError(t, err)
+				require.True(t, proven)
+
+				r := b.enrolmentStore(t, reader)
+				e, found, err := r.Get(ctx, user)
+				require.NoError(t, err)
+				require.True(t, found)
+				assert.Equal(t, gen, e.Generation)
+				assert.Equal(t, []byte("314159"), e.EmailCode, "the emailed code sealed through %s must open through %s", writer, reader)
+				assertInstant(t, "DeviceProvenAt", begun, e.DeviceProvenAt)
+				assertInstant(t, "EmailCodeUntil", begun.Add(10*time.Minute), e.EmailCodeUntil)
+
+				charges, ok := r.(mfa.DeviceProofStore)
+				require.True(t, ok, "the %s enrolment store must implement mfa.DeviceProofStore", reader)
+				count, charged, err := charges.ChargeEmailCode(ctx, user, gen, begun.Add(time.Minute))
+				require.NoError(t, err)
+				assert.True(t, charged, "a code proven through %s must be charged through %s", writer, reader)
+				assert.Equal(t, 1, count)
+			})
+		}
+	}
+}
+
+// testEnrolmentDurableFlow proves the enrolment path's durable guarantees
+// hold when driven the way a real chain drives them: through session.Manager,
+// not a store's raw methods, and through mfa.TOTP's Enroller API, not the
+// enrolment store's raw methods. Each backend runs, on its own database
+// connection, one complete flow: a session is created, marked
+// enrolment-pending and saved; loading it back shows the lowered deadlines,
+// the marker and the generation the mark and a begin left; the device is
+// proven with a valid code and an emailed code is issued; completing without
+// that code is refused; the raw column the code is sealed into is never the
+// plaintext; redeeming the emailed code enrols the user; and restoring the
+// deadlines on satisfy, then rotating the handle, leaves a session that
+// reloads with its ordinary deadlines and no marker or generation. An
+// injected clock keeps every deadline computed here exact against what a
+// reload reports, so timestamp truncation and the NULL/zero round trip of the
+// enrolment-origin marker are pinned along the way.
+func testEnrolmentDurableFlow(t *testing.T, b backends) {
+	t.Helper()
+
+	const (
+		lifetime        = 15 * time.Minute
+		idleTimeout     = time.Hour
+		absoluteTimeout = 24 * time.Hour
+	)
+
+	for _, name := range backendNames {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+
+			at := time.Now().UTC().Truncate(time.Microsecond)
+			clock := func() time.Time { return at }
+
+			sessions, err := session.NewManager(
+				session.WithStore(b.clockedSessionStore(t, name, clock)),
+				session.WithClock(clock),
+				session.WithIdleTimeout(idleTimeout),
+				session.WithAbsoluteTimeout(absoluteTimeout),
+			)
+			require.NoError(t, err)
+
+			method, err := mfa.NewTOTP(b.enrolmentStore(t, name), "Durable "+name, mfa.WithClock(clock))
+			require.NoError(t, err)
+
+			user := identity.UserID("u-enrolment-flow-" + name)
+
+			s, err := sessions.Create(ctx, user, session.WithFirstFactor(factor.Password))
+			require.NoError(t, err)
+
+			sessions.MarkEnrolmentPending(s, lifetime)
+
+			prov, gen, err := method.BeginEnrolmentGeneration(ctx, user, "durable-"+name+"@example.com")
+			require.NoError(t, err)
+			require.NotEmpty(t, prov.Secret)
+
+			s.EnrolmentGeneration = gen
+			require.NoError(t, sessions.Save(ctx, s))
+
+			loaded, err := sessions.Load(ctx, s.ID)
+			require.NoError(t, err)
+			assert.Equal(t, session.MFAEnrolmentPending, loaded.MFA)
+			assert.Equal(t, gen, loaded.EnrolmentGeneration)
+			assertInstant(t, "AbsoluteExpiresAt", at.Add(lifetime), loaded.AbsoluteExpiresAt)
+			assert.False(t, loaded.IdleExpiresAt.After(loaded.AbsoluteExpiresAt),
+				"the idle deadline never outlives the lowered absolute one")
+			assertInstant(t, "EnrolmentOriginDeadline", at.Add(absoluteTimeout), loaded.EnrolmentOriginDeadline)
+
+			code, err := totp.GenerateCode(prov.Secret, at)
+			require.NoError(t, err)
+
+			const emailCodeTTL = 10 * time.Minute
+			emailCode, err := method.ProveDevice(ctx, user, gen, code, true, emailCodeTTL)
+			require.NoError(t, err)
+			require.NotEmpty(t, emailCode)
+
+			err = method.CompleteEnrolment(ctx, user, gen)
+			require.ErrorIs(t, err, mfa.ErrInvalidCode,
+				"completion without the emailed code must be refused")
+
+			raw := b.rawEmailCode(t, user)
+			assert.NotEmpty(t, raw)
+			assert.NotEqual(t, emailCode, raw, "the raw email_code column must not be the plaintext code")
+
+			require.NoError(t, method.RedeemEmailCode(ctx, user, gen, emailCode))
+
+			enrolled, err := method.Enrolled(ctx, user)
+			require.NoError(t, err)
+			assert.True(t, enrolled, "redeeming the emailed code must enrol the user")
+
+			loaded.MFA = session.MFASatisfied
+			loaded.MFASatisfiedAt = at
+			require.NoError(t, sessions.RestoreEnrolmentDeadlines(loaded))
+
+			rotated, err := sessions.Rotate(ctx, loaded)
+			require.NoError(t, err)
+
+			reloaded, err := sessions.Load(ctx, rotated.ID)
+			require.NoError(t, err)
+			assert.Equal(t, session.MFASatisfied, reloaded.MFA)
+			assert.True(t, reloaded.EnrolmentOriginDeadline.IsZero(),
+				"the enrolment-origin marker must be cleared once restored, round-tripping NULL back to zero")
+			assert.Equal(t, id.ID{}, reloaded.EnrolmentGeneration,
+				"the enrolment generation must be cleared once restored")
+			assertInstant(t, "AbsoluteExpiresAt", at.Add(absoluteTimeout), reloaded.AbsoluteExpiresAt)
+			assertInstant(t, "IdleExpiresAt", at.Add(idleTimeout), reloaded.IdleExpiresAt)
+		})
+	}
 }

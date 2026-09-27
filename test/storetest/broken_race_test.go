@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -138,12 +140,95 @@ func blockedVariant(d raceDefect) brokenVariant {
 }
 
 const (
-	consumeCase = "exactly one consumption wins per record"
-	insertCase  = "exactly one insert wins per record"
-	stepCase    = "exactly one acceptance of a step wins per record"
+	consumeCase  = "exactly one consumption wins per record"
+	insertCase   = "exactly one insert wins per record"
+	stepCase     = "exactly one acceptance of a step wins per record"
+	completeCase = "exactly one completion wins per record"
+	chargeCase   = "exactly the allowed number of charges win per code"
 )
 
-var raceVariants = []brokenVariant{
+// sharedHarness is a fake harness whose New and NewReplica both return one
+// store, made once per run, as two instances on one database share its
+// state. It is as wide as the charge race's default of 20 racers.
+func sharedHarness[S any](newStore func() S) storetest.DurableHarness[S] {
+	var (
+		once   sync.Once
+		shared S
+	)
+	h := fakeHarness(func(*testing.T) S {
+		once.Do(func() { shared = newStore() })
+		return shared
+	})
+	h.PoolSize = 20
+	return h
+}
+
+// enrolmentRace names which of the enrolment path's writes a variant races.
+type enrolmentRace int
+
+const (
+	completeRace enrolmentRace = iota
+	chargeRace
+)
+
+// enrolmentRaceVariant races completions or charges through storefix's race
+// inputs against a store newStore makes, shared by both instances. An empty
+// failsCase is a conforming run, which the race must pass.
+func enrolmentRaceVariant[S storetest.DeviceProofEnrolmentStore](
+	name string, race enrolmentRace, newStore func() S, failsCase, failsWith string,
+) brokenVariant {
+	return brokenVariant{
+		name: name,
+		run: func(t *testing.T) {
+			if race == completeRace {
+				storetest.RunCompleteRace(t, sharedHarness(newStore), storefix.CompleteRace[S]())
+				return
+			}
+			storetest.RunChargeRace(t, sharedHarness(newStore), storefix.ChargeRace[S]())
+		},
+		failsCase: failsCase,
+		failsWith: failsWith,
+	}
+}
+
+// mfaRaceStore returns a maker of an mfaStore carrying d.
+func mfaRaceStore(d mfaDefect) func() *mfaStore {
+	return func() *mfaStore { return newMFAStore(d) }
+}
+
+// enrolmentRaceVariants race the enrolment path's writes: the shipped memory
+// store and the conforming fake must pass, and the fakes deciding by a read,
+// or leaving the wrong state behind, must fail.
+var enrolmentRaceVariants = []brokenVariant{
+	enrolmentRaceVariant("race-complete-memory", completeRace, mfa.NewMemoryEnrolmentStore, "", ""),
+	enrolmentRaceVariant("race-complete-conforming", completeRace, mfaRaceStore(mfaConforming), "", ""),
+	enrolmentRaceVariant("race-complete-read-then-write", completeRace, mfaRaceStore(mfaCompleteReadThenWrite),
+		completeCase, "more than one successful completion"),
+	enrolmentRaceVariant("race-charge-memory", chargeRace, mfa.NewMemoryEnrolmentStore, "", ""),
+	enrolmentRaceVariant("race-charge-conforming", chargeRace, mfaRaceStore(mfaConforming), "", ""),
+	enrolmentRaceVariant("race-charge-read-then-write", chargeRace, mfaRaceStore(mfaChargeReadThenWrite),
+		chargeCase, "more than 5 successful charge"),
+	// Exactly the allowed charges win, so only the check of each record
+	// after the race finds the code gone.
+	enrolmentRaceVariant("race-charge-clears-code-at-cap", chargeRace, mfaRaceStore(mfaChargeClearsCodeAtCap),
+		chargeCase, "EmailCode must still be stored after the race"),
+	{
+		// A single-use store lets one charge through where five are
+		// allowed: the race counts wins both ways.
+		name: "race-charge-single-winner",
+		run: func(t *testing.T) {
+			h := raceHarness(raceConforming)
+			h.PoolSize = 20
+			storetest.RunChargeRace(t, h, raceOver())
+		},
+		failsCase: chargeCase,
+		failsWith: "fewer than 5 successful charge: 1 of 20 racers won",
+	},
+}
+
+// raceVariants are the race suites' variants: the single-use races' below,
+// then the enrolment path's.
+var raceVariants = append([]brokenVariant{
 	raceVariant("consume", storetest.RunConsumeRace[*raceStore], raceConforming, "", ""),
 	raceVariant("consume", storetest.RunConsumeRace[*raceStore], raceReadThenWrite,
 		consumeCase, "more than one successful consumption"),
@@ -177,4 +262,4 @@ var raceVariants = []brokenVariant{
 		failsCase: "narrow pool",
 		failsWith: "storetest: a pool of 2 connections cannot exercise a race of 8 racers",
 	},
-}
+}, enrolmentRaceVariants...)

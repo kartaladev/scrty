@@ -16,13 +16,16 @@ import (
 
 	"github.com/kartaladev/scrty/apikey"
 	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/test/internal/storefix"
+	"github.com/kartaladev/scrty/test/storetest"
 )
 
 // recordingPool is the connection pool beneath a *gorm.DB: every statement
@@ -173,22 +176,22 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	cases := []testCase{
 		{name: "session create", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Create(ctx, storefix.DurableSession("stmt-sid-create", now))
-		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session create of a stored identifier", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now)))
 			started()
 			err := counted.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now))
 			require.Error(t, err)
 			return nil
-		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session save", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-save", now)))
 			started()
 			return counted.sessions.Save(ctx, storefix.DurableSession("stmt-sid-save", now))
-		}, assert: one(`UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14 WHERE id_digest = $15`)},
+		}, assert: one(`UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14,"enrolment_origin_deadline"=$15,"enrolment_generation"=$16 WHERE id_digest = $17`)},
 		{name: "session save of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Save(ctx, storefix.DurableSession("stmt-sid-gone", now))
-		}), assert: refused(session.ErrSessionNotFound, `UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14 WHERE id_digest = $15`)},
+		}), assert: refused(session.ErrSessionNotFound, `UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14,"enrolment_origin_deadline"=$15,"enrolment_generation"=$16 WHERE id_digest = $17`)},
 		{name: "session load", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-load", now)))
 			started()
@@ -275,13 +278,13 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 
 		{name: "MFA begin", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-begin", "TOTP"))
-		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","last_step"=$7 WHERE mfa_enrolments.confirmed_at IS NULL`)},
+		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$12,"device_proven_at"=$13,"email_code"=$14,"email_code_until"=$15,"email_code_attempts"=$16 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA begin over a confirmed enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", 1000, now)))
 			started()
 			return counted.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP-OTHER"))
-		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at") VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","last_step"=$7 WHERE mfa_enrolments.confirmed_at IS NULL`)},
+		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$12,"device_proven_at"=$13,"email_code"=$14,"email_code_until"=$15,"email_code_attempts"=$16 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA get", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-get", "TOTP")))
 			started()
@@ -291,7 +294,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
 			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", 1000, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"last_step"=GREATEST(last_step, $2) WHERE user_id = $3 AND confirmed_at IS NULL`)},
+		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND confirmed_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", 1000, now)))
@@ -304,6 +307,33 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			started()
 			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", 1000))
 		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND confirmed_at IS NOT NULL AND last_step < $3`)},
+		{name: "MFA device proof", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			gen := begunOn(ctx, t, seed, "stmt-mfa-prove")
+			started()
+			return flag(proofs(t, counted).ProveDevice(ctx, "stmt-mfa-prove", gen, 1000, []byte("314159"), now.Add(10*time.Minute), now))
+		}, assert: one(proveStmt)},
+		{name: "MFA device proof on another generation", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			begunOn(ctx, t, seed, "stmt-mfa-prove-stale")
+			started()
+			return flag(proofs(t, counted).ProveDevice(ctx, "stmt-mfa-prove-stale", id.MustParse("01926a4e-0000-7000-8000-0000000000ff"), 1000, nil, time.Time{}, now))
+		}, assert: refused(errNotStored, proveStmt)},
+		{name: "MFA completion", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			gen := provenOn(ctx, t, seed, "stmt-mfa-complete", now)
+			started()
+			return flag(proofs(t, counted).Complete(ctx, "stmt-mfa-complete", gen, now))
+		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2 WHERE user_id = $3 AND generation = $4 AND device_proven_at IS NOT NULL AND confirmed_at IS NULL`)},
+		{name: "MFA charge", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			gen := provenOn(ctx, t, seed, "stmt-mfa-charge", now)
+			started()
+			_, ok, err := proofs(t, counted).ChargeEmailCode(ctx, "stmt-mfa-charge", gen, now)
+			return flag(ok, err)
+		}, assert: one(chargeStmt)},
+		{name: "MFA charge with no code outstanding", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			gen := begunOn(ctx, t, seed, "stmt-mfa-charge-none")
+			started()
+			_, ok, err := proofs(t, counted).ChargeEmailCode(ctx, "stmt-mfa-charge-none", gen, now)
+			return flag(ok, err)
+		}, assert: refused(errNotStored, chargeStmt)},
 		{name: "MFA delete", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.Delete(ctx, "stmt-mfa-delete")
 		}), assert: one(`DELETE FROM "mfa_enrolments" WHERE user_id = $1`)},
@@ -408,6 +438,46 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		require.NoError(t, recorded.WithContext(t.Context()).Exec("SELECT 1").Error)
 		assert.Equal(t, []string{"SELECT 1"}, normalized(pool.take()))
 	})
+}
+
+// The enrolment path's conditional writes, as the device-proof rows pin them.
+const (
+	proveStmt  = `UPDATE "mfa_enrolments" SET "device_proven_at"=$1,"email_code"=$2,"email_code_attempts"=$3,"email_code_until"=$4,"last_step"=$5 WHERE user_id = $6 AND generation = $7 AND confirmed_at IS NULL AND device_proven_at IS NULL AND last_step < $8`
+	chargeStmt = `UPDATE "mfa_enrolments" SET "email_code_attempts"=email_code_attempts + 1 WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_proven_at IS NOT NULL AND email_code IS NOT NULL AND email_code_until > $3 AND email_code_attempts < $4 RETURNING "email_code_attempts"`
+)
+
+// proofs is s's enrolment store as the enrolment path's port.
+func proofs(t *testing.T, s storeSet) mfa.DeviceProofStore {
+	t.Helper()
+
+	return storetest.RequireDeviceProof(t, s.enrolments)
+}
+
+// begunOn begins user's enrolment through s on a generation of its own, and
+// returns the generation.
+func begunOn(ctx context.Context, t *testing.T, s storeSet, user identity.UserID) id.ID {
+	t.Helper()
+
+	gen, err := id.NewV7Generator().NewID()
+	require.NoError(t, err)
+	e := storefix.Pending(user, "TOTP")
+	e.Generation = gen
+	require.NoError(t, s.enrolments.PutPending(ctx, e))
+
+	return gen
+}
+
+// provenOn is begunOn followed by a device proof at now, with an emailed code
+// good for ten minutes.
+func provenOn(ctx context.Context, t *testing.T, s storeSet, user identity.UserID, now time.Time) id.ID {
+	t.Helper()
+
+	gen := begunOn(ctx, t, s, user)
+	ok, err := proofs(t, s).ProveDevice(ctx, user, gen, 1000, []byte("314159"), now.Add(10*time.Minute), now)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	return gen
 }
 
 // ignoringTwo drops the enrolment Get returns beside its found flag.

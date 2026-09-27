@@ -101,6 +101,7 @@ const (
 	colBytea       = "bytea"
 	colJSONB       = "jsonb"
 	colBigint      = "bigint"
+	colInteger     = "integer"
 	colSmallint    = "smallint"
 	colBoolean     = "boolean"
 	colTimestamptz = "timestamp with time zone" // microsecond precision: no modifier
@@ -127,13 +128,11 @@ func optional(name, typ string) column { return column{name: name, typ: typ, nul
 // nullability and defaults, against design.md's table model (decision 2) and
 // the column encodings of decision 9 (bytea for the signing key envelope and
 // the digests, base64url text for the MFA secret and the session ID token).
-//
-// It excludes the fields decision 2 explicitly keeps out of this migration set
-// until mfa-enrolment-path adds them test-first:
+// It also pins the enrolment-path columns mfa-enrolment-path adds:
 // sessions.enrolment_origin_deadline and sessions.enrolment_generation, and
 // mfa_enrolments.generation, device_proven_at, email_code, email_code_until
-// and email_code_attempts. A column reappearing before that change lands is
-// caught here, by name.
+// and email_code_attempts. sessions.mfa_state stays a smallint: the row below
+// pins its type unchanged even though it gains a new ordinal value.
 var securityStateColumns = map[string][]column{
 	"sessions": {
 		required("id", colUUID),
@@ -152,6 +151,8 @@ var securityStateColumns = map[string][]column{
 		defaulted("external_session_id", colText, defEmptyText),
 		defaulted("external_id_token", colText, defEmptyText),
 		defaulted("data", colJSONB, defEmptyObject),
+		optional("enrolment_origin_deadline", colTimestamptz),
+		optional("enrolment_generation", colUUID),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -173,6 +174,11 @@ var securityStateColumns = map[string][]column{
 		optional("confirmed_at", colTimestamptz),
 		defaulted("last_step", colBigint, "0"),
 		required("created_at", colTimestamptz),
+		optional("generation", colUUID),
+		optional("device_proven_at", colTimestamptz),
+		optional("email_code", colText),
+		optional("email_code_until", colTimestamptz),
+		defaulted("email_code_attempts", colInteger, "0"),
 	},
 	"api_keys": {
 		required("id", colUUID),

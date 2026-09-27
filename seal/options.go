@@ -1,10 +1,19 @@
 package seal
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // options holds what an Option configures on a sealing store.
 type options struct {
 	resealOnRead bool
+	now          func() time.Time
+
+	// clockSet and nilClock record what WithClock was given, so newOptions
+	// can refuse a clock the store does not use, or a nil one.
+	clockSet bool
+	nilClock bool
 }
 
 // Option configures a sealing store built by NewSigningKeyStore or
@@ -29,15 +38,24 @@ func WithResealOnRead(on bool) Option {
 }
 
 // newOptions applies opts over the defaults for the sealing store named
-// store, refusing a nil option, and refusing re-sealing on read, the default,
-// when the store has no resealer to re-seal through.
-func newOptions(store string, hasResealer bool, opts []Option) (options, error) {
-	o := options{resealOnRead: true}
+// store, refusing a nil option, re-sealing on read, the default, when the
+// store has no resealer to re-seal through, a nil clock, and any clock when
+// the store keeps no clock (usesClock false).
+func newOptions(store string, hasResealer, usesClock bool, opts []Option) (options, error) {
+	o := options{resealOnRead: true, now: time.Now}
 	for _, opt := range opts {
 		if opt == nil {
 			return options{}, fmt.Errorf("%w: a sealing store option is nil", ErrInvalidConfiguration)
 		}
 		opt(&o)
+	}
+
+	switch {
+	case o.clockSet && !usesClock:
+		return options{}, fmt.Errorf("%w: the sealing %s store judges no time and takes no clock",
+			ErrInvalidConfiguration, store)
+	case o.nilClock:
+		return options{}, fmt.Errorf("%w: the sealing %s store's clock is nil", ErrInvalidConfiguration, store)
 	}
 
 	if o.resealOnRead && !hasResealer {
@@ -46,4 +64,27 @@ func newOptions(store string, hasResealer bool, opts []Option) (options, error) 
 	}
 
 	return o, nil
+}
+
+// WithClock replaces the clock NewEnrolmentStore judges an emailed code's
+// expiry by. The default is time.Now.
+//
+// A code is expired from its EmailCodeUntil instant on, and an expired code
+// is not opened on read: it is returned as no code, its expiry kept.
+//
+// The expiry is set, and each attempt charged, by the enrolling method's own
+// clock (mfa.WithClock for TOTP). Give this store the same clock: one that
+// runs ahead of the method's reads a live code as none, and a correct code is
+// then charged an attempt and refused.
+//
+// NewSigningKeyStore judges no time, so given to it WithClock is a
+// configuration error rather than a setting silently ignored. A nil clock is
+// a configuration error too, rather than a silent fallback to the wall clock:
+// a caller passing one meant to inject a clock.
+func WithClock(now func() time.Time) Option {
+	return func(o *options) {
+		o.clockSet = true
+		o.nilClock = now == nil
+		o.now = now
+	}
 }

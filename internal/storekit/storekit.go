@@ -66,17 +66,8 @@ func CheckID(v id.ID, record string) error {
 }
 
 // CheckSession refuses a session the stores cannot hold without altering it:
-// one carrying the enrolment-origin marker or an enrolment generation, which
-// the sessions table the migrate package creates has no column for, or one
-// with text PostgreSQL cannot store in a column or in its data.
+// one with text PostgreSQL cannot store in a column or in its data.
 func CheckSession(sess *session.Session) error {
-	if !sess.EnrolmentOriginDeadline.IsZero() {
-		return errors.New("the enrolment-origin marker is not supported by this store")
-	}
-	if !sess.EnrolmentGeneration.IsZero() {
-		return errors.New("the enrolment generation is not supported by this store")
-	}
-
 	if err := CheckStorable(
 		Text("user reference", string(sess.UserID)),
 		Text("first factor", string(sess.FirstFactor)),

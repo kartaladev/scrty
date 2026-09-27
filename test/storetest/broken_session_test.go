@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -72,6 +73,15 @@ const (
 	// refusal still leaves those columns changed: the call looks refused,
 	// but live session state moved.
 	sessionSaveRefusesTextAfterPartialWrite sessionDefect = "save-refuses-after-partial-write"
+	// Save writes every field but the enrolment-origin marker, which it
+	// stores as none.
+	sessionSaveDropsEnrolmentDeadline sessionDefect = "save-drops-enrolment-origin-deadline"
+	// Save reads a zero marker and generation as "not given" and keeps the
+	// stored ones, as a COALESCE would, so the upgrade never clears them.
+	sessionSaveKeepsEnrolmentMarker sessionDefect = "save-keeps-enrolment-marker"
+	// Load hands back no enrolment generation, as a column the read leaves
+	// out would.
+	sessionLoadDropsEnrolmentGeneration sessionDefect = "load-drops-enrolment-generation"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -223,6 +233,21 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 		saved.MFASatisfiedAt = stored.MFASatisfiedAt
 		s.records[sess.ID] = saved
 		return nil
+	case sessionSaveDropsEnrolmentDeadline:
+		saved := cloneSession(sess)
+		saved.EnrolmentOriginDeadline = time.Time{}
+		s.records[sess.ID] = saved
+		return nil
+	case sessionSaveKeepsEnrolmentMarker:
+		saved := cloneSession(sess)
+		if saved.EnrolmentOriginDeadline.IsZero() {
+			saved.EnrolmentOriginDeadline = stored.EnrolmentOriginDeadline
+		}
+		if saved.EnrolmentGeneration.IsZero() {
+			saved.EnrolmentGeneration = stored.EnrolmentGeneration
+		}
+		s.records[sess.ID] = saved
+		return nil
 	default:
 		s.records[sess.ID] = cloneSession(sess)
 		return nil
@@ -251,6 +276,8 @@ func (s *sessionStore) Load(_ context.Context, sessionID string) (*session.Sessi
 	switch s.defect {
 	case sessionLoadSharesData:
 		out.Data = stored.Data
+	case sessionLoadDropsEnrolmentGeneration:
+		out.EnrolmentGeneration = id.Nil
 	case sessionLoadNoneAsPending:
 		if out.MFA == session.MFANone {
 			out.MFA = session.MFAPending

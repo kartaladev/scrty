@@ -45,6 +45,8 @@ None.
 - `http-security-chain`: the unenforced-challenge refusal covers every declared challenge kind, with a consumer declaration for kinds of its own; the password-change gate lets the logout path through.
 - `http-error-propagation`: a challenge of the enrolment kind maps to 403; the enrolment endpoints' refusals get their rows.
 - `oidc-login`: a scenario for a consumer who removes the OIDC exemption and adds `oidc` to the path's allowlist.
+- `security-state-stores`: durable enrolment stores implement device proof, completion and emailed-code charging as conditional writes on the generation; a new pending enrolment starts a new generation and clears the proof and code; confirmation clears an outstanding code and never lowers the recorded step; durable session stores keep the enrolment-pending state, the enrolment-origin marker and the enrolment generation.
+- `secrets-at-rest`: the emailed enrolment code is sealed at rest, bound to its user and generation under a binding distinct from the secret's, fails closed when it cannot be opened, and is not re-sealed on read.
 
 ## Impact
 
@@ -53,7 +55,7 @@ None.
   - `session`: the new state, the enrolment-origin marker and the deadline rules;
   - `mfa`: an enroller port that the TOTP method implements, the enrolment store's new conditional writes, and the reset helper;
   - `httpsec`: the enrolment interceptor and gate, the status rows, the generalised unenforced-challenge check, and the password-change gate's logout exemption.
-- **Durable stores, after `durable-persistence` lands:** this change carries the durable side itself. It adds the enrolment record's generation, device-proven time, sealed emailed code, expiry and failure count, and the session's enrolment-origin marker and generation, to the initial security-state migration (squashing is free before a tag); implements the device-proof port on the `database/sql`, `pgx` and `gorm` enrolment stores; extends the conformance suites; and adds `security-state-stores` and `secrets-at-rest` deltas once those capabilities are promoted. Until then the device-proof writes are a separate port, so the stores `durable-persistence` builds against today's `EnrolmentStore` keep compiling.
+- **Durable stores, after `durable-persistence` lands:** this change carries the durable side itself. It adds the enrolment record's generation, device-proven time, sealed emailed code, expiry and attempt count, and the session's enrolment-origin marker and generation, to the initial security-state migration (squashing is free before a tag); implements the device-proof port on the `database/sql`, `pgx` and `gorm` enrolment stores; extends the conformance suites; and adds `security-state-stores` and `secrets-at-rest` deltas once those capabilities are promoted. Until then the device-proof writes are a separate port, so the stores `durable-persistence` builds against today's `EnrolmentStore` keep compiling.
 - **Follow-ups on other changes, each a revision of its own:**
   - `oidc-mfa-assurance`: its "no usable enrolment" outcome in Challenge mode follows this change's allowlist instead of always denying;
   - `shared-rate-limiting` and `operations`: whichever lands after this change adds the two enrolment limiters' namespaces, their prune tasks, and the path to the optional DI wiring.

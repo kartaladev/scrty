@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // mfaUser is the user most enrolment cases enrol. Its case and trailing space
@@ -26,8 +27,18 @@ func pendingEnrolment(user identity.UserID, secret string, n int) mfa.Enrolment 
 	}
 }
 
+// pendingOn returns a pending enrolment for user on generation n, carrying
+// secret and begun on the enrolment generation gen.
+func pendingOn(user identity.UserID, secret string, n int, gen id.ID) mfa.Enrolment {
+	e := pendingEnrolment(user, secret, n)
+	e.Generation = gen
+	return e
+}
+
 // assertEnrolment requires the user's stored enrolment to be present and to
-// equal want in every field this contract covers.
+// equal want in every field: the ones mfa.EnrolmentStore writes, and the
+// enrolment path's, which mfa.DeviceProofStore writes and PutPending and
+// Confirm clear. An emailed code of nil and one of no bytes are both none.
 func assertEnrolment(ctx context.Context, t *testing.T, s mfa.EnrolmentStore, want mfa.Enrolment) {
 	t.Helper()
 
@@ -39,9 +50,15 @@ func assertEnrolment(ctx context.Context, t *testing.T, s mfa.EnrolmentStore, wa
 	assertTimeEqual(t, want.ConfirmedAt, got.ConfirmedAt, "ConfirmedAt")
 	assert.Equal(t, want.LastStep, got.LastStep, "LastStep")
 	assertTimeEqual(t, want.CreatedAt, got.CreatedAt, "CreatedAt")
-	// Generation, DeviceProvenAt, EmailCode, EmailCodeUntil and
-	// EmailCodeAttempts are the device-proof enrolment path's fields. They
-	// are asserted by the enrolment-path suite extension, not here.
+	assert.Equal(t, want.Generation, got.Generation, "Generation")
+	assertTimeEqual(t, want.DeviceProvenAt, got.DeviceProvenAt, "DeviceProvenAt")
+	if len(want.EmailCode) == 0 {
+		assert.Empty(t, got.EmailCode, "EmailCode must be none")
+	} else {
+		assert.Equal(t, want.EmailCode, got.EmailCode, "EmailCode")
+	}
+	assertTimeEqual(t, want.EmailCodeUntil, got.EmailCodeUntil, "EmailCodeUntil")
+	assert.Equal(t, want.EmailCodeAttempts, got.EmailCodeAttempts, "EmailCodeAttempts")
 }
 
 // assertNotEnrolled requires the store to hold no enrolment for user.
@@ -73,6 +90,59 @@ func confirmEnrolment(
 	return e
 }
 
+// The enrolment suite's cases that need mfa.DeviceProofStore to seed. The
+// enrolment suite runs them when the store implements the port and logs them
+// as not run otherwise; RunDeviceProofSuite, which requires the port, always
+// runs them, so a store behind that suite cannot pass them unchecked.
+const (
+	newGenerationCase    = "A new pending enrolment starts a new generation"
+	confirmKeepsStepCase = "Confirmation keeps a later device-proof step"
+)
+
+// assertNewGeneration is the case newGenerationCase: a begin over a proven
+// enrolment whose code took a charge reads back on the new generation with no
+// device proof, no code, no expiry and no attempts.
+//
+//nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
+func assertNewGeneration(
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *fakeClock,
+) {
+	begunOn(ctx, t, s, suiteID(1))
+	proveDevice(ctx, t, p, suiteID(1), 1000, emailCode)
+	_, charged, err := p.ChargeEmailCode(ctx, mfaUser, suiteID(1), chargeAt)
+	require.NoError(t, err)
+	require.True(t, charged, "the proven code must take a charge")
+
+	next := pendingOn(mfaUser, "secret-2", 2, suiteID(2))
+	require.NoError(t, s.PutPending(ctx, next))
+
+	assertEnrolment(ctx, t, s, next)
+}
+
+// assertConfirmKeepsStep is the case confirmKeepsStepCase: a confirmation at
+// a step earlier than the device proof's clears the emailed code, keeps the
+// later step, and so leaves that step spent.
+//
+//nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
+func assertConfirmKeepsStep(
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *fakeClock,
+) {
+	begunOn(ctx, t, s, suiteID(1))
+	e := proveDevice(ctx, t, p, suiteID(1), 1001, emailCode)
+
+	at := suiteStart.Add(time.Hour)
+	confirmed, err := s.Confirm(ctx, mfaUser, 1000, at)
+	require.NoError(t, err)
+	require.True(t, confirmed, "Confirmation keeps a later device-proof step: Confirm must report true")
+
+	e.ConfirmedAt, e.EmailCode = at, nil
+	assertEnrolment(ctx, t, s, e)
+
+	accepted, err := s.AcceptStep(ctx, mfaUser, 1001)
+	require.NoError(t, err)
+	assert.False(t, accepted, "the device-proof step 1001 is spent and must not be accepted again")
+}
+
 // RunEnrolmentStoreSuite checks an mfa.EnrolmentStore against the contract
 // the TOTP method relies on: an absent enrolment is reported as absent, never
 // as an error; a begin is stored pending with no step spent, whatever it is
@@ -81,6 +151,14 @@ func confirmEnrolment(
 // and step; AcceptStep succeeds only on a confirmed enrolment and only for a
 // step strictly after the recorded one; users are matched byte for byte; and
 // deleting is not an error when there is nothing to delete.
+//
+// For a store that also implements mfa.DeviceProofStore, two more cases hold
+// the begin and the confirmation to the enrolment path: a begin starts a new
+// generation and clears the device proof, the emailed code, its expiry and
+// its attempts; and a confirmation clears the emailed code and never lowers a
+// step a device proof recorded. They need ProveDevice to seed, so for a store
+// without it they are logged as not run; RunDeviceProofSuite runs them too,
+// with the rest of that port, and fails a store without it.
 //
 // newStore is called once per case and must return an empty store. The store
 // takes every instant from its caller, so it needs no clock.
@@ -246,6 +324,8 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 					"a deleted enrolment no longer blocks a begin")
 			},
 		},
+		optionalCase(false, newGenerationCase, assertNewGeneration),
+		optionalCase(false, confirmKeepsStepCase, assertConfirmKeepsStep),
 	}
 
 	runSuite(t, cases, withoutClock(newStore))

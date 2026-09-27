@@ -142,45 +142,27 @@ func TestSessionStore_Durable(t *testing.T) {
 	// store seals under both keys, k2 active, and reads the clock at now.
 	store := newSessionStore(t, db, keys.Rotated(t), at(now))
 
-	// enrolmentMarked is sid's session, with the enrolment-origin marker set.
+	// enrolmentMarked is sid's session, marked enrolment-only and having
+	// begun an enrolment on generation.
+	generation := id.MustParse("01926a4e-0000-7000-8000-00000000abcd")
 	enrolmentMarked := func(sid string) *session.Session {
 		s := storefix.DurableSession(sid, now)
+		s.MFA = session.MFAEnrolmentPending
 		s.EnrolmentOriginDeadline = now.Add(12 * time.Hour)
-		return s
-	}
-	// enrolmentGenerated is sid's session, having begun an enrolment.
-	generation := id.MustParse("01926a4e-0000-7000-8000-00000000abcd")
-	enrolmentGenerated := func(sid string) *session.Session {
-		s := storefix.DurableSession(sid, now)
 		s.EnrolmentGeneration = generation
 		return s
 	}
-	const markerField, generationField = "enrolment-origin marker", "enrolment generation"
-	markerValue := now.Add(12 * time.Hour).Format(time.RFC3339)
-
-	// refusedCreate creates sess, which the store must refuse, naming field,
-	// and write nothing.
-	refusedCreate := func(sess *session.Session, field string, values ...string) func(t *testing.T, ctx context.Context) {
-		return func(t *testing.T, ctx context.Context) {
-			err := store.Create(ctx, sess)
-			require.Error(t, err)
-			storefix.AssertNamesOnly(t, err, field, append(values, sess.ID)...)
-			assert.Empty(t, storedSession(ctx, t, raw, sess.ID), "a refused create wrote a row")
-		}
-	}
-	// refusedSave creates a clean session sid, then saves marked over it,
-	// which the store must refuse, naming field, and leave the row unchanged.
-	refusedSave := func(marked *session.Session, field string, values ...string) func(t *testing.T, ctx context.Context) {
-		return func(t *testing.T, ctx context.Context) {
-			require.NoError(t, store.Create(ctx, storefix.DurableSession(marked.ID, now)))
-			before := storedSession(ctx, t, raw, marked.ID)
-
-			marked.LastAccessedAt = now.Add(time.Minute)
-			err := store.Save(ctx, marked)
-			require.Error(t, err)
-			storefix.AssertNamesOnly(t, err, field, append(values, marked.ID)...)
-			assert.Equal(t, before, storedSession(ctx, t, raw, marked.ID), "a refused save changed the row")
-		}
+	// enrolmentColumns reads sid's two enrolment columns out of band.
+	enrolmentColumns := func(ctx context.Context, t *testing.T, sid string) (sql.NullTime, sql.NullString) {
+		t.Helper()
+		var (
+			deadline sql.NullTime
+			gen      sql.NullString
+		)
+		require.NoError(t, raw.QueryRowContext(ctx,
+			`SELECT enrolment_origin_deadline, enrolment_generation::text FROM sessions WHERE id_digest = $1`,
+			storefix.Digest(sid)).Scan(&deadline, &gen))
+		return deadline, gen
 	}
 
 	type testCase struct {
@@ -286,20 +268,32 @@ func TestSessionStore_Durable(t *testing.T) {
 			},
 		},
 		{
-			name:   "a create carrying the enrolment-origin marker is refused and writes nothing",
-			assert: refusedCreate(enrolmentMarked("sess-create-marker"), markerField, markerValue),
+			name: "a marked session keeps its marker and generation in their columns",
+			assert: func(t *testing.T, ctx context.Context) {
+				require.NoError(t, store.Create(ctx, enrolmentMarked("sess-marked")))
+
+				deadline, gen := enrolmentColumns(ctx, t, "sess-marked")
+				require.True(t, deadline.Valid, "the marker was not stored")
+				assert.True(t, deadline.Time.Equal(now.Add(12*time.Hour)))
+				assert.Equal(t, sql.NullString{String: generation.String(), Valid: true}, gen)
+			},
 		},
 		{
-			name:   "a create carrying an enrolment generation is refused and writes nothing",
-			assert: refusedCreate(enrolmentGenerated("sess-create-generation"), generationField, generation.String()),
-		},
-		{
-			name:   "a save carrying the enrolment-origin marker is refused and leaves the row unchanged",
-			assert: refusedSave(enrolmentMarked("sess-save-marker"), markerField, markerValue),
-		},
-		{
-			name:   "a save carrying an enrolment generation is refused and leaves the row unchanged",
-			assert: refusedSave(enrolmentGenerated("sess-save-generation"), generationField, generation.String()),
+			name: "an unmarked session, or one whose marker is cleared, stores NULL in both columns",
+			assert: func(t *testing.T, ctx context.Context) {
+				require.NoError(t, store.Create(ctx, storefix.DurableSession("sess-unmarked", now)))
+				deadline, gen := enrolmentColumns(ctx, t, "sess-unmarked")
+				assert.False(t, deadline.Valid, "an unmarked session stored a marker")
+				assert.False(t, gen.Valid, "a session with no enrolment stored a generation")
+
+				marked := enrolmentMarked("sess-cleared")
+				require.NoError(t, store.Create(ctx, marked))
+				marked.MFA, marked.EnrolmentOriginDeadline, marked.EnrolmentGeneration = session.MFASatisfied, time.Time{}, id.Nil
+				require.NoError(t, store.Save(ctx, marked))
+				deadline, gen = enrolmentColumns(ctx, t, "sess-cleared")
+				assert.False(t, deadline.Valid, "a cleared marker is still stored")
+				assert.False(t, gen.Valid, "a cleared generation is still stored")
+			},
 		},
 	}
 

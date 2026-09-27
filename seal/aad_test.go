@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 )
 
@@ -14,6 +15,8 @@ import (
 // deliberate migration, never an edit.
 func TestAADGolden(t *testing.T) {
 	t.Parallel()
+
+	gen := id.MustParse("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
 
 	type testCase struct {
 		name   string
@@ -38,6 +41,22 @@ func TestAADGolden(t *testing.T) {
 			},
 		},
 		{
+			// The generation's canonical text comes first, at a fixed length,
+			// then the user reference byte for byte.
+			name: "an emailed MFA code is bound to its generation and user reference",
+			got:  func() []byte { return seal.MFAEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, []byte("scrty/mfa:email-code:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:Alice "), got)
+			},
+		},
+		{
+			name: "an emailed MFA code is not bound like the same user's secret",
+			got:  func() []byte { return seal.MFAEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.NotEqual(t, seal.MFASecretAAD("Alice "), got)
+			},
+		},
+		{
 			name: "the signing-key prefix",
 			got:  func() []byte { return []byte(seal.AADSigningKeyPrefix) },
 			assert: func(t *testing.T, got []byte) {
@@ -49,6 +68,13 @@ func TestAADGolden(t *testing.T) {
 			got:  func() []byte { return []byte(seal.AADMFASecretPrefix) },
 			assert: func(t *testing.T, got []byte) {
 				assert.Equal(t, "scrty/mfa:secret:", string(got))
+			},
+		},
+		{
+			name: "the emailed MFA code prefix",
+			got:  func() []byte { return []byte(seal.AADMFAEmailCodePrefix) },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, "scrty/mfa:email-code:", string(got))
 			},
 		},
 	}

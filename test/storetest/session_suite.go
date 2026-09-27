@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -41,8 +42,9 @@ func sessionRecord(sessionID string, user identity.UserID) *session.Session {
 		MFA:                   session.MFASatisfied,
 		MFASatisfiedAt:        suiteStart.Add(2 * time.Minute),
 		PasswordChangePending: true,
-		// EnrolmentOriginDeadline and EnrolmentGeneration are left zero here:
-		// the enrolment-path suite extension asserts them, not this suite.
+		// EnrolmentOriginDeadline and EnrolmentGeneration are left zero: a
+		// satisfied session was never marked, or its mark was cleared on the
+		// upgrade. enrolmentSession sets them.
 		Data: map[string]string{
 			"tenant": "t-9",
 			"flags":  "a,b",
@@ -65,6 +67,20 @@ func federatedSession(sessionID string, user identity.UserID, issuer, sid string
 	s.ExternalIssuer = issuer
 	s.ExternalSessionID = sid
 	s.ExternalIDToken = "header.payload.signature"
+	return s
+}
+
+// enrolmentSession returns an enrolment-only session for user: pending
+// enrolment, its absolute deadline lowered, and marked with the deadline it
+// held before, 21:00 on the suite's day, and with the enrolment generation
+// gen.
+func enrolmentSession(sessionID string, user identity.UserID, gen id.ID) *session.Session {
+	s := sessionRecord(sessionID, user)
+	s.AbsoluteExpiresAt = suiteStart.Add(15 * time.Minute)
+	s.MFA = session.MFAEnrolmentPending
+	s.MFASatisfiedAt = time.Time{}
+	s.EnrolmentOriginDeadline = suiteStart.Add(11 * time.Hour)
+	s.EnrolmentGeneration = gen
 	return s
 }
 
@@ -93,8 +109,8 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assert.Equal(t, want.MFA, got.MFA, "MFA is %v, want %v", got.MFA, want.MFA)
 	assertTimeEqual(t, want.MFASatisfiedAt, got.MFASatisfiedAt, "MFASatisfiedAt")
 	assert.Equal(t, want.PasswordChangePending, got.PasswordChangePending)
-	// EnrolmentOriginDeadline and EnrolmentGeneration are asserted by the
-	// enrolment-path suite extension, not here.
+	assertTimeEqual(t, want.EnrolmentOriginDeadline, got.EnrolmentOriginDeadline, "EnrolmentOriginDeadline")
+	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
 	assert.Equal(t, want.ExternalProvider, got.ExternalProvider)
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
@@ -352,6 +368,54 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		mfaSaveCase("a save moves the second-factor time to the one saved",
 			session.MFASatisfied, suiteStart.Add(5*time.Minute)),
 		mfaSaveCase("a save that clears the second-factor time loads it cleared", session.MFAPending, time.Time{}),
+		{
+			// Created marked, then saved marked again with a new marker and
+			// generation, as a second begin in the session moves them: both
+			// writes must carry the three fields.
+			name: "Enrolment-only session round trip",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+				created := enrolmentSession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, created))
+				assertSessionsLoad(ctx, t, s, created)
+
+				saved := enrolmentSession("sess-a", "u-1", suiteID(2))
+				saved.EnrolmentOriginDeadline = suiteStart.Add(7 * time.Hour)
+				require.NoError(t, s.Save(ctx, saved))
+				assertSessionsLoad(ctx, t, s, saved)
+			},
+		},
+		{
+			name: "Unmarked session",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+				unmarked := sessionRecord("sess-a", "u-1")
+				unmarked.MFA = session.MFAPending
+				unmarked.MFASatisfiedAt = time.Time{}
+				require.NoError(t, s.Create(ctx, unmarked))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assertSession(t, unmarked, got)
+				assert.True(t, got.EnrolmentOriginDeadline.IsZero(), "an unmarked session loads with no marker")
+				assert.Equal(t, id.Nil, got.EnrolmentGeneration, "an unmarked session loads with no generation")
+
+				require.NoError(t, s.Save(ctx, unmarked))
+				assertSessionsLoad(ctx, t, s, unmarked)
+			},
+		},
+		{
+			// The upgrade restores the deadline and clears the marker and the
+			// generation: a save must replace them with the zero values, not
+			// read the zero values as "not given".
+			name: "Marker cleared on upgrade",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+				require.NoError(t, s.Create(ctx, enrolmentSession("sess-a", "u-1", suiteID(1))))
+
+				upgraded := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Save(ctx, upgraded))
+
+				assertSessionsLoad(ctx, t, s, upgraded)
+			},
+		},
 		{
 			// Save replaces the record whole, so an absent map and empty
 			// provider fields replace what was stored: a store reading them as

@@ -65,6 +65,39 @@ func innerSecret(t *testing.T, inner mfa.EnrolmentStore, user identity.UserID) [
 	return e.Secret
 }
 
+// codeSentinel marks an emailed code, so a test can tell whether plaintext
+// reached the inner store or an error's text.
+const codeSentinel = "EMAILED-CODE-SENTINEL-987654"
+
+// proveSealed records a device proof of user's enrolment on gen in inner,
+// with codeSentinel sealed by c against the additional data of sealedFor,
+// bypassing the store under test, and returns the stored code.
+func proveSealed(t *testing.T, inner mfa.EnrolmentStore, c seal.Cipher, gen, sealedFor id.ID) []byte {
+	t.Helper()
+
+	sealed, err := c.Seal([]byte(codeSentinel), seal.MFAEmailCodeAAD(sealedFor, userRef))
+	require.NoError(t, err)
+
+	p, ok := inner.(mfa.DeviceProofStore)
+	require.True(t, ok)
+	proven, err := p.ProveDevice(t.Context(), userRef, gen, 9, sealed, codeUntil, codeIssuedAt)
+	require.NoError(t, err)
+	require.True(t, proven)
+
+	return sealed
+}
+
+// codeIssuedAt and codeUntil are when proveSealed issues its code and when
+// that code expires; codeLive is a read clock before the expiry.
+var (
+	codeIssuedAt = time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	codeUntil    = codeIssuedAt.Add(10 * time.Minute)
+	codeLive     = codeIssuedAt.Add(5 * time.Minute)
+)
+
+// clockAt returns a clock stopped at at.
+func clockAt(at time.Time) func() time.Time { return func() time.Time { return at } }
+
 // cancelled returns ctx already cancelled.
 func cancelled(ctx context.Context) context.Context {
 	cctx, cancel := context.WithCancel(ctx)
@@ -168,6 +201,25 @@ func TestNewEnrolmentStore(t *testing.T) {
 			cipher:   c,
 			opts:     []seal.Option{seal.WithResealOnRead(true), nil},
 			assert:   refused,
+		},
+		{
+			name:     "a nil clock is refused",
+			inner:    memory,
+			resealer: true,
+			cipher:   c,
+			opts:     []seal.Option{seal.WithClock(nil)},
+			assert:   refused,
+		},
+		{
+			name:     "a clock is accepted",
+			inner:    memory,
+			resealer: true,
+			cipher:   c,
+			opts:     []seal.Option{seal.WithClock(time.Now)},
+			assert: func(t *testing.T, store mfa.EnrolmentStore, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, store)
+			},
 		},
 		{
 			name:          "a typed-nil resealer is refused",
@@ -308,6 +360,126 @@ func TestEnrolmentStore_PutPending(t *testing.T) {
 	}
 }
 
+// proofFixture is what a ProveDevice case asserts against.
+type proofFixture struct {
+	inner *mfa.MemoryEnrolmentStore
+	gen   id.ID
+}
+
+func TestEnrolmentStore_ProveDevice(t *testing.T) {
+	t.Parallel()
+
+	cs := newCiphers(t)
+	at := time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
+	until := at.Add(10 * time.Minute)
+
+	type testCase struct {
+		name   string
+		cipher func(ctrl *gomock.Controller, gen id.ID) seal.Cipher
+		code   []byte
+		assert func(t *testing.T, f proofFixture, ok bool, err error)
+	}
+
+	stored := func(t *testing.T, f proofFixture) mfa.Enrolment {
+		t.Helper()
+		e, found, err := f.inner.Get(t.Context(), userRef)
+		require.NoError(t, err)
+		require.True(t, found)
+
+		return e
+	}
+
+	cases := []testCase{
+		{
+			name: "the inner store holds the emailed code sealed, bound to generation and user",
+			code: []byte(codeSentinel),
+			assert: func(t *testing.T, f proofFixture, ok bool, err error) {
+				require.NoError(t, err)
+				require.True(t, ok)
+
+				e := stored(t, f)
+				require.NotNil(t, e.EmailCode)
+				assert.NotContains(t, string(e.EmailCode), codeSentinel, "the inner store received the emailed code in plaintext")
+
+				opened, keyID, err := cs.k2Only.Open(e.EmailCode, seal.MFAEmailCodeAAD(f.gen, userRef))
+				require.NoError(t, err)
+				assert.Equal(t, "k2", keyID)
+				assert.Equal(t, []byte(codeSentinel), opened)
+
+				other, err := id.NewV7Generator().NewID()
+				require.NoError(t, err)
+				for name, aad := range map[string][]byte{
+					"another generation": seal.MFAEmailCodeAAD(other, userRef),
+					"another user":       seal.MFAEmailCodeAAD(f.gen, "victim"),
+					"the user's secret":  seal.MFASecretAAD(userRef),
+					"no additional data": nil,
+				} {
+					_, _, err := cs.current.Open(e.EmailCode, aad)
+					assert.ErrorIs(t, err, seal.ErrDecryptionFailed, "the code opened under %s", name)
+				}
+
+				assert.True(t, e.DeviceProvenAt.Equal(at))
+				assert.True(t, e.EmailCodeUntil.Equal(until))
+			},
+		},
+		{
+			name: "no emailed code reaches the inner store as none, without consulting the cipher",
+			cipher: func(ctrl *gomock.Controller, _ id.ID) seal.Cipher {
+				return NewMockCipher(ctrl)
+			},
+			assert: func(t *testing.T, f proofFixture, ok bool, err error) {
+				require.NoError(t, err)
+				require.True(t, ok)
+				assert.Nil(t, stored(t, f).EmailCode)
+			},
+		},
+		{
+			name: "a cipher that fails to seal the emailed code stores nothing",
+			cipher: func(ctrl *gomock.Controller, gen id.ID) seal.Cipher {
+				c := NewMockCipher(ctrl)
+				c.EXPECT().Seal([]byte(codeSentinel), seal.MFAEmailCodeAAD(gen, userRef)).Return(nil, errCipherDown)
+
+				return c
+			},
+			code: []byte(codeSentinel),
+			assert: func(t *testing.T, f proofFixture, ok bool, err error) {
+				require.ErrorIs(t, err, errCipherDown)
+				assert.False(t, ok)
+				assertNoLeak(t, err, string(userRef), codeSentinel)
+
+				e := stored(t, f)
+				assert.True(t, e.DeviceProvenAt.IsZero(), "no device proof is recorded")
+				assert.Nil(t, e.EmailCode)
+				assert.Zero(t, e.LastStep)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			inner := mfa.NewMemoryEnrolmentStore()
+			e := pendingEnrolment(t, userRef)
+			putSealed(t, inner, cs.current, e)
+
+			c := cs.current
+			if tc.cipher != nil {
+				c = tc.cipher(ctrl, e.Generation)
+			}
+
+			store, err := seal.NewEnrolmentStore(inner, nil, c, seal.WithResealOnRead(false))
+			require.NoError(t, err)
+			p, isProof := store.(mfa.DeviceProofStore)
+			require.True(t, isProof)
+
+			ok, err := p.ProveDevice(t.Context(), userRef, e.Generation, 9, tc.code, until, at)
+			tc.assert(t, proofFixture{inner: inner, gen: e.Generation}, ok, err)
+		})
+	}
+}
+
 // enrolmentFixture is what a Get case sets up and asserts against.
 type enrolmentFixture struct {
 	store    mfa.EnrolmentStore
@@ -322,14 +494,17 @@ func TestEnrolmentStore_Get(t *testing.T) {
 	gone := mustCipher(t, seal.WithEncryptionKey("gone", keyThree))
 	secret := []byte(mfaSentinel + string(userRef))
 
+	// Every case reads at codeLive, before proveSealed's code expires, unless
+	// it names a clock of its own or asks for the default one.
 	type testCase struct {
-		name   string
-		opts   []seal.Option
-		cipher func(ctrl *gomock.Controller) seal.Cipher
-		inner  func(ctrl *gomock.Controller) mfa.EnrolmentStore
-		setup  func(t *testing.T, f enrolmentFixture)
-		ctx    func(ctx context.Context) context.Context
-		assert func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error)
+		name         string
+		opts         []seal.Option
+		defaultClock bool
+		cipher       func(ctrl *gomock.Controller) seal.Cipher
+		inner        func(ctrl *gomock.Controller) mfa.EnrolmentStore
+		setup        func(t *testing.T, f enrolmentFixture)
+		ctx          func(ctx context.Context) context.Context
+		assert       func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error)
 	}
 
 	unreadable := func(want error) func(*testing.T, enrolmentFixture, mfa.Enrolment, bool, error) {
@@ -486,6 +661,159 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			assert: opened,
 		},
 		{
+			name: "an emailed code loads opened",
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, cs.current, e.Generation, e.Generation)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				opened(t, f, e, found, err)
+				assert.Equal(t, []byte(codeSentinel), e.EmailCode)
+			},
+		},
+		{
+			name: "Emailed code unreadable: a tampered code is an error, never not enrolled",
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				sealed, err := cs.current.Seal([]byte(codeSentinel), seal.MFAEmailCodeAAD(e.Generation, userRef))
+				require.NoError(t, err)
+				sealed[len(sealed)-1] ^= 0x01
+				p, _ := f.inner.(mfa.DeviceProofStore)
+				ok, err := p.ProveDevice(t.Context(), userRef, e.Generation, 9, sealed, time.Now().Add(time.Hour), time.Now())
+				require.NoError(t, err)
+				require.True(t, ok)
+			},
+			assert: unreadable(seal.ErrDecryptionFailed),
+		},
+		{
+			name: "an emailed code sealed for another generation does not open",
+			setup: func(t *testing.T, f enrolmentFixture) {
+				earlier := pendingEnrolment(t, userRef)
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, cs.current, e.Generation, earlier.Generation)
+			},
+			assert: unreadable(seal.ErrDecryptionFailed),
+		},
+		{
+			name: "an emailed code sealed under a key the ring no longer holds fails closed",
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, gone, e.Generation, e.Generation)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				unreadable(seal.ErrUnknownKeyID)(t, f, e, found, err)
+				assertNoLeak(t, err, codeSentinel)
+			},
+		},
+		{
+			// The code is not a sealed value at all: had the store tried to
+			// open it, the mock cipher would have failed the case.
+			name: "Expired code is not opened: an unopenable code at its expiry reads back as none, expiry kept",
+			opts: []seal.Option{seal.WithClock(clockAt(codeUntil))},
+			cipher: func(ctrl *gomock.Controller) seal.Cipher {
+				c := NewMockCipher(ctrl)
+				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(userRef)).Return(secret, "k2", nil)
+				c.EXPECT().ActiveKeyID().Return("k2", nil)
+
+				return c
+			},
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				p, _ := f.inner.(mfa.DeviceProofStore)
+				ok, err := p.ProveDevice(t.Context(), userRef, e.Generation, 9, []byte("not a sealed value"),
+					codeUntil, codeIssuedAt)
+				require.NoError(t, err)
+				require.True(t, ok)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				opened(t, f, e, found, err)
+				assert.Nil(t, e.EmailCode)
+				assert.True(t, e.EmailCodeUntil.Equal(codeUntil), "EmailCodeUntil is %v, want %v", e.EmailCodeUntil, codeUntil)
+				assert.True(t, e.DeviceProvenAt.Equal(codeIssuedAt), "DeviceProvenAt is %v", e.DeviceProvenAt)
+			},
+		},
+		{
+			name: "Abandoned code after its key is removed: an expired code reads back as none, expiry kept",
+			opts: []seal.Option{seal.WithClock(clockAt(codeUntil.Add(time.Hour)))},
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, gone, e.Generation, e.Generation)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				opened(t, f, e, found, err)
+				assert.Nil(t, e.EmailCode)
+				assert.True(t, e.EmailCodeUntil.Equal(codeUntil), "EmailCodeUntil is %v, want %v", e.EmailCodeUntil, codeUntil)
+			},
+		},
+		{
+			name: "an expired code that would open is still not opened",
+			opts: []seal.Option{seal.WithClock(clockAt(codeUntil))},
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, cs.current, e.Generation, e.Generation)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				opened(t, f, e, found, err)
+				assert.Nil(t, e.EmailCode)
+				assert.True(t, e.EmailCodeUntil.Equal(codeUntil), "EmailCodeUntil is %v, want %v", e.EmailCodeUntil, codeUntil)
+			},
+		},
+		{
+			name: "a code one instant before its expiry is still opened",
+			opts: []seal.Option{seal.WithClock(clockAt(codeUntil.Add(-time.Nanosecond)))},
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, cs.current, e.Generation, e.Generation)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				opened(t, f, e, found, err)
+				assert.Equal(t, []byte(codeSentinel), e.EmailCode)
+			},
+		},
+		{
+			// proveSealed's code expired long before the wall clock.
+			name:         "the default clock is the wall clock: a code expired by it is not opened",
+			defaultClock: true,
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, f.inner, cs.current, e)
+				proveSealed(t, f.inner, gone, e.Generation, e.Generation)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				opened(t, f, e, found, err)
+				assert.Nil(t, e.EmailCode)
+			},
+		},
+		{
+			name: "Emailed code is not rewritten on read: a retired-key code opens and stays as stored",
+			setup: func(t *testing.T, f enrolmentFixture) {
+				e := pendingEnrolment(t, userRef)
+				old := putSealed(t, f.inner, cs.retired, e)
+				proveSealed(t, f.inner, cs.retired, e.Generation, e.Generation)
+				// Only the secret is handed to the resealer; the code never is.
+				f.resealer.EXPECT().ResealEnrolmentSecret(gomock.Any(), userRef, old, gomock.Any()).Return(nil)
+			},
+			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
+				after, _, getErr := f.inner.Get(t.Context(), userRef)
+				require.NoError(t, getErr)
+
+				opened(t, f, e, found, err)
+				assert.Equal(t, []byte(codeSentinel), e.EmailCode)
+
+				_, keyID, err := cs.retired.Open(after.EmailCode, seal.MFAEmailCodeAAD(e.Generation, userRef))
+				require.NoError(t, err)
+				assert.Equal(t, "k1", keyID, "the stored code stays sealed under the retired key")
+			},
+		},
+		{
 			name: "a cancelled read is an error, never not enrolled",
 			inner: func(ctrl *gomock.Controller) mfa.EnrolmentStore {
 				inner := NewMockEnrolmentStore(ctrl)
@@ -520,7 +848,11 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			}
 			resealer := NewMockEnrolmentResealer(ctrl)
 
-			store, err := seal.NewEnrolmentStore(inner, resealer, c, tc.opts...)
+			opts := tc.opts
+			if !tc.defaultClock {
+				opts = append([]seal.Option{seal.WithClock(clockAt(codeLive))}, tc.opts...)
+			}
+			store, err := seal.NewEnrolmentStore(inner, resealer, c, opts...)
 			require.NoError(t, err)
 
 			f := enrolmentFixture{store: store, inner: inner, resealer: resealer}

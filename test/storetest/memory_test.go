@@ -63,6 +63,10 @@ func TestMemoryEnrolmentStore(t *testing.T) {
 		t.Helper()
 		return mfa.NewMemoryEnrolmentStore()
 	})
+	storetest.RunDeviceProofSuite(t, func(t *testing.T) storetest.DeviceProofEnrolmentStore {
+		t.Helper()
+		return mfa.NewMemoryEnrolmentStore()
+	})
 }
 
 func TestMemoryAPIKeyStore(t *testing.T) {

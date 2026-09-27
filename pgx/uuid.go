@@ -22,3 +22,24 @@ func scanID(u pgtype.UUID) (id.ID, error) {
 
 	return id.ID(u.Bytes), nil
 }
+
+// nullableID is the identifier a nullable uuid column held: id.Nil for NULL.
+func nullableID(u pgtype.UUID) id.ID {
+	if !u.Valid {
+		return id.Nil
+	}
+
+	return id.ID(u.Bytes)
+}
+
+// nullID is v as bound to a nullable uuid column or compared with one: NULL
+// for the nil identifier, otherwise uuidArg(v). The nil identifier sent as its
+// text is the all-zero UUID, which "generation = $n" would match on a row
+// stored with that value; NULL matches nothing.
+func nullID(v id.ID) any {
+	if v.IsZero() {
+		return nil
+	}
+
+	return uuidArg(v)
+}

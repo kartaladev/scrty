@@ -67,7 +67,8 @@ type signingKeyStore struct {
 // configuration error matching ErrInvalidConfiguration, and so is a nil r
 // unless re-sealing on read is turned off: re-sealing is the default, and a
 // store with nowhere to re-seal to would quietly keep retired keys in use. With
-// re-sealing off, r is not used and may be nil.
+// re-sealing off, r is not used and may be nil. WithClock is refused: the
+// store judges no time, so a clock would be silently ignored.
 func NewSigningKeyStore(
 	inner signingkey.KeyStore, r SigningKeyResealer, c Cipher, opts ...Option,
 ) (signingkey.KeyStore, error) {
@@ -78,7 +79,7 @@ func NewSigningKeyStore(
 		return nil, fmt.Errorf("%w: the sealing signing-key store has no cipher", ErrInvalidConfiguration)
 	}
 
-	o, err := newOptions("signing-key", !nilcheck.IsNil(r), opts)
+	o, err := newOptions("signing-key", !nilcheck.IsNil(r), false, opts)
 	if err != nil {
 		return nil, err
 	}

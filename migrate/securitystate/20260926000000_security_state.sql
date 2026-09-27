@@ -24,7 +24,10 @@ CREATE TABLE sessions (
     external_session_id text NOT NULL DEFAULT '',
     -- base64url envelope, '' = none.
     external_id_token   text NOT NULL DEFAULT '',
-    data                jsonb NOT NULL DEFAULT '{}'
+    data                jsonb NOT NULL DEFAULT '{}',
+    -- The absolute deadline held before an enrolment mark; NULL = not marked.
+    enrolment_origin_deadline timestamptz NULL,
+    enrolment_generation      uuid NULL
 );
 -- +goose StatementEnd
 -- Issuer leads: a provider session id is unique only within its issuer.
@@ -64,7 +67,13 @@ CREATE TABLE mfa_enrolments (
     -- "IS NULL" unsatisfiable and break confirm-once.
     confirmed_at timestamptz NULL,
     last_step    bigint NOT NULL DEFAULT 0,
-    created_at   timestamptz NOT NULL
+    created_at   timestamptz NOT NULL,
+    -- Enrolment path. NULL generation = none, and matches no conditional write.
+    generation          uuid NULL,
+    device_proven_at    timestamptz NULL,
+    email_code          text NULL, -- base64url envelope, NULL = none
+    email_code_until    timestamptz NULL,
+    email_code_attempts integer NOT NULL DEFAULT 0
 );
 
 CREATE TABLE api_keys (

@@ -43,8 +43,9 @@ type brokenVariant struct {
 }
 
 // brokenVariants is every variant the guard runs: the portable suites' below,
-// then the durable suites' (durableVariants).
-var brokenVariants = slices.Concat(portableVariants, durableVariants)
+// the enrolment path's (enrolmentPathVariants), then the durable suites'
+// (durableVariants).
+var brokenVariants = slices.Concat(portableVariants, enrolmentPathVariants, durableVariants)
 
 // portableVariants are the portable suites' variants.
 var portableVariants = []brokenVariant{

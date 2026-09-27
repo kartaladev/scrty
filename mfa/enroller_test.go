@@ -86,6 +86,11 @@ type spyStore struct {
 	// hideProof makes Get also report the device proof of an exhausted code as
 	// absent, as a store that cleared it would.
 	hideProof bool
+
+	// hideCode makes Get report any emailed code as absent, its expiry kept,
+	// as a sealing store reads back one that has expired. A test sets it only
+	// once the code has expired.
+	hideCode bool
 }
 
 func (s *spyStore) armAfterGet(hook func()) {
@@ -109,6 +114,13 @@ func (s *spyStore) hideExhaustedProofs() {
 	s.hideExhausted, s.hideProof = true, true
 }
 
+func (s *spyStore) hideExpiredCodes() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.hideCode = true
+}
+
 func (s *spyStore) note(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -129,9 +141,13 @@ func (s *spyStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment
 	e, ok, err := s.MemoryEnrolmentStore.Get(ctx, user)
 
 	s.mu.Lock()
-	hook, hide, hideProof := s.afterGet, s.hideExhausted, s.hideProof
+	hook, hide, hideProof, hideCode := s.afterGet, s.hideExhausted, s.hideProof, s.hideCode
 	s.afterGet = nil
 	s.mu.Unlock()
+
+	if hideCode {
+		e.EmailCode = nil
+	}
 
 	if hide && e.EmailCodeAttempts >= mfa.MaxEmailCodeFailures {
 		e.EmailCode = nil
@@ -348,6 +364,13 @@ func TestTOTPEnroller(t *testing.T) {
 	confirm := func(t *testing.T, f *enrolFixture, _ id.ID) error { return confirmNow(t, f) }
 
 	expire := func(_ *testing.T, f *enrolFixture, _ id.ID, _ string) { f.advance(11 * time.Minute) }
+
+	// expireUnread expires the code and reads it back as absent, its expiry
+	// kept, as a sealing store does.
+	expireUnread := func(t *testing.T, f *enrolFixture, gen id.ID, emailed string) {
+		expire(t, f, gen, emailed)
+		f.store.hideExpiredCodes()
+	}
 
 	hiddenExhaust := func(t *testing.T, f *enrolFixture, gen id.ID, emailed string) {
 		f.store.hideExhaustedCodes()
@@ -588,6 +611,31 @@ func TestTOTPEnroller(t *testing.T) {
 			name:   "the single-call confirm is refused once the emailed code has expired",
 			run:    bypass(expire, confirm),
 			assert: stillPending,
+		},
+		{
+			name:   "completion is refused once the emailed code has expired and reads back as none",
+			run:    bypass(expireUnread, complete),
+			assert: stillPending,
+		},
+		{
+			name:   "the single-call confirm is refused once the emailed code has expired and reads back as none",
+			run:    bypass(expireUnread, confirm),
+			assert: stillPending,
+		},
+		{
+			name: "redemption of the right code is refused once it has expired and reads back as none",
+			run: func(t *testing.T, f *enrolFixture) (outcome, error) {
+				gen, emailed := f.proven(t)
+				expireUnread(t, f, gen, emailed)
+				err := f.m.RedeemEmailCode(t.Context(), "u-1", gen, emailed)
+
+				return outcome{enrolled: f.enrolled(t), e: f.stored(t)}, err
+			},
+			assert: func(t *testing.T, _ *enrolFixture, got outcome, err error) {
+				require.ErrorIs(t, err, mfa.ErrEmailCodeInvalid)
+				assert.False(t, got.enrolled, "an expired code completes nothing")
+				assert.True(t, got.e.ConfirmedAt.IsZero())
+			},
 		},
 		{
 			name:   "completion is refused once the emailed code is out of attempts",
