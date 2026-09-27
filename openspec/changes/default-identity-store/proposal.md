@@ -10,7 +10,7 @@ This change ships an optional PostgreSQL identity store that keeps those rules. 
 
 ## What Changes
 
-- Add a **default identity store**, an opt-in implementation of the four identity ports over six tables: users, roles, assigned roles, organizations, groups and resource privileges.
+- Add a **default identity store**, an opt-in implementation of the four identity ports over six tables: users, roles, assigned roles, organizations, groups and resource privileges. The same store also implements the optional password-history port over a seventh table, `password_history`.
   - `users.id` is a native PostgreSQL `uuid` holding a UUIDv7 from `pkg/id`. The user reference the rest of scrty sees is its canonical string.
   - The password hash, the password-changed-at time and the MFA-required flag live on `users`.
   - There are no foreign keys anywhere in the identity tables, and none to or from security-state tables. No query joins across the two groups.
@@ -26,23 +26,32 @@ This change ships an optional PostgreSQL identity store that keeps those rules. 
   - an update locks the user row before rebuilding grants.
 - Keep grant order in an explicit column, because scrty's identifier generator is replaceable and grant order decides which duplicate grant survives.
 - Leave the password-changed-at time and the MFA-required flag unwritten by any port call. The consumer's own user management owns both.
+- Add **optional password history**, off by default: a consumer can refuse a new password that matches one of the user's last N passwords, with the current one counted among the N.
+  - A new `password.History` port reads a user's recent retired hashes, retires a hash and prunes the rest to N−1, and forgets a user's history.
+  - A reuse guard in the `password` package enforces it. The consumer constructs it with a history port, an encoder and a required N (N ≤ 0, or a missing port or encoder, is a construction error). They call it from their own password-change function, including the one registered with `WithChangePasswordEndpoint`. The library never sees the new plaintext anywhere else, and the store's update cannot tell a local change from a provider-mirrored password, so neither of them checks or records history.
+  - The guard matches with the encoders' verification, so a hash under older parameters or a retired built-in algorithm still matches. It fails closed: a history read or record failure refuses the change, and the old hash is retired before the new one is written.
+  - A new refusal, `ErrPasswordReused`, maps to 422.
+  - The default identity store implements the port over a new `password_history` table in the identity migration set. History hashes are handled like `users.password`: never logged, never in error text, removed with the user, and bounded per user. A consumer can supply their own implementation, and a public conformance entry tests it.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `default-identity-store`: the optional PostgreSQL implementation of the identity ports. Covers what loading returns, the create-only and amend-only provisioning rules, role-grant rebuilds, the MFA requirement lookup, concurrency and ambient-transaction behaviour, the identity migration set, and the public conformance suite any port implementation can run.
+- `default-identity-store`: the optional PostgreSQL implementation of the identity ports and the password-history port. Covers what loading returns, the create-only and amend-only provisioning rules, role-grant rebuilds, the MFA requirement lookup, password-history storage and pruning, concurrency and ambient-transaction behaviour, the identity migration set, and the public conformance suites any port implementation can run.
 
 ### Modified Capabilities
 
-None. scrty has no archived specs yet.
+- `password-encoding`: adds the password-history port and the optional reuse guard, covering what N counts, matching across retired parameters and algorithms, fail-closed ordering, construction errors and the reuse refusal.
+- `http-error-propagation`: the status table gains the password-reused refusal, mapped to 422.
+- `http-security-chain`: a reuse refusal returned by the resolve endpoint's function leaves the password change owed.
 
 ## Impact
 
 - **New code:**
   - core module: the `database/sql` identity store, the embedded identity migrations, and shared query text in an internal package;
+  - core module, `password` package: the `History` port, the reuse guard, and the `ErrPasswordReused`, `ErrHistoryUnavailable` and `ErrConfig` errors; `httpsec.StatusForError` gains the 422 row;
   - `pgx` and `gorm` modules: their identity stores;
-  - `test` module: the identity-port conformance suite, fixtures that prove the suite catches known defects, and the `database/sql` adapter's PostgreSQL integration tests.
+  - `test` module: the identity-port conformance suite and its password-history entry, fixtures that prove the suite catches known defects, and the `database/sql` adapter's PostgreSQL integration tests.
 - **Dependencies:**
   - the core gains no third-party dependency;
   - the `pgx` and `gorm` modules already exist for security-state stores (durable-persistence);
@@ -51,5 +60,6 @@ None. scrty has no archived specs yet.
   - `identity-model` (identity-and-tokens) for the port signatures, user details, sentinel errors and provisioning options, including the accessor that reports which fields a caller named;
   - `schema-migrations` and `security-state-stores` (durable-persistence) for the migration runner, version-table mechanics and the `WithTx`/resolver pattern;
   - `di-wiring` (operations) for including this store in the default wiring;
-  - `id-generation` (project-foundation) for identifiers.
+  - `id-generation` (project-foundation) for identifiers;
+  - `password-encoding` (identity-and-tokens) for the encoder the reuse guard matches with, and `http-security-chain` / `http-error-propagation` (http-security) for the resolve endpoint and the status table.
 - **Consumers:** none yet. A consumer with their own user tables does not import this store and applies only the security-state migrations.

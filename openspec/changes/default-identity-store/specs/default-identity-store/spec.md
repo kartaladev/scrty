@@ -1,6 +1,6 @@
 ## Purpose
 
-Provides an optional, ready-to-use PostgreSQL implementation of scrty's identity ports (user loading, role privilege loading, user provisioning and MFA requirement lookup), plus a public conformance suite that proves any implementation of those ports, the consumer's included, keeps the same rules.
+Provides an optional, ready-to-use PostgreSQL implementation of scrty's identity ports (user loading, role privilege loading, user provisioning and MFA requirement lookup) and of the optional password-history port, plus a public conformance suite that proves any implementation of those ports, the consumer's included, keeps the same rules.
 
 ## ADDED Requirements
 
@@ -278,7 +278,7 @@ The identity tables SHALL ship as their own migration set, recorded in a version
 
 #### Scenario: Identity set alone
 - **WHEN** only the identity migration set is applied to an empty database
-- **THEN** the users, roles, assigned roles, organizations, groups and resource privileges tables exist
+- **THEN** the users, roles, assigned roles, organizations, groups, resource privileges and password history tables exist
 - **AND** no security-state table exists
 
 #### Scenario: Consumer with their own user tables
@@ -294,10 +294,10 @@ The identity tables SHALL ship as their own migration set, recorded in a version
 - **THEN** the applied versions are recorded in `app_identity_versions`
 
 ### Requirement: Every shipped adapter passes the identity-port conformance suite
-The `database/sql`, `pgx` and `gorm` implementations of the store SHALL each pass the full identity-port conformance suite against PostgreSQL, including its ambient-transaction part, with every case run and none skipped.
+The `database/sql`, `pgx` and `gorm` implementations of the store SHALL each pass the full identity-port conformance suite against PostgreSQL, including its ambient-transaction part and its password-history part, with every case run and none skipped.
 
 #### Scenario: Adapter parity
-- **WHEN** the conformance suite runs against each of the three adapters
+- **WHEN** the conformance suite, including its password-history part, runs against each of the three adapters
 - **THEN** every case passes for all three
 
 ### Requirement: The conformance suite is usable against any port implementation
@@ -328,3 +328,70 @@ The suite SHALL NOT assume scrty's table layout, and SHALL support a single data
   - it keeps the last of duplicate stored grants;
   - it reports an unknown user as not requiring MFA
 - **THEN** at least one case fails by assertion for that defect
+
+### Requirement: The store keeps password history for the reuse guard
+The store SHALL implement the password-history port, keeping each user's retired password hashes in their own table:
+- **Reading:** returns up to the requested number of the user's retired hashes, newest first, byte for byte. A well-formed user reference with no entries returns none and no error.
+- **Retiring:** records the hash as the user's newest entry, then removes every entry of that user beyond the newest number the caller keeps. A hash identical to the user's newest entry adds nothing. Keeping zero records nothing and removes every entry.
+- **Order:** the order of entries is the order in which they were retired, independent of the identifier generator and of clock ties.
+- **Bound:** after any retire, a user holds no more entries than the caller asked to keep.
+- **Malformed reference:** a user reference that is not a valid UUID string fails reading with an error, never with an empty history.
+- **Storage failure:** fails with an error, never with an empty history.
+
+#### Scenario: Newest first and bounded
+- **WHEN** hashes `h1`, `h2`, `h3` and `h4` are retired for a user in that order, each keeping 3
+- **THEN** reading 3 entries returns `h4`, `h3`, `h2`
+- **AND** the store holds exactly those three rows for the user
+
+#### Scenario: Order under a consumer generator
+- **WHEN** the store uses a generator with descending identifiers, and `h1` then `h2` are retired for a user
+- **THEN** reading returns `h2` before `h1`
+
+#### Scenario: Same bytes retired twice
+- **WHEN** `h1` is retired for a user, and `h1` is retired again, each keeping 3
+- **THEN** the user holds exactly one entry, `h1`
+
+#### Scenario: Keeping zero
+- **WHEN** a user holds entries `h1` and `h2`, and `h3` is retired keeping 0
+- **THEN** the user holds no entries
+
+#### Scenario: Malformed reference or unavailable table
+- **WHEN** history is read for `not-a-uuid`, or while the password history table does not exist
+- **THEN** reading fails with an error and returns no entries
+
+### Requirement: No port call of the identity store records password history
+Provisioning and updating SHALL NOT read, record or prune password history, including when a password hash is written. Only the password-history port writes history, so a password mirrored from an identity provider on every login never enters it.
+
+#### Scenario: Mirrored password write
+- **WHEN** a user's password hash is updated through the provisioner five times
+- **THEN** the user has no password history entries
+
+### Requirement: Password history is credential material and is removed with the user
+The store SHALL keep history hashes with the same handling as the stored password hash. It SHALL NOT write them to a log record, SHALL NOT include them in error text, and SHALL return them only through the port's read. It SHALL remove every entry of a user when asked to forget that user's history. Because the identity tables declare no foreign keys, the consumer's user deletion is responsible for asking, and the store's documentation SHALL say so beside the grants the deletion also removes.
+
+#### Scenario: History deleted with the user
+- **WHEN** the consumer's user deletion removes a user holding three history entries, and asks the store to forget that user's history in the same transaction
+- **THEN** reading that user's history returns none
+- **AND** another user's history is unchanged
+
+#### Scenario: Error text carries no hash
+- **WHEN** retiring a hash fails because the table cannot be written
+- **THEN** the error's text contains no part of the hash and not the user reference
+
+### Requirement: Password history takes part in the caller's transaction
+The password-history port SHALL read and write through the caller's ambient transaction under the same rules as the identity ports. Retiring SHALL be atomic: the insert and the pruning SHALL both happen or neither SHALL. A retire that fails inside a caller's transaction SHALL undo only its own writes and SHALL leave the caller's transaction usable.
+
+#### Scenario: Password write and history commit together
+- **WHEN** a caller, in one transaction, retires a user's current hash and updates the user's password through the provisioner, then rolls back
+- **THEN** the user's password and history are both as they were before the transaction
+
+### Requirement: The conformance suite tests any password-history implementation
+The identity-port conformance suite SHALL include a separate, public password-history part that tests any implementation of the password-history port through the port alone, plus a hook that begins a caller-owned transaction. It SHALL cover newest-first order, the read bound, pruning, the same-bytes rule, keeping zero, forgetting a user, the per-user boundary and ambient-transaction rollback. Running the identity-port part SHALL NOT require the password-history part's hooks.
+
+#### Scenario: Consumer verifies their own history store
+- **WHEN** a consumer runs the password-history part against their own implementation over their own table
+- **THEN** each rule runs as its own named case
+
+#### Scenario: Known history defect is caught
+- **WHEN** the password-history part is run against an implementation that returns entries oldest first, or that never prunes
+- **THEN** at least one case fails by assertion
