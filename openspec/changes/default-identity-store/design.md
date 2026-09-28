@@ -9,7 +9,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - `password-encoding` (identity-and-tokens) provides the encoder whose matching the optional password history uses, and `http-security-chain` / `http-error-propagation` (http-security) provide the password-change resolve endpoint and the status table.
   This change uses all of these and restates none of them.
 - **Product decisions already made:**
-  - the store is optional and included by the default wiring;
+  - the store is optional. Including it in the default wiring belongs to `di-wiring` (operations), which consumes this store; this change does not depend on it;
   - `users.id` is a native `uuid` holding a UUIDv7 from `pkg/id`, and the user reference is an opaque string;
   - there are no foreign keys to or from security-state tables;
   - the identity migration set is separate, with its own version table;
@@ -28,9 +28,9 @@ See proposal.md for why this change exists. The constraints that shape the appro
 - A schema that can be removed or never applied without touching security state.
 
 **Non-Goals:**
-- An administration API. The consumer's own user management writes organizations, groups, the role catalogue, privileges, `password_changed_at` and `mfa_required`.
+- An administration API. The consumer's own user management writes organizations, groups, the role catalogue, privileges and `mfa_required`. It records a local password change by naming the change time on update (Decision 5).
 - Password rules other than reuse: strength, length or breached-password checks stay in the consumer's own change function. Password history (Decision 12) is the only password rule this change adds, and it is off unless the consumer constructs it.
-- An in-memory identity implementation. If one exists, `identity-model` owns it, and it may run the same suite.
+- A new in-memory identity implementation. The existing one in the `test` module (`identitytest.InMemoryStore`) is updated only where this change's contract changes it: the named password-changed-at time, organizations by reference, and the unknown-user answer (Decisions 5, 7 and 10).
 - Deciding what the active flag, validity windows, super roles or the MFA-required flag mean. Authentication, authorization and security policy own that.
 - Backends other than PostgreSQL, and configurable table names.
 
@@ -38,14 +38,13 @@ See proposal.md for why this change exists. The constraints that shape the appro
 
 ### 1. Package placement
 
+The layout follows what durable-persistence settled for the security-state stores:
 - **Core module:**
-  - `identitystore`: the `database/sql` store;
-  - `identitystore/migrations`: the embedded SQL and the migration set;
-  - `internal/identitysql`: the query text shared by `database/sql` and `pgx`, whose only difference is row scanning.
-- **Nested modules:** `pgx/identitystore` and `gorm/identitystore`.
-- **Test module:** `test/identityconformance` holds the suite, and `test/identitystore` holds the `database/sql` integration tests.
-
-These names follow whatever durable-persistence settles for security-state stores.
+  - `sqlstore.NewIdentityStore`: the `database/sql` store, beside the security-state stores, with the same `Option`, `ErrConfig` and transaction resolution;
+  - `migrate.Identity()` and `migrate.IdentityVersionTable`: the embedded SQL under `migrate/identity`, exposed as a `migrate.Set` like `migrate.SecurityState()`;
+  - `internal/pgschema`: the query text shared by `database/sql` and `pgx`, whose only difference is row scanning.
+- **Nested modules:** `pgx.NewIdentityStore` and `gorm.NewIdentityStore`, in the existing adapter packages.
+- **Test module:** the conformance suite extends `test/identity` (package `identitytest`), the identity ports' existing public suite (Decision 10). The PostgreSQL runs of it live beside the security-state runs in `test/sqlstore`, `test/pgxstore` and `test/gormstore`.
 
 - **Default:** one store value per adapter, implementing all four identity ports and the optional password-history port (Decision 12).
 - **Override:** skip the store and implement the ports; or wire any subset of the store's ports alongside the consumer's own.
@@ -53,25 +52,26 @@ These names follow whatever durable-persistence settles for security-state store
 ### 2. Schema
 
 ```
-groups              (id uuid PK, name varchar NOT NULL, internal boolean NOT NULL DEFAULT false, created_at, updated_at)
-organizations       (id uuid PK, name varchar NOT NULL, group_id uuid NULL, created_at, updated_at)
-roles               (id uuid PK, name varchar NOT NULL UNIQUE, super_role boolean NOT NULL DEFAULT false, created_at, updated_at)
-users               (id uuid PK, name varchar NOT NULL DEFAULT '', username varchar NOT NULL UNIQUE,
+groups              (id uuid PK, name text NOT NULL, internal boolean NOT NULL DEFAULT false, created_at, updated_at)
+organizations       (id uuid PK, name text NOT NULL, group_id uuid NULL, created_at, updated_at)
+roles               (id uuid PK, name text NOT NULL UNIQUE, super_role boolean NOT NULL DEFAULT false, created_at, updated_at)
+users               (id uuid PK, name text NOT NULL DEFAULT '', username text NOT NULL UNIQUE,
                      password bytea NOT NULL, active boolean NOT NULL DEFAULT true,
-                     role varchar NOT NULL DEFAULT '', organization_id uuid NULL,
+                     role text NOT NULL DEFAULT '', organization_id uuid NULL,
                      password_changed_at timestamptz NULL,
                      mfa_required boolean NOT NULL DEFAULT false, created_at, updated_at)
-assigned_roles      (id uuid PK, user_id uuid NOT NULL, role_name varchar NOT NULL, position integer NOT NULL,
+assigned_roles      (id uuid PK, user_id uuid NOT NULL, role_name text NOT NULL, position integer NOT NULL,
                      is_primary boolean NOT NULL DEFAULT false, super_role boolean NOT NULL DEFAULT false,
                      start_date timestamptz NULL, valid_until timestamptz NULL, created_at, updated_at)
                      INDEX (user_id)
-resource_privileges (id uuid PK, role_name varchar NOT NULL, resource_group varchar NOT NULL,
-                     resource varchar NOT NULL, privilege varchar NOT NULL,
+resource_privileges (id uuid PK, role_name text NOT NULL, resource_group text NOT NULL,
+                     resource text NOT NULL, privilege text NOT NULL,
                      granted boolean NOT NULL DEFAULT false, created_at, updated_at)
                      INDEX (role_name)
 ```
 
 Choices a later tidy-up could undo, recorded so it does not:
+- **Types and timestamps follow the security-state set:** string columns are `text`. `created_at` and `updated_at` are `timestamptz NOT NULL` with no database default, as in every security-state table. The store binds them from its clock, so a consumer clock (`WithClock`) governs every time the store writes. Every identity store therefore honours `WithClock`, with the system clock as its default.
 - **`mfa_required` on `users`, `NOT NULL DEFAULT false`:**
   - losing an enrolment row must not clear the requirement;
   - a NULL would scan as "not required" and fail open;
@@ -92,14 +92,14 @@ Choices a later tidy-up could undo, recorded so it does not:
   - there is no `SELECT` beforehand, because a check the write does not honour only makes the race look handled;
   - `DO NOTHING` never touches the existing row;
   - one grant is inserted per occurrence of a role name;
-  - `password_changed_at` is written as NULL.
+  - `password_changed_at` is written only when the caller names it, and is NULL otherwise.
 - **gorm:** reaches the same statement through its on-conflict clause and the affected-row count.
 - **Update** selects the user row `FOR UPDATE`, then:
   - builds a partial `UPDATE users SET …` from the fields the caller named, using the identity model's field-was-set accessor, never field values;
   - rebuilds grants by deleting the user's grants and re-inserting the surviving ones with their original identifiers and attributes;
   - re-selects the complete record.
 - **Why lock the parent row:** row locks on existing grants cannot serialise against another writer's inserts. Lock order is users then grants, matching provisioning, so no deadlock cycle appears.
-- **Password writes:** `password_changed_at` is never in the update's column list.
+- **Password writes:** `password_changed_at` is in the update's column list only when the caller named it. Naming the password alone never puts it there.
 - **Atomicity:** each verb runs in its own transaction, or in a savepoint inside an ambient transaction (Decision 6).
 - **Default and override:** none. These are correctness properties of the port contract. A consumer wanting upsert semantics composes the two verbs and owns the account-takeover risk.
 
@@ -110,14 +110,25 @@ Choices a later tidy-up could undo, recorded so it does not:
 - **Role privileges:** one query ordered by resource group and resource, grouped in Go. Denied entries are kept.
 - **Grants and the active flag:** returned as stored. Validity windows are not filtered; authorization interprets them.
 
-### 5. The password-changed-at time and the MFA-required flag are consumer-owned
+### 5. A local password change records its time by default; the store never stamps it
 
-No port call writes either column:
-- **Why no port writes the password time:** a provider-mirrored password is written through update on every federated login, so stamping the time on a password write would keep it permanently fresh and exempt that user from password-age policy. The store cannot tell a local change from a mirrored one.
+The password-changed-at time is an ordinary named field that the store writes only when the caller names it. The library's local-change path names it by default, so skipping it takes deliberate effort. This is the user's decision, taken during this change's planning: a per-call option alone left a consumer's change route one forgotten option away from a user that password-age policy never challenges. It is built in three layers:
+1. **`identity.WithUserPasswordChange(hash, at)`** names the password and the time together, as one option for a local change. `WithUserPassword` alone remains the mirror's option, so the two paths are spelled differently. `WithUserPasswordChangedAt(at)` stays for backfilling or clearing the time on its own.
+2. **`ReuseGuard.Change` hands the time to the consumer's write.** Its `WriteFunc` receives `changedAt`, read from the guard's clock (`WithReuseClock`, default `time.Now`).
+3. **`password.ProvisionerWrite(p)`** builds a ready-made `WriteFunc` over any `identity.UserProvisioner`. It calls `Update(ctx, user.Username, WithUserPasswordChange(hash, changedAt))`, and joins an attached transaction because the store's update does. A consumer of the default store records the time with no extra code.
+
+- **Why the store never stamps the time itself:** a provider-mirrored password is written through update on every federated login. Stamping the time on every password write would keep a mirrored password permanently fresh and exempt that user from password-age policy. The store cannot tell a local change from a mirrored one, but the caller can. The library's own mirror and just-in-time provisioning (`oidc`) build their options with `WithUserPassword` alone, and a test pins that neither names the time.
+- **One record keys the change:** `Change` takes the user's loaded `*identity.Details`. Its `ID` keys history, its `Password` is the current hash, and `ProvisionerWrite` updates its `Username`. Passing a user reference and a username separately could check one user's history and write another user's password.
+- **Naming a zero time** clears the stored value, like naming any empty value.
 - **Why no port writes the MFA flag:** it is account policy for the consumer's own user management.
-- **Consequence, stated in godoc:** a deployment populated only through the ports has a zero password time for every user. Password-age policy then treats the user as `security-policy` documents for a zero time, and the conformance suite has to seed the value through a hook.
-- **Default:** never written by the store.
-- **Override:** the consumer's tooling writes the columns, and the store returns what it finds.
+- **Limit, stated in godoc (library-design rule 4):** the time is recorded by default only on the guard's path with `ProvisionerWrite`, or wherever a caller uses `WithUserPasswordChange`. `WithUserPassword` alone, or a custom `WriteFunc` that ignores `changedAt`, leaves the time as stored. The godoc of each says that this gives up password-age policy for that user.
+- **Default:** a change through `ReuseGuard.Change` with `ProvisionerWrite` records the time from the guard's clock. The store writes the time only when named, and never writes the MFA flag.
+- **Override:** a consumer `WriteFunc` for their own storage, which receives `changedAt`; `WithReuseClock` for the clock; `WithUserPasswordChangedAt` to set or clear the time directly. The consumer's tooling writes the MFA flag, and the store returns what it finds.
+- **Rejected:**
+  - A hook on the reuse guard duplicates the guard's `write` callback, and it fails after the password is already written.
+  - A store-only local-password writer is a second, unported write path, and the conformance suite could not check it.
+  - Leaving the time outside the ports forces the consumer to write SQL against library-owned tables, and silently leaves password-age policy inert.
+  - The named field alone, with no default path, was this change's first answer. The user tightened it to the three layers above.
 
 ### 6. Ambient transactions
 
@@ -138,6 +149,12 @@ The lookup reads `users.mfa_required` fresh on every call, and user details do n
 - **Cost, accepted:** one primary-key read per evaluation, with no cache. A cache would be per replica and would delay a flag change by its TTL.
 - **Default:** the store's lookup.
 - **Override:** a consumer lookup, for example one backed by a directory.
+- **An unknown user is user-not-found, never "not required".** This is the user's decision, taken during this change. A user reference with no stored user, or one that is not a valid UUID string, fails the lookup with the identity model's user-not-found error.
+  - **Why:** the reference comes from an already-authenticated principal, so an unknown user means something changed after the login, such as a deletion, or a lookup and a loader that disagree. Answering "not required" would fail open. A user who was required to use MFA and is then deleted would have their outstanding bearer tokens refused before the deletion and let through after it (UNREPRODUCED: this follows from the policy and spec text, and the suite case below becomes its first failing test). The MFA requirement policy already denies on any lookup error, so it needs no change.
+  - **Consistency:** the loaders already report an unknown user as user-not-found, and `identity-model` already requires a lookup failure to be an error, not "not required".
+  - **Cost, accepted:** the identity ports' suite had a case asserting the opposite, "an unknown user is answered rather than refused". That case, the in-memory store, and any consumer lookup that answers `false` for an unknown user change before the first tag (`identity-model` delta).
+  - **Sparse lookups:** a consumer lookup that stores flags only for users who need MFA must still tell "user exists, no flag" (`false`) from "no such user" (user-not-found), which can cost an existence check.
+  - **Stated limit:** a denial caused this way is logged as a lookup failure, not as a deleted user.
 - **Dependency:** identity-and-tokens is considering putting the flag on details. If it does, the store's loader returns the column as well, with no schema change. The lookup stays until that change removes the port.
 
 ### 8. Email is passed through, not stored
@@ -148,7 +165,7 @@ The provisioning options carry an email so a consumer's own provisioner can stor
 
 ### 9. Migrations
 
-- **Files:** plain SQL under `identitystore/migrations`, embedded with `embed.FS`, in the same goose-compatible format as the security-state set (`schema-migrations`), so goose or the consumer's own tool can run them.
+- **Files:** plain SQL under `migrate/identity`, exposed as `migrate.Identity()`, embedded with `embed.FS`, in the same goose-compatible format as the security-state set (`schema-migrations`), so goose or the consumer's own tool can run them.
 - **Version table:** the default is `goose_identity`, named in the same pattern as the security-state set's `goose_security_state`, and replaceable by the consumer.
 - **History:** one consolidated initial migration before any tag. After the first tag, changes are additive files.
 - **Down:** drops the seven tables (the six identity tables and `password_history`, Decision 12) in reverse creation order with `IF EXISTS`, and never touches another set's tables.
@@ -157,29 +174,35 @@ The provisioning options carry an email so a consumer's own provisioner can stor
 
 ### 10. The conformance suite
 
-`test/identityconformance` exports a harness of the four port implementations plus seeding hooks: user, password-changed-at, super role (first stored grant of the name), organization with group, privilege and MFA flag. It also has an ambient-transaction harness with `Begin` and a hook that makes a grant write fail.
-- **Run:** `Run(t, h)` and `RunAmbientTx(t, h)`. Cases are named per rule and run sequentially, each with a unique username and role name.
-- **Reading state back:** the provisioner cases read state through an update that names nothing, so they also check the complete-record obligation in every case.
-- **Every hook is required,** and a missing one fails the run before any case.
-  - `t.Skip` is green in CI, and the implementations most likely to get the password time wrong are the ones most likely to leave its hook out.
-  - Writing the hook makes the implementer notice the column their update must not touch.
+The identity ports already have one public conformance suite: `test/identity` (package `identitytest`), with a `Fixture` of the four ports plus seeding and fault hooks, an in-memory store, and self-tests that feed it deliberately broken stores. This change extends that suite rather than adding a second one, because two public suites for the same ports would drift.
+- **Additions:**
+  - cases for every rule in this capability that is observable through the ports and not yet covered, including the named password-changed-at time (Decision 5);
+  - `RunAmbientTx(t, h)`, a separate ambient-transaction part whose harness adds four hooks: one that begins a caller-owned transaction, one that writes an unrelated row inside it, one that reports whether that row was stored, and one that makes a grant write fail;
+  - `RunPasswordHistory(t, h)`, a separate password-history part (Decision 12);
+  - a seeding hook for an organization with its group, which the ports cannot create when the store keeps organizations as references.
+- **Removed:** `SeedPasswordChangedAt`. The suite sets the time through update by naming it, which also checks that a named time is written and an unnamed one is left alone. The fixture interface is public API of the `test` module, and the change is free before the first tag.
+- **Every hook is required.** The existing "may skip" allowance on the fault hooks is removed, and a missing hook fails the run before any case.
+  - `t.Skip` is green in CI, and the implementations most likely to get a rule wrong are the ones most likely to leave its hook out.
+  - A fault hook needs no backend support: a fixture wraps its store and returns the error from the port call.
+- **One database per run:** cases use names unique to the case, so a factory may hand every case a fixture over one shared database. They keep running in parallel.
 - **Out of scope:** context cancellation. The ports say nothing about it.
 - **Concurrency:** the suite runs a concurrent double-submit case. Its passing form holds for every interleaving, so it never fails spuriously.
 - **Adapter-only interleaving tests:** these force the interleaving, holding one transaction at a blocking statement confirmed through `pg_stat_activity`, and pin insert atomicity and update serialisation. They live with the adapters, because forcing an interleaving needs backend access the ports do not give.
-- **Self-test:** the `test` module holds one defective in-memory implementation per defect in the spec's "known defects are caught" scenario, and asserts the suite fails against each.
-- **Compatibility:** the harness is public API of the `test` module. Adding a required hook is a breaking change under the release policy.
+- **Self-test:** the existing broken-store self-test gains one deliberate defect per new entry in the spec's "known defects are caught" scenario, and asserts the suite fails against each.
+- **Compatibility:** the fixture is public API of the `test` module. Adding a required hook is a breaking change under the release policy.
 
 ### 11. Departures from the established design, and why
 
 Each item below is the only place scrty differs from the established store design. The letters give the justification: (a) a settled product decision requires it, (b) a demonstrated defect, or a project rule where stated.
 
 1. **Grant order is an explicit `position` column, not identifier order.** (a) The established design orders grants by identifier and relies on that order: the duplicate-collapse rule keeps the first stored grant, and its query comment calls the ordering load-bearing. Identifiers there came from one time-ordered source. scrty's identifier generator is replaceable by settled decision, and a consumer generator need not sort in creation order. Without a position column, a consumer's generator could decide which duplicate grant survives, promoting a later duplicate's super role. The "first stored duplicate under a consumer generator" scenario pins this.
-2. **Error messages never contain the username.** (b) The established design's own record of its concurrency defect names the harm: the raw error embedded the username, which on the just-in-time path is the user's email address, and that error is handed to a logger. Its fix restored the sentinel but still formatted the username into the wrapped message, so the same text still reaches logs. scrty wraps sentinels without the username and strips driver detail text.
+2. **Error messages never contain the username.** (b, UNREPRODUCED: the claim rests on the established design's own record of the defect, and no failing test in a disposable export has confirmed it; the scenario that becomes its first failing test is "Collision error text" in this change's spec) The established design's own record of its concurrency defect names the harm: the raw error embedded the username, which on the just-in-time path is the user's email address, and that error is handed to a logger. Its fix restored the sentinel but still formatted the username into the wrapped message, so the same text still reaches logs. scrty wraps sentinels without the username and strips driver detail text.
 3. **A malformed user reference to the MFA lookup is user-not-found.** (a) The user reference is an opaque string by settled decision, while the established design took a typed integer identifier that could not be malformed. Parsing happens only inside this store, which minted the value.
 4. **Identifiers are `uuid`, and user identifiers are exposed as canonical strings.** (a) `users.id` is a native `uuid` holding a UUIDv7 from `pkg/id`, and library-owned records use `pkg/id`. The other identity tables follow, so every identifier the store mints comes from one replaceable generator.
 5. **Separate migration set and version table.** (a) Settled.
 6. **Seeding hooks replace raw SQL seeding in the loader, role loader and lookup suites.** (a) The established loader suites seeded through SQL against their own table layout, which a consumer with different tables cannot run. The settled decision makes the suite usable against consumers' own implementations.
 7. **Construction-time configuration errors.** Project rule (library-design rule 6). The established constructors accepted a nil handle, which failed at first use.
+8. **The password-changed-at time is a named field that a port call writes when the caller names it, and the library's local-change path names it by default.** (a) The user's decision, made in this change. The established design had no port write the time, which left a deployment populated through the ports with no way to record a local rotation short of writing to the store's tables, and password-age policy inert for its users. `WithUserPasswordChange`, the reuse guard's `changedAt` and `ProvisionerWrite` make recording the default for a local change. A password write alone still never moves the time, so the mirrored-password exemption the established design guarded against stays closed (Decision 5).
 
 Password history (Decision 12) has no counterpart in the established design. It is an addition, not a departure, so nothing here overrides a prior behaviour.
 
@@ -188,7 +211,7 @@ Everything else follows the established design, including:
 - the primary-role column;
 - delete-and-reinsert grant rebuilds;
 - unfiltered grants;
-- no port writing the password time or MFA flag;
+- no port writing the MFA flag, and no password write moving the password time on its own;
 - a separate MFA lookup;
 - email discarded;
 - required hooks;
@@ -229,38 +252,45 @@ var (
 
 func NewReuseGuard(h History, enc Encoder, depth int, opts ...ReuseOption) (*ReuseGuard, error)
 func WithReuseMatchers(encs ...Encoder) ReuseOption
+func WithReuseClock(now func() time.Time) ReuseOption // default time.Now
 
-// Check refuses candidate with ErrPasswordReused when it matches current or one of
-// the depth-1 most recent retired hashes.
-func (g *ReuseGuard) Check(ctx context.Context, user identity.UserID, candidate string, current []byte) error
+// WriteFunc stores user's new password hash and the time it changed.
+type WriteFunc func(ctx context.Context, user *identity.Details, hash []byte, changedAt time.Time) error
 
-// Change checks, retires current, encodes candidate and calls write with the new
-// hash, in that order, stopping at the first failure.
-func (g *ReuseGuard) Change(ctx context.Context, user identity.UserID, candidate string,
-    current []byte, write func(ctx context.Context, hash []byte) error) error
+// ProvisionerWrite writes through p.Update, naming the hash and the time with
+// identity.WithUserPasswordChange.
+func ProvisionerWrite(p identity.UserProvisioner) (WriteFunc, error)
+
+// Check refuses candidate with ErrPasswordReused when it matches user.Password or
+// one of the depth-1 most recent retired hashes of user.ID.
+func (g *ReuseGuard) Check(ctx context.Context, user *identity.Details, candidate string) error
+
+// Change checks, retires user.Password, encodes candidate and calls write with the
+// new hash and the guard clock's time, in that order, stopping at the first failure.
+func (g *ReuseGuard) Change(ctx context.Context, user *identity.Details, candidate string, write WriteFunc) error
 ```
 
-The port lives with the encoder because the check is password verification, and `password` gains only `identity` (context, errors, time) as a new import. The four identity ports are unchanged.
+The port lives with the encoder because the check is password verification, and `password` gains only `identity` as a new import. `identity` imports no scrty package, so there is no cycle. `ProvisionerWrite` lives here too, for the same reason: `identity` cannot import `WriteFunc` without importing `password`. The four identity ports are unchanged.
 
-**What N counts: the current password is one of the N.** With depth N, the guard compares the candidate against the current hash the caller passes and the N−1 most recent retired hashes. So N = 1 refuses only "changing" to the same password, and N = 3 refuses the current and the two before it.
+**What N counts: the current password is one of the N.** With depth N, the guard compares the candidate against the current hash, `user.Password`, and the N−1 most recent retired hashes. So N = 1 refuses only "changing" to the same password, and N = 3 refuses the current and the two before it.
 - **Why the current counts:** "the last N passwords" in common policy wording includes the one in use. A guard that let a user "change" to the same password would satisfy a password-age challenge without changing anything.
-- **Why history holds retired hashes, not every hash set:** the current hash is already stored with the user. A user provisioned with a password, or one whose hash was last written by a mirror, has never been through the guard. Checking against the current hash the caller passes covers them, and history never needs seeding.
+- **Why history holds retired hashes, not every hash set:** the current hash is already stored with the user. A user provisioned with a password, or one whose hash was last written by a mirror, has never been through the guard. Checking against `user.Password` covers them, and history never needs seeding.
 - **An absent current hash** (nil or empty, for a user with no local password yet) matches nothing. This is not an error.
 
 **Comparison: verification, never re-hashing.** Each stored hash is checked with an encoder's `Match`, which reads the algorithm and parameters from the stored hash. Encoding the candidate again and comparing bytes would never match, because every hash carries a fresh salt. `Match` reports no match for another algorithm's hash, so the guard tries a set of matchers:
-- **Default:** the guard's own encoder, plus the library's Argon2id, bcrypt and scrypt encoders at their defaults, used only to match. Each reads its parameters from the hash, so any hash a built-in encoder ever wrote matches, whatever its cost. A matcher given another algorithm's hash returns without deriving a key, so the cost stays at about one derivation per stored hash.
+- **Default:** the guard's own encoder, plus the library's Argon2id, bcrypt and scrypt encoders at their defaults, used only to match. A default built-in matcher of the same algorithm as the guard's own encoder is left out, because a built-in `Match` reads every parameter from the hash, so the two would answer alike and cost a second derivation. Each reads its parameters from the hash, so any hash a built-in encoder ever wrote matches, whatever its cost. A matcher given another algorithm's hash returns without deriving a key, so the cost stays at about one derivation per stored hash.
 - **Override:** `WithReuseMatchers` replaces the extra matchers, for a consumer who stored hashes with their own encoder. The guard's own encoder is always included.
 - **Why include retired algorithms by default:** more matchers can only refuse more reuse. A guard that silently stops seeing history after an algorithm migration fails open.
 
 **Ordering, and failing closed.** `Change` runs these steps and stops at the first failure:
-1. **Read history.** A read error refuses the change with `ErrHistoryUnavailable`, wrapping the port's error with fixed text, and writes nothing. It never falls back to "no history".
+1. **Read history.** At depth 1 there is no retired hash to compare, so the read is skipped. Otherwise a read error refuses the change with `ErrHistoryUnavailable`, wrapping the port's error with fixed text, and writes nothing. It never falls back to "no history".
 2. **Match.** A match refuses with `ErrPasswordReused`, and `write` is not called.
-3. **Retire the current hash.** A record error refuses the change with `ErrHistoryUnavailable`, and the password is unchanged.
+3. **Retire the current hash.** An absent current hash retires nothing. Otherwise a record error refuses the change with `ErrHistoryUnavailable`, and the password is unchanged.
 4. **Encode the candidate** with the guard's encoder. An encoder error, such as bcrypt's too-long input, is returned as is.
-5. **Call `write`** with the new hash. Its error is returned unchanged. The retired entry from step 3 stays, and it holds the hash that is still current. Retiring the same bytes again adds nothing, so a retry does not double-count it and push an older entry out early.
+5. **Call `write`** with the user, the new hash and the time from the guard's clock. Its error is returned unchanged. The retired entry from step 3 stays, and it holds the hash that is still current. Retiring the same bytes again adds nothing, so a retry does not double-count it and push an older entry out early.
 
 - **Why retire before writing:** a record that fails after the password changed would leave a changed password with no history. Worse, the change function would fail, the gate would keep the marker, and the user's retry with the same new password would be refused as reused. Recording first means every failure before step 5 leaves the password untouched.
-- **Atomicity:** with the default identity store backing both the user and the history, the consumer runs `Change`, with `write` calling the store's update, inside one transaction attached with `WithTx` (Decision 6). The history methods resolve the same handle, so the retire, the password write and the prune commit or roll back together. Without a transaction, the ordering above keeps every partial failure on the safe side.
+- **Atomicity:** with the default identity store backing both the user and the history, the consumer runs `Change` with `ProvisionerWrite(store)` (Decision 5) inside one transaction attached with `WithTx` (Decision 6). The history methods resolve the same handle, so the retire, the password write and the prune commit or roll back together. Without a transaction, the ordering above keeps every partial failure on the safe side.
 - **Concurrency limit, stated:** the guard does not serialise two changes of one user. If a user submits two changes at the same instant, the last write wins, and the losing new password is never retired. Only that user can exploit this, and only to reuse a password they chose moments earlier.
 
 **Storage in the default identity store.** One more table in the identity migration set:
@@ -272,7 +302,7 @@ password_history    (id uuid PK, user_id uuid NOT NULL, password bytea NOT NULL,
 ```
 
 - **Order by `seq`, not by `id` or `retired_at`:** the identifier generator is replaceable (Decision 11.1), and two timestamps can tie. Pruning must know the newest entries exactly.
-- **Pruning:** `RetirePassword` inserts the row, unless the user's newest row holds the same bytes, and then deletes every row of the user beyond the newest `keep`. It does both in one statement group, in a savepoint inside an ambient transaction, and atomically otherwise (Decision 6). A user therefore holds at most N−1 rows. Lowering N prunes at the user's next change. Raising N lets history grow back, and never restores pruned rows.
+- **Pruning:** `RetirePassword` inserts the row, unless the user's newest row holds the same bytes, and then deletes every row of the user beyond the newest `keep`. It does both in one statement group, in a savepoint inside an ambient transaction, and atomically otherwise (Decision 6). A user therefore holds at most N−1 rows after any retire that did not overlap another retire of the same user. Two overlapping retires of one user can each miss the other's uncommitted row, and leave one row more until the user's next change prunes it. That is part of the concurrency limit stated under Ordering: the guard does not serialise two changes of one user. Lowering N prunes at the user's next change. Raising N lets history grow back, and never restores pruned rows.
 - **Credential material:** `password bytea NOT NULL`, the same type and handling as `users.password`. It is never logged, never in error text, and never returned except through `RecentPasswords`. An old password is often a close variant of the current one, so it deserves the same care.
 - **Deleted with the user:** there are no foreign keys, so nothing cascades. `ForgetPasswords` removes a user's rows, and the godoc tells the consumer's user deletion to call it in the same transaction that deletes the user and their grants. Rolling back the identity set drops the table.
 - **User reference:** parsed as in Decision 7. A malformed reference fails `RecentPasswords` with an error, so the guard refuses. It is never read as "no history". A well-formed reference with no rows returns an empty slice.
@@ -291,7 +321,7 @@ password_history    (id uuid PK, user_id uuid NOT NULL, password bytea NOT NULL,
 **Default, override and construction errors.**
 - **Default:** off. No guard, no check, no history rows. The table exists but stays empty.
 - **Enabling:** `NewReuseGuard(history, encoder, depth)`. N is required, and there is no default depth. Published guidance ranges from none at all (current NIST guidance does not ask for history) to 4 or 24, and a library default would present one of them as the right answer.
-- **Construction errors (`ErrConfig`, naming the mistake):** a nil or typed-nil history port, a nil encoder, depth ≤ 0, and a nil matcher passed to `WithReuseMatchers`. None of these surfaces first at a change.
+- **Construction errors (`ErrConfig`, naming the mistake):** a nil or typed-nil history port, a nil encoder, depth ≤ 0, a nil matcher passed to `WithReuseMatchers`, and a nil clock passed to `WithReuseClock`. None of these surfaces first at a change. `ProvisionerWrite` refuses a nil or typed-nil provisioner with `ErrConfig` when it is built, at wiring time. A nil user passed to `Check` or `Change`, or a nil write passed to `Change`, is an error wrapping `ErrConfig`, and nothing is read or written. So is a nil user passed straight to the write `ProvisionerWrite` built.
 - **Overrides:** the consumer's own `History` implementation over their own tables; extra matchers; or calling `Check` and composing their own ordering, which gives up the ordering guarantees above.
 - **No upper bound on N:** a large N is a cost the consumer chooses, not a contradiction. See Risks.
 
@@ -304,13 +334,13 @@ password_history    (id uuid PK, user_id uuid NOT NULL, password bytea NOT NULL,
 - **A default depth:** see above.
 - **A conformance case in the identity suite:** history is not an identity port. It gets its own `RunPasswordHistory` entry with its own harness, so a consumer who does not enable history supplies no extra hooks.
 
-**Conformance.** `test/identityconformance` exports `RunPasswordHistory(t, h)` over any `password.History` implementation. It covers newest-first order, the `n` bound, pruning to `keep`, the same-bytes rule, `keep == 0`, `ForgetPasswords`, the per-user boundary, and the ambient-transaction rollback. The three adapters run it.
+**Conformance.** `test/identity` exports `RunPasswordHistory(t, h)` over any `password.History` implementation. It covers newest-first order, the `n` bound, pruning to `keep`, the same-bytes rule, `keep == 0`, `ForgetPasswords`, the per-user boundary, and the ambient-transaction rollback. The three adapters run it.
 
 ## Risks / Trade-offs
 
 - [A consumer's migration tool records identity migrations in the security-state version table] → Distinct default names, a scenario applying each set alone, and README guidance showing both runner calls.
 - [The flag lookup errors whenever the identity set is missing, and security policy then fails closed on every non-exempt login] → Intended direction. The godoc and migration guide say: apply the identity set before deploying a version wired to this store, and do not roll it back while that version runs.
-- [A deployment populated only through the ports never has a password-changed-at time, so password-age policy never challenges] → Stated in godoc (Decision 5). Whether scrty should offer an explicit way to record a local rotation is an open question for the user.
+- [A consumer's own change route, outside the guard, writes the password with `WithUserPassword` alone, so password-age policy never challenges that user] → The guard's path with `ProvisionerWrite` records the time by default, and `WithUserPasswordChange` is the one-option spelling elsewhere. The godoc on `WithUserPassword` and `WriteFunc` states what skipping the time gives up (Decision 5).
 - [Without foreign keys, deleting an organization or user leaves dangling references and orphaned grants] → Dangling organizations load as absent. The consumer's user management deletes a user's grants with the user, and the godoc says so.
 - [Required hooks make the suite unusable for an implementation that cannot write those fields out of band] → Stated limit. If such an implementation appears, revisit this rather than making hooks optional.
 - [The row lock serialises concurrent updates of one user] → Short, rare, and different users are unaffected.
@@ -326,4 +356,49 @@ Not applicable: a new library with no consumers and no tags. For deployers, appl
 
 ## Open Questions
 
-- **Should the local change point write `password_changed_at`?** `ReuseGuard.Change` is the first seam that knows a password write is a local change rather than a mirror, which is exactly what Decision 5 says the store cannot know. The guard could take a hook, or the store could offer a local-change write that stamps the time, so that password-age policy works for deployments populated through the ports. This change leaves the column consumer-owned (Decision 5): the consumer's `write` callback may stamp it. Whether the library should do so is for the user to decide. It would also resolve the existing open question in Risks about recording a local rotation.
+None open. Two questions were decided by the user during this change:
+- Whether the local change point records the password-changed-at time: it records it by default, in three layers, and the store never stamps it (Decision 5).
+- What the MFA requirement lookup answers for an unknown user: user-not-found, never "not required" (Decision 7).
+
+## References
+
+Two kinds of source are listed. Those under **Researched** were consulted on 2026-09-28 while settling this change's decisions. Those under **Primary documentation** are the standard references for mechanisms the design relies on. They are cited as such, and were not re-checked link by link on that date.
+
+Decisions 5 (the password-changed-at time) and 7 (an unknown user is user-not-found) were reasoned from scrty's own settled specs (`identity-model`, `security-policy`) and project rule (`library-design`). They cite no external source beyond those below.
+
+### Researched
+
+**Password history (Decision 12): what "the last N passwords" means in published guidance, and why there is no default depth**
+- [NIST SP 800-63B-4: Authenticators, section 3.1.1.2 (password verifiers)](https://pages.nist.gov/800-63-4/sp800-63b/authenticators/): verifiers "SHALL NOT require subscribers to change passwords periodically", and must check a new password against a blocklist of commonly used or compromised passwords. There is no requirement to keep or check a user's previous passwords, which is the "none at all" end of the range.
+- PCI DSS v4.0 requirement 8.3.7: a new password must not match any of the last four. The primary standard is in the [PCI SSC document library](https://www.pcisecuritystandards.org/document_library/), which needs registration. The requirement is summarised in [Compass IT Compliance](https://www.compassitc.com/blog/pci-dss-4.0-password-requirements-a-guide-to-compliance), which states the last-four rule. Two other summaries found in the search do not state it, and are not cited. This is the "4" in the design.
+- [Enforce password history, Windows security policy setting (Microsoft Learn)](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-10/security/threat-protection/security-policy-settings/enforce-password-history): 24, the maximum, is recommended. The same page warns that forced unique changes push users towards incremental passwords. This is the "24" in the design.
+- [CIS benchmark item "Ensure 'Enforce password history' is set to '24 or more'" (Tenable audit)](https://www.tenable.com/audits/items/CIS_Microsoft_Windows_Server_2019_STIG_v1.0.1_L1_MS.audit:a01ae92c73f8d7795108312916cbc4ec)
+
+### Primary documentation
+
+**Provisioning and update (Decision 3), and concurrent retires (Decision 12, Risks)**
+- [PostgreSQL: INSERT … ON CONFLICT](https://www.postgresql.org/docs/current/sql-insert.html#SQL-ON-CONFLICT): the insert decides a username collision, and `DO NOTHING` leaves the existing row untouched
+- [PostgreSQL: SELECT … FOR UPDATE](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE) and [explicit locking](https://www.postgresql.org/docs/current/explicit-locking.html): the parent-row lock that serialises updates of one user
+- [PostgreSQL: transaction isolation](https://www.postgresql.org/docs/current/transaction-iso.html): under READ COMMITTED, two overlapping retires of one user can each miss the other's uncommitted row, which is the stated limit on the history bound
+
+**Ambient transactions (Decision 6)**
+- [PostgreSQL: transactions tutorial](https://www.postgresql.org/docs/current/tutorial-transactions.html): a failed statement aborts the whole transaction, so the store guards its own writes with savepoints
+- [PostgreSQL: SAVEPOINT](https://www.postgresql.org/docs/current/sql-savepoint.html), [ROLLBACK TO SAVEPOINT](https://www.postgresql.org/docs/current/sql-rollback-to.html) and [RELEASE SAVEPOINT](https://www.postgresql.org/docs/current/sql-release-savepoint.html)
+
+**Schema and identifiers (Decisions 2, 11 and 12)**
+- [RFC 9562: Universally Unique IDentifiers (UUIDs)](https://www.rfc-editor.org/rfc/rfc9562): UUIDv7, the default generator for `users.id`
+- [PostgreSQL: UUID type](https://www.postgresql.org/docs/current/datatype-uuid.html)
+- [PostgreSQL: CREATE TABLE, identity columns](https://www.postgresql.org/docs/current/sql-createtable.html): `password_history.seq GENERATED ALWAYS AS IDENTITY` orders history independently of the ID generator and of clock ties
+
+**Migrations (Decision 9)**
+- [pressly/goose](https://github.com/pressly/goose): the annotated SQL migration format the identity set uses, and its version table
+
+**The conformance suite's forced interleavings (Decision 10)**
+- [PostgreSQL: the pg_stat_activity view](https://www.postgresql.org/docs/current/monitoring-stats.html#MONITORING-PG-STAT-ACTIVITY-VIEW): confirming that a transaction is waiting on a lock before the test releases the other one
+
+**The reuse guard's matching and cost (Decision 12)**
+- [RFC 9106: Argon2](https://www.rfc-editor.org/rfc/rfc9106) and the [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html): the Argon2id parameters behind the cost of each derivation
+- [golang.org/x/crypto/bcrypt](https://pkg.go.dev/golang.org/x/crypto/bcrypt): the 72-byte input limit, and why a longer candidate can never match a bcrypt history entry
+
+**The reuse refusal's status (Decision 12, Status)**
+- [RFC 9110: HTTP Semantics, section 15.5.21 (422 Unprocessable Content)](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.21): a well-formed request whose content is refused

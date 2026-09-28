@@ -86,7 +86,7 @@ Provisioning SHALL create a new user and SHALL fail with the identity model's us
 ### Requirement: A provisioned user starts from safe defaults
 A newly provisioned user SHALL:
 - be active;
-- have no password-changed-at time;
+- have no password-changed-at time, unless the caller names one;
 - have the MFA-required flag false;
 - have the password hash stored verbatim and never hashed by the store, with an empty hash stored when none is given;
 - have the organization reference stored as given.
@@ -129,17 +129,29 @@ Updating SHALL amend an existing user, writing only the fields the caller explic
 - **WHEN** an update names no field
 - **THEN** no stored value changes and the complete stored record is returned
 
-### Requirement: No port call moves the password-age clock
-Neither provisioning nor updating SHALL set or change the stored password-changed-at time, including when a password hash is written. This keeps a password mirrored from an external identity provider on every login from exempting that user from password-age policy. The time SHALL be written only by the consumer's own user management, outside the ports, and the store SHALL return whatever value it holds.
+### Requirement: The password-age clock moves only when the caller names it
+Provisioning and updating SHALL write the password-changed-at time only when the caller names it, and SHALL store the named value as given. Naming a zero time SHALL clear the stored value. A password hash written without naming the time SHALL leave the stored time unchanged. This keeps a password mirrored from an external identity provider on every login from exempting that user from password-age policy, while a local change records itself by naming both. The store SHALL return whatever value it holds.
 
 #### Scenario: Password write on a user with no password change recorded
 - **WHEN** a user with no password-changed-at time is updated naming only a new password hash
 - **THEN** the new hash is stored
 - **AND** the stored password-changed-at time is still zero
 
-#### Scenario: Consumer-recorded rotation survives a password write
-- **WHEN** the consumer's own password-change tooling has written a password-changed-at time 400 days ago for a user, and the user is then updated naming only a new password hash
+#### Scenario: Recorded rotation survives a mirrored password write
+- **WHEN** a user's password-changed-at time was recorded 400 days ago, and the user is then updated naming only a new password hash
 - **THEN** the stored password-changed-at time is still 400 days ago
+
+#### Scenario: Local change names the time
+- **WHEN** a user is updated naming a new password hash and a password-changed-at time `T`
+- **THEN** the new hash is stored and the returned and stored password-changed-at time is `T`
+
+#### Scenario: Provisioning names the time
+- **WHEN** a user is provisioned naming a password-changed-at time `T`
+- **THEN** the returned record's password-changed-at time is `T`
+
+#### Scenario: Naming a zero time clears it
+- **WHEN** a user with a stored password-changed-at time is updated naming the zero time
+- **THEN** the stored password-changed-at time is zero
 
 ### Requirement: A role list that names nothing leaves grants untouched
 An update SHALL leave the stored grants, including their identifiers, super-role flags and validity windows, and the primary role, completely untouched when the caller does not name roles, names an empty role list, or names only empty role names. There SHALL be no way to remove every grant through an update.
@@ -263,7 +275,7 @@ Every port operation SHALL read and write through the caller's ambient transacti
 - **THEN** loading that username after the rollback fails with the user-not-found error
 
 ### Requirement: Wiring mistakes fail at construction
-Constructing a store SHALL fail with a configuration error when it is given no database handle, or an explicitly passed absent identifier generator or transaction resolver. No such mistake SHALL surface first at a port call.
+Constructing a store SHALL fail with a configuration error when it is given no database handle, or an explicitly passed absent identifier generator, transaction resolver or clock. No such mistake SHALL surface first at a port call.
 
 #### Scenario: Missing database handle
 - **WHEN** a store is constructed without a database handle
@@ -301,27 +313,27 @@ The `database/sql`, `pgx` and `gorm` implementations of the store SHALL each pas
 - **THEN** every case passes for all three
 
 ### Requirement: The conformance suite is usable against any port implementation
-The identity-port conformance suite SHALL be public and SHALL test any implementation of the user loader, role loader, user provisioner and MFA requirement lookup, not only scrty's. It SHALL drive the implementation only through the ports, plus seeding hooks the implementer supplies for state the ports cannot create:
-- a user;
-- a stored password-changed-at time;
-- a super-role grant with a validity window, applied to the first stored grant of that name;
+The identity-port conformance suite SHALL be public and SHALL test any implementation of the user loader, role loader, user provisioner and MFA requirement lookup, not only scrty's. It SHALL be the identity ports' one public suite, and SHALL drive the implementation only through the ports, plus hooks the implementer supplies for state the ports cannot create or faults they cannot cause:
+- a user's role grants with their identifiers, super-role flags and validity windows;
 - an organization with its group;
 - privilege entries;
-- the MFA-required flag.
+- the MFA-required flag;
+- a failing user load and a failing requirement lookup.
 
-The suite SHALL NOT assume scrty's table layout, and SHALL support a single database hosting a whole run. Every hook SHALL be required. A missing hook SHALL fail the suite immediately with a message naming it, rather than skip the cases that need it. The ambient-transaction part SHALL additionally require a hook that begins a caller-owned transaction and one that makes a grant write fail.
+The suite SHALL NOT assume scrty's table layout, and SHALL support a single database hosting a whole run. Every hook SHALL be required. A missing hook SHALL fail the suite immediately with a message naming it, rather than skip the cases that need it. The ambient-transaction part SHALL additionally require hooks that begin a caller-owned transaction, write an unrelated row inside it, report whether that row was stored, and make a grant write fail.
 
 #### Scenario: Consumer verifies their own store
 - **WHEN** a consumer runs the suite against their own implementation of the four ports over their own user tables, supplying every hook
 - **THEN** the suite exercises every rule in this capability that is observable through the ports and reports each rule as its own named case
 
 #### Scenario: Missing seeding hook
-- **WHEN** the suite is run without the password-changed-at seeding hook
+- **WHEN** the suite is run without the MFA-required seeding hook
 - **THEN** the suite fails before running any case, naming the missing hook
 
 #### Scenario: Known defects are caught
 - **WHEN** the suite is run against an implementation with any one of these defects:
-  - it stamps the password-changed-at time on a password write;
+  - it stamps the password-changed-at time on a password write that does not name it;
+  - it ignores a named password-changed-at time;
   - it overwrites an existing user on a username collision;
   - it returns only the amended fields from an update;
   - it rebuilds grants from scratch, dropping super roles;
@@ -334,7 +346,7 @@ The store SHALL implement the password-history port, keeping each user's retired
 - **Reading:** returns up to the requested number of the user's retired hashes, newest first, byte for byte. A well-formed user reference with no entries returns none and no error.
 - **Retiring:** records the hash as the user's newest entry, then removes every entry of that user beyond the newest number the caller keeps. A hash identical to the user's newest entry adds nothing. Keeping zero records nothing and removes every entry.
 - **Order:** the order of entries is the order in which they were retired, independent of the identifier generator and of clock ties.
-- **Bound:** after any retire, a user holds no more entries than the caller asked to keep.
+- **Bound:** after a retire that does not overlap another retire of the same user, that user holds no more entries than the caller asked to keep. Overlapping retires of one user may leave one extra entry, which that user's next retire prunes.
 - **Malformed reference:** a user reference that is not a valid UUID string fails reading with an error, never with an empty history.
 - **Storage failure:** fails with an error, never with an empty history.
 

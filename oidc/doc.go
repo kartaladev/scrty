@@ -109,9 +109,10 @@
 // provider, so it is not revoked by disabling or reconfiguring the user
 // there. Mirroring keeps it current only when the provider's claim keeps
 // returning the same stored hash; a provider that re-hashes per token should
-// not be mirrored, since every login would then write a spurious change. A
-// mirrored hash's password-changed time is never set, so a password-age
-// policy never challenges it on that basis alone.
+// not be mirrored, since every login would then write a spurious change. The
+// mirror never names the password-changed time, so writing a mirrored hash
+// never moves it; a time a local change already recorded stays in place, and
+// password-age policy keeps applying to it.
 //
 // Just-in-time provisioning creates a user and links it in two separate
 // writes (Broker.Broker), because the two ports may live in different

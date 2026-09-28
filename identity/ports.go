@@ -1,6 +1,9 @@
 package identity
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Field names a user field an option can set.
 //
@@ -16,6 +19,7 @@ const (
 	FieldRoles
 	FieldOrganization
 	FieldPassword
+	FieldPasswordChangedAt
 
 	fieldCount // not a field; keeps the set array in step with the list above
 )
@@ -32,6 +36,8 @@ type NewUser struct {
 	Roles        []string
 	Organization *Organization
 	Password     []byte
+
+	PasswordChangedAt time.Time
 
 	set [fieldCount]bool
 }
@@ -88,8 +94,40 @@ func WithUserOrganization(org *Organization) UserOption {
 // The hash is stored exactly as given and is never hashed again: this package
 // does no hashing, and a store that re-hashed here would make every stored
 // credential unverifiable.
+//
+// Named alone, it leaves the stored password-changed time as it was. That is
+// right for a password mirrored from an identity provider, and wrong for a local
+// change: use WithUserPasswordChange there, or the user is never challenged by
+// password-age policy.
 func WithUserPassword(hash []byte) UserOption {
 	return func(u *NewUser) { u.Password = hash; u.mark(FieldPassword) }
+}
+
+// WithUserPasswordChangedAt names when the password was last changed.
+//
+// Unnamed, the stored time is left as it was by Update, and is zero after
+// Provision: no password write moves it on its own. Name it on a local password
+// change, together with the new hash (WithUserPasswordChange does both), and the
+// store records the rotation that password-age policy reads. Leave it unnamed
+// when the password is mirrored from an identity provider, so a mirror written
+// on every federated login cannot keep a user permanently fresh. Naming the zero
+// time clears it.
+func WithUserPasswordChangedAt(t time.Time) UserOption {
+	return func(u *NewUser) { u.PasswordChangedAt = t; u.mark(FieldPasswordChangedAt) }
+}
+
+// WithUserPasswordChange names a local password change: the already-hashed
+// password and when it changed, together.
+//
+// Use it wherever the user changed their own password or an administrator reset
+// it, so the change records itself for password-age policy. A password mirrored
+// from an identity provider is named with WithUserPassword alone, so it never
+// moves the time.
+func WithUserPasswordChange(hash []byte, at time.Time) UserOption {
+	return func(u *NewUser) {
+		WithUserPassword(hash)(u)
+		WithUserPasswordChangedAt(at)(u)
+	}
 }
 
 // ApplyUserOptions collects opts into a NewUser.
@@ -155,16 +193,27 @@ type UserProvisioner interface {
 	// decided by the write itself rather than by a preceding read, so concurrent
 	// calls for one username create exactly one user. The first role name is
 	// primary and each occurrence of a name creates its own grant. The password
-	// hash is stored exactly as given. The created user is active. Errors never
+	// hash is stored exactly as given. The password-changed time is stored only
+	// when the caller names it with WithUserPasswordChangedAt (or
+	// WithUserPasswordChange), and is zero otherwise, including when a password
+	// is named without it. The created user is active. Errors never
 	// quote the username, which is an email address on just-in-time provisioning.
 	Provision(ctx context.Context, username string, opts ...UserOption) (*Details, error)
 
 	// Update amends an existing user, writing only the fields whose option was
 	// applied and leaving every other stored field as it was. An unknown username
 	// returns ErrUserNotFound and creates nothing. It returns the complete stored
-	// record, not only the amended columns, and never changes PasswordChangedAt,
-	// including when the password is written. Concurrent updates of one user are
+	// record, not only the amended columns. Concurrent updates of one user are
 	// serialized.
+	//
+	// PasswordChangedAt is a field like any other: it is written only when the
+	// caller names it with WithUserPasswordChangedAt, and naming the zero time
+	// clears it. A password named without it leaves the stored time as it was, so
+	// a password mirrored from an identity provider on every login never moves
+	// it, while a local change records itself by naming both:
+	//
+	//	// a local change records itself; a mirror names only the hash
+	//	store.Update(ctx, username, identity.WithUserPasswordChange(hash, now))
 	Update(ctx context.Context, username string, opts ...UserOption) (*Details, error)
 }
 

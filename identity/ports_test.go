@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,7 +20,11 @@ var allUserFields = []identity.Field{
 	identity.FieldRoles,
 	identity.FieldOrganization,
 	identity.FieldPassword,
+	identity.FieldPasswordChangedAt,
 }
+
+// changedAt is a whole-second UTC time for the password-changed-at cases.
+var changedAt = time.Date(2031, 6, 1, 0, 0, 0, 0, time.UTC)
 
 func TestApplyUserOptions(t *testing.T) {
 	t.Parallel()
@@ -75,6 +80,7 @@ func TestApplyUserOptions(t *testing.T) {
 				identity.WithUserRoles("editor", "viewer"),
 				identity.WithUserOrganization(&identity.Organization{ID: "o-1", Name: "acme"}),
 				identity.WithUserPassword([]byte("H")),
+				identity.WithUserPasswordChangedAt(changedAt),
 			},
 			assert: func(t *testing.T, u *identity.NewUser) {
 				for _, f := range allUserFields {
@@ -85,10 +91,52 @@ func TestApplyUserOptions(t *testing.T) {
 				assert.Equal(t, "alice@example.com", u.Email)
 				assert.Equal(t, []string{"editor", "viewer"}, u.Roles)
 				assert.Equal(t, []byte("H"), u.Password)
+				assert.Equal(t, changedAt, u.PasswordChangedAt)
 
 				if assert.NotNil(t, u.Organization) {
 					assert.Equal(t, "acme", u.Organization.Name)
 				}
+			},
+		},
+		{
+			name: "a named password-changed time is set and carried",
+			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(changedAt)},
+			assert: func(t *testing.T, u *identity.NewUser) {
+				assert.True(t, u.IsSet(identity.FieldPasswordChangedAt))
+				assert.Equal(t, changedAt, u.PasswordChangedAt)
+				assert.False(t, u.IsSet(identity.FieldPassword),
+					"naming the time alone must not name the password")
+			},
+		},
+		{
+			name: "the zero time still names the field, a request to clear it",
+			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(time.Time{})},
+			assert: func(t *testing.T, u *identity.NewUser) {
+				assert.True(t, u.IsSet(identity.FieldPasswordChangedAt))
+				assert.True(t, u.PasswordChangedAt.IsZero())
+			},
+		},
+		{
+			name: "the local-change option names the password and the time",
+			opts: []identity.UserOption{identity.WithUserPasswordChange([]byte("h"), changedAt)},
+			assert: func(t *testing.T, u *identity.NewUser) {
+				for _, f := range allUserFields {
+					want := f == identity.FieldPassword || f == identity.FieldPasswordChangedAt
+					assert.Equal(t, want, u.IsSet(f),
+						"the local-change option names exactly the password and the time; "+
+							"field %d disagrees", f)
+				}
+				assert.Equal(t, []byte("h"), u.Password)
+				assert.Equal(t, changedAt, u.PasswordChangedAt)
+			},
+		},
+		{
+			name: "a password named alone does not name the time",
+			opts: []identity.UserOption{identity.WithUserPassword([]byte("h"))},
+			assert: func(t *testing.T, u *identity.NewUser) {
+				assert.True(t, u.IsSet(identity.FieldPassword))
+				assert.False(t, u.IsSet(identity.FieldPasswordChangedAt),
+					"a mirrored password must never move the password-changed time")
 			},
 		},
 		{

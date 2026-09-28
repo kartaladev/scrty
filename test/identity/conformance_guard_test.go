@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,10 +45,25 @@ const (
 	defectAliasingOrganization defect = "aliasing-organization"
 	// The collision check is case-insensitive, so two distinct users collide.
 	defectCaseFoldingCollision defect = "case-folding-collision"
-	// Provision stamps the password-changed time.
+	// Provision stamps the password-changed time when a password is named and
+	// the time is not.
 	defectProvisionStampsChangedAt defect = "provision-stamps-changed-at"
-	// Update stamps the password-changed time when it writes a password.
+	// Update stamps the password-changed time when a password is named and the
+	// time is not, as a mirrored password would on every login.
 	defectUpdateStampsChangedAt defect = "update-stamps-changed-at"
+	// Neither verb writes a password-changed time the caller named, so a local
+	// change is never recorded.
+	defectIgnoresNamedChangedAt defect = "ignores-named-changed-at"
+	// A named zero password-changed time is skipped rather than clearing the
+	// stored one, as a store deciding from the value instead of IsSet would.
+	defectKeepsChangedAtOnNamedZero defect = "keeps-changed-at-on-named-zero"
+	// Update stamps the password-changed time whenever it is unset, rather than
+	// only when the caller names it — the same failure a SQL default of
+	// COALESCE(password_changed_at, now()) would produce.
+	defectStampsWhenUnset defect = "stamps-when-unset"
+	// Update writes a named password-changed time but drops the password change
+	// that named it, when both are named together.
+	defectDropsPasswordWithTime defect = "drops-password-with-time"
 	// A backend failure is reported as "not required".
 	defectMFAFailOpen defect = "mfa-fail-open"
 	// A role rebuild with no surviving name strips every grant.
@@ -82,7 +98,19 @@ const (
 	// Provision refuses a username that is only whitespace, although the
 	// contract says a username is opaque.
 	defectRefusesOpaqueUsername defect = "refuses-opaque-username"
+	// A loaded organization is returned without the group it belongs to.
+	defectDropsOrganizationGroup defect = "drops-organization-group"
+	// Update returns a record carrying only the fields the caller named.
+	defectAmendedFieldsOnly defect = "amended-fields-only"
+	// A role rebuild keeps the last of the stored grants that repeat a name.
+	defectKeepsLastDuplicate defect = "keeps-last-duplicate"
+	// Provision on a taken username replaces the existing user and succeeds.
+	defectOverwritesOnCollision defect = "overwrites-on-collision"
 )
+
+// missingHook names the defect of a store that lacks the named hook: a seeding
+// hook answers ErrHookUnsupported, a fault hook does nothing.
+func missingHook(hook string) defect { return defect("missing-hook-" + hook) }
 
 // everyDefect is every flaw the guard expects the conformance suite to catch.
 // A defect that is not listed here is a defect no run exercises.
@@ -96,6 +124,10 @@ var everyDefect = []defect{
 	defectCaseFoldingCollision,
 	defectProvisionStampsChangedAt,
 	defectUpdateStampsChangedAt,
+	defectIgnoresNamedChangedAt,
+	defectKeepsChangedAtOnNamedZero,
+	defectStampsWhenUnset,
+	defectDropsPasswordWithTime,
 	defectMFAFailOpen,
 	defectRoleStrip,
 	defectRoleMint,
@@ -111,6 +143,10 @@ var everyDefect = []defect{
 	defectLostUpdate,
 	defectFiltersRefusedPrivileges,
 	defectRefusesOpaqueUsername,
+	defectDropsOrganizationGroup,
+	defectAmendedFieldsOnly,
+	defectKeepsLastDuplicate,
+	defectOverwritesOnCollision,
 }
 
 // brokenStore implements every identity port over process memory, carrying
@@ -124,6 +160,7 @@ type brokenStore struct {
 	byName map[string]*identity.Details
 	privs  map[string][]*identity.ResourcePrivileges
 	mfa    map[identity.UserID]bool
+	orgs   map[string]*identity.Organization
 	nextID int
 
 	loadErr error
@@ -144,6 +181,7 @@ func newBrokenStore(d defect) *brokenStore {
 		byName: make(map[string]*identity.Details),
 		privs:  make(map[string][]*identity.ResourcePrivileges),
 		mfa:    make(map[identity.UserID]bool),
+		orgs:   make(map[string]*identity.Organization),
 	}
 }
 
@@ -171,6 +209,10 @@ func (s *brokenStore) key(username string) string {
 func (s *brokenStore) SeedRole(
 	_ context.Context, role string, p []*identity.ResourcePrivileges,
 ) error {
+	if s.d == missingHook("SeedRole") {
+		return identitytest.ErrHookUnsupported
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -180,6 +222,10 @@ func (s *brokenStore) SeedRole(
 }
 
 func (s *brokenStore) SeedMFARequired(_ context.Context, id identity.UserID, required bool) error {
+	if s.d == missingHook("SeedMFARequired") {
+		return identitytest.ErrHookUnsupported
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -188,25 +234,13 @@ func (s *brokenStore) SeedMFARequired(_ context.Context, id identity.UserID, req
 	return nil
 }
 
-func (s *brokenStore) SeedPasswordChangedAt(
-	_ context.Context, username string, at time.Time,
-) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	d, ok := s.byName[s.key(username)]
-	if !ok {
-		return identity.ErrUserNotFound
-	}
-
-	d.PasswordChangedAt = at
-
-	return nil
-}
-
 func (s *brokenStore) SeedRoleGrants(
 	_ context.Context, username string, grants []*identity.AssignedRole,
 ) error {
+	if s.d == missingHook("SeedRoleGrants") {
+		return identitytest.ErrHookUnsupported
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -231,8 +265,21 @@ func (s *brokenStore) SeedRoleGrants(
 	return nil
 }
 
+func (s *brokenStore) SeedOrganization(_ context.Context, org *identity.Organization) error {
+	if s.d == missingHook("SeedOrganization") {
+		return identitytest.ErrHookUnsupported
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.orgs[org.ID] = clonedOrg(org)
+
+	return nil
+}
+
 func (s *brokenStore) FailUserLoads(err error) {
-	if s.d == defectNoFaultInjection {
+	if s.d == defectNoFaultInjection || s.d == missingHook("FailUserLoads") {
 		return
 	}
 
@@ -243,7 +290,7 @@ func (s *brokenStore) FailUserLoads(err error) {
 }
 
 func (s *brokenStore) FailMFALookups(err error) {
-	if s.d == defectNoFaultInjection {
+	if s.d == defectNoFaultInjection || s.d == missingHook("FailMFALookups") {
 		return
 	}
 
@@ -273,10 +320,10 @@ func (s *brokenStore) LoadByUsername(
 	}
 
 	if s.d == defectAliasingLoad {
-		return d, nil
+		return s.resolveInPlaceLocked(d), nil
 	}
 
-	return clonedDetails(d), nil
+	return s.recordLocked(d), nil
 }
 
 func (s *brokenStore) LoadByUserID(
@@ -305,10 +352,10 @@ func (s *brokenStore) LoadByUserID(
 		}
 
 		if s.d == defectAliasingLoad {
-			return d, nil
+			return s.resolveInPlaceLocked(d), nil
 		}
 
-		return clonedDetails(d), nil
+		return s.recordLocked(d), nil
 	}
 
 	return nil, identity.ErrUserNotFound
@@ -399,7 +446,7 @@ func (s *brokenStore) Provision(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.d != defectPreflightCollision {
+	if s.d != defectPreflightCollision && s.d != defectOverwritesOnCollision {
 		if _, taken := s.byName[s.key(username)]; taken {
 			if s.d == defectLeakyCollisionError {
 				return nil, errors.New("identitytest: user " + username + " already exists: " +
@@ -426,7 +473,10 @@ func (s *brokenStore) insertLocked(username string, u *identity.NewUser) *identi
 
 	s.adopt(d, u)
 
-	if s.d == defectProvisionStampsChangedAt {
+	switch {
+	case u.IsSet(identity.FieldPasswordChangedAt):
+		s.writeChangedAt(d, u)
+	case s.d == defectProvisionStampsChangedAt && u.IsSet(identity.FieldPassword):
 		d.PasswordChangedAt = time.Now()
 	}
 
@@ -444,23 +494,22 @@ func (s *brokenStore) insertLocked(username string, u *identity.NewUser) *identi
 		return d
 	}
 
-	return clonedDetails(d)
+	return s.recordLocked(d)
 }
 
 // adopt takes the caller's password buffer and organization into d, copying
 // them unless the store's defect is to hold the caller's own memory.
 func (s *brokenStore) adopt(d *identity.Details, u *identity.NewUser) {
-	if s.d == defectAliasingPassword {
+	switch {
+	case s.d == defectDropsPasswordWithTime && u.IsSet(identity.FieldPasswordChangedAt):
+		// the local change's time is recorded, its password is not
+	case s.d == defectAliasingPassword:
 		d.Password = u.Password
-	} else {
+	default:
 		d.Password = append([]byte(nil), u.Password...)
 	}
 
-	if s.d == defectAliasingOrganization {
-		d.Organization = u.Organization
-	} else {
-		d.Organization = clonedOrg(u.Organization)
-	}
+	d.Organization = s.orgRef(u.Organization)
 }
 
 func (s *brokenStore) Update(
@@ -494,7 +543,41 @@ func (s *brokenStore) Update(
 		return d, nil
 	}
 
-	return clonedDetails(d), nil
+	if s.d == defectAmendedFieldsOnly {
+		return s.amendedOnlyLocked(d, u), nil
+	}
+
+	return s.recordLocked(d), nil
+}
+
+// amendedOnlyLocked returns the user's identity and the fields u named, and
+// nothing the update did not touch: a store answering from its UPDATE statement
+// rather than reading the record back.
+func (s *brokenStore) amendedOnlyLocked(d *identity.Details, u *identity.NewUser) *identity.Details {
+	full := s.recordLocked(d)
+	out := &identity.Details{ID: full.ID, Username: full.Username}
+
+	if u.IsSet(identity.FieldName) {
+		out.Name = full.Name
+	}
+
+	if u.IsSet(identity.FieldPassword) {
+		out.Password = full.Password
+	}
+
+	if u.IsSet(identity.FieldPasswordChangedAt) {
+		out.PasswordChangedAt = full.PasswordChangedAt
+	}
+
+	if u.IsSet(identity.FieldOrganization) {
+		out.Organization = full.Organization
+	}
+
+	if u.IsSet(identity.FieldRoles) {
+		out.Roles = full.Roles
+	}
+
+	return out
 }
 
 // unserializedUpdate reads, decides and writes without holding the lock across
@@ -523,7 +606,7 @@ func (s *brokenStore) unserializedUpdate(
 
 	s.byName[s.key(username)] = snapshot
 
-	return clonedDetails(snapshot), nil
+	return s.recordLocked(snapshot), nil
 }
 
 // lostUpdate reads the pre-state, waits until the other caller has read it too,
@@ -563,7 +646,7 @@ func (s *brokenStore) lostUpdate(
 
 	s.byName[s.key(username)] = snapshot
 
-	return clonedDetails(snapshot), nil
+	return s.recordLocked(snapshot), nil
 }
 
 func (s *brokenStore) write(d *identity.Details, u *identity.NewUser) {
@@ -574,27 +657,47 @@ func (s *brokenStore) write(d *identity.Details, u *identity.NewUser) {
 	}
 
 	if ignore || u.IsSet(identity.FieldPassword) {
-		if s.d == defectAliasingPassword {
-			d.Password = u.Password
-		} else {
-			d.Password = append([]byte(nil), u.Password...)
+		dropPassword := s.d == defectDropsPasswordWithTime && u.IsSet(identity.FieldPasswordChangedAt)
+
+		if !dropPassword {
+			if s.d == defectAliasingPassword {
+				d.Password = u.Password
+			} else {
+				d.Password = append([]byte(nil), u.Password...)
+			}
 		}
 
-		if s.d == defectUpdateStampsChangedAt {
+		if s.d == defectUpdateStampsChangedAt && !u.IsSet(identity.FieldPasswordChangedAt) {
+			d.PasswordChangedAt = time.Now()
+		}
+
+		if s.d == defectStampsWhenUnset && !u.IsSet(identity.FieldPasswordChangedAt) &&
+			d.PasswordChangedAt.IsZero() {
 			d.PasswordChangedAt = time.Now()
 		}
 	}
 
+	if ignore || u.IsSet(identity.FieldPasswordChangedAt) {
+		s.writeChangedAt(d, u)
+	}
+
 	if ignore || u.IsSet(identity.FieldOrganization) {
-		if s.d == defectAliasingOrganization {
-			d.Organization = u.Organization
-		} else {
-			d.Organization = clonedOrg(u.Organization)
-		}
+		d.Organization = s.orgRef(u.Organization)
 	}
 
 	if ignore || u.IsSet(identity.FieldRoles) {
 		d.Roles = s.rebuild(d.Roles, u.Roles)
+	}
+}
+
+// writeChangedAt writes the named password-changed time into d, unless the
+// store's defect is to drop it.
+func (s *brokenStore) writeChangedAt(d *identity.Details, u *identity.NewUser) {
+	switch {
+	case s.d == defectIgnoresNamedChangedAt:
+	case s.d == defectKeepsChangedAtOnNamedZero && u.PasswordChangedAt.IsZero():
+	default:
+		d.PasswordChangedAt = u.PasswordChangedAt
 	}
 }
 
@@ -623,7 +726,7 @@ func (s *brokenStore) rebuild(
 
 	existing := make(map[string]*identity.AssignedRole, len(stored))
 	for _, r := range stored {
-		if r != nil && existing[r.Name] == nil {
+		if r != nil && (existing[r.Name] == nil || s.d == defectKeepsLastDuplicate) {
 			existing[r.Name] = r
 		}
 	}
@@ -648,6 +751,68 @@ func (s *brokenStore) rebuild(
 	}
 
 	return rebuilt
+}
+
+// orgRef keeps the reference to the organization a caller named, copied unless
+// the store's defect is to hold the caller's own value, which it then resolves
+// by whatever identifier that value carries at load time.
+func (s *brokenStore) orgRef(o *identity.Organization) *identity.Organization {
+	switch {
+	case o == nil || o.ID == "":
+		return nil
+	case s.d == defectAliasingOrganization:
+		return o
+	default:
+		return &identity.Organization{ID: o.ID}
+	}
+}
+
+// recordLocked returns a copy of d as a caller sees it: the organization
+// resolved from its reference, and the primary grant first.
+func (s *brokenStore) recordLocked(d *identity.Details) *identity.Details {
+	out := clonedDetails(d)
+	out.Organization = nil
+
+	if d.Organization != nil {
+		out.Organization = clonedOrg(s.orgs[d.Organization.ID])
+	}
+
+	if s.d == defectDropsOrganizationGroup && out.Organization != nil {
+		out.Organization.Group = nil
+	}
+
+	primaryFirst(out.Roles)
+
+	return out
+}
+
+// resolveInPlaceLocked resolves d's organization onto the store's own seeded
+// record and hands d back, as a store aliasing its state would.
+func (s *brokenStore) resolveInPlaceLocked(d *identity.Details) *identity.Details {
+	if d.Organization != nil {
+		if org, ok := s.orgs[d.Organization.ID]; ok {
+			d.Organization = org
+		} else {
+			d.Organization = nil
+		}
+	}
+
+	primaryFirst(d.Roles)
+
+	return d
+}
+
+func primaryFirst(roles []*identity.AssignedRole) {
+	slices.SortStableFunc(roles, func(a, b *identity.AssignedRole) int {
+		switch {
+		case a.Primary == b.Primary:
+			return 0
+		case a.Primary:
+			return -1
+		default:
+			return 1
+		}
+	})
 }
 
 func clonedDetails(d *identity.Details) *identity.Details {
@@ -759,14 +924,51 @@ func TestConformanceSuiteIsLoadBearing(t *testing.T) {
 	}
 }
 
+// TestConformanceSuiteRequiresEveryHook checks that a fixture lacking any one
+// hook fails the run before a single case runs, with a message naming the hook.
+//
+// A skipped case is green in CI, and the implementations most likely to get a
+// rule wrong are the ones most likely to leave out the hook that checks it; so
+// a missing hook must stop the run, not thin it out.
+func TestConformanceSuiteRequiresEveryHook(t *testing.T) {
+	t.Parallel()
+
+	hooks := []string{
+		"SeedRole",
+		"SeedMFARequired",
+		"SeedRoleGrants",
+		"SeedOrganization",
+		"FailUserLoads",
+		"FailMFALookups",
+	}
+
+	for _, hook := range hooks {
+		t.Run(hook, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runSuiteInProcess(t, missingHook(hook), "-test.v")
+
+			require.Error(t, err, "a fixture without %s passed the suite", hook)
+			assert.True(t, strings.Contains(output, "identitytest: required hook "+hook+" is missing"),
+				"the failure must name the missing hook %s, or the implementer is left to guess", hook)
+			assert.Zero(t, strings.Count(output, "=== RUN   TestBrokenStoreConformance/"),
+				"cases ran although the required hook %s was missing", hook)
+		})
+	}
+}
+
 // runSuiteInProcess re-executes this test binary, running only the child test
-// against a store carrying d, and returns its combined output.
-func runSuiteInProcess(t *testing.T, d defect) (string, error) {
+// against a store carrying d, and returns its combined output. Extra test
+// flags, such as -test.v, are passed to the child.
+func runSuiteInProcess(t *testing.T, d defect, flags ...string) (string, error) {
 	t.Helper()
 
+	args := append([]string{
+		"-test.run=^TestBrokenStoreConformance$", "-test.count=1", "-test.timeout=5m",
+	}, flags...)
+
 	//nolint:gosec // G204: this test binary re-executed with fixed arguments
-	cmd := exec.CommandContext(t.Context(), os.Args[0],
-		"-test.run=^TestBrokenStoreConformance$", "-test.count=1", "-test.timeout=5m")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], args...)
 	cmd.Env = append(os.Environ(), defectVar+"="+string(d))
 
 	out, err := cmd.CombinedOutput()

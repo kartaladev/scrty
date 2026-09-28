@@ -16,6 +16,9 @@ import (
 //go:embed securitystate/*.sql
 var securityStateFS embed.FS
 
+//go:embed identity/*.sql
+var identityFS embed.FS
+
 // SecurityStateVersionTable is the version table name SecurityState uses by
 // default. A consumer may apply the set with any other name; the set never
 // reads or changes another set's version table.
@@ -49,4 +52,24 @@ func (s Set) FS() fs.FS { return s.fsys }
 // Its default version table is SecurityStateVersionTable.
 func SecurityState() Set {
 	return Set{fsys: securityStateFS, Dir: "securitystate", VersionTable: SecurityStateVersionTable}
+}
+
+// IdentityVersionTable is the version table name Identity uses by default. A
+// consumer applying the set with their own tool may record versions under any
+// other name instead.
+const IdentityVersionTable = "goose_identity"
+
+// Identity returns the identity migration set: groups, organizations, roles,
+// users, assigned roles, resource privileges and password history. It
+// creates no security-state table and no foreign key to or from one (see the
+// schema-migrations spec): the identity set can be applied, or rolled back,
+// without touching security state.
+//
+// The catalogue tables (groups, organizations, roles, resource_privileges)
+// are written only by the consumer's own tooling, which must supply
+// created_at and updated_at: those columns have no database default.
+//
+// Its default version table is IdentityVersionTable.
+func Identity() Set {
+	return Set{fsys: identityFS, Dir: "identity", VersionTable: IdentityVersionTable}
 }

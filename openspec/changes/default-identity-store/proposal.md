@@ -25,10 +25,10 @@ This change ships an optional PostgreSQL identity store that keeps those rules. 
   - a username collision is detected by the insert itself;
   - an update locks the user row before rebuilding grants.
 - Keep grant order in an explicit column, because scrty's identifier generator is replaceable and grant order decides which duplicate grant survives.
-- Leave the password-changed-at time and the MFA-required flag unwritten by any port call. The consumer's own user management owns both.
+- Make the password-changed-at time a named field that a port call writes only when the caller names it, and record it by default on a local change. A bundled local-change option names hash and time together, the reuse guard hands its write the change time, and a ready-made provisioner write records both. A password mirrored from an identity provider never moves the clock. The MFA-required flag stays unwritten by any port call; the consumer's own user management owns it.
 - Add **optional password history**, off by default: a consumer can refuse a new password that matches one of the user's last N passwords, with the current one counted among the N.
   - A new `password.History` port reads a user's recent retired hashes, retires a hash and prunes the rest to N−1, and forgets a user's history.
-  - A reuse guard in the `password` package enforces it. The consumer constructs it with a history port, an encoder and a required N (N ≤ 0, or a missing port or encoder, is a construction error). They call it from their own password-change function, including the one registered with `WithChangePasswordEndpoint`. The library never sees the new plaintext anywhere else, and the store's update cannot tell a local change from a provider-mirrored password, so neither of them checks or records history.
+  - A reuse guard in the `password` package enforces it, keyed by the user's loaded record, and hands the consumer's write the change time; `ProvisionerWrite` is its ready-made write over any user provisioner. The consumer constructs it with a history port, an encoder and a required N (N ≤ 0, or a missing port or encoder, is a construction error). They call it from their own password-change function, including the one registered with `WithChangePasswordEndpoint`. The library never sees the new plaintext anywhere else, and the store's update cannot tell a local change from a provider-mirrored password, so neither of them checks or records history.
   - The guard matches with the encoders' verification, so a hash under older parameters or a retired built-in algorithm still matches. It fails closed: a history read or record failure refuses the change, and the old hash is retired before the new one is written.
   - A new refusal, `ErrPasswordReused`, maps to 422.
   - The default identity store implements the port over a new `password_history` table in the identity migration set. History hashes are handled like `users.password`: never logged, never in error text, removed with the user, and bounded per user. A consumer can supply their own implementation, and a public conformance entry tests it.
@@ -41,6 +41,10 @@ This change ships an optional PostgreSQL identity store that keeps those rules. 
 
 ### Modified Capabilities
 
+- `identity-model`:
+  - provisioning and updating gain a named password-changed-at field, written only when the caller names it, replacing the rule that no port call ever changes it;
+  - the MFA requirement lookup answers an unknown user with user-not-found;
+  - the rule that the library ships no identity-port implementation is narrowed to the `identity` package, since this change ships an opt-in one.
 - `password-encoding`: adds the password-history port and the optional reuse guard, covering what N counts, matching across retired parameters and algorithms, fail-closed ordering, construction errors and the reuse refusal.
 - `http-error-propagation`: the status table gains the password-reused refusal, mapped to 422.
 - `http-security-chain`: a reuse refusal returned by the resolve endpoint's function leaves the password change owed.
@@ -49,6 +53,7 @@ This change ships an optional PostgreSQL identity store that keeps those rules. 
 
 - **New code:**
   - core module: the `database/sql` identity store, the embedded identity migrations, and shared query text in an internal package;
+  - core module, `identity` package: the `WithUserPasswordChangedAt` and `WithUserPasswordChange` options and the field;
   - core module, `password` package: the `History` port, the reuse guard, and the `ErrPasswordReused`, `ErrHistoryUnavailable` and `ErrConfig` errors; `httpsec.StatusForError` gains the 422 row;
   - `pgx` and `gorm` modules: their identity stores;
   - `test` module: the identity-port conformance suite and its password-history entry, fixtures that prove the suite catches known defects, and the `database/sql` adapter's PostgreSQL integration tests.
@@ -59,7 +64,6 @@ This change ships an optional PostgreSQL identity store that keeps those rules. 
 - **Depends on other changes:**
   - `identity-model` (identity-and-tokens) for the port signatures, user details, sentinel errors and provisioning options, including the accessor that reports which fields a caller named;
   - `schema-migrations` and `security-state-stores` (durable-persistence) for the migration runner, version-table mechanics and the `WithTx`/resolver pattern;
-  - `di-wiring` (operations) for including this store in the default wiring;
   - `id-generation` (project-foundation) for identifiers;
   - `password-encoding` (identity-and-tokens) for the encoder the reuse guard matches with, and `http-security-chain` / `http-error-propagation` (http-security) for the resolve endpoint and the status table.
 - **Consumers:** none yet. A consumer with their own user tables does not import this store and applies only the security-state migrations.

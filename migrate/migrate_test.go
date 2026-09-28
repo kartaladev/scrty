@@ -11,6 +11,41 @@ import (
 	"github.com/kartaladev/scrty/migrate"
 )
 
+// TestIdentitySet pins the identity set's directory, its version table and
+// the shape of its embedded files: exactly one goose-annotated SQL file, and
+// no foreign key anywhere (the identity migration set is independent of
+// security state).
+func TestIdentitySet(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.Identity()
+
+	assert.Equal(t, "identity", set.Dir)
+	assert.Equal(t, "goose_identity", migrate.IdentityVersionTable)
+	assert.Equal(t, "goose_identity", set.VersionTable)
+
+	sub, err := fs.Sub(set.FS(), set.Dir)
+	require.NoError(t, err)
+
+	entries, err := fs.ReadDir(sub, ".")
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the identity set has exactly one migration file")
+
+	name := entries[0].Name()
+	assert.True(t, strings.HasSuffix(name, ".sql"), "file %s", name)
+
+	data, err := fs.ReadFile(sub, name)
+	require.NoError(t, err)
+	content := string(data)
+
+	assert.Contains(t, content, "-- +goose Up")
+	assert.Contains(t, content, "-- +goose Down")
+
+	upper := strings.ToUpper(content)
+	assert.NotContains(t, upper, "REFERENCES", "no identity table declares a foreign key")
+	assert.NotContains(t, upper, "FOREIGN KEY", "no identity table declares a foreign key")
+}
+
 // TestSecurityStateFilesAvoidNoTransactionAnnotation walks the embedded
 // security-state set and fails when any file contains a line goose's
 // migration parser would honour as its annotation for opting a migration out

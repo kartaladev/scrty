@@ -13,7 +13,7 @@ By default the library SHALL NOT check a new password against earlier ones, and 
 - **THEN** no history entry is recorded and no reuse check runs
 
 ### Requirement: The reuse guard refuses the current password and the N−1 before it
-A reuse guard of depth N SHALL refuse a candidate password that matches the user's current hash, as supplied by the caller, or one of the user's N−1 most recent retired hashes. The refusal SHALL be the password-reused error. A candidate matching none of them SHALL be accepted. An absent current hash SHALL match nothing and SHALL NOT be an error.
+A reuse guard of depth N SHALL refuse a candidate password that matches the user's current hash, taken from the user record the caller passes, or one of that user's N−1 most recent retired hashes. The same record SHALL key both the history and the write, so a change can never check one user's history and write another user's password. The refusal SHALL be the password-reused error. A candidate matching none of them SHALL be accepted. An absent current hash SHALL match nothing and SHALL NOT be an error.
 
 #### Scenario: Depth 3
 - **WHEN** a guard of depth 3 is used, and a user whose provisioned password was `p1` changes it through the guard to `p2`, then `p3`, then `p4`
@@ -50,7 +50,7 @@ When the reuse guard changes a password, it SHALL run these steps in order, stop
 2. check for reuse;
 3. retire the current hash, keeping only the newest N−1 retired hashes;
 4. encode the candidate with its encoder;
-5. hand the new hash to the consumer's write.
+5. hand the user record, the new hash and the change time to the consumer's write.
 
 Retiring a hash identical, byte for byte, to the user's newest retired hash SHALL add no entry. A depth of 1 SHALL keep no retired hashes. History for one user SHALL NOT affect another.
 
@@ -66,6 +66,21 @@ Retiring a hash identical, byte for byte, to the user's newest retired hash SHAL
 #### Scenario: Another user's history is not consulted
 - **WHEN** user `a` has history holding `p1`, and user `b` changes their password to `p1` through a guard
 - **THEN** user `b`'s change succeeds
+
+### Requirement: A change through the reuse guard records when it happened
+The reuse guard SHALL hand the consumer's write the time of the change, read from the guard's clock, whose default is the system clock and which the consumer SHALL be able to replace. The library SHALL provide a ready-made write over any user provisioner that updates the user's password and password-changed time together, so a consumer of such a provisioner records the time with no code of their own. A write that ignores the time SHALL leave the stored time unchanged, and the documentation of the write SHALL say that this exempts the user from password-age policy.
+
+#### Scenario: Ready-made write records the time
+- **WHEN** a guard with a fixed clock at 2031-06-01 changes a user's password through the ready-made provisioner write
+- **THEN** the provisioner is updated naming the new hash and the password-changed time 2031-06-01, and nothing else
+
+#### Scenario: Consumer write receives the time
+- **WHEN** a consumer's own write is used with a guard whose clock is replaced with one returning `T`
+- **THEN** the write receives the user record, the new hash and `T`
+
+#### Scenario: Write that ignores the time
+- **WHEN** a consumer's write stores only the hash and ignores the time
+- **THEN** the change succeeds and the stored password-changed time is unchanged
 
 ### Requirement: The reuse guard fails closed
 The reuse guard SHALL refuse a change it cannot check or record. A failure reading history SHALL refuse the change with the history-unavailable error, and SHALL NOT call the consumer's write. A failure retiring the current hash SHALL refuse the change with the history-unavailable error, and SHALL NOT call the consumer's write, so the stored password is unchanged. The history-unavailable error SHALL carry fixed library text, with the port's error reachable by identity and type. An error from the consumer's write SHALL be returned unchanged.
@@ -97,7 +112,7 @@ The password-reused and history-unavailable errors SHALL NOT contain the candida
 - **AND** the port's error is reachable by identity
 
 ### Requirement: Reuse guard wiring mistakes fail at construction
-Constructing a reuse guard SHALL fail with a configuration error naming the mistake when it is given no history port (including a typed-nil one), no encoder, a depth of zero or less, or an absent matcher. The depth SHALL have no default and SHALL be required. No such mistake SHALL surface first at a change.
+Constructing a reuse guard SHALL fail with a configuration error naming the mistake when it is given no history port (including a typed-nil one), no encoder, a depth of zero or less, an absent matcher, or an absent clock. Building the ready-made provisioner write SHALL fail with a configuration error when it is given no provisioner (including a typed-nil one). A check or change given no user record, or a change given no write, SHALL fail with a configuration error and SHALL read and write nothing. The ready-made provisioner write, called directly with no user record, SHALL fail the same way and SHALL write nothing. The depth SHALL have no default and SHALL be required. No such mistake SHALL surface first at a change.
 
 #### Scenario: Depth zero
 - **WHEN** a reuse guard is constructed with depth 0, or with depth −1

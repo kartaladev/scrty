@@ -22,3 +22,19 @@ func TestInMemoryStoreConformance(t *testing.T) {
 		return identitytest.NewInMemoryStore()
 	})
 }
+
+// TestInMemoryStoreConformance_SharedStore runs the whole suite over one shared
+// store, as a consumer running it against a single database would. Each case
+// gets its own fixture over the shared records, so a fault one case injects
+// stays with that case.
+func TestInMemoryStoreConformance_SharedStore(t *testing.T) {
+	t.Parallel()
+
+	shared := identitytest.NewInMemoryStore()
+
+	identitytest.RunConformanceSuite(t, func(t *testing.T) identitytest.Fixture {
+		t.Helper()
+
+		return shared.Share()
+	})
+}

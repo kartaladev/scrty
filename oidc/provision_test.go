@@ -21,6 +21,42 @@ import (
 // provisionClock is the broker's clock in every provisioning row.
 var provisionClock = time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
 
+// allProvisionFields is every field a Provision or Update option can name.
+// The matcher loops over it rather than restating the list. A field listed
+// here without a case in provisionFieldValue panics; a new identity.Field
+// constant that is never added here is not compared at all, because the
+// identity package exports no list of every field to check this one against.
+var allProvisionFields = []identity.Field{
+	identity.FieldName,
+	identity.FieldEmail,
+	identity.FieldRoles,
+	identity.FieldOrganization,
+	identity.FieldPassword,
+	identity.FieldPasswordChangedAt,
+}
+
+// provisionFieldValue returns u's value for f, in the shape the matcher
+// compares. Roles is clipped to a fresh backing array so two equal-content
+// slices with different capacities still compare equal.
+func provisionFieldValue(u *identity.NewUser, f identity.Field) any {
+	switch f {
+	case identity.FieldName:
+		return u.Name
+	case identity.FieldEmail:
+		return u.Email
+	case identity.FieldRoles:
+		return slices.Clip(append([]string{}, u.Roles...))
+	case identity.FieldOrganization:
+		return u.Organization
+	case identity.FieldPassword:
+		return u.Password
+	case identity.FieldPasswordChangedAt:
+		return u.PasswordChangedAt
+	default:
+		panic(fmt.Sprintf("provisionFieldValue: unhandled field %d", f))
+	}
+}
+
 // brokerUserOptionsMatcher matches the variadic options of a Provision call
 // by what they name: it applies both sides with identity.ApplyUserOptions and
 // compares every field's IsSet flag and, where set, its value.
@@ -37,21 +73,11 @@ func (m brokerUserOptionsMatcher) Matches(x any) bool {
 		return false
 	}
 	got := identity.ApplyUserOptions(opts...)
-	fields := []struct {
-		f         identity.Field
-		got, want any
-	}{
-		{identity.FieldName, got.Name, m.want.Name},
-		{identity.FieldEmail, got.Email, m.want.Email},
-		{identity.FieldRoles, slices.Clip(append([]string{}, got.Roles...)), slices.Clip(append([]string{}, m.want.Roles...))},
-		{identity.FieldOrganization, got.Organization, m.want.Organization},
-		{identity.FieldPassword, got.Password, m.want.Password},
-	}
-	for _, f := range fields {
-		if got.IsSet(f.f) != m.want.IsSet(f.f) {
+	for _, f := range allProvisionFields {
+		if got.IsSet(f) != m.want.IsSet(f) {
 			return false
 		}
-		if m.want.IsSet(f.f) && !reflect.DeepEqual(f.got, f.want) {
+		if m.want.IsSet(f) && !reflect.DeepEqual(provisionFieldValue(got, f), provisionFieldValue(m.want, f)) {
 			return false
 		}
 	}

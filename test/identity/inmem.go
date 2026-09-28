@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/kartaladev/scrty/identity"
 )
@@ -26,25 +25,53 @@ var ErrEmptyUsername = errors.New("identitytest: username is required")
 // holds that lock across its whole read-modify-write. A store that took the lock
 // only around each map access would pass the race detector and still break both
 // contracts.
+//
+// A user holds its organization by reference, as a store keeping organizations
+// in their own table would: Provision and Update keep only the identifier they
+// are given, and every record returned resolves it against the organizations
+// seeded through SeedOrganization, or to none. Grants are returned primary
+// first, then in stored order.
+//
+// The records live apart from the injected faults: Share hands out another store
+// over the same records, whose faults are its own.
 type InMemoryStore struct {
+	*inMemoryRecords
+
+	faultMu sync.Mutex
+	loadErr error
+	mfaErr  error
+}
+
+// inMemoryRecords is the state every store returned by Share has in common,
+// guarded by one lock so the contracts' atomicity holds across them.
+type inMemoryRecords struct {
 	mu     sync.Mutex
 	byName map[string]*identity.Details
 	privs  map[string][]*identity.ResourcePrivileges
 	mfa    map[identity.UserID]bool
+	orgs   map[string]*identity.Organization
 	nextID int
-
-	loadErr  error
-	privsErr error
-	mfaErr   error
 }
 
 // NewInMemoryStore returns an empty store.
 func NewInMemoryStore() *InMemoryStore {
-	return &InMemoryStore{
+	return &InMemoryStore{inMemoryRecords: &inMemoryRecords{
 		byName: make(map[string]*identity.Details),
 		privs:  make(map[string][]*identity.ResourcePrivileges),
 		mfa:    make(map[identity.UserID]bool),
-	}
+		orgs:   make(map[string]*identity.Organization),
+	}}
+}
+
+// Share returns another store over the same records as s, with no faults
+// injected and fault hooks of its own.
+//
+// It is how a single store hosts a whole conformance run, as one database
+// would: the factory hands each case s.Share(), so every case writes to the same
+// records while a fault one case injects through FailUserLoads or
+// FailMFALookups fails that case's calls only.
+func (s *InMemoryStore) Share() *InMemoryStore {
+	return &InMemoryStore{inMemoryRecords: s.inMemoryRecords}
 }
 
 // SeedRole records the privileges a role grants.
@@ -71,27 +98,6 @@ func (s *InMemoryStore) SeedMFARequired(
 	defer s.mu.Unlock()
 
 	s.mfa[id] = required
-
-	return nil
-}
-
-// SeedPasswordChangedAt records when a user's password was last changed.
-//
-// It is seeding, not a port: nothing in the identity ports sets this time, which
-// is exactly the contract the suite checks — neither Provision nor Update may
-// move it.
-func (s *InMemoryStore) SeedPasswordChangedAt(
-	_ context.Context, username string, at time.Time,
-) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	d, ok := s.byName[username]
-	if !ok {
-		return identity.ErrUserNotFound
-	}
-
-	d.PasswordChangedAt = at
 
 	return nil
 }
@@ -128,44 +134,73 @@ func (s *InMemoryStore) SeedRoleGrants(
 	return nil
 }
 
-// FailUserLoads makes every user load return err.
+// SeedOrganization records an organization and its group, replacing any
+// organization seeded earlier under the same identifier.
+//
+// A user holds only the organization's identifier, as a store keeping
+// organizations in their own table would, and each load resolves it here. The
+// organization is copied in, so the caller's value stays the caller's.
+func (s *InMemoryStore) SeedOrganization(_ context.Context, org *identity.Organization) error {
+	if org == nil {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.orgs[org.ID] = cloneOrg(org)
+
+	return nil
+}
+
+// FailUserLoads makes every later user load through this store return err. A
+// store obtained through Share is not affected, and a nil err clears the fault.
 //
 // It exists so the suite can check that a backend outage is distinguishable from
 // an unknown user: a caller that cannot tell them apart counts an outage as a
 // failed login attempt, and locks out a user who did nothing wrong.
 func (s *InMemoryStore) FailUserLoads(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.faultMu.Lock()
+	defer s.faultMu.Unlock()
 
 	s.loadErr = err
 }
 
-// FailMFALookups makes every MFA requirement lookup return err, so a caller's
-// fail-closed behaviour can be exercised.
+// FailMFALookups makes every later MFA requirement lookup through this store
+// return err, so a caller's fail-closed behaviour can be exercised. A store
+// obtained through Share is not affected, and a nil err clears the fault.
 func (s *InMemoryStore) FailMFALookups(err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.faultMu.Lock()
+	defer s.faultMu.Unlock()
 
 	s.mfaErr = err
+}
+
+// fault reads one injected fault.
+func (s *InMemoryStore) fault(which *error) error {
+	s.faultMu.Lock()
+	defer s.faultMu.Unlock()
+
+	return *which
 }
 
 // LoadByUsername implements identity.UserLoader.
 func (s *InMemoryStore) LoadByUsername(
 	_ context.Context, username string,
 ) (*identity.Details, error) {
+	if err := s.fault(&s.loadErr); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.loadErr != nil {
-		return nil, s.loadErr
-	}
 
 	d, ok := s.byName[username]
 	if !ok {
 		return nil, identity.ErrUserNotFound
 	}
 
-	return cloneDetails(d), nil
+	return s.recordLocked(d), nil
 }
 
 // LoadByUserID implements identity.UserLoader.
@@ -177,16 +212,16 @@ func (s *InMemoryStore) LoadByUsername(
 func (s *InMemoryStore) LoadByUserID(
 	_ context.Context, id identity.UserID,
 ) (*identity.Details, error) {
+	if err := s.fault(&s.loadErr); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.loadErr != nil {
-		return nil, s.loadErr
-	}
-
 	for _, d := range s.byName {
 		if d.ID == id {
-			return cloneDetails(d), nil
+			return s.recordLocked(d), nil
 		}
 	}
 
@@ -200,10 +235,6 @@ func (s *InMemoryStore) LoadPrivileges(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.privsErr != nil {
-		return nil, s.privsErr
-	}
-
 	p, ok := s.privs[role]
 	if !ok || len(p) == 0 {
 		return nil, identity.ErrPrivilegesNotFound
@@ -214,12 +245,12 @@ func (s *InMemoryStore) LoadPrivileges(
 
 // Required implements identity.MFARequirementLookup.
 func (s *InMemoryStore) Required(_ context.Context, id identity.UserID) (bool, error) {
+	if err := s.fault(&s.mfaErr); err != nil {
+		return false, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	if s.mfaErr != nil {
-		return false, s.mfaErr
-	}
 
 	return s.mfa[id], nil
 }
@@ -255,7 +286,13 @@ func (s *InMemoryStore) Provision(
 		Username:     username,
 		Password:     bytes.Clone(u.Password),
 		Active:       true,
-		Organization: cloneOrg(u.Organization),
+		Organization: orgReference(u.Organization),
+	}
+
+	// The time is written only when named: a password named alone leaves it
+	// zero, so a mirrored password never records a rotation.
+	if u.IsSet(identity.FieldPasswordChangedAt) {
+		d.PasswordChangedAt = u.PasswordChangedAt
 	}
 
 	// Each occurrence of a name creates its own grant, and the first is primary.
@@ -269,7 +306,7 @@ func (s *InMemoryStore) Provision(
 
 	s.byName[username] = d
 
-	return cloneDetails(d), nil
+	return s.recordLocked(d), nil
 }
 
 // Update implements identity.UserProvisioner.
@@ -296,15 +333,60 @@ func (s *InMemoryStore) Update(
 		d.Password = bytes.Clone(u.Password)
 	}
 
+	// Writing the password never moves the time on its own; only naming the
+	// time does, and naming the zero time clears it.
+	if u.IsSet(identity.FieldPasswordChangedAt) {
+		d.PasswordChangedAt = u.PasswordChangedAt
+	}
+
 	if u.IsSet(identity.FieldOrganization) {
-		d.Organization = cloneOrg(u.Organization)
+		d.Organization = orgReference(u.Organization)
 	}
 
 	if u.IsSet(identity.FieldRoles) {
 		d.Roles = rebuildRoles(d.Roles, u.Roles)
 	}
 
-	return cloneDetails(d), nil
+	return s.recordLocked(d), nil
+}
+
+// recordLocked returns the complete record of d as a caller sees it: a copy,
+// with the organization reference resolved against the seeded organizations
+// and the primary grant listed first. The caller holds s.mu.
+func (s *InMemoryStore) recordLocked(d *identity.Details) *identity.Details {
+	out := cloneDetails(d)
+	out.Organization = nil
+
+	if d.Organization != nil {
+		out.Organization = cloneOrg(s.orgs[d.Organization.ID])
+	}
+
+	// Primary first, then the stored order: a stable sort keeps every other
+	// grant where it was.
+	slices.SortStableFunc(out.Roles, func(a, b *identity.AssignedRole) int {
+		switch {
+		case a.Primary == b.Primary:
+			return 0
+		case a.Primary:
+			return -1
+		default:
+			return 1
+		}
+	})
+
+	return out
+}
+
+// orgReference keeps only the identifier of the organization a caller named: an
+// organization is the consumer's own record, seeded through SeedOrganization,
+// and a user merely refers to it. Naming no organization, or one with no
+// identifier, refers to none.
+func orgReference(o *identity.Organization) *identity.Organization {
+	if o == nil || o.ID == "" {
+		return nil
+	}
+
+	return &identity.Organization{ID: o.ID}
 }
 
 // rebuildRoles applies the role rules: empty names are skipped, a repeated name

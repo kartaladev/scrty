@@ -115,9 +115,11 @@ type Details struct {
 	Organization *Organization
 
 	// PasswordChangedAt is when the password was last changed, as the store
-	// records it. Neither Provision nor Update moves it: the store keeps the
-	// hash, but when a password last changed is the consumer's to decide, and a
-	// password-age policy reads this to refuse a stale credential.
+	// records it; a password-age policy reads it to refuse a stale credential.
+	// Provision and Update write it only when the caller names it with
+	// WithUserPasswordChangedAt or WithUserPasswordChange; a password written
+	// without it leaves it as stored (zero on Provision), so a mirrored password
+	// never moves it. Naming the zero time clears it.
 	//
 	// It stays on Details and never reaches Principal: it is record-keeping for
 	// the library's own call paths, not part of the outward identity.
