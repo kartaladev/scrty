@@ -66,6 +66,13 @@ const (
 	defectDropsPasswordWithTime defect = "drops-password-with-time"
 	// A backend failure is reported as "not required".
 	defectMFAFailOpen defect = "mfa-fail-open"
+	// An MFA lookup of a reference that names no stored user answers "not
+	// required" rather than user-not-found, failing open for a deleted user.
+	defectMFAUnknownNotRequired defect = "mfa-unknown-not-required"
+	// An MFA lookup of a stored user with no requirement recorded answers
+	// user-not-found, as a sparse lookup that stores flags only for users who
+	// need MFA would if it skipped the existence check.
+	defectMFAUnflaggedNotFound defect = "mfa-unflagged-not-found"
 	// A role rebuild with no surviving name strips every grant.
 	defectRoleStrip defect = "role-strip"
 	// A rebuilt grant is minted fresh, losing the stored attributes.
@@ -81,8 +88,6 @@ const (
 	defectIgnoresIsSet defect = "ignores-isset"
 	// Update's read-modify-write is not serialized.
 	defectUnserializedUpdate defect = "unserialized-update"
-	// Fault injection does nothing.
-	defectNoFaultInjection defect = "no-fault-injection"
 	// A created user is not active.
 	defectInactiveOnCreate defect = "inactive-on-create"
 	// The collision error quotes the username.
@@ -106,7 +111,60 @@ const (
 	defectKeepsLastDuplicate defect = "keeps-last-duplicate"
 	// Provision on a taken username replaces the existing user and succeeds.
 	defectOverwritesOnCollision defect = "overwrites-on-collision"
+	// Update of the empty username answers user-not-found rather than
+	// refusing the username.
+	defectUpdateEmptyUsernameNotFound defect = "update-empty-username-not-found"
+	// Provision of the empty username answers user-already-exists rather than
+	// refusing the username.
+	defectProvisionEmptyUsernameExists defect = "provision-empty-username-exists"
+	// LoadPrivileges returns entries in stored order, not grouped by resource
+	// group and then resource.
+	defectUnorderedPrivileges defect = "unordered-privileges"
+	// An update that does not name roles re-mints every grant, keeping only
+	// its name and primary flag.
+	defectRemintsUnnamedGrants defect = "remints-unnamed-grants"
+	// Provision on a taken username refuses, but first appends the requested
+	// grants to the existing user.
+	defectCollisionAppendsGrants defect = "collision-appends-grants"
+	// Provision derives a grant identifier from the role name, so a repeated
+	// name shares one identifier.
+	defectDuplicateRoleSharesID defect = "duplicate-role-shares-id"
+	// An update that names no field clears the stored name.
+	defectNothingClearsName defect = "nothing-clears-name"
+	// A newly named role inherits the super-role flag and validity window of
+	// the user's first stored grant.
+	defectNewRoleInherits defect = "new-role-inherits"
+	// Where the stored grants repeat a name, the rebuild keeps the first
+	// grant's identifier but takes the attributes of the later duplicate.
+	defectDuplicatePromotesLater defect = "duplicate-promotes-later-attributes"
+	// A role rebuild skips an empty name only when no non-empty name survives,
+	// so a list mixing empty and real names creates a grant named "".
+	defectKeepsEmptyRoleNames defect = "keeps-empty-role-names"
+	// Provision stores the user but returns a record with no display name and
+	// no organization.
+	defectProvisionReturnsPartial defect = "provision-returns-partial-record"
+	// A failed MFA lookup is reported as user-not-found, so an outage reads as
+	// a deleted user.
+	defectMFAFaultReadsNotFound defect = "mfa-fault-reads-not-found"
+	// An update naming an empty role list re-mints every grant with a fresh
+	// identifier and no validity window, keeping its name, primary and
+	// super-role flags.
+	defectRemintsOnEmptyRoleList defect = "remints-on-empty-role-list"
+	// Provision given no password stores a placeholder hash rather than an
+	// empty one.
+	defectPlaceholderPassword defect = "placeholder-password"
+	// Provision mints its first grant with a validity window.
+	defectProvisionGrantsWindow defect = "provision-grants-window"
 )
+
+// variantOtherLocation is not a defect: a store that returns every stored
+// time as the same instant in another location, as a database session in
+// another time zone does. The suite must pass it, because an instant is what
+// the contracts store.
+const variantOtherLocation defect = "returns-times-in-another-location"
+
+// otherLocation is the location variantOtherLocation reports times in.
+var otherLocation = time.FixedZone("x", 7*3600)
 
 // missingHook names the defect of a store that lacks the named hook: a seeding
 // hook answers ErrHookUnsupported, a fault hook does nothing.
@@ -129,6 +187,8 @@ var everyDefect = []defect{
 	defectStampsWhenUnset,
 	defectDropsPasswordWithTime,
 	defectMFAFailOpen,
+	defectMFAUnknownNotRequired,
+	defectMFAUnflaggedNotFound,
 	defectRoleStrip,
 	defectRoleMint,
 	defectTrimmingLoader,
@@ -136,7 +196,6 @@ var everyDefect = []defect{
 	defectTrimsUserID,
 	defectIgnoresIsSet,
 	defectUnserializedUpdate,
-	defectNoFaultInjection,
 	defectInactiveOnCreate,
 	defectLeakyCollisionError,
 	defectUpsert,
@@ -147,6 +206,21 @@ var everyDefect = []defect{
 	defectAmendedFieldsOnly,
 	defectKeepsLastDuplicate,
 	defectOverwritesOnCollision,
+	defectUpdateEmptyUsernameNotFound,
+	defectUnorderedPrivileges,
+	defectRemintsUnnamedGrants,
+	defectCollisionAppendsGrants,
+	defectDuplicateRoleSharesID,
+	defectNothingClearsName,
+	defectNewRoleInherits,
+	defectDuplicatePromotesLater,
+	defectProvisionEmptyUsernameExists,
+	defectKeepsEmptyRoleNames,
+	defectProvisionReturnsPartial,
+	defectMFAFaultReadsNotFound,
+	defectRemintsOnEmptyRoleList,
+	defectPlaceholderPassword,
+	defectProvisionGrantsWindow,
 }
 
 // brokenStore implements every identity port over process memory, carrying
@@ -171,6 +245,10 @@ type brokenStore struct {
 	// every run rather than only when the scheduler allows. Under -race the
 	// scheduler is the least likely to allow it.
 	arrived atomic.Int64
+
+	// grantSeq numbers the grants a rebuild mints; it is atomic because the
+	// unserialized defects rebuild outside the lock.
+	grantSeq atomic.Int64
 }
 
 var errUsernameRequired = errors.New("identitytest: username is required")
@@ -279,7 +357,7 @@ func (s *brokenStore) SeedOrganization(_ context.Context, org *identity.Organiza
 }
 
 func (s *brokenStore) FailUserLoads(err error) {
-	if s.d == defectNoFaultInjection || s.d == missingHook("FailUserLoads") {
+	if s.d == missingHook("FailUserLoads") {
 		return
 	}
 
@@ -290,7 +368,7 @@ func (s *brokenStore) FailUserLoads(err error) {
 }
 
 func (s *brokenStore) FailMFALookups(err error) {
-	if s.d == defectNoFaultInjection || s.d == missingHook("FailMFALookups") {
+	if s.d == missingHook("FailMFALookups") {
 		return
 	}
 
@@ -397,6 +475,16 @@ func (s *brokenStore) LoadPrivileges(
 		out = append(out, &ec)
 	}
 
+	if s.d != defectUnorderedPrivileges {
+		slices.SortStableFunc(out, func(a, b *identity.ResourcePrivileges) int {
+			if c := strings.Compare(a.Group, b.Group); c != 0 {
+				return c
+			}
+
+			return strings.Compare(a.Resource, b.Resource)
+		})
+	}
+
 	return out, nil
 }
 
@@ -409,16 +497,43 @@ func (s *brokenStore) Required(_ context.Context, id identity.UserID) (bool, err
 			return false, nil
 		}
 
+		if s.d == defectMFAFaultReadsNotFound {
+			return false, identity.ErrUserNotFound
+		}
+
 		return false, s.mfaErr
 	}
 
-	return s.mfa[id], nil
+	if s.d == defectMFAUnknownNotRequired {
+		return s.mfa[id], nil
+	}
+
+	if s.d == defectMFAUnflaggedNotFound {
+		required, ok := s.mfa[id]
+		if !ok {
+			return false, identity.ErrUserNotFound
+		}
+
+		return required, nil
+	}
+
+	for _, d := range s.byName {
+		if d.ID == id {
+			return s.mfa[id], nil
+		}
+	}
+
+	return false, identity.ErrUserNotFound
 }
 
 func (s *brokenStore) Provision(
 	_ context.Context, username string, opts ...identity.UserOption,
 ) (*identity.Details, error) {
 	if username == "" {
+		if s.d == defectProvisionEmptyUsernameExists {
+			return nil, identity.ErrUserExists
+		}
+
 		return nil, errUsernameRequired
 	}
 
@@ -448,6 +563,13 @@ func (s *brokenStore) Provision(
 
 	if s.d != defectPreflightCollision && s.d != defectOverwritesOnCollision {
 		if _, taken := s.byName[s.key(username)]; taken {
+			if s.d == defectCollisionAppendsGrants {
+				existing := s.byName[s.key(username)]
+				for _, n := range u.Roles {
+					existing.Roles = append(existing.Roles, &identity.AssignedRole{ID: "appended", Name: n})
+				}
+			}
+
 			if s.d == defectLeakyCollisionError {
 				return nil, errors.New("identitytest: user " + username + " already exists: " +
 					identity.ErrUserExists.Error())
@@ -481,11 +603,23 @@ func (s *brokenStore) insertLocked(username string, u *identity.NewUser) *identi
 	}
 
 	for i, name := range u.Roles {
-		d.Roles = append(d.Roles, &identity.AssignedRole{
-			ID:      "r-" + id + "-" + strconv.Itoa(i),
+		grantID := "r-" + id + "-" + strconv.Itoa(i)
+		if s.d == defectDuplicateRoleSharesID {
+			grantID = "r-" + id + "-" + name
+		}
+
+		grant := &identity.AssignedRole{
+			ID:      grantID,
 			Name:    name,
 			Primary: i == 0,
-		})
+		}
+
+		if s.d == defectProvisionGrantsWindow && i == 0 {
+			grant.StartDate = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+			grant.ValidUntil = time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC)
+		}
+
+		d.Roles = append(d.Roles, grant)
 	}
 
 	s.byName[s.key(username)] = d
@@ -494,7 +628,14 @@ func (s *brokenStore) insertLocked(username string, u *identity.NewUser) *identi
 		return d
 	}
 
-	return s.recordLocked(d)
+	out := s.recordLocked(d)
+
+	if s.d == defectProvisionReturnsPartial {
+		out.Name = ""
+		out.Organization = nil
+	}
+
+	return out
 }
 
 // adopt takes the caller's password buffer and organization into d, copying
@@ -505,6 +646,8 @@ func (s *brokenStore) adopt(d *identity.Details, u *identity.NewUser) {
 		// the local change's time is recorded, its password is not
 	case s.d == defectAliasingPassword:
 		d.Password = u.Password
+	case s.d == defectPlaceholderPassword && !u.IsSet(identity.FieldPassword):
+		d.Password = []byte("!")
 	default:
 		d.Password = append([]byte(nil), u.Password...)
 	}
@@ -515,6 +658,10 @@ func (s *brokenStore) adopt(d *identity.Details, u *identity.NewUser) {
 func (s *brokenStore) Update(
 	_ context.Context, username string, opts ...identity.UserOption,
 ) (*identity.Details, error) {
+	if username == "" && s.d != defectUpdateEmptyUsernameNotFound {
+		return nil, errUsernameRequired
+	}
+
 	u := identity.ApplyUserOptions(opts...)
 
 	if s.d == defectUnserializedUpdate {
@@ -685,9 +832,40 @@ func (s *brokenStore) write(d *identity.Details, u *identity.NewUser) {
 		d.Organization = s.orgRef(u.Organization)
 	}
 
-	if ignore || u.IsSet(identity.FieldRoles) {
+	switch {
+	case ignore || u.IsSet(identity.FieldRoles):
 		d.Roles = s.rebuild(d.Roles, u.Roles)
+	case s.d == defectRemintsUnnamedGrants:
+		reminted := make([]*identity.AssignedRole, 0, len(d.Roles))
+		for _, r := range d.Roles {
+			reminted = append(reminted, &identity.AssignedRole{ID: s.mintGrantID(), Name: r.Name, Primary: r.Primary})
+		}
+
+		d.Roles = reminted
 	}
+
+	if s.d == defectNothingClearsName && namesNothing(u) {
+		d.Name = ""
+	}
+}
+
+// namesNothing reports whether u names no field at all.
+func namesNothing(u *identity.NewUser) bool {
+	for _, f := range []identity.Field{
+		identity.FieldName, identity.FieldEmail, identity.FieldPassword, identity.FieldPasswordChangedAt,
+		identity.FieldOrganization, identity.FieldRoles,
+	} {
+		if u.IsSet(f) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// mintGrantID returns an identifier no other grant of this store holds.
+func (s *brokenStore) mintGrantID() string {
+	return "g-" + strconv.FormatInt(s.grantSeq.Add(1), 10)
 }
 
 // writeChangedAt writes the named password-changed time into d, unless the
@@ -708,7 +886,7 @@ func (s *brokenStore) rebuild(
 	seen := make(map[string]bool, len(names))
 
 	for _, n := range names {
-		if n == "" || seen[n] {
+		if seen[n] || (n == "" && s.d != defectKeepsEmptyRoleNames) {
 			continue
 		}
 
@@ -716,9 +894,19 @@ func (s *brokenStore) rebuild(
 		survivors = append(survivors, n)
 	}
 
-	if len(survivors) == 0 {
-		if s.d == defectRoleStrip {
+	if !slices.ContainsFunc(survivors, func(n string) bool { return n != "" }) {
+		switch s.d {
+		case defectRoleStrip:
 			return nil
+		case defectRemintsOnEmptyRoleList:
+			reminted := make([]*identity.AssignedRole, 0, len(stored))
+			for _, r := range stored {
+				reminted = append(reminted, &identity.AssignedRole{
+					ID: s.mintGrantID(), Name: r.Name, Primary: r.Primary, SuperRole: r.SuperRole,
+				})
+			}
+
+			return reminted
 		}
 
 		return stored
@@ -726,8 +914,14 @@ func (s *brokenStore) rebuild(
 
 	existing := make(map[string]*identity.AssignedRole, len(stored))
 	for _, r := range stored {
-		if r != nil && (existing[r.Name] == nil || s.d == defectKeepsLastDuplicate) {
+		switch first := existing[r.Name]; {
+		case r == nil:
+		case first == nil || s.d == defectKeepsLastDuplicate:
 			existing[r.Name] = r
+		case s.d == defectDuplicatePromotesLater:
+			promoted := *r
+			promoted.ID = first.ID
+			existing[r.Name] = &promoted
 		}
 	}
 
@@ -747,7 +941,14 @@ func (s *brokenStore) rebuild(
 			continue
 		}
 
-		rebuilt = append(rebuilt, &identity.AssignedRole{Name: n, Primary: i == 0})
+		fresh := &identity.AssignedRole{ID: s.mintGrantID(), Name: n, Primary: i == 0}
+		if s.d == defectNewRoleInherits && len(stored) > 0 {
+			fresh.SuperRole = stored[0].SuperRole
+			fresh.StartDate = stored[0].StartDate
+			fresh.ValidUntil = stored[0].ValidUntil
+		}
+
+		rebuilt = append(rebuilt, fresh)
 	}
 
 	return rebuilt
@@ -783,7 +984,28 @@ func (s *brokenStore) recordLocked(d *identity.Details) *identity.Details {
 
 	primaryFirst(out.Roles)
 
+	if s.d == variantOtherLocation {
+		inOtherLocation(out)
+	}
+
 	return out
+}
+
+// inOtherLocation moves every non-zero time of d to otherLocation, keeping the
+// instant.
+func inOtherLocation(d *identity.Details) {
+	move := func(tm *time.Time) {
+		if !tm.IsZero() {
+			*tm = tm.In(otherLocation)
+		}
+	}
+
+	move(&d.PasswordChangedAt)
+
+	for _, r := range d.Roles {
+		move(&r.StartDate)
+		move(&r.ValidUntil)
+	}
 }
 
 // resolveInPlaceLocked resolves d's organization onto the store's own seeded
@@ -889,7 +1111,7 @@ func TestConformanceSuiteIsLoadBearing(t *testing.T) {
 		assert func(t *testing.T, err error, output string)
 	}
 
-	cases := make([]testCase, 0, len(everyDefect)+1)
+	cases := make([]testCase, 0, len(everyDefect)+2)
 
 	cases = append(cases, testCase{
 		name:   "a store with no defect passes",
@@ -898,6 +1120,14 @@ func TestConformanceSuiteIsLoadBearing(t *testing.T) {
 			require.NoError(t, err,
 				"the suite rejected a conforming store, so every defect below fails for the "+
 					"wrong reason:\n%s", output)
+		},
+	}, testCase{
+		name:   "a store returning its times in another location passes",
+		defect: variantOtherLocation,
+		assert: func(t *testing.T, err error, output string) {
+			require.NoError(t, err,
+				"the suite compared a time's location rather than its instant, so it rejects a "+
+					"conforming store whose database session is in another time zone:\n%s", output)
 		},
 	})
 
@@ -910,6 +1140,14 @@ func TestConformanceSuiteIsLoadBearing(t *testing.T) {
 					"the suite passed a store whose %s defect breaks a contract the library "+
 						"relies on, so no consumer implementation is checked against it either:\n%s",
 					d, output)
+				// A failed run is not enough: a defect the preflight trips over is
+				// reported as a missing hook, and the case written for it never runs.
+				// It is caught only when a named case fails by assertion.
+				assert.NotContains(t, output, "identitytest: required hook",
+					"the %s defect stopped the run at the preflight, so no case was shown to "+
+						"catch it:\n%s", d, output)
+				assert.Contains(t, output, "--- FAIL: TestBrokenStoreConformance/",
+					"no case of the suite failed by assertion for the %s defect:\n%s", d, output)
 			},
 		})
 	}

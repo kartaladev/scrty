@@ -89,7 +89,7 @@ A newly provisioned user SHALL:
 - have no password-changed-at time, unless the caller names one;
 - have the MFA-required flag false;
 - have the password hash stored verbatim and never hashed by the store, with an empty hash stored when none is given;
-- have the organization reference stored as given.
+- have the organization reference stored as given. An organization reference SHALL be a UUID in canonical lowercase text, as the store returns identifiers; any other reference SHALL be refused before anything is written, with an error that does not contain the reference.
 
 Role names SHALL produce one grant per occurrence, in the order given, with only the first grant primary, the first name as the primary role, and no super role or validity window. An email address passed to provisioning SHALL NOT be stored by this store and SHALL never be used as a lookup key. Provisioning SHALL return the complete stored record.
 
@@ -250,12 +250,22 @@ The flag SHALL be read fresh on each lookup. Losing a user's MFA enrolment SHALL
 - **AND** it does not report "not required"
 
 ### Requirement: Errors do not carry user-supplied identifiers
-Errors returned by the store SHALL NOT include the username or password hash in their message text, and SHALL NOT pass through driver detail text that echoes stored values. On the provisioning path a username is often an email address, and errors are routinely logged.
+Errors returned by the store SHALL NOT include the username or password hash in their message text, and SHALL NOT pass through driver detail text that echoes stored values. The driver's own error value SHALL NOT be reachable through the returned error's chain, because its detail fields can carry a failing row's values; the returned text MAY keep the driver's primary message and its SQLSTATE code. On the provisioning path a username is often an email address, and errors are routinely logged.
 
 #### Scenario: Collision error text
 - **WHEN** provisioning `ada@example.test` fails because the username is taken
 - **THEN** the error matches the user-already-exists error
 - **AND** its message does not contain `ada@example.test`
+
+#### Scenario: Constraint failure does not expose the failing row
+- **WHEN** a write fails on a database constraint whose driver error carries the failing row's values in its detail
+- **THEN** the returned error's text contains neither the username nor the hash
+- **AND** no error in its chain is the driver's error value
+
+#### Scenario: Organization reference that is not a canonical UUID
+- **WHEN** provisioning or updating names an organization reference that is not a UUID in canonical lowercase text
+- **THEN** the call fails and nothing is written
+- **AND** the error does not contain the reference
 
 ### Requirement: The store takes part in the caller's transaction
 Every port operation SHALL read and write through the caller's ambient transaction when the context carries one, following the `security-state-stores` capability's ambient transaction contract, including a consumer-supplied transaction resolver. A provisioning or update call that fails inside a caller's transaction SHALL undo only its own writes and SHALL leave the caller's transaction usable, with the caller's earlier writes intact. Outside a caller's transaction, provisioning and updating SHALL each be atomic across all tables they touch.

@@ -2,6 +2,7 @@ package identitytest
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -44,16 +45,24 @@ var (
 //
 // Every hook is required. Before any case runs, the suite calls each hook once
 // on a probe fixture; a seeding hook that returns ErrHookUnsupported, or a fault
-// hook whose fault does not reach the port, fails the run with a message naming
-// the hook. A skipped case would be green in CI, and the implementations most
-// likely to get a rule wrong are the ones most likely to leave out its hook.
+// hook after which the port answers exactly as it does with no fault set, fails
+// the run with a message naming the hook. How the port reports a fault that did
+// reach it — as an error, not as a miss or as "not required" — is left to the
+// named cases, so a store that swallows a fault fails the case written for it.
+//
+// A skipped case would be green in CI, and the implementations most likely to
+// get a rule wrong are the ones most likely to leave out its hook.
 //
 // Every identifier the suite seeds — organization, group and grant — is a
 // canonical lowercase UUID string, and every username, role name and
-// identifier is unique to the case that uses it. A factory may therefore hand
-// every case a fixture over one shared database, and the cases still run in
-// parallel. Faults injected through a fault hook must then stay with the
-// fixture they were injected on, so that one case's outage is not every case's.
+// identifier is unique to the case that uses it and to the run: each run draws
+// its own random nonce into them. A factory may therefore hand every case a
+// fixture over one shared database, and the cases still run in parallel; the
+// database may also outlive the run, as a long-lived development database or
+// one reused under go test -count=2 does, without a later run colliding with
+// the rows an earlier one left behind. Faults injected through a fault hook
+// must then stay with the fixture they were injected on, so that one case's
+// outage is not every case's.
 type Fixture interface {
 	identity.UserProvisioner
 	identity.UserLoader
@@ -109,8 +118,9 @@ type Fixture interface {
 // Factory returns a Fixture for one case.
 //
 // The suite calls it per case. It may return a fresh, empty store each time, or
-// a fixture over one database shared by the whole run: every case uses names
-// unique to it, so no case sees state another left behind. Faults injected
+// a fixture over one database shared by the whole run, or by several runs:
+// every case uses names unique to it and to the run, so no case sees state
+// another case, or an earlier run, left behind. Faults injected
 // through a fixture's fault hooks must not reach the fixtures of other cases.
 type Factory func(t *testing.T) Fixture
 
@@ -153,58 +163,68 @@ func requireUsableFixture(t *testing.T, newFixture Factory) {
 // errProbeFault is the fault the preflight injects through each fault hook.
 var errProbeFault = errors.New("identitytest: probe fault")
 
+// errFaultNotReached reports a fault hook after which the port answered
+// exactly as it does with no fault set.
+var errFaultNotReached = errors.New("the port answered as if no fault was set, so the fault did not reach it")
+
 // requireEveryHook calls each hook of f once and fails the run, naming every
 // hook that is missing. A seeding hook is missing when it answers
-// ErrHookUnsupported; a fault hook is missing when the port call after it does
-// not fail with the injected fault. The fault hooks are probed last, because
-// they leave f failing.
+// ErrHookUnsupported; a fault hook is missing when the port call after it gives
+// the answer it gives with no fault set. The fault hooks are probed last,
+// because they leave f failing.
 func requireEveryHook(t *testing.T, f Fixture) {
 	t.Helper()
 
 	ctx := t.Context()
-	user := uniqueName(t, "probe", 0)
+	// Fresh names on every call: two parts run under one *testing.T over one
+	// database each run this preflight, and must not meet each other's probe.
+	salt := rand.Text()
+	user := probeName(t, "probe", salt)
 
 	probe, err := f.Provision(ctx, user)
 	require.NoError(t, err, "identitytest: the preflight could not provision its probe user")
 	require.NotNil(t, probe, "identitytest: the preflight's probe user was provisioned as nothing")
-
-	faultReached := func(err error) error {
-		if errors.Is(err, errProbeFault) {
-			return nil
-		}
-
-		return ErrHookUnsupported
-	}
 
 	hooks := []struct {
 		name string
 		call func() error
 	}{
 		{"SeedOrganization", func() error {
-			return f.SeedOrganization(ctx, &identity.Organization{ID: uniqueID(t, "probe-org"), Name: "probe"})
+			return f.SeedOrganization(ctx, &identity.Organization{ID: uniqueID(t, "probe-org-"+salt), Name: "probe"})
 		}},
 		{"SeedRole", func() error {
-			return f.SeedRole(ctx, uniqueName(t, "probe-role", 0), []*identity.ResourcePrivileges{{
+			return f.SeedRole(ctx, probeName(t, "probe-role", salt), []*identity.ResourcePrivileges{{
 				Group: "probe", Resource: "probe", Privileges: []identity.Privilege{{Name: "read", Granted: true}},
 			}})
 		}},
 		{"SeedRoleGrants", func() error {
 			return f.SeedRoleGrants(ctx, user, []*identity.AssignedRole{
-				{ID: uniqueID(t, "probe-grant"), Name: "probe", Primary: true},
+				{ID: uniqueID(t, "probe-grant-"+salt), Name: "probe", Primary: true},
 			})
 		}},
 		{"SeedMFARequired", func() error { return f.SeedMFARequired(ctx, probe.ID, true) }},
+		// A fault hook is present when the port no longer gives its unfaulted
+		// answer. Whether the port reports the fault correctly — as an error,
+		// and not as a miss or as "not required" — is a contract of its own,
+		// checked by a named case; judged here, a fail-open store would be
+		// reported as a missing hook and the case written for it would never run.
 		{"FailUserLoads", func() error {
 			f.FailUserLoads(errProbeFault)
-			_, err := f.LoadByUsername(ctx, user)
+			// Unfaulted, the probe user loads.
+			if _, err := f.LoadByUsername(ctx, user); err == nil {
+				return errFaultNotReached
+			}
 
-			return faultReached(err)
+			return nil
 		}},
 		{"FailMFALookups", func() error {
 			f.FailMFALookups(errProbeFault)
-			_, err := f.Required(ctx, probe.ID)
+			// Unfaulted, the probe user was seeded as required above.
+			if required, err := f.Required(ctx, probe.ID); err == nil && required {
+				return errFaultNotReached
+			}
 
-			return faultReached(err)
+			return nil
 		}},
 	}
 
@@ -212,6 +232,8 @@ func requireEveryHook(t *testing.T, f Fixture) {
 		switch err := h.call(); {
 		case errors.Is(err, ErrHookUnsupported):
 			t.Errorf("identitytest: required hook %s is missing", h.name)
+		case errors.Is(err, errFaultNotReached):
+			t.Errorf("identitytest: required hook %s is missing: %v", h.name, err)
 		case err != nil:
 			t.Errorf("identitytest: required hook %s failed on the preflight probe: %v", h.name, err)
 		}
@@ -701,9 +723,18 @@ func runPrivilegesOwnershipCase(t *testing.T, newFixture Factory) {
 	require.Len(t, got[0].Privileges, 2,
 		"the suite needs the refused privilege to write through, so it must be carried")
 
+	// No order is promised inside a group, so each entry is rewritten by what
+	// it is rather than where it sits: the granted one renamed, the refused one
+	// granted.
 	got[0].Resource = "payment"
-	got[0].Privileges[0].Name = "write"
-	got[0].Privileges[1].Granted = true
+
+	for i := range got[0].Privileges {
+		if got[0].Privileges[i].Granted {
+			got[0].Privileges[i].Name = "write"
+		} else {
+			got[0].Privileges[i].Granted = true
+		}
+	}
 
 	again, err := f.LoadPrivileges(ctx, role)
 	require.NoError(t, err)
@@ -711,12 +742,11 @@ func runPrivilegesOwnershipCase(t *testing.T, newFixture Factory) {
 
 	assert.Equal(t, "invoice", again[0].Resource,
 		"a reader rewrote which resource the stored row is about")
-
-	require.Len(t, again[0].Privileges, 2)
-	assert.Equal(t, "read", again[0].Privileges[0].Name,
-		"a reader renamed a privilege on the stored row")
-	assert.False(t, again[0].Privileges[1].Granted,
-		"a reader granted itself a privilege the role is refused")
+	assert.ElementsMatch(t, []identity.Privilege{
+		{Name: "read", Granted: true},
+		{Name: "delete", Granted: false},
+	}, again[0].Privileges,
+		"a reader renamed a privilege on the stored row, or granted itself one the role is refused")
 }
 
 func runRoleLoaderCases(t *testing.T, newFixture Factory) {
@@ -746,13 +776,49 @@ func runRoleLoaderCases(t *testing.T, newFixture Factory) {
 				require.Len(t, p, 1)
 				assert.Equal(t, "billing", p[0].Group)
 				assert.Equal(t, "invoice", p[0].Resource)
-				assert.Equal(t, []identity.Privilege{
+				// No order is promised inside a group.
+				assert.ElementsMatch(t, []identity.Privilege{
 					{Name: "read", Granted: true},
 					{Name: "delete", Granted: false},
 				}, p[0].Privileges,
 					"a privilege that is not granted is carried as refused rather than filtered "+
 						"away, so a caller can tell 'refused' apart from 'not mentioned'; a loader "+
 						"that drops it makes the two indistinguishable")
+			},
+		},
+		{
+			// Seeded out of order, so a loader returning stored order fails.
+			name: "privileges are grouped by resource group, then by resource",
+			seed: func(t *testing.T, ctx context.Context, f Fixture, role string) {
+				require.NoError(t, f.SeedRole(ctx, role, []*identity.ResourcePrivileges{
+					{
+						Group: "billing", Resource: "invoice",
+						Privileges: []identity.Privilege{
+							{Name: "read", Granted: true},
+							{Name: "export", Granted: false},
+						},
+					},
+					{
+						Group: "accounts", Resource: "ledger",
+						Privileges: []identity.Privilege{{Name: "read", Granted: true}},
+					},
+					{
+						Group: "accounts", Resource: "journal",
+						Privileges: []identity.Privilege{{Name: "read", Granted: true}},
+					},
+				}))
+			},
+			assert: func(t *testing.T, p []*identity.ResourcePrivileges, err error) {
+				require.NoError(t, err)
+
+				got := make([]string, 0, len(p))
+				for _, e := range p {
+					got = append(got, e.Group+"/"+e.Resource)
+				}
+
+				assert.Equal(t, []string{"accounts/journal", "accounts/ledger", "billing/invoice"}, got,
+					"groups are ordered by resource group and then resource, so two stores "+
+						"answer the same role alike")
 			},
 		},
 		{
@@ -952,6 +1018,28 @@ func mustUpdate(t *testing.T, f Fixture, user string, opts ...identity.UserOptio
 	return d
 }
 
+// atUTC returns a copy of d with every time in UTC, so that two records holding
+// the same instants compare equal whatever location each was read in: the
+// contracts store an instant, and a store may report it in its session's zone.
+func atUTC(d *identity.Details) *identity.Details {
+	if d == nil {
+		return nil
+	}
+
+	out := *d
+	out.PasswordChangedAt = d.PasswordChangedAt.UTC()
+	out.Roles = make([]*identity.AssignedRole, 0, len(d.Roles))
+
+	for _, r := range d.Roles {
+		rc := *r
+		rc.StartDate = r.StartDate.UTC()
+		rc.ValidUntil = r.ValidUntil.UTC()
+		out.Roles = append(out.Roles, &rc)
+	}
+
+	return &out
+}
+
 // mustLoad reads user back through the loader, failing the case on an error.
 func mustLoad(t *testing.T, f Fixture, user string) *identity.Details {
 	t.Helper()
@@ -963,34 +1051,45 @@ func mustLoad(t *testing.T, f Fixture, user string) *identity.Details {
 	return d
 }
 
-// uniqueName returns a username no other case uses, short enough to fit a
-// consumer's own username column — the suite runs over the consumer's own
-// tables, which may be no wider than varchar(64).
+// uniqueName returns a username no other case uses, in this run or any other,
+// short enough to fit a consumer's own username column — the suite runs over
+// the consumer's own tables, which may be no wider than varchar(64).
 //
 // The full test name is not usable directly: nested subtests make it grow
 // past 100 characters, so instead the name is built from prefix (kept to 12
 // characters or fewer by its caller), a 12-hex-character fingerprint of the
-// case's full test name, and the case's own index. The fingerprint keeps
-// cases independent even when several share a store and run in parallel or
-// as nested subtests, without the result growing with nesting depth; the
-// bound is prefix (<=12) + "-" + 12 hex characters + "-" + the index, well
-// under 64 characters for any i this suite generates.
+// case, and the case's own index. The fingerprint keeps cases independent even
+// when several share a store and run in parallel or as nested subtests,
+// without the result growing with nesting depth; the bound is prefix (<=12) +
+// "-" + 12 hex characters + "-" + the index, well under 64 characters for any i
+// this suite generates.
 func uniqueName(t *testing.T, prefix string, i int) string {
 	t.Helper()
 
-	sum := sha256.Sum256([]byte(t.Name()))
-	fingerprint := hex.EncodeToString(sum[:])[:12]
+	sum := caseFingerprint(t, "")
 
-	return prefix + "-" + fingerprint + "-" + strconv.Itoa(i)
+	return prefix + "-" + hex.EncodeToString(sum[:])[:12] + "-" + strconv.Itoa(i)
+}
+
+// probeName returns a name for a preflight probe, unique to the preflight call
+// that drew salt as well as to the case and run: a test that runs two parts of
+// the suite under one *testing.T runs two preflights with one test name and one
+// run nonce. It has the length bound of uniqueName.
+func probeName(t *testing.T, prefix, salt string) string {
+	t.Helper()
+
+	sum := caseFingerprint(t, salt)
+
+	return prefix + "-" + hex.EncodeToString(sum[:])[:12]
 }
 
 // blankName returns a username of spaces and tabs only, unique to the calling
-// case: the bits of a fingerprint of its test name choose between the two, so
+// case and run: the bits of the case's fingerprint choose between the two, so
 // the username stays blank while no other case can produce it.
 func blankName(t *testing.T) string {
 	t.Helper()
 
-	sum := sha256.Sum256([]byte(t.Name()))
+	sum := caseFingerprint(t, "")
 
 	var b strings.Builder
 
@@ -1008,13 +1107,14 @@ func blankName(t *testing.T) string {
 }
 
 // uniqueID returns an identifier for a seeded organization, group or grant that
-// no other case uses, formatted as a canonical lowercase UUID string so a store
-// keying those rows on a UUID column can hold it. The same test and label give
-// the same identifier, so a case can compute it again when it asserts.
+// no other case uses, in this run or any other, formatted as a canonical
+// lowercase UUID string so a store keying those rows on a UUID column can hold
+// it. The same test and label give the same identifier for as long as the test
+// runs, so a case can compute it again when it asserts.
 func uniqueID(t *testing.T, label string) string {
 	t.Helper()
 
-	sum := sha256.Sum256([]byte(t.Name() + "\x00" + label))
+	sum := caseFingerprint(t, label)
 	b := sum[:16]
 	b[6] = (b[6] & 0x0f) | 0x80 // version 8: a name-derived identifier
 	b[8] = (b[8] & 0x3f) | 0x80 // RFC 9562 variant
@@ -1022,6 +1122,44 @@ func uniqueID(t *testing.T, label string) string {
 	h := hex.EncodeToString(b)
 
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// caseFingerprint hashes the case's full test name, a nonce drawn for this run
+// of the test, and label.
+//
+// The test name alone is the same on every run, so a factory handing the suite
+// a database that outlives the run — a long-lived development database, or any
+// database under go test -count=2 — would meet the previous run's rows under
+// the same names: user-already-exists where the case expects a fresh user, and
+// another run's grants. A nonce per process is not enough either, because
+// -count=2 repeats every test inside one process. So the nonce belongs to the
+// *testing.T: every run of every test draws its own, and a case sees the same
+// one for as long as it runs.
+func caseFingerprint(t *testing.T, label string) [sha256.Size]byte {
+	t.Helper()
+
+	return sha256.Sum256([]byte(runNonce(t) + "\x00" + t.Name() + "\x00" + label))
+}
+
+// runNonces holds the nonce of each running test, keyed by its *testing.T and
+// removed when the test ends.
+var runNonces sync.Map
+
+// runNonce returns the nonce of this run of t, drawing it from crypto/rand on
+// first use.
+func runNonce(t *testing.T) string {
+	t.Helper()
+
+	if n, ok := runNonces.Load(t); ok {
+		return n.(string)
+	}
+
+	n, loaded := runNonces.LoadOrStore(t, rand.Text())
+	if !loaded {
+		t.Cleanup(func() { runNonces.Delete(t) })
+	}
+
+	return n.(string)
 }
 
 // runProvisionOwnershipCase checks that a created user is the store's own copy
@@ -1064,9 +1202,10 @@ func runProvisionOwnershipCase(t *testing.T, newFixture Factory) {
 	created.Name = "Rewritten"
 	created.Roles[0].SuperRole = true
 
-	if created.Organization != nil {
-		created.Organization.ID = "o-rewritten"
-	}
+	require.NotNil(t, created.Organization,
+		"Provision returns the complete stored record, and the user was created in a seeded "+
+			"organization")
+	created.Organization.ID = "o-rewritten"
 
 	stored, err := f.LoadByUsername(ctx, user)
 	require.NoError(t, err)
@@ -1269,10 +1408,13 @@ func runRoleRebuildRaceCase(t *testing.T, newFixture Factory) {
 func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 	t.Helper()
 
+	// opts, when set, replaces the update the case makes, which is otherwise
+	// one naming roles.
 	type testCase struct {
 		name   string
 		seed   func(t *testing.T, ctx context.Context, f Fixture, user string)
 		roles  []string
+		opts   []identity.UserOption
 		assert func(t *testing.T, d *identity.Details, err error)
 	}
 
@@ -1298,16 +1440,57 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 		}))
 	}
 
+	// assertUntouched checks the grants seedGranted wrote, attribute by
+	// attribute: a caller naming no usable role asked for no change, so a store
+	// that re-mints the grants it keeps has still changed them.
 	assertUntouched := func(t *testing.T, d *identity.Details, err error) {
+		t.Helper()
+
 		require.NoError(t, err)
 		require.Len(t, d.Roles, 2,
 			"nothing can strip every grant through Update: a caller that named no usable role "+
 				"asked for no change, not for the user to lose all access")
-		assert.Equal(t, "admin", d.Roles[0].Name)
-		assert.True(t, d.Roles[0].SuperRole)
+
+		admin, viewer := d.Roles[0], d.Roles[1]
+		assert.Equal(t, "admin", admin.Name)
+		assert.Equal(t, uniqueID(t, "grant-admin"), admin.ID,
+			"a grant re-minted under a new identifier breaks every reference to the old one")
+		assert.True(t, admin.Primary, "admin is still the primary role")
+		assert.True(t, admin.SuperRole)
+		assert.True(t, grantStart.Equal(admin.StartDate),
+			"the validity window is untouched: want start %v, got %v", grantStart, admin.StartDate)
+		assert.True(t, grantValidUntil.Equal(admin.ValidUntil),
+			"want valid-until %v, got %v", grantValidUntil, admin.ValidUntil)
+
+		assert.Equal(t, "viewer", viewer.Name)
+		assert.Equal(t, uniqueID(t, "grant-viewer"), viewer.ID)
+		assert.False(t, viewer.Primary)
+		assert.False(t, viewer.SuperRole)
 	}
 
 	cases := []testCase{
+		{
+			name: "an update that does not name roles keeps every grant as stored",
+			seed: seedGranted,
+			opts: []identity.UserOption{identity.WithUserName("Renamed")},
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.Len(t, d.Roles, 2)
+
+				admin, viewer := d.Roles[0], d.Roles[1]
+				assert.Equal(t, uniqueID(t, "grant-admin"), admin.ID,
+					"grants the caller did not name are not rebuilt, so their identifiers stand")
+				assert.Equal(t, "admin", admin.Name)
+				assert.True(t, admin.Primary)
+				assert.True(t, admin.SuperRole, "and neither are their super-role flags")
+				assert.True(t, grantStart.Equal(admin.StartDate), "nor their validity windows")
+				assert.True(t, grantValidUntil.Equal(admin.ValidUntil))
+
+				assert.Equal(t, uniqueID(t, "grant-viewer"), viewer.ID)
+				assert.Equal(t, "viewer", viewer.Name)
+				assert.False(t, viewer.Primary)
+			},
+		},
 		{
 			name:   "an empty role list leaves the stored grants untouched",
 			seed:   seedGranted,
@@ -1347,6 +1530,26 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 			},
 		},
 		{
+			name: "empty names are skipped and a repeat collapses, among names that survive",
+			seed: func(t *testing.T, ctx context.Context, f Fixture, user string) {
+				t.Helper()
+
+				mustProvision(t, f, user)
+				require.NoError(t, f.SeedRoleGrants(ctx, user, []*identity.AssignedRole{
+					{ID: uniqueID(t, "grant-admin"), Name: "admin", Primary: true},
+				}))
+			},
+			roles: []string{"", "viewer", "viewer", ""},
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.Len(t, d.Roles, 1,
+					"an empty name is skipped whether or not a real name survives beside it: a "+
+						"grant named \"\" is a role nobody can have meant")
+				assert.Equal(t, "viewer", d.Roles[0].Name)
+				assert.True(t, d.Roles[0].Primary, "the first surviving name is primary")
+			},
+		},
+		{
 			name:  "a surviving name keeps the stored grant's identifier, flag and dates",
 			seed:  seedGranted,
 			roles: []string{"viewer", "admin"},
@@ -1359,9 +1562,44 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 					"a rebuilt grant that mints a new identifier breaks every reference to the old one")
 				assert.True(t, admin.SuperRole,
 					"re-asserting a role by name must not silently demote it")
-				assert.Equal(t, grantStart, admin.StartDate)
-				assert.Equal(t, grantValidUntil, admin.ValidUntil,
-					"nor silently extend a grant that was due to expire")
+				assert.True(t, grantStart.Equal(admin.StartDate),
+					"want start %v, got %v", grantStart, admin.StartDate)
+				assert.True(t, grantValidUntil.Equal(admin.ValidUntil),
+					"nor silently extend a grant that was due to expire: want valid-until %v, got %v",
+					grantValidUntil, admin.ValidUntil)
+			},
+		},
+		{
+			name: "a newly named role is a new grant that inherits nothing",
+			seed: func(t *testing.T, ctx context.Context, f Fixture, user string) {
+				t.Helper()
+
+				mustProvision(t, f, user)
+				require.NoError(t, f.SeedRoleGrants(ctx, user, []*identity.AssignedRole{{
+					ID:         uniqueID(t, "grant-admin"),
+					Name:       "admin",
+					Primary:    true,
+					SuperRole:  true,
+					StartDate:  grantStart,
+					ValidUntil: grantValidUntil,
+				}}))
+			},
+			roles: []string{"admin", "editor"},
+			assert: func(t *testing.T, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.Len(t, d.Roles, 2)
+				require.Equal(t, "editor", d.Roles[1].Name)
+
+				editor := d.Roles[1]
+				assert.NotEmpty(t, editor.ID, "a new grant is given an identifier of its own")
+				assert.NotEqual(t, uniqueID(t, "grant-admin"), editor.ID,
+					"and not the identifier of a grant the user already holds")
+				assert.False(t, editor.Primary)
+				assert.False(t, editor.SuperRole,
+					"a role named alongside a super role must not become one: that would escalate "+
+						"privilege through a role list")
+				assert.True(t, editor.StartDate.IsZero(), "nor inherit another grant's validity window")
+				assert.True(t, editor.ValidUntil.IsZero())
 			},
 		},
 		{
@@ -1372,16 +1610,32 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 				_, err := f.Provision(ctx, user)
 				require.NoError(t, err)
 				require.NoError(t, f.SeedRoleGrants(ctx, user, []*identity.AssignedRole{
-					{ID: uniqueID(t, "grant-first"), Name: "viewer", Primary: true},
-					{ID: uniqueID(t, "grant-second"), Name: "viewer"},
+					{
+						ID:         uniqueID(t, "grant-first"),
+						Name:       "admin",
+						Primary:    true,
+						SuperRole:  true,
+						StartDate:  grantStart,
+						ValidUntil: grantValidUntil,
+					},
+					{ID: uniqueID(t, "grant-second"), Name: "admin"},
 				}))
 			},
-			roles: []string{"viewer"},
+			roles: []string{"admin"},
 			assert: func(t *testing.T, d *identity.Details, err error) {
 				require.NoError(t, err)
 				require.Len(t, d.Roles, 1)
-				assert.Equal(t, uniqueID(t, "grant-first"), d.Roles[0].ID,
+
+				kept := d.Roles[0]
+				assert.Equal(t, uniqueID(t, "grant-first"), kept.ID,
 					"the choice is defined rather than left to map order, so two stores agree")
+				assert.True(t, kept.SuperRole,
+					"the kept grant carries the first grant's own super-role flag, not a later "+
+						"duplicate's")
+				assert.True(t, grantStart.Equal(kept.StartDate),
+					"and its own validity window: want start %v, got %v", grantStart, kept.StartDate)
+				assert.True(t, grantValidUntil.Equal(kept.ValidUntil),
+					"want valid-until %v, got %v", grantValidUntil, kept.ValidUntil)
 			},
 		},
 	}
@@ -1398,7 +1652,12 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 				tc.seed(t, ctx, f, user)
 			}
 
-			d, err := f.Update(ctx, user, identity.WithUserRoles(tc.roles...))
+			opts := tc.opts
+			if opts == nil {
+				opts = []identity.UserOption{identity.WithUserRoles(tc.roles...)}
+			}
+
+			d, err := f.Update(ctx, user, opts...)
 			tc.assert(t, d, err)
 		})
 	}
@@ -1407,11 +1666,14 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 func runUpdateCases(t *testing.T, newFixture Factory) {
 	t.Helper()
 
+	// username, when set, derives the username the case updates from its
+	// unique one; assert receives the username that was updated.
 	type testCase struct {
-		name   string
-		seed   func(t *testing.T, ctx context.Context, f Fixture, user string)
-		opts   []identity.UserOption
-		assert func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error)
+		name     string
+		seed     func(t *testing.T, ctx context.Context, f Fixture, user string)
+		username func(user string) string
+		opts     []identity.UserOption
+		assert   func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error)
 	}
 
 	// seedUser gives every case a user with something in each field, so an
@@ -1474,6 +1736,40 @@ func runUpdateCases(t *testing.T, newFixture Factory) {
 			},
 		},
 		{
+			name:     "an empty username is refused, as neither a miss nor a collision",
+			username: func(string) string { return "" },
+			opts:     []identity.UserOption{identity.WithUserName("Nobody")},
+			assert: func(t *testing.T, ctx context.Context, f Fixture, _ string, d *identity.Details, err error) {
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound,
+					"an empty username is refused as a username: reported as a miss, a caller "+
+						"would read it as a user who was deleted")
+				assert.NotErrorIs(t, err, identity.ErrUserExists)
+				assert.Nil(t, d)
+
+				_, loadErr := f.LoadByUsername(ctx, "")
+				assert.ErrorIs(t, loadErr, identity.ErrUserNotFound, "a refused update writes nothing")
+			},
+		},
+		{
+			name: "an update naming nothing changes nothing and returns the complete record",
+			seed: seedUser,
+			assert: func(t *testing.T, _ context.Context, f Fixture, user string, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, d)
+
+				assert.Equal(t, "First", d.Name)
+				assert.Equal(t, []byte("H1"), d.Password)
+				require.Len(t, d.Roles, 1)
+				assert.Equal(t, "viewer", d.Roles[0].Name)
+				require.NotNil(t, d.Organization)
+				assert.Equal(t, "acme", d.Organization.Name)
+
+				assert.Equal(t, atUTC(d), atUTC(mustLoad(t, f, user)),
+					"an update that names nothing writes nothing, and returns what is stored")
+			},
+		},
+		{
 			name: "the complete stored record is returned, not only the amended fields",
 			seed: seedUser,
 			opts: []identity.UserOption{identity.WithUserName("Alice A.")},
@@ -1498,6 +1794,10 @@ func runUpdateCases(t *testing.T, newFixture Factory) {
 
 			if tc.seed != nil {
 				tc.seed(t, ctx, f, user)
+			}
+
+			if tc.username != nil {
+				user = tc.username(user)
 			}
 
 			d, err := f.Update(ctx, user, tc.opts...)
@@ -1587,11 +1887,72 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 		name     string
 		seed     func(t *testing.T, ctx context.Context, f Fixture, user string)
 		username func(t *testing.T, user string) string
-		opts     func(user string) []identity.UserOption
+		opts     func(t *testing.T, user string) []identity.UserOption
 		assert   func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error)
 	}
 
 	cases := []testCase{
+		{
+			name: "provisioning with every field returns the complete stored record",
+			seed: func(t *testing.T, ctx context.Context, f Fixture, _ string) {
+				t.Helper()
+
+				require.NoError(t, f.SeedOrganization(ctx, fullOrganization(t)))
+			},
+			opts: func(t *testing.T, _ string) []identity.UserOption {
+				return []identity.UserOption{
+					identity.WithUserName("Ada"),
+					identity.WithUserRoles("admin", "auditor"),
+					identity.WithUserOrganization(&identity.Organization{ID: uniqueID(t, "org")}),
+					identity.WithUserPassword([]byte("H1")),
+				}
+			},
+			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, d)
+
+				// Every check reads the record Provision returned: the caller acts
+				// on it without loading the user again.
+				assert.NotEmpty(t, d.ID)
+				assert.Equal(t, user, d.Username)
+				assert.Equal(t, "Ada", d.Name, "the returned record carries the name it was given")
+				assert.Equal(t, []byte("H1"), d.Password)
+				assert.True(t, d.Active)
+				assert.True(t, d.PasswordChangedAt.IsZero(),
+					"no time was named, so none is recorded: got %v", d.PasswordChangedAt)
+				assert.Equal(t, fullOrganization(t), d.Organization,
+					"the returned record carries the organization, resolved with its group")
+
+				require.Len(t, d.Roles, 2)
+				assert.Equal(t, "admin", d.Roles[0].Name)
+				assert.True(t, d.Roles[0].Primary, "the first role named is primary")
+				assert.Equal(t, "auditor", d.Roles[1].Name)
+				assert.False(t, d.Roles[1].Primary)
+
+				for _, r := range d.Roles {
+					assert.False(t, r.SuperRole, "a provisioned grant is never a super role")
+					assert.True(t, r.StartDate.IsZero() && r.ValidUntil.IsZero(),
+						"a provisioned grant has no validity window: got %v to %v", r.StartDate, r.ValidUntil)
+				}
+
+				required, reqErr := f.Required(ctx, d.ID)
+				require.NoError(t, reqErr)
+				assert.False(t, required, "a created user is not required to use a second factor")
+			},
+		},
+		{
+			name: "provisioning with no password stores an empty hash",
+			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, d)
+				assert.Empty(t, d.Password, "no password was given, so the returned record holds none")
+
+				loaded, loadErr := f.LoadByUsername(ctx, user)
+				require.NoError(t, loadErr)
+				assert.Empty(t, loaded.Password,
+					"no password was given, so an empty hash is stored, never a placeholder")
+			},
+		},
 		{
 			name: "a created user is active",
 			assert: func(t *testing.T, _ context.Context, _ Fixture, _ string, d *identity.Details, err error) {
@@ -1614,14 +1975,21 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 		{
 			name:     "an empty username is refused",
 			username: func(*testing.T, string) string { return "" },
-			assert: func(t *testing.T, _ context.Context, _ Fixture, _ string, d *identity.Details, err error) {
+			assert: func(t *testing.T, ctx context.Context, f Fixture, _ string, d *identity.Details, err error) {
 				require.Error(t, err, "a user with no username could never be loaded again")
+				assert.NotErrorIs(t, err, identity.ErrUserExists,
+					"an empty username is refused as a username, not reported as taken")
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound,
+					"an empty username is refused as a username, not reported as a miss")
 				assert.Nil(t, d)
+
+				_, loadErr := f.LoadByUsername(ctx, "")
+				assert.ErrorIs(t, loadErr, identity.ErrUserNotFound, "a refused provision writes nothing")
 			},
 		},
 		{
 			name: "the first role name is primary and the rest are not",
-			opts: func(string) []identity.UserOption {
+			opts: func(*testing.T, string) []identity.UserOption {
 				return []identity.UserOption{identity.WithUserRoles("editor", "viewer")}
 			},
 			assert: func(t *testing.T, _ context.Context, _ Fixture, _ string, d *identity.Details, err error) {
@@ -1637,18 +2005,23 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 		},
 		{
 			name: "a repeated role name creates one grant per occurrence",
-			opts: func(string) []identity.UserOption {
+			opts: func(*testing.T, string) []identity.UserOption {
 				return []identity.UserOption{identity.WithUserRoles("viewer", "viewer")}
 			},
 			assert: func(t *testing.T, _ context.Context, _ Fixture, _ string, d *identity.Details, err error) {
 				require.NoError(t, err)
-				assert.Len(t, d.Roles, 2,
+				require.Len(t, d.Roles, 2,
 					"Provision records what the caller asked for; deduplication is Update's rule")
+
+				assert.NotEqual(t, d.Roles[0].ID, d.Roles[1].ID,
+					"each occurrence is its own grant, so each carries its own identifier")
+				assert.True(t, d.Roles[0].Primary)
+				assert.False(t, d.Roles[1].Primary, "only the first occurrence is primary")
 			},
 		},
 		{
 			name: "the password hash is stored exactly as given",
-			opts: func(string) []identity.UserOption {
+			opts: func(*testing.T, string) []identity.UserOption {
 				return []identity.UserOption{identity.WithUserPassword([]byte("H"))}
 			},
 			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
@@ -1677,7 +2050,7 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 		},
 		{
 			name: "the email is never a lookup key",
-			opts: func(user string) []identity.UserOption {
+			opts: func(_ *testing.T, user string) []identity.UserOption {
 				return []identity.UserOption{identity.WithUserEmail(user + "@example.com")}
 			},
 			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, _ *identity.Details, err error) {
@@ -1691,10 +2064,12 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 		{
 			name: "a taken username is refused and the existing user is untouched",
 			seed: func(t *testing.T, ctx context.Context, f Fixture, user string) {
-				_, err := f.Provision(ctx, user, identity.WithUserName("First"))
+				_, err := f.Provision(ctx, user, identity.WithUserName("First"), identity.WithUserRoles("admin"))
 				require.NoError(t, err)
 			},
-			opts: func(string) []identity.UserOption { return []identity.UserOption{identity.WithUserName("Second")} },
+			opts: func(*testing.T, string) []identity.UserOption {
+				return []identity.UserOption{identity.WithUserName("Second"), identity.WithUserRoles("root")}
+			},
 			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
 				require.ErrorIs(t, err, identity.ErrUserExists)
 				assert.Nil(t, d)
@@ -1703,6 +2078,12 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 				require.NoError(t, loadErr)
 				assert.Equal(t, "First", stored.Name,
 					"the existing account is never adopted or overwritten by a second create")
+
+				require.Len(t, stored.Roles, 1,
+					"a refused create must not add its grants to the existing user: that would hand "+
+						"the refused caller's roles to someone else's account")
+				assert.Equal(t, "admin", stored.Roles[0].Name)
+				assert.True(t, stored.Roles[0].Primary)
 			},
 		},
 		{
@@ -1741,7 +2122,7 @@ func runProvisionCases(t *testing.T, newFixture Factory) {
 
 			var opts []identity.UserOption
 			if tc.opts != nil {
-				opts = tc.opts(user)
+				opts = tc.opts(t, user)
 			}
 
 			d, err := f.Provision(ctx, username, opts...)
@@ -1780,13 +2161,48 @@ func runMFALookupSuite(t *testing.T, newFixture Factory) {
 
 	cases := []testCase{
 		{
-			name: "an unknown user is answered rather than refused",
+			name: "an unknown user is refused, never answered as not required",
+			setup: func(t *testing.T, _ context.Context, _ Fixture, _ string) identity.UserID {
+				t.Helper()
+
+				// Well formed, so a store keyed on UUIDs reaches its query, and
+				// unique to the case, so no stored user can hold it.
+				return identity.UserID(uniqueID(t, "unknown-user"))
+			},
+			assert: func(t *testing.T, required bool, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound,
+					"the reference comes from an authenticated principal, so an unknown user "+
+						"means it was deleted or the loader disagrees: answered as not required, "+
+						"the lookup fails open and waves the user past their second factor")
+				assert.False(t, required)
+			},
+		},
+		{
+			name: "a reference the store cannot parse is refused as an unknown user",
 			setup: func(_ *testing.T, _ context.Context, _ Fixture, _ string) identity.UserID {
-				return "u-unknown"
+				return "not-a-uuid"
+			},
+			assert: func(t *testing.T, required bool, err error) {
+				require.ErrorIs(t, err, identity.ErrUserNotFound,
+					"a reference no stored user can hold names no user, whatever the store's "+
+						"key format, and is neither 'not required' nor a driver error")
+				assert.False(t, required)
+			},
+		},
+		{
+			name: "a stored user with no requirement recorded is not required",
+			setup: func(t *testing.T, ctx context.Context, f Fixture, user string) identity.UserID {
+				t.Helper()
+
+				d, err := f.Provision(ctx, user)
+				require.NoError(t, err)
+
+				return d.ID
 			},
 			assert: func(t *testing.T, required bool, err error) {
 				require.NoError(t, err,
-					"an unknown user is a legitimate answer of false, not a lookup failure")
+					"a user who exists but was never marked is a legitimate answer of false: "+
+						"refusing it would deny every user nobody has configured")
 				assert.False(t, required)
 			},
 		},
@@ -1855,6 +2271,9 @@ func runMFALookupSuite(t *testing.T, newFixture Factory) {
 				require.Error(t, err,
 					"a lookup that cannot answer must say so: reported as 'not required', an "+
 						"outage would wave every user past their second factor")
+				assert.NotErrorIs(t, err, identity.ErrUserNotFound,
+					"an outage is not a missing user: reported as one, a caller treats every "+
+						"authenticated principal as deleted and cannot tell the backend is down")
 				assert.False(t, required, "and it fails closed rather than guessing true")
 			},
 		},

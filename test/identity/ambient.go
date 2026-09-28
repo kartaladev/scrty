@@ -2,6 +2,7 @@ package identitytest
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"testing"
 
@@ -45,24 +46,48 @@ type AmbientHarness interface {
 	// stored, read outside any transaction.
 	UnrelatedStored(ctx context.Context, key string) (bool, error)
 
-	// FailGrantWrites makes the next Provision fail while writing its role
-	// grants, after the user itself was written. It needs no backend support: a
-	// harness can wrap the store's grant write, or fail on the grant table with a
-	// trigger, so long as the failure happens inside the store's own work.
+	// FailGrantWrites makes the next Provision that names two or more roles
+	// fail while writing its role grants, after the user row was written. The
+	// suite provisions two roles after setting it, so a harness may fail the
+	// first grant or the second.
+	//
+	// The failure must be a statement the backend itself refuses, inside the
+	// store's own work — not an error returned from a wrapper before the
+	// statement runs. That is what the case after it tests: on PostgreSQL a
+	// refused statement aborts the whole transaction, so a store with no
+	// savepoint around its own writes turns the caller's commit into a rollback
+	// of the caller's earlier work. A failure the backend never saw leaves the
+	// transaction healthy, and such a store would pass.
+	//
+	// The recommended way is the store's own identifier generator: configure
+	// the store under test with a generator that, once FailGrantWrites is set,
+	// repeats an identifier it has already issued, so the second grant's insert
+	// is refused with a primary-key violation. Do not use a trigger on the grant
+	// table: it fails every fixture over the same database at once, while the
+	// suite runs its cases in parallel over one database and a fault must stay
+	// with the harness it was set on.
+	//
+	// An adapter that joins a caller's transaction both through its own context
+	// value and through a consumer transaction resolver runs RunAmbientTx once
+	// for each: once with Begin placing the transaction where the adapter's
+	// WithTx does, and once through a store configured with a resolver that
+	// returns the consumer's own transaction handle.
 	FailGrantWrites()
 }
 
 // RunAmbientTx checks that an implementation takes part in the caller's
 // transaction: its reads see what the transaction wrote, a Provision that fails
 // inside it undoes only its own writes and leaves the transaction usable, and a
-// rollback takes the store's writes with it.
+// rollback takes the store's writes with it, an Update's as well as a
+// Provision's.
 //
 // It is a separate part from RunConformanceSuite because a consumer's store may
 // have no notion of an ambient transaction; one that has must pass it.
 //
 // Like RunConformanceSuite, it fails before any case when a hook is missing,
-// including Begin and FailGrantWrites. Every name it uses is unique to its case,
-// so the factory may hand every case a harness over one shared database.
+// including Begin and FailGrantWrites. Every name it uses is unique to its case
+// and to the run, so the factory may hand every case a harness over one shared
+// database, including one that outlives the run.
 func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 	t.Helper()
 
@@ -173,6 +198,44 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 					"the store wrote outside the transaction the caller rolled back")
 			},
 		},
+		{
+			name: "a rollback undoes an update made inside the transaction",
+			act: func(t *testing.T, ctx context.Context, h AmbientHarness, user, _ string) {
+				t.Helper()
+
+				// Stored before the transaction, so only the update is the
+				// transaction's own work.
+				_, err := h.Provision(ctx, user, identity.WithUserName("Before"), identity.WithUserRoles("admin"))
+				require.NoError(t, err)
+
+				txCtx, _, rollback := begin(t, ctx, h)
+
+				_, err = h.Update(txCtx, user, identity.WithUserName("After"), identity.WithUserRoles("viewer"))
+				require.NoError(t, err)
+
+				inside, err := h.LoadByUsername(txCtx, user)
+				require.NoError(t, err)
+				assert.Equal(t, "After", inside.Name,
+					"the update must be visible through the caller's transaction")
+
+				outside, err := h.LoadByUsername(ctx, user)
+				require.NoError(t, err)
+				assert.Equal(t, "Before", outside.Name,
+					"an uncommitted update was visible outside the caller's transaction")
+
+				require.NoError(t, rollback())
+			},
+			assert: func(t *testing.T, ctx context.Context, h AmbientHarness, user, _ string) {
+				t.Helper()
+
+				d, err := h.LoadByUsername(ctx, user)
+				require.NoError(t, err)
+				assert.Equal(t, "Before", d.Name,
+					"the store wrote the update outside the transaction the caller rolled back")
+				require.Len(t, d.Roles, 1, "and the grants it rebuilt stay rolled back with it")
+				assert.Equal(t, "admin", d.Roles[0].Name)
+			},
+		},
 	}
 
 	for i, tc := range cases {
@@ -208,8 +271,10 @@ func begin(
 }
 
 // assertNotStored checks that nothing of an uncommitted user is visible through
-// ctx: the user, its role's privileges, and its MFA requirement. An unknown user
-// may be answered as not required or as not found, never as required.
+// ctx: the user, its role's privileges, and its MFA requirement. Outside the
+// transaction the user is unknown, so the MFA lookup must refuse it as not
+// found: answering "not required" or "required" would both read a user that
+// does not exist.
 func assertNotStored(
 	t *testing.T, ctx context.Context, h AmbientHarness,
 	user, role string, id identity.UserID, msg string,
@@ -223,17 +288,14 @@ func assertNotStored(
 	assert.ErrorIs(t, err, identity.ErrPrivilegesNotFound, msg)
 
 	required, err := h.Required(ctx, id)
-	if err != nil {
-		assert.ErrorIs(t, err, identity.ErrUserNotFound, msg)
-	}
-
+	assert.ErrorIs(t, err, identity.ErrUserNotFound, msg)
 	assert.False(t, required, msg)
 }
 
 // requireEveryAmbientHook probes the hooks AmbientHarness adds to Fixture, and
 // fails the run naming each one that is missing. Begin and the unrelated-row
 // hooks are missing when they answer ErrHookUnsupported; FailGrantWrites is
-// missing when the Provision after it succeeds.
+// missing when a Provision of two roles after it succeeds.
 func requireEveryAmbientHook(t *testing.T, h AmbientHarness) {
 	t.Helper()
 
@@ -256,7 +318,9 @@ func requireEveryAmbientHook(t *testing.T, h AmbientHarness) {
 		t.FailNow()
 	}
 
-	key := uniqueName(t, "ambprobe", 0)
+	// Fresh on every call, as in requireEveryHook: two parts under one
+	// *testing.T over one database must not meet each other's probe.
+	key := probeName(t, "ambprobe", rand.Text())
 	missing("WriteUnrelated", h.WriteUnrelated(txCtx, key))
 
 	_, err = h.UnrelatedStored(ctx, key)
@@ -264,7 +328,9 @@ func requireEveryAmbientHook(t *testing.T, h AmbientHarness) {
 
 	h.FailGrantWrites()
 
-	if _, err := h.Provision(txCtx, key, identity.WithUserRoles("probe")); err == nil {
+	// Two roles, as the case that relies on the fault provisions: a harness may
+	// fail the second grant rather than the first.
+	if _, err := h.Provision(txCtx, key, identity.WithUserRoles("probe", "probe-second")); err == nil {
 		t.Errorf("identitytest: required hook FailGrantWrites is missing")
 	}
 

@@ -9,8 +9,10 @@ import "errors"
 // deliberately carries no username.
 var (
 	// ErrUserNotFound is returned by a user loader for an unknown username or
-	// user reference, and by a provisioner's Update for a user that does not
-	// exist.
+	// user reference, by a provisioner's Update for a user that does not
+	// exist, and by an MFA requirement lookup for a user reference that names
+	// no stored user or that the implementation cannot parse. The lookup never
+	// answers such a reference as "not required".
 	ErrUserNotFound = errors.New("identity: user not found")
 
 	// ErrUserExists is returned by Provision when the username is taken.

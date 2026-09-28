@@ -25,6 +25,14 @@ FROM users WHERE id = $1`
   created_at, updated_at
 FROM assigned_roles WHERE user_id = $1 ORDER BY is_primary DESC, position, id`
 
+	// GrantsByUserInPosition reads every role grant of user $1 in stored
+	// position order, whichever is primary. An update's grant rebuild reads
+	// it to keep the first stored grant of a repeated name: position, never
+	// the identifier, decides which one is first.
+	GrantsByUserInPosition = `SELECT id, role_name, position, is_primary, super_role, start_date, valid_until,
+  created_at, updated_at
+FROM assigned_roles WHERE user_id = $1 ORDER BY position, id`
+
 	// OrganizationByID reads the organization with id $1. No row is not an
 	// error: the caller treats a dangling reference as no organization.
 	OrganizationByID = `SELECT id, name, group_id, created_at, updated_at FROM organizations WHERE id = $1`

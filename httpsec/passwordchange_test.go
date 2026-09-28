@@ -14,6 +14,8 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -22,6 +24,11 @@ import (
 // endpoint. There is no default: without a resolve endpoint only a new login
 // clears the challenge, so the path is the consumer's to name.
 const testChangePasswordPath = "/account/password"
+
+// reuseCurrentPassword is the resolve endpoint's caller's current password in
+// the reuse-guard cases of TestChangePasswordEndpoint: a candidate submitted
+// unchanged is what "reused" and "no guard configured" both check against.
+const reuseCurrentPassword = "current-Secr3t!"
 
 // errChangeRefused is what a consumer's change-password function refuses with,
 // so a test can assert the chain returned that error and not one of its own.
@@ -253,6 +260,108 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				require.ErrorIs(t, s.err, errChangeRefused,
 					"the consumer's error is the refusal, unchanged")
 				assert.Empty(t, saved.all(), "a change that did not happen clears no marker")
+			},
+		},
+		{
+			name: "a reused password is refused through the reuse guard, and the debt survives",
+			change: func(t *testing.T, ran *bool) httpsec.ChangePasswordFunc {
+				t.Helper()
+
+				enc := fastReuseEncoder(t)
+				store := newPasswordReuseStore(&identity.Details{
+					ID:       "u-1",
+					Username: testSubject,
+					Password: mustEncodeReuse(t, enc, reuseCurrentPassword),
+				})
+				history := newPasswordReuseHistory()
+
+				// The candidate equals the current password, so a depth-1 guard —
+				// which compares only against user.Password — refuses it without
+				// any history seeded.
+				return func(ex *httpsec.Exchange) error {
+					*ran = true
+
+					details, err := store.LoadByUsername(ex.Context(), testSubject)
+					if err != nil {
+						return err
+					}
+
+					guard, err := password.NewReuseGuard(history, enc, 1)
+					if err != nil {
+						return err
+					}
+
+					write, err := password.ProvisionerWrite(store)
+					if err != nil {
+						return err
+					}
+
+					return guard.Change(ex.Context(), details, ex.Request.FormValue("password"), write)
+				}
+			},
+			wire: resolvingSession,
+			request: func(ctx context.Context) *http.Request {
+				return changePasswordFormRequest(ctx, reuseCurrentPassword)
+			},
+			assert: func(t *testing.T, _ *authHarness, chain *httpsec.Chain, s served, saved *savedSessions) {
+				require.ErrorIs(t, s.err, password.ErrPasswordReused)
+				assert.Equal(t, http.StatusUnprocessableEntity, httpsec.StatusForError(s.err))
+				assert.Empty(t, saved.all(), "a change refused as reused clears no marker")
+
+				next := serve(t, chain, bearerRequest(t.Context(), "Bearer a-token"))
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, next.err, &ch,
+					"the next request on the session is still refused with the password-change challenge")
+				assert.Equal(t, policy.ChallengePasswordChange, ch.Kind)
+				assert.False(t, next.handlerRan)
+			},
+		},
+		{
+			name: "an endpoint with no reuse guard accepts the current password and clears the marker",
+			change: func(t *testing.T, ran *bool) httpsec.ChangePasswordFunc {
+				t.Helper()
+
+				enc := fastReuseEncoder(t)
+				store := newPasswordReuseStore(&identity.Details{
+					ID:       "u-1",
+					Username: testSubject,
+					Password: mustEncodeReuse(t, enc, reuseCurrentPassword),
+				})
+
+				// No guard is built at all: reuse checking is off unless the
+				// consumer enables it.
+				return func(ex *httpsec.Exchange) error {
+					*ran = true
+
+					details, err := store.LoadByUsername(ex.Context(), testSubject)
+					if err != nil {
+						return err
+					}
+
+					hash, err := enc.Encode(ex.Request.FormValue("password"))
+					if err != nil {
+						return err
+					}
+
+					_, err = store.Update(ex.Context(), details.Username, identity.WithUserPassword(hash))
+
+					return err
+				}
+			},
+			wire: resolvingSession,
+			request: func(ctx context.Context) *http.Request {
+				return changePasswordFormRequest(ctx, reuseCurrentPassword)
+			},
+			assert: func(t *testing.T, _ *authHarness, chain *httpsec.Chain, s served, saved *savedSessions) {
+				require.NoError(t, s.err, "no guard is called, so the current password is accepted")
+
+				records := saved.all()
+				require.Len(t, records, 1, "the cleared marker is persisted once")
+				assert.False(t, records[0].PasswordChangePending)
+
+				next := serve(t, chain, bearerRequest(t.Context(), "Bearer a-token"))
+				require.NoError(t, next.err)
+				assert.True(t, next.handlerRan, "the session no longer owes a password change")
 			},
 		},
 		{

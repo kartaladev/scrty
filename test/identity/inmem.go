@@ -2,19 +2,22 @@ package identitytest
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"github.com/kartaladev/scrty/identity"
 )
 
-// ErrEmptyUsername is returned by Provision when the username is empty. It is
-// this store's own error: the identity package names no sentinel for it, because
-// the rule is "the username is required", not a contract about which error says
-// so.
+// ErrEmptyUsername is returned by Provision and Update when the username is
+// empty. It is this store's own error: the identity package names no sentinel
+// for it, because the rule is "the username is required", not a contract about
+// which error says so. It is neither identity.ErrUserExists nor
+// identity.ErrUserNotFound.
 var ErrEmptyUsername = errors.New("identitytest: username is required")
 
 // InMemoryStore implements every identity port over process memory.
@@ -50,7 +53,11 @@ type inMemoryRecords struct {
 	privs  map[string][]*identity.ResourcePrivileges
 	mfa    map[identity.UserID]bool
 	orgs   map[string]*identity.Organization
-	nextID int
+
+	// seq numbers the users and grants the store creates. Like a database
+	// sequence it is shared by every view of the records, including a copy
+	// taken to model a transaction, so no two of them mint one identifier.
+	seq *atomic.Int64
 }
 
 // NewInMemoryStore returns an empty store.
@@ -60,6 +67,7 @@ func NewInMemoryStore() *InMemoryStore {
 		privs:  make(map[string][]*identity.ResourcePrivileges),
 		mfa:    make(map[identity.UserID]bool),
 		orgs:   make(map[string]*identity.Organization),
+		seq:    new(atomic.Int64),
 	}}
 }
 
@@ -240,10 +248,23 @@ func (s *InMemoryStore) LoadPrivileges(
 		return nil, identity.ErrPrivilegesNotFound
 	}
 
-	return clonePrivileges(p), nil
+	// Groups are ordered by resource group and then resource; the entries
+	// inside a group keep the order they were seeded in, since none is promised.
+	out := clonePrivileges(p)
+	slices.SortStableFunc(out, func(a, b *identity.ResourcePrivileges) int {
+		return cmp.Or(cmp.Compare(a.Group, b.Group), cmp.Compare(a.Resource, b.Resource))
+	})
+
+	return out, nil
 }
 
 // Required implements identity.MFARequirementLookup.
+//
+// A reference that names no stored user fails with identity.ErrUserNotFound,
+// never "not required": the reference comes from an authenticated principal, so
+// an unknown user means something changed after the login, and answering false
+// would let that user past their second factor. A stored user with no
+// requirement recorded is not required.
 func (s *InMemoryStore) Required(_ context.Context, id identity.UserID) (bool, error) {
 	if err := s.fault(&s.mfaErr); err != nil {
 		return false, err
@@ -252,7 +273,13 @@ func (s *InMemoryStore) Required(_ context.Context, id identity.UserID) (bool, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.mfa[id], nil
+	for _, d := range s.byName {
+		if d.ID == id {
+			return s.mfa[id], nil
+		}
+	}
+
+	return false, identity.ErrUserNotFound
 }
 
 // Provision implements identity.UserProvisioner.
@@ -277,8 +304,7 @@ func (s *InMemoryStore) Provision(
 		return nil, identity.ErrUserExists
 	}
 
-	s.nextID++
-	id := strconv.Itoa(s.nextID)
+	id := strconv.FormatInt(s.seq.Add(1), 10)
 
 	d := &identity.Details{
 		ID:           identity.UserID("u-" + id),
@@ -313,6 +339,12 @@ func (s *InMemoryStore) Provision(
 func (s *InMemoryStore) Update(
 	_ context.Context, username string, opts ...identity.UserOption,
 ) (*identity.Details, error) {
+	// Refused as a username, before any lookup: answered as user-not-found, a
+	// caller would read it as a user who was deleted.
+	if username == "" {
+		return nil, ErrEmptyUsername
+	}
+
 	u := identity.ApplyUserOptions(opts...)
 
 	s.mu.Lock()
@@ -344,10 +376,16 @@ func (s *InMemoryStore) Update(
 	}
 
 	if u.IsSet(identity.FieldRoles) {
-		d.Roles = rebuildRoles(d.Roles, u.Roles)
+		d.Roles = rebuildRoles(d.Roles, u.Roles, s.mintGrantIDLocked)
 	}
 
 	return s.recordLocked(d), nil
+}
+
+// mintGrantIDLocked returns an identifier no other grant of the store holds.
+// The caller holds s.mu.
+func (s *InMemoryStore) mintGrantIDLocked() string {
+	return "r-" + strconv.FormatInt(s.seq.Add(1), 10) + "-0"
 }
 
 // recordLocked returns the complete record of d as a caller sees it: a copy,
@@ -394,8 +432,11 @@ func orgReference(o *identity.Organization) *identity.Organization {
 // are left untouched, so nothing can strip every role through Update. A
 // surviving name that matches an existing grant keeps that grant's identifier,
 // super-role flag and validity window; where the stored grants repeat a name,
-// the first stored grant is the one reused.
-func rebuildRoles(stored []*identity.AssignedRole, names []string) []*identity.AssignedRole {
+// the first stored grant is the one reused. A name with no existing grant gets a
+// new grant, identified by mint, with no super role and no validity window.
+func rebuildRoles(
+	stored []*identity.AssignedRole, names []string, mint func() string,
+) []*identity.AssignedRole {
 	survivors := make([]string, 0, len(names))
 	seen := make(map[string]bool, len(names))
 
@@ -436,7 +477,7 @@ func rebuildRoles(stored []*identity.AssignedRole, names []string) []*identity.A
 			continue
 		}
 
-		rebuilt = append(rebuilt, &identity.AssignedRole{Name: n, Primary: i == 0})
+		rebuilt = append(rebuilt, &identity.AssignedRole{ID: mint(), Name: n, Primary: i == 0})
 	}
 
 	return rebuilt

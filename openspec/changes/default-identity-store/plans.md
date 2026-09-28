@@ -590,7 +590,7 @@ The catalogue test in `test/migrate_identity_test.go` pins every column, default
 
 **Files:** Modify `sqlstore/identity.go` and `test/sqlstore/identity_test.go`.
 
-- [ ] **Step 1: Write failing tests:** run `identitytest.RunAmbientTx`. The harness's `Begin` opens `conn.DB.BeginTx` and returns `sqlstore.WithTx(ctx, tx)`. `WriteUnrelated` inserts into a scratch table the test creates. `FailGrantWrites` sets a fixture flag that makes the store's grant insert fail. Do this through a test-only resolver option returning a `DBTX` wrapper that fails the first `ExecContext` whose query equals `pgschema.InsertGrant`. Add a second case with `WithTxResolver` over the consumer's own transaction, then roll back.
+- [ ] **Step 1: Write failing tests:** run `identitytest.RunAmbientTx`. The harness's `Begin` opens `conn.DB.BeginTx` and returns `sqlstore.WithTx(ctx, tx)`. `WriteUnrelated` inserts into a scratch table the test creates. `FailGrantWrites` arms a consumer `id.Generator` on that fixture's store that returns the identifier of an existing grant row, so PostgreSQL itself refuses the grant insert with a primary-key violation after the user row is written. A Go-side error that sends no statement would never abort the transaction, and the case would pass without savepoints. A trigger is ruled out because cases share one database. Add a second case with `WithTxResolver` over the consumer's own transaction, then roll back.
 - [ ] **Step 2: See red:** without savepoints, the failed-provision case FAILs at commit with `pq: current transaction is aborted` (or pgx's equivalent), and the unrelated row is missing.
 - [ ] **Step 3: Implement** `SAVEPOINT scrty_identity_<n>`, `ROLLBACK TO SAVEPOINT`, `RELEASE`. `<n>` comes from a per-store `atomic.Uint64`, never from input. Outside an ambient transaction, run `db.BeginTx` / `Commit`.
 - [ ] **Step 4: Run** `go test -race -count=1 -run 'TestIdentity' ./sqlstore/` in `test/`. Expected: PASS.
@@ -709,3 +709,19 @@ The catalogue test in `test/migrate_identity_test.go` pins every column, default
 - [ ] Run these in the core, `pgx`, `gorm`, `ginsec`, `fibersec` and `test` modules: `go test -race -count=1 ./...`, `go vet ./...`, `gofmt -l .` (empty), `golangci-lint run`.
 - [ ] Dispatch one fresh reviewer across the whole branch against every requirement in the change's five spec files, reporting `REPRODUCED`/`UNREPRODUCED` per claim.
 - [ ] Commit by explicit path only.
+
+---
+
+## Session handoff (2026-09-28)
+
+Done and reviewed: 1.1–1.4, 2.1–2.6, 3.1–3.6, 4.1–4.2, 5.1–5.3, 8.1–8.2 (23/32). Next: lane D2 (5.4–5.6), then lanes E (6.x) and F (7.x) in parallel, then H (9.x). Every finished dispatch went through verification and at least one fresh review, and every finding was folded in.
+
+Settled during implementation. The pgx and gorm lanes must follow these; they are also recorded in spec.md and design.md:
+- **Driver errors leave the chain.** The identity store returns the driver's primary message and SQLSTATE as text, and never the driver's error value, whose detail can carry a failing row. `sqlstore/identity_errors.go` (`dbFailed`, `scanFailed`, `detached`) is the reference. Task 5.5's history methods must use it too.
+- **References are byte-exact.** User and organization references are canonical lowercase UUID text. An upper-case spelling of a user reference is user-not-found. A non-canonical organization reference is refused before any write, with fixed text.
+- **`FailGrantWrites` fails a real statement.** It is implemented with an armed consumer `id.Generator` that re-issues an existing grant id, so PostgreSQL raises a primary-key violation. Run `RunAmbientTx` once through `WithTx` and once through a consumer resolver.
+- **Savepoints and panics.** A panic in `fn`, or in a savepoint statement, rolls the savepoint back and propagates the original panic. Update locks the user row `FOR UPDATE` first, then plans its grants (ids minted before any write), then writes.
+- **Privilege order.** Groups are ordered by resource group, then resource. The order inside a group is unspecified, and the suite compares it as a set.
+- **Parallel history cases.** The password-history suite's ambient cases call the store outside an open transaction, so a pooled harness needs more connections than the number of cases run in parallel.
+
+Open items noticed, not yet in any task: `password/reuse_test.go` has two unused helper methods (`seed`, `entries`), flagged by gopls. Remove them before the 9.2 lint gate.

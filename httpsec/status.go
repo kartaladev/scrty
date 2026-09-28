@@ -8,6 +8,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -39,6 +40,14 @@ var statusTable = []statusRow{
 	{ErrCredentialsMissing, http.StatusBadRequest},
 	{oidc.ErrInvalidLogoutToken, http.StatusBadRequest},
 	{ErrRequestTooLarge, http.StatusRequestEntityTooLarge},
+
+	// A new password refused as reused: the request is well formed and the
+	// value is refused, so a client can show a field-level message. A history
+	// that could not be read or recorded is a dependency failure, not a
+	// refusal of the caller's input, and carries no row here: it falls through
+	// to the unrecognised-error 500 below, like any other unrecognised error.
+	{password.ErrPasswordReused, http.StatusUnprocessableEntity},
+
 	{policy.ErrAccountLocked, http.StatusLocked},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
 
@@ -69,6 +78,15 @@ var statusTable = []statusRow{
 // password-change or enrolment challenge is 403, because the caller is
 // authenticated and must act rather than present credentials again; every other
 // kind, a consumer's own included, is 401.
+//
+// A new password a consumer's password-change function refused as reused
+// ([password.ErrPasswordReused]) is 422: the request is well formed and the
+// value is refused, not 400 (malformed), 401 (authentication) or 403 (the
+// password-change challenge itself, which would make the client unable to
+// tell "you still owe a change" from "that password was used recently"). A
+// history that could not be read or recorded ([password.ErrHistoryUnavailable])
+// is a dependency failure, not a refusal of the caller's input, and maps to
+// 500 like any other unrecognised error.
 func StatusForError(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError

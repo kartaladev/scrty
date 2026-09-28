@@ -130,6 +130,7 @@ func TestProvisionerWrite_Write(t *testing.T) {
 			},
 			assert: func(t *testing.T, err error, _ *identity.NewUser) {
 				require.ErrorIs(t, err, errStore)
+				assert.Same(t, errStore, err, "returned as is, not wrapped")
 			},
 		},
 		{

@@ -23,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
@@ -67,6 +68,13 @@ func TestStatusForError(t *testing.T) {
 		{name: "wrapped invalid code", err: fmt.Errorf("verifying: %w", mfa.ErrInvalidCode), want: 401},
 		{name: "malformed login", err: httpsec.ErrCredentialsMissing, want: 400},
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
+		{name: "reused password", err: password.ErrPasswordReused, want: 422},
+		{
+			name: "wrapped reused password",
+			err:  fmt.Errorf("change: %w", password.ErrPasswordReused),
+			want: 422,
+		},
+		{name: "password history unavailable is a dependency failure", err: password.ErrHistoryUnavailable, want: 500},
 		{name: "account locked", err: policy.ErrAccountLocked, want: 423},
 		{name: "too many sessions", err: policy.ErrTooManySessions, want: 429},
 		{name: "unknown identity provider", err: oidc.ErrUnknownProvider, want: 404},
@@ -235,6 +243,15 @@ var sentinelRegistry = map[string]map[string]error{
 		"oidc.ErrRetainSinceRequired": oidc.ErrRetainSinceRequired,
 		"oidc.ErrUnknownProvider":     oidc.ErrUnknownProvider,
 	},
+	"github.com/kartaladev/scrty/password": {
+		"password.ErrConfig":             password.ErrConfig,
+		"password.ErrHistoryUnavailable": password.ErrHistoryUnavailable,
+		"password.ErrInvalidParameters":  password.ErrInvalidParameters,
+		"password.ErrNoRandomSource":     password.ErrNoRandomSource,
+		"password.ErrPasswordReused":     password.ErrPasswordReused,
+		"password.ErrPasswordTooLong":    password.ErrPasswordTooLong,
+		"password.ErrWeakParameters":     password.ErrWeakParameters,
+	},
 	"github.com/kartaladev/scrty/policy": {
 		"policy.ErrAccountLocked":               policy.ErrAccountLocked,
 		"policy.ErrConfig":                      policy.ErrConfig,
@@ -304,6 +321,12 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"oidc.ErrRetainSinceRequired":             "a purge misuse, never a request outcome",
 		"oidc.ErrFlowStoreFull":                   "capacity exhaustion, deliberately 500",
 		"oidc.ErrFlowUnspent":                     "a marker joined onto another refusal, never returned alone",
+		"password.ErrConfig":                      "a wiring fault, refused at construction",
+		"password.ErrInvalidParameters":           "a wiring fault, refused at construction",
+		"password.ErrNoRandomSource":              "a wiring fault, refused at construction",
+		"password.ErrWeakParameters":              "a wiring fault, refused at construction",
+		"password.ErrHistoryUnavailable":          "a dependency failure, deliberately 500",
+		"password.ErrPasswordTooLong":             "the encoder's error is returned as is, and the consumer decides",
 	}
 
 	for _, pkg := range []string{
@@ -311,6 +334,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"github.com/kartaladev/scrty/authorize",
 		"github.com/kartaladev/scrty/mfa",
 		"github.com/kartaladev/scrty/oidc",
+		"github.com/kartaladev/scrty/password",
 		"github.com/kartaladev/scrty/policy",
 		"github.com/kartaladev/scrty/ratelimit",
 		"github.com/kartaladev/scrty/session",

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -17,57 +18,87 @@ import (
 
 // This file checks RunAmbientTx itself. The in-memory store has no
 // transactions, so the harnesses below model one: a transaction is a private
-// copy of the committed records, and committing it replaces them. It lives in
-// the package, not beside the other self-tests, because copying the records
-// needs the store's internals.
+// copy of the committed records, and committing it copies the records it
+// created or changed into the committed ones. It lives in the package, not
+// beside the other self-tests, because copying the records needs the store's
+// internals.
 
 // ambientHarnessVar selects the harness the child test runs RunAmbientTx
 // against, one per process, so the verdict is attributable to it alone.
 const ambientHarnessVar = "SCRTY_IDENTITY_AMBIENT_HARNESS"
 
-// ignoresTx names the harness whose store ignores the caller's transaction: it
-// writes straight to the committed records, and a failed grant write leaves the
-// user it already wrote.
-const ignoresTx = "ignores-tx"
+// The harness variants a child can run, beside "" (a correct harness) and
+// "missing-<hook>" (a harness lacking that hook).
+const (
+	// ignoresTx names the harness whose store ignores the caller's
+	// transaction: it writes straight to the committed records, and a failed
+	// grant write leaves the user it already wrote.
+	ignoresTx = "ignores-tx"
+	// doomsTx names the harness whose failed grant write aborts the caller's
+	// whole transaction, as a PostgreSQL statement failing with no savepoint
+	// around it does: the caller's commit then fails and its earlier writes
+	// are lost.
+	doomsTx = "dooms-tx"
+	// secondGrant names a correct harness whose FailGrantWrites fails only the
+	// second grant of a Provision, as a consumer identifier generator that
+	// repeats the first grant's identifier would. A Provision naming one role
+	// is not affected.
+	secondGrant = "second-grant"
+)
 
-var errGrantWrite = errors.New("identitytest: grant write failed")
+var (
+	errGrantWrite = errors.New("identitytest: grant write failed")
+	errTxAborted  = errors.New("identitytest: transaction is aborted, commands ignored until end of block")
+)
 
 type txKey struct{}
 
+// memDB is the committed state several harnesses share, as several fixtures
+// share one database.
+type memDB struct {
+	mu        sync.Mutex
+	committed *InMemoryStore
+	unrelated map[string]bool
+}
+
+func newMemDB() *memDB {
+	return &memDB{committed: NewInMemoryStore(), unrelated: make(map[string]bool)}
+}
+
 // memTx is one caller-owned transaction over a private copy of the records.
 type memTx struct {
-	store     *InMemoryStore
+	store *InMemoryStore
+	// begun is the records as the transaction first saw them, so the commit
+	// can tell what the transaction wrote from what it only carried.
+	begun     *InMemoryStore
 	unrelated map[string]bool
+	doomed    bool
 }
 
 // memAmbientHarness implements AmbientHarness over the in-memory store.
 type memAmbientHarness struct {
-	ignoresTx bool
-	// missing names a hook this harness lacks: Begin answers
-	// ErrHookUnsupported, FailGrantWrites does nothing.
-	missing string
+	variant string
+	db      *memDB
+	// base is this harness's view of the committed records, with fault hooks
+	// of its own, so a fault one case injects stays with that case.
+	base *InMemoryStore
 
 	mu         sync.Mutex
-	committed  *InMemoryStore
-	unrelated  map[string]bool
 	failGrants bool
 }
 
-func newMemAmbientHarness(ignores bool) *memAmbientHarness {
-	return newMemAmbientHarnessLacking(ignores, "")
+func newMemAmbientHarness(variant string) *memAmbientHarness {
+	return newMemAmbientHarnessOn(newMemDB(), variant)
 }
 
-func newMemAmbientHarnessLacking(ignores bool, missing string) *memAmbientHarness {
-	return &memAmbientHarness{
-		ignoresTx: ignores,
-		missing:   missing,
-		committed: NewInMemoryStore(),
-		unrelated: make(map[string]bool),
-	}
+func newMemAmbientHarnessOn(db *memDB, variant string) *memAmbientHarness {
+	return &memAmbientHarness{variant: variant, db: db, base: db.committed.Share()}
 }
+
+func (h *memAmbientHarness) lacks(hook string) bool { return h.variant == "missing-"+hook }
 
 func (h *memAmbientHarness) tx(ctx context.Context) *memTx {
-	if h.ignoresTx {
+	if h.variant == ignoresTx {
 		return nil
 	}
 
@@ -82,36 +113,37 @@ func (h *memAmbientHarness) store(ctx context.Context) *InMemoryStore {
 		return tx.store
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	return h.committed
+	return h.base
 }
 
 func (h *memAmbientHarness) Begin(
 	ctx context.Context,
 ) (context.Context, func() error, func() error, error) {
-	if h.missing == "Begin" {
+	if h.lacks("Begin") {
 		return nil, nil, nil, ErrHookUnsupported
 	}
 
-	if h.ignoresTx {
+	if h.variant == ignoresTx {
 		noop := func() error { return nil }
 
 		return ctx, noop, noop, nil
 	}
 
-	h.mu.Lock()
-	tx := &memTx{store: h.committed.copyRecords(), unrelated: make(map[string]bool)}
-	h.mu.Unlock()
+	store := h.db.committed.copyRecords()
+	tx := &memTx{store: store, begun: store.copyRecords(), unrelated: make(map[string]bool)}
 
 	commit := func() error {
-		h.mu.Lock()
-		defer h.mu.Unlock()
+		if tx.doomed {
+			return errTxAborted
+		}
 
-		h.committed = tx.store
+		h.db.committed.applyWrites(tx.store, tx.begun)
+
+		h.db.mu.Lock()
+		defer h.db.mu.Unlock()
+
 		for k := range tx.unrelated {
-			h.unrelated[k] = true
+			h.db.unrelated[k] = true
 		}
 
 		return nil
@@ -122,29 +154,37 @@ func (h *memAmbientHarness) Begin(
 }
 
 func (h *memAmbientHarness) WriteUnrelated(txCtx context.Context, key string) error {
+	if h.lacks("WriteUnrelated") {
+		return ErrHookUnsupported
+	}
+
 	if tx := h.tx(txCtx); tx != nil {
 		tx.unrelated[key] = true
 
 		return nil
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
 
-	h.unrelated[key] = true
+	h.db.unrelated[key] = true
 
 	return nil
 }
 
 func (h *memAmbientHarness) UnrelatedStored(_ context.Context, key string) (bool, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	if h.lacks("UnrelatedStored") {
+		return false, ErrHookUnsupported
+	}
 
-	return h.unrelated[key], nil
+	h.db.mu.Lock()
+	defer h.db.mu.Unlock()
+
+	return h.db.unrelated[key], nil
 }
 
 func (h *memAmbientHarness) FailGrantWrites() {
-	if h.missing == "FailGrantWrites" {
+	if h.lacks("FailGrantWrites") {
 		return
 	}
 
@@ -156,24 +196,32 @@ func (h *memAmbientHarness) FailGrantWrites() {
 
 // Provision fails partway when FailGrantWrites asked it to. A store honouring
 // the transaction undoes its own writes, as a savepoint would; one ignoring it
-// has already written the user when the grant write fails.
+// has already written the user when the grant write fails; one with no
+// savepoint dooms the caller's transaction.
 func (h *memAmbientHarness) Provision(
 	ctx context.Context, username string, opts ...identity.UserOption,
 ) (*identity.Details, error) {
+	grants := len(identity.ApplyUserOptions(opts...).Roles)
+
 	h.mu.Lock()
-	fail := h.failGrants
-	h.failGrants = false
+	fail := h.failGrants && (h.variant != secondGrant || grants >= 2)
+	if fail {
+		h.failGrants = false
+	}
 	h.mu.Unlock()
 
-	if fail {
-		if h.ignoresTx {
-			_, _ = h.store(ctx).Provision(ctx, username, opts...)
-		}
-
-		return nil, errGrantWrite
+	if !fail {
+		return h.store(ctx).Provision(ctx, username, opts...)
 	}
 
-	return h.store(ctx).Provision(ctx, username, opts...)
+	switch tx := h.tx(ctx); {
+	case h.variant == ignoresTx:
+		_, _ = h.store(ctx).Provision(ctx, username, opts...)
+	case h.variant == doomsTx && tx != nil:
+		tx.doomed = true
+	}
+
+	return nil, errGrantWrite
 }
 
 func (h *memAmbientHarness) Update(
@@ -220,13 +268,9 @@ func (h *memAmbientHarness) SeedOrganization(ctx context.Context, org *identity.
 	return h.store(ctx).SeedOrganization(ctx, org)
 }
 
-func (h *memAmbientHarness) FailUserLoads(err error) {
-	h.store(context.Background()).FailUserLoads(err)
-}
+func (h *memAmbientHarness) FailUserLoads(err error) { h.base.FailUserLoads(err) }
 
-func (h *memAmbientHarness) FailMFALookups(err error) {
-	h.store(context.Background()).FailMFALookups(err)
-}
+func (h *memAmbientHarness) FailMFALookups(err error) { h.base.FailMFALookups(err) }
 
 var _ AmbientHarness = (*memAmbientHarness)(nil)
 
@@ -236,7 +280,7 @@ func (s *InMemoryStore) copyRecords() *InMemoryStore {
 	defer s.mu.Unlock()
 
 	c := NewInMemoryStore()
-	c.nextID = s.nextID
+	c.seq = s.seq
 
 	for k, d := range s.byName {
 		c.byName[k] = cloneDetails(d)
@@ -257,23 +301,160 @@ func (s *InMemoryStore) copyRecords() *InMemoryStore {
 	return c
 }
 
-// TestRunAmbientTx_TransactionalHarnessPasses runs the ambient part against a
-// harness whose store honours the caller's transaction. A suite that failed it
-// would be proving nothing about the harness below that ignores one.
-func TestRunAmbientTx_TransactionalHarnessPasses(t *testing.T) {
+// applyWrites is the commit of the model: it copies into s every record of
+// from that the transaction created or changed, judged against begun, the
+// records as the transaction first saw them. The ambient part creates and
+// updates records inside a transaction but never deletes one, so this carries
+// every write the transaction made, and leaves the records it only carried as
+// other harnesses committed them meanwhile.
+func (s *InMemoryStore) applyWrites(from, begun *InMemoryStore) {
+	from.mu.Lock()
+	defer from.mu.Unlock()
+
+	begun.mu.Lock()
+	defer begun.mu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for k, d := range from.byName {
+		if prev, ok := begun.byName[k]; !ok || !reflect.DeepEqual(prev, d) {
+			s.byName[k] = cloneDetails(d)
+		}
+	}
+
+	for k, p := range from.privs {
+		if prev, ok := begun.privs[k]; !ok || !reflect.DeepEqual(prev, p) {
+			s.privs[k] = clonePrivileges(p)
+		}
+	}
+
+	for k, v := range from.mfa {
+		if prev, ok := begun.mfa[k]; !ok || prev != v {
+			s.mfa[k] = v
+		}
+	}
+
+	for k, o := range from.orgs {
+		if prev, ok := begun.orgs[k]; !ok || !reflect.DeepEqual(prev, o) {
+			s.orgs[k] = cloneOrg(o)
+		}
+	}
+}
+
+// TestMemAmbientHarness_TransactionAndCommittedMintDistinctIDs checks the model
+// itself: a user created inside a transaction and one created outside it while
+// it is open never share an identifier, as two rows drawing on one database
+// sequence never do. Were they to share one, a lookup by reference outside the
+// transaction would find the committed user and read the uncommitted one as
+// stored.
+func TestMemAmbientHarness_TransactionAndCommittedMintDistinctIDs(t *testing.T) {
 	t.Parallel()
 
+	ctx := t.Context()
+	h := newMemAmbientHarness("")
+
+	txCtx, _, rollback, err := h.Begin(ctx)
+	require.NoError(t, err)
+
+	defer func() { _ = rollback() }()
+
+	outside, err := h.Provision(ctx, "outside", identity.WithUserRoles("admin"))
+	require.NoError(t, err)
+
+	inside, err := h.Provision(txCtx, "inside", identity.WithUserRoles("admin"))
+	require.NoError(t, err)
+
+	assert.NotEqual(t, outside.ID, inside.ID, "the two users share an identifier")
+	assert.NotEqual(t, outside.Roles[0].ID, inside.Roles[0].ID, "the two grants share an identifier")
+}
+
+// TestMemAmbientHarness_CommitKeepsAnUpdate checks the model's commit: an
+// update made inside a transaction to a user committed before it began is
+// stored once the transaction commits, as a database commit would store it.
+func TestMemAmbientHarness_CommitKeepsAnUpdate(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	h := newMemAmbientHarness("")
+
+	_, err := h.Provision(ctx, "updated-in-tx", identity.WithUserName("Before"))
+	require.NoError(t, err)
+
+	txCtx, commit, rollback, err := h.Begin(ctx)
+	require.NoError(t, err)
+
+	defer func() { _ = rollback() }()
+
+	_, err = h.Update(txCtx, "updated-in-tx", identity.WithUserName("After"))
+	require.NoError(t, err)
+	require.NoError(t, commit())
+
+	got, err := h.LoadByUsername(ctx, "updated-in-tx")
+	require.NoError(t, err)
+	assert.Equal(t, "After", got.Name, "the commit dropped an update made inside the transaction")
+}
+
+// TestRunAmbientTx_ConformingHarnessesPass runs the ambient part against
+// harnesses whose store honours the caller's transaction. A suite that failed
+// them would be proving nothing about the harnesses below that break it.
+func TestRunAmbientTx_ConformingHarnessesPass(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		variant string
+	}
+
+	cases := []testCase{
+		{name: "a transactional harness", variant: ""},
+		{
+			// FailGrantWrites promises a failure after the user row is written,
+			// not a failure of the first grant; the preflight must accept a
+			// harness that fails the second.
+			name:    "a harness that fails only the second grant",
+			variant: secondGrant,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			RunAmbientTx(t, func(t *testing.T) AmbientHarness {
+				t.Helper()
+
+				return newMemAmbientHarness(tc.variant)
+			})
+		})
+	}
+}
+
+// TestSuiteParts_ConformanceThenAmbientOverOneStore runs the conformance suite
+// and then the ambient part under one *testing.T over one shared store, as an
+// adapter's test does over one database. Each part runs its own preflight, and
+// the second must not meet the first one's probe.
+func TestSuiteParts_ConformanceThenAmbientOverOneStore(t *testing.T) {
+	t.Parallel()
+
+	db := newMemDB()
+
+	RunConformanceSuite(t, func(t *testing.T) Fixture {
+		t.Helper()
+
+		return newMemAmbientHarnessOn(db, "")
+	})
 	RunAmbientTx(t, func(t *testing.T) AmbientHarness {
 		t.Helper()
 
-		return newMemAmbientHarness(false)
+		return newMemAmbientHarnessOn(db, "")
 	})
 }
 
 // TestAmbientHarnessChild runs the ambient part against the harness named by the
 // environment, and is the child half of TestRunAmbientTx_IsLoadBearing.
 func TestAmbientHarnessChild(t *testing.T) {
-	name, named := os.LookupEnv(ambientHarnessVar)
+	variant, named := os.LookupEnv(ambientHarnessVar)
 	if !named {
 		t.Skipf("no harness named in %s; run through TestRunAmbientTx_IsLoadBearing", ambientHarnessVar)
 	}
@@ -281,7 +462,7 @@ func TestAmbientHarnessChild(t *testing.T) {
 	RunAmbientTx(t, func(t *testing.T) AmbientHarness {
 		t.Helper()
 
-		return newMemAmbientHarnessLacking(name == ignoresTx, strings.TrimPrefix(name, "missing-"))
+		return newMemAmbientHarness(variant)
 	})
 }
 
@@ -290,7 +471,7 @@ func TestAmbientHarnessChild(t *testing.T) {
 func TestRunAmbientTx_RequiresEveryHook(t *testing.T) {
 	t.Parallel()
 
-	for _, hook := range []string{"Begin", "FailGrantWrites"} {
+	for _, hook := range []string{"Begin", "WriteUnrelated", "UnrelatedStored", "FailGrantWrites"} {
 		t.Run(hook, func(t *testing.T) {
 			t.Parallel()
 
@@ -324,21 +505,53 @@ func runAmbientChild(t *testing.T, harness string, flags ...string) (string, err
 	return string(out), err
 }
 
-// TestRunAmbientTx_IsLoadBearing checks that each case of the ambient part fails
-// against a store that ignores the caller's transaction.
+// TestRunAmbientTx_IsLoadBearing checks that the ambient part fails, by the
+// named case's assertion, against each harness that breaks the caller's
+// transaction.
 func TestRunAmbientTx_IsLoadBearing(t *testing.T) {
 	t.Parallel()
 
-	output, err := runAmbientChild(t, ignoresTx)
+	const (
+		seenInside   = "rows_written_inside_the_transaction_are_seen_only_through_its_context"
+		failedUsable = "a_failed_provision_leaves_the_transaction_usable_and_its_earlier_writes_intact"
+		rolledBack   = "a_rollback_takes_the_provisioned_user_with_it"
+		updateUndone = "a_rollback_undoes_an_update_made_inside_the_transaction"
+	)
 
-	require.Error(t, err, "the ambient part passed a store that ignores the caller's transaction")
+	type testCase struct {
+		name    string
+		variant string
+		// catching lists the cases that must each fail against the harness.
+		catching []string
+	}
 
-	for _, c := range []string{
-		"rows_written_inside_the_transaction_are_seen_only_through_its_context",
-		"a_failed_provision_leaves_the_transaction_usable_and_its_earlier_writes_intact",
-		"a_rollback_takes_the_provisioned_user_with_it",
-	} {
-		assert.True(t, strings.Contains(output, "--- FAIL: TestAmbientHarnessChild/"+c),
-			"case %q passed a store that ignores the caller's transaction", c)
+	cases := []testCase{
+		{
+			name:     "a store that ignores the caller's transaction",
+			variant:  ignoresTx,
+			catching: []string{seenInside, failedUsable, rolledBack, updateUndone},
+		},
+		{
+			name:     "a store whose failure dooms the caller's transaction",
+			variant:  doomsTx,
+			catching: []string{failedUsable},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			output, err := runAmbientChild(t, tc.variant)
+
+			require.Error(t, err, "the ambient part passed %s", tc.name)
+			assert.NotContains(t, output, "identitytest: required hook",
+				"the preflight stopped the run, so no case was shown to catch %s:\n%s", tc.name, output)
+
+			for _, c := range tc.catching {
+				assert.True(t, strings.Contains(output, "--- FAIL: TestAmbientHarnessChild/"+c),
+					"case %q passed %s:\n%s", c, tc.name, output)
+			}
+		})
 	}
 }

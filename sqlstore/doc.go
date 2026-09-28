@@ -1,8 +1,11 @@
 // Package sqlstore keeps scrty's security state in PostgreSQL through
 // database/sql: sessions, one-time tokens, login attempts, signing keys, MFA
-// enrolments, API keys, and OIDC links, flows and handoffs. Each store
-// implements the contract its owning package defines, and runs against the
-// tables the migrate package creates.
+// enrolments, API keys, and OIDC links, flows and handoffs. IdentityStore
+// keeps the identity records beside them: users, their role grants,
+// organizations, groups and role privileges. Each store implements the
+// contract its owning package defines, and runs against the tables the
+// migrate package creates: the security-state stores against
+// migrate.SecurityState, the identity store against migrate.Identity.
 //
 // The package depends on the standard library and scrty's core packages only.
 // It brings no driver: the consumer opens the *sql.DB with the PostgreSQL
@@ -37,19 +40,31 @@
 // WithTx. When it reports a transaction with a nil handle, the operation runs
 // no statement and fails with ErrNilTransaction. A transaction attached
 // through another backend's adapter is never seen here. The stores never
-// commit or roll back a transaction they did not open.
+// commit or roll back a transaction they did not open; the identity store
+// rolls back only to a savepoint of its own, as below.
 //
 // Refusals — an already-consumed token, a duplicate link, a replayed time step
 // — are reported without a failed statement, so they leave a caller's
-// transaction usable. The limit: any statement a store runs inside a caller's
-// transaction that fails for an unexpected reason aborts that transaction, as
-// PostgreSQL defines, a read (for example one cancelled by a statement
-// timeout) as much as a write. Refusals never do.
+// transaction usable. The limit, for the security-state stores: any statement
+// they run inside a caller's transaction that fails for an unexpected reason
+// aborts that transaction, as PostgreSQL defines, a read (for example one
+// cancelled by a statement timeout) as much as a write. Refusals never do.
+//
+// The identity store's writes differ: inside a caller's transaction,
+// IdentityStore.Provision and IdentityStore.Update run under a savepoint of
+// their own, and roll back to it when they fail, so a failed provision or
+// update undoes only its own writes and leaves the caller's transaction usable,
+// with the caller's earlier work intact. The identity store's reads follow the
+// limit above.
 //
 // # Errors
 //
 // Refusals return the owning package's sentinels. Database failures are
 // returned wrapped with the name of the operation, and are never reported as a
 // refusal or as absence. Error text never contains stored values, secrets or
-// user references.
+// user references. The security-state stores keep the driver's error in the
+// chain. The identity store does not: its tables hold usernames and password
+// hashes, which a driver error's detail fields can carry, so it returns the
+// driver's text and the context and database/sql sentinels it matched, and
+// leaves the driver's error value out.
 package sqlstore

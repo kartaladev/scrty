@@ -223,6 +223,13 @@ type UserProvisioner interface {
 // losing an enrolment row cannot silently clear it. Callers fail closed on an
 // error rather than reading a failure as "not required".
 //
+// A reference that names no stored user, including one the implementation
+// cannot parse, is answered with ErrUserNotFound, never with "not required":
+// the reference comes from an authenticated principal, so an unknown user means
+// something changed after the login, and answering false would fail open. A
+// stored user with no requirement recorded is not required, with no error. Any
+// other failure is an error that is not ErrUserNotFound.
+//
 // scrty ships no implementation.
 type MFARequirementLookup interface {
 	Required(ctx context.Context, userID UserID) (bool, error)
