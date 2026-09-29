@@ -74,7 +74,7 @@ None.
 
 - **Code:** `mfa` gains the optional challenge step on its method port. `httpsec`'s MFA verify and enrolment endpoints and their options take a method set. `policy`'s MFA policies and method lookup take a set.
 - **APIs:** breaking changes to `EnableMFA`, `EnableMFAEnrolment` and the MFA policy constructors, allowed before the first tag and recorded in the design.
-- **Stores:** none expected. Enrolments are already per method, and pending challenges use the existing one-time token store under per-method purposes. The design confirms whether any store contract changes.
+- **Stores:** no store contract or schema change. Enrolment storage is one per user in TOTP's own store (`mfa_enrolments`), so each method type owns its enrolment storage (design D1, the user's decision); pending challenges use the existing one-time token store under per-method purposes.
 - **Dependencies:** none.
 - **Ordering:** the queue is `default-identity-store`, then this change, then `recovery-codes`, then `passkey-authentication`, by the user's decision. This change does not depend on `default-identity-store`. `recovery-codes` builds on the multi-method slot, and `passkey-authentication` depends on both.
 
