@@ -61,6 +61,8 @@ directly. Nothing is tagged yet, so the API can change without a compatibility c
   run instead of ticking at a fixed rate.
 - `sessions`: the in-memory store's housekeeping is paced by the store's time source rather than a
   real ticker.
+- `module-layout`: the dependency check that keeps test tooling out of the core module's production
+  build also forbids clockwork.
 
 ## Impact
 

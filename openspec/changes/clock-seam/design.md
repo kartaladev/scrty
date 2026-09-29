@@ -40,6 +40,9 @@ See proposal.md for why. The current state that shapes the approach:
   tests that need all of package `time` faked. Both tools remain, and D7 says when to use which.
 - Changing any interval, lifetime, TTL, leeway or default duration.
 - The `sweep` module's clock, which the `operations` change owns (D6).
+- A time-source option for the `httpsec` interceptors. They read `time.Now` for policy input and
+  refusal-log sampling, with no option today. Adding one is a new consumer-facing seam, not a change
+  of an existing seam's shape, so it is left to a later change. Their tests keep using synctest (D7).
 
 ## Decisions
 
@@ -94,9 +97,17 @@ func System() Timed
   ratelimit's `Clock`-typed options, take a `clock.Clock` instead. `WithClock`, `WithReuseClock`,
   `VerifyWithClock` and the rest keep their names, because an option is named after what it
   governs, and that has not changed.
-- **Nil is still a configuration error.** A nil clock, including a typed nil, fails construction
-  with the package's configuration error, through the existing nil-detection helper. This keeps the
-  authn-authz-core rule.
+- **Nil handling is unchanged, and now covers typed nil.** Each option keeps the nil policy it has
+  today, and judges nil through the existing nil-detection helper, so a typed-nil clock is treated
+  exactly as a nil one:
+  - **Refused:** every option whose constructor returns an error fails construction with the
+    package's configuration error. This keeps the authn-authz-core rule.
+  - **Ignored, keeping the system clock:** `session.WithMemoryStoreClock`,
+    `onetime.WithMemoryStoreClock` and `id.WithClock`, whose constructors return no error, and
+    `mfa.WithResetClock`, whose godoc already promises it. Making them refuse would change three
+    constructor signatures and every caller, which is a nil-policy change rather than a seam change.
+    It is left out of this change, by the user's decision, and the `time-source` spec names these
+    four as the stated limit that `library-design.md` rule 4 asks for.
 - **Default:** `clock.System()`.
 - **Override:** pass any `clock.Clock` (a clockwork fake, or the consumer's own type) to the
   option.
