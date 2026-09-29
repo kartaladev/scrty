@@ -232,7 +232,7 @@ func (h *integrationHarness) buildChain(t *testing.T) *httpsec.Chain {
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
-		httpsec.EnableMFA(h.totp, httpsec.WithMFATokens(h.tokens)),
+		httpsec.EnableMFA([]mfa.Method{h.totp}, httpsec.WithMFATokens(h.tokens)),
 	)
 	require.NoError(t, err)
 
@@ -293,7 +293,7 @@ func (h *integrationHarness) getWithKey(t *testing.T, source, key string) served
 func (h *integrationHarness) verify(t *testing.T, source, accessToken, code string) served {
 	t.Helper()
 
-	req := postValues(t.Context(), httpsec.DefaultMFAVerifyPath, source,
+	req := postValues(t.Context(), testMFAVerifyPath, source,
 		url.Values{"code": {code}})
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 

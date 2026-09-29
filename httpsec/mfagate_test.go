@@ -8,9 +8,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -76,7 +78,7 @@ func TestMFAGate(t *testing.T) {
 			// else.
 			name:    "a pending session reading the verify path",
 			state:   session.MFAPending,
-			request: get(httpsec.DefaultMFAVerifyPath),
+			request: get(testMFAVerifyPath),
 			assert:  challenged,
 		},
 		{
@@ -170,24 +172,82 @@ func TestMFAGateLogoutExempt(t *testing.T) {
 	}
 }
 
-// TestMFAGateVerifyExempt pins that the gate never refuses the code submission
-// itself, whatever slot either half is placed at: they are one interceptor, so
-// the challenge cannot be made unsatisfiable by ordering.
+// TestMFAGateVerifyExempt pins that the gate never refuses a code submission
+// to any configured method, whatever slot either half is placed at: they are
+// one interceptor, so the challenge cannot be made unsatisfiable by ordering.
+// A path under the verify prefix naming no method is the endpoint's to refuse
+// as unknown, never the gate's to answer with the challenge.
 func TestMFAGateVerifyExempt(t *testing.T) {
 	t.Parallel()
 
-	h := newMFAHarness(t)
-	h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+	type testCase struct {
+		name   string
+		path   string
+		wire   func(h *mfaHarness, email *MockMethod)
+		assert func(t *testing.T, h *mfaHarness, out served)
+	}
 
-	s := h.pendingSession(t, factor.Password)
+	resolved := func(t *testing.T, h *mfaHarness, out served) {
+		t.Helper()
 
-	out := serve(t, h.chain(t, s), postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+		var ch *httpsec.ChallengeError
+		require.NotErrorAs(t, out.err, &ch, "the gate does not refuse the request that resolves it")
+		require.NoError(t, out.err)
+		assert.Equal(t, http.StatusOK, out.rec.Code)
 
-	var ch *httpsec.ChallengeError
-	require.NotErrorAs(t, out.err, &ch, "the gate does not refuse the request that resolves it")
-	require.NoError(t, out.err)
-	assert.Equal(t, http.StatusOK, out.rec.Code)
+		require.NotNil(t, h.resolved)
+		assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
+	}
 
-	require.NotNil(t, h.resolved)
-	assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
+	cases := []testCase{
+		{
+			name: "TOTP's verify path",
+			path: httpsec.DefaultMFAVerifyPrefix + "/totp",
+			wire: func(h *mfaHarness, _ *MockMethod) {
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: resolved,
+		},
+		{
+			name: "the emailed code's verify path",
+			path: httpsec.DefaultMFAVerifyPrefix + "/email-code",
+			wire: func(h *mfaHarness, email *MockMethod) {
+				h.allows().neverVerifies().recordsNoFailure()
+				email.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil)
+			},
+			assert: resolved,
+		},
+		{
+			name: "a verify path naming no method",
+			path: httpsec.DefaultMFAVerifyPrefix + "/sms",
+			wire: func(h *mfaHarness, _ *MockMethod) {
+				h.neverVerifies().neverChecked().recordsNoFailure()
+			},
+			assert: func(t *testing.T, _ *mfaHarness, out served) {
+				var ch *httpsec.ChallengeError
+				require.NotErrorAs(t, out.err, &ch, "the endpoint refuses it, not the gate")
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+				assert.False(t, out.handlerRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp)
+
+			email := emailCodeMethod(t)
+			email.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+			h.extra = []mfa.Method{email}
+
+			tc.wire(h, email)
+
+			s := h.pendingSession(t, factor.Password)
+
+			tc.assert(t, h, serve(t, h.chain(t, s), postCode(t.Context(), tc.path)))
+		})
+	}
 }

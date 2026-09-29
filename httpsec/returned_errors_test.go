@@ -299,9 +299,9 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 	) *errorSink {
 		t.Helper()
 
-		return refusedBy(t, postCode(t.Context(), httpsec.DefaultMFAVerifyPath),
+		return refusedBy(t, postCode(t.Context(), testMFAVerifyPath),
 			carrying(s),
-			httpsec.EnableMFA(method,
+			httpsec.EnableMFA([]mfa.Method{method},
 				httpsec.WithMFAVerifyLimiter(allowingVerifyLimiter(t)),
 				httpsec.WithMFATokens(tokens)),
 			httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions}))
@@ -324,6 +324,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 		t.Helper()
 
 		m := mfaMethod(t, factor.AuthenticatorApp)
+		m.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
 		m.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil)
 
 		return m

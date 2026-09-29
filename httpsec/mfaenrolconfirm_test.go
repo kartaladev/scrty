@@ -753,7 +753,7 @@ func TestEnrolmentThrottleLeavesVerificationAlone(t *testing.T) {
 			// spent.
 			h.clock.Advance(30 * time.Second)
 
-			out := serve(t, h.chain(t, pending), post(t.Context(), httpsec.DefaultMFAVerifyPath,
+			out := serve(t, h.chain(t, pending), post(t.Context(), testMFAVerifyPath,
 				"code="+h.codeFor(t, userSecret)))
 			require.NoError(t, out.err, "the verification succeeds")
 			assert.Equal(t, http.StatusOK, out.rec.Code)

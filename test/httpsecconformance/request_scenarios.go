@@ -67,9 +67,9 @@ func verifyBuild(t *testing.T) ChainSpec {
 
 	return ChainSpec{
 		Options: append(bearerOptions(effects),
-			httpsec.EnableMFA(fx.TOTP, httpsec.WithMFATokens(fixtureTokens{}))),
+			httpsec.EnableMFA([]mfa.Method{fx.TOTP}, httpsec.WithMFATokens(fixtureTokens{}))),
 		Effects: effects,
-		Routes:  []Route{{Method: http.MethodPost, Path: httpsec.DefaultMFAVerifyPath, Status: http.StatusCreated, Body: RouteBody}},
+		Routes:  []Route{{Method: http.MethodPost, Path: httpsec.DefaultMFAVerifyPrefix + "/totp", Status: http.StatusCreated, Body: RouteBody}},
 		NoRoute: true,
 	}
 }
@@ -113,7 +113,7 @@ func wrongVerifyCode(spec ChainSpec) string {
 // created, with query appended to the path and body sent as a URL-encoded form.
 func verifyPost(query, body func(ChainSpec) string) func(ChainSpec) RequestSpec {
 	return func(spec ChainSpec) RequestSpec {
-		r := authenticatedRequest(http.MethodPost, httpsec.DefaultMFAVerifyPath+"?"+query(spec))(spec)
+		r := authenticatedRequest(http.MethodPost, httpsec.DefaultMFAVerifyPrefix+"/totp"+"?"+query(spec))(spec)
 		r.Header["Content-Type"] = "application/x-www-form-urlencoded"
 
 		if body != nil {

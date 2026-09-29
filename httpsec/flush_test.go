@@ -212,7 +212,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				c, err := httpsec.New(
 					httpsec.WithLogger(log),
 					h.carries(s),
-					httpsec.EnableMFA(h.method,
+					httpsec.EnableMFA([]mfa.Method{h.method},
 						httpsec.WithMFAVerifyLimiter(h.limiter),
 						httpsec.WithMFATokens(h.tokens),
 						httpsec.WithMFALogInterval(time.Hour)),
@@ -221,7 +221,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				require.NoError(t, err)
 
 				for range 3 {
-					out := serve(t, c, postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+					out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
 					require.ErrorIs(t, out.err, mfa.ErrVerifyThrottled)
 				}
 
@@ -608,7 +608,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 		httpsec.WithPolicyEngine(engine),
 		httpsec.EnableFormLogin(loginDeps),
 		mh.carries(pending),
-		httpsec.EnableMFA(mh.method,
+		httpsec.EnableMFA([]mfa.Method{mh.method},
 			httpsec.WithMFAVerifyLimiter(mh.limiter),
 			httpsec.WithMFATokens(mh.tokens),
 			httpsec.WithMFALogInterval(time.Hour)),
@@ -622,7 +622,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 	// Drive every component but the authenticator — already refused above —
 	// into holding suppressed refusals, all under one window no test outlives.
 	for range 3 {
-		out := serve(t, c, postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+		out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
 		require.ErrorIs(t, out.err, mfa.ErrVerifyThrottled)
 	}
 

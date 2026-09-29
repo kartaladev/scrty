@@ -101,3 +101,7 @@ func Settings(c *Chain) ChainSettings {
 // WithSession exposes the unexported publisher, so a test can put a session on
 // a context exactly as an interceptor does.
 var WithSession = withSession
+
+// ReadResponse exposes the reader the verify endpoint hands a method's
+// response through, so its rules can be pinned without a chain.
+var ReadResponse = readResponse

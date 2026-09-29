@@ -144,11 +144,18 @@ func TestEnrolmentLogs(t *testing.T) {
 				beginsPastTheLimit(t, c, 20)
 
 				// Verification of another session is throttled on the same
-				// logger, under its own default window.
+				// logger, under its own default window. The user is enrolled,
+				// so each wrong code is a guess the throttle counts: a method
+				// the user may not use is refused before anything is counted.
+				p, err := h.totp.BeginEnrolment(t.Context(), testMFAUser, enrolUsername)
+				require.NoError(t, err)
+				require.NoError(t, h.totp.ConfirmEnrolment(t.Context(), testMFAUser, h.codeFor(t, p.Secret)))
+
+				wrong := h.wrongCodeFor(t, p.Secret)
 				pending := h.chain(t, h.sessionIn(t, factor.Password, session.MFAPending))
 
 				for n := range 25 {
-					out := serve(t, pending, post(t.Context(), httpsec.DefaultMFAVerifyPath, "code=000000"))
+					out := serve(t, pending, post(t.Context(), testMFAVerifyPath, "code="+wrong))
 					if n >= 5 {
 						require.ErrorIs(t, out.err, mfa.ErrVerifyThrottled)
 					}

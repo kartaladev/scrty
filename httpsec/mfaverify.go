@@ -1,8 +1,10 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
@@ -32,17 +34,25 @@ type MFAResponder func(ex *Exchange, result MFAResult) error
 //go:generate mockgen -destination=mfamethod_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa Method
 //go:generate mockgen -destination=enrolmentstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa EnrolmentStore
 
-// DefaultMFAVerifyPath is the path the second-factor endpoint answers POST
-// requests on when the consumer names none. It is a constant rather than a
+// DefaultMFAVerifyPrefix is the prefix the second-factor endpoint answers POST
+// requests under when the consumer names none: each configured method is
+// verified at the prefix followed by "/" and the method's name, so TOTP's
+// default verify path is "/mfa/verify/totp". It is a constant rather than a
 // bare literal so a client, a test or a proxy rule naming the same endpoint
 // names the same thing this package does.
-const DefaultMFAVerifyPath = "/mfa/totp"
+const DefaultMFAVerifyPrefix = "/mfa/verify"
 
 // mfaInterceptor is both halves of the second factor: the endpoint a pending
 // session resolves its challenge at, and the gate that holds every other
 // request that session makes.
 type mfaInterceptor struct {
-	method   mfa.Method
+	// methods are the configured methods in the order EnableMFA was given
+	// them, byName indexes them by the path segment that names each, and
+	// lookups are the same methods as the policies consult them.
+	methods []mfa.Method
+	byName  map[string]mfa.Method
+	lookups []policy.MFAMethodLookup
+
 	sessions *session.Manager
 	tokens   token.Generator
 	throttle *mfa.VerifyThrottle
@@ -58,7 +68,7 @@ type mfaInterceptor struct {
 
 	now func() time.Time
 
-	verifyPath string
+	verifyPrefix string
 
 	// logoutPath is handed over at assembly, never configured here.
 	logoutPath string
@@ -80,6 +90,14 @@ func (c *config) wireMFA() error {
 		throttle, err := mfa.NewVerifyThrottle(opts...)
 		if err != nil {
 			return newConfigError("EnableMFA could not build the verification throttle: %s", err)
+		}
+
+		// The endpoint answers every POST under its prefix, so a logout there
+		// would be answered as an unknown method and a pending session could
+		// never log out.
+		if c.logoutPath != "" && underPrefix(c.logoutPath, i.verifyPrefix) {
+			return newConfigError("EnableMFA's verify prefix %q claims the logout path %q, so a "+
+				"session owing a second factor could not log out", i.verifyPrefix, c.logoutPath)
 		}
 
 		i.throttle = throttle
@@ -112,37 +130,45 @@ func (i *mfaInterceptor) Intercept(ex *Exchange, next Next) error {
 	return i.gate(ex, next)
 }
 
-// isVerifyRequest reports whether r is a code submission.
+// isVerifyRequest reports whether r is a second-factor submission.
 //
-// Only POST, and only on the exact path: verifying a second factor resolves a
-// challenge, which is a change, and one a link could trigger is one another
-// site could trigger for a caller who never asked.
+// Only POST, and only under the verify prefix: verifying a second factor
+// resolves a challenge, which is a change, and one a link could trigger is one
+// another site could trigger for a caller who never asked. Every POST under the
+// prefix is the endpoint's, including one whose path names no method, so that
+// one is refused as unknown rather than passed to the gate or the application.
 func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
-	return r.Method() == http.MethodPost && r.Path() == i.verifyPath
+	return r.Method() == http.MethodPost && underPrefix(r.Path(), i.verifyPrefix)
 }
 
-// verify answers a code submission.
+// verify answers a second-factor submission.
 //
 // The order is deliberate, and each step's placement is a requirement rather
-// than a convenience:
+// than a convenience. Steps 1 to 4 are decided from the session and the path
+// alone, before the body is read, and none of them is counted against the
+// user:
 //
-//  1. No session: there is nothing to add a second factor to.
-//  2. Same channel, checked before the code is even read. A code that would
-//     arrive the way the first factor did is not a second factor, so reading
-//     it, counting it or verifying it would all be wrong. The challenge stays
-//     pending and nothing is recorded: the user has not failed anything, the
-//     deployment has.
-//  3. The throttle, before the code is even read, so guessing costs attempts
+//  1. No session, or one carrying no resolved caller: there is nothing to add
+//     a second factor to, and nobody to issue the rotated credential to.
+//  2. The path names no configured method: ErrUnknownMFAMethod. The method is
+//     read from the path and nowhere else.
+//  3. The method is on the first factor's channel: mfa.ErrSameChannel. A
+//     response that would arrive the way the first factor did is not a second
+//     factor. The user has not failed anything, the deployment has.
+//  4. The user may not use the method, as policy.UsableMFAMethods decides for
+//     the policies too: ErrMFAMethodNotUsable. A lookup that fails is returned
+//     as it is, never read as "not enrolled".
+//  5. The throttle, before the response is read, so guessing costs attempts
 //     rather than time, and a locked-out user learns nothing from a body the
-//     endpoint cannot read.
-//  4. The code itself, read from the "code" field of a URL-encoded POST body
-//     and never from the URL. A body that carries none, is not such a form or
-//     does not parse is ErrCredentialsMissing, and one over the limit is
-//     ErrRequestTooLarge; neither is counted, because no code was presented.
-//     A code that was read and is wrong is recorded against the user, and the
-//     method's error is returned unchanged, so a consumer sees mfa's own
-//     sentinel.
-//  5. Success: resolve, rotate, publish, answer.
+//     endpoint cannot read. It counts per user across every method.
+//  6. The response, read the way the method's format declares and never from
+//     the URL. A response that cannot be read is ErrCredentialsMissing and one
+//     over the method's limit is ErrRequestTooLarge; neither is counted,
+//     because none was presented.
+//  7. The method verifies it. A wrong response is recorded against the user,
+//     and the method's error is returned unchanged, so a consumer sees mfa's
+//     own sentinel.
+//  8. Success: resolve, rotate, publish, answer.
 func (i *mfaInterceptor) verify(ex *Exchange) error {
 	s := ex.Session
 	if s == nil {
@@ -157,29 +183,58 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return ErrAuthenticationRequired
 	}
 
-	if i.method.Channel() == s.FirstFactor.Channel() {
-		return mfa.ErrSameChannel
+	name, ok := methodSegment(ex.Request.Path(), i.verifyPrefix)
+	method, known := i.byName[name]
+	if !ok || !known {
+		return ErrUnknownMFAMethod
 	}
 
 	ctx := ex.Context()
 	user := s.UserID
 
+	if err := i.usable(ctx, method, s); err != nil {
+		return err
+	}
+
 	if err := i.throttle.Check(ctx, user); err != nil {
 		return err
 	}
 
-	code, err := postedField(ex.Request, "code")
+	response, err := readResponse(ex.Request, method.Response())
 	if err != nil {
 		return err
 	}
 
-	if err := i.method.Verify(ctx, user, []byte(code)); err != nil {
+	if err := method.Verify(ctx, user, response); err != nil {
 		i.throttle.RecordFailure(ctx, user)
 
 		return err
 	}
 
 	return i.resolve(ex, s)
+}
+
+// usable refuses a method the session's user may not use as their second
+// factor: one on the first factor's own channel, which has no override, and
+// one policy.UsableMFAMethods does not report, which is the same decision the
+// policies made when they raised the challenge. A lookup error is returned
+// unchanged.
+func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *session.Session) error {
+	if method.Channel() == s.FirstFactor.Channel() {
+		return mfa.ErrSameChannel
+	}
+
+	usable, err := policy.UsableMFAMethods(ctx, i.lookups, s.UserID, s.FirstFactor)
+	if err != nil {
+		return err
+	}
+
+	name := method.Name()
+	if !slices.ContainsFunc(usable, func(m policy.MFAMethodLookup) bool { return m.Name() == name }) {
+		return ErrMFAMethodNotUsable
+	}
+
+	return nil
 }
 
 // resolve records the second factor and moves the session to a new handle.

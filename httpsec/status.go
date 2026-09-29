@@ -51,8 +51,11 @@ var statusTable = []statusRow{
 	{policy.ErrAccountLocked, http.StatusLocked},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
 
-	// A federated-login path segment naming no registered provider.
+	// A federated-login path segment naming no registered provider, and a
+	// second-factor path segment naming no configured method. Which providers
+	// and methods exist is configuration, not a secret.
 	{oidc.ErrUnknownProvider, http.StatusNotFound},
+	{ErrUnknownMFAMethod, http.StatusNotFound},
 
 	{authorize.ErrAccessDenied, http.StatusForbidden},
 	{policy.ErrPolicyDenied, http.StatusForbidden},
@@ -61,6 +64,7 @@ var statusTable = []statusRow{
 	{policy.ErrMFAEnrollmentRequired, http.StatusForbidden},
 	{policy.ErrSecondFactorSameChannel, http.StatusForbidden},
 	{mfa.ErrSameChannel, http.StatusForbidden},
+	{ErrMFAMethodNotUsable, http.StatusForbidden},
 	{mfa.ErrAlreadyEnrolled, http.StatusForbidden},
 }
 

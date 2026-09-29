@@ -148,7 +148,7 @@ func enrolmentOptions(t *testing.T, e *Effects) []httpsec.Option {
 
 	return append(bearerOptions(e),
 		httpsec.WithPolicyEngine(engine),
-		httpsec.EnableMFA(fx.TOTP, httpsec.WithMFATokens(fixtureTokens{})),
+		httpsec.EnableMFA([]mfa.Method{fx.TOTP}, httpsec.WithMFATokens(fixtureTokens{})),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: fixtureUsers{}, Sender: fx.Outbox}),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: e.Sessions}),
 	)
@@ -396,7 +396,7 @@ func enrolmentVerifyGrantsAccess() Scenario {
 	return Scenario{
 		Name:  "verification ends the enrolment and grants a full session",
 		Build: enrolmentBuild(stepCompleted),
-		Request: enrolmentPost(httpsec.DefaultMFAVerifyPath,
+		Request: enrolmentPost(httpsec.DefaultMFAVerifyPrefix+"/totp",
 			codeField(func(spec ChainSpec) string {
 				c, err := totp.GenerateCode(spec.Effects.Enrolment.Secret, spec.Effects.Enrolment.Now())
 				if err != nil {

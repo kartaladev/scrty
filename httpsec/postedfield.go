@@ -15,7 +15,14 @@ import (
 // code is a few bytes; nothing an endpoint reads through it comes near it.
 const postedFieldBodyLimit int64 = 4 << 10
 
-// postedField reads name from the POST body, and only from it.
+// postedField reads name from the POST body, bounded at postedFieldBodyLimit.
+// See postedFieldLimited for the rules.
+func postedField(r Request, name string) (string, error) {
+	return postedFieldLimited(r, name, postedFieldBodyLimit)
+}
+
+// postedFieldLimited reads name from the POST body, and only from it, reading
+// at most limit bytes of the body.
 //
 // Request.FormValue looks in the posted form first and falls back to the URL
 // query, on every adapter; a code in a URL has already reached access logs,
@@ -28,8 +35,8 @@ const postedFieldBodyLimit int64 = 4 << 10
 // — is ErrCredentialsMissing, never an empty value: a code nobody could read
 // was not presented, so it must not be judged, or charged, as a wrong one. A
 // body over the limit is ErrRequestTooLarge.
-func postedField(r Request, name string) (string, error) {
-	body, err := r.Body(postedFieldBodyLimit)
+func postedFieldLimited(r Request, name string, limit int64) (string, error) {
+	body, err := r.Body(limit)
 	if errors.Is(err, ErrRequestTooLarge) {
 		return "", ErrRequestTooLarge
 	}

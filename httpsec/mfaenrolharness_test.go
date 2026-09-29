@@ -154,7 +154,7 @@ func (h *enrolHarness) options(t *testing.T, s *session.Session) []httpsec.Optio
 	return append([]httpsec.Option{
 		httpsec.WithPolicyEngine(enrolmentEngine(t)),
 		h.carries(s),
-		httpsec.EnableMFA(h.method, append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
+		httpsec.EnableMFA([]mfa.Method{h.method}, append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
 		enrolment,
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
 	}, h.extra...)

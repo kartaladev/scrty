@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -316,7 +317,7 @@ func (c *config) build() (*Chain, error) {
 	// configured after EnablePasswordChangeGate, so it is handed over here.
 	c.wirePasswordChange()
 
-	// The enrolment path takes the MFA method EnableMFA was given and the
+	// The enrolment path takes the first MFA method EnableMFA was given and the
 	// chain's sessions and logout path, any of which an option applied after
 	// EnableMFAEnrolment may still have set.
 	if err := c.wireMFAEnrolment(); err != nil {
@@ -1000,55 +1001,85 @@ func WithBearerAllowEmptyScheme() BearerTokenOption {
 // named on EnableMFA.
 type MFAOption func(*mfaInterceptor) error
 
-// EnableMFA verifies a second factor at the MFA slot, and holds every session
-// that owes one.
+// EnableMFA verifies a second factor at the MFA slot, on any of methods, and
+// holds every session that owes one.
 //
-// Defaults: the endpoint answers POST requests on DefaultMFAVerifyPath
-// (WithMFAVerifyPath); failed verifications are counted per user reference by
-// an in-memory limiter of 5 failures per 15 minutes (WithMFAVerifyLimiter);
-// and the records those refusals write are sampled over one minute
-// (WithMFALogInterval). A consumer who wires nothing else gets all three.
+// Each method is verified by POST at its own path: the verify prefix, "/" and
+// the method's name, so TOTP is verified at "/mfa/verify/totp" by default. The
+// method is read from that path and never from a header, the URL query or the
+// body. A POST under the prefix naming no configured method — an empty, extra
+// or trailing segment included — is refused with ErrUnknownMFAMethod (404).
+// Before the body is read the endpoint also refuses a method on the session's
+// first-factor channel with mfa.ErrSameChannel, and a method the user may not
+// use with ErrMFAMethodNotUsable (403), deciding "usable" with
+// policy.UsableMFAMethods; a failed enrolment lookup is returned as the
+// refusal. None of these is counted against the verification limiter.
 //
-// The endpoint reads only the "code" field of an
-// "application/x-www-form-urlencoded" POST body. A code in the URL query is
-// never read, because a URL reaches access logs, proxy logs and the Referer
-// header the next page sends. A body that carries no code, is not such a form
-// (multipart and JSON included) or does not parse is refused with
-// ErrCredentialsMissing (400), and one over 4 KiB with ErrRequestTooLarge
-// (413); neither is counted against the verification limiter, because no code
-// was presented. The limiter is still consulted first, so a user it already
-// refuses gets its refusal rather than 400. This is a limit, not a default:
-// there is no option to read another encoding; a consumer who must accept one
-// puts an interceptor of their own in front of the endpoint.
+// The policies that raise the challenge must be built from the same methods,
+// through mfa.LookupsFor(methods...), so the endpoint never refuses a method a
+// policy offered or accepts one it did not.
 //
-// The method is required, and one reporting no channel is refused here. An
-// empty channel equals the channel of an unrecorded first factor, so every
-// session established without a recorded kind would be refused at verify as a
-// same-channel attempt — a wiring mistake whose symptom appears far from its
-// cause.
+// Defaults: the verify prefix is DefaultMFAVerifyPrefix
+// (WithMFAVerifyPrefix); failed verifications are counted per user reference,
+// across every method, by an in-memory limiter of 5 failures per 15 minutes
+// (WithMFAVerifyLimiter); and the records those refusals write are sampled
+// over one minute (WithMFALogInterval). A consumer who wires nothing else gets
+// all three.
+//
+// Each method's response is read by the library, the way the method's
+// mfa.ResponseFormat declares: one field of an
+// "application/x-www-form-urlencoded" POST body (TOTP reads "code", up to
+// 4 KiB), or a whole JSON body, bounded at the method's declared limit. A
+// response in the URL query is never read, because a URL reaches access logs,
+// proxy logs and the Referer header the next page sends. A body that carries
+// no response, is not of the declared type or does not parse is refused with
+// ErrCredentialsMissing (400), and one over the limit with ErrRequestTooLarge
+// (413); neither is counted against the verification limiter, because no
+// response was presented. The limiter is still consulted first, so a user it
+// already refuses gets its refusal rather than 400. The two readers are a
+// limit, not a default: a method never reads the request itself, and a
+// consumer who must accept another encoding puts an interceptor of their own
+// in front of the endpoint.
+//
+// The set is required and is checked by mfa.LookupsFor: an empty set, an
+// absent method, a method reporting no channel, a name that is not one path
+// segment, two methods sharing a name and a malformed response format are all
+// refused here. An empty channel in particular equals the channel of an
+// unrecorded first factor, so every session established without a recorded
+// kind would be refused at verify as a same-channel attempt — a wiring mistake
+// whose symptom appears far from its cause.
 //
 // The session manager is not a parameter: the handle is rotated in the one the
 // chain already resolves sessions through, taken from the built-ins enabled
 // alongside this one, exactly as the chain's own activity write-back takes it.
 // A chain with no session manager at all is refused, because a second factor
 // that could not rotate the handle would leave a pre-MFA handle live after the
-// privilege change.
-func EnableMFA(method mfa.Method, opts ...MFAOption) Option {
+// privilege change. A verify prefix that claims the chain's logout path is
+// refused too, because a pending session could then not log out.
+func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 	const option = "EnableMFA"
 
 	return func(c *config) error {
 		// LookupsFor is the one place a wrongly declared method is caught, so
 		// the rules and their messages are stated once for the policy lookups
 		// and for this endpoint rather than drifting apart.
-		if _, err := mfa.LookupsFor(method); err != nil {
+		lookups, err := mfa.LookupsFor(methods...)
+		if err != nil {
 			return newConfigError("%s was given an unusable method: %s", option, err)
 		}
 
+		byName := make(map[string]mfa.Method, len(methods))
+		for _, m := range methods {
+			byName[m.Name()] = m
+		}
+
 		i := &mfaInterceptor{
-			method:     method,
-			now:        time.Now,
-			verifyPath: DefaultMFAVerifyPath,
-			respond:    writeMFAResult,
+			methods:      slices.Clone(methods),
+			byName:       byName,
+			lookups:      lookups,
+			now:          time.Now,
+			verifyPrefix: DefaultMFAVerifyPrefix,
+			respond:      writeMFAResult,
 		}
 
 		for _, opt := range opts {
@@ -1082,23 +1113,26 @@ func EnableMFA(method mfa.Method, opts ...MFAOption) Option {
 	}
 }
 
-// WithMFAVerifyPath answers code submissions on path instead.
+// WithMFAVerifyPrefix verifies each method under prefix instead: a method is
+// verified at prefix, "/" and its name.
 //
-// Default: DefaultMFAVerifyPath. Only POST on that exact path is a
+// Default: DefaultMFAVerifyPrefix. Only POST under the prefix is a
 // verification; every other request to it is judged like any other, which for
-// a session that owes a second factor means the gate holds it.
+// a session that owes a second factor means the gate holds it. A trailing
+// slash is dropped, so "/auth/2fa" and "/auth/2fa/" are the same prefix.
 //
-// An empty path is refused: it would match nothing, so the endpoint the
-// consumer asked for would silently not exist and the challenge could never be
-// resolved.
-func WithMFAVerifyPath(path string) MFAOption {
+// An empty prefix is refused, because the endpoint the consumer asked for
+// would silently not exist and the challenge could never be resolved; so is a
+// prefix that does not start with "/", which matches no request path, and the
+// root "/", which would claim every one-segment path of the application.
+func WithMFAVerifyPrefix(prefix string) MFAOption {
 	return func(i *mfaInterceptor) error {
-		if path == "" {
-			return newConfigError("WithMFAVerifyPath was given no path, so a session owing a " +
-				"second factor would have no way to resolve it")
+		p, err := mfaPrefix("WithMFAVerifyPrefix", prefix)
+		if err != nil {
+			return err
 		}
 
-		i.verifyPath = path
+		i.verifyPrefix = p
 
 		return nil
 	}

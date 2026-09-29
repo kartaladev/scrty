@@ -52,7 +52,9 @@
 // declares "application/x-www-form-urlencoded", so a "multipart/form-data"
 // submission is refused with ErrCredentialsMissing rather than parsed; and a
 // urlencoded body that does not parse yields no credential at all, rather
-// than the pairs that did parse before the error.
+// than the pairs that did parse before the error. An MFA method that declares
+// a JSON body instead is read under the same rule: the body only, and only
+// when it declares a JSON media type.
 //
 // # Failing closed
 //

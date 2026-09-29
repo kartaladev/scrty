@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,10 @@ import (
 // consumer's own reference, and the throttle's bucket key is composed from it.
 const testMFAUser identity.UserID = "u-1"
 
+// testMFAVerifyPath is where the harness's method, named "totp" as the
+// built-in TOTP method is, is verified under the default prefix.
+const testMFAVerifyPath = httpsec.DefaultMFAVerifyPrefix + "/totp"
+
 // testMFACode is the code these tests post. What it means is the method's
 // business: the double is told to accept it or to refuse it, and the endpoint
 // never looks at it.
@@ -42,6 +47,13 @@ type mfaHarness struct {
 	sessions *session.Manager
 	method   *MockMethod
 	limiter  *MockLimiter
+
+	// response is the format the method declares: TOTP's form field unless a
+	// case declares another.
+	response mfa.ResponseFormat
+
+	// extra are methods configured after the harness's own, in order.
+	extra []mfa.Method
 
 	// tokens issues the credential a caller carries away from a successful
 	// verification, and verifies the one it arrived with. It is one double
@@ -76,16 +88,25 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 	require.NoError(t, err)
 
 	m := NewMockMethod(ctrl)
-	m.EXPECT().Name().Return("test-method").AnyTimes()
-	m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
+	m.EXPECT().Name().Return("totp").AnyTimes()
 
 	h := &mfaHarness{
 		sessions: sessions,
 		method:   m,
+		response: mfa.FormField("code", 4<<10),
 		limiter:  NewMockLimiter(ctrl),
 		tokens:   NewMockGenerator(ctrl),
 		users:    NewMockUserLoader(ctrl),
 	}
+
+	// The format is read when the chain is built and on every request, so a
+	// case that declares another sets h.response before building the chain.
+	m.EXPECT().Response().AnyTimes().DoAndReturn(func() mfa.ResponseFormat { return h.response })
+
+	// The user is enrolled on the harness's method, so it is usable whenever
+	// its channel differs from the first factor's. A case about enrolment
+	// configures a method of its own in h.extra.
+	m.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
 
 	// A token names the session it was issued for, exactly as a real one does
 	// through its jti. That is the whole mechanism this group is about: a
@@ -140,11 +161,45 @@ func mfaMethod(t *testing.T, channel factor.Channel) *MockMethod {
 	t.Helper()
 
 	m := NewMockMethod(gomock.NewController(t))
-	m.EXPECT().Name().Return("test-method").AnyTimes()
+	m.EXPECT().Name().Return("totp").AnyTimes()
 	m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
 	m.EXPECT().Channel().Return(channel).AnyTimes()
 
 	return m
+}
+
+// emailCodeMethod is a second method double: an emailed one-time code named
+// "email-code", on the email channel, read from the same form field TOTP is.
+// Whether the user is enrolled on it, and what it answers, is each case's own.
+func emailCodeMethod(t *testing.T) *MockMethod {
+	t.Helper()
+
+	m := NewMockMethod(gomock.NewController(t))
+	m.EXPECT().Name().Return("email-code").AnyTimes()
+	m.EXPECT().Channel().Return(factor.Email).AnyTimes()
+	m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
+
+	return m
+}
+
+// unreadBody is a request body that fails the test the moment anything reads
+// it, for the refusals that must be decided before the body is touched.
+type unreadBody struct{ t *testing.T }
+
+func (b unreadBody) Read([]byte) (int, error) {
+	b.t.Error("the request body was read before the request was refused")
+
+	return 0, io.EOF
+}
+
+// postUnread is a POST to target whose body must never be read.
+func postUnread(ctx context.Context, t *testing.T, target string) *http.Request {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, target, unreadBody{t: t})
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	return req
 }
 
 // channel fixes what the harness's method reports for its whole lifetime, as
@@ -260,7 +315,7 @@ func (h *mfaHarness) chain(t *testing.T, s *session.Session) *httpsec.Chain {
 
 	c, err := httpsec.New(
 		h.carries(s),
-		httpsec.EnableMFA(h.method, mfaOpts...),
+		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
 	)
 	require.NoError(t, err)
@@ -305,9 +360,9 @@ func TestEnableMFA(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		method func(t *testing.T) mfa.Method
-		opts   []httpsec.MFAOption
+		name    string
+		methods func(t *testing.T) []mfa.Method
+		opts    []httpsec.MFAOption
 		// noTokens leaves the token generator out entirely, which is how a
 		// case pins what happens to a chain that was never given one.
 		noTokens bool
@@ -326,7 +381,24 @@ func TestEnableMFA(t *testing.T) {
 		return httpsec.New(opt, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions}))
 	}
 
-	authenticator := func(t *testing.T) mfa.Method { return mfaMethod(t, factor.AuthenticatorApp) }
+	// one is a set of the single method m makes.
+	one := func(m func(t *testing.T) mfa.Method) func(t *testing.T) []mfa.Method {
+		return func(t *testing.T) []mfa.Method { return []mfa.Method{m(t)} }
+	}
+
+	authenticator := one(func(t *testing.T) mfa.Method { return mfaMethod(t, factor.AuthenticatorApp) })
+
+	// authenticatorAnd is the authenticator plus a second method named name.
+	authenticatorAnd := func(name string) func(t *testing.T) []mfa.Method {
+		return func(t *testing.T) []mfa.Method {
+			second := NewMockMethod(gomock.NewController(t))
+			second.EXPECT().Name().Return(name).AnyTimes()
+			second.EXPECT().Channel().Return(factor.Email).AnyTimes()
+			second.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
+
+			return []mfa.Method{mfaMethod(t, factor.AuthenticatorApp), second}
+		}
+	}
 
 	configError := func(t *testing.T, c *httpsec.Chain, err error) {
 		require.ErrorIs(t, err, httpsec.ErrConfig)
@@ -340,74 +412,123 @@ func TestEnableMFA(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:   "a method with a channel, and nothing else configured",
-			method: authenticator,
-			assert: built,
+			name:    "a method with a channel, and nothing else configured",
+			methods: authenticator,
+			assert:  built,
 		},
 		{
-			name:   "a consumer's limiter, path and log interval",
-			method: authenticator,
+			name:    "a consumer's limiter, prefix and log interval",
+			methods: authenticator,
 			opts: []httpsec.MFAOption{
-				httpsec.WithMFAVerifyPath("/auth/second-factor"),
+				httpsec.WithMFAVerifyPrefix("/auth/second-factor"),
 				httpsec.WithMFAVerifyLimiter(NewMockLimiter(gomock.NewController(t))),
 				httpsec.WithMFALogInterval(5 * time.Minute),
 			},
 			assert: built,
 		},
 		{
-			name:   "an empty channel",
-			method: func(t *testing.T) mfa.Method { return mfaMethod(t, "") },
-			assert: configError,
+			name:    "an empty channel",
+			methods: one(func(t *testing.T) mfa.Method { return mfaMethod(t, "") }),
+			assert:  configError,
 		},
 		{
-			name:   "a nil method",
-			method: func(*testing.T) mfa.Method { return nil },
-			assert: configError,
+			name:    "a nil method",
+			methods: one(func(*testing.T) mfa.Method { return nil }),
+			assert:  configError,
 		},
 		{
-			name:   "a typed-nil method",
-			method: func(*testing.T) mfa.Method { return (*MockMethod)(nil) },
-			assert: configError,
+			name:    "a typed-nil method",
+			methods: one(func(*testing.T) mfa.Method { return (*MockMethod)(nil) }),
+			assert:  configError,
 		},
 		{
-			name:   "a nil limiter",
-			method: authenticator,
-			opts:   []httpsec.MFAOption{httpsec.WithMFAVerifyLimiter(nil)},
-			assert: configError,
+			name:    "a nil limiter",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyLimiter(nil)},
+			assert:  configError,
 		},
 		{
-			name:   "a limiter interface holding a nil pointer",
-			method: authenticator,
-			opts:   []httpsec.MFAOption{httpsec.WithMFAVerifyLimiter((*ratelimit.MemoryLimiter)(nil))},
-			assert: configError,
+			name:    "a limiter interface holding a nil pointer",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyLimiter((*ratelimit.MemoryLimiter)(nil))},
+			assert:  configError,
 		},
 		{
-			name:   "an empty verify path",
-			method: authenticator,
-			opts:   []httpsec.MFAOption{httpsec.WithMFAVerifyPath("")},
+			name:    "two methods on different paths",
+			methods: authenticatorAnd("email-code"),
+			assert:  built,
+		},
+		{
+			name:    "no methods",
+			methods: func(*testing.T) []mfa.Method { return nil },
+			assert:  configError,
+		},
+		{
+			name:    "two methods sharing a name",
+			methods: authenticatorAnd("totp"),
+			assert:  configError,
+		},
+		{
+			name:    "an empty verify prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("")},
+			assert:  configError,
+		},
+		{
+			name:    "the root as the verify prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("/")},
+			assert:  configError,
+		},
+		{
+			name:    "a verify prefix without a leading slash",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("mfa")},
+			assert:  configError,
+		},
+		{
+			// The verify endpoint would answer the logout request first, so a
+			// pending session could never log out.
+			name:    "a verify prefix that is the logout path",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(httpsec.DefaultLogoutPath)},
+			assert:  configError,
+		},
+		{
+			name:    "a logout path under the verify prefix",
+			methods: authenticator,
+			build: func(t *testing.T, opt httpsec.Option) (*httpsec.Chain, error) {
+				t.Helper()
+
+				sessions, err := session.NewManager()
+				require.NoError(t, err)
+
+				return httpsec.New(opt, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions},
+					httpsec.WithLogoutRequestPath(httpsec.DefaultMFAVerifyPrefix+"/logout")))
+			},
 			assert: configError,
 		},
 		{
 			name:     "no token generator",
-			method:   authenticator,
+			methods:  authenticator,
 			noTokens: true,
 			assert:   configError,
 		},
 		{
-			name:   "a nil token generator",
-			method: authenticator,
-			opts:   []httpsec.MFAOption{httpsec.WithMFATokens(nil)},
-			assert: configError,
+			name:    "a nil token generator",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFATokens(nil)},
+			assert:  configError,
 		},
 		{
-			name:   "a token generator interface holding a nil pointer",
-			method: authenticator,
-			opts:   []httpsec.MFAOption{httpsec.WithMFATokens((*MockGenerator)(nil))},
-			assert: configError,
+			name:    "a token generator interface holding a nil pointer",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFATokens((*MockGenerator)(nil))},
+			assert:  configError,
 		},
 		{
-			name:   "a chain with no session manager",
-			method: authenticator,
+			name:    "a chain with no session manager",
+			methods: authenticator,
 			build: func(t *testing.T, opt httpsec.Option) (*httpsec.Chain, error) {
 				t.Helper()
 
@@ -437,7 +558,7 @@ func TestEnableMFA(t *testing.T) {
 				}, opts...)
 			}
 
-			c, err := build(t, httpsec.EnableMFA(tc.method(t), opts...))
+			c, err := build(t, httpsec.EnableMFA(tc.methods(t), opts...))
 			tc.assert(t, c, err)
 		})
 	}
@@ -554,7 +675,7 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			s := tc.session(t, h)
 			tc.wire(t, h)
 
-			out := serve(t, h.chain(t, s), postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+			out := serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath))
 			tc.assert(t, h, s, out)
 		})
 	}
@@ -609,7 +730,7 @@ func TestMFAVerifySameChannel(t *testing.T) {
 			s := h.pendingSession(t, factor.MagicLink)
 			tc.wire(t, h)
 
-			out := serve(t, h.chain(t, s), postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+			out := serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath))
 			tc.assert(t, h, s, out)
 		})
 	}
@@ -628,7 +749,7 @@ func TestMFAVerifySuccess(t *testing.T) {
 	s := h.pendingSession(t, factor.Password)
 	previous := s.ID
 
-	out := serve(t, h.chain(t, s), postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+	out := serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath))
 
 	require.NoError(t, out.err)
 	assert.Equal(t, http.StatusOK, out.rec.Code)
@@ -669,7 +790,7 @@ func TestMFAVerifyFailure(t *testing.T) {
 				return h.pendingSession(t, factor.Password)
 			},
 			request: func(ctx context.Context) *http.Request {
-				return postCode(ctx, httpsec.DefaultMFAVerifyPath)
+				return postCode(ctx, testMFAVerifyPath)
 			},
 			wire: func(_ *testing.T, h *mfaHarness) { h.allows().refuses().recordsFailure() },
 			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
@@ -694,7 +815,7 @@ func TestMFAVerifyFailure(t *testing.T) {
 			},
 			request: func(ctx context.Context) *http.Request {
 				return httptest.NewRequestWithContext(
-					ctx, http.MethodGet, httpsec.DefaultMFAVerifyPath, nil)
+					ctx, http.MethodGet, testMFAVerifyPath, nil)
 			},
 			wire: func(_ *testing.T, h *mfaHarness) {
 				h.neverVerifies().neverChecked().recordsNoFailure()
@@ -722,39 +843,223 @@ func TestMFAVerifyFailure(t *testing.T) {
 	}
 }
 
-// TestMFAVerifyConsumerPath pins that the endpoint moves when the consumer
-// moves it — and that it moves rather than being copied: the default path is
-// then an ordinary route, gated like any other.
-func TestMFAVerifyConsumerPath(t *testing.T) {
+// TestMFAVerify pins the verify endpoint over a method set: TOTP (the
+// harness's method) and an emailed code, each at its own path under the
+// prefix. The method is read from the path and nowhere else, and every refusal
+// that can be decided from the path and the session is decided before the body
+// is read and without counting anything against the user.
+func TestMFAVerify(t *testing.T) {
 	t.Parallel()
 
-	const consumerPath = "/auth/second-factor"
+	const consumerPrefix = "/auth/second-factor"
+
+	errLookup := errors.New("mfaverify_test: enrolment store unavailable")
 
 	type testCase struct {
-		name   string
-		path   string
-		wire   func(t *testing.T, h *mfaHarness)
-		assert func(t *testing.T, h *mfaHarness, s *session.Session, out served)
+		name string
+		// first is the session's first factor; zero means a password.
+		first factor.Kind
+		// owesNothing starts the session with no MFA challenge pending.
+		owesNothing bool
+		mfaOpts     []httpsec.MFAOption
+		request     func(ctx context.Context, t *testing.T) *http.Request
+		wire        func(h *mfaHarness, email *MockMethod)
+		assert      func(t *testing.T, h *mfaHarness, s *session.Session, out served)
 	}
+
+	postTo := func(target string) func(ctx context.Context, t *testing.T) *http.Request {
+		return func(ctx context.Context, _ *testing.T) *http.Request { return postCode(ctx, target) }
+	}
+
+	unread := func(target string) func(ctx context.Context, t *testing.T) *http.Request {
+		return func(ctx context.Context, t *testing.T) *http.Request { return postUnread(ctx, t, target) }
+	}
+
+	// untouched is the wiring of every refusal decided before the body: no
+	// method verifies, the throttle is not consulted and nothing is counted.
+	untouched := func(h *mfaHarness, email *MockMethod) {
+		h.neverVerifies().neverChecked().recordsNoFailure()
+		email.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+	}
+
+	enrolledOnEmail := func(email *MockMethod, enrolled bool) {
+		email.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(enrolled, nil).AnyTimes()
+	}
+
+	resolved := func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.Equal(t, http.StatusOK, out.rec.Code)
+		assert.False(t, out.handlerRan, "the endpoint answers the request itself")
+		require.NotNil(t, h.resolved)
+		assert.NotEqual(t, s.ID, h.resolved.ID, "the handle is rotated")
+		assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
+
+		_, err := h.sessions.Load(t.Context(), s.ID)
+		require.Error(t, err, "the previous handle no longer loads")
+	}
+
+	refusedAs := func(sentinel error, status int) func(*testing.T, *mfaHarness, *session.Session, served) {
+		return func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+			t.Helper()
+
+			require.ErrorIs(t, out.err, sentinel)
+			assert.Equal(t, status, httpsec.StatusForError(out.err))
+			assert.False(t, out.handlerRan)
+			assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+		}
+	}
+
+	unknown := refusedAs(httpsec.ErrUnknownMFAMethod, http.StatusNotFound)
 
 	cases := []testCase{
 		{
-			name: "a code posted to the consumer's path resolves the challenge",
-			path: consumerPath,
-			wire: func(_ *testing.T, h *mfaHarness) { h.allows().accepts().recordsNoFailure() },
-			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
+			name:    "a valid code to TOTP's path",
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+				email.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+			},
+			assert: resolved,
+		},
+		{
+			name:    "a valid code to the emailed code's path",
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/email-code"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, true)
+				h.allows().neverVerifies().recordsNoFailure()
+				email.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil)
+			},
+			assert: resolved,
+		},
+		{
+			name:    "a method no one configured",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/sms"),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "a method named in another case",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/TOTP"),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "the bare prefix",
+			request: unread(httpsec.DefaultMFAVerifyPrefix),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "an empty segment",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/"),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "a trailing slash after the method",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/totp/"),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "an extra segment after the method",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/totp/x"),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "an empty segment before the method",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "//totp"),
+			wire:    untouched,
+			assert:  unknown,
+		},
+		{
+			name:    "a method the user is not enrolled on",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/email-code"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				untouched(h, email)
+			},
+			assert: refusedAs(httpsec.ErrMFAMethodNotUsable, http.StatusForbidden),
+		},
+		{
+			name:    "the emailed code after a magic-link login",
+			first:   factor.MagicLink,
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/email-code"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, true)
+				untouched(h, email)
+			},
+			assert: refusedAs(mfa.ErrSameChannel, http.StatusForbidden),
+		},
+		{
+			name:    "an enrolment lookup that fails",
+			request: unread(httpsec.DefaultMFAVerifyPrefix + "/email-code"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				email.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(false, errLookup).AnyTimes()
+				untouched(h, email)
+			},
+			assert: refusedAs(errLookup, http.StatusInternalServerError),
+		},
+		{
+			name: "a method named in the query or the body",
+			request: func(ctx context.Context, _ *testing.T) *http.Request {
+				return formRequest(ctx, httpsec.DefaultMFAVerifyPrefix+"/totp?method=email-code",
+					"code="+testMFACode+"&method=email-code")
+			},
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, true)
+				h.allows().accepts().recordsNoFailure()
+				email.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+			},
+			assert: resolved,
+		},
+		{
+			// The session owes nothing, because a GET from one that does is held
+			// by the gate, which is the gate's own requirement. What this pins
+			// is narrower: a GET is not a verification.
+			name:        "a GET to a verify path",
+			owesNothing: true,
+			request: func(ctx context.Context, _ *testing.T) *http.Request {
+				return httptest.NewRequestWithContext(ctx, http.MethodGet,
+					httpsec.DefaultMFAVerifyPrefix+"/totp", nil)
+			},
+			wire: untouched,
+			assert: func(t *testing.T, _ *mfaHarness, _ *session.Session, out served) {
 				require.NoError(t, out.err)
-				assert.Equal(t, http.StatusOK, out.rec.Code)
-				require.NotNil(t, h.resolved)
-				assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
+				assert.True(t, out.handlerRan, "the request continues to the application")
 			},
 		},
 		{
-			name: "the default path is no longer the endpoint",
-			path: httpsec.DefaultMFAVerifyPath,
-			wire: func(_ *testing.T, h *mfaHarness) {
-				h.neverVerifies().neverChecked().recordsNoFailure()
+			name:    "a valid code under the consumer's prefix",
+			mfaOpts: []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(consumerPrefix)},
+			request: postTo(consumerPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
 			},
+			assert: resolved,
+		},
+		{
+			name:    "a consumer's prefix given with a trailing slash",
+			mfaOpts: []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(consumerPrefix + "/")},
+			request: postTo(consumerPrefix + "/totp"),
+			wire: func(h *mfaHarness, email *MockMethod) {
+				enrolledOnEmail(email, false)
+				h.allows().accepts().recordsNoFailure()
+			},
+			assert: resolved,
+		},
+		{
+			// The endpoint moves rather than being copied: the default path
+			// is then an ordinary route, held by the gate like any other.
+			name:    "the default prefix once the consumer has moved it",
+			mfaOpts: []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(consumerPrefix)},
+			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
+			wire:    untouched,
 			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, out.err, &ch, "it is an ordinary route, held by the gate")
@@ -770,13 +1075,63 @@ func TestMFAVerifyConsumerPath(t *testing.T) {
 
 			h := newMFAHarness(t)
 			h.channel(factor.AuthenticatorApp)
-			h.mfaOpts = []httpsec.MFAOption{httpsec.WithMFAVerifyPath(consumerPath)}
+			h.mfaOpts = tc.mfaOpts
 
-			s := h.pendingSession(t, factor.Password)
-			tc.wire(t, h)
+			email := emailCodeMethod(t)
+			h.extra = []mfa.Method{email}
 
-			out := serve(t, h.chain(t, s), postCode(t.Context(), tc.path))
+			first := tc.first
+			if first == "" {
+				first = factor.Password
+			}
+
+			state := session.MFAPending
+			if tc.owesNothing {
+				state = session.MFANone
+			}
+
+			s := h.newSession(t, first, state)
+			tc.wire(h, email)
+
+			out := serve(t, h.chain(t, s), tc.request(t.Context(), t))
 			tc.assert(t, h, s, out)
 		})
 	}
+}
+
+// TestMFAVerifyThrottleAcrossMethods pins that the verification throttle is
+// one count per user, whichever method the guesses were made against: a
+// throttle per method would multiply an attacker's guesses by the number of
+// methods configured.
+func TestMFAVerifyThrottleAcrossMethods(t *testing.T) {
+	t.Parallel()
+
+	limiter, err := ratelimit.NewMemoryLimiter(5, 15*time.Minute)
+	require.NoError(t, err)
+
+	h := newMFAHarness(t)
+	h.channel(factor.AuthenticatorApp)
+	h.mfaOpts = []httpsec.MFAOption{httpsec.WithMFAVerifyLimiter(limiter)}
+
+	email := emailCodeMethod(t)
+	email.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+	email.EXPECT().Verify(gomock.Any(), testMFAUser, gomock.Any()).Return(mfa.ErrInvalidCode).Times(2)
+	h.extra = []mfa.Method{email}
+
+	// Three wrong answers to TOTP; the valid code that follows is never
+	// checked, because by then the user is at the limit.
+	h.method.EXPECT().Verify(gomock.Any(), testMFAUser, gomock.Any()).Return(mfa.ErrInvalidCode).Times(3)
+
+	s := h.pendingSession(t, factor.Password)
+	c := h.chain(t, s)
+
+	for _, path := range []string{"/totp", "/totp", "/totp", "/email-code", "/email-code"} {
+		out := serve(t, c, postCode(t.Context(), httpsec.DefaultMFAVerifyPrefix+path))
+		require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
+	}
+
+	out := serve(t, c, postCode(t.Context(), httpsec.DefaultMFAVerifyPrefix+"/totp"))
+
+	require.ErrorIs(t, out.err, mfa.ErrVerifyThrottled)
+	assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
 }

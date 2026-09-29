@@ -475,7 +475,7 @@ func mfaGateFor(t *testing.T) httpsec.Option {
 	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example")
 	require.NoError(t, err)
 
-	return httpsec.EnableMFA(method, httpsec.WithMFATokens(fixtureTokens{}))
+	return httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(fixtureTokens{}))
 }
 
 // sending is the request of a scenario whose request does not depend on what

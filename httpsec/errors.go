@@ -31,6 +31,17 @@ var (
 	// ErrRequestTooLarge refuses a body over the configured bound before it is
 	// parsed.
 	ErrRequestTooLarge = errors.New("httpsec: request too large")
+
+	// ErrUnknownMFAMethod refuses a second-factor request whose path names no
+	// configured method: a segment naming nothing, an empty segment, or more
+	// than one. The set of methods is configuration, not a secret, so it maps
+	// to 404, as a federated-login path naming no provider does.
+	ErrUnknownMFAMethod = errors.New("httpsec: unknown MFA method")
+
+	// ErrMFAMethodNotUsable refuses a second factor on a configured method the
+	// session's user may not use: one they are not enrolled on. It maps to
+	// 403: the caller is known, and may not take this step.
+	ErrMFAMethodNotUsable = errors.New("httpsec: MFA method not usable")
 )
 
 // ChallengeError refuses a request that must satisfy a challenge before it

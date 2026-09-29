@@ -93,7 +93,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 			chain, err := httpsec.New(
 				httpsec.EnableMagicLink(h.manager, h.options()...),
 				httpsec.WithPolicyEngine(engineOf(t, requirement)),
-				httpsec.EnableMFA(totp, httpsec.WithMFATokens(mfaTokens)),
+				httpsec.EnableMFA([]mfa.Method{totp}, httpsec.WithMFATokens(mfaTokens)),
 				httpsec.EnableMFAEnrolment(
 					httpsec.EnrolmentDeps{Users: h.users, Sender: h.sender}, tc.enrolOpts...),
 			)

@@ -130,7 +130,7 @@ func ExampleEnableMFAEnrolment() {
 			Tokens:        exampleTokens{},
 			Attempts:      policy.NewMemoryAttemptStore(),
 		}),
-		httpsec.EnableMFA(totp, httpsec.WithMFATokens(exampleTokens{})),
+		httpsec.EnableMFA([]mfa.Method{totp}, httpsec.WithMFATokens(exampleTokens{})),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: users, Sender: exampleSender{}}),
 	)
 	if err != nil {

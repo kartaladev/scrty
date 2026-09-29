@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -35,7 +36,7 @@ func (h *mfaHarness) bearerChain(t *testing.T) *httpsec.Chain {
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
-		httpsec.EnableMFA(h.method, mfaOpts...),
+		httpsec.EnableMFA([]mfa.Method{h.method}, mfaOpts...),
 	)
 	require.NoError(t, err)
 
@@ -58,7 +59,7 @@ func (h *mfaHarness) buildChain(t *testing.T) (*httpsec.Chain, error) {
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
-		httpsec.EnableMFA(h.method, mfaOpts...),
+		httpsec.EnableMFA([]mfa.Method{h.method}, mfaOpts...),
 	)
 }
 
@@ -105,7 +106,7 @@ func TestMFAVerifyDoesNotStrandCaller(t *testing.T) {
 	loginToken := mfaTokenFor(s.ID)
 
 	out := serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
-		httpsec.DefaultMFAVerifyPath, loginToken, "code="+testMFACode))
+		testMFAVerifyPath, loginToken, "code="+testMFACode))
 	require.NoError(t, out.err)
 
 	var got verifyBody
@@ -152,7 +153,7 @@ func TestMFAVerifySatisfiedSessionPassesTheGate(t *testing.T) {
 	require.ErrorAs(t, held.err, &ch)
 
 	out := serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
-		httpsec.DefaultMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
+		testMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
 	require.NoError(t, out.err)
 
 	var got verifyBody
@@ -255,7 +256,7 @@ func TestMFAVerifyResponder(t *testing.T) {
 			s := h.pendingSession(t, factor.Password)
 
 			out := serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
-				httpsec.DefaultMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
+				testMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
 
 			tc.assert(t, h, s.ID, out, nil)
 		})
@@ -292,7 +293,7 @@ func TestMFAVerifyConsumerResponder(t *testing.T) {
 	s := h.pendingSession(t, factor.Password)
 
 	out := serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
-		httpsec.DefaultMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
+		testMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode))
 	require.NoError(t, out.err)
 
 	assert.Empty(t, out.rec.Body.String(), "the consumer's responder replaces the default entirely")
@@ -329,13 +330,13 @@ func TestMFAVerifyWithoutResolvedCaller(t *testing.T) {
 	c, err := httpsec.New(
 		httpsec.RegisterInterceptor(sessionOnly, httpsec.Before(httpsec.OrderMFAChallenge)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}),
-		httpsec.EnableMFA(h.method,
+		httpsec.EnableMFA([]mfa.Method{h.method},
 			httpsec.WithMFAVerifyLimiter(h.limiter),
 			httpsec.WithMFATokens(h.tokens)),
 	)
 	require.NoError(t, err)
 
-	out := serve(t, c, postCode(t.Context(), httpsec.DefaultMFAVerifyPath))
+	out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
 
 	require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 	assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")

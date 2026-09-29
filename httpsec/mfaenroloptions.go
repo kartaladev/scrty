@@ -50,7 +50,7 @@ const enrolmentEmailCodeTTL = 10 * time.Minute
 // EnrolmentDeps are the collaborators the enrolment path is wired to.
 //
 // The MFA method and the session manager are not among them: the method is the
-// one EnableMFA was given, because the verify endpoint that completes the
+// first method EnableMFA was given, because the verify endpoint that completes the
 // upgrade must verify the very factor that was enrolled, and the sessions are
 // the chain's own.
 type EnrolmentDeps struct {
@@ -137,7 +137,7 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 // it, and the failure is logged by the fixed reason "not-voided" and the
 // error's Go type, never the store's own text.
 //
-// The method enrolled is the one EnableMFA was given, which must implement
+// The method enrolled is the first method EnableMFA was given, which must implement
 // mfa.Enroller over a store that implements mfa.DeviceProofStore. New refuses
 // the chain when there is no EnableMFA, when its method cannot enrol, when its
 // store cannot record a device proof, when there is no session manager, and

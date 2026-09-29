@@ -26,7 +26,7 @@ const testMFAWrongCode = "000000"
 // verifyRequest is a POST to the default verify path with the given query,
 // content type and body.
 func verifyRequest(ctx context.Context, query, contentType, body string) *http.Request {
-	target := httpsec.DefaultMFAVerifyPath
+	target := testMFAVerifyPath
 	if query != "" {
 		target += "?" + query
 	}
@@ -63,7 +63,10 @@ func TestVerifyReadsBodyOnly(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name    string
+		name string
+		// format is what the method declares; the zero format keeps TOTP's
+		// "code" form field of up to 4 KiB.
+		format  mfa.ResponseFormat
 		request func(ctx context.Context, t *testing.T) *http.Request
 		wire    func(h *mfaHarness)
 		assert  func(t *testing.T, h *mfaHarness, s *session.Session, out served)
@@ -163,6 +166,56 @@ func TestVerifyReadsBodyOnly(t *testing.T) {
 			},
 		},
 		{
+			name: "a 5 KiB body to TOTP's 4 KiB field",
+			request: func(ctx context.Context, _ *testing.T) *http.Request {
+				body := "code=" + testMFACode + "&pad="
+				return verifyRequest(ctx, "", "application/x-www-form-urlencoded",
+					body+strings.Repeat("a", 5<<10-len(body)))
+			},
+			wire: missing,
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrRequestTooLarge)
+				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+			},
+		},
+		{
+			name:   "a JSON method receives exactly the document posted",
+			format: mfa.JSONBody(16 << 10),
+			request: func(ctx context.Context, _ *testing.T) *http.Request {
+				return verifyRequest(ctx, "", "application/json", jsonDocument(6<<10))
+			},
+			wire: func(h *mfaHarness) {
+				h.allows().recordsNoFailure()
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(jsonDocument(6<<10))).Return(nil)
+			},
+			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Equal(t, session.MFASatisfied, h.stored(t, h.resolved.ID).MFA)
+			},
+		},
+		{
+			name:   "a URL-encoded body to a JSON method",
+			format: mfa.JSONBody(16 << 10),
+			request: func(ctx context.Context, _ *testing.T) *http.Request {
+				return verifyRequest(ctx, "", "application/x-www-form-urlencoded", "code="+testMFACode)
+			},
+			wire:   missing,
+			assert: missingUncounted,
+		},
+		{
+			name:   "a JSON body over the method's declared limit",
+			format: mfa.JSONBody(1 << 10),
+			request: func(ctx context.Context, _ *testing.T) *http.Request {
+				return verifyRequest(ctx, "", "application/json", jsonDocument(2<<10))
+			},
+			wire: missing,
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrRequestTooLarge)
+				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+			},
+		},
+		{
 			// The throttle's check runs before the code is read, so a user
 			// already locked out learns nothing new from an unreadable body.
 			name: "a throttled user posting an empty body",
@@ -179,7 +232,7 @@ func TestVerifyReadsBodyOnly(t *testing.T) {
 		{
 			name: "a valid URL-encoded code",
 			request: func(ctx context.Context, _ *testing.T) *http.Request {
-				return postCode(ctx, httpsec.DefaultMFAVerifyPath)
+				return postCode(ctx, testMFAVerifyPath)
 			},
 			wire: func(h *mfaHarness) { h.allows().accepts().recordsNoFailure() },
 			assert: func(t *testing.T, h *mfaHarness, _ *session.Session, out served) {
@@ -225,6 +278,10 @@ func TestVerifyReadsBodyOnly(t *testing.T) {
 
 			h := newMFAHarness(t)
 			h.channel(factor.AuthenticatorApp)
+
+			if tc.format.Kind() != 0 {
+				h.response = tc.format
+			}
 
 			s := h.pendingSession(t, factor.Password)
 			tc.wire(h)

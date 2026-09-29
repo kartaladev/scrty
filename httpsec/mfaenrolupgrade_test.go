@@ -220,7 +220,7 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 
 			tc.before(t, h, s, &failing)
 
-			tc.assert(t, h, s, issued, serve(t, c, post(t.Context(), httpsec.DefaultMFAVerifyPath,
+			tc.assert(t, h, s, issued, serve(t, c, post(t.Context(), testMFAVerifyPath,
 				"code="+h.codeFor(t, secret))))
 		})
 	}

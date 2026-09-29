@@ -237,7 +237,7 @@ func (c *config) declares(kind policy.ChallengeKind) bool {
 	return c.engine != nil && slices.Contains(c.engine.DeclaredChallenges(), kind)
 }
 
-// enrolmentMethod is the MFA method the enrolment path enrols: the one
+// enrolmentMethod is the MFA method the enrolment path enrols: the first one
 // EnableMFA was given, which must be able to enrol through the path.
 //
 // It is that method and no other because the verify endpoint completes the
@@ -247,7 +247,7 @@ func (c *config) enrolmentMethod(option string) (mfa.Enroller, error) {
 	var method mfa.Method
 
 	_ = eachInterceptor(c, func(i *mfaInterceptor) error {
-		method = i.method
+		method = i.methods[0]
 
 		return nil
 	})
@@ -259,12 +259,12 @@ func (c *config) enrolmentMethod(option string) (mfa.Enroller, error) {
 
 	enroller, ok := method.(mfa.Enroller)
 	if !ok {
-		return nil, newConfigError("%s needs the method EnableMFA was given to implement "+
+		return nil, newConfigError("%s needs the first method EnableMFA was given to implement "+
 			"mfa.Enroller, and %q does not", option, method.Name())
 	}
 
 	if !enroller.SupportsEnrolmentPath() {
-		return nil, newConfigError("%s needs the store of the method EnableMFA was given to "+
+		return nil, newConfigError("%s needs the store of the first method EnableMFA was given to "+
 			"implement mfa.DeviceProofStore, and the store of %q does not; it still serves "+
 			"out-of-band enrolment", option, method.Name())
 	}

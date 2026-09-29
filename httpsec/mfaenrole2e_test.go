@@ -185,7 +185,7 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 			Verifier: d.tokens, Sessions: d.sessions, Users: d.users,
 		}),
-		httpsec.EnableMFA(d.totp, httpsec.WithMFATokens(d.tokens)),
+		httpsec.EnableMFA([]mfa.Method{d.totp}, httpsec.WithMFATokens(d.tokens)),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: d.users, Sender: d.sender}, d.enrolOpts...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 	)
@@ -350,7 +350,7 @@ func (d *e2eDeployment) enrolAndVerify(t *testing.T, credential string, emailed 
 	// The proof spent this step's code; the verification needs a later one.
 	d.clock.Advance(30 * time.Second)
 
-	verified := d.send(t, httpsec.DefaultMFAVerifyPath, credential, url.Values{"code": {d.code(t, doc.Secret)}})
+	verified := d.send(t, testMFAVerifyPath, credential, url.Values{"code": {d.code(t, doc.Secret)}})
 	require.NoError(t, verified.err)
 	require.Equal(t, http.StatusOK, verified.rec.Code)
 
@@ -398,7 +398,7 @@ func oidcEnrolmentChain(t *testing.T, h *oidcHarness, pathOpts ...policy.Enrolme
 
 	h.chainOpts = []httpsec.Option{
 		httpsec.WithPolicyEngine(engineOf(t, challenge, requirement)),
-		httpsec.EnableMFA(method, httpsec.WithMFATokens(h.tokens)),
+		httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(h.tokens)),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: users, Sender: &capturingSender{}}),
 	}
 

@@ -86,11 +86,11 @@ func enableMFAFor(t *testing.T) httpsec.Option {
 	ctrl := gomock.NewController(t)
 
 	method := NewMockMethod(ctrl)
-	method.EXPECT().Name().Return("test-method").AnyTimes()
+	method.EXPECT().Name().Return("totp").AnyTimes()
 	method.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
 	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-	return httpsec.EnableMFA(method, httpsec.WithMFATokens(NewMockGenerator(ctrl)))
+	return httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(NewMockGenerator(ctrl)))
 }
 
 // TestChainRefusesUnenforcedMFAChallenge pins the refusal http-security

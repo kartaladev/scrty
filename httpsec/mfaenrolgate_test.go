@@ -14,7 +14,6 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -150,13 +149,13 @@ func TestEnrolmentGate(t *testing.T) {
 		{
 			name:    "the verify endpoint",
 			state:   session.MFAEnrolmentPending,
-			request: postTo(httpsec.DefaultMFAVerifyPath, "code="+testMFACode),
+			request: postTo(testMFAVerifyPath, "code="+testMFACode),
 			refused: true,
 			reached: func(t *testing.T, _ *gateWitnesses, out served) {
 				t.Helper()
 
-				require.ErrorIs(t, out.err, mfa.ErrInvalidCode,
-					"the verify endpoint judges the code, for a user with nothing enrolled")
+				require.ErrorIs(t, out.err, httpsec.ErrMFAMethodNotUsable,
+					"the verify endpoint judges the request, and refuses a method the user has not enrolled on")
 			},
 			assert: challenged,
 		},
