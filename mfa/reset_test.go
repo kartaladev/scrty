@@ -26,9 +26,11 @@ func TestResetEnrolment(t *testing.T) {
 
 	type mocks struct {
 		enrolments *MockEnrolmentRemover
-		sessions   *MockSessionRevoker
-		users      *MockUserLoader
-		sender     *MockSender
+		// second is another method's remover, for the resets across methods.
+		second   *MockEnrolmentRemover
+		sessions *MockSessionRevoker
+		users    *MockUserLoader
+		sender   *MockSender
 	}
 
 	type testCase struct {
@@ -67,7 +69,7 @@ func TestResetEnrolment(t *testing.T) {
 			name: "a consumer contact resolver chooses the address",
 			deps: func(m mocks) mfa.ResetDeps {
 				return mfa.ResetDeps{
-					Enrolments: m.enrolments, Sessions: m.sessions, Users: m.users, Sender: m.sender,
+					Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Sessions: m.sessions, Users: m.users, Sender: m.sender,
 					Contact: func(_ context.Context, d *identity.Details) (string, error) {
 						return "security+" + d.Name + "@example.org", nil
 					},
@@ -132,7 +134,7 @@ func TestResetEnrolment(t *testing.T) {
 			name: "a failing address resolution is returned after removal and session deletion",
 			deps: func(m mocks) mfa.ResetDeps {
 				return mfa.ResetDeps{
-					Enrolments: m.enrolments, Sessions: m.sessions, Users: m.users, Sender: m.sender,
+					Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Sessions: m.sessions, Users: m.users, Sender: m.sender,
 					Contact: func(context.Context, *identity.Details) (string, error) { return "", outage },
 				}
 			},
@@ -175,7 +177,7 @@ func TestResetEnrolment(t *testing.T) {
 			name: "sessions kept: no session is deleted",
 			opts: []mfa.ResetOption{mfa.WithoutSessionRevocation()},
 			deps: func(m mocks) mfa.ResetDeps {
-				return mfa.ResetDeps{Enrolments: m.enrolments, Users: m.users, Sender: m.sender}
+				return mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Users: m.users, Sender: m.sender}
 			},
 			expect: func(_ *testing.T, m mocks) {
 				m.enrolments.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(nil)
@@ -188,7 +190,7 @@ func TestResetEnrolment(t *testing.T) {
 			name: "notification off: nothing is sent and no loader or sender is needed",
 			opts: []mfa.ResetOption{mfa.WithoutResetNotification()},
 			deps: func(m mocks) mfa.ResetDeps {
-				return mfa.ResetDeps{Enrolments: m.enrolments, Sessions: m.sessions}
+				return mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Sessions: m.sessions}
 			},
 			expect: func(_ *testing.T, m mocks) {
 				gomock.InOrder(
@@ -201,7 +203,7 @@ func TestResetEnrolment(t *testing.T) {
 		{
 			name: "a missing sender with notification on is a configuration error and removes nothing",
 			deps: func(m mocks) mfa.ResetDeps {
-				return mfa.ResetDeps{Enrolments: m.enrolments, Sessions: m.sessions, Users: m.users}
+				return mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Sessions: m.sessions, Users: m.users}
 			},
 			expect: func(*testing.T, mocks) {},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
@@ -209,7 +211,7 @@ func TestResetEnrolment(t *testing.T) {
 		{
 			name: "a missing loader with notification on is a configuration error and removes nothing",
 			deps: func(m mocks) mfa.ResetDeps {
-				return mfa.ResetDeps{Enrolments: m.enrolments, Sessions: m.sessions, Sender: m.sender}
+				return mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Sessions: m.sessions, Sender: m.sender}
 			},
 			expect: func(*testing.T, mocks) {},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
@@ -217,15 +219,84 @@ func TestResetEnrolment(t *testing.T) {
 		{
 			name: "a missing session revoker with revocation on is a configuration error and removes nothing",
 			deps: func(m mocks) mfa.ResetDeps {
-				return mfa.ResetDeps{Enrolments: m.enrolments, Users: m.users, Sender: m.sender}
+				return mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Users: m.users, Sender: m.sender}
 			},
 			expect: func(*testing.T, mocks) {},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
 		},
 		{
-			name:   "a missing enrolment remover is a configuration error",
-			deps:   func(m mocks) mfa.ResetDeps { return mfa.ResetDeps{Sessions: m.sessions} },
-			opts:   []mfa.ResetOption{mfa.WithoutResetNotification()},
+			name: "reset across methods removes on every remover in order, then ends sessions and notifies",
+			deps: func(m mocks) mfa.ResetDeps {
+				return mfa.ResetDeps{
+					Enrolments: []mfa.EnrolmentRemover{m.enrolments, m.second},
+					Sessions:   m.sessions, Users: m.users, Sender: m.sender,
+				}
+			},
+			expect: func(_ *testing.T, m mocks) {
+				gomock.InOrder(
+					m.enrolments.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(nil),
+					m.second.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(nil),
+					m.sessions.EXPECT().DeleteByUser(gomock.Any(), identity.UserID("u-1")).Return(nil),
+					m.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(ada, nil),
+					m.sender.EXPECT().Send(gomock.Any(), gomock.Any()).Return(nil),
+				)
+			},
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
+		},
+		{
+			// The mocks are strict: a session deletion or a send here would
+			// fail the case as an unexpected call.
+			name: "a removal fails: the first stays removed, sessions are kept and nothing is sent",
+			deps: func(m mocks) mfa.ResetDeps {
+				return mfa.ResetDeps{
+					Enrolments: []mfa.EnrolmentRemover{m.enrolments, m.second},
+					Sessions:   m.sessions, Users: m.users, Sender: m.sender,
+				}
+			},
+			expect: func(_ *testing.T, m mocks) {
+				gomock.InOrder(
+					m.enrolments.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(nil),
+					m.second.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(outage),
+				)
+			},
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, outage) },
+		},
+		{
+			name: "no removers is a configuration error and writes nothing",
+			deps: func(m mocks) mfa.ResetDeps {
+				return mfa.ResetDeps{Sessions: m.sessions, Users: m.users, Sender: m.sender}
+			},
+			expect: func(*testing.T, mocks) {},
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
+		},
+		{
+			name: "an empty list of removers is a configuration error and writes nothing",
+			deps: func(m mocks) mfa.ResetDeps {
+				return mfa.ResetDeps{
+					Enrolments: []mfa.EnrolmentRemover{}, Sessions: m.sessions, Users: m.users, Sender: m.sender,
+				}
+			},
+			expect: func(*testing.T, mocks) {},
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
+		},
+		{
+			name: "an absent remover is a configuration error",
+			deps: func(m mocks) mfa.ResetDeps {
+				return mfa.ResetDeps{
+					Enrolments: []mfa.EnrolmentRemover{nil}, Sessions: m.sessions, Users: m.users, Sender: m.sender,
+				}
+			},
+			expect: func(*testing.T, mocks) {},
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
+		},
+		{
+			name: "an absent remover after a present one is refused before the first removes anything",
+			deps: func(m mocks) mfa.ResetDeps {
+				return mfa.ResetDeps{
+					Enrolments: []mfa.EnrolmentRemover{m.enrolments, (*MockEnrolmentRemover)(nil)},
+					Sessions:   m.sessions, Users: m.users, Sender: m.sender,
+				}
+			},
 			expect: func(*testing.T, mocks) {},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, mfa.ErrConfig) },
 		},
@@ -252,13 +323,17 @@ func TestResetEnrolment(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			m := mocks{
 				enrolments: NewMockEnrolmentRemover(ctrl),
+				second:     NewMockEnrolmentRemover(ctrl),
 				sessions:   NewMockSessionRevoker(ctrl),
 				users:      NewMockUserLoader(ctrl),
 				sender:     NewMockSender(ctrl),
 			}
 			tc.expect(t, m)
 
-			deps := mfa.ResetDeps{Enrolments: m.enrolments, Sessions: m.sessions, Users: m.users, Sender: m.sender}
+			deps := mfa.ResetDeps{
+				Enrolments: []mfa.EnrolmentRemover{m.enrolments},
+				Sessions:   m.sessions, Users: m.users, Sender: m.sender,
+			}
 			if tc.deps != nil {
 				deps = tc.deps(m)
 			}
@@ -338,7 +413,7 @@ func TestResetEnrolmentClock(t *testing.T) {
 
 			before := time.Now()
 			err := mfa.ResetEnrolment(t.Context(), "u-1",
-				mfa.ResetDeps{Enrolments: enrolments, Users: users, Sender: sender}, opts...)
+				mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{enrolments}, Users: users, Sender: sender}, opts...)
 			after := time.Now()
 
 			require.NoError(t, err)
@@ -379,7 +454,7 @@ func TestResetEnrolmentEndToEnd(t *testing.T) {
 		DoAndReturn(func(_ context.Context, msg notify.Message) error { sent <- msg; return nil })
 
 	require.NoError(t, mfa.ResetEnrolment(ctx, "u-1", mfa.ResetDeps{
-		Enrolments: m, Sessions: sessions, Users: users, Sender: sender,
+		Enrolments: []mfa.EnrolmentRemover{m}, Sessions: sessions, Users: users, Sender: sender,
 	}))
 
 	enrolled, err := m.Enrolled(ctx, "u-1")

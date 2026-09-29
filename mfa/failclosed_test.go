@@ -85,12 +85,12 @@ func TestRequiredUserFailsClosed(t *testing.T) {
 				mfa.WithClock(clockwork.NewFakeClockAt(base)))
 			require.NoError(t, err)
 
-			lookup, err := mfa.LookupFor(method)
+			lookups, err := mfa.LookupsFor(method)
 			require.NoError(t, err)
 
 			required := &stubRequirement{required: map[identity.UserID]bool{"u-1": true}}
 
-			pol, err := policy.NewMFARequirementPolicy(required, []policy.MFAMethodLookup{lookup})
+			pol, err := policy.NewMFARequirementPolicy(required, lookups)
 			require.NoError(t, err)
 
 			engine, err := policy.NewEngine(pol)
@@ -125,12 +125,12 @@ func TestRequireForAllLocksOutUnenrolled(t *testing.T) {
 		mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
-	lookup, err := mfa.LookupFor(method)
+	lookups, err := mfa.LookupsFor(method)
 	require.NoError(t, err)
 
 	// Required of everyone, and this user never enrolled. There is no per-user
 	// requirement lookup at all, which is what require-for-all permits.
-	pol, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{lookup}, policy.WithMFARequiredForAll())
+	pol, err := policy.NewMFARequirementPolicy(nil, lookups, policy.WithMFARequiredForAll())
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(pol)

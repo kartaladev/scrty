@@ -21,6 +21,9 @@ type stubMethod struct {
 	channel  factor.Channel
 	enrolled bool
 	err      error
+
+	// response is what Response reports; nil reports a valid form field.
+	response *mfa.ResponseFormat
 }
 
 func (s *stubMethod) Name() string {
@@ -37,7 +40,15 @@ func (s *stubMethod) Enrolled(context.Context, identity.UserID) (bool, error) {
 	return s.enrolled, s.err
 }
 
-func (s *stubMethod) Verify(context.Context, identity.UserID, string) error { return s.err }
+func (s *stubMethod) Response() mfa.ResponseFormat {
+	if s.response == nil {
+		return mfa.FormField("code", 4<<10)
+	}
+
+	return *s.response
+}
+
+func (s *stubMethod) Verify(context.Context, identity.UserID, []byte) error { return s.err }
 
 func TestMethodSatisfiesLookup(t *testing.T) {
 	t.Parallel()

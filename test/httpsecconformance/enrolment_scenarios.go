@@ -133,13 +133,13 @@ func enrolmentOptions(t *testing.T, e *Effects) []httpsec.Option {
 
 	fx := e.Enrolment
 
-	lookup, err := mfa.LookupFor(fx.TOTP)
+	lookups, err := mfa.LookupsFor(fx.TOTP)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup})
+	challenge, err := policy.NewMFAPolicy(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{lookup},
+	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
 		policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 
@@ -214,7 +214,7 @@ func enrolmentBuild(step enrolmentStep) func(t *testing.T) ChainSpec {
 		}
 
 		if step >= stepVerified {
-			require.NoError(t, fx.TOTP.Verify(ctx, UserID, fx.code(t)))
+			require.NoError(t, fx.TOTP.Verify(ctx, UserID, []byte(fx.code(t))))
 			s.MFA = session.MFASatisfied
 			s.MFASatisfiedAt = fx.Now()
 

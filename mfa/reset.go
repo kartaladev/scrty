@@ -37,8 +37,10 @@ type EnrolmentRemover interface {
 // ErrConfig before anything is written. A nil dependency is never read as an
 // opt-out.
 type ResetDeps struct {
-	// Enrolments removes the enrolment. Always required.
-	Enrolments EnrolmentRemover
+	// Enrolments removes the user's enrolment on every method to reset, in
+	// order. Always required: an empty list, or an absent entry, is an
+	// ErrConfig.
+	Enrolments []EnrolmentRemover
 
 	// Sessions ends the user's sessions. Required unless
 	// WithoutSessionRevocation.
@@ -151,24 +153,28 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 	return resetSubject, fmt.Sprintf(resetBodyText, at.UTC().Format(time.RFC1123))
 }
 
-// ResetEnrolment resets user's second factor: an operator's action for a user
+// ResetEnrolment resets user's second factors: an operator's action for a user
 // who lost their authenticator, or whose authenticator is suspected to be in
 // someone else's hands.
 //
 // In order, it:
 //
-//  1. removes the user's enrolment;
+//  1. removes the user's enrolment on every remover in ResetDeps.Enrolments,
+//     in order;
 //  2. deletes every session of the user, so a session that satisfied MFA with
 //     the lost authenticator ends (default; WithoutSessionRevocation keeps
 //     them);
 //  3. notifies the user at the address the contact resolver gives, by default
 //     the username (default; WithoutResetNotification turns it off).
 //
-// The removal comes first and is never undone. Any failure after it —
-// deleting sessions, loading the user, resolving the address or sending the
-// message — is returned after the removal, never swallowed, and the steps
-// after the failing one are not run; the caller retries the reset, which
-// removes an absent enrolment without error. The user's MFA requirement is
+// The removals come first and are never undone. A removal that fails stops the
+// reset and is returned: the sessions are kept and no notification is sent,
+// because telling the user their second factors were reset would be false
+// while one remains; the removals already done stay done. Any failure after
+// the removals — deleting sessions, loading the user, resolving the address or
+// sending the message — is returned after them, never swallowed, and the steps
+// after the failing one are not run. Either way the caller retries the reset,
+// which removes an absent enrolment without error. The user's MFA requirement is
 // untouched: with the enrolment path on, their next login enters the
 // enrolment-only state, and with it off they are refused until enrolled out of
 // band.
@@ -178,9 +184,10 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 // quote the user's address. The dependency's error still matches through
 // errors.Is and errors.As.
 //
-// Every dependency and option is checked before anything is written: a missing
-// dependency that a step needs, or a nil WithResetMessage builder, is an
-// ErrConfig and the enrolment stays in place.
+// Every dependency and option is checked before anything is written: an empty
+// list of removers, an absent remover, a missing dependency that a step needs,
+// or a nil WithResetMessage builder, is an ErrConfig and every enrolment stays
+// in place.
 //
 // The sender is used as given: it need not be non-blocking. Unlike a sign-in
 // flow, a reset is named by an operator, so its response time reveals nothing
@@ -196,8 +203,13 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 		return err
 	}
 
-	if err := deps.Enrolments.RemoveEnrolment(ctx, user); err != nil {
-		return diag.Wrap(err, "mfa: reset could not remove the enrolment")
+	// A failed removal stops the reset: ending the sessions and telling the
+	// user their second factors were reset would be false while one remains.
+	// The removals already done stay done.
+	for _, e := range deps.Enrolments {
+		if err := e.RemoveEnrolment(ctx, user); err != nil {
+			return diag.Wrap(err, "mfa: reset could not remove the enrolment")
+		}
 	}
 
 	if c.revokeSessions {
@@ -215,8 +227,14 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 
 // check refuses a dependency a configured step needs and was not given.
 func (d ResetDeps) check(c resetConfig) error {
-	if nilcheck.IsNil(d.Enrolments) {
-		return fmt.Errorf("%w: reset requires an enrolment remover", ErrConfig)
+	if len(d.Enrolments) == 0 {
+		return fmt.Errorf("%w: reset requires at least one enrolment remover", ErrConfig)
+	}
+
+	for i, e := range d.Enrolments {
+		if nilcheck.IsNil(e) {
+			return fmt.Errorf("%w: reset enrolment remover %d is nil", ErrConfig, i)
+		}
 	}
 
 	if c.revokeSessions && nilcheck.IsNil(d.Sessions) {

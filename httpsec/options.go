@@ -1037,10 +1037,10 @@ func EnableMFA(method mfa.Method, opts ...MFAOption) Option {
 	const option = "EnableMFA"
 
 	return func(c *config) error {
-		// LookupFor is the one place a method with no channel is caught, so the
-		// rule and its message are stated once for the policy lookup and for
-		// this endpoint rather than drifting apart.
-		if _, err := mfa.LookupFor(method); err != nil {
+		// LookupsFor is the one place a wrongly declared method is caught, so
+		// the rules and their messages are stated once for the policy lookups
+		// and for this endpoint rather than drifting apart.
+		if _, err := mfa.LookupsFor(method); err != nil {
 			return newConfigError("%s was given an unusable method: %s", option, err)
 		}
 

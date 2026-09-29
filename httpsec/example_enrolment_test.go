@@ -91,18 +91,18 @@ func ExampleEnableMFAEnrolment() {
 		panic(err)
 	}
 
-	lookup, err := mfa.LookupFor(totp)
+	lookups, err := mfa.LookupsFor(totp)
 	if err != nil {
 		panic(err)
 	}
 
-	requirementPolicy, err := policy.NewMFARequirementPolicy(exampleRequirement{}, []policy.MFAMethodLookup{lookup},
+	requirementPolicy, err := policy.NewMFARequirementPolicy(exampleRequirement{}, lookups,
 		policy.WithMFAEnrolmentPath())
 	if err != nil {
 		panic(err)
 	}
 
-	challengePolicy, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup})
+	challengePolicy, err := policy.NewMFAPolicy(lookups)
 	if err != nil {
 		panic(err)
 	}

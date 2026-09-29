@@ -100,7 +100,7 @@ func TestVerifyReadsBodyOnly(t *testing.T) {
 			},
 			wire: func(h *mfaHarness) {
 				h.allows().recordsFailure()
-				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, testMFAWrongCode).
+				h.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFAWrongCode)).
 					Return(mfa.ErrInvalidCode)
 			},
 			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {

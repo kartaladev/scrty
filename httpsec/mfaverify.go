@@ -173,7 +173,7 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 		return err
 	}
 
-	if err := i.method.Verify(ctx, user, code); err != nil {
+	if err := i.method.Verify(ctx, user, []byte(code)); err != nil {
 		i.throttle.RecordFailure(ctx, user)
 
 		return err

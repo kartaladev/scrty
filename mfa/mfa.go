@@ -2,8 +2,10 @@ package mfa
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
@@ -85,7 +87,10 @@ var ErrEnrolmentThrottled = errors.New("mfa: too many enrolment attempts for thi
 //
 // An implementation is expected to be safe for concurrent use.
 type Method interface {
-	// Name identifies the method in logs and in a consumer's own routing.
+	// Name identifies the method in logs, in the library's per-method paths
+	// and in a consumer's own routing. It is one path segment of lowercase
+	// letters, digits and hyphens, starting with a letter or digit, unique
+	// among the methods served, and constant.
 	Name() string
 
 	// Channel reports the medium this method's codes travel over. Constant,
@@ -95,32 +100,123 @@ type Method interface {
 	// Enrolled reports whether user has a confirmed, readable enrolment.
 	Enrolled(ctx context.Context, user identity.UserID) (bool, error)
 
-	// Verify checks code for user. A wrong, reused or malformed code returns
-	// ErrInvalidCode.
-	Verify(ctx context.Context, user identity.UserID, code string) error
+	// Response declares how the verification response is carried and the
+	// largest body accepted. Constant for the method's lifetime.
+	Response() ResponseFormat
+
+	// Verify checks response for user. The response is the bytes the library
+	// read as Response declares: a form field's value, or a whole JSON body.
+	// A wrong, reused or malformed response returns ErrInvalidCode.
+	Verify(ctx context.Context, user identity.UserID, response []byte) error
 }
 
-// LookupFor adapts a Method to the lookup the security policies consult.
+// ChallengeMethod is a Method whose response answers a challenge the server
+// issued, such as a WebAuthn assertion or an emailed code bound to one attempt.
 //
-// A Method already has the two methods policy.MFAMethodLookup needs, so this is
-// a validating constructor rather than a translation: it is the one place a
-// method with no channel is caught. An empty channel equals the channel of an
-// unrecorded first factor, so every session established without a recorded kind
-// would be refused at verify as a same-channel attempt — a wiring mistake whose
-// symptom appears far from its cause, which is why it is refused here.
+// The library owns the pending challenge: it issues it as a single-use token
+// bound to the session, hands its string to BeginChallenge, and on verify
+// checks the challenge PresentedChallenge extracts against the one it issued,
+// spending it on every attempt, before Verify is called. The method owns its
+// protocol: what the client is sent, and how the answer is checked.
 //
-// The returned lookup carries the method's contract unchanged: Enrolled is true
-// only for a confirmed, readable enrolment, and a store failure is an error
-// rather than a false. There is no default: a lookup describes one method, and
-// the library cannot guess which.
-func LookupFor(m Method) (policy.MFAMethodLookup, error) {
-	if nilcheck.IsNil(m) {
-		return nil, errors.New("mfa: lookup requires a method")
+// An implementation is expected to be safe for concurrent use.
+type ChallengeMethod interface {
+	Method
+
+	// BeginChallenge returns the JSON the client needs to answer, built around
+	// challenge, a server-issued random string the library will later match.
+	BeginChallenge(ctx context.Context, user identity.UserID, challenge string) (json.RawMessage, error)
+
+	// PresentedChallenge extracts from response the challenge the client
+	// answered. A response it cannot read is an error, and the verification is
+	// refused as an invalid code.
+	PresentedChallenge(response []byte) (string, error)
+}
+
+// LookupsFor validates methods and returns them, in the same order, as the
+// lookups the security policies consult.
+//
+// A Method already has everything policy.MFAMethodLookup needs, so this is a
+// validating constructor rather than a translation: it is the one place a
+// wrongly declared method is caught, at construction rather than at a user's
+// first verification. Every refusal wraps ErrConfig and names the method's
+// position. It refuses:
+//   - an empty set;
+//   - an absent method, nil or typed nil;
+//   - an empty channel. An empty channel equals the channel of an unrecorded
+//     first factor, so every session established without a recorded kind would
+//     be refused at verify as a same-channel attempt;
+//   - a name that is not one path segment of lowercase letters, digits and
+//     hyphens, starting with a letter or digit;
+//   - two methods sharing a name;
+//   - a response format not built by FormField or JSONBody, a limit of zero or
+//     less or above 1 MiB, or a form field with no name.
+//
+// Each returned lookup carries its method's contract unchanged: Enrolled is
+// true only for a confirmed, readable enrolment, and a store failure is an
+// error rather than a false. There is no default set: the library cannot guess
+// which methods a consumer serves.
+func LookupsFor(methods ...Method) ([]policy.MFAMethodLookup, error) {
+	if len(methods) == 0 {
+		return nil, fmt.Errorf("%w: at least one method is required", ErrConfig)
 	}
 
-	if m.Channel() == "" {
-		return nil, fmt.Errorf("mfa: method %q reports no channel", m.Name())
+	lookups := make([]policy.MFAMethodLookup, 0, len(methods))
+	seen := make(map[string]struct{}, len(methods))
+
+	for i, m := range methods {
+		if nilcheck.IsNil(m) {
+			return nil, fmt.Errorf("%w: method %d is nil", ErrConfig, i)
+		}
+
+		name := m.Name()
+		if !methodName.MatchString(name) {
+			return nil, fmt.Errorf("%w: method %d is named %q, which is not one path segment "+
+				"of lowercase letters, digits and hyphens", ErrConfig, i, name)
+		}
+
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("%w: method %d is named %q, as an earlier method is", ErrConfig, i, name)
+		}
+
+		seen[name] = struct{}{}
+
+		if m.Channel() == "" {
+			return nil, fmt.Errorf("%w: method %d (%q) reports no channel", ErrConfig, i, name)
+		}
+
+		if err := checkResponse(m.Response()); err != nil {
+			return nil, fmt.Errorf("%w: method %d (%q) %w", ErrConfig, i, name, err)
+		}
+
+		lookups = append(lookups, m)
 	}
 
-	return m, nil
+	return lookups, nil
+}
+
+// methodName is one path segment: lowercase letters, digits and hyphens,
+// starting with a letter or digit.
+var methodName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// maxResponseLimit is the largest body a method may declare: 1 MiB.
+const maxResponseLimit = 1 << 20
+
+// checkResponse refuses a format FormField or JSONBody would not describe.
+func checkResponse(f ResponseFormat) error {
+	switch f.Kind() {
+	case ResponseFormField:
+		if f.Field() == "" {
+			return errors.New("declares a form field with no name")
+		}
+	case ResponseJSONBody:
+	default:
+		return errors.New("declares a response format not built by FormField or JSONBody")
+	}
+
+	if f.Limit() <= 0 || f.Limit() > maxResponseLimit {
+		return fmt.Errorf("declares a response limit of %d bytes, outside (0, %d]", f.Limit(), maxResponseLimit)
+	}
+
+	return nil
 }

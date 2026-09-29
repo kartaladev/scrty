@@ -269,11 +269,11 @@ func TestMFALogsCarryNoSecrets(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, m.ConfirmEnrolment(t.Context(), "u-1", codeForSecret(t, p.Secret, base)))
 
-	assert.ErrorIs(t, m.Verify(t.Context(), "u-1", "123456"), mfa.ErrInvalidCode)
+	assert.ErrorIs(t, m.Verify(t.Context(), "u-1", []byte("123456")), mfa.ErrInvalidCode)
 
 	// A replay, too: the code that confirmed the enrolment must not reappear.
 	spent := codeForSecret(t, p.Secret, base)
-	_ = m.Verify(t.Context(), "u-1", spent)
+	_ = m.Verify(t.Context(), "u-1", []byte(spent))
 
 	require.NoError(t, m.RemoveEnrolment(t.Context(), "u-1"))
 

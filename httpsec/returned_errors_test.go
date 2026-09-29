@@ -324,7 +324,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 		t.Helper()
 
 		m := mfaMethod(t, factor.AuthenticatorApp)
-		m.EXPECT().Verify(gomock.Any(), testMFAUser, testMFACode).Return(nil)
+		m.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil)
 
 		return m
 	}

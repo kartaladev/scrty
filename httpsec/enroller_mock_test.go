@@ -315,6 +315,44 @@ func (c *MockEnrollerRedeemEmailCodeCall) DoAndReturn(f func(context.Context, id
 	return c
 }
 
+// Response mocks base method.
+func (m *MockEnroller) Response() mfa.ResponseFormat {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Response")
+	ret0, _ := ret[0].(mfa.ResponseFormat)
+	return ret0
+}
+
+// Response indicates an expected call of Response.
+func (mr *MockEnrollerMockRecorder) Response() *MockEnrollerResponseCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Response", reflect.TypeOf((*MockEnroller)(nil).Response))
+	return &MockEnrollerResponseCall{Call: call}
+}
+
+// MockEnrollerResponseCall wrap *gomock.Call
+type MockEnrollerResponseCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockEnrollerResponseCall) Return(arg0 mfa.ResponseFormat) *MockEnrollerResponseCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockEnrollerResponseCall) Do(f func() mfa.ResponseFormat) *MockEnrollerResponseCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockEnrollerResponseCall) DoAndReturn(f func() mfa.ResponseFormat) *MockEnrollerResponseCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // SupportsEnrolmentPath mocks base method.
 func (m *MockEnroller) SupportsEnrolmentPath() bool {
 	m.ctrl.T.Helper()
@@ -354,17 +392,17 @@ func (c *MockEnrollerSupportsEnrolmentPathCall) DoAndReturn(f func() bool) *Mock
 }
 
 // Verify mocks base method.
-func (m *MockEnroller) Verify(ctx context.Context, user identity.UserID, code string) error {
+func (m *MockEnroller) Verify(ctx context.Context, user identity.UserID, response []byte) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Verify", ctx, user, code)
+	ret := m.ctrl.Call(m, "Verify", ctx, user, response)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Verify indicates an expected call of Verify.
-func (mr *MockEnrollerMockRecorder) Verify(ctx, user, code any) *MockEnrollerVerifyCall {
+func (mr *MockEnrollerMockRecorder) Verify(ctx, user, response any) *MockEnrollerVerifyCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockEnroller)(nil).Verify), ctx, user, code)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockEnroller)(nil).Verify), ctx, user, response)
 	return &MockEnrollerVerifyCall{Call: call}
 }
 
@@ -380,13 +418,13 @@ func (c *MockEnrollerVerifyCall) Return(arg0 error) *MockEnrollerVerifyCall {
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockEnrollerVerifyCall) Do(f func(context.Context, identity.UserID, string) error) *MockEnrollerVerifyCall {
+func (c *MockEnrollerVerifyCall) Do(f func(context.Context, identity.UserID, []byte) error) *MockEnrollerVerifyCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockEnrollerVerifyCall) DoAndReturn(f func(context.Context, identity.UserID, string) error) *MockEnrollerVerifyCall {
+func (c *MockEnrollerVerifyCall) DoAndReturn(f func(context.Context, identity.UserID, []byte) error) *MockEnrollerVerifyCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

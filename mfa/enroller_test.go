@@ -700,7 +700,7 @@ func TestTOTPEnroller(t *testing.T) {
 				require.NoError(t, err)
 				require.NoError(t, f.m.CompleteEnrolment(t.Context(), "u-1", gen))
 
-				return outcome{enrolled: f.enrolled(t)}, f.m.Verify(t.Context(), "u-1", device)
+				return outcome{enrolled: f.enrolled(t)}, f.m.Verify(t.Context(), "u-1", []byte(device))
 			},
 			assert: func(t *testing.T, _ *enrolFixture, got outcome, err error) {
 				assert.True(t, got.enrolled)

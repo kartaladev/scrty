@@ -121,7 +121,7 @@ func TestTOTPRFC6238Vectors(t *testing.T) {
 
 			enrolConfirmed(t, store, "u-1", []byte(rfc6238SHA1Secret))
 
-			assert.NoError(t, m.Verify(ctx, "u-1", tc.code))
+			assert.NoError(t, m.Verify(ctx, "u-1", []byte(tc.code)))
 		})
 	}
 }
@@ -180,12 +180,63 @@ func TestTOTPStepWindow(t *testing.T) {
 			}
 
 			before := store.AcceptStepCalls()
-			tc.assert(t, m.Verify(ctx, "u-1", code))
+			tc.assert(t, m.Verify(ctx, "u-1", []byte(code)))
 
 			if tc.mutate != nil {
 				assert.Equal(t, before, store.AcceptStepCalls(),
 					"a malformed or wrong code must not reach the store")
 			}
+		})
+	}
+}
+
+func TestTOTPDeclarations(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, m *mfa.TOTP)
+	}
+
+	cases := []testCase{
+		{
+			name: "named totp",
+			assert: func(t *testing.T, m *mfa.TOTP) {
+				assert.Equal(t, "totp", m.Name())
+			},
+		},
+		{
+			name: "responds with the code form field of up to 4 KiB",
+			assert: func(t *testing.T, m *mfa.TOTP) {
+				assert.Equal(t, mfa.FormField("code", 4<<10), m.Response())
+				assert.Equal(t, mfa.ResponseFormField, m.Response().Kind())
+				assert.Equal(t, "code", m.Response().Field())
+				assert.Equal(t, int64(4<<10), m.Response().Limit())
+			},
+		},
+		{
+			name: "verifies a valid code handed over as bytes",
+			assert: func(t *testing.T, m *mfa.TOTP) {
+				// u-1 is enrolled on the RFC 6238 secret by the subtest body.
+				at := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
+				code := codeAt(t, []byte(rfc6238SHA1Secret), at, 6, 30*time.Second)
+				assert.NoError(t, m.Verify(t.Context(), "u-1", []byte(code)))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := mfa.NewMemoryEnrolmentStore()
+			m, err := mfa.NewTOTP(store, "Example",
+				mfa.WithClock(clockwork.NewFakeClockAt(time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC))),
+			)
+			require.NoError(t, err)
+			enrolConfirmed(t, store, "u-1", []byte(rfc6238SHA1Secret))
+
+			tc.assert(t, m)
 		})
 	}
 }

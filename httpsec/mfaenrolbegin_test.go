@@ -185,6 +185,7 @@ func TestEnrolmentBegin(t *testing.T) {
 
 				m := NewMockEnroller(gomock.NewController(t))
 				m.EXPECT().Name().Return("email-code").AnyTimes()
+				m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
 				m.EXPECT().Channel().Return(factor.Email).AnyTimes()
 				m.EXPECT().SupportsEnrolmentPath().Return(true).AnyTimes()
 				m.EXPECT().BeginEnrolmentGeneration(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)

@@ -77,6 +77,7 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 
 	m := NewMockMethod(ctrl)
 	m.EXPECT().Name().Return("test-method").AnyTimes()
+	m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
 
 	h := &mfaHarness{
 		sessions: sessions,
@@ -140,6 +141,7 @@ func mfaMethod(t *testing.T, channel factor.Channel) *MockMethod {
 
 	m := NewMockMethod(gomock.NewController(t))
 	m.EXPECT().Name().Return("test-method").AnyTimes()
+	m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
 	m.EXPECT().Channel().Return(channel).AnyTimes()
 
 	return m
@@ -155,14 +157,14 @@ func (h *mfaHarness) channel(c factor.Channel) *mfaHarness {
 
 // accepts wires the method to accept the code these tests post.
 func (h *mfaHarness) accepts() *mfaHarness {
-	h.method.EXPECT().Verify(gomock.Any(), testMFAUser, testMFACode).Return(nil)
+	h.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(nil)
 
 	return h
 }
 
 // refuses wires the method to refuse the code these tests post.
 func (h *mfaHarness) refuses() *mfaHarness {
-	h.method.EXPECT().Verify(gomock.Any(), testMFAUser, testMFACode).Return(mfa.ErrInvalidCode)
+	h.method.EXPECT().Verify(gomock.Any(), testMFAUser, []byte(testMFACode)).Return(mfa.ErrInvalidCode)
 
 	return h
 }

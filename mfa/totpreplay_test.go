@@ -57,8 +57,8 @@ func TestTOTPReplay(t *testing.T) {
 
 	code := codeAt(t, secret, base, 6, 30*time.Second)
 
-	require.NoError(t, m.Verify(ctx, "u-1", code), "the first presentation is accepted")
-	assert.ErrorIs(t, m.Verify(ctx, "u-1", code), mfa.ErrInvalidCode,
+	require.NoError(t, m.Verify(ctx, "u-1", []byte(code)), "the first presentation is accepted")
+	assert.ErrorIs(t, m.Verify(ctx, "u-1", []byte(code)), mfa.ErrInvalidCode,
 		"the same code within its step is refused")
 }
 
@@ -76,7 +76,7 @@ func TestTOTPVerifyStoreFailure(t *testing.T) {
 		mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
-	err = m.Verify(t.Context(), "u-1", "123456")
+	err = m.Verify(t.Context(), "u-1", []byte("123456"))
 	assert.ErrorIs(t, err, outage)
 	assert.NotErrorIs(t, err, mfa.ErrInvalidCode)
 
@@ -114,7 +114,7 @@ func TestTOTPVerifyRace(t *testing.T) {
 			defer wg.Done()
 			<-start
 
-			if m.Verify(ctx, "u-1", code) == nil {
+			if m.Verify(ctx, "u-1", []byte(code)) == nil {
 				accepted.Add(1)
 			}
 		}()
@@ -158,6 +158,6 @@ func TestTOTPProvingCodeNotReplayableAfterConfirm(t *testing.T) {
 	require.True(t, confirmed)
 
 	proving := codeAt(t, e.Secret, now, 6, 30*time.Second)
-	assert.Error(t, m.Verify(t.Context(), "u-1", proving),
+	assert.Error(t, m.Verify(t.Context(), "u-1", []byte(proving)),
 		"the code that proved the device was accepted again")
 }

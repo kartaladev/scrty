@@ -15,6 +15,7 @@ import (
 
 	factor "github.com/kartaladev/scrty/factor"
 	identity "github.com/kartaladev/scrty/identity"
+	mfa "github.com/kartaladev/scrty/mfa"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -157,18 +158,56 @@ func (c *MockMethodNameCall) DoAndReturn(f func() string) *MockMethodNameCall {
 	return c
 }
 
-// Verify mocks base method.
-func (m *MockMethod) Verify(ctx context.Context, user identity.UserID, code string) error {
+// Response mocks base method.
+func (m *MockMethod) Response() mfa.ResponseFormat {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Verify", ctx, user, code)
+	ret := m.ctrl.Call(m, "Response")
+	ret0, _ := ret[0].(mfa.ResponseFormat)
+	return ret0
+}
+
+// Response indicates an expected call of Response.
+func (mr *MockMethodMockRecorder) Response() *MockMethodResponseCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Response", reflect.TypeOf((*MockMethod)(nil).Response))
+	return &MockMethodResponseCall{Call: call}
+}
+
+// MockMethodResponseCall wrap *gomock.Call
+type MockMethodResponseCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockMethodResponseCall) Return(arg0 mfa.ResponseFormat) *MockMethodResponseCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockMethodResponseCall) Do(f func() mfa.ResponseFormat) *MockMethodResponseCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockMethodResponseCall) DoAndReturn(f func() mfa.ResponseFormat) *MockMethodResponseCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// Verify mocks base method.
+func (m *MockMethod) Verify(ctx context.Context, user identity.UserID, response []byte) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Verify", ctx, user, response)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Verify indicates an expected call of Verify.
-func (mr *MockMethodMockRecorder) Verify(ctx, user, code any) *MockMethodVerifyCall {
+func (mr *MockMethodMockRecorder) Verify(ctx, user, response any) *MockMethodVerifyCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockMethod)(nil).Verify), ctx, user, code)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Verify", reflect.TypeOf((*MockMethod)(nil).Verify), ctx, user, response)
 	return &MockMethodVerifyCall{Call: call}
 }
 
@@ -184,13 +223,13 @@ func (c *MockMethodVerifyCall) Return(arg0 error) *MockMethodVerifyCall {
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockMethodVerifyCall) Do(f func(context.Context, identity.UserID, string) error) *MockMethodVerifyCall {
+func (c *MockMethodVerifyCall) Do(f func(context.Context, identity.UserID, []byte) error) *MockMethodVerifyCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockMethodVerifyCall) DoAndReturn(f func(context.Context, identity.UserID, string) error) *MockMethodVerifyCall {
+func (c *MockMethodVerifyCall) DoAndReturn(f func(context.Context, identity.UserID, []byte) error) *MockMethodVerifyCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

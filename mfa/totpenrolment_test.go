@@ -245,7 +245,7 @@ func TestTOTPBeginEnrolmentTwice(t *testing.T) {
 
 	m2, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(later)))
 	require.NoError(t, err)
-	assert.NoError(t, m2.Verify(ctx, "u-1", codeForSecret(t, second.Secret, later)))
+	assert.NoError(t, m2.Verify(ctx, "u-1", []byte(codeForSecret(t, second.Secret, later))))
 }
 
 func TestTOTPRemoveEnrolment(t *testing.T) {

@@ -138,13 +138,26 @@ func (t *TOTP) Name() string { return "totp" }
 // factor after any of them.
 func (t *TOTP) Channel() factor.Channel { return factor.AuthenticatorApp }
 
+// Response reports FormField("code", 4<<10): the code is the "code" field of a
+// URL-encoded body of at most 4 KiB, so a plain HTML form verifies a code.
+func (t *TOTP) Response() ResponseFormat { return FormField(totpResponseField, totpResponseLimit) }
+
+const (
+	// totpResponseField is the form field TOTP's code is read from.
+	totpResponseField = "code"
+
+	// totpResponseLimit bounds the verify body; a code is a handful of digits.
+	totpResponseLimit = 4 << 10
+)
+
 // Digits reports the configured code length. Default: 6.
 func (t *TOTP) Digits() int { return t.digits }
 
 // Period reports the configured time step. Default: 30s.
 func (t *TOTP) Period() time.Duration { return t.period }
 
-// Verify checks code for user.
+// Verify checks the code in response for user. The response is the value of
+// the "code" form field, as the verify endpoint read it.
 //
 // The order is: read the enrolment, match the code against the accepted steps,
 // then ask the store to accept the matched step. The store call is last and is
@@ -163,7 +176,9 @@ func (t *TOTP) Period() time.Duration { return t.period }
 // can tell a refusal from an outage. It is also never reported as "not
 // enrolled". Its text is the package's own, never the store's, and the store's
 // error still matches through errors.Is and errors.As.
-func (t *TOTP) Verify(ctx context.Context, user identity.UserID, code string) error {
+func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte) error {
+	code := string(response)
+
 	e, ok, err := t.store.Get(ctx, user)
 	if err != nil {
 		return enrolmentStoreFailed(err, msgReadFailed)

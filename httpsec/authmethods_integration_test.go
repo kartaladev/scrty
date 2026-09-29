@@ -202,10 +202,10 @@ func (h *integrationHarness) code(t *testing.T) string {
 func (h *integrationHarness) buildChain(t *testing.T) *httpsec.Chain {
 	t.Helper()
 
-	lookup, err := mfa.LookupFor(h.totp)
+	lookups, err := mfa.LookupsFor(h.totp)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup})
+	challenge, err := policy.NewMFAPolicy(lookups)
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(challenge)

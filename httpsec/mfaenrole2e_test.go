@@ -158,13 +158,13 @@ func (d *e2eDeployment) wireTokens() {
 func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 	t.Helper()
 
-	lookup, err := mfa.LookupFor(d.totp)
+	lookups, err := mfa.LookupsFor(d.totp)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup})
+	challenge, err := policy.NewMFAPolicy(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(d.required, []policy.MFAMethodLookup{lookup},
+	requirement, err := policy.NewMFARequirementPolicy(d.required, lookups,
 		policy.WithMFAEnrolmentPath(d.pathOpts...))
 	require.NoError(t, err)
 
@@ -378,17 +378,17 @@ func oidcEnrolmentChain(t *testing.T, h *oidcHarness, pathOpts ...policy.Enrolme
 	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Payroll")
 	require.NoError(t, err)
 
-	lookup, err := mfa.LookupFor(method)
+	lookups, err := mfa.LookupsFor(method)
 	require.NoError(t, err)
 
 	classification := policy.WithMFAExemption(func(k factor.Kind) bool {
 		return k != factor.OIDC && k.MFAExempt()
 	})
 
-	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup}, classification)
+	challenge, err := policy.NewMFAPolicy(lookups, classification)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{lookup},
+	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
 		policy.WithMFARequiredForAll(), classification, policy.WithMFAEnrolmentPath(pathOpts...))
 	require.NoError(t, err)
 
@@ -540,7 +540,7 @@ func TestEnrolmentPathEndToEnd(t *testing.T) {
 		held := challengedFor(t, d.login(t), policy.ChallengeMFA)
 
 		require.NoError(t, mfa.ResetEnrolment(t.Context(), e2eUser, mfa.ResetDeps{
-			Enrolments: d.totp, Sessions: d.sessions, Users: d.users, Sender: d.sender,
+			Enrolments: []mfa.EnrolmentRemover{d.totp}, Sessions: d.sessions, Users: d.users, Sender: d.sender,
 		}))
 
 		stale := d.invoices(t, held)

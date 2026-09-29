@@ -63,7 +63,7 @@ func (d *returnedErrorsDeps) code(t *testing.T) string {
 
 func (d *returnedErrorsDeps) reset(contact mfa.ContactResolver) mfa.ResetDeps {
 	return mfa.ResetDeps{
-		Enrolments: d.enrolments,
+		Enrolments: []mfa.EnrolmentRemover{d.enrolments},
 		Sessions:   d.sessions,
 		Users:      d.users,
 		Sender:     d.sender,
@@ -156,7 +156,7 @@ func TestMFAReturnedErrors(t *testing.T) {
 				d.store.EXPECT().Get(gomock.Any(), user).Return(mfa.Enrolment{}, false, errMFAFixture)
 			},
 			act: func(t *testing.T, ctx context.Context, d *returnedErrorsDeps) error {
-				return d.method.Verify(ctx, user, d.code(t))
+				return d.method.Verify(ctx, user, []byte(d.code(t)))
 			},
 			assert: assertRedacted,
 		},
@@ -167,7 +167,7 @@ func TestMFAReturnedErrors(t *testing.T) {
 				d.store.EXPECT().AcceptStep(gomock.Any(), user, gomock.Any()).Return(false, errMFAFixture)
 			},
 			act: func(t *testing.T, ctx context.Context, d *returnedErrorsDeps) error {
-				return d.method.Verify(ctx, user, d.code(t))
+				return d.method.Verify(ctx, user, []byte(d.code(t)))
 			},
 			assert: assertRedacted,
 		},

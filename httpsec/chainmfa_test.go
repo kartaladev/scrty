@@ -87,6 +87,7 @@ func enableMFAFor(t *testing.T) httpsec.Option {
 
 	method := NewMockMethod(ctrl)
 	method.EXPECT().Name().Return("test-method").AnyTimes()
+	method.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
 	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
 	return httpsec.EnableMFA(method, httpsec.WithMFATokens(NewMockGenerator(ctrl)))
