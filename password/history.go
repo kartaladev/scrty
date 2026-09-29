@@ -63,7 +63,7 @@ var (
 // current hash has been retired, and returns its error unchanged. user is the
 // record the caller passed to Change; hash is the new hash, already encoded;
 // changedAt is read from the guard's clock ([WithReuseClock], default
-// [time.Now]).
+// clock.System()).
 //
 // [ProvisionerWrite] builds one over any [identity.UserProvisioner] that
 // records both the hash and changedAt. That is the only path on which the time

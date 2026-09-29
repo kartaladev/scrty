@@ -77,7 +77,7 @@ type provingEnrolmentStore struct {
 // issued. An expired code can no longer be charged or redeemed, and an
 // abandoned one stays stored; opening it would let an ordinary key rotation
 // that removes its key fail every read of the user's enrolment. The clock
-// defaults to time.Now; WithClock replaces it.
+// defaults to clock.System(); WithClock replaces it.
 //
 // A failure of c or of inner is returned behind fixed text that names no user
 // and carries none of the failing error's text, and still matches that error

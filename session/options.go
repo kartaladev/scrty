@@ -162,7 +162,17 @@ func WithHousekeepingInterval(d time.Duration) MemoryStoreOption {
 // and it waits on the same clock between housekeeping sweeps, so a controlled
 // clock runs housekeeping without real waiting. A test that moves a manager's
 // clock gives the store the same one, so expiry means the same thing on both
-// sides. A nil clock, typed nil included, keeps the default, since this
+// sides.
+//
+// The housekeeping loop calls After from its own goroutine, after Start has
+// returned, and again only once the previous sweep has finished. A caller
+// driving a controlled clock therefore waits for the loop to be waiting on it
+// before advancing it, both after Start and after each advance that triggers a
+// sweep: with clockwork's fake, BlockUntilContext(ctx, 1), counting only this
+// store's waiter, so a clock shared with other waiters needs their count added.
+// An advance made earlier is not seen by a loop that has not yet called After.
+//
+// A nil clock, typed nil included, keeps the default, since this
 // constructor cannot fail and a store with no clock could not judge expiry at
 // all.
 func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {

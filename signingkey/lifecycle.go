@@ -22,6 +22,12 @@ import (
 // get rotation back without constructing a new manager. Such a Start first
 // waits for the cancelled run's loops to finish, an in-flight store write
 // included, exactly as Stop does.
+//
+// Start returns before the loops have begun waiting on the clock: each calls
+// the clock's After from its own goroutine. A caller driving a controlled clock
+// (WithClock) waits for all three to be waiting before advancing it — with
+// clockwork's fake, BlockUntilContext(ctx, 3) — or its advance may land before
+// a loop starts counting and never fire that loop.
 func (km *KeyManager) Start(ctx context.Context) error {
 	km.lifecycle.Lock()
 	defer km.lifecycle.Unlock()

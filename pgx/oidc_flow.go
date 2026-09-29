@@ -29,7 +29,7 @@ type FlowStore struct{ c *config }
 //
 // Complete judges expiry with the store's clock: a flow is expired from its
 // ExpiresAt instant on. It honours WithTxResolver, WithClock (default
-// time.Now) and WithIDGenerator (default id.NewV7Generator, for the rows'
+// clock.System()) and WithIDGenerator (default id.NewV7Generator, for the rows'
 // primary keys), and refuses any other option.
 //
 // Limits, stated: PostgreSQL text cannot hold a NUL byte or invalid UTF-8. A

@@ -26,9 +26,9 @@ type OneTimeStore struct{ c *config }
 
 // NewOneTimeStore returns a durable one-time token store on db.
 //
-// The reaper judges "expired" with the store's clock, at the moment it runs.
-// It honours WithTxResolver and WithClock (default time.Now), and refuses any
-// other option.
+// The reaper judges "expired" with the store's clock, at the moment it runs. It
+// honours WithTxResolver and WithClock (default clock.System()), and refuses
+// any other option.
 //
 // Limits, stated: PostgreSQL text cannot hold a NUL byte or invalid UTF-8. A
 // token whose purpose or subject holds either is refused with an error that

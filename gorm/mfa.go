@@ -54,11 +54,11 @@ import (
 //
 // A read judges an emailed code's expiry with the store's clock: a code whose
 // EmailCodeUntil has passed is not opened, and is returned as no code, with
-// EmailCodeUntil kept. The default is time.Now; WithClock replaces it.
+// EmailCodeUntil kept. The default is clock.System(); WithClock replaces it.
 //
 // It honours WithTxResolver, WithIDGenerator (default id.NewV7Generator, for
-// the rows' primary keys), WithClock (default time.Now) and WithResealOnRead
-// (default on), and refuses any other option.
+// the rows' primary keys), WithClock (default clock.System()) and
+// WithResealOnRead (default on), and refuses any other option.
 //
 // Limits, stated:
 //   - PostgreSQL text cannot hold a NUL byte or invalid UTF-8. A begin for a

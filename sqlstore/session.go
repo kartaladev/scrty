@@ -43,8 +43,8 @@ import (
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
 //
-// It honours WithTxResolver, WithClock (default time.Now) and WithIDGenerator
-// (default id.NewV7Generator), and refuses any other option.
+// It honours WithTxResolver, WithClock (default clock.System()) and
+// WithIDGenerator (default id.NewV7Generator), and refuses any other option.
 //
 // Limits, stated:
 //   - PostgreSQL text and jsonb cannot hold a NUL byte or invalid UTF-8. A

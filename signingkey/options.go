@@ -86,6 +86,14 @@ func WithKeyStore(store KeyStore) Option {
 // interval after its previous run finished. A controlled clock, such as
 // clockwork's fake, therefore drives every one of them without real waiting.
 //
+// Each loop calls After from its own goroutine, after Start has returned, and
+// again only once its previous run has finished. A caller driving a controlled
+// clock must therefore wait until the loops are waiting on it before advancing
+// it, both after Start and after each advance that triggers a run: with
+// clockwork's fake, BlockUntilContext(ctx, 3) waits for all three loops. An
+// advance made earlier is not seen by a loop that has not yet called After,
+// and that loop waits a full interval from wherever the clock then stands.
+//
 // A nil clock, typed nil included, is a configuration error from
 // NewKeyManager.
 func WithClock(clk clock.Timed) Option {

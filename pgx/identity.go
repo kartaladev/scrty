@@ -81,8 +81,8 @@ import (
 //
 // It honours WithTxResolver, WithIDGenerator (default id.NewV7Generator; the
 // identifiers of the users, grants and history entries it creates) and
-// WithClock (default time.Now; every created_at, updated_at and retired_at it
-// writes), and refuses any other option.
+// WithClock (default clock.System(); every created_at, updated_at and
+// retired_at it writes), and refuses any other option.
 //
 // # Migrations
 //

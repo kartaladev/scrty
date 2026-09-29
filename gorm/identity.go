@@ -76,8 +76,9 @@ import (
 //
 // It honours WithTxResolver, WithIDGenerator (default id.NewV7Generator; the
 // identifiers of the users, grants and history entries it creates) and
-// WithClock (default time.Now; every created_at, updated_at and retired_at it
-// writes: gorm fills none of them itself), and refuses any other option.
+// WithClock (default clock.System(); every created_at, updated_at and
+// retired_at it writes: gorm fills none of them itself), and refuses any other
+// option.
 //
 // Every statement runs with gorm's logger discarded, like every store in this
 // package, since its bound values are usernames, password hashes and user

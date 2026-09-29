@@ -68,10 +68,9 @@ import (
 // # Defaults and options
 //
 // It honours WithTxResolver, WithIDGenerator (default id.NewV7Generator; the
-// identifiers of the users, grants and password-history entries it creates)
-// and WithClock (default time.Now; every created_at and updated_at it writes,
-// and every password-history entry's retired_at), and refuses any other
-// option.
+// identifiers of the users, grants and password-history entries it creates) and
+// WithClock (default clock.System(); every created_at and updated_at it writes,
+// and every password-history entry's retired_at), and refuses any other option.
 //
 // # Migrations
 //

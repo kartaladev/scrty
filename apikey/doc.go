@@ -68,7 +68,7 @@
 // Every default is replaceable without forking, and every option names the
 // default it replaces: the store (NewMemoryStore, which does not survive a
 // restart), the prefix ("sk"), the digest (SHA-256), the identifier generator
-// (id.NewV7Generator), the clock (time.Now), the random source
+// (id.NewV7Generator), the clock (clock.System()), the random source
 // (crypto/rand.Reader) and the logger (slog.Default). A nil value is a
 // configuration error for every one of them except the logger, where nil is
 // read as "do not log from this component".

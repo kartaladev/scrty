@@ -8,6 +8,7 @@ package session_test
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
@@ -192,6 +193,56 @@ func (c *countingClock) After(d time.Duration) <-chan time.Time {
 	return c.FakeClock.After(d)
 }
 
+// slowSweepClock is a controlled clock on which a sweep takes time. Only a
+// sweep reads Now on a store nothing else is using, so each read is one sweep:
+// it is recorded at the instant it starts, and the first one moves the clock
+// on by took before returning, as a slow sweep would. Each wait is recorded
+// by the instant it is due, which is when the loop's next sweep will run.
+type slowSweepClock struct {
+	*clockwork.FakeClock
+
+	took time.Duration
+
+	mu     sync.Mutex
+	sweeps []time.Time
+	dues   []time.Time
+}
+
+func (c *slowSweepClock) After(d time.Duration) <-chan time.Time {
+	c.mu.Lock()
+	c.dues = append(c.dues, c.FakeClock.Now().Add(d))
+	c.mu.Unlock()
+
+	return c.FakeClock.After(d)
+}
+
+func (c *slowSweepClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.FakeClock.Now()
+	c.sweeps = append(c.sweeps, now)
+	if len(c.sweeps) == 1 {
+		c.FakeClock.Advance(c.took)
+	}
+
+	return now
+}
+
+func (c *slowSweepClock) sweepStarts() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]time.Time(nil), c.sweeps...)
+}
+
+func (c *slowSweepClock) waitsDue() []time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]time.Time(nil), c.dues...)
+}
+
 // sessionExpiringAt is a session whose idle deadline is at, and whose absolute
 // deadline is well after it.
 func sessionExpiringAt(id string, at time.Time) *session.Session {
@@ -317,6 +368,70 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				assert.Zero(t, store.Len(), "the restarted loop did not sweep")
 				assert.Equal(t, int32(3), clk.waits.Load(),
 					"one sweep, by the restarted loop alone, is one wait more")
+			},
+		},
+		{
+			// Pins time-source "A long jump runs once": the loop waits for one
+			// interval and does not catch up on the intervals a jump skipped.
+			// Each pass of the loop waits once, so the wait count, read once
+			// the loop has parked again, is one more than the sweeps run.
+			name: "a long jump sweeps once, and the next sweep is one interval after it",
+			assert: func(t *testing.T) {
+				clk := &countingClock{FakeClock: clockwork.NewFakeClockAt(createdAt)}
+				store := session.NewMemoryStore(
+					session.WithMemoryStoreClock(clk),
+					session.WithHousekeepingInterval(10*time.Second),
+				)
+				require.NoError(t, store.Start(t.Context()))
+				t.Cleanup(func() { _ = store.Stop() })
+				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				clk.Advance(50 * time.Second)
+				blockUntil(t, clk.FakeClock, 1, "housekeeping did not wait again after the jump")
+				require.Equal(t, int32(2), clk.waits.Load(), "a jump of five intervals did not sweep exactly once")
+
+				clk.Advance(10*time.Second - time.Nanosecond)
+				clk.Advance(time.Nanosecond)
+				blockUntil(t, clk.FakeClock, 1, "housekeeping did not wait again after its second sweep")
+				assert.Equal(t, int32(3), clk.waits.Load(),
+					"the sweep after the jump did not come exactly one interval later")
+			},
+		},
+		{
+			// Pins time-source "Interval counted from the end of a run": a
+			// sweep that takes 3s, starting at 10s, ends at 13s, so the next
+			// one starts at 23s, not at 20s.
+			name: "the next sweep is one interval after the previous one finished",
+			assert: func(t *testing.T) {
+				clk := &slowSweepClock{FakeClock: clockwork.NewFakeClockAt(createdAt), took: 3 * time.Second}
+				store := session.NewMemoryStore(
+					session.WithMemoryStoreClock(clk),
+					session.WithHousekeepingInterval(10*time.Second),
+				)
+				require.NoError(t, store.Start(t.Context()))
+				t.Cleanup(func() { _ = store.Stop() })
+				blockUntil(t, clk.FakeClock, 1, "housekeeping never waited on the store's clock")
+
+				clk.Advance(10 * time.Second)
+				blockUntil(t, clk.FakeClock, 1, "housekeeping did not wait again after its slow sweep")
+				require.Equal(t, []time.Time{createdAt.Add(10 * time.Second)}, clk.sweepStarts())
+
+				// Read once the loop has parked, the wait it parked on says when
+				// the next sweep runs: 23s, not 20s, one interval after the
+				// first sweep started.
+				assert.Equal(t,
+					[]time.Time{createdAt.Add(10 * time.Second), createdAt.Add(23 * time.Second)},
+					clk.waitsDue(),
+					"the next sweep was not due one interval after the first finished")
+
+				clk.Advance(10*time.Second - time.Nanosecond)
+				clk.Advance(time.Nanosecond)
+				blockUntil(t, clk.FakeClock, 1, "housekeeping did not wait again after its second sweep")
+
+				assert.Equal(t,
+					[]time.Time{createdAt.Add(10 * time.Second), createdAt.Add(23 * time.Second)},
+					clk.sweepStarts(),
+					"the second sweep did not start one interval after the first finished")
 			},
 		},
 		{

@@ -6,8 +6,8 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// The default generator uses time.Now and crypto/rand.Reader; WithClock and
-// WithRandom replace them. Identifiers are not secrets.
+// The default generator uses clock.System() and crypto/rand.Reader; WithClock
+// and WithRandom replace them. Identifiers are not secrets.
 func ExampleNewV7Generator() {
 	gen := id.NewV7Generator()
 

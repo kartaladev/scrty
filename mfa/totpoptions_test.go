@@ -28,6 +28,13 @@ func TestNewTOTP(t *testing.T) {
 		assert.Nil(t, m)
 	}
 
+	// An absent time or random source is the package's configuration error,
+	// so a consumer can tell a wiring mistake apart with errors.Is.
+	sourceConfigError := func(t *testing.T, m *mfa.TOTP, err error) {
+		require.ErrorIs(t, err, mfa.ErrConfig)
+		assert.Nil(t, m)
+	}
+
 	namesIssuer := func(t *testing.T, m *mfa.TOTP, err error) {
 		require.Error(t, err)
 		assert.Nil(t, m)
@@ -92,7 +99,7 @@ func TestNewTOTP(t *testing.T) {
 			name:   "a nil clock",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithClock(nil)},
-			assert: configError,
+			assert: sourceConfigError,
 		},
 		{
 			// A nil pointer inside the interface is refused like an untyped
@@ -100,7 +107,7 @@ func TestNewTOTP(t *testing.T) {
 			name:   "a typed-nil clock",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithClock((*nilClock)(nil))},
-			assert: configError,
+			assert: sourceConfigError,
 		},
 		{
 			name:   "a consumer clock with only Now",
@@ -115,7 +122,7 @@ func TestNewTOTP(t *testing.T) {
 			name:   "a nil random source",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithRandom(nil)},
-			assert: configError,
+			assert: sourceConfigError,
 		},
 		{
 			// *failAfterReader implements io.Reader through a pointer receiver,
@@ -126,7 +133,7 @@ func TestNewTOTP(t *testing.T) {
 			name:   "a typed-nil random source",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithRandom((*failAfterReader)(nil))},
-			assert: configError,
+			assert: sourceConfigError,
 		},
 		{
 			name:   "a nil logger",

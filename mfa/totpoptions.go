@@ -36,8 +36,8 @@ func WithPeriod(d time.Duration) TOTPOption {
 }
 
 // WithClock replaces the source of the instant codes are matched against. The
-// default is clock.System(). A nil clock, typed nil included, is a
-// construction error.
+// default is clock.System(). A nil clock, typed nil included, fails NewTOTP
+// with ErrConfig.
 //
 // It exists for tests, which must pin the time step a code belongs to, and for
 // a deployment whose notion of now comes from somewhere other than the process
@@ -53,7 +53,7 @@ func WithClock(clk clock.Clock) TOTPOption {
 }
 
 // WithRandom replaces crypto/rand.Reader as the source of enrolment secrets. A
-// nil reader is a construction error.
+// nil reader, typed nil included, fails NewTOTP with ErrConfig.
 //
 // The default is the operating system's cryptographically secure source, which
 // is what a shared secret must come from. This option is for tests that need a

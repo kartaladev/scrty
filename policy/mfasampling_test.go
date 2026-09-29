@@ -134,9 +134,9 @@ func TestPolicyRefusalLogIntervalOfZeroWritesEveryRecord(t *testing.T) {
 }
 
 // TestPolicySamplingClockOverride covers the override point for the clock each
-// policy measures its sampling window by. The default is time.Now; a consumer
-// who steps time themselves — a test, or a deployment replaying records —
-// supplies their own.
+// policy measures its sampling window by. The default is clock.System(); a
+// consumer who steps time themselves — a test, or a deployment replaying
+// records — supplies their own.
 func TestPolicySamplingClockOverride(t *testing.T) {
 	t.Parallel()
 

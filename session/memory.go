@@ -86,6 +86,12 @@ func (s *MemoryStore) Len() int {
 // Housekeeping is optional. Without it nothing is ever served that has
 // expired, because Load judges expiry on every read; what is lost is the
 // memory those records occupy. See the type's documentation.
+//
+// Start returns before housekeeping has begun waiting on the clock: the loop
+// calls the clock's After from its own goroutine. A caller driving a controlled
+// clock (WithMemoryStoreClock) waits for that one waiter before advancing it —
+// with clockwork's fake, BlockUntilContext(ctx, 1) — or its advance may land
+// before the loop starts counting and never trigger a sweep.
 func (s *MemoryStore) Start(ctx context.Context) error {
 	s.lifecycle.Lock()
 	defer s.lifecycle.Unlock()
