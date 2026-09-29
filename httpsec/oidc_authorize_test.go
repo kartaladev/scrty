@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -164,7 +165,7 @@ func TestOIDCAuthorize(t *testing.T) {
 		},
 		{
 			name:        "a flow expiry already passed clamps Max-Age to 1",
-			managerOpts: []oidc.ManagerOption{oidc.WithClock(func() time.Time { return time.Now().Add(-oidc.DefaultFlowTTL) })},
+			managerOpts: []oidc.ManagerOption{oidc.WithClock(clockwork.NewFakeClockAt(time.Now().Add(-oidc.DefaultFlowTTL)))},
 			request:     get(corp),
 			assert: func(t *testing.T, _ *oidcHarness, out served) {
 				require.NoError(t, out.err)

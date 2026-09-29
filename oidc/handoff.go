@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -61,7 +62,7 @@ type HandoffManager struct {
 	store   HandoffStore
 	users   identity.UserLoader
 	random  io.Reader
-	now     func() time.Time
+	clock   clock.Clock
 	ids     id.Generator
 	log     *slog.Logger
 	sampler *logsample.Sampler
@@ -78,7 +79,7 @@ type HandoffManager struct {
 //	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
 //
 // With no options it draws codes from crypto/rand.Reader (WithHandoffRandom),
-// reads time from time.Now (WithHandoffClock), names records with
+// reads time from clock.System() (WithHandoffClock), names records with
 // id.NewV7Generator() (WithHandoffIDGenerator) and logs to slog.Default()
 // (WithHandoffLogger). Every error it returns wraps ErrConfig.
 //
@@ -107,8 +108,8 @@ func NewHandoffManager(store HandoffStore, users identity.UserLoader, opts ...Ha
 	if h.random == nil {
 		h.random = rand.Reader
 	}
-	if h.now == nil {
-		h.now = time.Now
+	if h.clock == nil {
+		h.clock = clock.System()
 	}
 	if h.ids == nil {
 		h.ids = id.NewV7Generator()
@@ -154,7 +155,7 @@ func (h *HandoffManager) Issue(ctx context.Context, res CallbackResult) (string,
 		return "", fmt.Errorf("oidc: naming a handoff record: %w", err)
 	}
 
-	now := h.now()
+	now := h.clock.Now()
 	rec := HandoffRecord{
 		ID:         recID,
 		TokenID:    tokenID,
@@ -257,7 +258,7 @@ func (h *HandoffManager) Redeem(ctx context.Context, code string, checks ...Rede
 	if subtle.ConstantTimeCompare(handoffDigest(secret), rec.SecretHash) != 1 {
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "secret_mismatch")
 	}
-	now := h.now()
+	now := h.clock.Now()
 	if !now.Before(rec.ExpiresAt) {
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "expired")
 	}
@@ -364,7 +365,7 @@ func (h *HandoffManager) refuseFailure(ctx context.Context, reason, op string, e
 // the sampling window from the reason attribute where a reason has more than
 // one call site (refuseFailure's op), and is otherwise the reason itself.
 func (h *HandoffManager) record(ctx context.Context, level slog.Level, key string, attrs ...slog.Attr) error {
-	write, suppressed := h.sampler.Allow("oidc.handoff."+key, h.now())
+	write, suppressed := h.sampler.Allow("oidc.handoff."+key, h.clock.Now())
 	if write {
 		h.log.LogAttrs(ctx, level, "oidc handoff redemption refused",
 			append(attrs, slog.Int("suppressed", suppressed))...)

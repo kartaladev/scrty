@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,8 +35,8 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 	t.Run("a caller writing to what it inserted cannot change what was stored", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt)
+		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 
 		tok := storedToken(t, checkTokenID)
 		want := bytes.Clone(tok.SecretHash)
@@ -56,8 +57,8 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 	t.Run("a caller writing to what it read back cannot change what was stored", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt)
+		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		first, err := store.FindByID(t.Context(), checkTokenID)
@@ -76,8 +77,8 @@ func TestMemoryStoreIsolatesRecords(t *testing.T) {
 	t.Run("an absent binding stays absent", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt)
+		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 
 		tok := storedToken(t, checkTokenID)
 		tok.BindingHash = nil
@@ -117,8 +118,8 @@ func TestMemoryStore(t *testing.T) {
 	t.Run("consuming what is not there and what is already spent look alike", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt)
+		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		require.NoError(t, store.Consume(t.Context(), checkTokenID, issuedAt.Add(time.Minute)))
@@ -137,8 +138,8 @@ func TestMemoryStore(t *testing.T) {
 	t.Run("a purge with no cutoff is refused and deletes nothing", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt.Add(time.Hour))
-		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Hour))
+		store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 		require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
 
 		removed, err := store.DeleteExpiredBefore(t.Context(), "magic-link", time.Time{})
@@ -153,8 +154,8 @@ func TestMemoryStoreIsSafeForConcurrentUse(t *testing.T) {
 
 	const writers = 32
 
-	clk := newTestClock(issuedAt)
-	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
+	clk := clockwork.NewFakeClockAt(issuedAt)
+	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 	gen := id.NewV7Generator()
 
 	ids := make([]id.ID, writers)
@@ -179,4 +180,110 @@ func TestMemoryStoreIsSafeForConcurrentUse(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestMemoryStoreClock covers the store's own time source, which judges expiry
+// when the store purges. A constructor that cannot fail cannot refuse an absent
+// clock, so nil and typed nil keep the system clock instead.
+func TestMemoryStoreClock(t *testing.T) {
+	t.Parallel()
+
+	// sweepsBySystemTime asserts that the store judged expiry by the system
+	// clock: of a record expired an hour ago and one that expires in an hour,
+	// only the first is purged.
+	sweepsBySystemTime := func(t *testing.T, store *onetime.MemoryStore) {
+		t.Helper()
+
+		now := time.Now()
+		expired := storedToken(t, id.MustParse("01999f00-0000-7000-8000-000000000001"))
+		expired.IssuedAt, expired.ExpiresAt = now.Add(-2*time.Hour), now.Add(-time.Hour)
+		live := storedToken(t, id.MustParse("01999f00-0000-7000-8000-000000000002"))
+		live.IssuedAt, live.ExpiresAt = now.Add(-2*time.Hour), now.Add(time.Hour)
+		require.NoError(t, store.Insert(t.Context(), expired))
+		require.NoError(t, store.Insert(t.Context(), live))
+
+		removed, err := store.DeleteExpiredBefore(t.Context(), "magic-link", now)
+		require.NoError(t, err)
+		assert.Equal(t, 1, removed, "the store did not judge expiry by the system clock")
+		_, err = store.FindByID(t.Context(), live.ID)
+		assert.NoError(t, err, "the store purged a record the system clock says is live")
+	}
+
+	type testCase struct {
+		name   string
+		opts   []onetime.MemoryStoreOption
+		assert func(t *testing.T, store *onetime.MemoryStore)
+	}
+
+	cases := []testCase{
+		{
+			name:   "no clock option reads the system clock",
+			assert: sweepsBySystemTime,
+		},
+		{
+			name:   "an untyped nil clock keeps the system clock",
+			opts:   []onetime.MemoryStoreOption{onetime.WithMemoryStoreClock(nil)},
+			assert: sweepsBySystemTime,
+		},
+		{
+			// time-source: "Absent source on a constructor that cannot fail".
+			name:   "a typed nil clock keeps the system clock, rather than being read",
+			opts:   []onetime.MemoryStoreOption{onetime.WithMemoryStoreClock((*nilClock)(nil))},
+			assert: sweepsBySystemTime,
+		},
+		{
+			name: "a consumer clock judges expiry in place of the system clock",
+			opts: []onetime.MemoryStoreOption{onetime.WithMemoryStoreClock(fixedClock{at: issuedAt.Add(time.Minute)})},
+			assert: func(t *testing.T, store *onetime.MemoryStore) {
+				// Live by the consumer's clock, long expired by the system
+				// clock: a store reading the latter would purge it.
+				require.NoError(t, store.Insert(t.Context(), storedToken(t, checkTokenID)))
+
+				removed, err := store.DeleteExpiredBefore(t.Context(), "magic-link", issuedAt.Add(time.Second))
+				require.NoError(t, err)
+				assert.Zero(t, removed, "the store judged expiry by the system clock")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := onetime.NewMemoryStore(tc.opts...)
+			tc.assert(t, store)
+		})
+	}
+}
+
+// TestManagerAndStoreShareAConsumerClock is the time-source scenario "Consumer
+// time source": a manager and its store read one controlled clock, so a token
+// is dated, expired and purged by it with no real waiting. It stands alone
+// because it builds a manager over the store, which no other store case does.
+func TestManagerAndStoreShareAConsumerClock(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+	clk := clockwork.NewFakeClockAt(start)
+	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	m, err := onetime.NewManager("magic-link",
+		onetime.WithStore(store), onetime.WithClock(clk), onetime.WithTTL(5*time.Minute))
+	require.NoError(t, err)
+
+	presented, tok, err := m.Issue(t.Context(), "ada@example.com")
+	require.NoError(t, err)
+	assert.Equal(t, time.Date(2030, 1, 1, 12, 5, 0, 0, time.UTC), tok.ExpiresAt)
+
+	removed, err := store.DeleteExpiredBefore(t.Context(), "magic-link", clk.Now().Add(time.Second))
+	require.NoError(t, err)
+	require.Zero(t, removed, "the store purged a token its clock says is live")
+
+	clk.Advance(6 * time.Minute)
+
+	_, err = m.Redeem(t.Context(), presented, "")
+	require.ErrorIs(t, err, onetime.ErrInvalidToken, "a token past its expiry by the shared clock was redeemed")
+
+	removed, err = store.DeleteExpiredBefore(t.Context(), "magic-link", clk.Now().Add(time.Second))
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed, "the store did not judge expiry by the shared clock")
 }

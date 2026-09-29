@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -18,29 +19,12 @@ import (
 // follow the cause through the decision it produced.
 var errAttemptStoreDown = errors.New("the attempt store is unreachable")
 
-// lockoutClock is the tests' time source, fixed, so a failure's age is exactly
-// what the case wrote rather than whatever the wall clock did while the test
-// ran.
-type lockoutClock struct {
-	mu sync.Mutex
-	at time.Time
-}
-
-func newLockoutClock(at time.Time) *lockoutClock { return &lockoutClock{at: at} }
-
-func (c *lockoutClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.at
-}
-
 // lockoutWith builds a policy over a fresh in-memory store and the tests'
 // fixed clock, with opts applied after both, so a case can replace either.
 func lockoutWith(t *testing.T, opts ...policy.LockoutOption) *policy.AccountLockoutPolicy {
 	t.Helper()
 
-	all := append([]policy.LockoutOption{policy.WithLockoutClock(newLockoutClock(lockoutNow).Now)}, opts...)
+	all := append([]policy.LockoutOption{policy.WithLockoutClock(clockwork.NewFakeClockAt(lockoutNow))}, opts...)
 	p, err := policy.NewAccountLockoutPolicy(all...)
 	require.NoError(t, err)
 

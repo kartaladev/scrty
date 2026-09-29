@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -62,19 +63,19 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			at := start
+			clk := clockwork.NewFakeClockAt(start)
 
 			h := newMagicLinkHarness(t)
 
-			store := session.NewMemoryStore(session.WithMemoryStoreClock(func() time.Time { return at }))
+			store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 			mgr, err := session.NewManager(
 				session.WithStore(store),
-				session.WithClock(func() time.Time { return at }))
+				session.WithClock(clk))
 			require.NoError(t, err)
 			h.sessions = mgr
 
 			enrolStore := mfa.NewMemoryEnrolmentStore()
-			totp, err := mfa.NewTOTP(enrolStore, enrolIssuer, mfa.WithClock(func() time.Time { return at }))
+			totp, err := mfa.NewTOTP(enrolStore, enrolIssuer, mfa.WithClock(clk))
 			require.NoError(t, err)
 
 			ctrl := gomock.NewController(t)
@@ -108,7 +109,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 			require.True(t, ok, "no access token was issued for the enrolment-only session")
 			require.NotEmpty(t, id)
 
-			at = tc.at
+			clk.Advance(tc.at.Sub(clk.Now()))
 
 			_, err = mgr.Load(t.Context(), id)
 			tc.assert(t, err)

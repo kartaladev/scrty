@@ -5,11 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -22,28 +22,9 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
-// enrolClock is one timeline shared by the session manager, its store and the
-// TOTP method, safe to read from the store's housekeeping.
-type enrolClock struct {
-	mu sync.Mutex
-	at time.Time
-}
-
-func (c *enrolClock) now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.at
-}
-
-// set moves the timeline to at, and the harness's TOTP clock with it.
-func (c *enrolClock) set(h *enrolHarness, at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.at = at
-	h.at = at
-}
+// moveTo sets the harness's timeline, shared by the session manager, its store
+// and the TOTP method, to at.
+func moveTo(h *enrolHarness, at time.Time) { h.clock.Advance(at.Sub(h.clock.Now())) }
 
 // failingCreates is a session store whose Create answers errStoreLeaky once
 // failing is set, and behaves as the store it wraps otherwise.
@@ -73,28 +54,27 @@ func clockAt(hh, mm int) time.Time {
 // shared clock, starting at 09:00, with a 12-hour absolute timeout. Inserts
 // into the session store, which is how a rotation writes, fail while failing is
 // set.
-func onTimeline(t *testing.T, h *enrolHarness, failing *atomic.Bool) *enrolClock {
+func onTimeline(t *testing.T, h *enrolHarness, failing *atomic.Bool) {
 	t.Helper()
 
-	clock := &enrolClock{}
-	clock.set(h, clockAt(9, 0))
+	// A fresh fake rather than a move: the timeline's instants are UTC, and a
+	// move would keep the harness clock's location.
+	h.clock = clockwork.NewFakeClockAt(clockAt(9, 0))
 
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clock.now))
+	store := session.NewMemoryStore(session.WithMemoryStoreClock(h.clock))
 
 	var err error
 	h.sessions, err = session.NewManager(
 		session.WithStore(failingCreates{Store: store, failing: failing}),
-		session.WithClock(clock.now),
+		session.WithClock(h.clock),
 		session.WithAbsoluteTimeout(12*time.Hour),
 	)
 	require.NoError(t, err)
 
-	h.totp, err = mfa.NewTOTP(h.store, enrolIssuer, mfa.WithClock(clock.now))
+	h.totp, err = mfa.NewTOTP(h.store, enrolIssuer, mfa.WithClock(h.clock))
 	require.NoError(t, err)
 
 	h.method = h.totp
-
-	return clock
 }
 
 // issuedFor records the session identifier every token was issued for.
@@ -125,7 +105,7 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 
 		// before runs after the emailed code was redeemed at 09:08, and before
 		// the verification.
-		before func(t *testing.T, h *enrolHarness, clock *enrolClock, s *session.Session, failing *atomic.Bool)
+		before func(t *testing.T, h *enrolHarness, s *session.Session, failing *atomic.Bool)
 
 		assert func(t *testing.T, h *enrolHarness, s *session.Session, issued *atomic.Value, out served)
 	}
@@ -148,8 +128,8 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "a fresh code at 09:09",
-			before: func(_ *testing.T, h *enrolHarness, clock *enrolClock, _ *session.Session, _ *atomic.Bool) {
-				clock.set(h, clockAt(9, 9))
+			before: func(_ *testing.T, h *enrolHarness, _ *session.Session, _ *atomic.Bool) {
+				moveTo(h, clockAt(9, 9))
 			},
 			assert: func(t *testing.T, h *enrolHarness, s *session.Session, issued *atomic.Value, out served) {
 				t.Helper()
@@ -178,12 +158,12 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 			// A session the store loaded at 09:14 reaches verification at
 			// 09:16, past the deadline it was lowered to.
 			name: "a session past its lowered deadline",
-			before: func(t *testing.T, h *enrolHarness, clock *enrolClock, s *session.Session, _ *atomic.Bool) {
+			before: func(t *testing.T, h *enrolHarness, s *session.Session, _ *atomic.Bool) {
 				t.Helper()
 
-				clock.set(h, clockAt(9, 14))
+				moveTo(h, clockAt(9, 14))
 				h.pinned = h.stored(t, s.ID)
-				clock.set(h, clockAt(9, 16))
+				moveTo(h, clockAt(9, 16))
 			},
 			assert: func(t *testing.T, h *enrolHarness, _ *session.Session, issued *atomic.Value, out served) {
 				t.Helper()
@@ -196,10 +176,10 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 		},
 		{
 			name: "a rotation that fails",
-			before: func(t *testing.T, h *enrolHarness, clock *enrolClock, s *session.Session, failing *atomic.Bool) {
+			before: func(t *testing.T, h *enrolHarness, s *session.Session, failing *atomic.Bool) {
 				t.Helper()
 
-				clock.set(h, clockAt(9, 9))
+				moveTo(h, clockAt(9, 9))
 				h.pinned = h.stored(t, s.ID)
 				failing.Store(true)
 			},
@@ -222,7 +202,7 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 
 			var failing atomic.Bool
 
-			clock := onTimeline(t, h, &failing)
+			onTimeline(t, h, &failing)
 			issued := issuedFor(h)
 
 			s := h.enrolmentOnly(t, factor.Password)
@@ -231,14 +211,14 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 			c := h.chain(t, s)
 			secret := h.beginDoc(t, c).Secret
 
-			clock.set(h, clockAt(9, 7))
+			moveTo(h, clockAt(9, 7))
 			emailed := h.prove(t, c, o, secret)
 
-			clock.set(h, clockAt(9, 8))
+			moveTo(h, clockAt(9, 8))
 			require.NoError(t, serve(t, c, emailCodeRequest(t.Context(), emailed)).err)
 			require.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA)
 
-			tc.before(t, h, clock, s, &failing)
+			tc.before(t, h, s, &failing)
 
 			tc.assert(t, h, s, issued, serve(t, c, post(t.Context(), httpsec.DefaultMFAVerifyPath,
 				"code="+h.codeFor(t, secret))))

@@ -73,7 +73,7 @@ func TestHousekeeping(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := newFakeClock(epoch)
+			clk := newClock()
 			store := signingkey.NewInMemoryKeyStore()
 			seed := tc.seed(t)
 			for _, rec := range seed {
@@ -82,7 +82,7 @@ func TestHousekeeping(t *testing.T) {
 
 			km, err := signingkey.NewKeyManager(t.Context(),
 				signingkey.WithKeyStore(store),
-				signingkey.WithClock(clock),
+				signingkey.WithClock(clk),
 				signingkey.WithLifetime(24*time.Hour),
 				signingkey.WithHousekeepingInterval(time.Second),
 				signingkey.WithReloadInterval(30*time.Minute),
@@ -97,9 +97,8 @@ func TestHousekeeping(t *testing.T) {
 
 			require.NoError(t, km.Start(t.Context()))
 
-			clock.Advance(time.Second)
-			require.Eventually(t, func() bool { return !publishes(km, expired) },
-				10*time.Second, 5*time.Millisecond,
+			advance(t, clk, time.Second, loopCount)
+			require.False(t, publishes(km, expired),
 				"housekeeping should have stopped publishing the expired key")
 
 			tc.assert(t, km, store, current)
@@ -107,15 +106,16 @@ func TestHousekeeping(t *testing.T) {
 	}
 }
 
-// TestHousekeepingAndRotationNeverDeadlock ticks rotation and housekeeping
+// TestHousekeepingAndRotationNeverDeadlock runs rotation and housekeeping
 // together, over and over. Housekeeping takes the keyring lock itself, so being
-// called while rotation held that lock would deadlock; the test's timeout is
-// what turns that into a failure instead of a hang.
+// called while rotation held that lock would deadlock; the loops would then
+// never park again, and the bounded wait for them is what turns that into a
+// failure instead of a hang.
 func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithHousekeepingInterval(time.Hour),
@@ -129,9 +129,10 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 
 	kid := currentKid(t, km, signingkey.EdDSA)
 	for round := range 12 {
-		clock.Advance(time.Hour)
-		kid = waitForRotation(t, km, signingkey.EdDSA, kid)
-		require.NotEmpty(t, kid, "round %d", round)
+		advance(t, clk, time.Hour, loopCount)
+		next := currentKid(t, km, signingkey.EdDSA)
+		require.NotEqual(t, kid, next, "round %d rotates", round)
+		kid = next
 	}
 
 	keys, err := km.VerificationKeys()
@@ -142,7 +143,7 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 
 // TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime pins the boundary
 // itself. A key is published for the lifetime it was given, so one whose age is
-// exactly that lifetime is still published, and one a tick older is not.
+// exactly that lifetime is still published, and one any older is not.
 //
 // The interval is what makes the boundary reachable: the sweep that runs at
 // epoch+1s is the one that sees boundary at exactly 24 hours old. stale is an
@@ -153,7 +154,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 		sweep    = time.Second
 	)
 
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	store := signingkey.NewInMemoryKeyStore()
 
 	stale := realRecord(t, epoch.Add(sweep-lifetime-time.Hour))
@@ -165,7 +166,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithLifetime(lifetime),
 		signingkey.WithHousekeepingInterval(sweep),
 		signingkey.WithReloadInterval(30*time.Minute),
@@ -177,16 +178,13 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	require.Equal(t, newest.Kid, currentKid(t, km, signingkey.RS256))
 	require.NoError(t, km.Start(t.Context()))
 
-	clock.Advance(sweep)
-	require.Eventually(t, func() bool { return !publishes(km, stale.Kid) },
-		10*time.Second, 5*time.Millisecond,
+	advance(t, clk, sweep, loopCount)
+	require.False(t, publishes(km, stale.Kid),
 		"the sweep ran: a key an hour past its lifetime stopped being published")
 	assert.True(t, publishes(km, boundary.Kid),
 		"a key whose age is exactly the lifetime has not outlived it")
 
-	clock.Advance(sweep)
-	assert.Eventually(t, func() bool { return !publishes(km, boundary.Kid) },
-		10*time.Second, 5*time.Millisecond,
-		"and one a tick older has")
+	advance(t, clk, sweep, loopCount)
+	assert.False(t, publishes(km, boundary.Kid), "and one a sweep older has")
 	assert.True(t, publishes(km, newest.Kid), "the current key is kept throughout")
 }

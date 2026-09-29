@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -78,14 +79,14 @@ func TestManagerTouch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := newTestClock(createdAt)
+			clk := clockwork.NewFakeClockAt(createdAt)
 			m, _ := managerOnClock(t, clk, tc.opts...)
 
 			s, err := m.Create(t.Context(), testUser)
 			require.NoError(t, err)
 
 			for _, at := range tc.activity {
-				clk.Set(createdAt.Add(at))
+				clk.Advance(createdAt.Add(at).Sub(clk.Now()))
 				err = m.Touch(t.Context(), s)
 			}
 			tc.assert(t, s, err)
@@ -95,18 +96,18 @@ func TestManagerTouch(t *testing.T) {
 	t.Run("the extension is persisted, not only applied in memory", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		s, err := m.Create(t.Context(), testUser)
 		require.NoError(t, err)
 
-		clk.Set(createdAt.Add(20 * time.Minute))
+		clk.Advance(createdAt.Add(20 * time.Minute).Sub(clk.Now()))
 		require.NoError(t, m.Touch(t.Context(), s))
 
 		// Past the original 09:30 deadline: this loads only because the
 		// extension reached the store.
-		clk.Set(createdAt.Add(40 * time.Minute))
+		clk.Advance(createdAt.Add(40 * time.Minute).Sub(clk.Now()))
 		loaded, err := m.Load(t.Context(), s.ID)
 		require.NoError(t, err)
 		assert.Equal(t, createdAt.Add(50*time.Minute), loaded.IdleExpiresAt)

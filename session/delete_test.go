@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,7 +22,7 @@ func TestDeletingAndCounting(t *testing.T) {
 	t.Run("deleting one session leaves the rest", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 		ctx := t.Context()
 
@@ -41,7 +42,7 @@ func TestDeletingAndCounting(t *testing.T) {
 	t.Run("deleting a session that is not there is not an error", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		// The caller asked for it to be gone, and it is. Reporting a failure
@@ -52,7 +53,7 @@ func TestDeletingAndCounting(t *testing.T) {
 	t.Run("deleting a user's sessions spares every other user's", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 		ctx := t.Context()
 
@@ -78,7 +79,7 @@ func TestDeletingAndCounting(t *testing.T) {
 	t.Run("a user reference is matched exactly as the consumer supplied it", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 		ctx := t.Context()
 
@@ -96,7 +97,7 @@ func TestDeletingAndCounting(t *testing.T) {
 	t.Run("counting a user's active sessions excludes expired ones", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 		ctx := t.Context()
 
@@ -105,7 +106,7 @@ func TestDeletingAndCounting(t *testing.T) {
 		_, err := m.Create(ctx, testUser)
 		require.NoError(t, err)
 
-		clk.Set(createdAt.Add(time.Hour))
+		clk.Advance(createdAt.Add(time.Hour).Sub(clk.Now()))
 		for range 2 {
 			_, err := m.Create(ctx, testUser)
 			require.NoError(t, err)
@@ -125,7 +126,7 @@ func TestDeletingAndCounting(t *testing.T) {
 	t.Run("deleting expired sessions reports how many went and spares live ones", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, store := managerOnClock(t, clk)
 		ctx := t.Context()
 
@@ -134,7 +135,7 @@ func TestDeletingAndCounting(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-		clk.Set(createdAt.Add(time.Hour))
+		clk.Advance(createdAt.Add(time.Hour).Sub(clk.Now()))
 		live, err := m.Create(ctx, testUser)
 		require.NoError(t, err)
 
@@ -268,7 +269,7 @@ func TestEndingFederatedSessions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := newTestClock(createdAt)
+			clk := clockwork.NewFakeClockAt(createdAt)
 			m, _ := managerOnClock(t, clk)
 			ids := seedFederated(t, m)
 

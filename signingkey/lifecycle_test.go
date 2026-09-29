@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 
@@ -18,83 +20,141 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-// fakeClock is a Clock whose time moves only when a test moves it, and which
-// also makes the tickers the key manager's loops run on. Advancing it fires
-// every ticker whose interval has elapsed, so a test drives rotation, reload
-// and housekeeping at their configured intervals without waiting for them.
-type fakeClock struct {
-	mu      sync.Mutex
-	now     time.Time
-	tickers []*fakeTicker
+// loopCount is how many background loops one started manager runs: rotation,
+// reload and housekeeping, each parked on its own After between runs.
+const loopCount = 3
+
+// parkTimeout bounds how long a test waits for the loops to park on the
+// controlled clock. It is a failure bound, never a way of synchronising: every
+// wait returns the moment the loops have parked, and only a loop that never
+// parks — one not driven by the clock at all — waits it out.
+const parkTimeout = 10 * time.Second
+
+// newClock returns a controlled clock at epoch. Its time moves only when a
+// test advances it, and advancing it fires every After that has come due.
+func newClock() *clockwork.FakeClock { return clockwork.NewFakeClockAt(epoch) }
+
+// awaitParked returns once n Afters are pending on clk, which for a started
+// manager is the proof that its loops are waiting for their next interval.
+// Every Advance must be preceded by it: advancing before a loop has asked for
+// its After would move time past an interval the loop never saw begin.
+func awaitParked(t *testing.T, clk *clockwork.FakeClock, n int) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), parkTimeout)
+	defer cancel()
+	require.NoError(t, clk.BlockUntilContext(ctx, n),
+		"%d background loops should be parked on the clock", n)
 }
 
-func newFakeClock(now time.Time) *fakeClock { return &fakeClock{now: now} }
+// advance moves clk on by d once n loops are parked, and returns once they are
+// parked again. A loop re-parks only after its run has finished, so on return
+// every run the advance started has completed, and a test can assert on what
+// it did without polling.
+func advance(t *testing.T, clk *clockwork.FakeClock, d time.Duration, n int) {
+	t.Helper()
 
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.now
+	awaitParked(t, clk, n)
+	clk.Advance(d)
+	awaitParked(t, clk, n)
 }
 
-func (c *fakeClock) NewTicker(d time.Duration) signingkey.Ticker {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// countingStore is the in-memory key store, counting the writes and loads the
+// manager makes of it, and able to hold the next load until the test releases
+// it.
+type countingStore struct {
+	signingkey.KeyStore
 
-	ticker := &fakeTicker{clock: c, every: d, next: c.now.Add(d), ch: make(chan time.Time, 1)}
-	c.tickers = append(c.tickers, ticker)
-	return ticker
+	mu          sync.Mutex
+	storeCalls  int
+	loadCalls   int
+	holdNext    bool          // the next LoadAll waits for hold to close
+	hold        chan struct{} // closed by releaseLoad
+	loadStarted chan struct{} // closed when the held LoadAll has begun
 }
 
-// Advance moves time forward and fires every ticker due at the new time. Like
-// time.Ticker, a ticker whose previous tick has not been consumed drops the new
-// one, so advancing past several intervals delivers a single tick.
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func newCountingStore() *countingStore {
+	return &countingStore{KeyStore: signingkey.NewInMemoryKeyStore()}
+}
 
-	c.now = c.now.Add(d)
-	for _, ticker := range c.tickers {
-		if ticker.stopped || c.now.Before(ticker.next) {
-			continue
-		}
-		ticker.next = c.now.Add(ticker.every)
+func (s *countingStore) Store(ctx context.Context, rec signingkey.Record) error {
+	s.mu.Lock()
+	s.storeCalls++
+	s.mu.Unlock()
+
+	return s.KeyStore.Store(ctx, rec)
+}
+
+func (s *countingStore) LoadAll(ctx context.Context) ([]signingkey.Record, error) {
+	s.mu.Lock()
+	s.loadCalls++
+	held, hold, started := s.holdNext, s.hold, s.loadStarted
+	s.holdNext = false
+	s.mu.Unlock()
+
+	if held {
+		close(started)
 		select {
-		case ticker.ch <- c.now:
-		default:
+		case <-hold:
+		case <-ctx.Done(): // a failed test's Stop must not wait on the hold
 		}
+	}
+	return s.KeyStore.LoadAll(ctx)
+}
+
+// zero forgets the calls made so far, so a test counts only what the loops do
+// and not what construction did.
+func (s *countingStore) zero() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.storeCalls, s.loadCalls = 0, 0
+}
+
+func (s *countingStore) stores() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.storeCalls
+}
+
+func (s *countingStore) loads() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.loadCalls
+}
+
+// holdNextLoad makes the next LoadAll wait until releaseLoad is called.
+func (s *countingStore) holdNextLoad() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.holdNext = true
+	s.hold, s.loadStarted = make(chan struct{}), make(chan struct{})
+}
+
+// awaitLoadStarted returns once the held LoadAll has begun.
+func (s *countingStore) awaitLoadStarted(t *testing.T) {
+	t.Helper()
+
+	s.mu.Lock()
+	started := s.loadStarted
+	s.mu.Unlock()
+
+	select {
+	case <-started:
+	case <-time.After(parkTimeout):
+		t.Fatal("the held reload never began")
 	}
 }
 
-// tickerCount reports how many tickers the manager asked for, which is how a
-// test sees that Start launched every loop and Stop released them.
-func (c *fakeClock) tickerCount() (live int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// releaseLoad lets the held LoadAll finish.
+func (s *countingStore) releaseLoad() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	for _, ticker := range c.tickers {
-		if !ticker.stopped {
-			live++
-		}
-	}
-	return live
-}
-
-type fakeTicker struct {
-	clock   *fakeClock
-	every   time.Duration
-	next    time.Time
-	ch      chan time.Time
-	stopped bool // guarded by clock.mu
-}
-
-func (t *fakeTicker) C() <-chan time.Time { return t.ch }
-
-func (t *fakeTicker) Stop() {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-
-	t.stopped = true
+	close(s.hold)
 }
 
 // TestKeyManagerLifecycle drives one Start/Stop sequence per case. The assert
@@ -176,25 +236,91 @@ func TestKeyManagerLifecycle(t *testing.T) {
 	}
 }
 
-// TestStartLaunchesEveryLoop pins that Start launches all three loops and Stop
-// releases them: each loop owns one ticker, taken from the configured clock.
-func TestStartLaunchesEveryLoop(t *testing.T) {
-	ignore := goleak.IgnoreCurrent()
+// TestLifecycleLoopsRunOnTheClock drives the background loops through a
+// controlled clock. Nothing waits on real time: each case parks the loops,
+// advances the clock, and asserts on what the store saw once the loops have
+// parked again.
+//
+// The manager runs RS256 only, rotates hourly, reloads every minute and sweeps
+// hourly. Housekeeping touches no store, so the counts are rotation's writes
+// and reload's loads; construction's own load and write are zeroed first.
+func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore)
+	}
 
-	clock := newFakeClock(epoch)
-	km, err := signingkey.NewKeyManager(t.Context(),
-		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
-		signingkey.WithAlgs(signingkey.EdDSA),
-		signingkey.WithClock(clock),
-	)
-	require.NoError(t, err)
-	require.Zero(t, clock.tickerCount(), "construction runs no loop, so it needs no ticker")
+	cases := []testCase{
+		{
+			name: "one interval runs rotation, reload and housekeeping once each",
+			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore) {
+				require.NoError(t, km.Start(t.Context()))
 
-	require.NoError(t, km.Start(t.Context()))
-	require.Equal(t, 3, clock.tickerCount(),
-		"rotation, reload and housekeeping each run on their own ticker")
+				advance(t, clk, time.Hour, loopCount)
+				assert.Equal(t, 1, store.stores(), "one rotation for the one configured algorithm")
+				assert.Equal(t, 1, store.loads(), "one reload: the minute intervals inside the hour did not each run")
+			},
+		},
+		{
+			name: "the interval is measured from the end of a run",
+			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore) {
+				store.holdNextLoad()
+				require.NoError(t, km.Start(t.Context()))
 
-	require.NoError(t, km.Stop())
-	require.Zero(t, clock.tickerCount(), "every loop releases its ticker when it ends")
-	goleak.VerifyNone(t, ignore)
+				awaitParked(t, clk, loopCount)
+				clk.Advance(time.Minute) // the reload starts at +1m
+				store.awaitLoadStarted(t)
+				clk.Advance(3 * time.Second) // and is still running at +1m3s
+				store.releaseLoad()
+				awaitParked(t, clk, loopCount)
+
+				clk.Advance(time.Minute - time.Nanosecond) // +2m3s less 1ns: not yet
+				awaitParked(t, clk, loopCount)
+				assert.Equal(t, 1, store.loads(), "the next reload is a full interval after the last one finished")
+
+				advance(t, clk, time.Nanosecond, loopCount) // +2m3s
+				assert.Equal(t, 2, store.loads(), "and runs as soon as that interval has elapsed")
+			},
+		},
+		{
+			name: "a long jump runs each loop once",
+			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore) {
+				require.NoError(t, km.Start(t.Context()))
+
+				advance(t, clk, 5*time.Hour, loopCount)
+				assert.Equal(t, 1, store.stores(), "five hourly intervals at once rotate once, not five times")
+				assert.Equal(t, 1, store.loads(), "and reload once, not three hundred times")
+
+				advance(t, clk, time.Hour-time.Nanosecond, loopCount)
+				assert.Equal(t, 1, store.stores(), "the next rotation is a full interval after the jump")
+
+				advance(t, clk, time.Nanosecond, loopCount)
+				assert.Equal(t, 2, store.stores(), "and runs once that interval has elapsed")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ignore := goleak.IgnoreCurrent()
+
+			clk := newClock()
+			store := newCountingStore()
+			km, err := signingkey.NewKeyManager(t.Context(),
+				signingkey.WithKeyStore(store),
+				signingkey.WithClock(clk),
+				signingkey.WithAlgs(signingkey.RS256),
+				signingkey.WithRotateInterval(time.Hour),
+				signingkey.WithReloadInterval(time.Minute),
+				signingkey.WithHousekeepingInterval(time.Hour),
+			)
+			require.NoError(t, err)
+			store.zero()
+
+			tc.assert(t, clk, km, store)
+
+			require.NoError(t, km.Stop())
+			goleak.VerifyNone(t, ignore)
+		})
+	}
 }

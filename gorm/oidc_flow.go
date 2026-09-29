@@ -105,7 +105,7 @@ func (s *FlowStore) Complete(ctx context.Context, handle, provider, state string
 		return oidc.Flow{}, failed(op, err)
 	}
 	var row flowRow
-	res := q.Raw(pgschema.FlowComplete, handle, provider, state, storekit.Time(s.c.now())).Scan(&row)
+	res := q.Raw(pgschema.FlowComplete, handle, provider, state, storekit.Time(s.c.clock.Now())).Scan(&row)
 	if res.Error != nil {
 		return oidc.Flow{}, failed(op, res.Error)
 	}

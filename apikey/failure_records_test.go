@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -75,10 +76,10 @@ func TestAPIKeyStoreFailureRecords(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			now := base
+			clk := clockwork.NewFakeClockAt(base)
 			inner := apikey.NewMemoryStore()
 			issuer, err := apikey.NewManager(
-				apikey.WithStore(inner), apikey.WithClock(func() time.Time { return now }))
+				apikey.WithStore(inner), apikey.WithClock(clk))
 			require.NoError(t, err)
 
 			presented, rec, err := issuer.Issue(t.Context(), "svc-billing", "nightly export",
@@ -88,7 +89,7 @@ func TestAPIKeyStoreFailureRecords(t *testing.T) {
 			var logs bytes.Buffer
 			verifier, err := apikey.NewManager(
 				apikey.WithStore(tc.store(t, inner)),
-				apikey.WithClock(func() time.Time { return now }),
+				apikey.WithClock(clk),
 				apikey.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 			require.NoError(t, err)
 

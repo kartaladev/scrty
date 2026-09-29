@@ -101,7 +101,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 	if err != nil {
 		return failed(op, err)
 	}
-	now := storekit.Time(s.c.now())
+	now := storekit.Time(s.c.clock.Now())
 
 	return s.atomically(ctx, op, func(q DBTX) error {
 		var newest []byte

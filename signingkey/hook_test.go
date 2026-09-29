@@ -48,12 +48,12 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 		report.hook(err)
 	}
 
-	clock := newFakeClock(epoch)
+	clk := newClock()
 
 	var err error
 	km, err = signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, report, opRotate)),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithErrorHook(hook),
 		signingkey.WithRotateInterval(time.Hour),
@@ -65,9 +65,10 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 
 	for attempt := 1; attempt <= attempts; attempt++ {
-		clock.Advance(time.Hour)
-		require.Eventually(t, func() bool { return report.hooks() >= attempt },
-			10*time.Second, 5*time.Millisecond,
+		// A hook that stalled its loop would keep it from parking again, which
+		// advance reports as a failure rather than a hang.
+		advance(t, clk, time.Hour, loopCount)
+		require.Equal(t, attempt, report.hooks(),
 			"rotation failure %d should have been reported: a hook that reads the "+
 				"manager back must not stall the loop it runs on", attempt)
 	}

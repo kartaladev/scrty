@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -48,7 +49,7 @@ func TestTOTPReplay(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 	store := mfa.NewMemoryEnrolmentStore()
 
-	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return base }))
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	secret := []byte(rfc6238SHA1Secret)
@@ -72,7 +73,7 @@ func TestTOTPVerifyStoreFailure(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 
 	m, err := mfa.NewTOTP(failingEnrolmentStore{err: outage}, "Example",
-		mfa.WithClock(func() time.Time { return base }))
+		mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	err = m.Verify(t.Context(), "u-1", "123456")
@@ -91,7 +92,7 @@ func TestTOTPVerifyRace(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 	store := mfa.NewMemoryEnrolmentStore()
 
-	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return base }))
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	secret := []byte(rfc6238SHA1Secret)
@@ -136,7 +137,7 @@ func TestTOTPProvingCodeNotReplayableAfterConfirm(t *testing.T) {
 
 	now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
 	store := mfa.NewMemoryEnrolmentStore()
-	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return now }))
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(now)))
 	require.NoError(t, err)
 
 	_, gen, err := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice")

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -246,11 +247,11 @@ func TestCheck(t *testing.T) {
 			if at.IsZero() {
 				at = issuedAt.Add(time.Minute)
 			}
-			clk := newTestClock(at)
+			clk := clockwork.NewFakeClockAt(at)
 
 			opts := append([]onetime.Option{
 				onetime.WithStore(store),
-				onetime.WithClock(clk.Now),
+				onetime.WithClock(clk),
 				onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
 			}, tc.opts...)
 
@@ -290,9 +291,9 @@ func TestCheckRefusesMalformedTokensWithoutReadingTheStore(t *testing.T) {
 			// shape, before it can buy a caller a single store lookup.
 			store := NewMockStore(ctrl)
 
-			clk := newTestClock(issuedAt)
+			clk := clockwork.NewFakeClockAt(issuedAt)
 			m, err := onetime.NewManager("magic-link",
-				onetime.WithStore(store), onetime.WithClock(clk.Now))
+				onetime.WithStore(store), onetime.WithClock(clk))
 			require.NoError(t, err)
 
 			c, err := m.Check(t.Context(), tc.presented, "")
@@ -313,9 +314,9 @@ func TestCheckingRepeatedlyWritesNothingAndKeepsSucceeding(t *testing.T) {
 	// racing caller, which is the whole reason it is separate from Consume.
 	store.EXPECT().FindByID(gomock.Any(), checkTokenID).Return(&rec, nil).Times(3)
 
-	clk := newTestClock(issuedAt.Add(time.Minute))
+	clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))
 	m, err := onetime.NewManager("magic-link",
-		onetime.WithStore(store), onetime.WithClock(clk.Now))
+		onetime.WithStore(store), onetime.WithClock(clk))
 	require.NoError(t, err)
 
 	for range 3 {

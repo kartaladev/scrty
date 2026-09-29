@@ -14,7 +14,7 @@ import (
 // newCacheManager returns a manager for providers "corp" (p) and any extra
 // providers, sending every request through p's in-memory client so that it
 // can run inside a testing/synctest bubble. Build it inside the bubble: its
-// default clock, time.Now, then reads the bubble's fake time.
+// default clock, clock.System(), then reads the bubble's fake time.
 func newCacheManager(t *testing.T, p *testProvider, opts ...oidc.ManagerOption) *oidc.Manager {
 	t.Helper()
 

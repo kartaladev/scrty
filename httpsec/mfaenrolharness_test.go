@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -48,9 +49,9 @@ type enrolHarness struct {
 	store    *mfa.MemoryEnrolmentStore
 	totp     *mfa.TOTP
 
-	// at is the TOTP method's clock. Tests move it between requests, never
+	// clock is the TOTP method's clock. Tests move it between requests, never
 	// during one.
-	at time.Time
+	clock *clockwork.FakeClock
 
 	users  *MockUserLoader
 	sender *MockSender
@@ -96,14 +97,14 @@ func newEnrolHarness(t *testing.T) *enrolHarness {
 		t:        t,
 		sessions: sessions,
 		store:    mfa.NewMemoryEnrolmentStore(),
-		at:       time.Now().Truncate(time.Second),
+		clock:    clockwork.NewFakeClockAt(time.Now().Truncate(time.Second)),
 		users:    NewMockUserLoader(ctrl),
 		sender:   NewMockSender(ctrl),
 		tokens:   NewMockGenerator(ctrl),
 		username: enrolUsername,
 	}
 
-	h.totp, err = mfa.NewTOTP(h.store, enrolIssuer, mfa.WithClock(func() time.Time { return h.at }))
+	h.totp, err = mfa.NewTOTP(h.store, enrolIssuer, mfa.WithClock(h.clock))
 	require.NoError(t, err)
 
 	h.method = h.totp
@@ -257,7 +258,7 @@ func (h *enrolHarness) enrolment(t *testing.T) (mfa.Enrolment, bool) {
 func (h *enrolHarness) codeFor(t *testing.T, secret string) string {
 	t.Helper()
 
-	code, err := totp.GenerateCode(secret, h.at)
+	code, err := totp.GenerateCode(secret, h.clock.Now())
 	require.NoError(t, err)
 
 	return code

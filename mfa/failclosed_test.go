@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -72,7 +73,7 @@ func TestRequiredUserFailsClosed(t *testing.T) {
 			healthy := mfa.NewMemoryEnrolmentStore()
 
 			setup, err := mfa.NewTOTP(healthy, "Example",
-				mfa.WithClock(func() time.Time { return base }))
+				mfa.WithClock(clockwork.NewFakeClockAt(base)))
 			require.NoError(t, err)
 
 			p, err := setup.BeginEnrolment(ctx, "u-1", "ada@example.com")
@@ -81,7 +82,7 @@ func TestRequiredUserFailsClosed(t *testing.T) {
 
 			// Now break the enrolment, leaving the requirement alone.
 			method, err := mfa.NewTOTP(tc.store(t, healthy), "Example",
-				mfa.WithClock(func() time.Time { return base }))
+				mfa.WithClock(clockwork.NewFakeClockAt(base)))
 			require.NoError(t, err)
 
 			lookup, err := mfa.LookupFor(method)
@@ -121,7 +122,7 @@ func TestRequireForAllLocksOutUnenrolled(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 
 	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example",
-		mfa.WithClock(func() time.Time { return base }))
+		mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	lookup, err := mfa.LookupFor(method)

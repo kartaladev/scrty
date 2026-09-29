@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -53,7 +54,7 @@ func TestConsumerBroker(t *testing.T) {
 
 	m, err := oidc.NewManager(reg, consumerBroker,
 		oidc.WithOutboundClient(p.Outbound(t)),
-		oidc.WithClock(func() time.Time { return now }),
+		oidc.WithClock(clockwork.NewFakeClockAt(now)),
 	)
 	require.NoError(t, err)
 

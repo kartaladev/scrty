@@ -45,7 +45,7 @@ func realRecordFor(t *testing.T, alg signingkey.Alg, createdAt time.Time) signin
 // while GetSigner handed out a working key for it, and a foreign key made
 // current would be exempt from housekeeping for as long as the process lived.
 func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	store := signingkey.NewInMemoryKeyStore()
 
 	// A replica configured for ES256 shares the store: one key past the
@@ -58,7 +58,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	// This manager is configured for RS256 only.
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.RS256),
 		signingkey.WithLifetime(24*time.Hour),
 		signingkey.WithRotateInterval(6*time.Hour),
@@ -84,17 +84,15 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 
 	require.NoError(t, km.Start(t.Context()))
 
-	clock.Advance(time.Second)
-	require.Eventually(t, func() bool { return !publishes(km, stale.Kid) },
-		10*time.Second, 5*time.Millisecond,
+	advance(t, clk, time.Second, loopCount)
+	require.False(t, publishes(km, stale.Kid),
 		"housekeeping retires a foreign key past its lifetime")
 	require.True(t, publishes(km, fresh.Kid), "the one inside the lifetime is kept")
 
 	// The newest foreign key is the one a current-key exemption would protect
 	// for the life of the process.
-	clock.Advance(25 * time.Hour)
-	assert.Eventually(t, func() bool { return !publishes(km, fresh.Kid) },
-		10*time.Second, 5*time.Millisecond,
+	advance(t, clk, 25*time.Hour, loopCount)
+	assert.False(t, publishes(km, fresh.Kid),
 		"no foreign key is current, so none is exempt from housekeeping")
 
 	_, _, ok = km.GetSigner(signingkey.ES256)

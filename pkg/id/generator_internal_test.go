@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ func TestV7Generator_CounterOverflowBorrowsNextMillisecond(t *testing.T) {
 	t.Parallel()
 
 	at := time.UnixMilli(1_700_000_000_000)
-	g := NewV7Generator(WithClock(func() time.Time { return at }), WithRandom(rand.NewChaCha8([32]byte{7})))
+	g := NewV7Generator(WithClock(clockwork.NewFakeClockAt(at)), WithRandom(rand.NewChaCha8([32]byte{7})))
 
 	first, err := g.NewID()
 	require.NoError(t, err)

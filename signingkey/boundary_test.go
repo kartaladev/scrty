@@ -226,11 +226,11 @@ func TestInMemoryStoreCopiesPrivateBytes(t *testing.T) {
 // every rotation.
 func TestDuplicateAlgsAreRefused(t *testing.T) {
 	store := signingkey.NewInMemoryKeyStore()
-	clock := newFakeClock(epoch)
+	clk := newClock()
 
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA, signingkey.EdDSA, signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(30*time.Minute),
@@ -247,12 +247,7 @@ func TestDuplicateAlgsAreRefused(t *testing.T) {
 		"one algorithm named three times is one algorithm")
 
 	require.NoError(t, km.Start(t.Context()))
-	clock.Advance(time.Hour)
-	require.Eventually(t, func() bool {
-		recs, lerr := store.LoadAll(t.Context())
-		return lerr == nil && len(recs) > 1
-	}, 5*time.Second, 5*time.Millisecond)
-	time.Sleep(200 * time.Millisecond)
+	advance(t, clk, time.Hour, loopCount)
 
 	recs, err := store.LoadAll(t.Context())
 	require.NoError(t, err)
@@ -302,7 +297,7 @@ func TestTypedNilPortIsAConfigurationError(t *testing.T) {
 // directions: WithAlgs keeps the caller's slice and SupportedAlgs hands the
 // manager's own back. A caller that sorts, filters or reuses either one
 // rewrites what the manager treats as configured, after the configuration was
-// validated — and the reload path reads that list on every tick.
+// validated — and the reload path reads that list on every run.
 func TestTheConfiguredAlgorithmsAreNotSharedWithTheConsumer(t *testing.T) {
 	// want is built here, and never handed to the manager, so no assertion can
 	// be satisfied by comparing a corrupted list with itself.
@@ -370,10 +365,10 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	dup := realRecord(t, epoch.Add(-25*time.Hour))
 	current := realRecord(t, epoch)
 
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, current}}),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithLifetime(24*time.Hour),
 		signingkey.WithHousekeepingInterval(time.Second),
 		signingkey.WithReloadInterval(30*time.Minute),
@@ -390,9 +385,8 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	// Housekeeping walks the order it publishes by and deletes as it goes, so a
 	// second entry for a kid it has just dropped would have nothing to read.
 	require.NoError(t, km.Start(t.Context()))
-	clock.Advance(time.Second)
-	require.Eventually(t, func() bool { return !publishes(km, dup.Kid) },
-		10*time.Second, 5*time.Millisecond,
+	advance(t, clk, time.Second, loopCount)
+	require.False(t, publishes(km, dup.Kid),
 		"the duplicated key stops being published once it is past its lifetime")
 	assert.True(t, publishes(km, current.Kid), "and the current key is untouched")
 }

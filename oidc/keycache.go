@@ -180,7 +180,7 @@ func (m *Manager) keysFor(ctx context.Context, provider, kid string) (jwk.Set, e
 	c := &m.cache
 	c.mu.Lock()
 	e := c.entry(key)
-	fresh, v := c.fresh(e, m.now()), *e
+	fresh, v := c.fresh(e, m.clock.Now()), *e
 	c.mu.Unlock()
 
 	if fresh {
@@ -231,7 +231,7 @@ func (m *Manager) cached(ctx context.Context, key string, fetch func(context.Con
 
 	c.mu.Lock()
 	e := c.entry(key)
-	v, done, err := c.settled(e, m.now())
+	v, done, err := c.settled(e, m.clock.Now())
 	c.mu.Unlock()
 
 	if !done {
@@ -252,7 +252,7 @@ func (m *Manager) staleOr(ctx context.Context, key string, e *cacheEntry, usable
 
 	c.mu.Lock()
 	v := *e
-	age := m.now().Sub(v.fetched)
+	age := m.clock.Now().Sub(v.fetched)
 	c.mu.Unlock()
 
 	if v.fetched.IsZero() || age < c.ttl || age > c.ttl+c.stale || (usable != nil && !usable(v)) {
@@ -291,7 +291,7 @@ func (m *Manager) shared(ctx context.Context, key string, e *cacheEntry, fetch f
 
 	ch := c.flight.DoChan(key, func() (any, error) {
 		c.mu.Lock()
-		now := m.now()
+		now := m.clock.Now()
 		if forKid && c.fresh(e, now) {
 			switch {
 			case now.Before(e.cooled):
@@ -323,7 +323,7 @@ func (m *Manager) shared(ctx context.Context, key string, e *cacheEntry, fetch f
 			}
 			return cacheEntry{}, err
 		}
-		e.md, e.keys, e.fetched = v.md, v.keys, m.now()
+		e.md, e.keys, e.fetched = v.md, v.keys, m.clock.Now()
 		e.err, e.until, e.misses = nil, time.Time{}, 0
 		result := *e
 		c.mu.Unlock()
@@ -370,7 +370,7 @@ func (m *Manager) recordFailure(key string, e *cacheEntry, err error) ([]slog.At
 	}
 	e.misses++
 	window := m.cache.backoff(e.misses)
-	e.err, e.until = err, m.now().Add(window)
+	e.err, e.until = err, m.clock.Now().Add(window)
 
 	kind, provider, _ := strings.Cut(key, ":")
 	return []slog.Attr{

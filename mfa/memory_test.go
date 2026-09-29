@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -856,7 +857,7 @@ func runTwoSessionRace(t *testing.T, s enrolmentPathStore) raceOutcome {
 	ctx := t.Context()
 	now := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 
-	m, err := mfa.NewTOTP(s, "Example", mfa.WithClock(func() time.Time { return now }))
+	m, err := mfa.NewTOTP(s, "Example", mfa.WithClock(clockwork.NewFakeClockAt(now)))
 	require.NoError(t, err)
 
 	_, genB, err := m.BeginEnrolmentGeneration(ctx, "u-1", "alice@example.com")

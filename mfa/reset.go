@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/notify"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // SessionRevoker ends every session of a user. *session.Manager and every
@@ -61,7 +62,7 @@ type ResetDeps struct {
 type resetConfig struct {
 	revokeSessions bool
 	notify         bool
-	now            func() time.Time
+	clock          clock.Clock
 	message        func(at time.Time) (subject, body string)
 	// messageUnset records a WithResetMessage given a nil builder, which is
 	// refused as ErrConfig rather than read as the default.
@@ -69,7 +70,7 @@ type resetConfig struct {
 }
 
 func newResetConfig(opts []ResetOption) resetConfig {
-	c := resetConfig{revokeSessions: true, notify: true, now: time.Now, message: defaultResetMessage}
+	c := resetConfig{revokeSessions: true, notify: true, clock: clock.System(), message: defaultResetMessage}
 
 	for _, opt := range opts {
 		if opt != nil {
@@ -103,12 +104,14 @@ func WithoutResetNotification() ResetOption {
 	return func(c *resetConfig) { c.notify = false }
 }
 
-// WithResetClock replaces time.Now as the source of the instant the
-// notification names. A nil clock is ignored, keeping time.Now.
-func WithResetClock(now func() time.Time) ResetOption {
+// WithResetClock replaces the source of the instant the notification names.
+// The default is clock.System(). A nil clock, typed nil included, is ignored,
+// keeping the default: the reset has no configuration error to return before
+// it removes the enrolment.
+func WithResetClock(clk clock.Clock) ResetOption {
 	return func(c *resetConfig) {
-		if now != nil {
-			c.now = now
+		if !nilcheck.IsNil(clk) {
+			c.clock = clk
 		}
 	}
 }
@@ -207,7 +210,7 @@ func ResetEnrolment(ctx context.Context, user identity.UserID, deps ResetDeps, o
 		return nil
 	}
 
-	return deps.notify(ctx, user, c.now(), c.message)
+	return deps.notify(ctx, user, c.clock.Now(), c.message)
 }
 
 // check refuses a dependency a configured step needs and was not given.

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -99,7 +100,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 	manager := func(t *testing.T, d returnedErrorsDoubles) *session.Manager {
 		t.Helper()
 
-		return managerFor(t, session.WithStore(d.store), session.WithClock(func() time.Time { return createdAt }))
+		return managerFor(t, session.WithStore(d.store), session.WithClock(clockwork.NewFakeClockAt(createdAt)))
 	}
 	encrypted := func(t *testing.T, d returnedErrorsDoubles) session.Store {
 		t.Helper()

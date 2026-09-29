@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -49,7 +50,7 @@ type KeyManager struct {
 	reloadEvery    time.Duration
 	sampleWindow   time.Duration
 	store          KeyStore
-	clock          Clock
+	clock          clock.Timed
 	logger         *slog.Logger
 	errorHook      func(error)
 	sampler        *logsample.Sampler
@@ -78,7 +79,7 @@ type KeyManager struct {
 // (WithRotateInterval); housekeeping every 1h (WithHousekeepingInterval);
 // reload every 1m (WithReloadInterval); a 5m failure-log sampling window
 // (WithLogSampleWindow); an in-memory store that does not survive a restart
-// (WithKeyStore); the system clock (WithClock); slog.Default() (WithLogger);
+// (WithKeyStore); clock.System(), the system clock (WithClock); slog.Default() (WithLogger);
 // and no error hook (WithErrorHook).
 //
 // A configuration that cannot work — an unsupported algorithm, a non-positive
@@ -101,7 +102,7 @@ func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 		reloadEvery:    defaultReloadEvery,
 		sampleWindow:   defaultSampleWindow,
 		store:          NewInMemoryKeyStore(),
-		clock:          systemClock{},
+		clock:          clock.System(),
 		logger:         slog.Default(),
 	}
 	for _, opt := range opts {

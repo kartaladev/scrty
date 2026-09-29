@@ -63,13 +63,6 @@ func newKeySourceWith(t *testing.T, opts ...signingkey.Option) *signingkey.KeyMa
 	return km
 }
 
-// fixedClock is the injectable time source both generator and verifier read.
-type fixedClock struct{ now time.Time }
-
-func (c *fixedClock) Now() time.Time { return c.now }
-
-func (c *fixedClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
-
 func alice() *identity.Principal {
 	return &identity.Principal{ID: "u-1", Username: "alice"}
 }

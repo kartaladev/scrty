@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // Manager mints sessions, holds them in a Store and enforces their two
@@ -39,7 +40,7 @@ type Manager struct {
 	store           Store
 	idleTimeout     time.Duration
 	absoluteTimeout time.Duration
-	now             func() time.Time
+	clock           clock.Clock
 	logger          *slog.Logger
 	random          io.Reader
 
@@ -135,7 +136,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		store:           NewMemoryStore(),
 		idleTimeout:     defaultIdleTimeout,
 		absoluteTimeout: defaultAbsoluteTimeout,
-		now:             time.Now,
+		clock:           clock.System(),
 		logger:          slog.Default(),
 		random:          rand.Reader,
 	}
@@ -154,7 +155,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	if nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
 	}
-	if nilcheck.IsNil(m.now) {
+	if nilcheck.IsNil(m.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 	if nilcheck.IsNil(m.random) {
@@ -201,7 +202,7 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 		return nil, err
 	}
 
-	now := m.now()
+	now := m.clock.Now()
 	s := &Session{
 		ID:                id,
 		UserID:            user,
@@ -245,7 +246,7 @@ func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
 // ErrSessionExpired and nothing is written: an expired session is not one a
 // request can revive by being made.
 func (m *Manager) Touch(ctx context.Context, s *Session) error {
-	now := m.now()
+	now := m.clock.Now()
 	if s.expired(now) {
 		return ErrSessionExpired
 	}

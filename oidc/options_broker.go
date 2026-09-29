@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/password"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -39,13 +39,14 @@ func WithBrokerLogger(l *slog.Logger) BrokerOption {
 }
 
 // WithBrokerClock replaces the clock that stamps a created link and paces the
-// refusal log. The default is time.Now.
-func WithBrokerClock(now func() time.Time) BrokerOption {
+// refusal log. The default is clock.System(). A nil clock, typed nil
+// included, is a configuration error.
+func WithBrokerClock(clk clock.Clock) BrokerOption {
 	return func(b *Broker) error {
-		if now == nil {
+		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: WithBrokerClock was given nil", ErrConfig)
 		}
-		b.now = now
+		b.clock = clk
 		return nil
 	}
 }

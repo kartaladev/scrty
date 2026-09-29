@@ -51,10 +51,10 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 		release: make(chan struct{}),
 	}
 
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
@@ -68,7 +68,8 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	store.armed = true
 	require.NoError(t, km.Start(t.Context()))
 
-	clock.Advance(time.Hour)
+	awaitParked(t, clk, loopCount)
+	clk.Advance(time.Hour)
 	<-store.writing // a rotation is now inside the store write
 
 	// Both halves of KeySource, asked from another goroutine so a blocked one

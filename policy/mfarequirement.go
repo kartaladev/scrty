@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -116,13 +117,13 @@ func WithMFARequirementLogInterval(d time.Duration) MFARequirementOption {
 }
 
 // WithMFARequirementClock replaces the time source the policy samples its
-// records by. The default is time.Now, and a nil clock is a configuration
-// error.
+// records by. The default is clock.System(), and a nil clock, typed nil
+// included, is a configuration error.
 //
 // It is not the instant a decision is judged against — that is Input.Now, taken
 // from the caller's clock so that every policy in a phase agrees.
-func WithMFARequirementClock(now func() time.Time) MFARequirementOption {
-	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.now = now })
+func WithMFARequirementClock(clk clock.Clock) MFARequirementOption {
+	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.clock = clk })
 }
 
 // WithMFARequirementPhaseSource replaces how the policy learns which phase it
@@ -153,7 +154,7 @@ type mfaRequirementPolicy struct {
 	exempt         func(factor.Kind) bool
 	phaseOf        func(context.Context, *Input) (Phase, bool)
 	logger         *slog.Logger
-	now            func() time.Time
+	clock          clock.Clock
 	logInterval    time.Duration
 	sampler        *logsample.Sampler
 
@@ -223,7 +224,7 @@ type mfaRequirementPolicy struct {
 // Defaults: the per-user lookup (WithMFARequiredForAll replaces it),
 // factor.Kind.MFAExempt (WithMFAExemption), the phase from the context
 // (WithMFARequirementPhaseSource), slog.Default (WithMFARequirementLogger),
-// time.Now (WithMFARequirementClock), DefaultLogInterval for its sampled
+// clock.System() (WithMFARequirementClock), DefaultLogInterval for its sampled
 // records (WithMFARequirementLogInterval) and no enrolment path
 // (WithMFAEnrolmentPath).
 func NewMFARequirementPolicy(
@@ -237,7 +238,7 @@ func NewMFARequirementPolicy(
 		exempt:      factor.Kind.MFAExempt,
 		phaseOf:     phaseOfContext,
 		logger:      slog.Default(),
-		now:         time.Now,
+		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
 	for _, opt := range opts {
@@ -262,7 +263,7 @@ func NewMFARequirementPolicy(
 			"%w: the mfa requirement policy has no source for the phase, so it would refuse "+
 				"every request it was asked about", ErrConfig)
 	}
-	if p.now == nil {
+	if nilcheck.IsNil(p.clock) {
 		return nil, fmt.Errorf(
 			"%w: the mfa requirement policy has no clock, so its records could not be "+
 				"sampled", ErrConfig)
@@ -480,7 +481,7 @@ func phaseName(phase Phase, known bool) string {
 func (p *mfaRequirementPolicy) sampled(
 	ctx context.Context, level slog.Level, msg, key string, attrs ...slog.Attr,
 ) {
-	write, suppressed := p.sampler.Allow(key, p.now())
+	write, suppressed := p.sampler.Allow(key, p.clock.Now())
 	if !write {
 		return
 	}

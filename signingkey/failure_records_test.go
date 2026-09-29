@@ -112,7 +112,7 @@ func TestSigningKeyStoreFailureRecords(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := newFakeClock(epoch)
+			clk := newClock()
 			report := &failureReport{}
 			recorder, logger := newLogRecorder()
 
@@ -121,7 +121,7 @@ func TestSigningKeyStoreFailureRecords(t *testing.T) {
 
 			km, err := signingkey.NewKeyManager(t.Context(),
 				signingkey.WithKeyStore(store),
-				signingkey.WithClock(clock),
+				signingkey.WithClock(clk),
 				signingkey.WithAlgs(signingkey.EdDSA),
 				signingkey.WithLogger(logger),
 				signingkey.WithErrorHook(report.hook),
@@ -135,11 +135,9 @@ func TestSigningKeyStoreFailureRecords(t *testing.T) {
 
 			require.NoError(t, km.Start(t.Context()))
 
-			clock.Advance(time.Second)
-			require.Eventually(t, func() bool { return report.hooks() >= 1 },
-				10*time.Second, 5*time.Millisecond, "the failure reaches the consumer's error hook")
-			require.Eventually(t, func() bool { return recorder.written() >= 1 },
-				10*time.Second, 5*time.Millisecond, "the failure reaches the logger")
+			advance(t, clk, time.Second, loopCount)
+			require.GreaterOrEqual(t, report.hooks(), 1, "the failure reaches the consumer's error hook")
+			require.GreaterOrEqual(t, recorder.written(), 1, "the failure reaches the logger")
 
 			records := recorder.records(t)
 			require.NotEmpty(t, records, "the failure reaches the logger")

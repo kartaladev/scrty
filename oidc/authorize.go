@@ -62,7 +62,7 @@ func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authori
 	}
 	state, nonce, verifier := secrets[0], secrets[1], secrets[2]
 
-	expires := m.now().Add(m.flowTTL)
+	expires := m.clock.Now().Add(m.flowTTL)
 	handle, err := m.flows.Begin(ctx, Flow{
 		Provider: p.Name, State: state, Nonce: nonce, Verifier: verifier, Next: next, ExpiresAt: expires,
 	})

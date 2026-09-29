@@ -154,7 +154,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 
 	switch {
 	case e.EmailCode == nil:
-	case !s.opts.now().Before(e.EmailCodeUntil):
+	case !s.opts.clock.Now().Before(e.EmailCodeUntil):
 		// Expired: it can no longer be charged or redeemed, and completion
 		// reads EmailCodeUntil, not the code. Opening it would let a key
 		// removed since it was sealed fail every read of an abandoned code.

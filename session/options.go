@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ErrConfig is wrapped by every error NewManager and NewEncryptedStore return
@@ -68,12 +70,13 @@ func WithAbsoluteTimeout(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.absoluteTimeout = d }
 }
 
-// WithClock replaces the time source. The default is time.Now.
+// WithClock replaces the time source. The default is clock.System().
 //
-// A nil clock is a configuration error rather than a silent fallback: a caller
-// passing one meant to inject a clock, and falling back to the wall clock
-// would make a test whose clock never advances look like one that does.
-func WithClock(now func() time.Time) ManagerOption { return func(m *Manager) { m.now = now } }
+// A nil clock, typed nil included, is a configuration error rather than a
+// silent fallback: a caller passing one meant to inject a clock, and falling
+// back to the wall clock would make a test whose clock never advances look
+// like one that does.
+func WithClock(clk clock.Clock) ManagerOption { return func(m *Manager) { m.clock = clk } }
 
 // WithSessionLogger replaces the logger. The default is slog.Default().
 //
@@ -137,11 +140,12 @@ func WithExternalSession(provider, issuer, sessionID, idToken string) CreateOpti
 type MemoryStoreOption func(*MemoryStore)
 
 // WithHousekeepingInterval replaces how often a started store sweeps expired
-// sessions. The default is one minute.
+// sessions. The default is one minute. Each sweep starts one interval after
+// the previous one finished.
 //
 // Zero or less is ignored and the default is kept: a non-positive interval
-// would make the ticker either refuse to be created or spin, and neither is
-// what a caller asking for housekeeping wants.
+// would make housekeeping spin, which is not what a caller asking for it
+// wants.
 func WithHousekeepingInterval(d time.Duration) MemoryStoreOption {
 	return func(s *MemoryStore) {
 		if d > 0 {
@@ -151,17 +155,20 @@ func WithHousekeepingInterval(d time.Duration) MemoryStoreOption {
 }
 
 // WithMemoryStoreClock replaces the store's time source. The default is
-// time.Now.
+// clock.System().
 //
 // The store needs a clock of its own because only it can decide which of its
-// records are expired, both when it refuses to serve one and when it sweeps.
-// A test that moves a manager's clock gives the store the same one, so expiry
-// means the same thing on both sides. A nil function keeps the default, since
-// a store with no clock could not judge expiry at all.
-func WithMemoryStoreClock(now func() time.Time) MemoryStoreOption {
+// records are expired, both when it refuses to serve one and when it sweeps,
+// and it waits on the same clock between housekeeping sweeps, so a controlled
+// clock runs housekeeping without real waiting. A test that moves a manager's
+// clock gives the store the same one, so expiry means the same thing on both
+// sides. A nil clock, typed nil included, keeps the default, since this
+// constructor cannot fail and a store with no clock could not judge expiry at
+// all.
+func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {
 	return func(s *MemoryStore) {
-		if now != nil {
-			s.now = now
+		if !nilcheck.IsNil(clk) {
+			s.clock = clk
 		}
 	}
 }

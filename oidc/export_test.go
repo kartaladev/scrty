@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ManagerWiring is what NewManager resolved, for tests that must see a
@@ -14,7 +15,7 @@ import (
 type ManagerWiring struct {
 	Out     *outbound.Client
 	Random  io.Reader
-	Now     func() time.Time
+	Clock   clock.Clock
 	Flows   FlowStore
 	FlowTTL time.Duration
 	Log     *slog.Logger
@@ -22,7 +23,7 @@ type ManagerWiring struct {
 
 // WiringOf exposes m's resolved dependencies to the black-box tests.
 func WiringOf(m *Manager) ManagerWiring {
-	return ManagerWiring{Out: m.out, Random: m.random, Now: m.now, Flows: m.flows, FlowTTL: m.flowTTL, Log: m.log}
+	return ManagerWiring{Out: m.out, Random: m.random, Clock: m.clock, Flows: m.flows, FlowTTL: m.flowTTL, Log: m.log}
 }
 
 // MetadataForTest exposes the manager's provider-metadata lookup.

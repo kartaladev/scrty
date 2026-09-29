@@ -95,6 +95,23 @@ func TestNewTOTP(t *testing.T) {
 			assert: configError,
 		},
 		{
+			// A nil pointer inside the interface is refused like an untyped
+			// nil, rather than read at the first verification.
+			name:   "a typed-nil clock",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithClock((*nilClock)(nil))},
+			assert: configError,
+		},
+		{
+			name:   "a consumer clock with only Now",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})},
+			assert: func(t *testing.T, m *mfa.TOTP, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, m)
+			},
+		},
+		{
 			name:   "a nil random source",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithRandom(nil)},
@@ -171,3 +188,14 @@ func TestTOTPChannel(t *testing.T) {
 			"an authenticator code must not arrive on any first factor's channel: %s", kind)
 	}
 }
+
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil an
+// unchecked constructor error hands over.
+type nilClock struct{}
+
+func (*nilClock) Now() time.Time { return time.Time{} }
+
+// fixedClock is a consumer's own clock with only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }

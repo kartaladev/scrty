@@ -15,11 +15,11 @@ import (
 	"io"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"testing/iotest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -37,43 +37,24 @@ var errStoreDown = errors.New("store down")
 // issuedAt is the instant every test clock starts from.
 var issuedAt = time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 
-// testClock is a clock a test moves by hand. It is safe for concurrent use
-// because the racing-redemption test reads it from many goroutines at once.
-type testClock struct {
-	mu sync.Mutex
-	at time.Time
-}
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil an
+// unchecked constructor error hands over.
+type nilClock struct{}
 
-func newTestClock(at time.Time) *testClock { return &testClock{at: at} }
+func (*nilClock) Now() time.Time { return time.Time{} }
 
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// fixedClock is a consumer's own clock with only Now.
+type fixedClock struct{ at time.Time }
 
-	return c.at
-}
-
-func (c *testClock) Set(at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.at = at
-}
-
-func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.at = c.at.Add(d)
-}
+func (c fixedClock) Now() time.Time { return c.at }
 
 // newManager returns a manager and the in-memory store behind it, both reading
 // the same clock so that expiry means the same thing on either side.
-func newManager(t *testing.T, clk *testClock, opts ...onetime.Option) (*onetime.Manager, *onetime.MemoryStore) {
+func newManager(t *testing.T, clk *clockwork.FakeClock, opts ...onetime.Option) (*onetime.Manager, *onetime.MemoryStore) {
 	t.Helper()
 
-	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk.Now))
-	all := append([]onetime.Option{onetime.WithStore(store), onetime.WithClock(clk.Now)}, opts...)
+	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+	all := append([]onetime.Option{onetime.WithStore(store), onetime.WithClock(clk)}, opts...)
 
 	m, err := onetime.NewManager("magic-link", all...)
 	require.NoError(t, err)
@@ -195,6 +176,21 @@ func TestNewManager(t *testing.T) {
 			assert:  configError,
 		},
 		{
+			name:    "a typed nil clock is refused like an untyped one, rather than panicking at the first issue",
+			purpose: "magic-link",
+			opts:    []onetime.Option{onetime.WithClock((*nilClock)(nil))},
+			assert:  configError,
+		},
+		{
+			name:    "a consumer clock with only Now is accepted",
+			purpose: "magic-link",
+			opts:    []onetime.Option{onetime.WithClock(fixedClock{at: issuedAt})},
+			assert: func(t *testing.T, m *onetime.Manager, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, m)
+			},
+		},
+		{
 			name:    "a nil random source is refused, because a silent fallback would hide a deliberate entropy choice",
 			purpose: "magic-link",
 			opts:    []onetime.Option{onetime.WithRandom(nil)},
@@ -246,11 +242,11 @@ func TestIssue(t *testing.T) {
 		name    string
 		subject string
 		issue   []onetime.IssueOption
-		manager func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore)
+		manager func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore)
 		assert  func(t *testing.T, store *onetime.MemoryStore, presented string, tok onetime.Token, err error)
 	}
 
-	plain := func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+	plain := func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 		t.Helper()
 
 		return newManager(t, clk)
@@ -287,7 +283,7 @@ func TestIssue(t *testing.T) {
 		{
 			name:    "expiry is the issue time plus the time-to-live",
 			subject: "ada@example.com",
-			manager: func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 				t.Helper()
 
 				return newManager(t, clk, onetime.WithTTL(24*time.Hour))
@@ -315,7 +311,7 @@ func TestIssue(t *testing.T) {
 		{
 			name:    "a random source that fails is an error, never a weaker secret",
 			subject: "ada@example.com",
-			manager: func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 				t.Helper()
 
 				return newManager(t, clk, onetime.WithRandom(iotest.ErrReader(errNoEntropy)))
@@ -329,7 +325,7 @@ func TestIssue(t *testing.T) {
 		{
 			name:    "a short read from the random source is an error, never a shorter secret",
 			subject: "ada@example.com",
-			manager: func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 				t.Helper()
 
 				return newManager(t, clk, onetime.WithRandom(strings.NewReader("too short")))
@@ -343,7 +339,7 @@ func TestIssue(t *testing.T) {
 		{
 			name:    "an identifier generator that fails is an error",
 			subject: "ada@example.com",
-			manager: func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 				t.Helper()
 
 				gen := NewMockGenerator(gomock.NewController(t))
@@ -360,7 +356,7 @@ func TestIssue(t *testing.T) {
 		{
 			name:    "a consumer generator supplies the record identifier",
 			subject: "ada@example.com",
-			manager: func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 				t.Helper()
 
 				gen := NewMockGenerator(gomock.NewController(t))
@@ -377,14 +373,14 @@ func TestIssue(t *testing.T) {
 		{
 			name:    "a store that cannot insert is reported, not swallowed",
 			subject: "ada@example.com",
-			manager: func(t *testing.T, clk *testClock) (*onetime.Manager, *onetime.MemoryStore) {
+			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Manager, *onetime.MemoryStore) {
 				t.Helper()
 
 				store := NewMockStore(gomock.NewController(t))
 				store.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(errStoreDown)
 
 				m, err := onetime.NewManager("magic-link",
-					onetime.WithStore(store), onetime.WithClock(clk.Now))
+					onetime.WithStore(store), onetime.WithClock(clk))
 				require.NoError(t, err)
 
 				return m, nil
@@ -400,7 +396,7 @@ func TestIssue(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := newTestClock(issuedAt)
+			clk := clockwork.NewFakeClockAt(issuedAt)
 			m, store := tc.manager(t, clk)
 
 			presented, tok, err := m.Issue(t.Context(), tc.subject, tc.issue...)
@@ -409,10 +405,33 @@ func TestIssue(t *testing.T) {
 	}
 }
 
+// TestIssueDefaultClockIsTheSystemClock is the time-source scenario "System
+// clock by default": with no clock option, a manager and the default
+// in-memory store behind it both read the system clock, so an issued token's
+// expiry lands the lifetime after the system time at issue. It stands outside
+// TestIssue's table because it needs the real wall clock read around the call,
+// which the table's shared runner has no row-specific room for.
+func TestIssueDefaultClockIsTheSystemClock(t *testing.T) {
+	t.Parallel()
+
+	m, err := onetime.NewManager("magic-link", onetime.WithTTL(5*time.Minute))
+	require.NoError(t, err)
+
+	before := time.Now()
+	_, tok, err := m.Issue(t.Context(), "ada@example.com")
+	after := time.Now()
+	require.NoError(t, err)
+
+	assert.False(t, tok.ExpiresAt.Before(before.Add(5*time.Minute)),
+		"expiry landed before the earliest system time plus the lifetime")
+	assert.False(t, tok.ExpiresAt.After(after.Add(5*time.Minute)),
+		"expiry landed after the latest system time plus the lifetime")
+}
+
 func TestIssuedIdentifiersNeverCollide(t *testing.T) {
 	t.Parallel()
 
-	m, _ := newManager(t, newTestClock(issuedAt))
+	m, _ := newManager(t, clockwork.NewFakeClockAt(issuedAt))
 
 	seen := make(map[string]struct{}, 1000)
 	for range 1000 {
@@ -434,7 +453,7 @@ func TestIssuedSecretsAreOnlyStoredAsHashes(t *testing.T) {
 
 	const binding = "device-nonce-a"
 
-	clk := newTestClock(issuedAt)
+	clk := clockwork.NewFakeClockAt(issuedAt)
 	m, store := newManager(t, clk)
 
 	presented, tok, err := m.Issue(t.Context(), "ada@example.com", onetime.WithBinding(binding))
@@ -462,7 +481,7 @@ func TestIssuedSecretsAreOnlyStoredAsHashes(t *testing.T) {
 func TestAnUnboundTokenStoresNoBindingHash(t *testing.T) {
 	t.Parallel()
 
-	clk := newTestClock(issuedAt)
+	clk := clockwork.NewFakeClockAt(issuedAt)
 	m, store := newManager(t, clk)
 
 	_, tok, err := m.Issue(t.Context(), "ada@example.com")
@@ -485,10 +504,10 @@ func sha256Of(value string) []byte {
 
 // managerFor returns a second manager over an existing store, so that a test
 // can show one purpose's tokens are invisible to another's.
-func managerFor(t *testing.T, purpose string, store onetime.Store, clk *testClock, opts ...onetime.Option) *onetime.Manager {
+func managerFor(t *testing.T, purpose string, store onetime.Store, clk *clockwork.FakeClock, opts ...onetime.Option) *onetime.Manager {
 	t.Helper()
 
-	all := append([]onetime.Option{onetime.WithStore(store), onetime.WithClock(clk.Now)}, opts...)
+	all := append([]onetime.Option{onetime.WithStore(store), onetime.WithClock(clk)}, opts...)
 
 	m, err := onetime.NewManager(purpose, all...)
 	require.NoError(t, err)
@@ -498,11 +517,11 @@ func managerFor(t *testing.T, purpose string, store onetime.Store, clk *testCloc
 
 // issueAgo issues a token as though it had been issued ago before issuedAt, and
 // leaves the clock back at issuedAt.
-func issueAgo(t *testing.T, clk *testClock, m *onetime.Manager, subject string, ago time.Duration) string {
+func issueAgo(t *testing.T, clk *clockwork.FakeClock, m *onetime.Manager, subject string, ago time.Duration) string {
 	t.Helper()
 
-	clk.Set(issuedAt.Add(-ago))
-	defer clk.Set(issuedAt)
+	clk.Advance(issuedAt.Add(-ago).Sub(clk.Now()))
+	defer func() { clk.Advance(issuedAt.Sub(clk.Now())) }()
 
 	presented, _, err := m.Issue(t.Context(), subject)
 	require.NoError(t, err)
@@ -516,7 +535,7 @@ func TestIssuedCount(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []onetime.Option
-		issue  func(t *testing.T, clk *testClock, m, other *onetime.Manager)
+		issue  func(t *testing.T, clk *clockwork.FakeClock, m, other *onetime.Manager)
 		assert func(t *testing.T, n int, err error)
 	}
 
@@ -536,7 +555,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "every issue inside the window counts",
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, m, "ada@example.com", 5*time.Minute)
@@ -547,7 +566,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "an issue older than the window does not count",
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, m, "ada@example.com", 10*time.Minute)
@@ -557,7 +576,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "an issue exactly at the edge of the window still counts",
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, m, "ada@example.com", time.Hour)
@@ -566,7 +585,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "an issue one moment before the edge does not",
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, m, "ada@example.com", time.Hour+time.Nanosecond)
@@ -575,7 +594,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "another subject is not counted",
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, m, "bob@example.com", 5*time.Minute)
@@ -584,7 +603,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "the same subject under another purpose is not counted",
-			issue: func(t *testing.T, clk *testClock, _, other *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, _, other *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, other, "ada@example.com", 5*time.Minute)
@@ -594,7 +613,7 @@ func TestIssuedCount(t *testing.T) {
 		{
 			name: "a consumer window widens what counts",
 			opts: []onetime.Option{onetime.WithIssuanceWindow(6 * time.Hour)},
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				issueAgo(t, clk, m, "ada@example.com", 70*time.Minute)
@@ -603,7 +622,7 @@ func TestIssuedCount(t *testing.T) {
 		},
 		{
 			name: "a consumed token still counts, because it was still issued",
-			issue: func(t *testing.T, clk *testClock, m, _ *onetime.Manager) {
+			issue: func(t *testing.T, clk *clockwork.FakeClock, m, _ *onetime.Manager) {
 				t.Helper()
 
 				presented := issueAgo(t, clk, m, "ada@example.com", 5*time.Minute)
@@ -618,7 +637,7 @@ func TestIssuedCount(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := newTestClock(issuedAt)
+			clk := clockwork.NewFakeClockAt(issuedAt)
 			m, store := newManager(t, clk, tc.opts...)
 			other := managerFor(t, "email-code", store, clk)
 
@@ -641,8 +660,8 @@ func TestIssuedCountReportsAStoreThatCannotAnswer(t *testing.T) {
 		CountRecentBySubject(gomock.Any(), "magic-link", "ada@example.com", issuedAt.Add(-time.Hour)).
 		Return(0, errStoreDown)
 
-	clk := newTestClock(issuedAt)
-	m, err := onetime.NewManager("magic-link", onetime.WithStore(store), onetime.WithClock(clk.Now))
+	clk := clockwork.NewFakeClockAt(issuedAt)
+	m, err := onetime.NewManager("magic-link", onetime.WithStore(store), onetime.WithClock(clk))
 	require.NoError(t, err)
 
 	n, err := m.IssuedCount(t.Context(), "ada@example.com")
@@ -658,7 +677,7 @@ func TestPurgeExpired(t *testing.T) {
 	t.Run("a token still inside the issuance window survives, so a sweep cannot free quota", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk)
 
 		// Expired a quarter of an hour ago, but issued only half an hour ago,
@@ -678,7 +697,7 @@ func TestPurgeExpired(t *testing.T) {
 	t.Run("a token older than the window but not yet expired survives", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk, onetime.WithTTL(24*time.Hour))
 
 		presented := issueAgo(t, clk, m, "ada@example.com", 2*time.Hour)
@@ -695,7 +714,7 @@ func TestPurgeExpired(t *testing.T) {
 	t.Run("a token both expired and past the window is removed", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk)
 
 		issueAgo(t, clk, m, "ada@example.com", 90*time.Minute)
@@ -709,7 +728,7 @@ func TestPurgeExpired(t *testing.T) {
 	t.Run("another purpose's records are left alone", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk)
 		other := managerFor(t, "email-code", store, clk)
 
@@ -730,8 +749,8 @@ func TestPurgeExpired(t *testing.T) {
 		// cannot purge must be refused without a round trip.
 		store := NewMockStore(ctrl)
 
-		clk := newTestClock(issuedAt)
-		m, err := onetime.NewManager("magic-link", onetime.WithStore(store), onetime.WithClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt)
+		m, err := onetime.NewManager("magic-link", onetime.WithStore(store), onetime.WithClock(clk))
 		require.NoError(t, err)
 
 		removed, err := m.PurgeExpired(t.Context())
@@ -749,8 +768,8 @@ func TestPurgeExpired(t *testing.T) {
 			DeleteExpiredBefore(gomock.Any(), "magic-link", issuedAt.Add(-time.Hour)).
 			Return(0, errStoreDown)
 
-		clk := newTestClock(issuedAt)
-		m, err := onetime.NewManager("magic-link", onetime.WithStore(store), onetime.WithClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(issuedAt)
+		m, err := onetime.NewManager("magic-link", onetime.WithStore(store), onetime.WithClock(clk))
 		require.NoError(t, err)
 
 		removed, err := m.PurgeExpired(t.Context())

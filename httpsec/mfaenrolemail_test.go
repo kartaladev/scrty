@@ -212,7 +212,7 @@ func TestEnrolmentEmailCode(t *testing.T) {
 		{
 			name: "the emailed code within 10 minutes",
 			before: func(_ *testing.T, h *enrolHarness, _ *httpsec.Chain, _ *outbox, _ string) {
-				h.at = h.at.Add(9 * time.Minute)
+				h.clock.Advance(9 * time.Minute)
 			},
 			assert: func(t *testing.T, h *enrolHarness, s *session.Session, o *outbox, doc beginBody, out served) {
 				t.Helper()
@@ -247,7 +247,7 @@ func TestEnrolmentEmailCode(t *testing.T) {
 		{
 			name: "the emailed code 11 minutes later",
 			before: func(_ *testing.T, h *enrolHarness, _ *httpsec.Chain, _ *outbox, _ string) {
-				h.at = h.at.Add(11 * time.Minute)
+				h.clock.Advance(11 * time.Minute)
 			},
 			assert: func(t *testing.T, h *enrolHarness, s *session.Session, _ *outbox, _ beginBody, out served) {
 				t.Helper()

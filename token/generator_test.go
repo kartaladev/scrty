@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,14 +21,14 @@ func TestGenerateClaims(t *testing.T) {
 	type testCase struct {
 		name   string
 		algs   []signingkey.Alg
-		opts   func(clock *fixedClock) []token.GenerateOption
+		opts   func(clock *clockwork.FakeClock) []token.GenerateOption
 		assert func(t *testing.T, keys *signingkey.KeyManager, raw string, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "the default token is RS256, lives 15 minutes and names the current key",
-			opts: func(clock *fixedClock) []token.GenerateOption {
+			opts: func(clock *clockwork.FakeClock) []token.GenerateOption {
 				return []token.GenerateOption{
 					token.WithIssuer("https://auth.example"),
 					token.WithClock(clock),
@@ -55,7 +56,7 @@ func TestGenerateClaims(t *testing.T) {
 		{
 			name: "a consumer replaces the algorithm and the lifetime",
 			algs: []signingkey.Alg{signingkey.ES256},
-			opts: func(clock *fixedClock) []token.GenerateOption {
+			opts: func(clock *clockwork.FakeClock) []token.GenerateOption {
 				return []token.GenerateOption{
 					token.WithSigningAlg(signingkey.ES256),
 					token.WithLifetime(5 * time.Minute),
@@ -78,7 +79,7 @@ func TestGenerateClaims(t *testing.T) {
 		},
 		{
 			name: "a configured audience is carried",
-			opts: func(clock *fixedClock) []token.GenerateOption {
+			opts: func(clock *clockwork.FakeClock) []token.GenerateOption {
 				return []token.GenerateOption{
 					token.WithAudience("api"),
 					token.WithClock(clock),
@@ -96,7 +97,7 @@ func TestGenerateClaims(t *testing.T) {
 			t.Parallel()
 
 			keys := newKeySource(t, tc.algs...)
-			clock := &fixedClock{now: issuedAt}
+			clock := clockwork.NewFakeClockAt(issuedAt)
 
 			gen, err := token.NewGenerator(keys, tc.opts(clock)...)
 			require.NoError(t, err)
@@ -195,6 +196,17 @@ func TestNewGeneratorValidation(t *testing.T) {
 			name:   "a nil clock",
 			keys:   reporting,
 			opts:   []token.GenerateOption{token.WithClock(nil)},
+			assert: refused("clock"),
+		},
+		{
+			// *clockwork.FakeClock implements Now through a pointer receiver, so
+			// a nil one passed to WithClock is an interface holding a nil
+			// pointer: `== nil` misses it, and only the reflect-based check the
+			// constructor uses catches it before the first Generate reads from a
+			// nil receiver.
+			name:   "a typed-nil clock",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithClock((*clockwork.FakeClock)(nil))},
 			assert: refused("clock"),
 		},
 		{
@@ -374,7 +386,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 	t.Parallel()
 
 	issuedAt := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
-	clock := &fixedClock{now: issuedAt}
+	clock := clockwork.NewFakeClockAt(issuedAt)
 
 	gen, err := token.NewGenerator(newKeySource(t),
 		token.WithIssuer("https://auth.example"),

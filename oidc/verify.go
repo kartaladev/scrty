@@ -146,7 +146,7 @@ func (m *Manager) parseProviderJWT(ctx context.Context, p Provider, raw string, 
 		jwt.WithIssuer(p.Issuer),
 		jwt.WithAudience(p.ClientID),
 		jwt.WithAcceptableSkew(m.skew),
-		jwt.WithClock(jwt.ClockFunc(m.now)),
+		jwt.WithClock(jwt.ClockFunc(m.clock.Now)),
 		// Judged at the clock's own resolution, whatever process-wide
 		// truncation another package may have set.
 		jwt.WithTruncation(0),

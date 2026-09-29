@@ -33,11 +33,11 @@ func signWithCurrent(t *testing.T, source signingkey.KeySource, payload string) 
 }
 
 func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	store := signingkey.NewInMemoryKeyStore()
 	shared := []signingkey.Option{
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithReloadInterval(10 * time.Second), // the consumer's interval
 		signingkey.WithHousekeepingInterval(12 * time.Hour),
@@ -61,27 +61,28 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 	require.NoError(t, replicaA.Start(t.Context()))
 	stopAndVerify(t, replicaA)
 
-	clock.Advance(time.Minute)
-	k2 := waitForRotation(t, replicaA, signingkey.EdDSA, k1)
+	advance(t, clk, time.Minute, loopCount)
+	k2 := currentKid(t, replicaA, signingkey.EdDSA)
+	require.NotEqual(t, k1, k2, "replica A rotated")
 	token := signWithCurrent(t, replicaA, "issued by replica A")
 
-	// Replica B starts only now, so its reload ticker is due exactly one
-	// reload interval after the rotation it has to pick up — not part of it.
+	// Replica B starts only now, so its reload is due exactly one reload
+	// interval after the rotation it has to pick up — not part of it.
 	require.NoError(t, replicaB.Start(t.Context()))
 	stopAndVerify(t, replicaB)
 	require.Equal(t, k1, currentKid(t, replicaB, signingkey.EdDSA),
 		"replica B has not reloaded yet")
 
-	clock.Advance(9 * time.Second)
-	assert.Never(t, func() bool { return publishes(replicaB, k2) },
-		200*time.Millisecond, 20*time.Millisecond,
+	// Both replicas share the clock, so both sets of loops are parked on it.
+	const bothReplicas = 2 * loopCount
+
+	advance(t, clk, 9*time.Second, bothReplicas)
+	assert.False(t, publishes(replicaB, k2),
 		"nothing is reloaded before the consumer's 10-second interval has elapsed")
 
-	clock.Advance(time.Second) // ten seconds since replica A rotated
-	require.Eventually(t, func() bool {
-		kid, _, ok := replicaB.GetSigner(signingkey.EdDSA)
-		return publishes(replicaB, k2) && ok && kid == k2
-	}, 10*time.Second, 5*time.Millisecond,
+	advance(t, clk, time.Second, bothReplicas) // ten seconds since replica A rotated
+	kid, _, ok := replicaB.GetSigner(signingkey.EdDSA)
+	require.True(t, publishes(replicaB, k2) && ok && kid == k2,
 		"within one reload interval replica B publishes k2 and adopts it as current")
 
 	setB := publishedSet(t, replicaB)
@@ -93,14 +94,14 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 }
 
 func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	store := signingkey.NewInMemoryKeyStore()
 	held := realRecord(t, epoch)
 	require.NoError(t, store.Store(t.Context(), held))
 
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithReloadInterval(10*time.Second),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
@@ -120,11 +121,9 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 
 	require.NoError(t, km.Start(t.Context()))
 
-	clock.Advance(10 * time.Second)
-	require.Eventually(t, func() bool {
-		kid, _, ok := km.GetSigner(signingkey.RS256)
-		return publishes(km, newest.Kid) && ok && kid == newest.Kid
-	}, 10*time.Second, 5*time.Millisecond,
+	advance(t, clk, 10*time.Second, loopCount)
+	kid, _, ok := km.GetSigner(signingkey.RS256)
+	require.True(t, publishes(km, newest.Kid) && ok && kid == newest.Kid,
 		"a reload publishes the stored key and re-picks the latest CreatedAt as current")
 
 	assert.False(t, publishes(km, expired.Kid),
@@ -137,13 +136,13 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 }
 
 func TestReloadFailureKeepsHeldKeys(t *testing.T) {
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	report := &failureReport{}
 	recorder, logger := newLogRecorder()
 
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, report, opReload)),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithLogger(logger),
 		signingkey.WithErrorHook(report.hook),
@@ -160,12 +159,9 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 
 	require.NoError(t, km.Start(t.Context()))
 
-	clock.Advance(10 * time.Second)
-	require.Eventually(t, func() bool { return report.hooks() >= 1 },
-		10*time.Second, 5*time.Millisecond,
-		"the reload failure reaches the consumer's error hook")
-	require.Eventually(t, func() bool { return recorder.written() >= 1 },
-		10*time.Second, 5*time.Millisecond, "the reload failure reaches the configured logger")
+	advance(t, clk, 10*time.Second, loopCount)
+	require.Equal(t, 1, report.hooks(), "the reload failure reaches the consumer's error hook")
+	require.Equal(t, 1, recorder.written(), "the reload failure reaches the configured logger")
 
 	hooked, _ := report.snapshot()
 	assert.ErrorIs(t, hooked[0], errStoreUnreachable,

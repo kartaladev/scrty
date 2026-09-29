@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -405,7 +406,7 @@ func newCallbackEnv(t *testing.T, now time.Time, flows func(t *testing.T) oidc.F
 	e := &callbackEnv{p: p, broker: NewMockIdentityBroker(gomock.NewController(t)), logs: &bytes.Buffer{}}
 	opts := []oidc.ManagerOption{
 		oidc.WithOutboundClient(p.Outbound(t)),
-		oidc.WithClock(func() time.Time { return now }),
+		oidc.WithClock(clockwork.NewFakeClockAt(now)),
 		oidc.WithLogger(testTextLogger(e.logs)),
 	}
 	if flows != nil {

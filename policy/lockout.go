@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ErrAccountLocked is the reason an AccountLockoutPolicy denies a
@@ -61,7 +62,7 @@ type AccountLockoutPolicy struct {
 	store     AttemptStore
 	threshold int
 	window    time.Duration
-	now       func() time.Time
+	clock     clock.Clock
 }
 
 // LockoutOption configures an AccountLockoutPolicy. Every option names the
@@ -97,16 +98,16 @@ func WithLockoutWindow(d time.Duration) LockoutOption {
 	return func(p *AccountLockoutPolicy) { p.window = d }
 }
 
-// WithLockoutClock replaces the time source. The default is time.Now.
+// WithLockoutClock replaces the time source. The default is clock.System().
 //
 // The policy needs one of its own for the work no request drives — recording a
 // failure, and choosing a purge cutoff — while an evaluation judges against the
 // instant the phase carries, so that every policy in a phase agrees about when
-// now is. A nil clock is a configuration error rather than a silent fallback:
-// falling back to the wall clock would make a test whose clock never advances
-// look like one that does.
-func WithLockoutClock(now func() time.Time) LockoutOption {
-	return func(p *AccountLockoutPolicy) { p.now = now }
+// now is. A nil clock, typed nil included, is a configuration error rather
+// than a silent fallback: falling back to the wall clock would make a test
+// whose clock never advances look like one that does.
+func WithLockoutClock(clk clock.Clock) LockoutOption {
+	return func(p *AccountLockoutPolicy) { p.clock = clk }
 }
 
 // NewAccountLockoutPolicy returns a policy that locks an account after
@@ -129,7 +130,7 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 		store:     NewMemoryAttemptStore(),
 		threshold: defaultLockoutThreshold,
 		window:    defaultLockoutWindow,
-		now:       time.Now,
+		clock:     clock.System(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -151,7 +152,7 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 	if nilcheck.IsNil(p.store) {
 		return nil, fmt.Errorf("%w: attempt store must not be nil", ErrConfig)
 	}
-	if nilcheck.IsNil(p.now) {
+	if nilcheck.IsNil(p.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 
@@ -204,7 +205,7 @@ func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision
 
 	now := in.Now
 	if now.IsZero() {
-		now = p.now()
+		now = p.clock.Now()
 	}
 
 	count, err := p.store.FailureCount(ctx, in.Username, now.Add(-p.window))
@@ -246,7 +247,7 @@ func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision
 // The store's own error comes back behind fixed library text; it stays
 // reachable through errors.Is and errors.As, but its text never is.
 func (p *AccountLockoutPolicy) RecordFailure(ctx context.Context, username string) error {
-	if err := p.store.RecordFailure(ctx, username, p.now()); err != nil {
+	if err := p.store.RecordFailure(ctx, username, p.clock.Now()); err != nil {
 		return diag.Wrap(err, "policy: record a failed attempt")
 	}
 
@@ -293,7 +294,7 @@ func (p *AccountLockoutPolicy) PurgeExpired(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("%w: %T", ErrReapUnsupported, p.store)
 	}
 
-	removed, err := reaper.DeleteAttemptsBefore(ctx, p.now().Add(-p.window))
+	removed, err := reaper.DeleteAttemptsBefore(ctx, p.clock.Now().Add(-p.window))
 	if err != nil {
 		if err == ErrRetainSinceRequired { //nolint:errorlint // identity: a bare sentinel carries no store text
 			return 0, err

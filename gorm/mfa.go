@@ -77,7 +77,7 @@ func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.Enrolm
 	}
 
 	inner := &enrolmentStore{c: cfg}
-	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithClock(cfg.now), seal.WithResealOnRead(cfg.resealOnRead))
+	s, err := seal.NewEnrolmentStore(inner, inner, c, seal.WithClock(cfg.clock), seal.WithResealOnRead(cfg.resealOnRead))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, err)
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -546,7 +547,7 @@ func TestBrokerProvisioning(t *testing.T) {
 			opts := append([]oidc.BrokerOption{
 				oidc.WithProvisioner(h.prov),
 				oidc.WithBrokerLogger(log),
-				oidc.WithBrokerClock(func() time.Time { return provisionClock }),
+				oidc.WithBrokerClock(clockwork.NewFakeClockAt(provisionClock)),
 			}, tc.opts...)
 
 			b, err := oidc.NewBroker(h.links, h.users, opts...)

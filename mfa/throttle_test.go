@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -259,7 +260,7 @@ func TestMFALogsCarryNoSecrets(t *testing.T) {
 	store := mfa.NewMemoryEnrolmentStore()
 
 	m, err := mfa.NewTOTP(store, "Example",
-		mfa.WithClock(func() time.Time { return base }),
+		mfa.WithClock(clockwork.NewFakeClockAt(base)),
 		mfa.WithTOTPLogger(logger),
 	)
 	require.NoError(t, err)

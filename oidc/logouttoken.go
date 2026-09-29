@@ -83,7 +83,7 @@ func (m *Manager) checkLogoutToken(ctx context.Context, p Provider, raw string) 
 	if !ok {
 		return LogoutClaims{}, refused("no issued-at")
 	}
-	now := m.now()
+	now := m.clock.Now()
 	// The future-iat check below duplicates jwx's own default IsIssuedAtValid
 	// validator (run inside parseProviderJWT's jwt.Parse); it is kept as
 	// defence in depth rather than relied on as the only guard.

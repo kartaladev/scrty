@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // perReplicaWarning is written once per limiter, on first use.
@@ -48,7 +49,7 @@ const perReplicaWarning = "ratelimit: the in-memory limiter counts only this rep
 type MemoryLimiter struct {
 	limit  int
 	window time.Duration
-	clock  Clock
+	clock  clock.Clock
 	logger *slog.Logger
 
 	// warnOnce keeps the per-replica warning to one record. Repeating it on
@@ -72,13 +73,13 @@ type MemoryLimiter struct {
 // here is the difference between a wiring mistake found at startup and one found
 // when a limit turns out to be either absent or total.
 //
-// Defaults: the system clock, replaceable with WithMemoryLimiterClock, and
+// Defaults: clock.System(), replaceable with WithMemoryLimiterClock, and
 // slog.Default, replaceable with WithMemoryLimiterLogger.
 func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*MemoryLimiter, error) {
 	l := &MemoryLimiter{
 		limit:  limit,
 		window: window,
-		clock:  systemClock{},
+		clock:  clock.System(),
 		logger: slog.Default(),
 		keys:   map[string][]time.Time{},
 	}

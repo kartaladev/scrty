@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -247,7 +248,7 @@ func TestVerifyLogoutToken(t *testing.T) {
 			require.NoError(t, err)
 			opts := append([]oidc.ManagerOption{
 				oidc.WithOutboundClient(p.Outbound(t)),
-				oidc.WithClock(func() time.Time { return now }),
+				oidc.WithClock(clockwork.NewFakeClockAt(now)),
 			}, tc.opts...)
 			m, err := oidc.NewManager(reg, stubBroker{}, opts...)
 			require.NoError(t, err)

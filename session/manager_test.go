@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -86,8 +87,8 @@ func TestConsumerStoreServesEveryOperation(t *testing.T) {
 	store.EXPECT().DeleteByExternalSession(gomock.Any(), "https://a", "s-1").Return(1, nil).Times(1)
 	store.EXPECT().DeleteByUserAndExternalIssuer(gomock.Any(), testUser, "https://a").Return(2, nil).Times(1)
 
-	clk := newTestClock(createdAt)
-	m := managerFor(t, session.WithStore(store), session.WithClock(clk.Now))
+	clk := clockwork.NewFakeClockAt(createdAt)
+	m := managerFor(t, session.WithStore(store), session.WithClock(clk))
 	ctx := t.Context()
 
 	_, err := m.Create(ctx, testUser)
@@ -180,6 +181,22 @@ func TestNewManager(t *testing.T) {
 			name:   "a nil clock is refused",
 			opts:   []session.ManagerOption{session.WithClock(nil)},
 			assert: configError,
+		},
+		{
+			// time-source "Nil time source", typed nil included: a nil
+			// pointer inside the interface would otherwise pass construction
+			// and panic, or read nonsense, at the first Create.
+			name:   "a typed-nil clock is refused like an untyped one",
+			opts:   []session.ManagerOption{session.WithClock((*nilClock)(nil))},
+			assert: configError,
+		},
+		{
+			name: "a consumer clock with only Now is accepted",
+			opts: []session.ManagerOption{session.WithClock(fixedClock{at: createdAt})},
+			assert: func(t *testing.T, m *session.Manager, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, m)
+			},
 		},
 		{
 			name:   "a nil random source is refused",

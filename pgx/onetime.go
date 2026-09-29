@@ -137,7 +137,7 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 	}
 
 	n, err := s.c.exec(ctx, "purge expired one-time tokens", pgschema.OneTimeDeleteExpiredBefore,
-		purpose, storekit.Time(s.c.now()), storekit.Time(retainSince))
+		purpose, storekit.Time(s.c.clock.Now()), storekit.Time(retainSince))
 
 	return int(n), err
 }

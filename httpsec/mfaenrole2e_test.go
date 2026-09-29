@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,7 +55,7 @@ func (r *requiredFlag) Required(context.Context, identity.UserID) (bool, error) 
 type e2eDeployment struct {
 	sessions *session.Manager
 	totp     *mfa.TOTP
-	clock    *integrationClock
+	clock    *clockwork.FakeClock
 	users    *MockUserLoader
 	sender   *capturingSender
 	tokens   *MockGenerator
@@ -80,7 +81,7 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 
 	d := &e2eDeployment{
 		sessions: sessions,
-		clock:    &integrationClock{now: time.Now().Truncate(time.Second)},
+		clock:    clockwork.NewFakeClockAt(time.Now().Truncate(time.Second)),
 		users:    NewMockUserLoader(ctrl),
 		sender:   &capturingSender{},
 		tokens:   NewMockGenerator(ctrl),
@@ -88,7 +89,7 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 	}
 	d.required.on.Store(true)
 
-	d.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Payroll", mfa.WithClock(d.clock.Now))
+	d.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Payroll", mfa.WithClock(d.clock))
 	require.NoError(t, err)
 
 	onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
@@ -347,7 +348,7 @@ func (d *e2eDeployment) enrolAndVerify(t *testing.T, credential string, emailed 
 	challengedFor(t, d.invoices(t, credential), policy.ChallengeMFA)
 
 	// The proof spent this step's code; the verification needs a later one.
-	d.clock.advance(30 * time.Second)
+	d.clock.Advance(30 * time.Second)
 
 	verified := d.send(t, httpsec.DefaultMFAVerifyPath, credential, url.Values{"code": {d.code(t, doc.Secret)}})
 	require.NoError(t, verified.err)
@@ -534,7 +535,7 @@ func TestEnrolmentPathEndToEnd(t *testing.T) {
 		provisioning, err := d.totp.BeginEnrolment(t.Context(), e2eUser, e2eAddress)
 		require.NoError(t, err)
 		require.NoError(t, d.totp.ConfirmEnrolment(t.Context(), e2eUser, d.code(t, provisioning.Secret)))
-		d.clock.advance(30 * time.Second)
+		d.clock.Advance(30 * time.Second)
 
 		held := challengedFor(t, d.login(t), policy.ChallengeMFA)
 

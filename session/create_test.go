@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -48,7 +49,7 @@ func TestCreateWritesEverythingInOneWrite(t *testing.T) {
 	t.Run("a session created without a first factor reports none", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		s, err := m.Create(t.Context(), testUser)
@@ -63,7 +64,7 @@ func TestCreateWritesEverythingInOneWrite(t *testing.T) {
 	t.Run("the deadlines are set from the manager's clock and timeouts", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		s, err := m.Create(t.Context(), testUser)

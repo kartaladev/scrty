@@ -13,6 +13,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -86,15 +87,15 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 			assert:  refused,
 		},
 		{
-			// *fakeClock (defined in memory_test.go) implements Clock through a
-			// pointer receiver, so a nil one is an interface holding a nil
-			// pointer: `== nil` misses it, and only the reflect-based check the
-			// constructor now uses catches it before the first refusal sample
-			// reads from a nil receiver.
+			// *clockwork.FakeClock implements Now through a pointer receiver, so
+			// a nil one is an interface holding a nil pointer: `== nil` misses
+			// it, and only the reflect-based check the constructor now uses
+			// catches it before the first refusal sample reads from a nil
+			// receiver.
 			name:    "a typed nil clock",
 			flow:    testFlow,
 			limiter: workingLimiter,
-			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardClock((*fakeClock)(nil))},
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardClock((*clockwork.FakeClock)(nil))},
 			assert:  refused,
 		},
 		{

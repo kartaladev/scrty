@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -29,7 +30,7 @@ type Manager struct {
 	registry *Registry
 	out      *outbound.Client
 	random   io.Reader
-	now      func() time.Time
+	clock    clock.Clock
 	flows    FlowStore
 	flowTTL  time.Duration
 	broker   IdentityBroker
@@ -63,7 +64,7 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // (identity.MissingPort), is a wiring mistake. A nil pointer inside a non-nil
 // interface counts as nil. With no options it sends every
 // request through outbound.New(), draws secrets from crypto/rand.Reader, reads
-// time from time.Now, logs to slog.Default(), and holds login flows for
+// time from clock.System(), logs to slog.Default(), and holds login flows for
 // DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
 // judges provider token times within DefaultClockSkew (WithClockSkew), and
 // accepts logout tokens issued up to DefaultLogoutTokenMaxAge ago
@@ -120,14 +121,14 @@ func NewManager(registry *Registry, broker IdentityBroker, opts ...ManagerOption
 	if m.random == nil {
 		m.random = rand.Reader
 	}
-	if m.now == nil {
-		m.now = time.Now
+	if m.clock == nil {
+		m.clock = clock.System()
 	}
 	if m.log == nil {
 		m.log = slog.Default()
 	}
 	if m.flows == nil {
-		s, err := NewMemoryFlowStore(WithMemoryFlowStoreClock(m.now), WithMemoryFlowStoreRandom(m.random))
+		s, err := NewMemoryFlowStore(WithMemoryFlowStoreClock(m.clock), WithMemoryFlowStoreRandom(m.random))
 		if err != nil {
 			return nil, fmt.Errorf("%w: default flow store: %w", ErrConfig, err)
 		}

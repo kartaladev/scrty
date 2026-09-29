@@ -44,43 +44,13 @@ func (km *KeyManager) Start(ctx context.Context) error {
 	}
 
 	loopCtx, cancel := context.WithCancel(ctx)
-
-	// The tickers are taken here rather than inside each goroutine, so that
-	// once Start returns, every loop's cadence is already registered with the
-	// clock. A test that advances a fake clock straight after Start therefore
-	// cannot race ahead of the loop that has not asked for its ticker yet.
-	//
-	// They are also taken before the WaitGroup counts them and before any
-	// goroutine is launched. TickerClock is an advertised override point, so a
-	// consumer clock that panics partway through is reachable; counting three
-	// loops first would leave the counter above the number running, and every
-	// later Stop would wait for a goroutine that was never launched — forever,
-	// holding the lock Start and Stop both need. Unwinding here instead leaves
-	// the manager as it was: no ticker held, and no run to wait for.
-	tickers := make([]Ticker, 0, len(loops))
-	launched := false
-	defer func() {
-		if launched {
-			return
-		}
-		cancel()
-		for _, ticker := range tickers {
-			ticker.Stop()
-		}
-	}()
-
-	for _, loop := range loops {
-		tickers = append(tickers, km.newTicker(loop.every))
-	}
-
 	km.cancel = cancel
 	km.runDone = loopCtx.Done()
 
 	km.wg.Add(len(loops))
-	for i, loop := range loops {
-		go km.loop(loopCtx, tickers[i], loop.step)
+	for _, loop := range loops {
+		go km.loop(loopCtx, loop.every, loop.step)
 	}
-	launched = true
 
 	return nil
 }
@@ -116,35 +86,27 @@ func (km *KeyManager) reapLocked() {
 	km.cancel, km.runDone = nil, nil
 }
 
-// newTicker paces a loop from the configured clock where it offers a ticker,
-// and from the system clock otherwise, so a consumer supplying a bare Clock
-// still gets working loops.
-func (km *KeyManager) newTicker(every time.Duration) Ticker {
-	if clock, ok := km.clock.(TickerClock); ok {
-		return clock.NewTicker(every)
-	}
-	return systemClock{}.NewTicker(every)
-}
-
-// loop runs step on every tick until the context ends.
+// loop runs step one interval after the previous step finished, until the
+// context ends. Waiting on the clock's After, rather than on a ticker, is what
+// lets a controlled clock drive the loop, and is what makes the cadence
+// fixed-delay: a slow run pushes the next one back rather than eating into its
+// interval.
 //
 // It ends with return, never with break: a break inside the select would leave
-// the select but not the for, and the goroutine would spin on a dead ticker
-// until the process exited.
-func (km *KeyManager) loop(ctx context.Context, ticker Ticker, step func(context.Context)) {
+// the select but not the for.
+func (km *KeyManager) loop(ctx context.Context, every time.Duration, step func(context.Context)) {
 	defer km.wg.Done()
 	// Flushing here rather than in Stop accounts for the suppressed failures
 	// on every shutdown path, including a caller who only cancels the context.
 	// It runs before wg.Done, so a Stop that is waiting still returns after
 	// the last record has been written.
 	defer km.sampler.Flush()
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C():
+		case <-km.clock.After(every):
 			step(ctx)
 		}
 	}

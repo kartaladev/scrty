@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -160,7 +161,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		at := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 
-		m, err := apikey.NewManager(apikey.WithClock(func() time.Time { return at }))
+		m, err := apikey.NewManager(apikey.WithClock(clockwork.NewFakeClockAt(at)))
 		require.NoError(t, err)
 
 		_, rec, err := m.Issue(ctx, "svc-billing", "k", nil, time.Hour)

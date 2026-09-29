@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -268,7 +269,7 @@ func TestMarkEnrolmentPending(t *testing.T) {
 
 			ctx := t.Context()
 
-			clk := newTestClock(tc.created)
+			clk := clockwork.NewFakeClockAt(tc.created)
 			m, _ := managerOnClock(t, clk, tc.opts...)
 			s, err := m.Create(ctx, testUser, session.WithFirstFactor(factor.Password))
 			require.NoError(t, err)
@@ -277,25 +278,25 @@ func TestMarkEnrolmentPending(t *testing.T) {
 				tc.prepare(s)
 			}
 
-			clk.Set(tc.markAt)
+			clk.Advance(tc.markAt.Sub(clk.Now()))
 			m.MarkEnrolmentPending(s, enrolmentLifetime)
 			require.NoError(t, m.Save(ctx, s), "the mark is persisted by one save")
 
 			if !tc.remarkAt.IsZero() {
-				clk.Set(tc.remarkAt)
+				clk.Advance(tc.remarkAt.Sub(clk.Now()))
 				m.MarkEnrolmentPending(s, enrolmentLifetime)
 				require.NoError(t, m.Save(ctx, s))
 			}
 
 			if !tc.touchAt.IsZero() {
-				clk.Set(tc.touchAt)
+				clk.Advance(tc.touchAt.Sub(clk.Now()))
 				live, err := m.Load(ctx, s.ID)
 				require.NoError(t, err)
 				require.NoError(t, m.Touch(ctx, live))
 			}
 
 			if !tc.loadAt.IsZero() {
-				clk.Set(tc.loadAt)
+				clk.Advance(tc.loadAt.Sub(clk.Now()))
 			}
 
 			loaded, err := m.Load(ctx, s.ID)
@@ -455,7 +456,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 
 			ctx := t.Context()
 
-			clk := newTestClock(tc.created)
+			clk := clockwork.NewFakeClockAt(tc.created)
 			m, store := managerOnClock(t, clk)
 			s, err := m.Create(ctx, testUser, session.WithFirstFactor(factor.Password))
 			require.NoError(t, err)
@@ -465,7 +466,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 			}
 
 			if !tc.markAt.IsZero() {
-				clk.Set(tc.markAt)
+				clk.Advance(tc.markAt.Sub(clk.Now()))
 				m.MarkEnrolmentPending(s, enrolmentLifetime)
 				s.EnrolmentGeneration = testGeneration
 			}
@@ -479,11 +480,11 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 			if tc.restorerOpts != nil {
 				restorer = managerFor(t, append([]session.ManagerOption{
 					session.WithStore(store),
-					session.WithClock(clk.Now),
+					session.WithClock(clk),
 				}, tc.restorerOpts...)...)
 			}
 
-			clk.Set(tc.restoreAt)
+			clk.Advance(tc.restoreAt.Sub(clk.Now()))
 			if err := restorer.RestoreEnrolmentDeadlines(s); err != nil {
 				tc.assert(t, s, err)
 				return
@@ -540,7 +541,7 @@ func TestEnrolmentSessionCountsUntilExpiry(t *testing.T) {
 
 			ctx := t.Context()
 
-			clk := newTestClock(at(9, 0))
+			clk := clockwork.NewFakeClockAt(at(9, 0))
 			m, _ := managerOnClock(t, clk)
 			s, err := m.Create(ctx, testUser, session.WithFirstFactor(factor.Password))
 			require.NoError(t, err)
@@ -548,7 +549,7 @@ func TestEnrolmentSessionCountsUntilExpiry(t *testing.T) {
 			m.MarkEnrolmentPending(s, enrolmentLifetime)
 			require.NoError(t, m.Save(ctx, s))
 
-			clk.Set(tc.countAt)
+			clk.Advance(tc.countAt.Sub(clk.Now()))
 			n, err := m.CountActiveByUser(ctx, testUser)
 			tc.assert(t, n, err)
 		})

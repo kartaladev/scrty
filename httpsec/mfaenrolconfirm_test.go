@@ -406,7 +406,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 
 				var err error
 				h.totp, err = mfa.NewTOTP(proofOutageStore{h.store}, enrolIssuer,
-					mfa.WithClock(func() time.Time { return h.at }))
+					mfa.WithClock(h.clock))
 				require.NoError(t, err)
 
 				h.method = h.totp
@@ -513,7 +513,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 
 				var err error
 				h.totp, err = mfa.NewTOTP(cancellableStore{h.store}, enrolIssuer,
-					mfa.WithClock(func() time.Time { return h.at }))
+					mfa.WithClock(h.clock))
 				require.NoError(t, err)
 
 				h.method = h.totp
@@ -751,7 +751,7 @@ func TestEnrolmentThrottleLeavesVerificationAlone(t *testing.T) {
 
 			// The next step's code, since the one that proved the device is
 			// spent.
-			h.at = h.at.Add(30 * time.Second)
+			h.clock.Advance(30 * time.Second)
 
 			out := serve(t, h.chain(t, pending), post(t.Context(), httpsec.DefaultMFAVerifyPath,
 				"code="+h.codeFor(t, userSecret)))

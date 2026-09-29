@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
@@ -114,7 +115,7 @@ func TestTOTPRFC6238Vectors(t *testing.T) {
 
 			m, err := mfa.NewTOTP(store, "Example",
 				mfa.WithDigits(8),
-				mfa.WithClock(func() time.Time { return at }),
+				mfa.WithClock(clockwork.NewFakeClockAt(at)),
 			)
 			require.NoError(t, err)
 
@@ -166,7 +167,7 @@ func TestTOTPStepWindow(t *testing.T) {
 
 			store := &countingEnrolmentStore{EnrolmentStore: mfa.NewMemoryEnrolmentStore()}
 			m, err := mfa.NewTOTP(store, "Example",
-				mfa.WithClock(func() time.Time { return base }),
+				mfa.WithClock(clockwork.NewFakeClockAt(base)),
 			)
 			require.NoError(t, err)
 

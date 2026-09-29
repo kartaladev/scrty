@@ -73,7 +73,7 @@ func newBackchannelHarness(t *testing.T) *backchannelHarness {
 	clock := &offsetClock{}
 
 	return &backchannelHarness{
-		oidcHarness: newOIDCHarness(t, oidc.WithClock(clock.Now)),
+		oidcHarness: newOIDCHarness(t, oidc.WithClock(clock)),
 		clock:       clock,
 		ctx:         t.Context(),
 		ids:         map[string]string{},
@@ -450,7 +450,7 @@ func TestOIDCBackchannel(t *testing.T) {
 				broker, err := oidc.NewBroker(links, NewMockUserLoader(ctrl))
 				require.NoError(t, err)
 
-				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock.Now))
+				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock))
 				h.federated(t, "federated", testOIDCProvider, h.issuer(), "abc")
 
 				return nil
@@ -472,7 +472,7 @@ func TestOIDCBackchannel(t *testing.T) {
 				broker, err := oidc.NewBroker(links, NewMockUserLoader(ctrl))
 				require.NoError(t, err)
 
-				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock.Now))
+				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock))
 
 				return nil
 			},
@@ -486,7 +486,7 @@ func TestOIDCBackchannel(t *testing.T) {
 			setup: func(t *testing.T, h *backchannelHarness) []httpsec.OIDCOption {
 				// No expectation: the broker is never consulted by a logout.
 				broker := NewMockIdentityBroker(gomock.NewController(t))
-				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock.Now))
+				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock))
 				h.federated(t, "federated", testOIDCProvider, h.issuer(), "abc")
 
 				return nil
@@ -503,7 +503,7 @@ func TestOIDCBackchannel(t *testing.T) {
 			setup: func(t *testing.T, h *backchannelHarness) []httpsec.OIDCOption {
 				h.manager = h.managerWith(t, NewMockIdentityBroker(gomock.NewController(t)),
 					func(p *oidc.Provider) { p.SigningAlgs = []string{"RS256"} },
-					oidc.WithClock(h.clock.Now))
+					oidc.WithClock(h.clock))
 
 				return nil
 			},
@@ -772,7 +772,7 @@ func TestOIDCBackchannel(t *testing.T) {
 
 				broker, err := oidc.NewBroker(links, NewMockUserLoader(ctrl))
 				require.NoError(t, err)
-				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock.Now))
+				h.manager = h.managerWith(t, broker, nil, oidc.WithClock(h.clock))
 
 				store := NewMockStore(ctrl)
 				store.EXPECT().DeleteByUserAndExternalIssuer(gomock.Any(), oidcTestUserID, h.issuer()).

@@ -186,7 +186,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, failed(op, err)
 	}
 
-	now := s.c.now()
+	now := s.c.clock.Now()
 	if !now.Before(row.IdleExpiresAt) || !now.Before(row.AbsoluteExpiresAt) {
 		return nil, session.ErrSessionExpired
 	}
@@ -252,7 +252,7 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	if err != nil {
 		return 0, failed(op, err)
 	}
-	now := storekit.Time(s.c.now())
+	now := storekit.Time(s.c.clock.Now())
 	var n int64
 	err = q.Model(&sessionRow{}).
 		Where("user_id = ? AND idle_expires_at > ? AND absolute_expires_at > ?", string(user), now, now).
@@ -266,7 +266,7 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 
 // DeleteExpired removes every session expired by the store's clock.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
-	now := storekit.Time(s.c.now())
+	now := storekit.Time(s.c.clock.Now())
 	return deleteWhere[sessionRow](ctx, s.c, "delete expired sessions", "idle_expires_at <= ? OR absolute_expires_at <= ?", now, now)
 }
 

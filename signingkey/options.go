@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"slices"
 	"time"
+
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ErrConfig is wrapped by every error NewKeyManager returns for a wiring
@@ -17,56 +20,6 @@ var ErrConfig = errors.New("signingkey: invalid configuration")
 // Option configures a KeyManager. Every default NewKeyManager applies has an
 // Option here that replaces it.
 type Option func(*KeyManager)
-
-// Clock is the time source the key manager reads creation times, rotation and
-// housekeeping from.
-//
-// With no clock configured the key manager uses the system clock. A consumer
-// replaces it through WithClock, which is how a test advances time without
-// waiting.
-type Clock interface {
-	Now() time.Time
-}
-
-// Ticker delivers a tick every interval until it is stopped. It is the shape of
-// time.Ticker, narrowed to what the background loops use.
-type Ticker interface {
-	// C returns the channel ticks arrive on. Like time.Ticker's channel, a
-	// tick that is not consumed before the next one is due may be dropped.
-	C() <-chan time.Time
-
-	// Stop releases the ticker. No further tick arrives after it returns.
-	Stop()
-}
-
-// TickerClock is the optional half of Clock: a time source that also paces the
-// rotation, reload and housekeeping loops, so advancing it runs them without
-// waiting for real time to pass.
-//
-// A Clock that does not implement it paces the loops with time.NewTicker, which
-// is what the default system clock does. Implement it to control the cadence as
-// well as the creation times — a test's clock, or a consumer coordinating the
-// loops with their own scheduler.
-type TickerClock interface {
-	Clock
-
-	// NewTicker returns a ticker delivering a tick every d.
-	NewTicker(d time.Duration) Ticker
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
-
-func (systemClock) NewTicker(d time.Duration) Ticker { return realTicker{ticker: time.NewTicker(d)} }
-
-// realTicker adapts time.Ticker to Ticker. time.Ticker exposes its channel as a
-// field, which cannot satisfy a method of the same name.
-type realTicker struct{ ticker *time.Ticker }
-
-func (r realTicker) C() <-chan time.Time { return r.ticker.C }
-
-func (r realTicker) Stop() { r.ticker.Stop() }
 
 // WithAlgs sets the algorithms a current key is kept for. Default: RS256 only.
 // Supported: RS256, ES256 and EdDSA; anything else fails construction.
@@ -126,13 +79,17 @@ func WithKeyStore(store KeyStore) Option {
 	return func(km *KeyManager) { km.store = store }
 }
 
-// WithClock sets the time source. Default: the system clock.
+// WithClock sets the time source. Default: clock.System().
 //
-// A clock that also implements TickerClock paces the background loops as well
-// as stamping creation times; one that does not leaves the loops on
-// time.NewTicker.
-func WithClock(clock Clock) Option {
-	return func(km *KeyManager) { km.clock = clock }
+// The clock stamps key creation times and paces the rotation, reload and
+// housekeeping loops: each waits on the clock's After, and runs again one
+// interval after its previous run finished. A controlled clock, such as
+// clockwork's fake, therefore drives every one of them without real waiting.
+//
+// A nil clock, typed nil included, is a configuration error from
+// NewKeyManager.
+func WithClock(clk clock.Timed) Option {
+	return func(km *KeyManager) { km.clock = clk }
 }
 
 // WithLogger sets where rotation and reload failures are logged. Default:
@@ -159,9 +116,9 @@ func WithLogger(logger *slog.Logger) Option {
 // The hook runs synchronously on the background loop that failed, which fixes
 // what it may do:
 //
-//   - It must be fast. The loop cannot tick again until the hook returns, so a
-//     hook that blocks for longer than the rotation interval stops rotation for
-//     as long as it blocks.
+//   - It must be fast. The loop's next interval begins only once the hook has
+//     returned, so a hook that blocks delays every later run of that loop by
+//     as long as it blocks, and one that never returns stops it.
 //   - It must not panic. There is no recover between the hook and the loop, so
 //     a panic ends that loop and takes the process with it.
 //   - It must not call Start or Stop. Stop waits for the loop the hook is
@@ -194,7 +151,7 @@ func (km *KeyManager) validate() error {
 		return fmt.Errorf("%w: key store must not be nil", ErrConfig)
 	}
 
-	if isNilPort(km.clock) {
+	if nilcheck.IsNil(km.clock) {
 		return fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 

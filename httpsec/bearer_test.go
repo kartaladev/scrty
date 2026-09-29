@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -785,22 +786,22 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			t.Parallel()
 
 			start := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
-			clock := start
+			clk := clockwork.NewFakeClockAt(start)
 
 			// The store judges expiry by the same clock as the manager, or the
 			// lowered deadline would be read against the wall clock.
 			store := &countingSaves{Store: session.NewMemoryStore(
-				session.WithMemoryStoreClock(func() time.Time { return clock }))}
+				session.WithMemoryStoreClock(clk))}
 
 			sessions, err := session.NewManager(
-				session.WithClock(func() time.Time { return clock }), session.WithStore(store))
+				session.WithClock(clk), session.WithStore(store))
 			require.NoError(t, err)
 
 			s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
 			require.NoError(t, err)
 
 			// Ten minutes into a full session the user becomes required.
-			clock = start.Add(10 * time.Minute)
+			clk.Advance(10 * time.Minute)
 
 			if tc.pending {
 				sessions.MarkEnrolmentPending(s, 15*time.Minute)
@@ -831,7 +832,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			stored, err := sessions.Load(t.Context(), s.ID)
 			require.NoError(t, err)
 			assert.Equal(t, session.MFAEnrolmentPending, stored.MFA, "the mark is stored")
-			assert.True(t, stored.AbsoluteExpiresAt.Equal(clock.Add(15*time.Minute)),
+			assert.True(t, stored.AbsoluteExpiresAt.Equal(clk.Now().Add(15*time.Minute)),
 				"the deadline is lowered to the enrolment lifetime from the mark, got %s",
 				stored.AbsoluteExpiresAt)
 			assert.True(t, stored.EnrolmentOriginDeadline.Equal(start.Add(sessions.AbsoluteTimeout())),

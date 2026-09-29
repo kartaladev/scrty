@@ -146,7 +146,7 @@ func (t *TOTP) ProveDevice(
 		return "", ErrInvalidCode
 	}
 
-	now := t.now()
+	now := t.clock.Now()
 
 	step, matched := t.match(e.Secret, code, now)
 	if !matched {
@@ -238,7 +238,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 		return ErrInvalidCode
 	}
 
-	completed, err := t.proofs.Complete(ctx, user, gen, t.now())
+	completed, err := t.proofs.Complete(ctx, user, gen, t.clock.Now())
 	if err != nil {
 		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}
@@ -280,7 +280,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 		return errNoDeviceProofStore
 	}
 
-	attempt, charged, err := t.proofs.ChargeEmailCode(ctx, user, gen, t.now())
+	attempt, charged, err := t.proofs.ChargeEmailCode(ctx, user, gen, t.clock.Now())
 	if err != nil {
 		return deviceProofStoreFailed(err, "mfa: totp could not charge an attempt against the emailed code")
 	}
@@ -310,7 +310,7 @@ func (t *TOTP) RedeemEmailCode(ctx context.Context, user identity.UserID, gen id
 		return ErrEmailCodeInvalid
 	}
 
-	completed, err := t.proofs.Complete(ctx, user, gen, t.now())
+	completed, err := t.proofs.Complete(ctx, user, gen, t.clock.Now())
 	if err != nil {
 		return deviceProofStoreFailed(err, msgCompleteFailed)
 	}

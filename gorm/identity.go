@@ -291,7 +291,7 @@ func (s *IdentityStore) Provision(
 		}
 	}
 
-	now := storekit.Time(s.c.now())
+	now := storekit.Time(s.c.clock.Now())
 	user := userRow{
 		ID:          userID,
 		Name:        u.Name,
@@ -389,7 +389,7 @@ func (s *IdentityStore) Update(
 		}
 		userID := locked.ID
 
-		now := storekit.Time(s.c.now())
+		now := storekit.Time(s.c.clock.Now())
 
 		// The rebuilt grants, with every new identifier, are settled before
 		// the first write, so a generator that fails or panics finds nothing

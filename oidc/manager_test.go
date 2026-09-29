@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -15,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // stubBroker resolves every identity to one fixed principal. Where a test must
@@ -121,8 +123,7 @@ func TestNewManagerOptions(t *testing.T) {
 				assert.NotNil(t, w.Out, "the default outbound client is built")
 				assert.Equal(t, rand.Reader, w.Random, "the default random source is crypto/rand")
 				assert.Same(t, slog.Default(), w.Log, "the default logger is slog.Default()")
-				require.NotNil(t, w.Now)
-				assert.WithinDuration(t, time.Now(), w.Now(), time.Minute, "the default clock is time.Now")
+				assert.Equal(t, clock.System(), w.Clock, "the default clock is clock.System()")
 				assert.IsType(t, &oidc.MemoryFlowStore{}, w.Flows, "the default flow store is in memory")
 				assert.Equal(t, oidc.DefaultFlowTTL, w.FlowTTL, "the default flow TTL is DefaultFlowTTL")
 				assert.Equal(t, 10*time.Minute, oidc.DefaultFlowTTL)
@@ -184,6 +185,14 @@ func TestNewManagerOptions(t *testing.T) {
 			opts: []oidc.ManagerOption{oidc.WithRandom(nil)}, assert: refusedConfig("WithRandom")},
 		{name: "a nil clock is refused", registry: reg, broker: stubBroker{},
 			opts: []oidc.ManagerOption{oidc.WithClock(nil)}, assert: refusedConfig("WithClock")},
+		{name: "a typed-nil clock is refused like an untyped one", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithClock((*nilClock)(nil))}, assert: refusedConfig("WithClock")},
+		{name: "a consumer clock with only Now is accepted", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, m)
+			}},
 		{name: "a nil flow store is refused", registry: reg, broker: stubBroker{},
 			opts: []oidc.ManagerOption{oidc.WithFlowStore(nil)}, assert: refusedConfig("WithFlowStore")},
 		{name: "a nil logger is refused", registry: reg, broker: stubBroker{},
@@ -217,7 +226,7 @@ func TestNewManagerOptions(t *testing.T) {
 			opts: []oidc.ManagerOption{
 				oidc.WithRandom(fixed),
 				oidc.WithOutboundClient(client),
-				oidc.WithClock(func() time.Time { return epoch }),
+				oidc.WithClock(clockwork.NewFakeClockAt(epoch)),
 				oidc.WithFlowStore(flows),
 				oidc.WithLogger(logger),
 				oidc.WithFlowTTL(3 * time.Minute),
@@ -230,8 +239,8 @@ func TestNewManagerOptions(t *testing.T) {
 				assert.Same(t, fixed, w.Random)
 				assert.Same(t, flows, w.Flows)
 				assert.Same(t, logger, w.Log)
-				require.NotNil(t, w.Now)
-				assert.Equal(t, epoch, w.Now())
+				require.NotNil(t, w.Clock)
+				assert.Equal(t, epoch, w.Clock.Now())
 				// That each is the one actually used is proven where it is
 				// first consumed: discovery, Authorize, expiry.
 			}},
@@ -261,3 +270,14 @@ func TestManagerProvidersIsTheCallersCopy(t *testing.T) {
 	names[0] = "mutated"
 	assert.Equal(t, []string{"corp"}, m.Providers())
 }
+
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil an
+// unchecked constructor error hands over.
+type nilClock struct{}
+
+func (*nilClock) Now() time.Time { return time.Time{} }
+
+// fixedClock is a consumer's own clock with only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }

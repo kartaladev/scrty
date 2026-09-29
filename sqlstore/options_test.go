@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -17,6 +18,18 @@ import (
 type fixedGenerator struct{}
 
 func (*fixedGenerator) NewID() (id.ID, error) { return id.ID{}, nil }
+
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil that
+// a plain `== nil` check misses but nilcheck.IsNil catches.
+type nilClock struct{}
+
+func (*nilClock) Now() time.Time { return time.Time{} }
+
+// fixedClock is a consumer's own clock with only Now, proving WithClock takes
+// any type with that signature, not only a clockwork fake.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
 
 // refusedWith pins the whole error text of a refused configuration: it names
 // the first problem only, and never a configured value.
@@ -55,8 +68,8 @@ func TestNewConfig(t *testing.T) {
 				assert.Same(t, base, c.base)
 				assert.Nil(t, c.resolver)
 				assert.IsType(t, &id.V7Generator{}, c.ids)
-				require.NotNil(t, c.now)
-				assert.WithinDuration(t, time.Now(), c.now(), time.Minute)
+				require.NotNil(t, c.clock)
+				assert.WithinDuration(t, time.Now(), c.clock.Now(), time.Minute)
 				assert.True(t, c.resealOnRead, "re-sealing on read is on by default")
 			},
 		},
@@ -67,7 +80,7 @@ func TestNewConfig(t *testing.T) {
 			opts: []Option{
 				WithTxResolver(func(context.Context) (DBTX, bool) { return nil, false }),
 				WithIDGenerator(gen),
-				WithClock(func() time.Time { return fixed }),
+				WithClock(clockwork.NewFakeClockAt(fixed)),
 				WithResealOnRead(false),
 			},
 			assert: func(t *testing.T, c *config, err error) {
@@ -75,8 +88,21 @@ func TestNewConfig(t *testing.T) {
 				require.NoError(t, err)
 				assert.NotNil(t, c.resolver)
 				assert.Same(t, gen, c.ids)
-				assert.True(t, fixed.Equal(c.now()))
+				assert.True(t, fixed.Equal(c.clock.Now()))
 				assert.False(t, c.resealOnRead)
+			},
+		},
+		{
+			// A Now-only consumer type: `time-source` "Third-party fake clock
+			// passed directly" — no adapter is needed for any type with Now.
+			name:    "a consumer clock with only Now is accepted",
+			base:    base,
+			honours: []optionKind{optClock},
+			opts:    []Option{WithClock(fixedClock{at: fixed})},
+			assert: func(t *testing.T, c *config, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.True(t, fixed.Equal(c.clock.Now()))
 			},
 		},
 		{
@@ -115,6 +141,13 @@ func TestNewConfig(t *testing.T) {
 			base:    base,
 			honours: []optionKind{optClock},
 			opts:    []Option{WithClock(nil)},
+			assert:  refusedWith("the clock is nil"),
+		},
+		{
+			name:    "a typed-nil clock is refused",
+			base:    base,
+			honours: []optionKind{optClock},
+			opts:    []Option{WithClock((*nilClock)(nil))},
 			assert:  refusedWith("the clock is nil"),
 		},
 		{
@@ -203,7 +236,7 @@ func TestNewConfigHonouredOptions(t *testing.T) {
 	}{
 		{"WithTxResolver", 0, WithTxResolver(func(context.Context) (DBTX, bool) { return nil, false })},
 		{"WithIDGenerator", optIDGenerator, WithIDGenerator(&fixedGenerator{})},
-		{"WithClock", optClock, WithClock(time.Now)},
+		{"WithClock", optClock, WithClock(clockwork.NewRealClock())},
 		{"WithResealOnRead", optResealOnRead, WithResealOnRead(false)},
 	}
 

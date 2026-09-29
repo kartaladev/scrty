@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -37,13 +37,14 @@ func WithHandoffRandom(r io.Reader) HandoffOption {
 }
 
 // WithHandoffClock replaces the clock issuance stamps and redemption judges
-// expiry and consumption by. The default is time.Now.
-func WithHandoffClock(now func() time.Time) HandoffOption {
+// expiry and consumption by. The default is clock.System(). A nil clock, typed
+// nil included, is a configuration error.
+func WithHandoffClock(clk clock.Clock) HandoffOption {
 	return func(h *HandoffManager) error {
-		if now == nil {
+		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: WithHandoffClock was given nil", ErrConfig)
 		}
-		h.now = now
+		h.clock = clk
 		return nil
 	}
 }

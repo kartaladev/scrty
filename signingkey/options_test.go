@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -115,6 +116,11 @@ func TestNewKeyManagerValidation(t *testing.T) {
 		{
 			name:   "a nil clock",
 			opts:   []signingkey.Option{signingkey.WithClock(nil)},
+			assert: refused("clock must not be nil"),
+		},
+		{
+			name:   "a typed-nil clock",
+			opts:   []signingkey.Option{signingkey.WithClock((*clockwork.FakeClock)(nil))},
 			assert: refused("clock must not be nil"),
 		},
 		{

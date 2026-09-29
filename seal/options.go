@@ -2,13 +2,15 @@ package seal
 
 import (
 	"fmt"
-	"time"
+
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // options holds what an Option configures on a sealing store.
 type options struct {
 	resealOnRead bool
-	now          func() time.Time
+	clock        clock.Clock
 
 	// clockSet and nilClock record what WithClock was given, so newOptions
 	// can refuse a clock the store does not use, or a nil one.
@@ -42,7 +44,7 @@ func WithResealOnRead(on bool) Option {
 // store has no resealer to re-seal through, a nil clock, and any clock when
 // the store keeps no clock (usesClock false).
 func newOptions(store string, hasResealer, usesClock bool, opts []Option) (options, error) {
-	o := options{resealOnRead: true, now: time.Now}
+	o := options{resealOnRead: true, clock: clock.System()}
 	for _, opt := range opts {
 		if opt == nil {
 			return options{}, fmt.Errorf("%w: a sealing store option is nil", ErrInvalidConfiguration)
@@ -67,7 +69,7 @@ func newOptions(store string, hasResealer, usesClock bool, opts []Option) (optio
 }
 
 // WithClock replaces the clock NewEnrolmentStore judges an emailed code's
-// expiry by. The default is time.Now.
+// expiry by. The default is clock.System().
 //
 // A code is expired from its EmailCodeUntil instant on, and an expired code
 // is not opened on read: it is returned as no code, its expiry kept.
@@ -78,13 +80,13 @@ func newOptions(store string, hasResealer, usesClock bool, opts []Option) (optio
 // then charged an attempt and refused.
 //
 // NewSigningKeyStore judges no time, so given to it WithClock is a
-// configuration error rather than a setting silently ignored. A nil clock is
-// a configuration error too, rather than a silent fallback to the wall clock:
-// a caller passing one meant to inject a clock.
-func WithClock(now func() time.Time) Option {
+// configuration error rather than a setting silently ignored. A nil clock,
+// typed nil included, is a configuration error too, rather than a silent
+// fallback to the wall clock: a caller passing one meant to inject a clock.
+func WithClock(clk clock.Clock) Option {
 	return func(o *options) {
 		o.clockSet = true
-		o.nilClock = now == nil
-		o.now = now
+		o.nilClock = nilcheck.IsNil(clk)
+		o.clock = clk
 	}
 }

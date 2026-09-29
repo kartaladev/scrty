@@ -73,7 +73,7 @@
 //
 // Every default has an option that replaces it, and every option names the
 // default it replaces. TOTPOption covers the built-in method: six digits, a
-// thirty-second step, time.Now and crypto/rand. ThrottleOption covers the
+// thirty-second step, clock.System() and crypto/rand. ThrottleOption covers the
 // throttle: the in-memory limiter above, a one-minute log-sampling window and
 // slog.Default.
 //

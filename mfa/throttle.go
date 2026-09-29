@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -61,7 +62,7 @@ type VerifyThrottle struct {
 	limiter     ratelimit.Limiter
 	logger      *slog.Logger
 	sampler     *logsample.Sampler
-	now         func() time.Time
+	clock       clock.Clock
 	logInterval time.Duration
 
 	// limiterSet records that WithVerifyLimiter was given, so a limiter passed
@@ -84,7 +85,7 @@ type VerifyThrottle struct {
 func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 	t := &VerifyThrottle{
 		logger:      slog.Default(),
-		now:         time.Now,
+		clock:       clock.System(),
 		logInterval: time.Minute,
 	}
 
@@ -199,7 +200,7 @@ func (t *VerifyThrottle) FlushRefusalLogs() error {
 // accounted for all of them. It carries no presented code and no secret, which
 // it has never been given.
 func (t *VerifyThrottle) sampled(ctx context.Context, level slog.Level, msg, reason string) {
-	write, suppressed := t.sampler.Allow(reason, t.now())
+	write, suppressed := t.sampler.Allow(reason, t.clock.Now())
 	if !write {
 		return
 	}
@@ -215,7 +216,7 @@ func (t *VerifyThrottle) sampled(ctx context.Context, level slog.Level, msg, rea
 // error text. A consumer who wants that detail logs it inside their own
 // implementation of Limiter.
 func (t *VerifyThrottle) sampledFailure(ctx context.Context, level slog.Level, msg, reason string, err error) {
-	write, suppressed := t.sampler.Allow(reason, t.now())
+	write, suppressed := t.sampler.Allow(reason, t.clock.Now())
 	if !write {
 		return
 	}

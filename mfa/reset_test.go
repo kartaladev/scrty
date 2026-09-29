@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -267,8 +268,81 @@ func TestResetEnrolment(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			opts := append([]mfa.ResetOption{mfa.WithResetClock(func() time.Time { return at })}, tc.opts...)
+			opts := append([]mfa.ResetOption{mfa.WithResetClock(clockwork.NewFakeClockAt(at))}, tc.opts...)
 			tc.assert(t, mfa.ResetEnrolment(ctx, "u-1", deps, opts...))
+		})
+	}
+}
+
+// TestResetEnrolmentClock covers the clock the notification names. The option
+// is ignored when nil, typed nil included, keeping the system clock: a reset
+// that refused a nil clock would fail after the enrolment is already gone.
+func TestResetEnrolmentClock(t *testing.T) {
+	t.Parallel()
+
+	ada := &identity.Details{ID: "u-1", Username: "ada@example.com", Name: "Ada"}
+	consumer := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// systemTime asserts the instant came from the system clock.
+	systemTime := func(t *testing.T, before, got, after time.Time) {
+		t.Helper()
+
+		assert.False(t, got.Before(before), "the instant %s is before the reset began (%s)", got, before)
+		assert.False(t, got.After(after), "the instant %s is after the reset ended (%s)", got, after)
+	}
+
+	type testCase struct {
+		name   string
+		opts   []mfa.ResetOption
+		assert func(t *testing.T, before, got, after time.Time)
+	}
+
+	cases := []testCase{
+		{name: "no clock option names the system time", assert: systemTime},
+		{name: "a nil clock keeps the system clock", opts: []mfa.ResetOption{mfa.WithResetClock(nil)}, assert: systemTime},
+		{
+			name:   "a typed-nil clock keeps the system clock, rather than being read",
+			opts:   []mfa.ResetOption{mfa.WithResetClock((*nilClock)(nil))},
+			assert: systemTime,
+		},
+		{
+			name: "a consumer clock names its own time",
+			opts: []mfa.ResetOption{mfa.WithResetClock(clockwork.NewFakeClockAt(consumer))},
+			assert: func(t *testing.T, _, got, _ time.Time) {
+				assert.Equal(t, consumer, got)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			enrolments := NewMockEnrolmentRemover(ctrl)
+			users := NewMockUserLoader(ctrl)
+			sender := NewMockSender(ctrl)
+			enrolments.EXPECT().RemoveEnrolment(gomock.Any(), identity.UserID("u-1")).Return(nil)
+			users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(ada, nil)
+			sender.EXPECT().Send(gomock.Any(), gomock.Any()).Return(nil)
+
+			var named time.Time
+			opts := append([]mfa.ResetOption{
+				mfa.WithoutSessionRevocation(),
+				mfa.WithResetMessage(func(at time.Time) (string, string) {
+					named = at
+
+					return "reset", "reset at " + at.String()
+				}),
+			}, tc.opts...)
+
+			before := time.Now()
+			err := mfa.ResetEnrolment(t.Context(), "u-1",
+				mfa.ResetDeps{Enrolments: enrolments, Users: users, Sender: sender}, opts...)
+			after := time.Now()
+
+			require.NoError(t, err)
+			tc.assert(t, before, named, after)
 		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -15,12 +16,6 @@ import (
 // flowStoreStart is the clock every flow store case begins at.
 var flowStoreStart = time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
 
-// flowStoreClock is a clock a single case advances by hand.
-type flowStoreClock struct{ now time.Time }
-
-func (c *flowStoreClock) Now() time.Time          { return c.now }
-func (c *flowStoreClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
-func newFlowStoreClock() *flowStoreClock          { return &flowStoreClock{now: flowStoreStart} }
 func flowStoreFlow(provider, state string, ttl time.Duration) oidc.Flow {
 	return oidc.Flow{
 		Provider: provider, State: state, Nonce: "nonce-" + state, Verifier: "verifier-" + state,
@@ -42,7 +37,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		opts []oidc.MemoryFlowStoreOption
 		// first is the call under test, made after the victim's flow is begun
 		// under handle h.
-		first func(t *testing.T, s *oidc.MemoryFlowStore, clock *flowStoreClock, h string) error
+		first func(t *testing.T, s *oidc.MemoryFlowStore, clock *clockwork.FakeClock, h string) error
 		// assert receives first's error and the outcome of then completing the
 		// victim's flow correctly.
 		assert func(t *testing.T, first error, got oidc.Flow, retry error)
@@ -54,8 +49,8 @@ func TestMemoryFlowStore(t *testing.T) {
 		require.NoError(t, retry, "a refused completion must leave the flow exactly as it was")
 		assert.Equal(t, victim, got)
 	}
-	complete := func(handle, provider, state string) func(*testing.T, *oidc.MemoryFlowStore, *flowStoreClock, string) error {
-		return func(t *testing.T, s *oidc.MemoryFlowStore, _ *flowStoreClock, h string) error {
+	complete := func(handle, provider, state string) func(*testing.T, *oidc.MemoryFlowStore, *clockwork.FakeClock, string) error {
+		return func(t *testing.T, s *oidc.MemoryFlowStore, _ *clockwork.FakeClock, h string) error {
 			if handle == "" {
 				handle = h
 			}
@@ -67,7 +62,7 @@ func TestMemoryFlowStore(t *testing.T) {
 	cases := []testCase{
 		{
 			name:  "the begun flow completes unchanged",
-			first: func(*testing.T, *oidc.MemoryFlowStore, *flowStoreClock, string) error { return nil },
+			first: func(*testing.T, *oidc.MemoryFlowStore, *clockwork.FakeClock, string) error { return nil },
 			assert: func(t *testing.T, first error, got oidc.Flow, retry error) {
 				require.NoError(t, first)
 				require.NoError(t, retry)
@@ -81,7 +76,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		{name: "state differing only in case", first: complete("", "a", "ST"), assert: stillCompletable},
 		{
 			name: "a zero purge cutoff is refused and deletes nothing",
-			first: func(t *testing.T, s *oidc.MemoryFlowStore, clock *flowStoreClock, _ string) error {
+			first: func(t *testing.T, s *oidc.MemoryFlowStore, clock *clockwork.FakeClock, _ string) error {
 				clock.Advance(time.Minute)
 				n, err := s.DeleteExpired(t.Context(), time.Time{})
 				assert.Zero(t, n)
@@ -95,7 +90,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "a purge removes only flows expired before the cutoff",
-			first: func(t *testing.T, s *oidc.MemoryFlowStore, clock *flowStoreClock, _ string) error {
+			first: func(t *testing.T, s *oidc.MemoryFlowStore, clock *clockwork.FakeClock, _ string) error {
 				early, err := s.Begin(t.Context(), flowStoreFlow("a", "early", time.Minute))
 				require.NoError(t, err)
 				clock.Advance(2 * time.Minute)
@@ -114,7 +109,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "an expired flow is refused",
-			first: func(_ *testing.T, _ *oidc.MemoryFlowStore, c *flowStoreClock, _ string) error {
+			first: func(_ *testing.T, _ *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				c.Advance(11 * time.Minute)
 				return nil
 			},
@@ -124,7 +119,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "a flow is refused at its expiry instant",
-			first: func(_ *testing.T, _ *oidc.MemoryFlowStore, c *flowStoreClock, _ string) error {
+			first: func(_ *testing.T, _ *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				c.Advance(10 * time.Minute)
 				return nil
 			},
@@ -134,7 +129,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "a flow completes just before its expiry",
-			first: func(_ *testing.T, _ *oidc.MemoryFlowStore, c *flowStoreClock, _ string) error {
+			first: func(_ *testing.T, _ *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				c.Advance(10*time.Minute - time.Nanosecond)
 				return nil
 			},
@@ -154,7 +149,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		{
 			name: "the store refuses above its maximum and evicts nothing",
 			opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(2)},
-			first: func(t *testing.T, s *oidc.MemoryFlowStore, _ *flowStoreClock, _ string) error {
+			first: func(t *testing.T, s *oidc.MemoryFlowStore, _ *clockwork.FakeClock, _ string) error {
 				second, err := s.Begin(t.Context(), flowStoreFlow("a", "second", 10*time.Minute))
 				require.NoError(t, err)
 				_, refused := s.Begin(t.Context(), flowStoreFlow("a", "third", 10*time.Minute))
@@ -171,7 +166,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		{
 			name: "expired flows do not count toward the maximum",
 			opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(2)},
-			first: func(t *testing.T, s *oidc.MemoryFlowStore, c *flowStoreClock, _ string) error {
+			first: func(t *testing.T, s *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				_, err := s.Begin(t.Context(), flowStoreFlow("a", "short", time.Minute))
 				require.NoError(t, err)
 				c.Advance(2 * time.Minute)
@@ -187,7 +182,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		{
 			name: "a full store refuses again until a flow expires",
 			opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(2)},
-			first: func(t *testing.T, s *oidc.MemoryFlowStore, c *flowStoreClock, _ string) error {
+			first: func(t *testing.T, s *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				_, err := s.Begin(t.Context(), flowStoreFlow("a", "short", 5*time.Minute))
 				require.NoError(t, err)
 				for range 2 {
@@ -210,9 +205,9 @@ func TestMemoryFlowStore(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clock := newFlowStoreClock()
+			clock := clockwork.NewFakeClockAt(flowStoreStart)
 			s, err := oidc.NewMemoryFlowStore(append([]oidc.MemoryFlowStoreOption{
-				oidc.WithMemoryFlowStoreClock(clock.Now),
+				oidc.WithMemoryFlowStoreClock(clock),
 			}, tc.opts...)...)
 			require.NoError(t, err)
 			h, err := s.Begin(t.Context(), victim)
@@ -297,6 +292,9 @@ func TestMemoryFlowStoreOptions(t *testing.T) {
 			assert: refused("WithMaxFlows")},
 		{name: "a nil clock is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreClock(nil)},
 			assert: refused("WithMemoryFlowStoreClock")},
+		{name: "a typed-nil clock is refused like an untyped one",
+			opts:   []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreClock((*nilClock)(nil))},
+			assert: refused("WithMemoryFlowStoreClock")},
 		{name: "a nil random source is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreRandom(nil)},
 			assert: refused("WithMemoryFlowStoreRandom")},
 		{name: "a typed-nil random source is refused",
@@ -336,8 +334,8 @@ const flowStoreRacers = 8
 func TestMemoryFlowStoreRacingComplete(t *testing.T) {
 	t.Parallel()
 
-	clock := newFlowStoreClock()
-	s, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreClock(clock.Now))
+	clock := clockwork.NewFakeClockAt(flowStoreStart)
+	s, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreClock(clock))
 	require.NoError(t, err)
 	h, err := s.Begin(t.Context(), flowStoreFlow("a", "st", 10*time.Minute))
 	require.NoError(t, err)

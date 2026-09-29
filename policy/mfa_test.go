@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -168,6 +169,19 @@ func TestNewMFAPolicy(t *testing.T) {
 			name:   "a nil clock is refused",
 			method: NewMockMFAMethodLookup(gomock.NewController(t)),
 			opts:   []policy.MFAOption{policy.WithMFAPolicyClock(nil)},
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				refused(t, p, err)
+			},
+		},
+		{
+			// *clockwork.FakeClock implements Now through a pointer receiver,
+			// so a nil one is an interface holding a nil pointer: `== nil`
+			// misses it, and only the reflect-based check the constructor now
+			// uses catches it before the first sampled record reads from a nil
+			// receiver.
+			name:   "a typed-nil clock is refused",
+			method: NewMockMFAMethodLookup(gomock.NewController(t)),
+			opts:   []policy.MFAOption{policy.WithMFAPolicyClock((*clockwork.FakeClock)(nil))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},

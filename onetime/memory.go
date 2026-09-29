@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -23,7 +25,7 @@ import (
 // check.
 type MemoryStore struct {
 	mu      sync.Mutex
-	now     func() time.Time
+	clock   clock.Clock
 	records map[id.ID]Token
 }
 
@@ -31,24 +33,24 @@ type MemoryStore struct {
 type MemoryStoreOption func(*MemoryStore)
 
 // WithMemoryStoreClock replaces the store's time source. The default is
-// time.Now.
+// clock.System().
 //
 // The store needs a clock of its own because only it can decide which of its
 // records have expired while it sweeps them. A test that moves a manager's
 // clock gives the store the same one, so expiry means the same thing on both
-// sides. A nil function keeps the default, since a store with no clock could
-// not sweep at all.
-func WithMemoryStoreClock(now func() time.Time) MemoryStoreOption {
+// sides. A nil clock, typed nil included, keeps the default, since this
+// constructor cannot fail and a store with no clock could not sweep at all.
+func WithMemoryStoreClock(clk clock.Clock) MemoryStoreOption {
 	return func(s *MemoryStore) {
-		if now != nil {
-			s.now = now
+		if !nilcheck.IsNil(clk) {
+			s.clock = clk
 		}
 	}
 }
 
 // NewMemoryStore returns the default store.
 func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
-	s := &MemoryStore{now: time.Now, records: make(map[id.ID]Token)}
+	s := &MemoryStore{clock: clock.System(), records: make(map[id.ID]Token)}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(s)
@@ -170,7 +172,7 @@ func (s *MemoryStore) DeleteExpiredBefore(_ context.Context, purpose string, ret
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now()
+	now := s.clock.Now()
 
 	var removed int
 	for key, rec := range s.records {

@@ -9,6 +9,8 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/signingkey"
 )
 
@@ -16,26 +18,6 @@ import (
 // wiring mistake, so a consumer can tell a contradictory configuration from a
 // failure at issue or verification time without matching on message text.
 var ErrConfig = errors.New("token: invalid configuration")
-
-// Clock is the time source a generator stamps iat and exp from and a verifier
-// runs every time check against.
-//
-// With no clock configured both use the system clock. A consumer replaces it
-// through WithClock or VerifyWithClock, which is how a test moves time without
-// waiting.
-//
-// It is declared here rather than shared with signingkey's clock on purpose:
-// Go interfaces are structural, so one implementation satisfies both with no
-// adapter, and signingkey's comes with a ticker companion for pacing its
-// background loops. This package runs no loop, so that vocabulary has no place
-// on its surface.
-type Clock interface {
-	Now() time.Time
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
 
 // defaultLifetime is how long an issued token is valid with no lifetime
 // configured.
@@ -57,7 +39,7 @@ type config struct {
 	audience string
 	lifetime time.Duration
 	alg      signingkey.Alg
-	clock    Clock
+	clock    clock.Clock
 
 	// maxTokenSize bounds the string Verify will look at, in bytes.
 	maxTokenSize int
@@ -81,7 +63,7 @@ func newConfig() *config {
 	return &config{
 		lifetime:     defaultLifetime,
 		alg:          signingkey.RS256,
-		clock:        systemClock{},
+		clock:        clock.System(),
 		maxTokenSize: defaultMaxTokenSize,
 	}
 }
@@ -104,8 +86,8 @@ func setAudience(aud string) func(*config) {
 	}
 }
 
-func setClock(clock Clock) func(*config) {
-	return func(c *config) { c.clock = clock }
+func setClock(clk clock.Clock) func(*config) {
+	return func(c *config) { c.clock = clk }
 }
 
 // GenerateOption configures a Generator. Every default NewGenerator applies has
@@ -139,8 +121,11 @@ func WithSigningAlg(alg signingkey.Alg) GenerateOption {
 }
 
 // WithClock sets the time source for iat, exp and the generator's own
-// verification. Default: the system clock.
-func WithClock(clock Clock) GenerateOption { return GenerateOption(setClock(clock)) }
+// verification. Default: clock.System().
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// generator with no clock could not stamp iat or exp at all.
+func WithClock(clk clock.Clock) GenerateOption { return GenerateOption(setClock(clk)) }
 
 // VerifyOption configures a Verifier. Every default NewVerifier applies has an
 // option here that replaces it, except the key source, which has no default.
@@ -181,10 +166,13 @@ func VerifyWithMaxTokenSize(size int) VerifyOption {
 	return func(c *config) { c.maxTokenSize = size }
 }
 
-// VerifyWithClock sets the time source for every time check. Default: the
-// system clock. No clock skew is tolerated, so this is the only way to move
+// VerifyWithClock sets the time source for every time check. Default:
+// clock.System(). No clock skew is tolerated, so this is the only way to move
 // the instant a token is judged against.
-func VerifyWithClock(clock Clock) VerifyOption { return VerifyOption(setClock(clock)) }
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// verifier with no clock could not judge exp, nbf or iat at all.
+func VerifyWithClock(clk clock.Clock) VerifyOption { return VerifyOption(setClock(clk)) }
 
 // validateOptions builds the validation rules every verification runs.
 //
@@ -234,7 +222,7 @@ func (c *config) validate() error {
 	if nilPort(c.keys) {
 		return fmt.Errorf("%w: a key source is required", ErrConfig)
 	}
-	if nilPort(c.clock) {
+	if nilcheck.IsNil(c.clock) {
 		return fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 	if c.maxTokenSize <= 0 {

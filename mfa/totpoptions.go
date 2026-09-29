@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -34,8 +35,9 @@ func WithPeriod(d time.Duration) TOTPOption {
 	return func(t *TOTP) { t.period = d }
 }
 
-// WithClock replaces time.Now as the source of the instant codes are matched
-// against. A nil clock is a construction error.
+// WithClock replaces the source of the instant codes are matched against. The
+// default is clock.System(). A nil clock, typed nil included, is a
+// construction error.
 //
 // It exists for tests, which must pin the time step a code belongs to, and for
 // a deployment whose notion of now comes from somewhere other than the process
@@ -46,8 +48,8 @@ func WithPeriod(d time.Duration) TOTPOption {
 // whether that code has expired and is no longer opened (seal.WithClock, and
 // WithClock on the durable stores): give it the same clock, or a store clock
 // running ahead reads a live code as none and a correct code is refused.
-func WithClock(now func() time.Time) TOTPOption {
-	return func(t *TOTP) { t.now = now }
+func WithClock(clk clock.Clock) TOTPOption {
+	return func(t *TOTP) { t.clock = clk }
 }
 
 // WithRandom replaces crypto/rand.Reader as the source of enrolment secrets. A

@@ -177,7 +177,7 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 		return 0, failed(op, err)
 	}
 	res := q.Where("purpose = ? AND expires_at <= ? AND issued_at < ?",
-		purpose, storekit.Time(s.c.now()), storekit.Time(retainSince)).
+		purpose, storekit.Time(s.c.clock.Now()), storekit.Time(retainSince)).
 		Delete(&oneTimeTokenRow{})
 	if res.Error != nil {
 		return 0, failed(op, res.Error)

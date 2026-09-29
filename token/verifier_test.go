@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,7 +85,7 @@ func TestNewVerifierValidation(t *testing.T) {
 			opts: func(t *testing.T) []token.VerifyOption {
 				t.Helper()
 
-				var missing *fixedClock
+				var missing *clockwork.FakeClock
 
 				return withKeys(token.VerifyWithClock(missing))(t)
 			},
@@ -354,7 +355,7 @@ func TestVerifyTimeChecks(t *testing.T) {
 
 			ver, err := token.NewVerifier(
 				token.VerifyWithKeySource(keys),
-				token.VerifyWithClock(&fixedClock{now: tc.verifyAt}),
+				token.VerifyWithClock(clockwork.NewFakeClockAt(tc.verifyAt)),
 			)
 			require.NoError(t, err)
 
@@ -492,7 +493,7 @@ func TestVerifyClaimEnforcement(t *testing.T) {
 
 			opts := append([]token.VerifyOption{
 				token.VerifyWithKeySource(keys),
-				token.VerifyWithClock(&fixedClock{now: at}),
+				token.VerifyWithClock(clockwork.NewFakeClockAt(at)),
 			}, tc.configured...)
 
 			ver, err := token.NewVerifier(opts...)
@@ -655,7 +656,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 
 			ver, err := token.NewVerifier(
 				token.VerifyWithKeySource(keys),
-				token.VerifyWithClock(&fixedClock{now: at}),
+				token.VerifyWithClock(clockwork.NewFakeClockAt(at)),
 			)
 			require.NoError(t, err)
 
@@ -890,7 +891,7 @@ func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
 
 	ver, err := token.NewVerifier(
 		token.VerifyWithKeySource(keys),
-		token.VerifyWithClock(&fixedClock{now: at}),
+		token.VerifyWithClock(clockwork.NewFakeClockAt(at)),
 	)
 	require.NoError(t, err)
 
@@ -899,7 +900,7 @@ func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
 	// string verifies.
 	later, err := token.NewVerifier(
 		token.VerifyWithKeySource(keys),
-		token.VerifyWithClock(&fixedClock{now: at.Add(time.Hour)}),
+		token.VerifyWithClock(clockwork.NewFakeClockAt(at.Add(time.Hour))),
 	)
 	require.NoError(t, err)
 	claims, err := later.Verify(t.Context(), raw)

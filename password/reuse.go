@@ -3,11 +3,11 @@ package password
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ReuseGuard refuses a new password that matches the user's current one or one
@@ -40,7 +40,7 @@ type ReuseGuard struct {
 	enc      Encoder
 	matchers []Encoder // enc first, then the extras
 	depth    int
-	now      func() time.Time
+	clock    clock.Clock
 }
 
 // ReuseOption configures a [ReuseGuard].
@@ -49,7 +49,7 @@ type ReuseOption func(*reuseConfig)
 type reuseConfig struct {
 	extras    []Encoder
 	extrasSet bool // WithReuseMatchers was applied, replacing the default extras
-	now       func() time.Time
+	clock     clock.Clock
 }
 
 // NewReuseGuard returns a guard that refuses the user's current password and
@@ -87,7 +87,7 @@ func NewReuseGuard(h History, enc Encoder, depth int, opts ...ReuseOption) (*Reu
 		return nil, fmt.Errorf("%w: the reuse depth must be at least 1", ErrConfig)
 	}
 
-	cfg := reuseConfig{now: time.Now}
+	cfg := reuseConfig{clock: clock.System()}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -100,7 +100,7 @@ func NewReuseGuard(h History, enc Encoder, depth int, opts ...ReuseOption) (*Reu
 		}
 	}
 
-	if cfg.now == nil {
+	if nilcheck.IsNil(cfg.clock) {
 		return nil, fmt.Errorf("%w: the reuse clock is nil", ErrConfig)
 	}
 
@@ -117,7 +117,7 @@ func NewReuseGuard(h History, enc Encoder, depth int, opts ...ReuseOption) (*Reu
 		enc:      enc,
 		matchers: append([]Encoder{enc}, extras...),
 		depth:    depth,
-		now:      cfg.now,
+		clock:    cfg.clock,
 	}, nil
 }
 
@@ -148,10 +148,10 @@ func WithReuseMatchers(encs ...Encoder) ReuseOption {
 // WithReuseClock replaces the clock [ReuseGuard.Change] reads the time of the
 // change from, which it hands to the [WriteFunc].
 //
-// Default: [time.Now]. A nil clock is refused by [NewReuseGuard] with
-// [ErrConfig].
-func WithReuseClock(now func() time.Time) ReuseOption {
-	return func(c *reuseConfig) { c.now = now }
+// Default: clock.System(). A nil clock, typed nil included, is refused by
+// [NewReuseGuard] with [ErrConfig].
+func WithReuseClock(clk clock.Clock) ReuseOption {
+	return func(c *reuseConfig) { c.clock = clk }
 }
 
 // Check refuses candidate with [ErrPasswordReused] when it matches user.Password
@@ -258,7 +258,7 @@ func (g *ReuseGuard) Change(ctx context.Context, user *identity.Details, candida
 		return err
 	}
 
-	return write(ctx, user, hash, g.now())
+	return write(ctx, user, hash, g.clock.Now())
 }
 
 // defaultMatchers returns the built-in encoders at their defaults, used only

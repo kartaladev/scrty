@@ -9,11 +9,11 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/password"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
@@ -30,7 +30,7 @@ type Broker struct {
 	log     *slog.Logger
 	sampler *logsample.Sampler
 	ids     id.Generator
-	now     func() time.Time
+	clock   clock.Clock
 
 	// Provisioning, per provider. jitDomains tells "configured empty" from
 	// "not configured" by the presence of the key.
@@ -74,7 +74,7 @@ var _ IdentityBroker = (*Broker)(nil)
 // inside a non-nil interface, fails with ErrConfig and identity.ErrMissingPort
 // naming the port. The library's in-memory link store is NewMemoryLinkStore.
 // With no options the broker provisions no one (see WithJIT), logs to slog.Default(), reads
-// time from time.Now and draws link identifiers from id.NewV7Generator().
+// time from clock.System() and draws link identifiers from id.NewV7Generator().
 func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption) (*Broker, error) {
 	if nilcheck.IsNil(links) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("link store"))
@@ -104,8 +104,8 @@ func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption)
 	if b.log == nil {
 		b.log = slog.Default()
 	}
-	if b.now == nil {
-		b.now = time.Now
+	if b.clock == nil {
+		b.clock = clock.System()
 	}
 	if b.ids == nil {
 		b.ids = id.NewV7Generator()
@@ -236,7 +236,7 @@ func (b *Broker) RoleSyncProviders() []string {
 // refusal logs one refusal through the sampler, naming the provider and the
 // domain of the email, never the email itself, a subject or a reference.
 func (b *Broker) refusal(ctx context.Context, level slog.Level, msg, provider, email string) {
-	write, suppressed := b.sampler.Allow("oidc.broker:"+msg+":"+provider, b.now())
+	write, suppressed := b.sampler.Allow("oidc.broker:"+msg+":"+provider, b.clock.Now())
 	if !write {
 		return
 	}

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
+
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // Generator creates identifiers for library-owned records. Components accept a
@@ -28,7 +30,7 @@ const (
 // It is safe for concurrent use.
 type V7Generator struct {
 	mu      sync.Mutex
-	now     func() time.Time
+	clock   clock.Clock
 	random  io.Reader
 	lastMS  int64
 	counter uint32
@@ -37,11 +39,15 @@ type V7Generator struct {
 // V7Option configures a V7Generator.
 type V7Option func(*V7Generator)
 
-// WithClock replaces the time source. Default: time.Now. A nil function keeps the default.
-func WithClock(now func() time.Time) V7Option {
+// WithClock replaces the time source. Default: clock.System().
+//
+// A nil clock, typed nil included, keeps the system clock rather than
+// failing construction: NewV7Generator returns no error, so refusing here
+// would leave no way to report the mistake.
+func WithClock(clk clock.Clock) V7Option {
 	return func(g *V7Generator) {
-		if now != nil {
-			g.now = now
+		if !nilcheck.IsNil(clk) {
+			g.clock = clk
 		}
 	}
 }
@@ -57,7 +63,7 @@ func WithRandom(r io.Reader) V7Option {
 
 // NewV7Generator returns the default generator.
 func NewV7Generator(opts ...V7Option) *V7Generator {
-	g := &V7Generator{now: time.Now, random: rand.Reader}
+	g := &V7Generator{clock: clock.System(), random: rand.Reader}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(g)
@@ -80,7 +86,7 @@ func (g *V7Generator) NewID() (ID, error) {
 	seed := binary.BigEndian.Uint32(rnd[0:4]) & seedMask
 
 	g.mu.Lock()
-	ms := g.now().UnixMilli()
+	ms := g.clock.Now().UnixMilli()
 	switch {
 	case ms > g.lastMS:
 		g.lastMS = ms

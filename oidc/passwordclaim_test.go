@@ -5,8 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -253,7 +253,7 @@ func TestBrokerPasswordClaim(t *testing.T) {
 				oidc.WithPasswordClaim("corp", "credentials.password_hash"),
 				oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
 				oidc.WithBrokerLogger(testTextLogger(&logs)),
-				oidc.WithBrokerClock(func() time.Time { return provisionClock }),
+				oidc.WithBrokerClock(clockwork.NewFakeClockAt(provisionClock)),
 			}, tc.opts...)
 			b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl), opts...)
 			require.NoError(t, err)

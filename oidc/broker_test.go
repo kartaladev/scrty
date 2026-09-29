@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -303,6 +304,24 @@ func TestNewBroker(t *testing.T) {
 				return oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl), oidc.WithBrokerClock(nil))
 			},
 			assert: func(t *testing.T, _ *oidc.Broker, err error) { require.ErrorIs(t, err, oidc.ErrConfig) },
+		},
+		{
+			name: "a typed-nil clock is refused like an untyped one",
+			build: func(ctrl *gomock.Controller) (*oidc.Broker, error) {
+				return oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl), oidc.WithBrokerClock((*nilClock)(nil)))
+			},
+			assert: func(t *testing.T, _ *oidc.Broker, err error) { require.ErrorIs(t, err, oidc.ErrConfig) },
+		},
+		{
+			name: "a consumer clock with only Now is accepted",
+			build: func(ctrl *gomock.Controller) (*oidc.Broker, error) {
+				return oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl),
+					oidc.WithBrokerClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}))
+			},
+			assert: func(t *testing.T, b *oidc.Broker, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, b)
+			},
 		},
 		{
 			name: "a nil identifier generator is refused",

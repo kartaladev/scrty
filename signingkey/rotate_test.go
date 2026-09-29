@@ -70,11 +70,11 @@ func stopAndVerify(t *testing.T, km *signingkey.KeyManager) {
 }
 
 func TestRotationAtTheConfiguredInterval(t *testing.T) {
-	clock := newFakeClock(epoch)
+	clk := newClock()
 	store := signingkey.NewInMemoryKeyStore()
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(clock),
+		signingkey.WithClock(clk),
 		signingkey.WithRotateInterval(6*time.Hour), // the consumer's interval
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(time.Hour),
@@ -86,15 +86,13 @@ func TestRotationAtTheConfiguredInterval(t *testing.T) {
 	k1 := currentKid(t, km, signingkey.RS256)
 	require.NoError(t, km.Start(t.Context()))
 
-	clock.Advance(5*time.Hour + 59*time.Minute)
-	assert.Never(t, func() bool {
-		kid, _, ok := km.GetSigner(signingkey.RS256)
-		return ok && kid != k1
-	}, 300*time.Millisecond, 20*time.Millisecond,
+	advance(t, clk, 5*time.Hour+59*time.Minute, loopCount)
+	assert.Equal(t, k1, currentKid(t, km, signingkey.RS256),
 		"nothing rotates before the consumer's 6-hour interval has elapsed")
 
-	clock.Advance(time.Minute) // six hours since the manager was constructed
-	k2 := waitForRotation(t, km, signingkey.RS256, k1)
+	advance(t, clk, time.Minute, loopCount) // six hours since the manager was started
+	k2 := currentKid(t, km, signingkey.RS256)
+	require.NotEqual(t, k1, k2, "the interval elapsed, so the key rotated")
 
 	assert.True(t, publishes(km, k2), "the new key is published")
 	assert.True(t, publishes(km, k1),
@@ -108,8 +106,9 @@ func TestRotationAtTheConfiguredInterval(t *testing.T) {
 	assert.Equal(t, epoch.Add(6*time.Hour), recs[1].CreatedAt,
 		"the new key is stamped with the clock's time, not the wall clock's")
 
-	clock.Advance(6 * time.Hour) // and again, every six hours
-	k3 := waitForRotation(t, km, signingkey.RS256, k2)
+	advance(t, clk, 6*time.Hour, loopCount) // and again, every six hours
+	k3 := currentKid(t, km, signingkey.RS256)
+	assert.NotEqual(t, k2, k3)
 	assert.NotEqual(t, k1, k3)
 }
 
@@ -308,11 +307,11 @@ func TestRotationFailureIsObservable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec, logger := newLogRecorder()
 			report := &failureReport{}
-			clock := newFakeClock(epoch)
+			clk := newClock()
 
 			opts := append([]signingkey.Option{
 				signingkey.WithKeyStore(failingStore(t, report, opRotate)),
-				signingkey.WithClock(clock),
+				signingkey.WithClock(clk),
 				signingkey.WithAlgs(signingkey.EdDSA),
 				signingkey.WithRotateInterval(time.Hour),
 				signingkey.WithReloadInterval(30 * time.Minute),
@@ -329,9 +328,8 @@ func TestRotationFailureIsObservable(t *testing.T) {
 			require.NoError(t, km.Start(t.Context()))
 
 			for attempt := 1; attempt <= 2; attempt++ {
-				clock.Advance(time.Hour)
-				require.Eventually(t, func() bool { return report.hooks() >= attempt },
-					10*time.Second, 5*time.Millisecond,
+				advance(t, clk, time.Hour, loopCount)
+				require.Equal(t, attempt, report.hooks(),
 					"rotation attempt %d should have been reported", attempt)
 			}
 

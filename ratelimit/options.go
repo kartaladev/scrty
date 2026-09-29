@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"time"
+
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ErrConfig is wrapped by every error this package's constructors return for a
@@ -12,28 +14,17 @@ import (
 // work is refused at construction, before any traffic depends on it.
 var ErrConfig = errors.New("ratelimit: invalid configuration")
 
-// Clock is the time source a limiter stamps failures from and a guard samples
-// its refusal records by.
-//
-// With no clock configured both use the system clock. A consumer replaces it
-// through WithMemoryLimiterClock or WithSourceGuardClock, which is how a test
-// crosses a window boundary without waiting for one to pass.
-type Clock interface {
-	Now() time.Time
-}
-
-type systemClock struct{}
-
-func (systemClock) Now() time.Time { return time.Now() }
-
 // MemoryOption configures a MemoryLimiter. Every default NewMemoryLimiter
 // applies has an option here that replaces it.
 type MemoryOption func(*MemoryLimiter)
 
 // WithMemoryLimiterClock sets the time source failures are stamped from and the
-// window is measured against. Default: the system clock.
-func WithMemoryLimiterClock(clock Clock) MemoryOption {
-	return func(l *MemoryLimiter) { l.clock = clock }
+// window is measured against. Default: clock.System().
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// limiter with no clock could not stamp a failure at all.
+func WithMemoryLimiterClock(clk clock.Clock) MemoryOption {
+	return func(l *MemoryLimiter) { l.clock = clk }
 }
 
 // WithMemoryLimiterLogger sets where the limiter writes its per-replica warning.
@@ -87,12 +78,15 @@ func WithSourceGuardLogger(logger *slog.Logger) GuardOption {
 }
 
 // WithSourceGuardClock sets the time source the guard samples its refusal
-// records by. Default: the system clock.
+// records by. Default: clock.System().
 //
 // It does not affect the limiter's own sense of time, which belongs to the
 // Limiter and is configured there.
-func WithSourceGuardClock(clock Clock) GuardOption {
-	return func(g *SourceGuard) { g.clock = clock }
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// guard with no clock could not sample its refusal records at all.
+func WithSourceGuardClock(clk clock.Clock) GuardOption {
+	return func(g *SourceGuard) { g.clock = clk }
 }
 
 // WithSourceGuardLogInterval sets how long one written refusal record suppresses

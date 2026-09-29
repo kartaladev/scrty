@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -171,7 +172,7 @@ func TestManagerLastUsed(t *testing.T) {
 
 			m, err := apikey.NewManager(
 				apikey.WithStore(store),
-				apikey.WithClock(func() time.Time { return at }),
+				apikey.WithClock(clockwork.NewFakeClockAt(at)),
 				// The best-effort case logs a warning by design; this keeps it
 				// out of the test output without silencing the behaviour.
 				apikey.WithLogger(slog.New(slog.DiscardHandler)),

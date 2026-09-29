@@ -4,12 +4,13 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"testing"
-	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -44,6 +45,16 @@ func TestNewAPIKeyManager(t *testing.T) {
 		{name: "nil digest", opts: []apikey.Option{apikey.WithDigest(nil)}, assert: configError},
 		{name: "nil id generator", opts: []apikey.Option{apikey.WithIDGenerator(nil)}, assert: configError},
 		{name: "nil clock", opts: []apikey.Option{apikey.WithClock(nil)}, assert: configError},
+		{
+			// *clockwork.FakeClock implements Now through a pointer receiver,
+			// so a nil one is an interface holding a nil pointer: `== nil`
+			// misses it, and only the reflect-based check the constructor now
+			// uses catches it before the first issued key reads from a nil
+			// receiver.
+			name:   "typed-nil clock",
+			opts:   []apikey.Option{apikey.WithClock((*clockwork.FakeClock)(nil))},
+			assert: configError,
+		},
 		{name: "nil random", opts: []apikey.Option{apikey.WithRandom(nil)}, assert: configError},
 		{name: "nil store", opts: []apikey.Option{apikey.WithStore(nil)}, assert: configError},
 		{name: "typed-nil store", opts: []apikey.Option{apikey.WithStore((*apikey.MemoryStore)(nil))}, assert: configError},
@@ -70,7 +81,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 				apikey.WithPrefix("acme"),
 				apikey.WithDigest(func(b []byte) []byte { sum := sha512.Sum512(b); return sum[:] }),
 				apikey.WithIDGenerator(id.NewV7Generator()),
-				apikey.WithClock(time.Now),
+				apikey.WithClock(clock.System()),
 				apikey.WithRandom(rand.Reader),
 			},
 			assert: func(t *testing.T, m *apikey.Manager, err error) {

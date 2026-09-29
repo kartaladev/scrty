@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -41,26 +42,6 @@ func handoffCallback() oidc.CallbackResult {
 		IDToken:   handoffIDToken,
 		Next:      "/dashboard",
 	}
-}
-
-// handoffClock is a settable clock safe for concurrent reads.
-type handoffClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newHandoffClock(at time.Time) *handoffClock { return &handoffClock{now: at} }
-
-func (c *handoffClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *handoffClock) Set(at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = at
 }
 
 // handoffLogSink collects every record a handoff manager writes, at every
@@ -110,7 +91,7 @@ func TestHandoffIssue(t *testing.T) {
 
 	type deps struct {
 		store oidc.HandoffStore
-		clock *handoffClock
+		clock *clockwork.FakeClock
 		m     *oidc.HandoffManager
 		users *MockUserLoader
 	}
@@ -295,11 +276,11 @@ func TestHandoffIssue(t *testing.T) {
 			assert: func(t *testing.T, d deps, code string, err error) {
 				require.NoError(t, err)
 
-				d.clock.Set(handoffT0.Add(60 * time.Second))
+				d.clock.Advance(handoffT0.Add(60 * time.Second).Sub(d.clock.Now()))
 				_, err = d.m.Redeem(t.Context(), code)
 				require.ErrorIs(t, err, oidc.ErrInvalidHandoff, "a code issued at 10:00:00 is refused at 10:01:00")
 
-				d.clock.Set(handoffT0.Add(60*time.Second - time.Nanosecond))
+				d.clock.Advance(handoffT0.Add(60*time.Second - time.Nanosecond).Sub(d.clock.Now()))
 				d.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
 					Return(&identity.Details{ID: "u-1", Active: true}, nil)
 				_, err = d.m.Redeem(t.Context(), code)
@@ -328,9 +309,9 @@ func TestHandoffIssue(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			clock := newHandoffClock(handoffT0)
+			clock := clockwork.NewFakeClockAt(handoffT0)
 			store, opts := tc.setup(t, ctrl)
-			opts = append([]oidc.HandoffOption{oidc.WithHandoffClock(clock.Now)}, opts...)
+			opts = append([]oidc.HandoffOption{oidc.WithHandoffClock(clock)}, opts...)
 
 			users := NewMockUserLoader(ctrl)
 			m, err := oidc.NewHandoffManager(store, users, opts...)
@@ -450,6 +431,14 @@ func TestHandoffIssueConstruction(t *testing.T) {
 			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
 				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffClock(nil))
+			},
+			assert: refusedAsConfig,
+		},
+		{
+			name: "WithHandoffClock with a typed-nil clock is refused like an untyped one",
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
+				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+					oidc.WithHandoffClock((*nilClock)(nil)))
 			},
 			assert: refusedAsConfig,
 		},

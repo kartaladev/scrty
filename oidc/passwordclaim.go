@@ -95,7 +95,7 @@ func (b *Broker) passwordClaimIgnored(ctx context.Context, provider string, reas
 	key := "oidc.broker.password-claim:" + string(reason) + ":" + provider
 	if _, warned := b.passwordWarned.LoadOrStore(key, struct{}{}); warned {
 		level = slog.LevelDebug
-		write, suppressed := b.sampler.Allow(key, b.now())
+		write, suppressed := b.sampler.Allow(key, b.clock.Now())
 		if !write {
 			return
 		}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/outbound"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // ManagerOption customises a Manager at construction.
@@ -54,13 +55,15 @@ func WithRandom(r io.Reader) ManagerOption {
 }
 
 // WithClock replaces the clock every expiry, TTL, cooldown and backoff
-// decision reads. The default is time.Now.
-func WithClock(now func() time.Time) ManagerOption {
+// decision reads. The default is clock.System(). The default in-memory flow
+// store reads the same clock. A nil clock, typed nil included, is a
+// configuration error.
+func WithClock(clk clock.Clock) ManagerOption {
 	return func(m *Manager) error {
-		if now == nil {
+		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: WithClock was given nil", ErrConfig)
 		}
-		m.now = now
+		m.clock = clk
 		return nil
 	}
 }
@@ -78,7 +81,7 @@ func WithClock(now func() time.Time) ManagerOption {
 //	s, err := oidc.NewMemoryFlowStore(oidc.WithMaxFlows(n))
 //
 // and passes it here. A store the consumer builds this way does not share
-// the manager's WithClock or WithRandom: it draws its own defaults (time.Now
+// the manager's WithClock or WithRandom: it draws its own defaults (clock.System()
 // and crypto/rand.Reader) unless the consumer also passes
 // WithMemoryFlowStoreClock and WithMemoryFlowStoreRandom to it, matching
 // whatever WithClock or WithRandom the manager itself was given. A nil store,

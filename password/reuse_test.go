@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -213,6 +214,19 @@ func TestNewReuseGuard_RefusesWiringMistakes(t *testing.T) {
 			enc:     enc,
 			depth:   5,
 			opts:    []password.ReuseOption{password.WithReuseClock(nil)},
+			assert:  refused("clock"),
+		},
+		{
+			// *clockwork.FakeClock implements Now through a pointer receiver,
+			// so a nil one is an interface holding a nil pointer: `== nil`
+			// misses it, and only the reflect-based check the constructor now
+			// uses catches it before the first Change reads from a nil
+			// receiver.
+			name:    "a typed-nil clock",
+			history: consumerHistory,
+			enc:     enc,
+			depth:   5,
+			opts:    []password.ReuseOption{password.WithReuseClock((*clockwork.FakeClock)(nil))},
 			assert:  refused("clock"),
 		},
 		{
@@ -568,7 +582,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "the write receives the record, the new hash and the clock's time",
 			depth: 3,
-			opts:  []password.ReuseOption{password.WithReuseClock(func() time.Time { return fixed })},
+			opts:  []password.ReuseOption{password.WithReuseClock(clockwork.NewFakeClockAt(fixed))},
 			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				return &identity.Details{ID: user, Password: hP1}, "p2", &recordingWrite{}
 			},

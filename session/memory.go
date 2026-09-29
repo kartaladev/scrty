@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // MemoryStore keeps sessions in process memory. It is the default store, and
@@ -16,10 +17,11 @@ import (
 // caller writing to a session it stored or loaded cannot change stored state,
 // and two callers holding "the same" session hold two records.
 //
-// Start launches a housekeeping ticker that sweeps expired sessions once per
-// WithHousekeepingInterval, which defaults to one minute. Stop ends it. Both
-// are idempotent, and the ticker also ends when the context given to Start
-// does.
+// Start launches housekeeping, which sweeps expired sessions one
+// WithHousekeepingInterval after the previous sweep finished, waiting on the
+// store's clock (WithMemoryStoreClock). The interval defaults to one minute.
+// Stop ends it. Both are idempotent, and housekeeping also ends when the
+// context given to Start does.
 //
 // # Limits, stated
 //
@@ -36,7 +38,7 @@ import (
 // records would make every caller a sweeper and every read a write.
 type MemoryStore struct {
 	mu       sync.RWMutex
-	now      func() time.Time
+	clock    clock.Timed
 	interval time.Duration
 	records  map[string]*Session
 
@@ -51,7 +53,7 @@ type MemoryStore struct {
 // NewMemoryStore returns the default store.
 func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 	s := &MemoryStore{
-		now:      time.Now,
+		clock:    clock.System(),
 		interval: defaultHousekeepingInterval,
 		records:  make(map[string]*Session),
 	}
@@ -73,12 +75,12 @@ func (s *MemoryStore) Len() int {
 	return len(s.records)
 }
 
-// Start launches the housekeeping ticker, which calls DeleteExpired once per
-// interval until Stop is called or ctx ends.
+// Start launches housekeeping, which calls DeleteExpired one interval after the
+// previous call finished until Stop is called or ctx ends.
 //
-// It is idempotent: starting a store whose ticker is running launches nothing
-// and returns nil. Starting again after the context of a previous run ended
-// launches a fresh ticker, which is how a consumer whose request-scoped
+// It is idempotent: starting a store whose housekeeping is running launches
+// nothing and returns nil. Starting again after the context of a previous run
+// ended launches fresh housekeeping, which is how a consumer whose request-scoped
 // context ended by mistake gets housekeeping back without a new store.
 //
 // Housekeeping is optional. Without it nothing is ever served that has
@@ -136,22 +138,19 @@ func (s *MemoryStore) reapLocked() {
 	s.cancel, s.runDone = nil, nil
 }
 
-// housekeep sweeps expired sessions once per interval until ctx ends.
+// housekeep sweeps expired sessions one interval after the previous sweep
+// finished, waiting on the store's clock, until ctx ends.
 //
 // It ends with return, never with break: a break inside the select would leave
-// the select but not the for, and the goroutine would spin on a dead ticker
-// until the process exited.
+// the select but not the for.
 func (s *MemoryStore) housekeep(ctx context.Context) {
 	defer s.wg.Done()
-
-	ticker := time.NewTicker(s.interval)
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-s.clock.After(s.interval):
 			// The only error this store returns is none, and there is no
 			// caller to hand one to from a background loop.
 			_, _ = s.DeleteExpired(ctx)
@@ -159,8 +158,8 @@ func (s *MemoryStore) housekeep(ctx context.Context) {
 	}
 }
 
-// Stop ends the housekeeping ticker and returns only once it has ended, so no
-// sweep is in progress when Stop returns.
+// Stop ends housekeeping and returns only once it has ended, so no sweep is in
+// progress when Stop returns.
 //
 // It is idempotent, and returns at once for a store that was never started.
 // Unlike a cancelled context, Stop is not terminal: a later Start launches
@@ -216,7 +215,7 @@ func (s *MemoryStore) Load(_ context.Context, id string) (*Session, error) {
 	if !found {
 		return nil, ErrSessionNotFound
 	}
-	if rec.expired(s.now()) {
+	if rec.expired(s.clock.Now()) {
 		return nil, ErrSessionExpired
 	}
 
@@ -261,7 +260,7 @@ func (s *MemoryStore) CountActiveByUser(_ context.Context, user identity.UserID)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	now := s.now()
+	now := s.clock.Now()
 
 	var n int
 	for _, rec := range s.records {
@@ -275,7 +274,7 @@ func (s *MemoryStore) CountActiveByUser(_ context.Context, user identity.UserID)
 
 // DeleteExpired removes every expired session and reports how many went.
 func (s *MemoryStore) DeleteExpired(_ context.Context) (int, error) {
-	now := s.now()
+	now := s.clock.Now()
 
 	return s.removeWhere(func(rec *Session) bool { return rec.expired(now) }), nil
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -43,9 +44,8 @@ func flushSummaries(t *testing.T, logs, msg string) []int {
 
 // flushFixedClock is a clock that never advances, so every refusal a test
 // drives falls in the sampler's very first window.
-func flushFixedClock() func() time.Time {
-	at := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
-	return func() time.Time { return at }
+func flushFixedClock() *clockwork.FakeClock {
+	return clockwork.NewFakeClockAt(time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC))
 }
 
 // TestHandoffManagerFlushRefusalLogs pins spec oidc-login "OIDC components

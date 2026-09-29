@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -40,7 +41,7 @@ type TOTP struct {
 	issuer string
 	digits int
 	period time.Duration
-	now    func() time.Time
+	clock  clock.Clock
 	random io.Reader
 	ids    id.Generator
 	logger *slog.Logger
@@ -58,7 +59,7 @@ type TOTP struct {
 // stored but never shown would be worse than none.
 //
 // Defaults: 6 digits (WithDigits, which also accepts 8), a 30-second step
-// (WithPeriod), time.Now (WithClock), crypto/rand.Reader (WithRandom) and
+// (WithPeriod), clock.System() (WithClock), crypto/rand.Reader (WithRandom) and
 // id.NewV7Generator for enrolment generations (WithTOTPIDGenerator). store
 // has no default — an enrolment store is the one thing this method cannot
 // invent, and NewMemoryEnrolmentStore is the obvious argument for a test or a
@@ -76,7 +77,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 		issuer: issuer,
 		digits: 6,
 		period: 30 * time.Second,
-		now:    time.Now,
+		clock:  clock.System(),
 		random: rand.Reader,
 		ids:    id.NewV7Generator(),
 		logger: slog.Default(),
@@ -108,7 +109,7 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 		return nil, fmt.Errorf("mfa: totp period must be positive, got %s", t.period)
 	}
 
-	if t.now == nil || nilcheck.IsNil(t.random) {
+	if nilcheck.IsNil(t.clock) || nilcheck.IsNil(t.random) {
 		return nil, errors.New("mfa: totp clock and random source must not be nil")
 	}
 
@@ -170,7 +171,7 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, code string) er
 		return ErrInvalidCode
 	}
 
-	step, matched := t.match(e.Secret, code, t.now())
+	step, matched := t.match(e.Secret, code, t.clock.Now())
 	if !matched {
 		t.record(ctx, slog.LevelDebug, msgCodeRefused, user, slog.String("reason", "no-match"))
 
@@ -370,7 +371,7 @@ func (t *TOTP) BeginEnrolmentGeneration(
 	if err := t.store.PutPending(ctx, Enrolment{
 		User:       user,
 		Secret:     secret,
-		CreatedAt:  t.now(),
+		CreatedAt:  t.clock.Now(),
 		Generation: gen,
 	}); err != nil {
 		return Provisioning{}, id.Nil, enrolmentStoreFailed(err, "mfa: totp could not store the pending enrolment")
@@ -440,12 +441,12 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 		return ErrInvalidCode
 	}
 
-	step, matched := t.match(e.Secret, code, t.now())
+	step, matched := t.match(e.Secret, code, t.clock.Now())
 	if !matched {
 		return ErrInvalidCode
 	}
 
-	confirmed, err := t.store.Confirm(ctx, user, step, t.now())
+	confirmed, err := t.store.Confirm(ctx, user, step, t.clock.Now())
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not confirm the enrolment")
 	}

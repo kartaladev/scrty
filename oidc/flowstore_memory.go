@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // DefaultMaxFlows is how many unexpired flows a MemoryFlowStore holds before
@@ -49,7 +50,7 @@ type MemoryFlowStore struct {
 	pruneAfter time.Time
 
 	max    int
-	now    func() time.Time
+	clock  clock.Clock
 	random io.Reader
 }
 
@@ -73,13 +74,14 @@ func WithMaxFlows(n int) MemoryFlowStoreOption {
 }
 
 // WithMemoryFlowStoreClock replaces the clock expiry is judged against. The
-// default is time.Now.
-func WithMemoryFlowStoreClock(now func() time.Time) MemoryFlowStoreOption {
+// default is clock.System(). A nil clock, typed nil included, is a
+// configuration error.
+func WithMemoryFlowStoreClock(clk clock.Clock) MemoryFlowStoreOption {
 	return func(s *MemoryFlowStore) error {
-		if now == nil {
+		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: WithMemoryFlowStoreClock was given nil", ErrConfig)
 		}
-		s.now = now
+		s.clock = clk
 		return nil
 	}
 }
@@ -100,7 +102,7 @@ func WithMemoryFlowStoreRandom(r io.Reader) MemoryFlowStoreOption {
 // NewMemoryFlowStore returns an empty in-memory flow store.
 //
 // With no options it holds at most DefaultMaxFlows unexpired flows, judges
-// expiry by time.Now and draws handles of 32 bytes from crypto/rand.Reader.
+// expiry by clock.System() and draws handles of 32 bytes from crypto/rand.Reader.
 // NewManager builds one with its own clock and random source when no
 // WithFlowStore is given.
 //
@@ -109,7 +111,7 @@ func WithMemoryFlowStoreRandom(r io.Reader) MemoryFlowStoreOption {
 // nil store and an error wrapping ErrConfig, before the store takes any
 // traffic. A nil option is ignored.
 func NewMemoryFlowStore(opts ...MemoryFlowStoreOption) (*MemoryFlowStore, error) {
-	s := &MemoryFlowStore{flows: make(map[string]Flow), max: DefaultMaxFlows, now: time.Now, random: rand.Reader}
+	s := &MemoryFlowStore{flows: make(map[string]Flow), max: DefaultMaxFlows, clock: clock.System(), random: rand.Reader}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
@@ -136,7 +138,7 @@ func (s *MemoryFlowStore) Begin(_ context.Context, f Flow) (string, error) {
 	defer s.mu.Unlock()
 
 	if len(s.flows) >= s.max {
-		s.pruneLocked(s.now())
+		s.pruneLocked(s.clock.Now())
 		if len(s.flows) >= s.max {
 			return "", ErrFlowStoreFull
 		}
@@ -187,7 +189,7 @@ func (s *MemoryFlowStore) Complete(_ context.Context, handle, provider, state st
 	f, found := s.flows[handle]
 	if !found || f.Provider != provider || state == "" ||
 		subtle.ConstantTimeCompare([]byte(state), []byte(f.State)) != 1 ||
-		!s.now().Before(f.ExpiresAt) {
+		!s.clock.Now().Before(f.ExpiresAt) {
 		return Flow{}, ErrInvalidState
 	}
 	delete(s.flows, handle)

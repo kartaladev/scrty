@@ -76,7 +76,7 @@ func (b *Broker) mirror(ctx context.Context, ext ExternalIdentity, l *Link, det 
 			emails:  []string{ext.Email, l.Email},
 			names:   []string{det.Username, l.Username, string(det.ID)},
 		})
-		write, suppressed := b.sampler.Allow("oidc.broker:mirror-update-failed:"+ext.Provider, b.now())
+		write, suppressed := b.sampler.Allow("oidc.broker:mirror-update-failed:"+ext.Provider, b.clock.Now())
 		if write {
 			b.log.LogAttrs(ctx, slog.LevelError,
 				"oidc: claim mirroring could not update the user; the login continues with the stored values",

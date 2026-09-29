@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -72,8 +73,8 @@ func (c fakeCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
 func sealingStore(t *testing.T, key byte) (session.Store, *session.MemoryStore) {
 	t.Helper()
 
-	clk := newTestClock(createdAt)
-	inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk.Now))
+	clk := clockwork.NewFakeClockAt(createdAt)
+	inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 	sealing, err := session.NewEncryptedStore(inner, fakeCipher{key: key})
 	require.NoError(t, err)
 
@@ -256,8 +257,8 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 	t.Run("a token sealed under a retired key is unreadable, not missing", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
-		inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk.Now))
+		clk := clockwork.NewFakeClockAt(createdAt)
+		inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 
 		retired, err := session.NewEncryptedStore(inner, fakeCipher{key: 0x2a})
 		require.NoError(t, err)

@@ -35,7 +35,7 @@ func (m *Manager) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
 		s.EnrolmentOriginDeadline = s.AbsoluteExpiresAt
 	}
 
-	if limit := m.now().Add(lifetime); limit.Before(s.AbsoluteExpiresAt) {
+	if limit := m.clock.Now().Add(lifetime); limit.Before(s.AbsoluteExpiresAt) {
 		s.AbsoluteExpiresAt = limit
 	}
 	if s.IdleExpiresAt.After(s.AbsoluteExpiresAt) {
@@ -72,7 +72,7 @@ func (m *Manager) RestoreEnrolmentDeadlines(s *Session) error {
 		return nil
 	}
 
-	now := m.now()
+	now := m.clock.Now()
 	if s.expired(now) {
 		return ErrSessionExpired
 	}

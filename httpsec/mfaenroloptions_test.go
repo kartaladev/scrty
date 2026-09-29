@@ -122,7 +122,7 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 				t.Helper()
 
 				m, err := mfa.NewTOTP(singleCallStore{h.store}, enrolIssuer,
-					mfa.WithClock(func() time.Time { return h.at }))
+					mfa.WithClock(h.clock))
 				require.NoError(t, err)
 
 				h.totp, h.method = m, m

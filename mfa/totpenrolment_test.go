@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -179,7 +180,7 @@ func TestTOTPConfirmEnrolment(t *testing.T) {
 			ctx := t.Context()
 
 			m, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example",
-				mfa.WithClock(func() time.Time { return base }))
+				mfa.WithClock(clockwork.NewFakeClockAt(base)))
 			require.NoError(t, err)
 
 			p, err := m.BeginEnrolment(ctx, "u-1", "ada@example.com")
@@ -203,7 +204,7 @@ func TestTOTPConfirmEnrolmentUnknown(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 
 	m, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example",
-		mfa.WithClock(func() time.Time { return base }))
+		mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	assert.ErrorIs(t, m.ConfirmEnrolment(ctx, "nobody", "123456"), mfa.ErrInvalidCode)
@@ -224,7 +225,7 @@ func TestTOTPBeginEnrolmentTwice(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 	store := mfa.NewMemoryEnrolmentStore()
 
-	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return base }))
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	first, err := m.BeginEnrolment(ctx, "u-1", "ada@example.com")
@@ -242,7 +243,7 @@ func TestTOTPBeginEnrolmentTwice(t *testing.T) {
 	// The existing authenticator still works: nothing was replaced.
 	later := base.Add(time.Minute)
 
-	m2, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return later }))
+	m2, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(later)))
 	require.NoError(t, err)
 	assert.NoError(t, m2.Verify(ctx, "u-1", codeForSecret(t, second.Secret, later)))
 }
@@ -254,7 +255,7 @@ func TestTOTPRemoveEnrolment(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 	store := mfa.NewMemoryEnrolmentStore()
 
-	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return base }))
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(base)))
 	require.NoError(t, err)
 
 	p, err := m.BeginEnrolment(ctx, "u-1", "ada@example.com")

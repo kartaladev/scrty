@@ -9,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -72,7 +73,7 @@ type SourceGuard struct {
 	limiter     Limiter
 	keyer       *SourceKeyer
 	logger      *slog.Logger
-	clock       Clock
+	clock       clock.Clock
 	logInterval time.Duration
 	sampler     *logsample.Sampler
 }
@@ -92,7 +93,7 @@ type SourceGuard struct {
 // limits, so it is refused at wiring time rather than discovered under attack.
 //
 // Defaults: a SourceKeyer with its own defaults (WithSourceGuardKeyer),
-// slog.Default (WithSourceGuardLogger), the system clock (WithSourceGuardClock)
+// slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock)
 // and DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval).
 func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceGuard, error) {
 	keyer, err := NewSourceKeyer()
@@ -105,7 +106,7 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		limiter:     limiter,
 		keyer:       keyer,
 		logger:      slog.Default(),
-		clock:       systemClock{},
+		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
 	for _, opt := range opts {

@@ -89,7 +89,7 @@ func (m *Manager) exchange(ctx context.Context, p Provider, md metadata, code, v
 // sampler, keyed by provider and reason. attrs never carry a credential: the
 // only provider text they may hold is a refused answer's body, truncated.
 func (m *Manager) logExchangeFailure(ctx context.Context, provider, reason string, attrs ...slog.Attr) {
-	write, suppressed := m.sampler.Allow("oidc.exchange:"+reason+":"+provider, m.now())
+	write, suppressed := m.sampler.Allow("oidc.exchange:"+reason+":"+provider, m.clock.Now())
 	if !write {
 		return
 	}

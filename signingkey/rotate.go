@@ -15,8 +15,8 @@ import (
 // published until housekeeping removes it, so tokens already issued keep
 // verifying.
 //
-// A failure leaves the previous key current, is reported, and is retried at the
-// next tick. One algorithm failing does not stop the others.
+// A failure leaves the previous key current, is reported, and is retried one
+// rotation interval later. One algorithm failing does not stop the others.
 func (km *KeyManager) rotateAll(ctx context.Context) {
 	for _, alg := range km.algs {
 		if _, f := km.mintAndStore(ctx, alg); f != nil {

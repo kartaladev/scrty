@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -36,7 +37,7 @@ func handoffUser() *identity.Details {
 // handoffRedeemFixture is one issued code and everything around it.
 type handoffRedeemFixture struct {
 	ctrl  *gomock.Controller
-	clock *handoffClock
+	clock *clockwork.FakeClock
 	mem   *oidc.MemoryHandoffStore
 	users *MockUserLoader
 	logs  *handoffLogSink
@@ -71,11 +72,11 @@ func newHandoffRedeemFixture(
 ) *handoffRedeemFixture {
 	t.Helper()
 
-	f := &handoffRedeemFixture{ctrl: gomock.NewController(t), clock: newHandoffClock(handoffT0), logs: &handoffLogSink{}}
+	f := &handoffRedeemFixture{ctrl: gomock.NewController(t), clock: clockwork.NewFakeClockAt(handoffT0), logs: &handoffLogSink{}}
 	f.mem = oidc.NewMemoryHandoffStore()
 	f.users = NewMockUserLoader(f.ctrl)
 
-	issuer, err := oidc.NewHandoffManager(f.mem, NewMockUserLoader(f.ctrl), oidc.WithHandoffClock(f.clock.Now))
+	issuer, err := oidc.NewHandoffManager(f.mem, NewMockUserLoader(f.ctrl), oidc.WithHandoffClock(f.clock))
 	require.NoError(t, err)
 	f.code, err = issuer.Issue(t.Context(), handoffCallback())
 	require.NoError(t, err)
@@ -85,7 +86,7 @@ func newHandoffRedeemFixture(
 		s = store(t, f.ctrl, f.mem)
 	}
 	f.m, err = oidc.NewHandoffManager(s, f.users,
-		oidc.WithHandoffClock(f.clock.Now), oidc.WithHandoffLogger(f.logs.Logger()))
+		oidc.WithHandoffClock(f.clock), oidc.WithHandoffLogger(f.logs.Logger()))
 	require.NoError(t, err)
 
 	return f
@@ -149,7 +150,7 @@ func TestHandoffRedeem(t *testing.T) {
 		{
 			name: "a valid code redeems once",
 			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
-				f.clock.Set(handoffT0.Add(30 * time.Second))
+				f.clock.Advance(handoffT0.Add(30 * time.Second).Sub(f.clock.Now()))
 				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(handoffUser(), nil)
 			},
 			assert: func(t *testing.T, f *handoffRedeemFixture, res oidc.HandoffResult, err error) {
@@ -241,8 +242,10 @@ func TestHandoffRedeem(t *testing.T) {
 			},
 		},
 		{
-			name:    "expired: exactly at the expiry",
-			arrange: func(_ *testing.T, f *handoffRedeemFixture) { f.clock.Set(handoffT0.Add(oidc.HandoffTTL)) },
+			name: "expired: exactly at the expiry",
+			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
+				f.clock.Advance(handoffT0.Add(oidc.HandoffTTL).Sub(f.clock.Now()))
+			},
 			assert: func(t *testing.T, f *handoffRedeemFixture, res oidc.HandoffResult, err error) {
 				refusedAsInvalid(t, res, err)
 				loggedAt(t, f, "DEBUG")
@@ -252,7 +255,7 @@ func TestHandoffRedeem(t *testing.T) {
 		{
 			name: "one nanosecond before the expiry redeems",
 			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
-				f.clock.Set(handoffT0.Add(oidc.HandoffTTL - time.Nanosecond))
+				f.clock.Advance(handoffT0.Add(oidc.HandoffTTL - time.Nanosecond).Sub(f.clock.Now()))
 				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(handoffUser(), nil)
 			},
 			assert: func(t *testing.T, f *handoffRedeemFixture, _ oidc.HandoffResult, err error) {
@@ -263,7 +266,7 @@ func TestHandoffRedeem(t *testing.T) {
 		{
 			name: "a clock stepped back before issue still redeems",
 			arrange: func(_ *testing.T, f *handoffRedeemFixture) {
-				f.clock.Set(handoffT0.Add(-5 * time.Second))
+				f.clock.Advance(handoffT0.Add(-5 * time.Second).Sub(f.clock.Now()))
 				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(handoffUser(), nil)
 			},
 			assert: func(t *testing.T, _ *handoffRedeemFixture, _ oidc.HandoffResult, err error) {

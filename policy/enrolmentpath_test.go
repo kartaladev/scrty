@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -382,7 +383,7 @@ func TestEnrolmentPathUntil(t *testing.T) {
 			// read it instead of Input.Now would keep the path open.
 			p := mfaRequirementPolicyFor(t, nil, mfaMethod(t, factor.AuthenticatorApp, false, nil),
 				policy.WithMFARequiredForAll(),
-				policy.WithMFARequirementClock(func() time.Time { return closesAt.Add(-time.Hour) }),
+				policy.WithMFARequirementClock(clockwork.NewFakeClockAt(closesAt.Add(-time.Hour))),
 				policy.WithMFAEnrolmentPath(pathOpts...))
 
 			in := &policy.Input{User: mfaUser, FirstFactor: factor.Password, Now: tc.now}

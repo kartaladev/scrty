@@ -6,6 +6,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -142,7 +143,7 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 	type testCase struct {
 		name    string
 		message string
-		build   func(t *testing.T, buf *bytes.Buffer, clock func() time.Time) policy.Policy
+		build   func(t *testing.T, buf *bytes.Buffer, clk *clockwork.FakeClock) policy.Policy
 		refuse  func(t *testing.T, p policy.Policy)
 	}
 
@@ -150,12 +151,12 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 		{
 			name:    "the second-factor challenge policy",
 			message: logSameChannelRefused,
-			build: func(t *testing.T, buf *bytes.Buffer, clock func() time.Time) policy.Policy {
+			build: func(t *testing.T, buf *bytes.Buffer, clk *clockwork.FakeClock) policy.Policy {
 				t.Helper()
 
 				p, err := policy.NewMFAPolicy(mfaMethod(t, factor.Email, true, nil),
 					policy.WithMFAPolicyLogger(mfaLogger(buf)),
-					policy.WithMFAPolicyClock(clock))
+					policy.WithMFAPolicyClock(clk))
 				require.NoError(t, err)
 
 				return p
@@ -170,14 +171,14 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 		{
 			name:    "the mfa requirement policy",
 			message: logMFARequired,
-			build: func(t *testing.T, buf *bytes.Buffer, clock func() time.Time) policy.Policy {
+			build: func(t *testing.T, buf *bytes.Buffer, clk *clockwork.FakeClock) policy.Policy {
 				t.Helper()
 
 				p, err := policy.NewMFARequirementPolicy(
 					mfaRequirementLookup(t, true, true, nil),
 					mfaMethod(t, factor.AuthenticatorApp, true, nil),
 					policy.WithMFARequirementLogger(mfaLogger(buf)),
-					policy.WithMFARequirementClock(clock))
+					policy.WithMFARequirementClock(clk))
 				require.NoError(t, err)
 
 				return p
@@ -196,9 +197,9 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			at := mfaNow
+			clk := clockwork.NewFakeClockAt(mfaNow)
 			buf := &bytes.Buffer{}
-			p := tc.build(t, buf, func() time.Time { return at })
+			p := tc.build(t, buf, clk)
 
 			tc.refuse(t, p)
 			tc.refuse(t, p)
@@ -207,7 +208,7 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 
 			// Exactly one window, so the record that reopens it carries the
 			// count held back rather than the reporter taking it.
-			at = at.Add(policy.DefaultLogInterval)
+			clk.Advance(policy.DefaultLogInterval)
 			tc.refuse(t, p)
 
 			records := mfaRecordsOf(t, buf, tc.message)

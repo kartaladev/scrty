@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -434,7 +435,7 @@ func TestMFAReturnedErrors(t *testing.T) {
 			}
 
 			d.method, err = mfa.NewTOTP(pathStore{d.store, d.proofs}, "Example",
-				mfa.WithClock(func() time.Time { return d.now }))
+				mfa.WithClock(clockwork.NewFakeClockAt(d.now)))
 			require.NoError(t, err)
 
 			tc.arrange(t, d)

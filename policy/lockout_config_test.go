@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -99,6 +100,16 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 		{
 			name:   "a nil clock is refused",
 			opts:   []policy.LockoutOption{policy.WithLockoutClock(nil)},
+			assert: refused,
+		},
+		{
+			// *clockwork.FakeClock implements Now through a pointer receiver,
+			// so a nil one is an interface holding a nil pointer: `== nil`
+			// misses it, and only the reflect-based check the constructor now
+			// uses catches it before the first failure or purge reads from a
+			// nil receiver.
+			name:   "a typed-nil clock is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutClock((*clockwork.FakeClock)(nil))},
 			assert: refused,
 		},
 		{

@@ -12,6 +12,7 @@ import (
 	"testing/iotest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,9 +21,31 @@ import (
 
 var t0 = time.Date(2022, 2, 22, 19, 22, 22, 0, time.UTC)
 
-func frozen(at time.Time) func() time.Time { return func() time.Time { return at } }
-
 func seeded(seed byte) *rand.ChaCha8 { return rand.NewChaCha8([32]byte{seed}) }
+
+// idTimestampMS extracts the 48-bit millisecond timestamp a V7Generator wrote
+// into the identifier's first six bytes.
+func idTimestampMS(t *testing.T, got id.ID) int64 {
+	t.Helper()
+
+	var ms [8]byte
+	copy(ms[2:], got[:6])
+
+	return int64(binary.BigEndian.Uint64(ms[:])) //nolint:gosec // 48-bit field read back
+}
+
+// nilClockID is a consumer clock type whose Now never dereferences its
+// receiver, so (*nilClockID)(nil) is a typed nil that does not panic on its
+// own: it is id.WithClock's nil handling under test, not this type's safety.
+type nilClockID struct{}
+
+func (*nilClockID) Now() time.Time { return time.Time{} }
+
+// fixedClockID is a consumer's own read-only clock: the "Read-only source for
+// a read-only component" scenario (time-source spec).
+type fixedClockID struct{ at time.Time }
+
+func (c fixedClockID) Now() time.Time { return c.at }
 
 func TestV7Generator_Layout(t *testing.T) {
 	t.Parallel()
@@ -65,7 +88,7 @@ func TestV7Generator_Layout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.assert(t, func() *id.V7Generator {
-				return id.NewV7Generator(id.WithClock(frozen(t0)), id.WithRandom(seeded(1)))
+				return id.NewV7Generator(id.WithClock(clockwork.NewFakeClockAt(t0)), id.WithRandom(seeded(1)))
 			})
 		})
 	}
@@ -93,7 +116,7 @@ func TestV7Generator_Ordering(t *testing.T) {
 		{
 			name: "many identifiers within one millisecond",
 			drive: func(t *testing.T) []id.ID {
-				gen := id.NewV7Generator(id.WithClock(frozen(t0)), id.WithRandom(seeded(2)))
+				gen := id.NewV7Generator(id.WithClock(clockwork.NewFakeClockAt(t0)), id.WithRandom(seeded(2)))
 				ids := make([]id.ID, 100_000)
 				for n := range ids {
 					v, err := gen.NewID()
@@ -107,11 +130,11 @@ func TestV7Generator_Ordering(t *testing.T) {
 		{
 			name: "time source moves backwards",
 			drive: func(t *testing.T) []id.ID {
-				now := t0
-				gen := id.NewV7Generator(id.WithClock(func() time.Time { return now }), id.WithRandom(seeded(3)))
+				clk := clockwork.NewFakeClockAt(t0)
+				gen := id.NewV7Generator(id.WithClock(clk), id.WithRandom(seeded(3)))
 				first, err := gen.NewID()
 				require.NoError(t, err)
-				now = t0.Add(-time.Second)
+				clk.Advance(-time.Second) // t0 - 1s
 				second, err := gen.NewID()
 				require.NoError(t, err)
 				return []id.ID{first, second}
@@ -121,9 +144,9 @@ func TestV7Generator_Ordering(t *testing.T) {
 		{
 			name: "later time sorts later across generators",
 			drive: func(t *testing.T) []id.ID {
-				early, err := id.NewV7Generator(id.WithClock(frozen(t0))).NewID()
+				early, err := id.NewV7Generator(id.WithClock(clockwork.NewFakeClockAt(t0))).NewID()
 				require.NoError(t, err)
-				late, err := id.NewV7Generator(id.WithClock(frozen(t0.Add(time.Millisecond)))).NewID()
+				late, err := id.NewV7Generator(id.WithClock(clockwork.NewFakeClockAt(t0.Add(time.Millisecond)))).NewID()
 				require.NoError(t, err)
 				return []id.ID{early, late}
 			},
@@ -135,6 +158,68 @@ func TestV7Generator_Ordering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.assert(t, tc.drive(t))
+		})
+	}
+}
+
+// TestV7Generator_ClockOption pins WithClock's four time-source shapes
+// (time-source spec): the default, a consumer's own read-only clock, and the
+// two absent-source shapes that id.WithClock keeps the system clock for
+// rather than refusing (D2's exception for a constructor that cannot fail).
+func TestV7Generator_ClockOption(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []id.V7Option
+		assert func(t *testing.T, got id.ID, before, after time.Time)
+	}
+
+	fromSystemClock := func(t *testing.T, got id.ID, before, after time.Time) {
+		t.Helper()
+
+		ms := idTimestampMS(t, got)
+		assert.GreaterOrEqual(t, ms, before.UnixMilli(), "earlier than the system time before construction")
+		assert.LessOrEqual(t, ms, after.UnixMilli(), "later than the system time after construction")
+	}
+
+	cases := []testCase{
+		{
+			name:   "default clock reads the system time",
+			opts:   nil,
+			assert: fromSystemClock,
+		},
+		{
+			name: "a consumer's own read-only clock is the generator's source",
+			opts: []id.V7Option{id.WithClock(fixedClockID{at: t0})},
+			assert: func(t *testing.T, got id.ID, _, _ time.Time) {
+				t.Helper()
+				assert.Equal(t, t0.UnixMilli(), idTimestampMS(t, got))
+			},
+		},
+		{
+			name:   "a nil clock keeps the system clock",
+			opts:   []id.V7Option{id.WithClock(nil)},
+			assert: fromSystemClock,
+		},
+		{
+			name:   "a typed-nil clock keeps the system clock",
+			opts:   []id.V7Option{id.WithClock((*nilClockID)(nil))},
+			assert: fromSystemClock,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gen := id.NewV7Generator(tc.opts...)
+			before := time.Now()
+			got, err := gen.NewID()
+			after := time.Now()
+			require.NoError(t, err)
+
+			tc.assert(t, got, before, after)
 		})
 	}
 }

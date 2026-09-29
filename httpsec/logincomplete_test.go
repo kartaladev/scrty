@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -637,7 +638,7 @@ func TestCompleteLoginEnrolment(t *testing.T) {
 			tokens := NewMockGenerator(ctrl)
 
 			sessions, err := session.NewManager(session.WithStore(store),
-				session.WithClock(func() time.Time { return start }))
+				session.WithClock(clockwork.NewFakeClockAt(start)))
 			require.NoError(t, err)
 
 			var saved session.Session
@@ -684,7 +685,7 @@ func TestCompleteLoginEnrolmentMagicLink(t *testing.T) {
 
 	h := newMagicLinkHarness(t)
 
-	sessions, err := session.NewManager(session.WithClock(func() time.Time { return start }))
+	sessions, err := session.NewManager(session.WithClock(clockwork.NewFakeClockAt(start)))
 	require.NoError(t, err)
 	h.sessions = sessions
 

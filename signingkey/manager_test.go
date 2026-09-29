@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,7 +121,7 @@ func TestNewKeyManagerStoresBeforeUse(t *testing.T) {
 
 	km, err := signingkey.NewKeyManager(t.Context(),
 		signingkey.WithKeyStore(store),
-		signingkey.WithClock(newFakeClock(minted)),
+		signingkey.WithClock(clockwork.NewFakeClockAt(minted)),
 	)
 	require.NoError(t, err)
 

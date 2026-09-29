@@ -300,7 +300,7 @@ func (s *IdentityStore) Provision(
 	if len(u.Roles) > 0 {
 		primary = u.Roles[0]
 	}
-	now := storekit.Time(s.c.now())
+	now := storekit.Time(s.c.clock.Now())
 
 	var out *identity.Details
 	err = s.atomically(ctx, op, func(q DBTX) error {
@@ -374,7 +374,7 @@ func (s *IdentityStore) Update(
 			return failed(op, err)
 		}
 
-		now := storekit.Time(s.c.now())
+		now := storekit.Time(s.c.clock.Now())
 
 		// The rebuilt grants, with every new identifier, are settled before
 		// the first write, so a generator that fails or panics finds nothing

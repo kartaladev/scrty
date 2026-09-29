@@ -7,15 +7,29 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 )
+
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil that
+// a plain `== nil` check misses but nilcheck.IsNil catches.
+type nilClock struct{}
+
+func (*nilClock) Now() time.Time { return time.Time{} }
+
+// fixedClock is a consumer's own clock with only Now, proving WithClock takes
+// any type with that signature, not only a clockwork fake.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
 
 // mfaSentinel marks an MFA secret, so a test can tell whether plaintext
 // reached the inner store or an error's text.
@@ -96,7 +110,7 @@ var (
 )
 
 // clockAt returns a clock stopped at at.
-func clockAt(at time.Time) func() time.Time { return func() time.Time { return at } }
+func clockAt(at time.Time) clock.Clock { return clockwork.NewFakeClockAt(at) }
 
 // cancelled returns ctx already cancelled.
 func cancelled(ctx context.Context) context.Context {
@@ -211,11 +225,32 @@ func TestNewEnrolmentStore(t *testing.T) {
 			assert:   refused,
 		},
 		{
+			name:     "a typed-nil clock is refused",
+			inner:    memory,
+			resealer: true,
+			cipher:   c,
+			opts:     []seal.Option{seal.WithClock((*nilClock)(nil))},
+			assert:   refused,
+		},
+		{
 			name:     "a clock is accepted",
 			inner:    memory,
 			resealer: true,
 			cipher:   c,
-			opts:     []seal.Option{seal.WithClock(time.Now)},
+			opts:     []seal.Option{seal.WithClock(clockwork.NewRealClock())},
+			assert: func(t *testing.T, store mfa.EnrolmentStore, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, store)
+			},
+		},
+		{
+			// A Now-only consumer type: `time-source` "Third-party fake clock
+			// passed directly" — no adapter is needed for any type with Now.
+			name:     "a consumer clock with only Now is accepted",
+			inner:    memory,
+			resealer: true,
+			cipher:   c,
+			opts:     []seal.Option{seal.WithClock(fixedClock{at: time.Now()})},
 			assert: func(t *testing.T, store mfa.EnrolmentStore, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, store)

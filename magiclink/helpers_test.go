@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
@@ -21,30 +22,9 @@ var errStoreDown = errors.New("dial tcp: connection refused")
 
 const testPurpose = "magic-link"
 
-// testClock is the clock the token managers built here read, so a test can
-// move a link past its expiry instead of waiting for it.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.now
-}
-
-func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = c.now.Add(d)
-}
-
 // clocks lets a helper reach the clock of a manager another helper built, so
 // the tests can keep passing *onetime.Manager around.
-var clocks sync.Map // *onetime.Manager -> *testClock
+var clocks sync.Map // *onetime.Manager -> *clockwork.FakeClock
 
 func testTokens(t *testing.T) *onetime.Manager {
 	t.Helper()
@@ -55,11 +35,13 @@ func testTokens(t *testing.T) *onetime.Manager {
 func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Manager {
 	t.Helper()
 
-	clock := &testClock{now: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)}
+	// The token managers built here read a fake clock, so a test can move a
+	// link past its expiry instead of waiting for it.
+	clock := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
 
-	opts := []onetime.Option{onetime.WithClock(clock.Now)}
+	opts := []onetime.Option{onetime.WithClock(clock)}
 	if store == nil {
-		store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock.Now))
+		store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock))
 	}
 	opts = append(opts, onetime.WithStore(store))
 
@@ -85,7 +67,7 @@ func advanceClockPast(t *testing.T, tokens *onetime.Manager) {
 	c, ok := clocks.Load(tokens)
 	require.True(t, ok, "the manager was not built by a helper in this package")
 
-	c.(*testClock).Advance(tokens.TTL() + time.Second)
+	c.(*clockwork.FakeClock).Advance(tokens.TTL() + time.Second)
 }
 
 func issueFor(t *testing.T, tokens *onetime.Manager, subject string) string {

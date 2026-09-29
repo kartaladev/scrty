@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -78,7 +79,7 @@ func TestManagerLoad(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := newTestClock(createdAt)
+			clk := clockwork.NewFakeClockAt(createdAt)
 			m, _ := managerOnClock(t, clk, tc.opts...)
 
 			created, err := m.Create(t.Context(), testUser)
@@ -88,7 +89,7 @@ func TestManagerLoad(t *testing.T) {
 			if tc.id != "" {
 				id = tc.id
 			}
-			clk.Set(createdAt.Add(tc.at))
+			clk.Advance(createdAt.Add(tc.at).Sub(clk.Now()))
 
 			loaded, err := m.Load(t.Context(), id)
 			tc.assert(t, loaded, err)

@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,28 +38,6 @@ const (
 	otherSource                        = "198.51.100.4"
 )
 
-// integrationClock is the instant the TOTP method matches codes against. It is
-// this test's to move, because a confirmed code's step is recorded and the next
-// code has to belong to a later one.
-type integrationClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *integrationClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.now
-}
-
-func (c *integrationClock) advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = c.now.Add(d)
-}
-
 // integrationHarness is one deployment: one session store, one token
 // generator, and all three authentication methods wired into one chain behind a
 // second-factor policy — which is the only way to find out whether they
@@ -73,7 +51,7 @@ type integrationHarness struct {
 	links  *magiclink.Manager
 	totp   *mfa.TOTP
 	secret string
-	clock  *integrationClock
+	clock  *clockwork.FakeClock
 
 	keys   *apikey.Manager
 	apiKey string
@@ -100,7 +78,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 		tokens:   NewMockGenerator(ctrl),
 		users:    NewMockUserLoader(ctrl),
 		sender:   &capturingSender{},
-		clock:    &integrationClock{now: time.Date(2026, time.September, 24, 9, 0, 0, 0, time.UTC)},
+		clock:    clockwork.NewFakeClockAt(time.Date(2026, time.September, 24, 9, 0, 0, 0, time.UTC)),
 	}
 
 	h.wireUsers()
@@ -114,7 +92,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 	require.NoError(t, err)
 
 	h.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Payroll",
-		mfa.WithClock(h.clock.Now))
+		mfa.WithClock(h.clock))
 	require.NoError(t, err)
 
 	h.enrol(ctx, t)
@@ -202,7 +180,7 @@ func (h *integrationHarness) enrol(ctx context.Context, t *testing.T) {
 
 	require.NoError(t, h.totp.ConfirmEnrolment(ctx, integrationUser, h.code(t)))
 
-	h.clock.advance(2 * 30 * time.Second)
+	h.clock.Advance(2 * 30 * time.Second)
 
 	enrolled, err := h.totp.Enrolled(ctx, integrationUser)
 	require.NoError(t, err)

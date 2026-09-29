@@ -3,6 +3,7 @@ package session_test
 import (
 	"testing"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -16,7 +17,7 @@ func TestLibraryStateIsNotInConsumerData(t *testing.T) {
 	t.Run("the state the library owns lives in fields, not in the consumer's map", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
@@ -39,7 +40,7 @@ func TestLibraryStateIsNotInConsumerData(t *testing.T) {
 	t.Run("a consumer key cannot forge a challenge state", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
@@ -63,7 +64,7 @@ func TestLibraryStateIsNotInConsumerData(t *testing.T) {
 	t.Run("the second-factor state is persisted through pending to satisfied", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(createdAt)
+		clk := clockwork.NewFakeClockAt(createdAt)
 		m, _ := managerOnClock(t, clk)
 
 		s, err := m.Create(t.Context(), testUser)
@@ -89,7 +90,7 @@ func TestLibraryStateIsNotInConsumerData(t *testing.T) {
 func TestConsumerDataIsReturnedUnchanged(t *testing.T) {
 	t.Parallel()
 
-	clk := newTestClock(createdAt)
+	clk := clockwork.NewFakeClockAt(createdAt)
 	m, _ := managerOnClock(t, clk)
 
 	// Every row here is a value a map of arbitrary values would change on the

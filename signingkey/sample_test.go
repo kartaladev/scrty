@@ -51,13 +51,13 @@ func TestFailureLogsAreSampled(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := newFakeClock(epoch)
+			clk := newClock()
 			report := &failureReport{}
 			recorder, logger := newLogRecorder()
 
 			km, err := signingkey.NewKeyManager(t.Context(),
 				signingkey.WithKeyStore(failingStore(t, report, tc.verb)),
-				signingkey.WithClock(clock),
+				signingkey.WithClock(clk),
 				signingkey.WithAlgs(signingkey.EdDSA),
 				signingkey.WithLogger(logger),
 				signingkey.WithErrorHook(report.hook),
@@ -73,9 +73,8 @@ func TestFailureLogsAreSampled(t *testing.T) {
 			require.NoError(t, km.Start(t.Context()))
 
 			drive := func(by time.Duration, want int) {
-				clock.Advance(by)
-				require.Eventually(t, func() bool { return report.hooks() >= want },
-					10*time.Second, 5*time.Millisecond,
+				advance(t, clk, by, loopCount)
+				require.Equal(t, want, report.hooks(),
 					"failure %d should have been reported", want)
 			}
 

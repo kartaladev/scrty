@@ -3,9 +3,9 @@ package sqlstore
 import (
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -27,7 +27,7 @@ type config struct {
 	base         *sql.DB
 	resolver     TxResolver
 	ids          id.Generator
-	now          func() time.Time
+	clock        clock.Clock
 	resealOnRead bool
 
 	// honours is the set of optionKinds the constructing store declared.
@@ -114,7 +114,7 @@ func WithIDGenerator(g id.Generator) Option {
 // passed, so it is no longer opened on read). The identity store honours it
 // too: its tables have no database default for created_at, updated_at or a
 // password-history entry's retired_at, and the clock binds every such time it
-// writes. The default is time.Now.
+// writes. The default is clock.System().
 //
 // For the MFA enrolment store, give it the same clock as the enrolling method
 // (mfa.WithClock for TOTP), which sets the code's expiry and charges each
@@ -122,19 +122,19 @@ func WithIDGenerator(g id.Generator) Option {
 // correct code is then charged an attempt and refused.
 //
 // Given to any other store, which takes its times from the caller, it is a
-// configuration error. A nil clock is a configuration error rather than a
-// silent fallback to the wall clock: a caller passing one meant to inject a
-// clock.
-func WithClock(now func() time.Time) Option {
+// configuration error. A nil clock, typed nil included, is a configuration
+// error rather than a silent fallback to the wall clock: a caller passing one
+// meant to inject a clock.
+func WithClock(clk clock.Clock) Option {
 	return func(c *config) {
 		if !c.applies(optClock, "WithClock") {
 			return
 		}
-		if now == nil {
+		if nilcheck.IsNil(clk) {
 			c.refuse("the clock is nil")
 			return
 		}
-		c.now = now
+		c.clock = clk
 	}
 }
 
@@ -175,7 +175,7 @@ func newConfig(base *sql.DB, opts []Option, honours ...optionKind) (*config, err
 	c := &config{
 		base:         base,
 		ids:          id.NewV7Generator(),
-		now:          time.Now,
+		clock:        clock.System(),
 		resealOnRead: true,
 	}
 	for _, k := range honours {

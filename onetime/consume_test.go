@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -28,7 +29,7 @@ func TestConsume(t *testing.T) {
 	t.Run("a checked token is spent, and spending it again is refused", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk)
 
 		presented, tok, err := m.Issue(t.Context(), "ada@example.com")
@@ -64,9 +65,9 @@ func TestConsume(t *testing.T) {
 		// No EXPECT: an empty proof must be refused without a store round trip.
 		store := NewMockStore(ctrl)
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, err := onetime.NewManager("magic-link",
-			onetime.WithStore(store), onetime.WithClock(clk.Now))
+			onetime.WithStore(store), onetime.WithClock(clk))
 		require.NoError(t, err)
 
 		require.ErrorIs(t, m.Consume(t.Context(), onetime.Checked{}), onetime.ErrInvalidToken)
@@ -75,7 +76,7 @@ func TestConsume(t *testing.T) {
 	t.Run("a store that cannot mark the token consumed is refused, not reported", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt.Add(time.Minute))
+		clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))
 		ctrl := gomock.NewController(t)
 		rec := liveRecord(t)
 
@@ -85,7 +86,7 @@ func TestConsume(t *testing.T) {
 
 		var logs bytes.Buffer
 		m, err := onetime.NewManager("magic-link",
-			onetime.WithStore(store), onetime.WithClock(clk.Now),
+			onetime.WithStore(store), onetime.WithClock(clk),
 			onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 		require.NoError(t, err)
 
@@ -124,7 +125,7 @@ func TestRedeem(t *testing.T) {
 	t.Run("a valid token is checked, the caller's checks run in order, and it is spent once", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk)
 
 		presented, tok, err := m.Issue(t.Context(), "ada@example.com")
@@ -165,7 +166,7 @@ func TestRedeem(t *testing.T) {
 	t.Run("a caller check error is returned unchanged and spends nothing", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, store := newManager(t, clk)
 
 		presented, tok, err := m.Issue(t.Context(), "ada@example.com")
@@ -194,7 +195,7 @@ func TestRedeem(t *testing.T) {
 	t.Run("the first refusing check stops the rest, and none of them spends the token", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, _ := newManager(t, clk)
 
 		presented, _, err := m.Issue(t.Context(), "ada@example.com")
@@ -222,7 +223,7 @@ func TestRedeem(t *testing.T) {
 	t.Run("a refused check never runs when the token itself is bad", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt)
+		clk := clockwork.NewFakeClockAt(issuedAt)
 		m, _ := newManager(t, clk)
 
 		var reached bool
@@ -239,7 +240,7 @@ func TestRedeem(t *testing.T) {
 	t.Run("a consumption failure is a refusal and no subject", func(t *testing.T) {
 		t.Parallel()
 
-		clk := newTestClock(issuedAt.Add(time.Minute))
+		clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))
 		ctrl := gomock.NewController(t)
 		rec := liveRecord(t)
 
@@ -249,7 +250,7 @@ func TestRedeem(t *testing.T) {
 
 		var logs bytes.Buffer
 		m, err := onetime.NewManager("magic-link",
-			onetime.WithStore(store), onetime.WithClock(clk.Now),
+			onetime.WithStore(store), onetime.WithClock(clk),
 			onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 		require.NoError(t, err)
 
@@ -268,7 +269,7 @@ func TestExactlyOneOfManyRacingRedemptionsSpendsTheToken(t *testing.T) {
 
 	const redeemers = 50
 
-	clk := newTestClock(issuedAt)
+	clk := clockwork.NewFakeClockAt(issuedAt)
 	m, store := newManager(t, clk)
 
 	presented, tok, err := m.Issue(t.Context(), "ada@example.com")

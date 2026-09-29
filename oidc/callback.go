@@ -154,7 +154,7 @@ func (m *Manager) completeFlow(ctx context.Context, provider, state, handle stri
 // [Manager]'s package doc). Neither carries a token, a state, a nonce or a
 // claim value.
 func (m *Manager) logCallbackRefusal(ctx context.Context, level slog.Level, reason, provider string, cause error) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.now())
+	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
 	if !write {
 		return
 	}
@@ -171,7 +171,7 @@ func (m *Manager) logCallbackRefusal(ctx context.Context, level slog.Level, reas
 // text, so a consumer who wants that detail logs it inside their own
 // implementation of FlowStore.
 func (m *Manager) logCallbackFailure(ctx context.Context, provider, reason string, err error) {
-	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.now())
+	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
 	if !write {
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -88,11 +89,11 @@ func TestOnetimeStoreFailureRecords(t *testing.T) {
 
 			var logs bytes.Buffer
 			ctrl := gomock.NewController(t)
-			clk := newTestClock(issuedAt.Add(time.Minute))
+			clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))
 
 			m, err := onetime.NewManager("magic-link",
 				onetime.WithStore(tc.store(t, ctrl)),
-				onetime.WithClock(clk.Now),
+				onetime.WithClock(clk),
 				onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 			require.NoError(t, err)
 

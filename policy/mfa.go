@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
@@ -202,14 +203,15 @@ func WithMFAPolicyLogInterval(d time.Duration) MFAOption {
 }
 
 // WithMFAPolicyClock replaces the time source the policy samples its records
-// by. The default is time.Now.
+// by. The default is clock.System().
 //
 // It is not the instant a decision is judged against — that is Input.Now, taken
 // from the caller's clock so that every policy in a phase agrees. This clock
 // measures the sampling window alone, which is how a test crosses a window
-// boundary without waiting for one. A nil clock is a configuration error.
-func WithMFAPolicyClock(now func() time.Time) MFAOption {
-	return mfaOption(func(p *mfaPolicy) { p.now = now })
+// boundary without waiting for one. A nil clock, typed nil included, is a
+// configuration error.
+func WithMFAPolicyClock(clk clock.Clock) MFAOption {
+	return mfaOption(func(p *mfaPolicy) { p.clock = clk })
 }
 
 // mfaPolicy challenges a login whose user is enrolled on a usable second
@@ -220,7 +222,7 @@ type mfaPolicy struct {
 	sameChannel SameChannelMode
 	exempt      func(factor.Kind) bool
 	logger      *slog.Logger
-	now         func() time.Time
+	clock       clock.Clock
 	logInterval time.Duration
 	sampler     *logsample.Sampler
 }
@@ -254,7 +256,7 @@ type mfaPolicy struct {
 //
 // Defaults: SameChannelRefuse (WithSameChannelEnrolment),
 // factor.Kind.MFAExempt (WithMFAExemption), slog.Default
-// (WithMFAPolicyLogger), time.Now (WithMFAPolicyClock) and DefaultLogInterval
+// (WithMFAPolicyLogger), clock.System() (WithMFAPolicyClock) and DefaultLogInterval
 // for its sampled records (WithMFAPolicyLogInterval).
 func NewMFAPolicy(method MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 	p := &mfaPolicy{
@@ -262,7 +264,7 @@ func NewMFAPolicy(method MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 		sameChannel: SameChannelRefuse,
 		exempt:      factor.Kind.MFAExempt,
 		logger:      slog.Default(),
-		now:         time.Now,
+		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
 	for _, opt := range opts {
@@ -281,7 +283,7 @@ func NewMFAPolicy(method MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 			"%w: the second-factor challenge policy has no exemption rule, so it could not "+
 				"judge a single login", ErrConfig)
 	}
-	if p.now == nil {
+	if nilcheck.IsNil(p.clock) {
 		return nil, fmt.Errorf(
 			"%w: the second-factor challenge policy has no clock, so its records could not "+
 				"be sampled", ErrConfig)
@@ -382,7 +384,7 @@ func (p *mfaPolicy) decideSameChannel(ctx context.Context, in *Input, channel fa
 // sampled writes one record unless the sampler is holding this key's window
 // open, in which case the event is counted and reported later.
 func (p *mfaPolicy) sampled(ctx context.Context, level slog.Level, msg, key string, attrs ...slog.Attr) {
-	write, suppressed := p.sampler.Allow(key, p.now())
+	write, suppressed := p.sampler.Allow(key, p.clock.Now())
 	if !write {
 		return
 	}

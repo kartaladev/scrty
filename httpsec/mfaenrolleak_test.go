@@ -606,7 +606,7 @@ func TestEnrolmentOutagesCarryNoAddress(t *testing.T) {
 			require.NoError(t, err)
 
 			h.totp, err = mfa.NewTOTP(tc.store(h.store), enrolIssuer,
-				mfa.WithClock(func() time.Time { return h.at }))
+				mfa.WithClock(h.clock))
 			require.NoError(t, err)
 
 			h.method = h.totp

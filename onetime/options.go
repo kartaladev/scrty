@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -72,12 +73,14 @@ func WithIssuanceWindow(d time.Duration) Option {
 // correlated with. A nil generator is a configuration error.
 func WithIDGenerator(g id.Generator) Option { return func(m *Manager) { m.ids = g } }
 
-// WithClock replaces the time source. The default is time.Now.
+// WithClock replaces the time source. The default is clock.System().
 //
-// A nil clock is a configuration error rather than a silent fallback: a caller
-// passing one meant to inject a clock, and falling back to the wall clock would
-// make a test that never advances look like one that does.
-func WithClock(now func() time.Time) Option { return func(m *Manager) { m.now = now } }
+// Any type with Now satisfies clock.Clock, a clockwork fake included. A nil
+// clock, typed nil included, is a configuration error rather than a silent
+// fallback: a caller passing one meant to inject a clock, and falling back to
+// the wall clock would make a test that never advances look like one that
+// does.
+func WithClock(clk clock.Clock) Option { return func(m *Manager) { m.clock = clk } }
 
 // WithLogger replaces the logger. The default is slog.Default().
 //

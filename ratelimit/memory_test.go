@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -131,17 +132,17 @@ func TestTheWindowSlides(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clock := newFakeClock(epoch)
+			clock := clockwork.NewFakeClockAt(epoch)
 			l, err := ratelimit.NewMemoryLimiter(tc.limit, testWindow,
 				ratelimit.WithMemoryLimiterClock(clock),
 				ratelimit.WithMemoryLimiterLogger(discardLogger()))
 			require.NoError(t, err)
 
 			for _, offset := range tc.at {
-				clock.Set(epoch.Add(offset))
+				clock.Advance(epoch.Add(offset).Sub(clock.Now()))
 				require.NoError(t, l.RecordFailure(t.Context(), "k"))
 			}
-			clock.Set(epoch)
+			clock.Advance(epoch.Sub(clock.Now()))
 
 			ctx := t.Context()
 			if tc.ctx != nil {
@@ -174,11 +175,12 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 		assert.Nil(t, l, "a refused configuration still handed back a limiter")
 	}
 
-	// *fakeClock implements Clock through a pointer receiver, so a nil one
-	// passed to WithMemoryLimiterClock is an interface holding a nil pointer:
-	// `== nil` misses it, and only the reflect-based check the constructor now
-	// uses catches it before the first sweep reads from a nil receiver.
-	var nilClock *fakeClock
+	// *clockwork.FakeClock implements Now through a pointer receiver, so a nil
+	// one passed to WithMemoryLimiterClock is an interface holding a nil
+	// pointer: `== nil` misses it, and only the reflect-based check the
+	// constructor now uses catches it before the first sweep reads from a nil
+	// receiver.
+	var nilClock *clockwork.FakeClock
 
 	cases := []testCase{
 		{name: "a limit of zero throttles everyone", limit: 0, window: testWindow, assert: refused},
@@ -221,7 +223,7 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 	t.Parallel()
 
-	newLimiter := func(t *testing.T, clock *fakeClock) *ratelimit.MemoryLimiter {
+	newLimiter := func(t *testing.T, clock *clockwork.FakeClock) *ratelimit.MemoryLimiter {
 		t.Helper()
 		l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
 			ratelimit.WithMemoryLimiterClock(clock),
@@ -233,7 +235,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 	t.Run("at most limit stamps are kept per key", func(t *testing.T) {
 		t.Parallel()
 
-		clock := newFakeClock(epoch)
+		clock := clockwork.NewFakeClockAt(epoch)
 		l := newLimiter(t, clock)
 
 		for range 1000 {
@@ -249,7 +251,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 	t.Run("pruning never drops a key whose newest stamp is still inside the window", func(t *testing.T) {
 		t.Parallel()
 
-		clock := newFakeClock(epoch)
+		clock := clockwork.NewFakeClockAt(epoch)
 		l, err := ratelimit.NewMemoryLimiter(1, testWindow,
 			ratelimit.WithMemoryLimiterClock(clock),
 			ratelimit.WithMemoryLimiterLogger(discardLogger()))
@@ -267,7 +269,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 	t.Run("a key keeps counting while its newest stamp is live and its oldest has expired", func(t *testing.T) {
 		t.Parallel()
 
-		clock := newFakeClock(epoch)
+		clock := clockwork.NewFakeClockAt(epoch)
 		l, err := ratelimit.NewMemoryLimiter(1, testWindow,
 			ratelimit.WithMemoryLimiterClock(clock),
 			ratelimit.WithMemoryLimiterLogger(discardLogger()))
@@ -288,7 +290,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 	t.Run("expired keys are dropped inline, without a background goroutine", func(t *testing.T) {
 		t.Parallel()
 
-		clock := newFakeClock(epoch)
+		clock := clockwork.NewFakeClockAt(epoch)
 		l := newLimiter(t, clock)
 
 		const keys = 10_000
@@ -309,7 +311,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 	t.Run("pruning runs at most once per window", func(t *testing.T) {
 		t.Parallel()
 
-		clock := newFakeClock(epoch)
+		clock := clockwork.NewFakeClockAt(epoch)
 		l := newLimiter(t, clock)
 
 		clock.Advance(30 * time.Second)
@@ -348,7 +350,7 @@ func TestThePerReplicaWarningIsWrittenOnce(t *testing.T) {
 	t.Parallel()
 
 	recorder, logger := newLogRecorder()
-	clock := newFakeClock(epoch)
+	clock := clockwork.NewFakeClockAt(epoch)
 	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
 		ratelimit.WithMemoryLimiterClock(clock),
 		ratelimit.WithMemoryLimiterLogger(logger))
@@ -364,37 +366,6 @@ func TestThePerReplicaWarningIsWrittenOnce(t *testing.T) {
 
 	assert.Equal(t, 1, strings.Count(recorder.String(), "counts only this replica"),
 		"the per-replica warning repeated on every call")
-}
-
-// fakeClock is the time source the clock-driven cases advance by hand, so a
-// window's boundary is tested at the nanosecond rather than approached by
-// sleeping.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock(now time.Time) *fakeClock { return &fakeClock{now: now} }
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = c.now.Add(d)
-}
-
-func (c *fakeClock) Set(now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = now
 }
 
 // logRecorder collects what a component wrote, so a test can count records

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -133,12 +134,12 @@ func TestManagerVerify(t *testing.T) {
 
 			ctx := t.Context()
 
-			now := base
+			clk := clockwork.NewFakeClockAt(base)
 			inner := apikey.NewMemoryStore()
 
 			m, err := apikey.NewManager(
 				apikey.WithStore(inner),
-				apikey.WithClock(func() time.Time { return now }),
+				apikey.WithClock(clk),
 			)
 			require.NoError(t, err)
 
@@ -152,12 +153,12 @@ func TestManagerVerify(t *testing.T) {
 			if tc.store != nil {
 				verifier, err = apikey.NewManager(
 					apikey.WithStore(tc.store(t, inner)),
-					apikey.WithClock(func() time.Time { return now }),
+					apikey.WithClock(clk),
 				)
 				require.NoError(t, err)
 			}
 
-			now = tc.at
+			clk.Advance(tc.at.Sub(clk.Now()))
 
 			p, rec, verifyErr := verifier.Verify(ctx, presented)
 			tc.assert(t, p, rec, verifyErr)
@@ -171,15 +172,15 @@ func TestManagerExpiry(t *testing.T) {
 	ctx := t.Context()
 
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
-	now := base
+	clk := clockwork.NewFakeClockAt(base)
 
-	m, err := apikey.NewManager(apikey.WithClock(func() time.Time { return now }))
+	m, err := apikey.NewManager(apikey.WithClock(clk))
 	require.NoError(t, err)
 
 	never, _, err := m.Issue(ctx, "svc-billing", "forever", nil, 0)
 	require.NoError(t, err)
 
-	now = base.AddDate(5, 0, 0)
+	clk.Advance(base.AddDate(5, 0, 0).Sub(clk.Now()))
 
 	_, _, err = m.Verify(ctx, never)
 	assert.NoError(t, err, "a lifetime of zero or less never expires")

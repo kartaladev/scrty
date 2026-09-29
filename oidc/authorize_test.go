@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -126,7 +127,7 @@ func TestManagerAuthorize(t *testing.T) {
 		{
 			name: "the flow is stored for the default TTL", provider: "corp",
 			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithClock(func() time.Time { return past })}
+				return []oidc.ManagerOption{oidc.WithClock(clockwork.NewFakeClockAt(past))}
 			},
 			assert: func(t *testing.T, m *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
@@ -144,7 +145,7 @@ func TestManagerAuthorize(t *testing.T) {
 			name: "the flow is stored for the consumer's TTL", provider: "corp",
 			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
 				return []oidc.ManagerOption{
-					oidc.WithClock(func() time.Time { return past }),
+					oidc.WithClock(clockwork.NewFakeClockAt(past)),
 					oidc.WithFlowTTL(3 * time.Minute),
 				}
 			},

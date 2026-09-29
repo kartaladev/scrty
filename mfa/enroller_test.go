@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -185,9 +186,7 @@ type portlessStore struct{ mfa.EnrolmentStore }
 type enrolFixture struct {
 	store *spyStore
 	m     *mfa.TOTP
-
-	mu  sync.Mutex
-	now time.Time
+	clk   *clockwork.FakeClock
 }
 
 func newEnrolFixture(t *testing.T, opts ...mfa.TOTPOption) *enrolFixture {
@@ -195,11 +194,11 @@ func newEnrolFixture(t *testing.T, opts ...mfa.TOTPOption) *enrolFixture {
 
 	f := &enrolFixture{
 		store: &spyStore{MemoryEnrolmentStore: mfa.NewMemoryEnrolmentStore()},
-		now:   time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC),
+		clk:   clockwork.NewFakeClockAt(time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)),
 	}
 
 	m, err := mfa.NewTOTP(f.store, "Example",
-		append([]mfa.TOTPOption{mfa.WithClock(f.clock)}, opts...)...)
+		append([]mfa.TOTPOption{mfa.WithClock(f.clk)}, opts...)...)
 	require.NoError(t, err)
 
 	f.m = m
@@ -207,19 +206,9 @@ func newEnrolFixture(t *testing.T, opts ...mfa.TOTPOption) *enrolFixture {
 	return f
 }
 
-func (f *enrolFixture) clock() time.Time {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+func (f *enrolFixture) clock() time.Time { return f.clk.Now() }
 
-	return f.now
-}
-
-func (f *enrolFixture) advance(d time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.now = f.now.Add(d)
-}
+func (f *enrolFixture) advance(d time.Duration) { f.clk.Advance(d) }
 
 // begin starts an enrolment for u-1 and returns its generation and the code
 // the authenticator shows now.
@@ -950,7 +939,7 @@ func TestTOTPEnrollerWithoutDeviceProofPort(t *testing.T) {
 
 	now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
 	store := portlessStore{mfa.NewMemoryEnrolmentStore()}
-	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(func() time.Time { return now }))
+	m, err := mfa.NewTOTP(store, "Example", mfa.WithClock(clockwork.NewFakeClockAt(now)))
 	require.NoError(t, err)
 
 	assert.False(t, m.SupportsEnrolmentPath())
@@ -983,7 +972,7 @@ func TestTOTPEnrollerLogs(t *testing.T) {
 	now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
 	logger := slog.New(slog.NewTextHandler(&lockedWriter{w: &buf}, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	m, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example",
-		mfa.WithClock(func() time.Time { return now }), mfa.WithTOTPLogger(logger))
+		mfa.WithClock(clockwork.NewFakeClockAt(now)), mfa.WithTOTPLogger(logger))
 	require.NoError(t, err)
 
 	p, gen, err := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice@example.com")
@@ -1080,7 +1069,7 @@ func TestVoidEmailCodeFailures(t *testing.T) {
 
 				now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
 				m, err := mfa.NewTOTP(chargeOutageStore{mfa.NewMemoryEnrolmentStore()}, "Example",
-					mfa.WithClock(func() time.Time { return now }))
+					mfa.WithClock(clockwork.NewFakeClockAt(now)))
 				require.NoError(t, err)
 
 				p, gen, err := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice@example.com")

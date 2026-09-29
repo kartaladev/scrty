@@ -85,7 +85,7 @@ func (s *FlowStore) Complete(ctx context.Context, handle, provider, state string
 	var f oidc.Flow
 	var expires time.Time
 	err := s.c.queryRow(ctx, "complete login flow", pgschema.FlowComplete,
-		[]any{handle, provider, state, storekit.Time(s.c.now())},
+		[]any{handle, provider, state, storekit.Time(s.c.clock.Now())},
 		&f.Provider, &f.State, &f.Nonce, &f.Verifier, &f.Next, &expires)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return oidc.Flow{}, oidc.ErrInvalidState

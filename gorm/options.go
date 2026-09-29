@@ -2,11 +2,11 @@ package gorm
 
 import (
 	"fmt"
-	"time"
 
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -28,7 +28,7 @@ type config struct {
 	base         *gormdb.DB
 	resolver     TxResolver
 	ids          id.Generator
-	now          func() time.Time
+	clock        clock.Clock
 	resealOnRead bool
 
 	// honours is the set of optionKinds the constructing store declared.
@@ -113,7 +113,7 @@ func WithIDGenerator(g id.Generator) Option {
 // the session store (expiry, counts and DeleteExpired), the OIDC flow store
 // (the expiry condition of Complete), the one-time token store's reaper, and
 // the MFA enrolment store (whether an emailed code's EmailCodeUntil has
-// passed, so it is no longer opened on read). The default is time.Now.
+// passed, so it is no longer opened on read). The default is clock.System().
 //
 // For the MFA enrolment store, give it the same clock as the enrolling method
 // (mfa.WithClock for TOTP), which sets the code's expiry and charges each
@@ -124,19 +124,19 @@ func WithIDGenerator(g id.Generator) Option {
 // updated_at and retired_at it writes; gorm stamps none of them itself.
 //
 // Given to any other store, which takes its times from the caller, it is a
-// configuration error. A nil clock is a configuration error rather than a
-// silent fallback to the wall clock: a caller passing one meant to inject a
-// clock.
-func WithClock(now func() time.Time) Option {
+// configuration error. A nil clock, typed nil included, is a configuration
+// error rather than a silent fallback to the wall clock: a caller passing one
+// meant to inject a clock.
+func WithClock(clk clock.Clock) Option {
 	return func(c *config) {
 		if !c.applies(optClock, "WithClock") {
 			return
 		}
-		if now == nil {
+		if nilcheck.IsNil(clk) {
 			c.refuse("the clock is nil")
 			return
 		}
-		c.now = now
+		c.clock = clk
 	}
 }
 
@@ -177,7 +177,7 @@ func newConfig(base *gormdb.DB, opts []Option, honours ...optionKind) (*config, 
 	c := &config{
 		base:         base,
 		ids:          id.NewV7Generator(),
-		now:          time.Now,
+		clock:        clock.System(),
 		resealOnRead: true,
 	}
 	for _, k := range honours {

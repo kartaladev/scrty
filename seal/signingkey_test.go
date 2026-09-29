@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -172,7 +173,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 			inner:    signingkey.NewInMemoryKeyStore(),
 			resealer: true,
 			cipher:   c,
-			opts:     []seal.Option{seal.WithClock(time.Now)},
+			opts:     []seal.Option{seal.WithClock(clockwork.NewRealClock())},
 			assert:   refused,
 		},
 		{

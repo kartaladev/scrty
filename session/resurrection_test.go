@@ -3,6 +3,7 @@ package session_test
 import (
 	"testing"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/session"
@@ -11,7 +12,7 @@ import (
 func TestSaveNeverRecreatesADeletedSession(t *testing.T) {
 	t.Parallel()
 
-	clk := newTestClock(createdAt)
+	clk := clockwork.NewFakeClockAt(createdAt)
 	m, _ := managerOnClock(t, clk)
 	ctx := t.Context()
 

@@ -3,10 +3,10 @@ package session_test
 import (
 	"errors"
 	"io"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
@@ -26,35 +26,16 @@ const testUser = identity.UserID("u1")
 // against them directly.
 var createdAt = time.Date(2026, time.March, 2, 9, 0, 0, 0, time.UTC)
 
-// testClock is a clock a test moves by hand. It is mutex-guarded because a
-// manager under -race may read it from another goroutine.
-type testClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil an
+// unchecked constructor error hands over.
+type nilClock struct{}
 
-func newTestClock(at time.Time) *testClock { return &testClock{now: at} }
+func (*nilClock) Now() time.Time { return time.Time{} }
 
-func (c *testClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// fixedClock is a consumer's own clock with only Now.
+type fixedClock struct{ at time.Time }
 
-	return c.now
-}
-
-func (c *testClock) Set(at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = at
-}
-
-func (c *testClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = c.now.Add(d)
-}
+func (c fixedClock) Now() time.Time { return c.at }
 
 // managerFor returns a manager on the default store with the default
 // deadlines, for cases that do not care about either.
@@ -76,13 +57,13 @@ func managerWithReader(t *testing.T, store session.Store, r io.Reader) *session.
 
 // managerOnClock returns a manager and the store behind it, both reading the
 // same clock, so expiry means the same thing on either side.
-func managerOnClock(t *testing.T, clk *testClock, opts ...session.ManagerOption) (*session.Manager, *session.MemoryStore) {
+func managerOnClock(t *testing.T, clk *clockwork.FakeClock, opts ...session.ManagerOption) (*session.Manager, *session.MemoryStore) {
 	t.Helper()
 
-	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk.Now))
+	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 	all := append([]session.ManagerOption{
 		session.WithStore(store),
-		session.WithClock(clk.Now),
+		session.WithClock(clk),
 	}, opts...)
 
 	return managerFor(t, all...), store

@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -35,7 +36,7 @@ type Manager struct {
 	prefix string
 	digest func([]byte) []byte
 	ids    id.Generator
-	now    func() time.Time
+	clock  clock.Clock
 	logger *slog.Logger
 	random io.Reader
 
@@ -64,7 +65,7 @@ func NewManager(opts ...Option) (*Manager, error) {
 		prefix: defaultPrefix,
 		digest: sha256Digest,
 		ids:    id.NewV7Generator(),
-		now:    time.Now,
+		clock:  clock.System(),
 		logger: slog.Default(),
 		random: rand.Reader,
 	}
@@ -89,7 +90,7 @@ func NewManager(opts ...Option) (*Manager, error) {
 	if nilcheck.IsNil(m.ids) {
 		return nil, fmt.Errorf("%w: identifier generator must not be nil", ErrConfig)
 	}
-	if nilcheck.IsNil(m.now) {
+	if nilcheck.IsNil(m.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 	if nilcheck.IsNil(m.random) {
@@ -158,7 +159,7 @@ func (m *Manager) Issue(
 		return "", Key{}, fmt.Errorf("apikey: could not mint an identifier: %w", err)
 	}
 
-	now := m.now()
+	now := m.clock.Now()
 
 	rec := Key{
 		ID:           keyID,
@@ -242,7 +243,7 @@ func (m *Manager) Verify(ctx context.Context, presented string) (identity.Princi
 		return identity.Principal{}, Key{}, ErrVerificationFailed
 	}
 
-	now := m.now()
+	now := m.clock.Now()
 
 	if rec.RevokedAt != nil || (rec.ExpiresAt != nil && now.After(*rec.ExpiresAt)) {
 		return identity.Principal{}, Key{}, ErrVerificationFailed
@@ -301,7 +302,7 @@ func levelFor(err error) slog.Level {
 // wrapped, with fixed text; a consumer who wants its own detail logs it
 // inside their own implementation of Store.
 func (m *Manager) Revoke(ctx context.Context, keyID id.ID) error {
-	return keyStoreFailed(m.store.Revoke(ctx, keyID, m.now()), "apikey: could not revoke the key")
+	return keyStoreFailed(m.store.Revoke(ctx, keyID, m.clock.Now()), "apikey: could not revoke the key")
 }
 
 // keyStoreFailed returns a Store's error as the manager returns it: nil as
@@ -349,7 +350,7 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 		return "", Key{}, err
 	}
 
-	if err := m.store.Revoke(ctx, keyID, m.now()); err != nil {
+	if err := m.store.Revoke(ctx, keyID, m.clock.Now()); err != nil {
 		return "", Key{}, diag.Wrap(err, fmt.Sprintf(
 			"apikey: rotated key %s was issued but %s could not be revoked", rec.ID, keyID))
 	}

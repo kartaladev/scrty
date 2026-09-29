@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -39,7 +40,7 @@ type Manager struct {
 	ttl            time.Duration
 	issuanceWindow time.Duration
 	ids            id.Generator
-	now            func() time.Time
+	clock          clock.Clock
 	logger         *slog.Logger
 	random         io.Reader
 }
@@ -75,7 +76,7 @@ func NewManager(purpose string, opts ...Option) (*Manager, error) {
 		ttl:            defaultTTL,
 		issuanceWindow: defaultIssuanceWindow,
 		ids:            id.NewV7Generator(),
-		now:            time.Now,
+		clock:          clock.System(),
 		logger:         slog.Default(),
 		random:         rand.Reader,
 	}
@@ -100,7 +101,7 @@ func NewManager(purpose string, opts ...Option) (*Manager, error) {
 	if nilcheck.IsNil(m.ids) {
 		return nil, fmt.Errorf("%w: identifier generator must not be nil", ErrConfig)
 	}
-	if nilcheck.IsNil(m.now) {
+	if nilcheck.IsNil(m.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 	if nilcheck.IsNil(m.random) {
@@ -168,7 +169,7 @@ func (m *Manager) Issue(ctx context.Context, subject string, opts ...IssueOption
 		return "", Token{}, fmt.Errorf("onetime: generate token identifier: %w", err)
 	}
 
-	now := m.now()
+	now := m.clock.Now()
 	tok := Token{
 		ID:         tokenID,
 		Purpose:    m.purpose,
@@ -256,7 +257,7 @@ func (m *Manager) Check(ctx context.Context, presented, binding string) (Checked
 	}
 	// Expiry is an instant the token does not survive: at ExpiresAt it is
 	// already gone, so the boundary does not depend on a clock's resolution.
-	if !m.now().Before(rec.ExpiresAt) {
+	if !m.clock.Now().Before(rec.ExpiresAt) {
 		return Checked{}, ErrInvalidToken
 	}
 	if subtle.ConstantTimeCompare(hash(secret), rec.SecretHash) != 1 {
@@ -287,7 +288,7 @@ func (m *Manager) Consume(ctx context.Context, c Checked) error {
 		return ErrInvalidToken
 	}
 
-	if err := m.store.Consume(ctx, c.token.ID, m.now()); err != nil {
+	if err := m.store.Consume(ctx, c.token.ID, m.clock.Now()); err != nil {
 		if !errors.Is(err, ErrTokenNotFound) {
 			m.logger.LogAttrs(ctx, slog.LevelError, "onetime: marking the token consumed failed",
 				append([]slog.Attr{
@@ -340,7 +341,7 @@ func (m *Manager) Redeem(ctx context.Context, presented, binding string, checks 
 	}
 
 	tok := c.token
-	tok.ConsumedAt = m.now()
+	tok.ConsumedAt = m.clock.Now()
 
 	return tok, nil
 }
@@ -357,7 +358,7 @@ func (m *Manager) Redeem(ctx context.Context, presented, binding string, checks 
 // quietly lift every limit resting on this number, at exactly the moment the
 // system is least able to notice.
 func (m *Manager) IssuedCount(ctx context.Context, subject string) (int, error) {
-	since := m.now().Add(-m.issuanceWindow)
+	since := m.clock.Now().Add(-m.issuanceWindow)
 
 	n, err := m.store.CountRecentBySubject(ctx, m.purpose, subject, since)
 	if err != nil {
@@ -388,7 +389,7 @@ func (m *Manager) PurgeExpired(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("%w: %T", ErrReapUnsupported, m.store)
 	}
 
-	removed, err := reaper.DeleteExpiredBefore(ctx, m.purpose, m.now().Add(-m.issuanceWindow))
+	removed, err := reaper.DeleteExpiredBefore(ctx, m.purpose, m.clock.Now().Add(-m.issuanceWindow))
 	if err != nil {
 		return 0, diag.Wrap(err, "onetime: purge expired tokens")
 	}

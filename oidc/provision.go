@@ -54,7 +54,7 @@ func (b *Broker) provision(ctx context.Context, ext ExternalIdentity) (*identity
 	l := Link{
 		ID: linkID, Provider: ext.Provider, Issuer: ext.Issuer, Subject: ext.Subject,
 		UserID: det.ID, Username: det.Username, Email: ext.Email,
-		CreatedAt: b.now(),
+		CreatedAt: b.clock.Now(),
 	}
 	if err := b.links.Insert(ctx, l); err != nil {
 		err = redact(err, values)

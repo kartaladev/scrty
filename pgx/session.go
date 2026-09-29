@@ -174,7 +174,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, err
 	}
 
-	now := s.c.now()
+	now := s.c.clock.Now()
 	if !now.Before(idle) || !now.Before(abs) {
 		return nil, session.ErrSessionExpired
 	}
@@ -227,12 +227,12 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	}
 
 	return s.c.count(ctx, "count user's active sessions", pgschema.SessionCountActive,
-		string(user), storekit.Time(s.c.now()))
+		string(user), storekit.Time(s.c.clock.Now()))
 }
 
 // DeleteExpired removes every session expired by the store's clock.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
-	n, err := s.c.exec(ctx, "delete expired sessions", pgschema.SessionDeleteExpired, storekit.Time(s.c.now()))
+	n, err := s.c.exec(ctx, "delete expired sessions", pgschema.SessionDeleteExpired, storekit.Time(s.c.clock.Now()))
 	return int(n), err
 }
 

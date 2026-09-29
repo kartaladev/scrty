@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -149,7 +150,7 @@ func TestProvisionerWrite_Write(t *testing.T) {
 			},
 			invoke: func(t *testing.T, write password.WriteFunc, user *identity.Details) error {
 				g, err := password.NewReuseGuard(newMemHistory(), fast, 3,
-					password.WithReuseClock(func() time.Time { return at }))
+					password.WithReuseClock(clockwork.NewFakeClockAt(at)))
 				require.NoError(t, err)
 
 				return g.Change(t.Context(), user, "p2", write)

@@ -245,7 +245,7 @@ func TestEnrolmentLogs(t *testing.T) {
 
 			var err error
 			h.totp, err = mfa.NewTOTP(h.store, enrolIssuer,
-				mfa.WithClock(func() time.Time { return h.at }), mfa.WithTOTPLogger(slog.New(methodLogs)))
+				mfa.WithClock(h.clock), mfa.WithTOTPLogger(slog.New(methodLogs)))
 			require.NoError(t, err)
 
 			h.method = h.totp
@@ -316,7 +316,7 @@ func TestEnrolmentVoidFailureLogged(t *testing.T) {
 
 				var err error
 				h.totp, err = mfa.NewTOTP(chargeOutageStore{h.store}, enrolIssuer,
-					mfa.WithClock(func() time.Time { return h.at }))
+					mfa.WithClock(h.clock))
 				require.NoError(t, err)
 
 				return h.totp
