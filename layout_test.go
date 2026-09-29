@@ -31,6 +31,11 @@ func TestModuleLayout(t *testing.T) {
 			assert:  hasViolation("example.com/fixture/app", "github.com/stretchr/testify"),
 		},
 		{
+			name:    "production file imports clockwork",
+			fixture: "testdata/layout/prodclockwork",
+			assert:  hasViolation("example.com/fixture/app", "github.com/jonboulle/clockwork"),
+		},
+		{
 			name:    "test file imports testify is allowed",
 			fixture: "testdata/layout/testtestify",
 			assert: func(t *testing.T, vs []violation) {

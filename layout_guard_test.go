@@ -31,6 +31,7 @@ var forbiddenProduction = []string{
 	"go.uber.org/mock",
 	"github.com/stretchr/testify",
 	"github.com/testcontainers/testcontainers-go",
+	"github.com/jonboulle/clockwork",
 }
 
 type listedPackage struct {
