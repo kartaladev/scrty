@@ -44,6 +44,20 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 		t.Helper()
 		return NewMockLimiter(gomock.NewController(t))
 	}
+	// throttlingLimiter reports every source as over its limit, which is what
+	// the "consumer clock" row below needs to make the guard write a sampled
+	// refusal record.
+	throttlingLimiter := func(t *testing.T) ratelimit.Limiter {
+		t.Helper()
+		l := NewMockLimiter(gomock.NewController(t))
+		l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+		return l
+	}
+	// consumerClockRecorder and consumerClockLogger capture what the
+	// "consumer clock" row's guard writes, so the row can prove it read the
+	// fixed clock rather than the wall clock.
+	consumerClockRecorder, consumerClockLogger := newLogRecorder()
+
 	refused := func(t *testing.T, g *ratelimit.SourceGuard, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, ratelimit.ErrConfig)
@@ -106,6 +120,36 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.NotNil(t, g)
+			},
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and the guard
+			// samples its refusal records by the consumer's clock: since
+			// fixedClock never advances, a one-millisecond sampling window
+			// never appears to elapse, so two refusals a real sleep apart
+			// still produce one record — which is only possible if the guard
+			// asks the clock rather than the wall clock for "now".
+			name:    "a consumer's own read-only clock is accepted and used to sample refusal records",
+			flow:    testFlow,
+			limiter: throttlingLimiter,
+			opts: []ratelimit.GuardOption{
+				ratelimit.WithSourceGuardClock(fixedClock{at: epoch}),
+				ratelimit.WithSourceGuardLogger(consumerClockLogger),
+				ratelimit.WithSourceGuardLogInterval(time.Millisecond),
+			},
+			assert: func(t *testing.T, g *ratelimit.SourceGuard, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, g)
+
+				_, _ = g.Check(t.Context(), testSource)
+				time.Sleep(50 * time.Millisecond) // real time passes; the frozen clock does not
+				_, _ = g.Check(t.Context(), testSource)
+
+				assert.Len(t, logRecords(t, consumerClockRecorder), 1,
+					"a clock that never advances must keep the sampling window from ever elapsing")
 			},
 		},
 	}

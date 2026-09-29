@@ -26,6 +26,13 @@ const (
 // failing case prints are readable rather than whatever the machine's clock says.
 var epoch = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 
+// fixedClock is a consumer's own read-only clock: the "Read-only source for a
+// read-only component" scenario (time-source spec). It carries only Now, and
+// never advances on its own, unlike clockwork's fakes.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
 // TestLimitsCountFailuresNotRequests pins the difference between a rate limiter
 // and a request limiter: only a recorded failure spends the allowance, so a
 // source making ordinary traffic can ask forever without throttling itself.
@@ -201,6 +208,33 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, l)
+			},
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and the limiter
+			// reads its window from the consumer's clock: since fixedClock
+			// never advances, a failure it stamps stays inside even a
+			// nanosecond window for as long as real wall-clock time keeps
+			// moving, which is only possible if the limiter asks the clock
+			// rather than the wall clock for "now".
+			name:   "a consumer's own read-only clock is accepted and used as the time source",
+			limit:  1,
+			window: time.Millisecond,
+			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterClock(fixedClock{at: epoch})},
+			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, l)
+
+				require.NoError(t, l.RecordFailure(t.Context(), "k"))
+				time.Sleep(50 * time.Millisecond) // real time passes; the frozen clock does not
+
+				exceeded, exceededErr := l.Exceeded(t.Context(), "k")
+				require.NoError(t, exceededErr)
+				assert.True(t, exceeded,
+					"a clock that never advances must keep the window from ever elapsing")
 			},
 		},
 	}

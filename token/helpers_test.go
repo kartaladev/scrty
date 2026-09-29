@@ -19,6 +19,13 @@ import (
 	"github.com/kartaladev/scrty/token"
 )
 
+// fixedClock is a consumer's own read-only clock: the "Read-only source for a
+// read-only component" scenario (time-source spec). It carries only Now, so
+// nothing else this package might ask of a clock is available on it.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
 // accepted and rejected are the two verdicts every verification table asserts.
 // They live here, once, so strengthening either strengthens every table.
 func accepted(t *testing.T, claims *token.Claims, err error) {

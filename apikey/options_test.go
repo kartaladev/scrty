@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"testing"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
@@ -28,6 +29,10 @@ func TestNewAPIKeyManager(t *testing.T) {
 		assert.ErrorIs(t, err, apikey.ErrConfig)
 		assert.Nil(t, m)
 	}
+
+	// consumerClockAt is what a consumer's own read-only clock reports, for
+	// the "consumer clock" row below.
+	consumerClockAt := time.Date(2035, time.July, 7, 7, 7, 7, 0, time.UTC)
 
 	cases := []testCase{
 		{
@@ -54,6 +59,24 @@ func TestNewAPIKeyManager(t *testing.T) {
 			name:   "typed-nil clock",
 			opts:   []apikey.Option{apikey.WithClock((*clockwork.FakeClock)(nil))},
 			assert: configError,
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and Issue reads
+			// the issued key's created-at from the consumer's clock.
+			name: "a consumer's own read-only clock is the manager's time source",
+			opts: []apikey.Option{apikey.WithClock(fixedClock{at: consumerClockAt})},
+			assert: func(t *testing.T, m *apikey.Manager, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, m)
+
+				_, rec, issueErr := m.Issue(t.Context(), "u-consumer-clock", "consumer clock key", nil, 0)
+				require.NoError(t, issueErr)
+				assert.True(t, consumerClockAt.Equal(rec.CreatedAt),
+					"the issued key's created-at did not come from the consumer's clock")
+			},
 		},
 		{name: "nil random", opts: []apikey.Option{apikey.WithRandom(nil)}, assert: configError},
 		{name: "nil store", opts: []apikey.Option{apikey.WithStore(nil)}, assert: configError},

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,12 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 		opts   []policy.MFARequirementOption
 		assert func(t *testing.T, p policy.Policy, err error)
 	}
+
+	// consumerRequirementClockAt is what a consumer's own read-only clock
+	// reports, and consumerRequirementClockLogBuf captures what the policy
+	// writes under it, for the "consumer clock" row below.
+	consumerRequirementClockAt := time.Date(2034, time.June, 6, 6, 6, 6, 0, time.UTC)
+	consumerRequirementClockLogBuf := &bytes.Buffer{}
 
 	cases := []testCase{
 		{
@@ -159,6 +166,37 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.ErrorIs(t, err, policy.ErrConfig)
 				assert.Nil(t, p)
+			},
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and the policy
+			// samples its refusal records by the consumer's clock: since
+			// fixedClock never advances, a one-millisecond sampling window
+			// never appears to elapse, so two refusals a real sleep apart
+			// still produce one record.
+			name:   "a consumer's own read-only clock is accepted and used to sample records",
+			method: mfaMethod(t, factor.Email, false, nil),
+			opts: []policy.MFARequirementOption{
+				policy.WithMFARequiredForAll(),
+				policy.WithMFARequirementClock(fixedClock{at: consumerRequirementClockAt}),
+				policy.WithMFARequirementLogger(mfaLogger(consumerRequirementClockLogBuf)),
+				policy.WithMFARequirementLogInterval(time.Millisecond),
+			},
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, p)
+
+				in := &policy.Input{User: mfaUser, FirstFactor: factor.MagicLink}
+				ctx := mfaPhaseContext(t, policy.PerRequest)
+				_ = p.Evaluate(ctx, in)
+				time.Sleep(50 * time.Millisecond) // real time passes; the frozen clock does not
+				_ = p.Evaluate(ctx, in)
+
+				assert.Len(t, mfaRecordsOf(t, consumerRequirementClockLogBuf, logMFAEnrollmentRequired), 1,
+					"a clock that never advances must keep the sampling window from ever elapsing")
 			},
 		},
 	}

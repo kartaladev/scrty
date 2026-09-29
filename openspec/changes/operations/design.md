@@ -120,7 +120,7 @@ type Result struct {
 type Report struct{ Results []Result }
 
 // WithRunTimeout (default 0: no deadline beyond ctx), WithObserver(func(Result)),
-// WithLogger (default slog.Default()), WithClock (default time.Now)
+// WithLogger (default slog.Default()), WithClock(clock.Clock) (default clock.System())
 var ErrNoTasks, ErrInvalidTask, ErrDuplicateTask, ErrUnknownTask, ErrTaskBusy,
     ErrTaskPanicked, ErrPurgeUnsupported, ErrInvalidOption error
 ```
@@ -173,6 +173,14 @@ func (s *Sweeper) Shutdown(ctx context.Context) error
 // WithClock(clockwork.Clock) (default real clock)
 var ErrNoInterval, ErrAlreadyStarted, ErrAlreadyShutdown, ErrInvalidOption error
 ```
+
+**The one clockwork type in a scrty API.** scrty's own components take the standard-library-typed
+`clock.Clock` or `clock.Timed` (the `clock-seam` change). `sweep` is the exception: its `WithClock`
+takes `clockwork.Clock`, because gocron v2's own `WithClock` requires exactly that type and `sweep`
+hands the clock straight to gocron. Widening a `clock.Timed` into gocron's eight-method interface
+would make scrty invent the behaviour of six methods it never reads. `sweep` is a nested module whose
+consumers already depend on clockwork through gocron, so the core module still gains no clockwork
+dependency.
 
 **Jobs.**
 - **One job per task:** named `sweep:<task>`, running `runner.RunTask` with the task's interval, or the default interval when the task's is zero.

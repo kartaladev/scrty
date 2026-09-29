@@ -147,6 +147,10 @@ func TestNewGeneratorValidation(t *testing.T) {
 			signingkey.WithRotateInterval(time.Hour))
 	}
 
+	// consumerClockAt is the instant a consumer's own read-only clock reports,
+	// for the "consumer clock" row below.
+	consumerClockAt := time.Date(2030, 6, 15, 8, 30, 0, 0, time.UTC)
+
 	// refused asserts that a wiring mistake is identifiable as a configuration
 	// error without matching message text, and that it says which mistake.
 	refused := func(mentions string) func(*testing.T, token.Generator, error) {
@@ -208,6 +212,26 @@ func TestNewGeneratorValidation(t *testing.T) {
 			keys:   reporting,
 			opts:   []token.GenerateOption{token.WithClock((*clockwork.FakeClock)(nil))},
 			assert: refused("clock"),
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and the generator
+			// reads its time from the consumer's clock: iat comes back equal
+			// to the fixed instant, not to the system clock's.
+			name: "a consumer's own read-only clock is the generator's time source",
+			keys: reporting,
+			opts: []token.GenerateOption{token.WithClock(fixedClock{at: consumerClockAt})},
+			assert: func(t *testing.T, gen token.Generator, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, gen)
+
+				raw, genErr := gen.Generate(t.Context(), "s-consumer-clock", alice())
+				require.NoError(t, genErr)
+				assert.EqualValues(t, consumerClockAt.Unix(), decodeClaims(t, raw)["iat"],
+					"the generator did not read the consumer's own clock")
+			},
 		},
 		{
 			// password, identity and signingkey all skip a nil option, and a

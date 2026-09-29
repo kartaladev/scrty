@@ -184,7 +184,7 @@ func WithUnavailableProbeInterval(d time.Duration) Option // default 1s; applies
 - **Default:** time is read inside the backend operation: `clock_timestamp()` in PostgreSQL, `TIME` in Redis.
   - **Why:** with the application clock, a replica running 30 seconds fast writes stamps that other replicas count for 30 seconds longer. A replica running slow computes a cutoff that counts expired failures. With the backend clock, one clock orders every stamp.
   - **Why `clock_timestamp()` and not `now()`:** `now()` is the transaction start, which differs from the call time on a pooled connection inside a longer transaction.
-- **Override:** `WithAppClock(func() time.Time)` passes the time as an argument instead. This serves tests and deployments that trust their clock discipline more than the backend's.
+- **Override:** `WithAppClock(clock.Clock)` passes the time as an argument instead. It takes scrty's `clock.Clock` seam (the `clock-seam` change), so a clockwork fake or a consumer's own clock is accepted directly; a nil clock, typed nil included, is a configuration error. This serves tests and deployments that trust their clock discipline more than the backend's.
   - **Stated limit:** replica clocks must agree to well within the window.
   - **Construction error:** a nil function.
 - **Redis version:** `TIME` inside a script requires effect replication, the default in Redis 7. `Verify(ctx)` refuses an older server with a configuration error.

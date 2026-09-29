@@ -15,9 +15,9 @@ and callers in the driver and `test` modules (D2, migration plan step 2).
 These packages have no caller of their clock options outside their own tests, except `password`,
 whose `test`-module callers are updated in 5.2.
 
-- [ ] 2.1 `token` and `ratelimit`: replace each package's `Clock` interface with `clock.Clock` in `WithClock`, `VerifyWithClock`, `WithMemoryLimiterClock` and `WithSourceGuardClock`; move their tests to clockwork fakes; keep or add nil and typed-nil refusal cases (`time-source`: absent source). Verify with `go test ./token/... ./ratelimit/...`
-- [ ] 2.2 `pkg/id` and `password`: `id.WithClock` and `WithReuseClock` take `clock.Clock`; tests use clockwork fakes, with the default and one consumer-source case per option; nil and typed-nil are refused by `WithReuseClock` and ignored by `id.WithClock`, keeping the system clock (D2). Verify with `go test ./pkg/id/... ./password/...`
-- [ ] 2.3 `policy` and `apikey`: `WithMFAPolicyClock`, `WithMFARequirementClock`, `WithLockoutClock` and apikey's `WithClock` take `clock.Clock`; tests move to clockwork fakes and keep nil and typed-nil refusal. Verify with `go test ./policy/... ./apikey/...`
+- [x] 2.1 `token` and `ratelimit`: replace each package's `Clock` interface with `clock.Clock` in `WithClock`, `VerifyWithClock`, `WithMemoryLimiterClock` and `WithSourceGuardClock`; move their tests to clockwork fakes; keep or add nil and typed-nil refusal cases (`time-source`: absent source). Verify with `go test ./token/... ./ratelimit/...`
+- [x] 2.2 `pkg/id` and `password`: `id.WithClock` and `WithReuseClock` take `clock.Clock`; tests use clockwork fakes, with the default and one consumer-source case per option; nil and typed-nil are refused by `WithReuseClock` and ignored by `id.WithClock`, keeping the system clock (D2). Verify with `go test ./pkg/id/... ./password/...`
+- [x] 2.3 `policy` and `apikey`: `WithMFAPolicyClock`, `WithMFARequirementClock`, `WithLockoutClock` and apikey's `WithClock` take `clock.Clock`; tests move to clockwork fakes and keep nil and typed-nil refusal. Verify with `go test ./policy/... ./apikey/...`
 
 ## 3. Components whose callers share `httpsec` tests (D2, D3)
 
@@ -42,5 +42,5 @@ with those callers.
 ## 6. Close out
 
 - [ ] 6.1 No `func() time.Time` clock option and no per-package `Clock` interface remains in production code across all modules: verify by a gopls workspace-symbol search for `Clock` and an `rg -n 'func\(\) time\.Time' --glob '!*_test.go' --glob '!.claude/.legacy'` returning only unexported internals that are fed from a `clock.Clock`
-- [ ] 6.2 Align the in-flight changes (migration plan step 5): amend the `shared-rate-limiting` design's `WithAppClock` to take `clock.Clock`, and record in the `operations` design that `sweep`'s `WithClock(clockwork.Clock)` is the one place a clockwork type crosses a scrty API (D6). Verify with `openspec validate shared-rate-limiting --strict` and `openspec validate operations --strict`
+- [x] 6.2 Align the in-flight changes (migration plan step 5): amend the `shared-rate-limiting` design's `WithAppClock` to take `clock.Clock`, and record in the `operations` design that `sweep`'s `WithClock(clockwork.Clock)` is the one place a clockwork type crosses a scrty API (D6). Verify with `openspec validate operations --strict`; `shared-rate-limiting` has no spec deltas yet (its open questions block them), so it is checked by reading the amended design decision
 - [ ] 6.3 Final gate across every module in `go.work`: `go build ./...`, `go vet ./...`, `gofmt -l .` empty, `go test -race ./...` green, and `openspec validate clock-seam --strict`; then one whole-branch review against every requirement in this change's four spec deltas

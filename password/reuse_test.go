@@ -19,6 +19,12 @@ import (
 	"github.com/kartaladev/scrty/password"
 )
 
+// fixedClock is a consumer's own read-only clock: the "Read-only source for a
+// read-only component" scenario (time-source spec). It carries only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
 // memHistory is a map-backed History honouring the port's contract: newest
 // first, the same-bytes rule, pruning to keep, and the caller's context. It
 // counts reads so a case can assert that history was, or was not, consulted.
@@ -143,6 +149,10 @@ func TestNewReuseGuard_RefusesWiringMistakes(t *testing.T) {
 
 	consumerHistory := func(ctrl *gomock.Controller) password.History { return NewMockHistory(ctrl) }
 
+	// consumerClockAt is what a consumer's own read-only clock reports, for
+	// the "consumer clock" row below.
+	consumerClockAt := time.Date(2032, time.March, 3, 4, 5, 6, 0, time.UTC)
+
 	refused := func(word string) func(t *testing.T, g *password.ReuseGuard, err error) {
 		return func(t *testing.T, g *password.ReuseGuard, err error) {
 			require.ErrorIs(t, err, password.ErrConfig)
@@ -228,6 +238,28 @@ func TestNewReuseGuard_RefusesWiringMistakes(t *testing.T) {
 			depth:   5,
 			opts:    []password.ReuseOption{password.WithReuseClock((*clockwork.FakeClock)(nil))},
 			assert:  refused("clock"),
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and Change reads
+			// the change time from the consumer's clock: depth 1 over a fresh
+			// user touches no history, so the write is the only place the
+			// clock could have come from.
+			name:    "a consumer's own read-only clock is the guard's time source",
+			history: consumerHistory,
+			enc:     enc,
+			depth:   1,
+			opts:    []password.ReuseOption{password.WithReuseClock(fixedClock{at: consumerClockAt})},
+			assert: func(t *testing.T, g *password.ReuseGuard, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, g)
+
+				user := &identity.Details{ID: identity.UserID("u-consumer-clock")}
+				w := &recordingWrite{}
+				require.NoError(t, g.Change(t.Context(), user, "p1", w.write))
+				assert.True(t, consumerClockAt.Equal(w.at),
+					"the write did not get the consumer clock's time")
+			},
 		},
 		{
 			name:    "the consumer's own history port, depth 5",

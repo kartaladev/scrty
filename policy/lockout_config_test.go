@@ -11,6 +11,12 @@ import (
 	"github.com/kartaladev/scrty/policy"
 )
 
+// fixedClock is a consumer's own read-only clock: the "Read-only source for a
+// read-only component" scenario (time-source spec). It carries only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
 func TestNewAccountLockoutPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -21,6 +27,12 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 	}
 
 	var absentStore *policy.MemoryAttemptStore
+
+	// consumerClockAt is what a consumer's own read-only clock reports, for
+	// the "consumer clock" row below. consumerClockStore is its own store, so
+	// the row can read back the instant RecordFailure stamped through it.
+	consumerClockAt := time.Date(2032, time.April, 4, 4, 4, 4, 0, time.UTC)
+	consumerClockStore := policy.NewMemoryAttemptStore()
 
 	refused := func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
 		t.Helper()
@@ -111,6 +123,38 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			name:   "a typed-nil clock is refused",
 			opts:   []policy.LockoutOption{policy.WithLockoutClock((*clockwork.FakeClock)(nil))},
 			assert: refused,
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and RecordFailure
+			// stamps the failure with the consumer's clock: the store counts
+			// it as after an instant a nanosecond earlier and not as after
+			// the instant itself, which pins the recorded time exactly.
+			name: "a consumer's own read-only clock is the policy's time source",
+			opts: []policy.LockoutOption{
+				policy.WithAttemptStore(consumerClockStore),
+				policy.WithLockoutClock(fixedClock{at: consumerClockAt}),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, p)
+
+				require.NoError(t, p.RecordFailure(t.Context(), "consumer-clock-user"))
+
+				notAfter, countErr := consumerClockStore.FailureCount(
+					t.Context(), "consumer-clock-user", consumerClockAt)
+				require.NoError(t, countErr)
+				assert.Zero(t, notAfter,
+					"the failure was recorded at an instant after the consumer clock's own time")
+
+				after, countErr := consumerClockStore.FailureCount(
+					t.Context(), "consumer-clock-user", consumerClockAt.Add(-time.Nanosecond))
+				require.NoError(t, countErr)
+				assert.Equal(t, 1, after,
+					"the failure was not stamped with the consumer clock's time")
+			},
 		},
 		{
 			name: "a nil option is ignored",

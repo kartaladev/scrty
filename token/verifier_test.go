@@ -57,6 +57,20 @@ func TestNewVerifierValidation(t *testing.T) {
 		}
 	}
 
+	// consumerVerifyAt is what a consumer's own read-only clock reports for
+	// the "consumer clock" row below. consumerVerifyKeys and consumerVerifyRaw
+	// are shared with it, so the row can prove the verifier judged the token
+	// against that instant rather than the system clock's: iat sits a minute
+	// before it and exp an hour after, a token no system clock in this test
+	// run would accept.
+	consumerVerifyAt := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
+	consumerVerifyKeys := newKeySource(t)
+	consumerVerifyRaw := signClaims(t, consumerVerifyKeys, map[string]any{
+		"sub": "alice", "jti": "s-1",
+		"iat": consumerVerifyAt.Add(-time.Minute).Unix(),
+		"exp": consumerVerifyAt.Add(time.Hour).Unix(),
+	})
+
 	cases := []testCase{
 		{
 			name:   "no key source",
@@ -90,6 +104,32 @@ func TestNewVerifierValidation(t *testing.T) {
 				return withKeys(token.VerifyWithClock(missing))(t)
 			},
 			assert: refused("clock"),
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and the verifier
+			// judges the token against the consumer's own clock: iat and exp
+			// are only in range around consumerVerifyAt, not around the
+			// system clock's own time.
+			name: "a consumer's own read-only clock is the verifier's time source",
+			opts: func(t *testing.T) []token.VerifyOption {
+				t.Helper()
+
+				return []token.VerifyOption{
+					token.VerifyWithKeySource(consumerVerifyKeys),
+					token.VerifyWithClock(fixedClock{at: consumerVerifyAt}),
+				}
+			},
+			assert: func(t *testing.T, ver token.Verifier, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, ver)
+
+				claims, verifyErr := ver.Verify(t.Context(), consumerVerifyRaw)
+				require.NoError(t, verifyErr, "the verifier did not read the consumer's own clock")
+				assert.NotNil(t, claims)
+			},
 		},
 		{
 			name:   "a zero maximum token size",

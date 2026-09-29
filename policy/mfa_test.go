@@ -140,6 +140,12 @@ func TestNewMFAPolicy(t *testing.T) {
 		assert.Nil(t, p, "a refused constructor still handed back a policy")
 	}
 
+	// consumerClockAt is what a consumer's own read-only clock reports, and
+	// consumerClockLogBuf captures what the policy writes under it, for the
+	// "consumer clock" row below.
+	consumerClockAt := time.Date(2033, time.May, 5, 5, 5, 5, 0, time.UTC)
+	consumerClockLogBuf := &bytes.Buffer{}
+
 	cases := []testCase{
 		{
 			name: "an absent method lookup is refused",
@@ -184,6 +190,35 @@ func TestNewMFAPolicy(t *testing.T) {
 			opts:   []policy.MFAOption{policy.WithMFAPolicyClock((*clockwork.FakeClock)(nil))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
+			},
+		},
+		{
+			// A Now-only consumer type: `time-source` "Read-only source for a
+			// read-only component". Construction succeeds, and the policy
+			// samples its same-channel records by the consumer's clock: since
+			// fixedClock never advances, a one-millisecond sampling window
+			// never appears to elapse, so two refusals a real sleep apart
+			// still produce one record.
+			name:   "a consumer's own read-only clock is accepted and used to sample records",
+			method: mfaMethod(t, factor.Email, true, nil),
+			opts: []policy.MFAOption{
+				policy.WithMFAPolicyClock(fixedClock{at: consumerClockAt}),
+				policy.WithMFAPolicyLogger(mfaLogger(consumerClockLogBuf)),
+				policy.WithMFAPolicyLogInterval(time.Millisecond),
+			},
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				t.Helper()
+
+				require.NoError(t, err)
+				require.NotNil(t, p)
+
+				in := &policy.Input{User: mfaUser, FirstFactor: factor.MagicLink}
+				_ = p.Evaluate(t.Context(), in)
+				time.Sleep(50 * time.Millisecond) // real time passes; the frozen clock does not
+				_ = p.Evaluate(t.Context(), in)
+
+				assert.Len(t, mfaRecordsOf(t, consumerClockLogBuf, logSameChannelRefused), 1,
+					"a clock that never advances must keep the sampling window from ever elapsing")
 			},
 		},
 		{

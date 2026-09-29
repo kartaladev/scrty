@@ -16,6 +16,12 @@ import (
 // outage, so a test that let it escape would show it in the failure output.
 var errStore = errors.New("dial tcp: connection refused")
 
+// fixedClock is a consumer's own read-only clock: the "Read-only source for a
+// read-only component" scenario (time-source spec). It carries only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
 // failingReader is a random source that cannot answer.
 type failingReader struct{}
 
