@@ -182,9 +182,13 @@ func RunTestSMTP(t *testing.T, opts ...TestOption) SMTPConn {
 	t.Cleanup(func() {
 		// Not t.Context(): it is already cancelled by the time cleanup runs,
 		// and Terminate would fail before it removed anything.
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := ctr.Terminate(cleanupCtx); err != nil {
+		// Without an explicit StopTimeout, Terminate's own grace period
+		// defaults to 10s too, leaving this context no margin over Docker's
+		// stop deadline: under load the two race and the context loses. Mailpit
+		// has nothing to flush on shutdown, so it is killed shortly after.
+		if err := ctr.Terminate(cleanupCtx, testcontainers.StopTimeout(2*time.Second)); err != nil {
 			t.Fatalf("failed to terminate SMTP container: %s", err)
 		}
 	})
@@ -439,36 +443,9 @@ func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 		opt(cfg)
 	}
 
-	ctx := t.Context()
+	ctr := startTestPostgres(t, cfg.image)
 
-	ctr, err := postgres.Run(ctx, cfg.image,
-		postgres.WithDatabase(postgresDatabase),
-		postgres.WithUsername(postgresUsername),
-		postgres.WithPassword(postgresPassword),
-		// The line appears once for the init server and once for the real
-		// one; only the second means the database accepts connections.
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(60*time.Second),
-		),
-	)
-	// Registered as soon as a container exists, before the error is checked,
-	// so one that started but never became ready is removed too.
-	if ctr != nil {
-		t.Cleanup(func() {
-			// Not t.Context(): it is already cancelled by the time cleanup
-			// runs, and Terminate would fail before it removed anything. The
-			// budget must exceed Docker's own stop grace period (10s), or a
-			// container that needs all of it under load fails the test here.
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			if err := ctr.Terminate(cleanupCtx); err != nil {
-				t.Errorf("failed to terminate PostgreSQL container: %s", err)
-			}
-		})
-	}
-	require.NoError(t, err, "failed to start PostgreSQL test container")
+	ctx := t.Context()
 
 	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
 	require.NoError(t, err, "failed to read the PostgreSQL connection string")
@@ -482,6 +459,112 @@ func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 	postgresSetUp(t, db, cfg)
 
 	return PostgresConn{DB: db, DSN: dsn}
+}
+
+// postgresPort is the port the PostgreSQL server listens on inside its
+// container.
+const postgresPort = "5432/tcp"
+
+// Timeouts of RunTestPostgres's readiness wait. The server's second ready
+// line can take most of a minute on a busy Docker host. The host port is
+// published when the container starts, so by then it is normally already
+// there, and postgresPortTimeout only bounds how long a missing one is
+// waited for before the container is given up on.
+const (
+	postgresReadyTimeout = 60 * time.Second
+	postgresPortTimeout  = 10 * time.Second
+)
+
+// postgresStartAttempts bounds how many containers RunTestPostgres starts
+// for one test when Docker brings a container up without publishing its port.
+const postgresStartAttempts = 3
+
+// startTestPostgres starts a PostgreSQL container for t and returns it only
+// once the server accepts connections and its port is published on the host.
+//
+// Under load, Docker Desktop occasionally starts a container that runs and
+// logs normally but has no host binding for its port, and never gets one.
+// Such a container cannot be reached, so it is stopped and another started,
+// up to postgresStartAttempts in all. Any other failure stops the test at
+// once. Every container started is terminated with the test.
+func startTestPostgres(t *testing.T, image string) *postgres.PostgresContainer {
+	t.Helper()
+
+	ctx := t.Context()
+
+	for attempt := 1; ; attempt++ {
+		ctr, err := postgres.Run(ctx, image,
+			postgres.WithDatabase(postgresDatabase),
+			postgres.WithUsername(postgresUsername),
+			postgres.WithPassword(postgresPassword),
+			// WithWaitStrategy would impose a 60-second deadline of its own
+			// on the two waits together, so the deadline is given here as
+			// their sum.
+			testcontainers.WithWaitStrategyAndDeadline(postgresReadyTimeout+postgresPortTimeout,
+				// The line appears once for the init server and once for the
+				// real one; only the second means the database accepts
+				// connections.
+				wait.ForLog("database system is ready to accept connections").
+					WithOccurrence(2).
+					WithStartupTimeout(postgresReadyTimeout),
+				// The log says nothing about the host side: without this,
+				// the connection string is read from a container Docker may
+				// not have published.
+				wait.ForMappedPort(postgresPort).
+					WithStartupTimeout(postgresPortTimeout),
+			),
+		)
+		// Registered as soon as a container exists, before the error is
+		// checked, so one that started but never became ready is removed too.
+		if ctr != nil {
+			t.Cleanup(func() {
+				// Not t.Context(): it is already cancelled by the time cleanup
+				// runs, and Terminate would fail before it removed anything.
+				// The budget must exceed Docker's own stop grace period (10s),
+				// or a container that needs all of it under load fails the
+				// test here.
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				if err := ctr.Terminate(cleanupCtx); err != nil {
+					t.Errorf("failed to terminate PostgreSQL container: %s", err)
+				}
+			})
+		}
+		if err == nil {
+			return ctr
+		}
+		if attempt == postgresStartAttempts || !postgresPortUnpublished(ctx, ctr) {
+			require.NoError(t, err, "failed to start PostgreSQL test container")
+		}
+
+		t.Logf("PostgreSQL container %s runs without a published port %s (attempt %d of %d: %v), starting another",
+			ctr.GetContainerID(), postgresPort, attempt, postgresStartAttempts, err)
+		// Stopped now so it does not load Docker for the rest of the test; the
+		// cleanup above still removes it.
+		stopTimeout := 2 * time.Second
+		if err := ctr.Stop(ctx, &stopTimeout); err != nil {
+			t.Logf("failed to stop the unreachable PostgreSQL container: %s", err)
+		}
+	}
+}
+
+// postgresPortUnpublished reports whether ctr is running with no host binding
+// for postgresPort, the one failure startTestPostgres retries. A container that
+// cannot be inspected, or that is not running, reports false.
+func postgresPortUnpublished(ctx context.Context, ctr *postgres.PostgresContainer) bool {
+	if ctr == nil {
+		return false
+	}
+	inspect, err := ctr.Inspect(ctx)
+	if err != nil || inspect.State == nil || !inspect.State.Running || inspect.NetworkSettings == nil {
+		return false
+	}
+	for port, bindings := range inspect.NetworkSettings.Ports {
+		if port.String() == postgresPort {
+			return len(bindings) == 0
+		}
+	}
+	return true
 }
 
 // ciEnv names the environment variable a CI runner sets, non-empty, to tell
@@ -632,6 +715,11 @@ func postgresSetUp(tb cleanupTB, db *sql.DB, cfg *testConfig) {
 // pinned by digest so a remote tag move cannot change what the tests ran
 // against.
 const keycloakImage = "quay.io/keycloak/keycloak:26.7.2@sha256:831330513f55695572286e521f94fcd3c7e285250ed5b848090265a33192f669"
+
+// keycloakStartupTimeout is how long RunTestKeycloak waits for the realm's
+// discovery document. Keycloak starts in about twenty seconds on an idle
+// host, but well over a minute when other test packages share the Docker host.
+const keycloakStartupTimeout = 3 * time.Minute
 
 // The realm RunTestKeycloak imports, and the bootstrap administrator the
 // container starts with. The administrator only ever drives the admin API
@@ -788,14 +876,18 @@ func RunTestKeycloak(t *testing.T, opts ...TestOption) KeycloakConn {
 				FileMode:          0o644,
 			},
 		),
-		testcontainers.WithWaitStrategy(
+		// WithWaitStrategy would wrap the strategy in wait.ForAll with a
+		// 60-second deadline of its own, which cuts the startup timeout below
+		// short: a JVM starting on a busy Docker host outlasts it. The
+		// deadline is therefore given here, equal to the startup timeout.
+		testcontainers.WithWaitStrategyAndDeadline(keycloakStartupTimeout,
 			wait.ForHTTP("/realms/"+keycloakRealm+"/.well-known/openid-configuration").
 				WithPort(keycloakHTTPSPort).
 				// A config of its own: a transport mutates the config it is
 				// given, so it is never shared with the clients below.
 				WithTLS(true, &tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12}).
 				WithStatusCodeMatcher(func(status int) bool { return status == http.StatusOK }).
-				WithStartupTimeout(3 * time.Minute),
+				WithStartupTimeout(keycloakStartupTimeout),
 		),
 	}
 	if cfg.backchannelPort != 0 {
