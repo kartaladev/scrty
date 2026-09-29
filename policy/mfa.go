@@ -51,9 +51,16 @@ var ErrSecondFactorSameChannel = errors.New(
 // channel, which is how a second factor that would arrive the same way as the
 // first is detected.
 //
+// Name identifies the method among the others configured beside it. It must be
+// constant, and unique within one set: the policies refuse a set in which two
+// methods share a name, because nothing downstream could tell them apart.
+//
 // scrty ships no implementation. An implementation is expected to be safe for
 // concurrent use.
 type MFAMethodLookup interface {
+	// Name identifies the method within the configured set.
+	Name() string
+
 	// Enrolled reports whether user has a confirmed, readable enrolment on
 	// this method.
 	Enrolled(ctx context.Context, user identity.UserID) (bool, error)
@@ -218,7 +225,7 @@ func WithMFAPolicyClock(clk clock.Clock) MFAOption {
 // factor. Every field is fixed at construction, so it is safe for concurrent
 // use.
 type mfaPolicy struct {
-	method      MFAMethodLookup
+	methods     []MFAMethodLookup
 	sameChannel SameChannelMode
 	exempt      func(factor.Kind) bool
 	logger      *slog.Logger
@@ -228,39 +235,50 @@ type mfaPolicy struct {
 }
 
 // NewMFAPolicy returns the second-factor challenge policy, which turns a
-// successful login into an MFA challenge when the user has a usable enrolment.
+// successful login into an MFA challenge when the user can use at least one of
+// methods.
+//
+// methods is the set of second-factor methods the deployment offers, in the
+// order it prefers them. It must be the same set, over the same methods, as the
+// chain's httpsec.EnableMFA was given — mfa.LookupsFor builds this list from
+// those methods — or the policy would challenge for a method the chain cannot
+// verify, or let a login through that the chain could have challenged.
 //
 // It runs in the post-authentication phase alone, which is the last point at
 // which a login can still be turned into a challenge. It answers:
 //
 //   - a login that has already satisfied a second factor: allow;
 //   - an exempt first factor: allow;
-//   - an enrolment lookup that failed: deny, so a lost or unreadable enrolment
-//     never downgrades a user to a single factor. The reason is fixed text and
-//     wraps the lookup's error, reachable through errors.Is and errors.As but
-//     not repeated in the text;
-//   - enrolled on a channel other than the first factor's: challenge for MFA;
-//   - not enrolled: allow;
-//   - enrolled on the first factor's own channel: whatever
-//     WithSameChannelEnrolment says, which by default is a refusal.
+//   - any method's enrolment lookup failed: deny, even when another method
+//     reports the user enrolled, so a lost or unreadable enrolment never
+//     downgrades a user to a single factor. The reason is fixed text and wraps
+//     the lookup's error, reachable through errors.Is and errors.As but not
+//     repeated in the text;
+//   - the user can use at least one method, as UsableMFAMethods decides — one
+//     they are enrolled on whose channel differs from the first factor's:
+//     challenge for MFA, whatever else they are enrolled on;
+//   - enrolled only on methods on the first factor's own channel: whatever
+//     WithSameChannelEnrolment says, which by default is a refusal;
+//   - enrolled on no method: allow.
 //
 // It decides nothing about users who are *required* to use a second factor;
 // that is the policy NewMFARequirementPolicy returns, and a deployment that
-// enforces a requirement registers both.
+// enforces a requirement registers both, over the same methods.
 //
-// An absent method lookup — nil, or a non-nil interface holding a nil pointer,
-// which is what an unchecked constructor result hands over — is a configuration
-// error wrapping ErrConfig. A policy with nothing to look enrolments up in
-// would allow every login while reading, at the call site, exactly like one
-// that challenges.
+// An empty set is a configuration error wrapping ErrConfig: a policy with
+// nothing to look enrolments up in would allow every login while reading, at
+// the call site, exactly like one that challenges. So is an absent method —
+// nil, or a non-nil interface holding a nil pointer, which is what an
+// unchecked constructor result hands over — and two methods of the same Name,
+// which nothing downstream could tell apart. The policy keeps its own copy of
+// the set.
 //
 // Defaults: SameChannelRefuse (WithSameChannelEnrolment),
 // factor.Kind.MFAExempt (WithMFAExemption), slog.Default
 // (WithMFAPolicyLogger), clock.System() (WithMFAPolicyClock) and DefaultLogInterval
 // for its sampled records (WithMFAPolicyLogInterval).
-func NewMFAPolicy(method MFAMethodLookup, opts ...MFAOption) (Policy, error) {
+func NewMFAPolicy(methods []MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 	p := &mfaPolicy{
-		method:      method,
 		sameChannel: SameChannelRefuse,
 		exempt:      factor.Kind.MFAExempt,
 		logger:      slog.Default(),
@@ -273,11 +291,12 @@ func NewMFAPolicy(method MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 		}
 	}
 
-	if nilcheck.IsNil(p.method) {
-		return nil, fmt.Errorf(
-			"%w: the second-factor challenge policy has no enrolment lookup, so it would "+
-				"complete every login on its first factor", ErrConfig)
+	checked, err := checkMFAMethods(methods, "second-factor challenge policy", true)
+	if err != nil {
+		return nil, err
 	}
+	p.methods = checked
+
 	if p.exempt == nil {
 		return nil, fmt.Errorf(
 			"%w: the second-factor challenge policy has no exemption rule, so it could not "+
@@ -322,32 +341,59 @@ func (p *mfaPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 		return Decision{Outcome: Allow}
 	}
 
-	enrolled, err := p.method.Enrolled(ctx, in.User)
+	usable, err := UsableMFAMethods(ctx, p.methods, in.User, in.FirstFactor)
 	if err != nil {
-		// Wrapped rather than replaced, so a caller can still match what
-		// failed; but under fixed text, because the lookup's error is the
-		// consumer's text and may quote what this package never saw.
-		return Decision{
-			Outcome: Deny,
-			Reason: diag.Wrap(err,
-				"policy: the second-factor enrolment could not be read, so this login "+
-					"cannot be completed on one factor"),
-		}
+		return denyUnreadableEnrolment(err)
+	}
+
+	if len(usable) > 0 {
+		return Decision{Outcome: Challenge, Challenge: ChallengeMFA}
+	}
+
+	// No usable method. Either the user is enrolled on nothing, or every
+	// method they are enrolled on arrives on the first factor's own channel.
+	enrolled, err := p.enrolledOnAny(ctx, in.User)
+	if err != nil {
+		return denyUnreadableEnrolment(err)
 	}
 
 	if !enrolled {
 		return Decision{Outcome: Allow}
 	}
 
-	channel := p.method.Channel()
-	if channel != in.FirstFactor.Channel() {
-		return Decision{Outcome: Challenge, Challenge: ChallengeMFA}
-	}
-
-	return p.decideSameChannel(ctx, in, channel)
+	return p.decideSameChannel(ctx, in, in.FirstFactor.Channel())
 }
 
-// decideSameChannel answers a login whose only enrolment arrives on the first
+// enrolledOnAny reports whether user is enrolled on any configured method,
+// whatever its channel. It is asked only once UsableMFAMethods found none, so a
+// true here means every enrolment is on the first factor's own channel.
+func (p *mfaPolicy) enrolledOnAny(ctx context.Context, user identity.UserID) (bool, error) {
+	for _, m := range p.methods {
+		enrolled, err := m.Enrolled(ctx, user)
+		if err != nil || enrolled {
+			return enrolled, err
+		}
+	}
+
+	return false, nil
+}
+
+// denyUnreadableEnrolment refuses a login whose enrolment on some method could
+// not be read.
+//
+// The error is wrapped rather than replaced, so a caller can still match what
+// failed; but under fixed text, because the lookup's error is the consumer's
+// text and may quote what this package never saw.
+func denyUnreadableEnrolment(err error) Decision {
+	return Decision{
+		Outcome: Deny,
+		Reason: diag.Wrap(err,
+			"policy: the second-factor enrolment could not be read, so this login "+
+				"cannot be completed on one factor"),
+	}
+}
+
+// decideSameChannel answers a login whose only enrolments arrive on the first
 // factor's own channel.
 //
 // Both modes write a record. The enrolment is unusable either way, and a login

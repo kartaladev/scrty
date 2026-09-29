@@ -20,10 +20,28 @@ import (
 func mfaChallengingEngine(t *testing.T) *policy.Engine {
 	t.Helper()
 
-	p, err := policy.NewMFAPolicy(NewMockMFAMethodLookup(gomock.NewController(t)))
+	p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleLookup(t)})
 	require.NoError(t, err)
 
 	return engineOf(t, p)
+}
+
+// enrollableLookup is a method lookup that reports it supports the enrolment
+// path, as the library's own TOTP does over a store that can hold its proofs.
+// The requirement policy admits a login to the path only over such a method.
+type enrollableLookup struct{ policy.MFAMethodLookup }
+
+func (enrollableLookup) SupportsEnrolmentPath() bool { return true }
+
+// idleLookup is a method lookup no case expects to be asked about a user: only
+// its name may be read, which is what a policy constructor does.
+func idleLookup(t *testing.T) *MockMFAMethodLookup {
+	t.Helper()
+
+	lookup := NewMockMFAMethodLookup(gomock.NewController(t))
+	lookup.EXPECT().Name().Return("totp").AnyTimes()
+
+	return lookup
 }
 
 // passwordChangeChallengingEngine holds a policy that can challenge, but for

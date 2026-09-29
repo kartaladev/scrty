@@ -80,10 +80,11 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			lookup := NewMockMFAMethodLookup(ctrl)
+			lookup.EXPECT().Name().Return("totp").AnyTimes()
 			lookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 			lookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-			requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, lookup,
+			requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}},
 				policy.WithMFAEnrolmentPath())
 			require.NoError(t, err)
 

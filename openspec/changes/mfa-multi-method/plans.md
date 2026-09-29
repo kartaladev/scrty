@@ -13,7 +13,7 @@
 
 **Tech Stack:** Go 1.27, `onetime` (pending challenges), clockwork fakes in tests, testify, gopls, and testcontainers (the `test` module).
 
-**Spec:** `openspec/changes/mfa-multi-method/` — `proposal.md`, `design.md` (D1–D12), `specs/multi-factor-auth`, `specs/security-policy`, `specs/http-error-propagation`, `specs/http-security-chain`, and `tasks.md`. Task numbers below (`1.1`…`6.2`) are `tasks.md`'s.
+**Spec:** `openspec/changes/mfa-multi-method/` — `proposal.md`, `design.md` (D1–D12), `specs/multi-factor-auth`, `specs/security-policy`, `specs/http-error-propagation`, `specs/http-security-chain`, and `tasks.md`. Task numbers below (`1.1`…`6.3`) are `tasks.md`'s.
 
 ## Global Constraints
 
@@ -78,7 +78,8 @@ Each group leaves the whole workspace compiling and green, including the `test` 
 | 4 | 4.1–4.3 | `httpsec/**` (begin, challenges, challenge error), `fibersec`/`ginsec` tests if affected | Opus | A spend-on-every-attempt variant of check-then-consume; concurrency |
 | 5 | 5.1–5.2 | `httpsec/**` (listing, enrolment prefixes), `test/httpsecconformance` enrolment callers | Opus | Settings-in-option wiring, and an enrolment refactor across several files |
 | 6 | 6.1 | `test/**` | Sonnet | Mechanical move of the conformance scenarios |
-| — | 6.2 | main session | — | Final gate and whole-branch review |
+| 7 | 6.2 | `README.md` | Sonnet | Documentation snippet, compiled in a scratch copy |
+| — | 6.3 | main session | — | Final gate and whole-branch review |
 
 ---
 
@@ -680,7 +681,7 @@ return &ChallengeError{Kind: policy.ChallengeMFA, Session: s, Token: token, Meth
 
   Rename the existing path-based rows to prefix plus `/totp`.
 - [ ] **Step 2: Run** `go test -run 'TestEnableMFAEnrolmentConstruction|TestEnrolment' -count=1 ./httpsec/`. To get a real red: rename the constants and options, keep matching the bare prefix, and keep using the single method. Expected FAIL on the per-method paths, the unknown method and `WithEnrolmentMethods`.
-- [ ] **Step 3: Implement.** `wireMFAEnrolment` collects the `EnableMFA` methods that are `mfa.Enroller` with `SupportsEnrolmentPath()`, narrowed by `WithEnrolmentMethods` (each name must be known and enrollable). Each endpoint parses its segment with `methodSegment`; an unknown name is `ErrUnknownMFAMethod`. The same-channel check uses the named method. Each endpoint calls the named method's `BeginEnrolmentGeneration`, `ProveDevice`, `CompleteEnrolment` or `RedeemEmailCode`, with the session's generation. The enrolment gate exempts POSTs under the three prefixes (email only when email confirmation is on).
+- [ ] **Step 3: Implement.** Rewrite `EnableMFAEnrolment`'s godoc (`httpsec/mfaenroloptions.go` about lines 146–150), which still speaks of one method and only the same-channel test: admission needs an enrollable method on another channel. `wireMFAEnrolment` collects the `EnableMFA` methods that are `mfa.Enroller` with `SupportsEnrolmentPath()`, narrowed by `WithEnrolmentMethods` (each name must be known and enrollable). Each endpoint parses its segment with `methodSegment`; an unknown name is `ErrUnknownMFAMethod`. The same-channel check uses the named method. Each endpoint calls the named method's `BeginEnrolmentGeneration`, `ProveDevice`, `CompleteEnrolment` or `RedeemEmailCode`, with the session's generation. The enrolment gate exempts POSTs under the three prefixes (email only when email confirmation is on).
 - [ ] **Step 4: Update the callers.** Run `go test -race -count=1 ./httpsec/...` and `go vet ./...` in `test/`. Expected: PASS.
 
 ---
@@ -696,6 +697,13 @@ return &ChallengeError{Kind: policy.ChallengeMFA, Session: s, Token: token, Meth
   - `verifyBuild`, `verifyCodeInTheQueryIsNotRead` and `verifyBodyCodeWinsOverTheQuery` target `/mfa/verify/totp`.
 - [ ] **Step 2: Run** `go vet ./...` and `go test -race -count=1 ./...` in `test/`. This needs Docker; if it is unavailable, say so and run the non-container packages. Expected: PASS. Because this task moves existing scenarios to the new paths and adds no behaviour, its red step is `go vet` failing before the update. Report that output, and say plainly that no new behaviour test was needed.
 
-### Task 6.2: Close out (main session)
+### Task 6.2: README examples
+
+**Files:** Modify `README.md` (the MFA sample near line 143, and any other MFA snippet).
+
+- [ ] **Step 1:** Rewrite every MFA snippet to the final API: `methods := []mfa.Method{totp}`, `lookups, err := mfa.LookupsFor(methods...)`, `policy.NewMFAPolicy(lookups, …)`, `policy.NewMFARequirementPolicy(required, lookups, …)`, `httpsec.EnableMFA(methods, …)`, and the paths `/mfa/verify/totp` and `/mfa/enrol/begin/totp`.
+- [ ] **Step 2:** Prove it compiles. Copy the snippet into a disposable `example_test.go` in a scratch copy of the module, fill in the declarations the README elides, and run `go vet` there. Before the rewrite the copy fails to compile against the new API; after it, the copy vets clean. Report both outputs.
+
+### Task 6.3: Close out (main session)
 
 - [ ] For every module in `go.work`, run `go build ./...`, `go vet ./...`, `gofmt -l .` (expected empty) and `go test -race ./...`. Then run `openspec validate mfa-multi-method --strict`. Then dispatch one fresh reviewer against every requirement and scenario of the four spec deltas and the Review Focus list. Its findings go back to a fresh dispatch of the owning group.

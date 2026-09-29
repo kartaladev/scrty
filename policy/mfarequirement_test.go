@@ -34,8 +34,8 @@ func mfaRequirementLookup(t *testing.T, consulted, required bool, err error) *Mo
 	return m
 }
 
-// mfaRequirementPolicyFor builds the requirement policy, writing its records
-// nowhere unless a case replaces the logger.
+// mfaRequirementPolicyFor builds the requirement policy over a set of one
+// method, writing its records nowhere unless a case replaces the logger.
 func mfaRequirementPolicyFor(
 	t *testing.T,
 	required identity.MFARequirementLookup,
@@ -44,7 +44,20 @@ func mfaRequirementPolicyFor(
 ) policy.Policy {
 	t.Helper()
 
-	p, err := policy.NewMFARequirementPolicy(required, method,
+	return mfaRequirementPolicyOver(t, required, mfaMethods(method), opts...)
+}
+
+// mfaRequirementPolicyOver builds the requirement policy over methods, which may
+// be empty, writing its records nowhere unless a case replaces the logger.
+func mfaRequirementPolicyOver(
+	t *testing.T,
+	required identity.MFARequirementLookup,
+	methods []policy.MFAMethodLookup,
+	opts ...policy.MFARequirementOption,
+) policy.Policy {
+	t.Helper()
+
+	p, err := policy.NewMFARequirementPolicy(required, methods,
 		append([]policy.MFARequirementOption{
 			policy.WithMFARequirementLogger(mfaLogger(&bytes.Buffer{})),
 		}, opts...)...)
@@ -57,11 +70,11 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		lookup identity.MFARequirementLookup
-		method policy.MFAMethodLookup
-		opts   []policy.MFARequirementOption
-		assert func(t *testing.T, p policy.Policy, err error)
+		name    string
+		lookup  identity.MFARequirementLookup
+		methods []policy.MFAMethodLookup
+		opts    []policy.MFARequirementOption
+		assert  func(t *testing.T, p policy.Policy, err error)
 	}
 
 	// consumerRequirementClockAt is what a consumer's own read-only clock
@@ -70,10 +83,16 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 	consumerRequirementClockAt := time.Date(2034, time.June, 6, 6, 6, 6, 0, time.UTC)
 	consumerRequirementClockLogBuf := &bytes.Buffer{}
 
+	// mutableRequirementMethods is the slice the "mutating the caller's
+	// slice" case below hands the constructor and then overwrites, to show
+	// the policy decided from its own copy of the set and not from whatever
+	// the caller does to the slice afterward.
+	mutableRequirementMethods := mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil))
+
 	cases := []testCase{
 		{
-			name:   "a policy with no lookup and no requirement for all can answer nothing",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
+			name:    "a policy with no lookup and no requirement for all can answer nothing",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.ErrorIs(t, err, policy.ErrMFARequirementLookupMissing)
 				assert.ErrorIs(t, err, policy.ErrConfig,
@@ -85,9 +104,9 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 			// A nil *MockMFARequirementLookup is a non-nil interface holding a
 			// nil pointer, which is what an unchecked constructor result hands
 			// over.
-			name:   "a typed-nil lookup is as absent as a nil one",
-			lookup: (*MockMFARequirementLookup)(nil),
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
+			name:    "a typed-nil lookup is as absent as a nil one",
+			lookup:  (*MockMFARequirementLookup)(nil),
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.ErrorIs(t, err, policy.ErrMFARequirementLookupMissing)
 				assert.Nil(t, p)
@@ -104,18 +123,72 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 			},
 		},
 		{
-			name:   "a typed-nil method is as absent as a nil one",
-			method: (*MockMFAMethodLookup)(nil),
-			opts:   []policy.MFARequirementOption{policy.WithMFARequiredForAll()},
+			name:    "requiring a second factor of everyone with an empty set of methods is unsatisfiable",
+			methods: mfaMethods(),
+			opts:    []policy.MFARequirementOption{policy.WithMFARequiredForAll()},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.ErrorIs(t, err, policy.ErrMFARequirementUnsatisfiable)
+				assert.ErrorIs(t, err, policy.ErrConfig)
 				assert.Nil(t, p)
 			},
 		},
 		{
-			name:   "requiring a second factor of everyone needs no lookup",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
-			opts:   []policy.MFARequirementOption{policy.WithMFARequiredForAll()},
+			name:    "a typed-nil method is refused",
+			methods: mfaMethods((*MockMFAMethodLookup)(nil)),
+			opts:    []policy.MFARequirementOption{policy.WithMFARequiredForAll()},
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.ErrorIs(t, err, policy.ErrConfig)
+				assert.Nil(t, p)
+			},
+		},
+		{
+			name:    "an absent method beside a present one is refused",
+			lookup:  NewMockMFARequirementLookup(gomock.NewController(t)),
+			methods: mfaMethods(idleMFAMethod(t, "totp"), nil),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.ErrorIs(t, err, policy.ErrConfig,
+					"a set holding an absent method was accepted, to panic at the first login")
+				assert.Nil(t, p)
+			},
+		},
+		{
+			name:    "a typed-nil method beside a present one is refused",
+			lookup:  NewMockMFARequirementLookup(gomock.NewController(t)),
+			methods: mfaMethods(idleMFAMethod(t, "totp"), (*MockMFAMethodLookup)(nil)),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.ErrorIs(t, err, policy.ErrConfig)
+				assert.Nil(t, p)
+			},
+		},
+		{
+			name:    "two methods of the same name are refused",
+			lookup:  NewMockMFARequirementLookup(gomock.NewController(t)),
+			methods: mfaMethods(idleMFAMethod(t, "totp"), idleMFAMethod(t, "totp")),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.ErrorIs(t, err, policy.ErrConfig,
+					"two methods nothing could tell apart were accepted")
+				assert.Nil(t, p)
+			},
+		},
+		{
+			// An empty set means no method is configured, which a per-user
+			// lookup can live with: a required user is refused.
+			name:    "an empty set with a per-user lookup is accepted, and refuses a required user",
+			lookup:  mfaRequirementLookup(t, true, true, nil),
+			methods: mfaMethods(),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+
+				d := p.Evaluate(mfaPhaseContext(t, policy.PerRequest), mfaInput(factor.Password))
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, policy.ErrMFARequired)
+			},
+		},
+		{
+			name:    "requiring a second factor of everyone needs no lookup",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
+			opts:    []policy.MFARequirementOption{policy.WithMFARequiredForAll()},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
@@ -175,8 +248,8 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 			// fixedClock never advances, a one-millisecond sampling window
 			// never appears to elapse, so two refusals a real sleep apart
 			// still produce one record.
-			name:   "a consumer's own read-only clock is accepted and used to sample records",
-			method: mfaMethod(t, factor.Email, false, nil),
+			name:    "a consumer's own read-only clock is accepted and used to sample records",
+			methods: mfaMethods(mfaMethod(t, factor.Email, false, nil)),
 			opts: []policy.MFARequirementOption{
 				policy.WithMFARequiredForAll(),
 				policy.WithMFARequirementClock(fixedClock{at: consumerRequirementClockAt}),
@@ -199,13 +272,38 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 					"a clock that never advances must keep the sampling window from ever elapsing")
 			},
 		},
+		{
+			// The godoc promises "the policy keeps its own copy of the set".
+			// Overwriting the caller's slice after construction must not
+			// change what an already-built policy consults.
+			name:    "mutating the caller's slice after construction does not change what the policy decided from",
+			lookup:  mfaRequirementLookup(t, true, true, nil),
+			methods: mutableRequirementMethods,
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+
+				in := &policy.Input{User: mfaUser, FirstFactor: factor.Password, Now: mfaNow}
+				ctx := mfaPhaseContext(t, policy.PerRequest)
+
+				before := p.Evaluate(ctx, in)
+				require.Equal(t, policy.Challenge, before.Outcome,
+					"the case's own setup was wrong before the mutation could prove anything")
+
+				mutableRequirementMethods[0] = mfaMethod(t, factor.AuthenticatorApp, false, nil)
+
+				after := p.Evaluate(ctx, in)
+				assert.Equal(t, policy.Challenge, after.Outcome,
+					"the policy consulted the caller's slice instead of its own copy")
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewMFARequirementPolicy(tc.lookup, tc.method, tc.opts...)
+			p, err := policy.NewMFARequirementPolicy(tc.lookup, tc.methods, tc.opts...)
 			tc.assert(t, p, err)
 		})
 	}
@@ -383,9 +481,9 @@ func TestMFARequirementEvaluationOrder(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var method policy.MFAMethodLookup
+			var methods []policy.MFAMethodLookup
 			if !tc.omitMethod {
-				method = mfaMethod(t, tc.channel, tc.enrolled, nil)
+				methods = mfaMethods(mfaMethod(t, tc.channel, tc.enrolled, nil))
 			}
 
 			opts := []policy.MFARequirementOption{
@@ -395,8 +493,8 @@ func TestMFARequirementEvaluationOrder(t *testing.T) {
 				opts = append(opts, policy.WithMFARequiredForAll())
 			}
 
-			p := mfaRequirementPolicyFor(t,
-				mfaRequirementLookup(t, tc.consulted, tc.required, tc.requiredErr), method, opts...)
+			p := mfaRequirementPolicyOver(t,
+				mfaRequirementLookup(t, tc.consulted, tc.required, tc.requiredErr), methods, opts...)
 
 			ctx := t.Context()
 			if !tc.withoutPhase {
@@ -469,7 +567,7 @@ func TestMFARequirementLookupFailureLogging(t *testing.T) {
 			buf := &bytes.Buffer{}
 			p, err := policy.NewMFARequirementPolicy(
 				mfaRequirementLookup(t, true, false, errRequirementStore),
-				mfaMethod(t, factor.AuthenticatorApp, true, nil),
+				mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 				policy.WithMFARequirementLogger(mfaLogger(buf)))
 			require.NoError(t, err)
 
@@ -496,7 +594,7 @@ func TestMFARequirementLookupFailureKeyIsSharedByEveryUser(t *testing.T) {
 	buf := &bytes.Buffer{}
 	p, err := policy.NewMFARequirementPolicy(
 		mfaRequirementLookup(t, true, false, errRequirementStore),
-		mfaMethod(t, factor.AuthenticatorApp, true, nil),
+		mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 		policy.WithMFARequirementLogger(mfaLogger(buf)))
 	require.NoError(t, err)
 
@@ -628,10 +726,151 @@ func TestMFARequirementMidSessionEnrolment(t *testing.T) {
 			// The lookup is what a mid-session flag changes: it now answers
 			// "required" for a session that never satisfied a second factor.
 			p := mfaRequirementPolicyFor(t, mfaRequirementLookup(t, true, true, nil),
-				mfaMethod(t, factor.AuthenticatorApp, false, nil), opts...)
+				canEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil)), opts...)
 
 			in := &policy.Input{User: mfaUser, FirstFactor: factor.Password, Now: mfaNow}
 			tc.assert(t, p.Evaluate(mfaPhaseContext(t, policy.PerRequest), in))
+		})
+	}
+}
+
+// TestMFARequirementPolicyOverASet covers the requirement policy over more than
+// one method: usability is decided across the whole set, any lookup failure
+// refuses, and the enrolment path is entered only through a method that
+// supports it on another channel. It is a table of its own because each row
+// builds its own set, where the tables above configure one method by fields.
+func TestMFARequirementPolicyOverASet(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		methods func(t *testing.T) []policy.MFAMethodLookup
+		pathOn  bool
+		phase   policy.Phase
+		first   factor.Kind
+		assert  func(t *testing.T, d policy.Decision)
+	}
+
+	cases := []testCase{
+		{
+			name: "usable on the second method, flagged mid-session, is challenged per request",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					mfaMethod(t, factor.AuthenticatorApp, false, nil),
+					mfaMethod(t, factor.Email, true, nil))
+			},
+			phase: policy.PerRequest, first: factor.Password,
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Challenge, d.Outcome,
+					"only the first configured method was consulted")
+				assert.Equal(t, policy.ChallengeMFA, d.Challenge)
+			},
+		},
+		{
+			name: "any lookup failure denies, though another method is usable",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					mfaMethod(t, factor.AuthenticatorApp, true, nil),
+					mfaMethod(t, factor.Email, false, errEnrolmentStore))
+			},
+			phase: policy.PerRequest, first: factor.Password,
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome,
+					"a lookup failure on one method was ignored because another answered")
+				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
+			},
+		},
+		{
+			name: "any lookup failure denies with the path on",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					canEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil)),
+					mfaMethod(t, factor.Email, false, errEnrolmentStore))
+			},
+			pathOn: true, phase: policy.PostAuthentication, first: factor.Password,
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
+				assert.NotErrorIs(t, d.Reason, policy.ErrMFAEnrollmentRequired)
+			},
+		},
+		{
+			name: "enrolled only on the first factor's channel, with another method unenrolled, is refused",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					mfaMethod(t, factor.AuthenticatorApp, false, nil),
+					mfaMethod(t, factor.Email, true, nil))
+			},
+			phase: policy.PostAuthentication, first: factor.MagicLink,
+			assert: deniedForEnrolment,
+		},
+		{
+			// The consumer's authenticator method is listed first, so a policy
+			// that looked at one method only, or ignored whether it can enrol,
+			// would admit the login.
+			name: "only a method that cannot enrol on another channel is refused (it listed first)",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					cannotEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil)),
+					canEnrol(mfaMethod(t, factor.Email, false, nil)))
+			},
+			pathOn: true, phase: policy.PostAuthentication, first: factor.MagicLink,
+			assert: deniedForEnrolment,
+		},
+		{
+			name: "only a method that cannot enrol on another channel is refused (it listed second)",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					canEnrol(mfaMethod(t, factor.Email, false, nil)),
+					cannotEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil)))
+			},
+			pathOn: true, phase: policy.PostAuthentication, first: factor.MagicLink,
+			assert: deniedForEnrolment,
+		},
+		{
+			// A method that does not declare SupportsEnrolmentPath at all is
+			// one that cannot enrol.
+			name: "a method that does not say whether it can enrol cannot",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(mfaMethod(t, factor.AuthenticatorApp, false, nil))
+			},
+			pathOn: true, phase: policy.PostAuthentication, first: factor.Password,
+			assert: deniedForEnrolment,
+		},
+		{
+			name: "only method on the first factor's channel is refused",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(canEnrol(mfaMethod(t, factor.Email, false, nil)))
+			},
+			pathOn: true, phase: policy.PostAuthentication, first: factor.MagicLink,
+			assert: deniedForEnrolment,
+		},
+		{
+			name: "a method that can enrol on another channel admits the login, wherever it is listed",
+			methods: func(t *testing.T) []policy.MFAMethodLookup {
+				return mfaMethods(
+					cannotEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil)),
+					canEnrol(mfaMethod(t, factor.Email, false, nil)))
+			},
+			pathOn: true, phase: policy.PostAuthentication, first: factor.Password,
+			assert: challengedForEnrolment,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []policy.MFARequirementOption
+			if tc.pathOn {
+				opts = append(opts, policy.WithMFAEnrolmentPath())
+			}
+
+			p := mfaRequirementPolicyOver(t, mfaRequirementLookup(t, true, true, nil),
+				tc.methods(t), opts...)
+
+			in := &policy.Input{User: mfaUser, FirstFactor: tc.first, Now: mfaNow}
+			tc.assert(t, p.Evaluate(mfaPhaseContext(t, tc.phase), in))
 		})
 	}
 }

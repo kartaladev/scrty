@@ -126,10 +126,11 @@ func enrolmentEngine(t *testing.T) *policy.Engine {
 	ctrl := gomock.NewController(t)
 
 	lookup := NewMockMFAMethodLookup(ctrl)
+	lookup.EXPECT().Name().Return("totp").AnyTimes()
 	lookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 	lookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-	p, err := policy.NewMFARequirementPolicy(everyoneRequired{}, lookup, policy.WithMFAEnrolmentPath())
+	p, err := policy.NewMFARequirementPolicy(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}}, policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 
 	return engineOf(t, p)

@@ -47,9 +47,11 @@ func (f enrolmentPathOption) applyEnrolmentPath(e *enrolmentPath) { f(e) }
 //     no session to confine, and is refused with ErrMFARequired as before;
 //   - the first factor's kind is on the path's allowlist
 //     (WithEnrolmentFirstFactors);
-//   - the MFA method's channel differs from the first factor's, because an
-//     enrolment on the first factor's own channel would leave the user no more
-//     usable than before.
+//   - at least one configured method supports the enrolment path — it
+//     implements SupportsEnrolmentPath() bool and reports true, as mfa.TOTP
+//     does over a store that can hold its proofs — and has a channel that
+//     differs from the first factor's, because an enrolment on the first
+//     factor's own channel would leave the user no more usable than before.
 //
 // A failed enrolment lookup is refused whether the path is on or off.
 //
@@ -60,14 +62,15 @@ func (f enrolmentPathOption) applyEnrolmentPath(e *enrolmentPath) { f(e) }
 // Turn the path on here and enable the enrolment interceptor on the chain
 // together.
 //
-// # The same method on both sides
+// # The same methods on both sides
 //
-// The MFAMethodLookup this policy was built with and the method the chain's
-// EnableMFA was given must be the same method. Nothing can check it: the policy
-// sees only the lookup. If they differ, the same-channel test above uses the
-// lookup's channel while the enrolment begin uses the method's, so a login
-// the policy admits to the path can be refused at begin as same-channel, and
-// that user stays confined until the enrolment-only session ends.
+// The methods this policy was built with and the methods the chain's EnableMFA
+// was given must be the same methods; mfa.LookupsFor builds this policy's list
+// from them. Nothing can check it: the policy sees only the lookups. If they
+// differ, the admission test above uses the lookups' channels and capabilities
+// while the enrolment begin uses the methods', so a login the policy admits to
+// the path can be refused at begin, and that user stays confined until the
+// enrolment-only session ends.
 func WithMFAEnrolmentPath(opts ...EnrolmentPathOption) MFARequirementOption {
 	return mfaRequirementOption(func(p *mfaRequirementPolicy) {
 		e := &enrolmentPath{firstFactors: defaultEnrolmentFirstFactors()}
@@ -154,10 +157,18 @@ func defaultEnrolmentFirstFactors() map[factor.Kind]bool {
 	return map[factor.Kind]bool{factor.Password: true, factor.MagicLink: true, "": true}
 }
 
+// enrolmentPathCapable is what a method lookup implements to say whether a user
+// can enrol on it through the enrolment path. It is declared here, and matched
+// structurally, so that this package need not import the one that implements
+// it; mfa.TOTP does. A lookup that does not implement it cannot enrol.
+type enrolmentPathCapable interface {
+	SupportsEnrolmentPath() bool
+}
+
 // admits reports whether a required user with no usable enrolment is
-// challenged for enrolment rather than refused. method is never nil here: a
+// challenged for enrolment rather than refused. methods is never empty here: a
 // policy with no method refuses before it asks.
-func (e *enrolmentPath) admits(in *Input, phase Phase, method MFAMethodLookup) bool {
+func (e *enrolmentPath) admits(in *Input, phase Phase, methods []MFAMethodLookup) bool {
 	if phase != PostAuthentication && phase != PerRequest {
 		return false
 	}
@@ -170,7 +181,18 @@ func (e *enrolmentPath) admits(in *Input, phase Phase, method MFAMethodLookup) b
 		return false
 	}
 
-	return method.Channel() != in.FirstFactor.Channel()
+	// An enrolment the user could then not use — on the first factor's own
+	// channel — or one no method can take through the path leaves the user no
+	// better off, so the path is entered only through a method that offers
+	// neither problem.
+	for _, m := range methods {
+		c, ok := m.(enrolmentPathCapable)
+		if ok && c.SupportsEnrolmentPath() && m.Channel() != in.FirstFactor.Channel() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // validate reports a path that could never work as configured.

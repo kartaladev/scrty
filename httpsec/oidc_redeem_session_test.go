@@ -85,6 +85,7 @@ func oidcMFAEngine(t *testing.T, exempt bool, enrolled func() bool) *policy.Engi
 	t.Helper()
 
 	method := NewMockMFAMethodLookup(gomock.NewController(t))
+	method.EXPECT().Name().Return("totp").AnyTimes()
 	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(context.Context, identity.UserID) (bool, error) { return enrolled(), nil })
@@ -102,10 +103,10 @@ func oidcMFAEngine(t *testing.T, exempt bool, enrolled func() bool) *policy.Engi
 		requirementOpts = append(requirementOpts, classification)
 	}
 
-	challenge, err := policy.NewMFAPolicy(method, challengeOpts...)
+	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{method}, challengeOpts...)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, method, requirementOpts...)
+	requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{method}, requirementOpts...)
 	require.NoError(t, err)
 
 	return engineOf(t, challenge, requirement)

@@ -54,16 +54,84 @@ const (
 )
 
 // mfaMethod returns a method lookup on ch that answers every enrolment
-// question with (enrolled, err). Both methods are optional: a policy that
-// allows before it looks asks neither.
+// question with (enrolled, err). It is named after its channel by
+// mfaMethodName, so a case that needs two methods on one channel names them
+// itself with namedMFAMethod. Every method is optional: a policy that allows
+// before it looks asks none.
 func mfaMethod(t *testing.T, ch factor.Channel, enrolled bool, err error) *MockMFAMethodLookup {
 	t.Helper()
 
+	return namedMFAMethod(t, mfaMethodName(ch), ch, enrolled, err)
+}
+
+// namedMFAMethod is mfaMethod under a name the case chooses.
+func namedMFAMethod(t *testing.T, name string, ch factor.Channel, enrolled bool, err error) *MockMFAMethodLookup {
+	t.Helper()
+
 	m := NewMockMFAMethodLookup(gomock.NewController(t))
+	m.EXPECT().Name().Return(name).AnyTimes()
 	m.EXPECT().Channel().Return(ch).AnyTimes()
 	m.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(enrolled, err).AnyTimes()
 
 	return m
+}
+
+// idleMFAMethod returns a method lookup a case never expects to be asked about
+// a user: only its name may be read, which is what a constructor does.
+func idleMFAMethod(t *testing.T, name string) *MockMFAMethodLookup {
+	t.Helper()
+
+	m := NewMockMFAMethodLookup(gomock.NewController(t))
+	m.EXPECT().Name().Return(name).AnyTimes()
+
+	return m
+}
+
+// mfaMethodName is the name mfaMethod gives a method on ch: the name scrty's
+// own methods on that channel carry, or the channel itself.
+func mfaMethodName(ch factor.Channel) string {
+	switch ch {
+	case factor.AuthenticatorApp:
+		return "totp"
+	case factor.Email:
+		return "email-code"
+	default:
+		return string(ch)
+	}
+}
+
+// mfaMethods is the set of methods a case lists, typed as the constructors
+// take it.
+func mfaMethods(methods ...policy.MFAMethodLookup) []policy.MFAMethodLookup {
+	return methods
+}
+
+// sequentialMethodLookup answers its first Enrolled call with (first,
+// firstErr) and every call after with (false, err). It is how a case reaches
+// the challenge policy's second walk over its methods (enrolledOnAny) with an
+// error the first walk (UsableMFAMethods) never saw, because that walk already
+// asked every method once and succeeded.
+type sequentialMethodLookup struct {
+	name     string
+	channel  factor.Channel
+	first    bool
+	firstErr error
+	err      error
+
+	calls int
+}
+
+func (s *sequentialMethodLookup) Name() string { return s.name }
+
+func (s *sequentialMethodLookup) Channel() factor.Channel { return s.channel }
+
+func (s *sequentialMethodLookup) Enrolled(context.Context, identity.UserID) (bool, error) {
+	s.calls++
+	if s.calls == 1 {
+		return s.first, s.firstErr
+	}
+
+	return false, s.err
 }
 
 // mfaInput is a login by kind, for the user the MFA cases are about.
@@ -71,12 +139,20 @@ func mfaInput(kind factor.Kind) *policy.Input {
 	return &policy.Input{User: mfaUser, FirstFactor: kind, Now: mfaNow}
 }
 
-// mfaPolicyFor builds the second-factor challenge policy over method, writing
-// its records nowhere unless a case replaces the logger.
+// mfaPolicyFor builds the second-factor challenge policy over a set of one
+// method, writing its records nowhere unless a case replaces the logger.
 func mfaPolicyFor(t *testing.T, method policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
 	t.Helper()
 
-	p, err := policy.NewMFAPolicy(method,
+	return mfaPolicyOver(t, mfaMethods(method), opts...)
+}
+
+// mfaPolicyOver builds the second-factor challenge policy over methods,
+// writing its records nowhere unless a case replaces the logger.
+func mfaPolicyOver(t *testing.T, methods []policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
+	t.Helper()
+
+	p, err := policy.NewMFAPolicy(methods,
 		append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(&bytes.Buffer{}))}, opts...)...)
 	require.NoError(t, err, "the policy under test could not be built")
 
@@ -126,10 +202,10 @@ func TestNewMFAPolicy(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		method policy.MFAMethodLookup
-		opts   []policy.MFAOption
-		assert func(t *testing.T, p policy.Policy, err error)
+		name    string
+		methods []policy.MFAMethodLookup
+		opts    []policy.MFAOption
+		assert  func(t *testing.T, p policy.Policy, err error)
 	}
 
 	refused := func(t *testing.T, p policy.Policy, err error) {
@@ -146,9 +222,29 @@ func TestNewMFAPolicy(t *testing.T) {
 	consumerClockAt := time.Date(2033, time.May, 5, 5, 5, 5, 0, time.UTC)
 	consumerClockLogBuf := &bytes.Buffer{}
 
+	// mutableMFAMethods is the slice the "mutating the caller's slice" case
+	// below hands the constructor and then overwrites, to show the policy
+	// decided from its own copy of the set and not from whatever the caller
+	// does to the slice afterward.
+	mutableMFAMethods := mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil))
+
 	cases := []testCase{
 		{
-			name: "an absent method lookup is refused",
+			name: "no set of methods is refused",
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				refused(t, p, err)
+			},
+		},
+		{
+			name:    "an empty set of methods is refused",
+			methods: mfaMethods(),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				refused(t, p, err)
+			},
+		},
+		{
+			name:    "an absent method lookup is refused",
+			methods: mfaMethods(nil),
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -157,24 +253,55 @@ func TestNewMFAPolicy(t *testing.T) {
 			// A nil *MockMFAMethodLookup is a non-nil interface holding a nil
 			// pointer, which is what an unchecked constructor result hands
 			// over. It would panic at the first login rather than here.
-			name:   "a typed-nil method lookup is refused",
-			method: (*MockMFAMethodLookup)(nil),
+			name:    "a typed-nil method lookup is refused",
+			methods: mfaMethods((*MockMFAMethodLookup)(nil)),
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
 		},
 		{
-			name:   "a nil exemption rule is refused",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
-			opts:   []policy.MFAOption{policy.WithMFAExemption(nil)},
+			name:    "an absent method beside a present one is refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp"), nil),
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
 		},
 		{
-			name:   "a nil clock is refused",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
-			opts:   []policy.MFAOption{policy.WithMFAPolicyClock(nil)},
+			name:    "a typed-nil method beside a present one is refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp"), (*MockMFAMethodLookup)(nil)),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				refused(t, p, err)
+			},
+		},
+		{
+			// Nothing downstream could tell the two apart: a client naming
+			// one would reach whichever came first.
+			name:    "two methods of the same name are refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp"), idleMFAMethod(t, "totp")),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				refused(t, p, err)
+			},
+		},
+		{
+			name:    "two methods of different names are accepted",
+			methods: mfaMethods(idleMFAMethod(t, "totp"), idleMFAMethod(t, "email-code")),
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
+			name:    "a nil exemption rule is refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
+			opts:    []policy.MFAOption{policy.WithMFAExemption(nil)},
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				refused(t, p, err)
+			},
+		},
+		{
+			name:    "a nil clock is refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
+			opts:    []policy.MFAOption{policy.WithMFAPolicyClock(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -185,9 +312,9 @@ func TestNewMFAPolicy(t *testing.T) {
 			// misses it, and only the reflect-based check the constructor now
 			// uses catches it before the first sampled record reads from a nil
 			// receiver.
-			name:   "a typed-nil clock is refused",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
-			opts:   []policy.MFAOption{policy.WithMFAPolicyClock((*clockwork.FakeClock)(nil))},
+			name:    "a typed-nil clock is refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
+			opts:    []policy.MFAOption{policy.WithMFAPolicyClock((*clockwork.FakeClock)(nil))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -199,8 +326,8 @@ func TestNewMFAPolicy(t *testing.T) {
 			// fixedClock never advances, a one-millisecond sampling window
 			// never appears to elapse, so two refusals a real sleep apart
 			// still produce one record.
-			name:   "a consumer's own read-only clock is accepted and used to sample records",
-			method: mfaMethod(t, factor.Email, true, nil),
+			name:    "a consumer's own read-only clock is accepted and used to sample records",
+			methods: mfaMethods(mfaMethod(t, factor.Email, true, nil)),
 			opts: []policy.MFAOption{
 				policy.WithMFAPolicyClock(fixedClock{at: consumerClockAt}),
 				policy.WithMFAPolicyLogger(mfaLogger(consumerClockLogBuf)),
@@ -222,16 +349,16 @@ func TestNewMFAPolicy(t *testing.T) {
 			},
 		},
 		{
-			name:   "a mode naming neither constant is refused",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
-			opts:   []policy.MFAOption{policy.WithSameChannelEnrolment(policy.SameChannelMode(7))},
+			name:    "a mode naming neither constant is refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
+			opts:    []policy.MFAOption{policy.WithSameChannelEnrolment(policy.SameChannelMode(7))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
 		},
 		{
-			name:   "the minimum wiring is a method lookup and nothing else",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
+			name:    "the minimum wiring is a method lookup and nothing else",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.NoError(t, err, "the documented minimum wiring was refused")
 				require.NotNil(t, p)
@@ -241,12 +368,35 @@ func TestNewMFAPolicy(t *testing.T) {
 			},
 		},
 		{
-			name:   "a nil logger is ignored rather than refused",
-			method: NewMockMFAMethodLookup(gomock.NewController(t)),
-			opts:   []policy.MFAOption{policy.WithMFAPolicyLogger(nil)},
+			name:    "a nil logger is ignored rather than refused",
+			methods: mfaMethods(idleMFAMethod(t, "totp")),
+			opts:    []policy.MFAOption{policy.WithMFAPolicyLogger(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.NoError(t, err, "a nil logger made configuring logging mandatory")
 				assert.NotNil(t, p)
+			},
+		},
+		{
+			// The godoc promises "the policy keeps its own copy of the set".
+			// Overwriting the caller's slice after construction must not
+			// change what an already-built policy consults.
+			name:    "mutating the caller's slice after construction does not change what the policy decided from",
+			methods: mutableMFAMethods,
+			assert: func(t *testing.T, p policy.Policy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+
+				in := mfaInput(factor.Password)
+
+				before := p.Evaluate(t.Context(), in)
+				require.Equal(t, policy.Challenge, before.Outcome,
+					"the case's own setup was wrong before the mutation could prove anything")
+
+				mutableMFAMethods[0] = mfaMethod(t, factor.AuthenticatorApp, false, nil)
+
+				after := p.Evaluate(t.Context(), in)
+				assert.Equal(t, policy.Challenge, after.Outcome,
+					"the policy consulted the caller's slice instead of its own copy")
 			},
 		},
 	}
@@ -255,7 +405,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewMFAPolicy(tc.method, tc.opts...)
+			p, err := policy.NewMFAPolicy(tc.methods, tc.opts...)
 			tc.assert(t, p, err)
 		})
 	}
@@ -265,11 +415,11 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		method *MockMFAMethodLookup
-		in     *policy.Input
-		opts   []policy.MFAOption
-		assert func(t *testing.T, d policy.Decision)
+		name    string
+		methods []policy.MFAMethodLookup
+		in      *policy.Input
+		opts    []policy.MFAOption
+		assert  func(t *testing.T, d policy.Decision)
 	}
 
 	allows := func(t *testing.T, d policy.Decision) {
@@ -281,23 +431,23 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name:   "a login that has already satisfied a second factor allows",
-			method: mfaMethod(t, factor.AuthenticatorApp, true, nil),
+			name:    "a login that has already satisfied a second factor allows",
+			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 			in: &policy.Input{
 				User: mfaUser, FirstFactor: factor.Password, MFASatisfied: true, Now: mfaNow,
 			},
 			assert: allows,
 		},
 		{
-			name:   "an exempt first factor allows",
-			method: mfaMethod(t, factor.AuthenticatorApp, true, nil),
-			in:     mfaInput(factor.OIDC),
-			assert: allows,
+			name:    "an exempt first factor allows",
+			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
+			in:      mfaInput(factor.OIDC),
+			assert:  allows,
 		},
 		{
-			name:   "a lookup error denies with a reason wrapping it",
-			method: mfaMethod(t, factor.AuthenticatorApp, false, errEnrolmentStore),
-			in:     mfaInput(factor.Password),
+			name:    "a lookup error denies with a reason wrapping it",
+			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, false, errEnrolmentStore)),
+			in:      mfaInput(factor.Password),
 			assert: func(t *testing.T, d policy.Decision) {
 				require.Equal(t, policy.Deny, d.Outcome,
 					"an unreadable enrolment downgraded the user to one factor")
@@ -306,9 +456,9 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 			},
 		},
 		{
-			name:   "enrolled on a different channel challenges for a second factor",
-			method: mfaMethod(t, factor.AuthenticatorApp, true, nil),
-			in:     mfaInput(factor.Password),
+			name:    "enrolled on a different channel challenges for a second factor",
+			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
+			in:      mfaInput(factor.Password),
 			assert: func(t *testing.T, d policy.Decision) {
 				require.Equal(t, policy.Challenge, d.Outcome)
 				assert.Equal(t, policy.ChallengeMFA, d.Challenge)
@@ -316,20 +466,115 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 			},
 		},
 		{
-			name:   "a user who is not enrolled allows",
-			method: mfaMethod(t, factor.AuthenticatorApp, false, nil),
-			in:     mfaInput(factor.Password),
-			assert: allows,
+			name:    "a user who is not enrolled allows",
+			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, false, nil)),
+			in:      mfaInput(factor.Password),
+			assert:  allows,
 		},
 		{
 			// The empty kind is unknown, so it reports no channel and is never
 			// exempt. It must not match an enrolled method either.
-			name:   "a login with no recorded first factor is still challenged",
-			method: mfaMethod(t, factor.AuthenticatorApp, true, nil),
-			in:     mfaInput(""),
+			name:    "a login with no recorded first factor is still challenged",
+			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
+			in:      mfaInput(""),
 			assert: func(t *testing.T, d policy.Decision) {
 				require.Equal(t, policy.Challenge, d.Outcome)
 				assert.Equal(t, policy.ChallengeMFA, d.Challenge)
+			},
+		},
+		{
+			name: "enrolled on the second of two methods challenges",
+			methods: mfaMethods(
+				mfaMethod(t, factor.AuthenticatorApp, false, nil),
+				mfaMethod(t, factor.Email, true, nil)),
+			in: mfaInput(factor.Password),
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Challenge, d.Outcome,
+					"only the first configured method was consulted")
+				assert.Equal(t, policy.ChallengeMFA, d.Challenge)
+			},
+		},
+		{
+			name: "one method's lookup failing denies, though another is enrolled",
+			methods: mfaMethods(
+				mfaMethod(t, factor.AuthenticatorApp, true, nil),
+				mfaMethod(t, factor.Email, false, errEnrolmentStore)),
+			in: mfaInput(factor.Password),
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome,
+					"a lookup failure on one method was ignored because another answered")
+				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
+			},
+		},
+		{
+			name: "a lookup failing ahead of an enrolled method denies",
+			methods: mfaMethods(
+				mfaMethod(t, factor.Email, false, errEnrolmentStore),
+				mfaMethod(t, factor.AuthenticatorApp, true, nil)),
+			in: mfaInput(factor.Password),
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
+			},
+		},
+		{
+			name: "a usable method alongside a same-channel one challenges",
+			methods: mfaMethods(
+				mfaMethod(t, factor.Email, true, nil),
+				mfaMethod(t, factor.AuthenticatorApp, true, nil)),
+			in: mfaInput(factor.MagicLink),
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Challenge, d.Outcome,
+					"a user with a usable method was refused over a same-channel one")
+				assert.Equal(t, policy.ChallengeMFA, d.Challenge)
+			},
+		},
+		{
+			name: "enrolled only on same-channel methods is refused by default",
+			methods: mfaMethods(
+				mfaMethod(t, factor.AuthenticatorApp, false, nil),
+				mfaMethod(t, factor.Email, true, nil)),
+			in: mfaInput(factor.MagicLink),
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome,
+					"a same-channel enrolment on a later method completed silently")
+				assert.ErrorIs(t, d.Reason, policy.ErrSecondFactorSameChannel)
+			},
+		},
+		{
+			name: "enrolled only on same-channel methods completes when the consumer chose it",
+			methods: mfaMethods(
+				mfaMethod(t, factor.AuthenticatorApp, false, nil),
+				mfaMethod(t, factor.Email, true, nil)),
+			in: mfaInput(factor.MagicLink),
+			opts: []policy.MFAOption{
+				policy.WithSameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
+			},
+			assert: allows,
+		},
+		{
+			name: "enrolled on none of several methods allows",
+			methods: mfaMethods(
+				mfaMethod(t, factor.AuthenticatorApp, false, nil),
+				mfaMethod(t, factor.Email, false, nil)),
+			in:     mfaInput(factor.Password),
+			assert: allows,
+		},
+		{
+			// The first walk (UsableMFAMethods) asks every method once and
+			// finds none usable; the second walk (enrolledOnAny) then asks
+			// again and this time fails. Only a stub that answers
+			// differently by call count can put the two walks apart.
+			name: "a lookup error in the second walk over the same set denies",
+			methods: mfaMethods(&sequentialMethodLookup{
+				name: mfaMethodName(factor.AuthenticatorApp), channel: factor.AuthenticatorApp,
+				err: errEnrolmentStore,
+			}),
+			in: mfaInput(factor.Password),
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome,
+					"an error from the second walk over the methods was not denied")
+				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
 			},
 		},
 	}
@@ -338,7 +583,7 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p := mfaPolicyFor(t, tc.method, tc.opts...)
+			p := mfaPolicyOver(t, tc.methods, tc.opts...)
 			tc.assert(t, p.Evaluate(t.Context(), tc.in))
 		})
 	}

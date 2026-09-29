@@ -694,10 +694,11 @@ func TestCompleteLoginEnrolmentMagicLink(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	method := NewMockMFAMethodLookup(ctrl)
+	method.EXPECT().Name().Return("totp").AnyTimes()
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-	requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, method,
+	requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{method}},
 		policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 

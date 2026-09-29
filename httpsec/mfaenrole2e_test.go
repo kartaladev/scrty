@@ -161,10 +161,10 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 	lookup, err := mfa.LookupFor(d.totp)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookup)
+	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup})
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(d.required, lookup,
+	requirement, err := policy.NewMFARequirementPolicy(d.required, []policy.MFAMethodLookup{lookup},
 		policy.WithMFAEnrolmentPath(d.pathOpts...))
 	require.NoError(t, err)
 
@@ -385,10 +385,10 @@ func oidcEnrolmentChain(t *testing.T, h *oidcHarness, pathOpts ...policy.Enrolme
 		return k != factor.OIDC && k.MFAExempt()
 	})
 
-	challenge, err := policy.NewMFAPolicy(lookup, classification)
+	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup}, classification)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookup,
+	requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{lookup},
 		policy.WithMFARequiredForAll(), classification, policy.WithMFAEnrolmentPath(pathOpts...))
 	require.NoError(t, err)
 

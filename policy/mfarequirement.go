@@ -149,7 +149,7 @@ func WithMFARequirementPhaseSource(
 // concurrent use.
 type mfaRequirementPolicy struct {
 	required       identity.MFARequirementLookup
-	method         MFAMethodLookup
+	methods        []MFAMethodLookup
 	requiredForAll bool
 	exempt         func(factor.Kind) bool
 	phaseOf        func(context.Context, *Input) (Phase, bool)
@@ -166,12 +166,19 @@ type mfaRequirementPolicy struct {
 // that a user who must use a second factor is challenged for one or refused,
 // and never simply let through.
 //
+// methods is the set of second-factor methods the deployment offers. It must be
+// the same set as the chain's httpsec.EnableMFA was given, and as
+// NewMFAPolicy was built with — mfa.LookupsFor builds this list from those
+// methods. It may be empty, which means no method is configured: a required
+// user is then refused with ErrMFARequired.
+//
 // # Register it beside NewMFAPolicy
 //
 // In the post-authentication phase this policy allows a required user with a
 // usable enrolment, because the login challenge is the challenge policy's job.
 // A deployment that registers this one alone therefore enforces nothing at
-// login: the requirement takes hold only on the next request. Register both.
+// login: the requirement takes hold only on the next request. Register both,
+// over the same methods.
 //
 // # Which phase it is being asked in
 //
@@ -199,11 +206,13 @@ type mfaRequirementPolicy struct {
 //     ErrMFARequired — there is no later point at which such a request could
 //     answer a challenge;
 //  5. the per-request phase with the second factor already satisfied: allow;
-//  6. no usable enrolment — not enrolled, or enrolled only on the first
-//     factor's own channel: with the enrolment path on (WithMFAEnrolmentPath)
-//     and admitting this login, challenge ChallengeMFAEnrolment; otherwise deny
-//     ErrMFAEnrollmentRequired. A failed enrolment lookup denies either way,
-//     with fixed text wrapping its error;
+//  6. no usable enrolment, as UsableMFAMethods decides — enrolled on no
+//     method, or only on methods on the first factor's own channel: with the
+//     enrolment path on (WithMFAEnrolmentPath) and admitting this login,
+//     challenge ChallengeMFAEnrolment; otherwise deny
+//     ErrMFAEnrollmentRequired. A failed enrolment lookup on any method denies
+//     either way, even when another method is usable, with fixed text
+//     wrapping its error;
 //  7. the per-request phase: challenge for MFA;
 //  8. the post-authentication phase: allow, leaving the login challenge to the
 //     challenge policy;
@@ -216,10 +225,12 @@ type mfaRequirementPolicy struct {
 // Construction fails, wrapping ErrConfig, with ErrMFARequirementLookupMissing
 // when there is no lookup and no requirement for all — the policy could answer
 // nothing — and with ErrMFARequirementUnsatisfiable when a second factor is
-// required of everyone and no method was given to present one. It also fails,
-// wrapping ErrConfig, when the enrolment path's allowlist is empty or names a
-// kind that can never enter it (WithEnrolmentFirstFactors). An absent argument
-// here means nil or a non-nil interface holding a nil pointer.
+// required of everyone and the set of methods is empty. It also fails,
+// wrapping ErrConfig, when the set holds an absent method or two methods of the
+// same Name, and when the enrolment path's allowlist is empty or names a kind
+// that can never enter it (WithEnrolmentFirstFactors). An absent argument here
+// means nil or a non-nil interface holding a nil pointer. The policy keeps its
+// own copy of the set.
 //
 // Defaults: the per-user lookup (WithMFARequiredForAll replaces it),
 // factor.Kind.MFAExempt (WithMFAExemption), the phase from the context
@@ -229,12 +240,11 @@ type mfaRequirementPolicy struct {
 // (WithMFAEnrolmentPath).
 func NewMFARequirementPolicy(
 	required identity.MFARequirementLookup,
-	method MFAMethodLookup,
+	methods []MFAMethodLookup,
 	opts ...MFARequirementOption,
 ) (Policy, error) {
 	p := &mfaRequirementPolicy{
 		required:    required,
-		method:      method,
 		exempt:      factor.Kind.MFAExempt,
 		phaseOf:     phaseOfContext,
 		logger:      slog.Default(),
@@ -250,9 +260,16 @@ func NewMFARequirementPolicy(
 	if !p.requiredForAll && nilcheck.IsNil(p.required) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, ErrMFARequirementLookupMissing)
 	}
-	if p.requiredForAll && nilcheck.IsNil(p.method) {
+	if p.requiredForAll && len(methods) == 0 {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, ErrMFARequirementUnsatisfiable)
 	}
+
+	checked, err := checkMFAMethods(methods, "mfa requirement policy", false)
+	if err != nil {
+		return nil, err
+	}
+	p.methods = checked
+
 	if p.exempt == nil {
 		return nil, fmt.Errorf(
 			"%w: the mfa requirement policy has no exemption rule, so it could not judge a "+
@@ -342,7 +359,7 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	// against. Either way the requirement can only be met by refusing. An
 	// unidentifiable phase is refused here too: it might be a stateless
 	// request, and the alternative is guessing in a required user's favour.
-	if !known || phase == StatelessAuthentication || nilcheck.IsNil(p.method) {
+	if !known || phase == StatelessAuthentication || len(p.methods) == 0 {
 		return p.denyRequired(ctx, in, phaseName(phase, known))
 	}
 
@@ -369,7 +386,7 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	if !usable {
 		// 6a. With the enrolment path on, a user it admits is sent to enrol
 		// rather than refused.
-		if p.enrolment != nil && p.enrolment.admits(in, phase, p.method) {
+		if p.enrolment != nil && p.enrolment.admits(in, phase, p.methods) {
 			return Decision{Outcome: Challenge, Challenge: ChallengeMFAEnrolment}
 		}
 
@@ -404,17 +421,19 @@ func (p *mfaRequirementPolicy) isRequired(ctx context.Context, in *Input) (bool,
 	return p.required.Required(ctx, in.User)
 }
 
-// hasUsableEnrolment answers step 6. An enrolment on the first factor's own
-// channel is not usable: whoever holds that channel holds both factors, so
-// challenging on it would prove nothing the first factor had not already
-// proved.
+// hasUsableEnrolment answers step 6 through UsableMFAMethods, the one
+// definition of "usable" the challenge policy and the chain share. An
+// enrolment on the first factor's own channel is not usable: whoever holds
+// that channel holds both factors, so challenging on it would prove nothing the
+// first factor had not already proved. A lookup failure on any method is an
+// error, never a shorter list.
 func (p *mfaRequirementPolicy) hasUsableEnrolment(ctx context.Context, in *Input) (bool, error) {
-	enrolled, err := p.method.Enrolled(ctx, in.User)
-	if err != nil || !enrolled {
+	usable, err := UsableMFAMethods(ctx, p.methods, in.User, in.FirstFactor)
+	if err != nil {
 		return false, err
 	}
 
-	return p.method.Channel() != in.FirstFactor.Channel(), nil
+	return len(usable) > 0, nil
 }
 
 // denyRequired refuses a required request that cannot be asked for a second

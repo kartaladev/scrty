@@ -118,3 +118,41 @@ func (c *MockMFAMethodLookupEnrolledCall) DoAndReturn(f func(context.Context, id
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// Name mocks base method.
+func (m *MockMFAMethodLookup) Name() string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Name")
+	ret0, _ := ret[0].(string)
+	return ret0
+}
+
+// Name indicates an expected call of Name.
+func (mr *MockMFAMethodLookupMockRecorder) Name() *MockMFAMethodLookupNameCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Name", reflect.TypeOf((*MockMFAMethodLookup)(nil).Name))
+	return &MockMFAMethodLookupNameCall{Call: call}
+}
+
+// MockMFAMethodLookupNameCall wrap *gomock.Call
+type MockMFAMethodLookupNameCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockMFAMethodLookupNameCall) Return(arg0 string) *MockMFAMethodLookupNameCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockMFAMethodLookupNameCall) Do(f func() string) *MockMFAMethodLookupNameCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockMFAMethodLookupNameCall) DoAndReturn(f func() string) *MockMFAMethodLookupNameCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

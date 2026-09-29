@@ -34,6 +34,28 @@ func deniedWith(reason error) func(t *testing.T, d policy.Decision) {
 	}
 }
 
+// enrollable is a method lookup that says whether it supports the enrolment
+// path, which the requirement policy learns by asking for exactly this method.
+// A bare MockMFAMethodLookup, which has no such method, stands for a method
+// that does not.
+type enrollable struct {
+	policy.MFAMethodLookup
+
+	supports bool
+}
+
+func (e enrollable) SupportsEnrolmentPath() bool { return e.supports }
+
+// canEnrol is m, reporting that it supports the enrolment path.
+func canEnrol(m policy.MFAMethodLookup) policy.MFAMethodLookup {
+	return enrollable{MFAMethodLookup: m, supports: true}
+}
+
+// cannotEnrol is m, reporting that it does not support the enrolment path.
+func cannotEnrol(m policy.MFAMethodLookup) policy.MFAMethodLookup {
+	return enrollable{MFAMethodLookup: m, supports: false}
+}
+
 // deniedForEnrolment is the refusal every login the path does not admit gets:
 // the one it got before the path existed.
 var deniedForEnrolment = deniedWith(policy.ErrMFAEnrollmentRequired)
@@ -199,9 +221,11 @@ func TestMFARequirementEnrolmentPath(t *testing.T) {
 			// built with no method as well as with one.
 			required := mfaRequirementLookup(t, true, true, nil)
 
-			var method policy.MFAMethodLookup
+			// The method supports the enrolment path, as the library's own TOTP
+			// does, so every refusal below is the one its row names.
+			var methods []policy.MFAMethodLookup
 			if !tc.omitMethod {
-				method = mfaMethod(t, tc.channel, tc.enrolled, tc.lookupErr)
+				methods = mfaMethods(canEnrol(mfaMethod(t, tc.channel, tc.enrolled, tc.lookupErr)))
 			}
 
 			var opts []policy.MFARequirementOption
@@ -209,7 +233,7 @@ func TestMFARequirementEnrolmentPath(t *testing.T) {
 				opts = append(opts, policy.WithMFAEnrolmentPath())
 			}
 
-			p := mfaRequirementPolicyFor(t, required, method, opts...)
+			p := mfaRequirementPolicyOver(t, required, methods, opts...)
 
 			in := &policy.Input{
 				User: mfaUser, FirstFactor: tc.first, MFASatisfied: tc.satisfied, Now: mfaNow,
@@ -323,7 +347,7 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 			}
 
 			p, err := policy.NewMFARequirementPolicy(nil,
-				mfaMethod(t, factor.AuthenticatorApp, false, nil), opts...)
+				mfaMethods(canEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil))), opts...)
 			if err != nil {
 				tc.assert(t, policy.Decision{}, err)
 
@@ -381,7 +405,7 @@ func TestEnrolmentPathUntil(t *testing.T) {
 
 			// The sampling clock is pinned before the instant, so a policy that
 			// read it instead of Input.Now would keep the path open.
-			p := mfaRequirementPolicyFor(t, nil, mfaMethod(t, factor.AuthenticatorApp, false, nil),
+			p := mfaRequirementPolicyFor(t, nil, canEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil)),
 				policy.WithMFARequiredForAll(),
 				policy.WithMFARequirementClock(clockwork.NewFakeClockAt(closesAt.Add(-time.Hour))),
 				policy.WithMFAEnrolmentPath(pathOpts...))

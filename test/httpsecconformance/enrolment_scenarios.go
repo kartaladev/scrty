@@ -136,10 +136,10 @@ func enrolmentOptions(t *testing.T, e *Effects) []httpsec.Option {
 	lookup, err := mfa.LookupFor(fx.TOTP)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookup)
+	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{lookup})
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookup,
+	requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{lookup},
 		policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 

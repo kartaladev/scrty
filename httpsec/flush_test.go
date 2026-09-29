@@ -404,10 +404,11 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				// A magic-link login whose only second factor arrives by email
 				// is two factors on one channel, so the policy refuses it.
 				method := NewMockMFAMethodLookup(gomock.NewController(t))
+				method.EXPECT().Name().Return("email-code").AnyTimes()
 				method.EXPECT().Channel().Return(factor.Email).AnyTimes()
 				method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-				p, err := policy.NewMFAPolicy(method,
+				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{method},
 					policy.WithMFAPolicyLogger(log),
 					policy.WithMFAPolicyLogInterval(time.Hour))
 				require.NoError(t, err)
@@ -591,10 +592,11 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 	// channel, so the policy refuses it. EnableMFA below is what enforces the
 	// challenge this policy raises, so no separate gate is needed.
 	method := NewMockMFAMethodLookup(gomock.NewController(t))
+	method.EXPECT().Name().Return("email-code").AnyTimes()
 	method.EXPECT().Channel().Return(factor.Email).AnyTimes()
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-	p, err := policy.NewMFAPolicy(method,
+	p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{method},
 		policy.WithMFAPolicyLogger(log), policy.WithMFAPolicyLogInterval(time.Hour))
 	require.NoError(t, err)
 

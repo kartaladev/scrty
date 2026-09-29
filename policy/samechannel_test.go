@@ -86,7 +86,7 @@ func TestSameChannelEnrolmentModes(t *testing.T) {
 			t.Parallel()
 
 			buf := &bytes.Buffer{}
-			p, err := policy.NewMFAPolicy(mfaMethod(t, factor.Email, true, nil),
+			p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
 				append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(buf))}, tc.opts...)...)
 			require.NoError(t, err)
 

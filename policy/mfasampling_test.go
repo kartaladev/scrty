@@ -28,14 +28,14 @@ func mfaSamplingPair(
 
 	challengeLog, requirementLog = &bytes.Buffer{}, &bytes.Buffer{}
 
-	challenge, err := policy.NewMFAPolicy(mfaMethod(t, factor.Email, true, nil),
+	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
 		append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(challengeLog))},
 			challengeOpts...)...)
 	require.NoError(t, err)
 
 	requirement, err = policy.NewMFARequirementPolicy(
 		mfaRequirementLookup(t, true, true, nil),
-		mfaMethod(t, factor.AuthenticatorApp, true, nil),
+		mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 		append([]policy.MFARequirementOption{
 			policy.WithMFARequirementLogger(mfaLogger(requirementLog)),
 		}, requirementOpts...)...)
@@ -154,7 +154,7 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 			build: func(t *testing.T, buf *bytes.Buffer, clk *clockwork.FakeClock) policy.Policy {
 				t.Helper()
 
-				p, err := policy.NewMFAPolicy(mfaMethod(t, factor.Email, true, nil),
+				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
 					policy.WithMFAPolicyLogger(mfaLogger(buf)),
 					policy.WithMFAPolicyClock(clk))
 				require.NoError(t, err)
@@ -176,7 +176,7 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 
 				p, err := policy.NewMFARequirementPolicy(
 					mfaRequirementLookup(t, true, true, nil),
-					mfaMethod(t, factor.AuthenticatorApp, true, nil),
+					mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 					policy.WithMFARequirementLogger(mfaLogger(buf)),
 					policy.WithMFARequirementClock(clk))
 				require.NoError(t, err)

@@ -37,7 +37,7 @@ func TestEngineCanChallenge(t *testing.T) {
 	secondFactor := func(t *testing.T) policy.Policy {
 		t.Helper()
 
-		p, err := policy.NewMFAPolicy(NewMockMFAMethodLookup(gomock.NewController(t)))
+		p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleMFAMethod(t, "totp")})
 		require.NoError(t, err)
 
 		return p
@@ -49,7 +49,7 @@ func TestEngineCanChallenge(t *testing.T) {
 		ctrl := gomock.NewController(t)
 
 		p, err := policy.NewMFARequirementPolicy(
-			NewMockMFARequirementLookup(ctrl), NewMockMFAMethodLookup(ctrl))
+			NewMockMFARequirementLookup(ctrl), mfaMethods(idleMFAMethod(t, "totp")))
 		require.NoError(t, err)
 
 		return p
@@ -207,7 +207,7 @@ func TestChallengesDoesNotAliasPolicyState(t *testing.T) {
 			policy: func(t *testing.T) policy.Challenger {
 				t.Helper()
 
-				p, err := policy.NewMFAPolicy(NewMockMFAMethodLookup(gomock.NewController(t)))
+				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleMFAMethod(t, "totp")})
 				require.NoError(t, err)
 
 				c, ok := p.(policy.Challenger)
@@ -224,7 +224,7 @@ func TestChallengesDoesNotAliasPolicyState(t *testing.T) {
 				ctrl := gomock.NewController(t)
 
 				p, err := policy.NewMFARequirementPolicy(
-					NewMockMFARequirementLookup(ctrl), NewMockMFAMethodLookup(ctrl))
+					NewMockMFARequirementLookup(ctrl), mfaMethods(idleMFAMethod(t, "totp")))
 				require.NoError(t, err)
 
 				c, ok := p.(policy.Challenger)

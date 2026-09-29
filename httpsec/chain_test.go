@@ -294,10 +294,8 @@ func TestUnenforcedChallenges(t *testing.T) {
 	enrolmentPath := func(t *testing.T) policy.Policy {
 		t.Helper()
 
-		ctrl := gomock.NewController(t)
-
 		p, err := policy.NewMFARequirementPolicy(
-			everyoneRequired{}, NewMockMFAMethodLookup(ctrl),
+			everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{idleLookup(t)}},
 			policy.WithMFAEnrolmentPath())
 		require.NoError(t, err)
 
@@ -356,7 +354,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 			policies: func(t *testing.T) []policy.Policy {
 				t.Helper()
 
-				p, err := policy.NewMFAPolicy(NewMockMFAMethodLookup(gomock.NewController(t)))
+				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleLookup(t)})
 				require.NoError(t, err)
 
 				return []policy.Policy{p}
@@ -405,7 +403,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 			policies: func(t *testing.T) []policy.Policy {
 				t.Helper()
 
-				p, err := policy.NewMFAPolicy(NewMockMFAMethodLookup(gomock.NewController(t)))
+				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleLookup(t)})
 				require.NoError(t, err)
 
 				return []policy.Policy{p}
