@@ -58,7 +58,7 @@ The split follows the call graph (`gopls references` on every clock option, 2026
 | 2 (parallel) | Lane B | 2.1–2.3 | `token/**`, `ratelimit/**`, `pkg/id/**`, `password/**`, `policy/**`, `apikey/**` | Sonnet | Mechanical option type change, nil rows |
 | 2 (parallel) | Lane C | 3.1–3.4 | `onetime/**`, `magiclink/**` (tests only), `oidc/**`, `session/**`, `mfa/**`, `httpsec/*_test.go` | Opus | Four packages plus a loop under `-race`, and shared test files |
 | 2 (parallel) | Lane S | 4.1–4.2 | `signingkey/**` | Opus | Loop ordering, stop/restart races, goroutine lifetime |
-| 2 (parallel) | Lane F | 5.1 | `seal/**`, `sqlstore/**`, `pgx/**` (not `pgx/go.mod`), `gorm/**` (not `gorm/go.mod`) | Sonnet | Option plumbing across three drivers |
+| 2 (parallel) | Lane F | 5.1 | `seal/**`, `sqlstore/**`, `pgx/**`, `gorm/**` (their `go.mod`/`go.sum` only for the test-only clockwork requirement) | Sonnet | Option plumbing across three drivers |
 | 3 | Suites | 5.2 | `test/**` | Sonnet | Mechanical factory change across one module |
 | 4 | Main session | 6.1–6.3 | `openspec/**`, verification | — | — |
 
@@ -336,6 +336,7 @@ the option takes `clk clock.Clock`, the field is `clock clock.Clock` defaulting 
 **Files:** Modify `onetime/options.go:80`, `onetime/manager.go:42,103`, `onetime/memory.go:26,41-47` (`WithMemoryStoreClock(clk clock.Clock)` keeps `clock.System()` when `nilcheck.IsNil(clk)`; godoc updated), `onetime/check_test.go`, `onetime/consume_test.go`, `onetime/failure_records_test.go`, `onetime/manager_test.go`, `onetime/memory_test.go`, `magiclink/helpers_test.go`.
 
 - [ ] **Step 1:** Tests.
+  - `time-source` "System clock by default": a store and manager built with no clock option issue a token with a 5-minute lifetime whose expiry lies 5 minutes after the system time read before and after issue.
   - `time-source` "Consumer time source": a manager and memory store sharing `clockwork.NewFakeClockAt(2030-01-01T12:00Z)` issue a token with a 5-minute lifetime; its expiry is 12:05; after `Advance(6*time.Minute)` redemption is refused as expired.
   - "Absent source on a constructor that cannot fail": `NewMemoryStore(WithMemoryStoreClock((*nilClock)(nil)))` stores a token whose expiry is computed from system time, and does not panic.
   - The manager's nil table (nil and typed nil refused).
@@ -354,7 +355,7 @@ the option takes `clk clock.Clock`, the field is `clock clock.Clock` defaulting 
 
 ### Task 3.3: `session` manager and `mfa`
 
-**Files:** Modify `session/options.go:71-76` (`WithClock(clk clock.Clock)`), `session/manager.go:42,157`, `session/helpers_test.go:29-50` (delete `testClock`; callers use `clockwork.NewFakeClockAt`; `Set(at)` becomes `Advance(at.Sub(clk.Now()))`), `session/enrolment_test.go`, `session/manager_test.go`, `session/returned_errors_test.go`, `mfa/totpoptions.go:49`, `mfa/totp.go:43,111`, `mfa/reset.go:64,106-115` (`WithResetClock(clk clock.Clock)` keeps `clock.System()` when `nilcheck.IsNil(clk)`), `mfa/throttle.go:64` (its internal field becomes `clock.Clock`, fed from TOTP's), and mfa's tests (`enroller_test.go`, `failclosed_test.go`, `memory_test.go`, `returned_errors_test.go`, `throttle_test.go`, `totp_test.go`, `totpenrolment_test.go`, `totpoptions_test.go`, `totpreplay_test.go`, `reset_test.go`), plus `httpsec/bearer_test.go`, `httpsec/logincomplete_test.go`, `httpsec/mfaenrollifetime_test.go`, `httpsec/mfaenrolupgrade_test.go`, `httpsec/authmethods_integration_test.go`, `httpsec/mfaenrolconfirm_test.go`, `httpsec/mfaenrole2e_test.go`, `httpsec/mfaenrolharness_test.go`, `httpsec/mfaenrolleak_test.go`, `httpsec/mfaenrollogs_test.go`, `httpsec/mfaenroloptions_test.go`.
+**Files:** Modify `session/options.go:71-76` (`WithClock(clk clock.Clock)`), `session/manager.go:42,157`, `session/helpers_test.go:29-50` (delete `testClock`; callers use `clockwork.NewFakeClockAt`; `Set(at)` becomes `Advance(at.Sub(clk.Now()))`), `session/enrolment_test.go`, `session/manager_test.go`, `session/returned_errors_test.go`, `mfa/totpoptions.go:49`, `mfa/totp.go:43,111`, `mfa/reset.go:64,106-115` (`WithResetClock(clk clock.Clock)` keeps `clock.System()` when `nilcheck.IsNil(clk)`), `mfa/throttle.go:64` (its internal field becomes `clock.Clock` defaulting to `clock.System()`; the throttle has no clock option and is built in `httpsec/mfaverify.go`, so it stays with the `httpsec` non-goal), and mfa's tests (`enroller_test.go`, `failclosed_test.go`, `memory_test.go`, `returned_errors_test.go`, `throttle_test.go`, `totp_test.go`, `totpenrolment_test.go`, `totpoptions_test.go`, `totpreplay_test.go`, `reset_test.go`), plus `httpsec/bearer_test.go`, `httpsec/logincomplete_test.go`, `httpsec/mfaenrollifetime_test.go`, `httpsec/mfaenrolupgrade_test.go`, `httpsec/authmethods_integration_test.go`, `httpsec/mfaenrolconfirm_test.go`, `httpsec/mfaenrole2e_test.go`, `httpsec/mfaenrolharness_test.go`, `httpsec/mfaenrolleak_test.go`, `httpsec/mfaenrollogs_test.go`, `httpsec/mfaenroloptions_test.go`.
 
 - [ ] **Step 1:** Tests.
   - `time-source` "Nil time source": `session.NewManager(session.WithClock(nil))` returns a configuration error, and a typed-nil row does too.

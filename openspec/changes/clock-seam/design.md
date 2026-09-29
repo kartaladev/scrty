@@ -40,8 +40,8 @@ See proposal.md for why. The current state that shapes the approach:
   tests that need all of package `time` faked. Both tools remain, and D7 says when to use which.
 - Changing any interval, lifetime, TTL, leeway or default duration.
 - The `sweep` module's clock, which the `operations` change owns (D6).
-- A time-source option for the `httpsec` interceptors. They read `time.Now` for policy input and
-  refusal-log sampling, with no option today. Adding one is a new consumer-facing seam, not a change
+- A time-source option for the `httpsec` interceptors, and for the MFA verify throttle they build.
+  They read `time.Now` for policy input and refusal-log sampling, with no option today. Adding one is a new consumer-facing seam, not a change
   of an existing seam's shape, so it is left to a later change. Their tests keep using synctest (D7).
 
 ## Decisions
