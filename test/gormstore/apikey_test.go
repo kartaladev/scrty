@@ -3,7 +3,6 @@ package gormstore_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/apikey"
 	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
@@ -65,7 +65,7 @@ func TestNewAPIKeyStore(t *testing.T) {
 		{
 			name:   "a clock does not apply to keys",
 			db:     db,
-			opts:   []gormstore.Option{gormstore.WithClock(time.Now)},
+			opts:   []gormstore.Option{gormstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 		{

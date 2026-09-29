@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -59,7 +60,7 @@ func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingke
 	cases := []suiteCase[signingkey.KeyStore]{
 		{
 			name: "an empty store loads no keys and no error",
-			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
 				got, err := s.LoadAll(ctx)
 				require.NoError(t, err)
 				assert.Empty(t, got)
@@ -67,7 +68,7 @@ func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingke
 		},
 		{
 			name: "a stored key loads unchanged",
-			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
 				rec := signingKeyRecord("kid-a", suiteStart)
 				require.NoError(t, s.Store(ctx, rec))
 
@@ -76,7 +77,7 @@ func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingke
 		},
 		{
 			name: "creation times keep at least microsecond precision",
-			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Store(ctx, signingKeyRecord("kid-a", preciseStart)))
 
 				got, err := s.LoadAll(ctx)
@@ -87,7 +88,7 @@ func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingke
 		},
 		{
 			name: "storing a key id again replaces the record, leaving one",
-			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
 				first := signingKeyRecord("kid-a", suiteStart)
 				other := signingKeyRecord("kid-b", suiteStart.Add(time.Minute))
 				require.NoError(t, s.Store(ctx, first))
@@ -104,7 +105,7 @@ func RunSigningKeyStoreSuite(t *testing.T, newStore func(t *testing.T) signingke
 		},
 		{
 			name: "keys load oldest first by creation time, whatever order they were stored in",
-			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s signingkey.KeyStore, _ *clockwork.FakeClock) {
 				oldest := signingKeyRecord("kid-z", suiteStart)
 				middle := signingKeyRecord("kid-a", suiteStart.Add(time.Hour))
 				newest := signingKeyRecord("kid-m", suiteStart.Add(2*time.Hour))

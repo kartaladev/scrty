@@ -3,7 +3,6 @@ package pgxstore_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -92,7 +92,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 			name:   "a clock does not apply to signing keys",
 			pool:   pool,
 			cipher: c,
-			opts:   []pgxstore.Option{pgxstore.WithClock(time.Now)},
+			opts:   []pgxstore.Option{pgxstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 	}

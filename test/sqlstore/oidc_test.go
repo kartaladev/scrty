@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
@@ -68,8 +69,8 @@ func TestFlowStore(t *testing.T) {
 	db := migratedDB(t).DB
 
 	t.Run("sqlstore", func(t *testing.T) {
-		oidctest.RunFlowStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.FlowStore {
-			return newFlowStore(t, emptied(t, db, "oidc_flows"), sqlstore.WithClock(now))
+		oidctest.RunFlowStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.FlowStore {
+			return newFlowStore(t, emptied(t, db, "oidc_flows"), sqlstore.WithClock(clk))
 		})
 	})
 }
@@ -80,7 +81,7 @@ func TestHandoffStore(t *testing.T) {
 	db := migratedDB(t).DB
 
 	t.Run("sqlstore", func(t *testing.T) {
-		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ func() time.Time) oidc.HandoffStore {
+		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ clock.Clock) oidc.HandoffStore {
 			return newHandoffStore(t, emptied(t, db, "oidc_handoffs"))
 		})
 	})
@@ -129,7 +130,7 @@ func TestNewOIDCStores(t *testing.T) {
 	refused := refusedConfig[any]
 	accepted := storefix.AcceptedConfig[any]
 	generator := sqlstore.WithIDGenerator(id.NewV7Generator())
-	clock := sqlstore.WithClock(time.Now)
+	clock := sqlstore.WithClock(clock.System())
 
 	cases := []testCase{
 		{name: "links: a handle is all it needs", build: links, db: db, assert: accepted},
@@ -190,7 +191,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 	clockedFlows := func(t *testing.T, db *sql.DB) (*sqlstore.FlowStore, *storefix.Clock) {
 		t.Helper()
 		clock := storefix.NewClock(storefix.OIDCStart)
-		return newFlowStore(t, db, sqlstore.WithClock(clock.Now)), clock
+		return newFlowStore(t, db, sqlstore.WithClock(clock)), clock
 	}
 	// countLinks counts the links at issuer, out of band.
 	countLinks := func(ctx context.Context, t *testing.T, db *sql.DB, issuer string) int {

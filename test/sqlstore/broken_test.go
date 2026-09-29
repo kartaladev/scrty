@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
@@ -34,8 +35,8 @@ var brokenVariants = []storefix.BrokenVariant{
 			db := migratedDB(t).DB
 			c := storefix.TestCipher(t)
 			t.Run("sqlstore", func(t *testing.T) {
-				storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
-					return storefix.SaveUpsertsStore{Store: newSessionStore(t, emptied(t, db, "sessions"), c, sqlstore.WithClock(now))}
+				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+					return storefix.SaveUpsertsStore{Store: newSessionStore(t, emptied(t, db, "sessions"), c, sqlstore.WithClock(clk))}
 				})
 			})
 		},

@@ -78,7 +78,7 @@ func TestStores_LogNothing(t *testing.T) {
 	operations := func(t *testing.T, ctx context.Context, db *gormdb.DB, opts ...gormstore.Option) {
 		t.Helper()
 
-		sessions := newSessionStore(t, db, c, append(opts, gormstore.WithClock(func() time.Time { return at }))...)
+		sessions := newSessionStore(t, db, c, append(opts, gormstore.WithClock(storefix.NewClock(at)))...)
 		tokens := newOneTimeStore(t, db, opts...)
 		attempts := newAttemptStore(t, db, opts...)
 
@@ -149,7 +149,7 @@ func TestStores_LogNothing(t *testing.T) {
 		_, _ = links.FindByExternal(ctx, l.Provider, l.Issuer, l.Subject)
 		_, _ = links.DeleteByUser(ctx, logCanary)
 
-		flows := newFlowStore(t, db, append(opts, gormstore.WithClock(func() time.Time { return storefix.OIDCStart }))...)
+		flows := newFlowStore(t, db, append(opts, gormstore.WithClock(storefix.NewClock(storefix.OIDCStart)))...)
 		f := storefix.Flow(logCanary, logCanary+"-"+storefix.NewID(t).String())
 		h, _ := flows.Begin(ctx, f)
 		_, _ = flows.Complete(ctx, h, logCanary, f.State)

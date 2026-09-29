@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
@@ -40,8 +41,8 @@ func TestOneTimeStore(t *testing.T) {
 	db := migratedDB(t).DB
 
 	t.Run("sqlstore", func(t *testing.T) {
-		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, now func() time.Time) onetime.Store {
-			return newOneTimeStore(t, emptied(t, db, "one_time_tokens"), sqlstore.WithClock(now))
+		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
+			return newOneTimeStore(t, emptied(t, db, "one_time_tokens"), sqlstore.WithClock(clk))
 		}, storetest.RequireReaper())
 	})
 }
@@ -163,7 +164,7 @@ func TestNewOneTimeStore(t *testing.T) {
 
 	cases := []testCase{
 		{name: "a handle is all it needs", db: db, assert: accepted},
-		{name: "it honours a clock, for its reaper", db: db, opts: []sqlstore.Option{sqlstore.WithClock(time.Now)}, assert: accepted},
+		{name: "it honours a clock, for its reaper", db: db, opts: []sqlstore.Option{sqlstore.WithClock(clock.System())}, assert: accepted},
 		{name: "a missing handle is refused", assert: refused("the database handle is nil")},
 		{
 			name:   "an id generator does not apply to tokens, which carry their own",

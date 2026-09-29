@@ -2,11 +2,11 @@ package storetest_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
@@ -19,9 +19,9 @@ import (
 func TestMemorySessionStore(t *testing.T) {
 	t.Parallel()
 
-	storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
+	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
-		return session.NewMemoryStore(session.WithMemoryStoreClock(now))
+		return session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))
 	})
 }
 
@@ -29,9 +29,9 @@ func TestMemorySessionStore(t *testing.T) {
 func TestMemoryOneTimeStore(t *testing.T) {
 	t.Parallel()
 
-	storetest.RunOneTimeStoreSuite(t, func(t *testing.T, now func() time.Time) onetime.Store {
+	storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
 		t.Helper()
-		return onetime.NewMemoryStore(onetime.WithMemoryStoreClock(now))
+		return onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 	}, storetest.RequireReaper())
 }
 

@@ -4,12 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -65,7 +65,7 @@ func TestNewAPIKeyStore(t *testing.T) {
 		{
 			name:   "a clock does not apply to keys",
 			db:     db,
-			opts:   []sqlstore.Option{sqlstore.WithClock(time.Now)},
+			opts:   []sqlstore.Option{sqlstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 		{

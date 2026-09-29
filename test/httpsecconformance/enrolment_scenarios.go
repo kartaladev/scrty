@@ -115,7 +115,7 @@ func newEnrolmentFixture(t *testing.T, e *Effects) *EnrolmentFixture {
 
 	fx := &EnrolmentFixture{Outbox: &Outbox{}, now: time.Now().Truncate(time.Second)}
 
-	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example", mfa.WithClock(fx.Now))
+	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example", mfa.WithClock(fx))
 	require.NoError(t, err)
 
 	fx.TOTP = method

@@ -14,6 +14,7 @@ import (
 	gormdb "gorm.io/gorm"
 
 	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
@@ -38,8 +39,8 @@ func TestSessionStore(t *testing.T) {
 	c := storefix.TestCipher(t)
 
 	t.Run("gorm", func(t *testing.T) {
-		storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
-			return newSessionStore(t, emptied(t, d, "sessions"), c, gormstore.WithClock(now))
+		storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+			return newSessionStore(t, emptied(t, d, "sessions"), c, gormstore.WithClock(clk))
 		})
 	})
 }
@@ -67,7 +68,7 @@ func TestNewSessionStore(t *testing.T) {
 			name:   "it honours a clock and an id generator",
 			db:     db,
 			cipher: c,
-			opts:   []gormstore.Option{gormstore.WithClock(time.Now), gormstore.WithIDGenerator(id.NewV7Generator())},
+			opts:   []gormstore.Option{gormstore.WithClock(clock.System()), gormstore.WithIDGenerator(id.NewV7Generator())},
 			assert: accepted,
 		},
 		{name: "a missing cipher is refused", db: db, assert: refused("the cipher is nil")},
@@ -137,7 +138,7 @@ func TestSessionStore_Durable(t *testing.T) {
 	db, raw := d.db, d.conn.DB
 	keys := storefix.NewKeys(t)
 	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
-	at := func(clock time.Time) gormstore.Option { return gormstore.WithClock(func() time.Time { return clock }) }
+	at := func(clock time.Time) gormstore.Option { return gormstore.WithClock(storefix.NewClock(clock)) }
 
 	// store seals under both keys, k2 active, and reads the clock at now.
 	store := newSessionStore(t, db, keys.Rotated(t), at(now))

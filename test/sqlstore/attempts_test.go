@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/sqlstore"
@@ -214,7 +215,7 @@ func TestNewAttemptStore(t *testing.T) {
 		{
 			name:   "a clock does not apply to attempts, whose instants come from the caller",
 			db:     db,
-			opts:   []sqlstore.Option{sqlstore.WithClock(time.Now)},
+			opts:   []sqlstore.Option{sqlstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 		{

@@ -5,11 +5,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -176,17 +178,17 @@ const (
 // match nothing on an empty issuer or provider session identifier.
 //
 // newStore is called once per case and must return an empty store that reads
-// time from now. The suite moves now itself and never waits.
+// time from clk. The suite advances clk itself and never waits.
 //
 // A consumer implementing session.Store over their own database calls this
 // from a test in their own module:
 //
 //	func TestMySessionStoreConformance(t *testing.T) {
-//	    storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
-//	        return newMySessionStore(t, now)
+//	    storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+//	        return newMySessionStore(t, clk)
 //	    })
 //	}
-func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time.Time) session.Store) {
+func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Clock) session.Store) {
 	t.Helper()
 
 	type sessionCase = suiteCase[session.Store]
@@ -194,7 +196,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 	dataCase := func(name string, data map[string]string) sessionCase {
 		return sessionCase{
 			name: name,
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := sessionRecord("sess-a", "u-1")
 				want.Data = data
 				require.NoError(t, s.Create(ctx, want))
@@ -211,7 +213,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 	mfaSaveCase := func(name string, state session.MFAState, at time.Time) sessionCase {
 		return sessionCase{
 			name: name,
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, sessionRecord("sess-a", "u-1")))
 
 				saved := sessionRecord("sess-a", "u-1")
@@ -245,7 +247,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 	textCase := func(write sessionTextWrite, name, canary string, with func(*session.Session)) sessionCase {
 		return sessionCase{
 			name: name,
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				var clean *session.Session
 				if write == sessionTextSave {
 					clean = sessionRecord("sess-a", "u-1")
@@ -290,7 +292,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		dataCase("a session created with an empty data map loads with an empty one", map[string]string{}),
 		{
 			name: "a federated session loads with its provider fields unchanged",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)
 				require.NoError(t, s.Create(ctx, want))
 
@@ -299,7 +301,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "a user reference round-trips byte for byte and is matched exactly",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := sessionRecord("sess-a", "Alice@Example.COM ")
 				require.NoError(t, s.Create(ctx, want))
 
@@ -327,7 +329,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 			"canary-8e93", func(sess *session.Session) { sess.UserID = "u\x00canary-8e93" }),
 		{
 			name: "a duplicate create errors and leaves the original unchanged",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				original := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, original))
 
@@ -343,7 +345,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 			// is changed here: a store updating a partial column list keeps
 			// the ones it left out, and loads them back.
 			name: "a saved session loads with every field saved, its user and provider included",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)))
 
 				saved := sessionRecord("sess-a", "u-2")
@@ -373,7 +375,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 			// generation, as a second begin in the session moves them: both
 			// writes must carry the three fields.
 			name: "Enrolment-only session round trip",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				created := enrolmentSession("sess-a", "u-1", suiteID(1))
 				require.NoError(t, s.Create(ctx, created))
 				assertSessionsLoad(ctx, t, s, created)
@@ -386,7 +388,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "Unmarked session",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				unmarked := sessionRecord("sess-a", "u-1")
 				unmarked.MFA = session.MFAPending
 				unmarked.MFASatisfiedAt = time.Time{}
@@ -407,7 +409,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 			// generation: a save must replace them with the zero values, not
 			// read the zero values as "not given".
 			name: "Marker cleared on upgrade",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, enrolmentSession("sess-a", "u-1", suiteID(1))))
 
 				upgraded := sessionRecord("sess-a", "u-1")
@@ -422,7 +424,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 			// "not given" keeps a federated session's provider after it is
 			// saved as a password one.
 			name: "a save that clears the data and provider fields loads them cleared",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)))
 
 				cleared := federatedSession("sess-a", "u-1", "", "")
@@ -436,7 +438,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "session times keep at least microsecond precision",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := sessionRecord("sess-a", "u-1")
 				want.CreatedAt = preciseStart
 				want.LastAccessedAt = preciseStart.Add(time.Minute)
@@ -456,7 +458,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "a created, saved or loaded session is the caller's own copy",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				created := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, created))
 				created.Data["tenant"] = "written after create"
@@ -475,7 +477,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "saving a deleted session is not found and does not bring it back",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				sess := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, sess))
 				require.NoError(t, s.Delete(ctx, "sess-a"))
@@ -487,14 +489,14 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "saving a session never created is not found",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				require.ErrorIs(t, s.Save(ctx, sessionRecord("sess-a", "u-1")), session.ErrSessionNotFound)
 				assertSessionsGone(ctx, t, s, "sess-a")
 			},
 		},
 		{
 			name: "loading an unknown session is not found",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Create(ctx, sessionRecord("sess-a", "u-1")))
 
 				assertSessionsGone(ctx, t, s, "sess-missing")
@@ -502,7 +504,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "deleting removes only that session, and deleting an absent one is not an error",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				keep := sessionRecord("sess-b", "u-1")
 				createSessions(ctx, t, s, sessionRecord("sess-a", "u-1"), keep)
 
@@ -516,37 +518,37 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "a session loads before its idle deadline and is expired at it",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
 				sess := sessionRecord("sess-a", "u-1")
 				require.NoError(t, s.Create(ctx, sess))
 
-				clock.Set(sess.IdleExpiresAt.Add(-time.Second))
+				clock.Advance((sess.IdleExpiresAt.Add(-time.Second)).Sub(clock.Now()))
 				assertSessionsLoad(ctx, t, s, sess)
 
-				clock.Set(sess.IdleExpiresAt)
+				clock.Advance((sess.IdleExpiresAt).Sub(clock.Now()))
 				_, err := s.Load(ctx, "sess-a")
 				require.ErrorIs(t, err, session.ErrSessionExpired, "the idle deadline is judged by the store's clock")
 			},
 		},
 		{
 			name: "a session is expired at its absolute deadline even before its idle one",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
 				sess := sessionRecord("sess-a", "u-1")
 				sess.IdleExpiresAt = suiteStart.Add(2 * time.Hour)
 				sess.AbsoluteExpiresAt = suiteStart.Add(time.Hour)
 				require.NoError(t, s.Create(ctx, sess))
 
-				clock.Set(sess.AbsoluteExpiresAt.Add(-time.Second))
+				clock.Advance((sess.AbsoluteExpiresAt.Add(-time.Second)).Sub(clock.Now()))
 				assertSessionsLoad(ctx, t, s, sess)
 
-				clock.Set(sess.AbsoluteExpiresAt)
+				clock.Advance((sess.AbsoluteExpiresAt).Sub(clock.Now()))
 				_, err := s.Load(ctx, "sess-a")
 				require.ErrorIs(t, err, session.ErrSessionExpired, "either deadline ends a session")
 			},
 		},
 		{
 			name: "the active count is exactly the user's unexpired sessions",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
 				absoluteExpired := sessionRecord("sess-e", "u-1")
 				absoluteExpired.IdleExpiresAt = suiteStart.Add(2 * time.Hour)
 				absoluteExpired.AbsoluteExpiresAt = suiteStart.Add(10 * time.Minute)
@@ -557,7 +559,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 					sessionRecord("sess-d", "u-2"),
 					absoluteExpired,
 				)
-				clock.Set(suiteStart.Add(10 * time.Minute))
+				clock.Advance((suiteStart.Add(10 * time.Minute)).Sub(clock.Now()))
 
 				for user, want := range map[identity.UserID]int{"u-1": 2, "u-2": 1, "U-1": 0, "u-missing": 0} {
 					n, err := s.CountActiveByUser(ctx, user)
@@ -569,42 +571,42 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "deleting by user removes every session of that user, expired ones included, and no other",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
 				keep := []*session.Session{sessionRecord("sess-d", "u-2"), sessionRecord("sess-e", "U-1")}
 				createSessions(ctx, t, s, sessionRecord("sess-a", "u-1"), sessionRecord("sess-b", "u-1"),
 					idleExpiredSession("sess-c", "u-1"))
 				createSessions(ctx, t, s, keep...)
-				clock.Set(suiteStart.Add(10 * time.Minute))
+				clock.Advance((suiteStart.Add(10 * time.Minute)).Sub(clock.Now()))
 
 				require.NoError(t, s.DeleteByUser(ctx, "u-1"))
 
-				clock.Set(suiteStart)
+				clock.Advance((suiteStart).Sub(clock.Now()))
 				assertSessionsGone(ctx, t, s, "sess-a", "sess-b", "sess-c")
 				assertSessionsLoad(ctx, t, s, keep...)
 			},
 		},
 		{
 			name: "deleting expired sessions removes exactly the expired ones",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
 				absoluteExpired := sessionRecord("sess-b", "u-2")
 				absoluteExpired.IdleExpiresAt = suiteStart.Add(2 * time.Hour)
 				absoluteExpired.AbsoluteExpiresAt = suiteStart.Add(10 * time.Minute)
 				live := sessionRecord("sess-c", "u-1")
 				createSessions(ctx, t, s, idleExpiredSession("sess-a", "u-1"), absoluteExpired, live)
-				clock.Set(suiteStart.Add(10 * time.Minute))
+				clock.Advance((suiteStart.Add(10 * time.Minute)).Sub(clock.Now()))
 
 				n, err := s.DeleteExpired(ctx)
 				require.NoError(t, err)
 				assert.Equal(t, 2, n, "the count is of the sessions removed")
 
-				clock.Set(suiteStart)
+				clock.Advance((suiteStart).Sub(clock.Now()))
 				assertSessionsGone(ctx, t, s, "sess-a", "sess-b")
 				assertSessionsLoad(ctx, t, s, live)
 			},
 		},
 		{
 			name: "deleting by provider session matches nothing on an empty issuer or session identifier",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				sessions := []*session.Session{
 					sessionRecord("sess-password", "u-1"),
 					federatedSession("sess-a-nosid", "u-1", sessionIssuerA, ""),
@@ -622,7 +624,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "deleting by provider session matches the issuer as well as the session identifier",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				fromB := federatedSession("sess-b", "u-2", sessionIssuerB, sessionSID)
 				createSessions(ctx, t, s,
 					federatedSession("sess-a1", "u-1", sessionIssuerA, sessionSID),
@@ -640,7 +642,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 		},
 		{
 			name: "deleting by user and issuer removes only that user's sessions from that issuer",
-			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				keep := []*session.Session{
 					federatedSession("sess-b", "u-1", sessionIssuerB, sessionSID),
 					sessionRecord("sess-password", "u-1"),
@@ -662,6 +664,26 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 
 				assertSessionsGone(ctx, t, s, "sess-a1", "sess-a2")
 				assertSessionsLoad(ctx, t, s, keep...)
+			},
+		},
+		{
+			// This proves newStore built its store on the clk the suite hands
+			// it, and not some clock of its own: a factory that silently
+			// falls back to clock.System() would leave this session loading
+			// forever, since advancing clk would never move its own clock.
+			name: "a session loads before the factory's clock advances past its idle deadline, and is refused after",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				sess.IdleExpiresAt = suiteStart.Add(time.Minute)
+				require.NoError(t, s.Create(ctx, sess))
+
+				assertSessionsLoad(ctx, t, s, sess)
+
+				clk.Advance(2 * time.Minute)
+
+				_, err := s.Load(ctx, "sess-a")
+				require.ErrorIs(t, err, session.ErrSessionExpired,
+					"the store's clock must be the one the suite advances")
 			},
 		},
 	}

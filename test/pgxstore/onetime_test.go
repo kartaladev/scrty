@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/onetime"
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
@@ -40,8 +41,8 @@ func TestOneTimeStore(t *testing.T) {
 	db := migrated(t)
 
 	t.Run("pgx", func(t *testing.T) {
-		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, now func() time.Time) onetime.Store {
-			return newOneTimeStore(t, emptied(t, db, "one_time_tokens"), pgxstore.WithClock(now))
+		storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
+			return newOneTimeStore(t, emptied(t, db, "one_time_tokens"), pgxstore.WithClock(clk))
 		}, storetest.RequireReaper())
 	})
 }
@@ -202,7 +203,7 @@ func TestNewOneTimeStore(t *testing.T) {
 		{
 			name:   "it honours a clock, for its reaper",
 			pool:   pool,
-			opts:   []pgxstore.Option{pgxstore.WithClock(time.Now)},
+			opts:   []pgxstore.Option{pgxstore.WithClock(clock.System())},
 			assert: accepted,
 		},
 		{name: "a missing pool is refused", assert: refused("the pool is nil")},

@@ -2,11 +2,11 @@ package oidctest_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )
 
@@ -15,9 +15,9 @@ import (
 func TestFlowStoreSuiteMemoryConformance(t *testing.T) {
 	t.Parallel()
 
-	oidctest.RunFlowStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.FlowStore {
+	oidctest.RunFlowStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.FlowStore {
 		t.Helper()
-		s, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreClock(now))
+		s, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreClock(clk))
 		require.NoError(t, err)
 		return s
 	})

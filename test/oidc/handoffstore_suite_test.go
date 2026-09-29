@@ -2,9 +2,9 @@ package oidctest_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )
 
@@ -13,7 +13,7 @@ import (
 func TestMemoryHandoffStoreConformance(t *testing.T) {
 	t.Parallel()
 
-	oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ func() time.Time) oidc.HandoffStore {
+	oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ clock.Clock) oidc.HandoffStore {
 		t.Helper()
 		return oidc.NewMemoryHandoffStore()
 	})

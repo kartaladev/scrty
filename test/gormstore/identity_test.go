@@ -13,6 +13,7 @@ import (
 
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -76,7 +77,7 @@ func TestNewIdentityStore(t *testing.T) {
 			name: "it honours a generator, a clock and a resolver",
 			opts: []gormstore.Option{
 				gormstore.WithIDGenerator(id.NewV7Generator()),
-				gormstore.WithClock(time.Now),
+				gormstore.WithClock(clock.System()),
 				gormstore.WithTxResolver(func(context.Context) (*gormdb.DB, bool) { return nil, false }),
 			},
 			assert: accepted,
@@ -255,7 +256,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 				t1 := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
 				t2 := t1.Add(48 * time.Hour)
 
-				s1 := newIdentityStore(t, d.db, gormstore.WithClock(func() time.Time { return t1 }))
+				s1 := newIdentityStore(t, d.db, gormstore.WithClock(storefix.NewClock(t1)))
 				created, err := s1.Provision(ctx, "clocked-user", identity.WithUserRoles("admin"))
 				require.NoError(t, err)
 
@@ -278,7 +279,7 @@ func TestIdentityStore_Scenarios(t *testing.T) {
 				assert.True(t, t1.Equal(c), "grant created_at: want %v, got %v", t1, c)
 				assert.True(t, t1.Equal(u), "grant updated_at: want %v, got %v", t1, u)
 
-				s2 := newIdentityStore(t, d.db, gormstore.WithClock(func() time.Time { return t2 }))
+				s2 := newIdentityStore(t, d.db, gormstore.WithClock(storefix.NewClock(t2)))
 				_, err = s2.Update(ctx, "clocked-user", identity.WithUserName("Renamed"), identity.WithUserRoles("admin", "viewer"))
 				require.NoError(t, err)
 

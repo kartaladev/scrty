@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -103,11 +105,11 @@ func assertHandoffRecord(t *testing.T, want oidc.HandoffRecord, got *oidc.Handof
 // a test in their own module:
 //
 //	func TestMyHandoffStoreConformance(t *testing.T) {
-//	    oidctest.RunHandoffStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.HandoffStore {
-//	        return newMyHandoffStore(t, now)
+//	    oidctest.RunHandoffStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.HandoffStore {
+//	        return newMyHandoffStore(t, clk)
 //	    })
 //	}
-func RunHandoffStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time.Time) oidc.HandoffStore) {
+func RunHandoffStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Clock) oidc.HandoffStore) {
 	t.Helper()
 
 	type testCase struct {
@@ -281,7 +283,7 @@ func RunHandoffStoreSuite(t *testing.T, newStore func(t *testing.T, now func() t
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Helper()
-			tc.assert(t, t.Context(), newStore(t, func() time.Time { return handoffSuiteNow }))
+			tc.assert(t, t.Context(), newStore(t, clockwork.NewFakeClockAt(handoffSuiteNow)))
 		})
 	}
 }

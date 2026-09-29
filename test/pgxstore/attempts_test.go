@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -223,7 +224,7 @@ func TestNewAttemptStore(t *testing.T) {
 		{
 			name:   "a clock does not apply to attempts, whose instants come from the caller",
 			pool:   pool,
-			opts:   []pgxstore.Option{pgxstore.WithClock(time.Now)},
+			opts:   []pgxstore.Option{pgxstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 		{

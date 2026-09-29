@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	identitytest "github.com/kartaladev/scrty/test/identity"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // TestIdentityStore_PasswordHistory runs the password-history part of the
@@ -90,7 +91,7 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			name: "retired_at comes from the store's clock",
 			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 				at := time.Date(2032, 3, 4, 5, 6, 7, 891011000, time.UTC)
-				s := newIdentityStore(t, pool, pgxstore.WithClock(func() time.Time { return at }))
+				s := newIdentityStore(t, pool, pgxstore.WithClock(storefix.NewClock(at)))
 				user := newHistoryUser(t)
 
 				require.NoError(t, s.RetirePassword(ctx, user, h1, 3))

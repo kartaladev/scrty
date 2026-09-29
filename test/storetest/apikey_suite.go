@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -80,7 +81,7 @@ func putAPIKeys(ctx context.Context, t *testing.T, s apikey.Store, keys ...apike
 func apiKeyTextCase(name, canary string, with func(*apikey.Key)) suiteCase[apikey.Store] {
 	return suiteCase[apikey.Store]{
 		name: name,
-		assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+		assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 			want := apiKeyRecord(1, keyPrincipal)
 			with(&want)
 
@@ -116,7 +117,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 	cases := []suiteCase[apikey.Store]{
 		{
 			name: "a stored key is found with every field unchanged",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				expiring := apiKeyRecord(1, keyPrincipal)
 				never := apiKeyRecord(2, keyPrincipal)
 				never.ExpiresAt = nil
@@ -136,7 +137,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 			// Scopes are the consumer's, so a key may carry none. Whether none
 			// loads as nil or as empty is left to the store.
 			name: "a key with nil or empty scopes is stored and found with none",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				nilScopes := apiKeyRecord(1, keyPrincipal)
 				nilScopes.Scopes = nil
 				emptyScopes := apiKeyRecord(2, keyPrincipal)
@@ -155,7 +156,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "an unknown key is not found by get, revoke or touch",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal))
 
 				for _, unknown := range []id.ID{suiteID(0x2ff), id.Nil} {
@@ -170,7 +171,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "revoking records when, and a second revoke keeps the first time",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal), apiKeyRecord(2, keyPrincipal))
 
 				first := suiteStart.Add(time.Hour)
@@ -185,7 +186,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "touching records the latest use and changes nothing else",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal))
 
 				first, latest := suiteStart.Add(time.Hour), suiteStart.Add(2*time.Hour)
@@ -199,7 +200,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "a stored key is not changed by the caller writing to what it put",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				put := apiKeyRecord(1, keyPrincipal)
 				putAPIKeys(ctx, t, s, put)
 				put.Scopes[0] = "written after put"
@@ -210,7 +211,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "a stored key is not changed by the caller writing to what it read",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal))
 
 				got, err := s.Get(ctx, suiteID(0x201))
@@ -223,7 +224,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "a stored key is not changed by the caller writing to what it listed",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal))
 
 				listed, err := s.List(ctx, keyPrincipal)
@@ -244,7 +245,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 			// system clock is still found and listed, so whoever manages the
 			// principal's keys sees it.
 			name: "expired keys are still found and listed",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				expired := apiKeyRecord(1, keyPrincipal)
 				longAgo := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 				expired.CreatedAt, expired.ExpiresAt = longAgo.Add(-time.Hour), &longAgo
@@ -262,7 +263,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "key times keep at least microsecond precision",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				rec := apiKeyRecord(1, keyPrincipal)
 				expires := preciseStart.Add(24 * time.Hour)
 				rec.CreatedAt, rec.ExpiresAt = preciseStart, &expires
@@ -290,7 +291,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "listing returns exactly the principal's keys, revoked ones included",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				mine := []apikey.Key{apiKeyRecord(1, keyPrincipal), apiKeyRecord(2, keyPrincipal)}
 				putAPIKeys(ctx, t, s, mine...)
 				putAPIKeys(ctx, t, s, apiKeyRecord(3, "svc-billing "), apiKeyRecord(4, "Svc-Billing"),
@@ -310,7 +311,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 		},
 		{
 			name: "listing a principal with no keys is empty, without an error",
-			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal))
 
 				got, err := s.List(ctx, "svc-nobody")

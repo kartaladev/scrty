@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/apikey"
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
@@ -66,7 +67,7 @@ func TestNewAPIKeyStore(t *testing.T) {
 		{
 			name:   "a clock does not apply to keys",
 			pool:   pool,
-			opts:   []pgxstore.Option{pgxstore.WithClock(time.Now)},
+			opts:   []pgxstore.Option{pgxstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 		{

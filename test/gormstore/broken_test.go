@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
@@ -37,9 +38,9 @@ var brokenVariants = []storefix.BrokenVariant{
 			d := migratedDB(t)
 			c := storefix.TestCipher(t)
 			t.Run("gorm", func(t *testing.T) {
-				storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
+				storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 					db := emptied(t, d, "sessions")
-					return gormSaveStore{Store: newSessionStore(t, db, c, gormstore.WithClock(now)), db: db}
+					return gormSaveStore{Store: newSessionStore(t, db, c, gormstore.WithClock(clk)), db: db}
 				})
 			})
 		},

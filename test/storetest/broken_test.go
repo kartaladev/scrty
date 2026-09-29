@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -52,9 +53,9 @@ var portableVariants = []brokenVariant{
 	{
 		name: "session-save-inserts",
 		run: func(t *testing.T) {
-			storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
+			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 				t.Helper()
-				return saveInsertsStore{session.NewMemoryStore(session.WithMemoryStoreClock(now))}
+				return saveInsertsStore{session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))}
 			})
 		},
 		failsCase: "saving a deleted session is not found and does not bring it back",
@@ -87,9 +88,9 @@ var portableVariants = []brokenVariant{
 	{
 		name: "session-" + string(sessionCreateRefusesEchoing),
 		run: func(t *testing.T) {
-			storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
+			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 				t.Helper()
-				return newSessionStore(sessionCreateRefusesEchoing, now)
+				return newSessionStore(sessionCreateRefusesEchoing, clk)
 			})
 		},
 		failsCase: "session data holding a NUL byte is refused or round-trips, never altered",
@@ -118,9 +119,9 @@ var portableVariants = []brokenVariant{
 	{
 		name: "onetime-reaper-required-but-missing",
 		run: func(t *testing.T) {
-			storetest.RunOneTimeStoreSuite(t, func(t *testing.T, now func() time.Time) onetime.Store {
+			storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
 				t.Helper()
-				return withoutOneTimeReaper{onetime.NewMemoryStore(onetime.WithMemoryStoreClock(now))}
+				return withoutOneTimeReaper{onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
 			}, storetest.RequireReaper())
 		},
 		failsCase: "a purge with a zero cutoff is refused and deletes nothing",
@@ -205,9 +206,9 @@ func sessionVariant(d sessionDefect, failsCase string) brokenVariant {
 	return brokenVariant{
 		name: "session-" + string(d),
 		run: func(t *testing.T) {
-			storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
+			storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 				t.Helper()
-				return newSessionStore(d, now)
+				return newSessionStore(d, clk)
 			})
 		},
 		failsCase: failsCase,
@@ -267,9 +268,9 @@ func oneTimeVariant(d oneTimeDefect, failsCase string) brokenVariant {
 	return brokenVariant{
 		name: "onetime-" + string(d),
 		run: func(t *testing.T) {
-			storetest.RunOneTimeStoreSuite(t, func(t *testing.T, now func() time.Time) onetime.Store {
+			storetest.RunOneTimeStoreSuite(t, func(t *testing.T, clk clock.Clock) onetime.Store {
 				t.Helper()
-				return newOneTimeStore(d, now)
+				return newOneTimeStore(d, clk)
 			}, storetest.RequireReaper())
 		},
 		failsCase: failsCase,

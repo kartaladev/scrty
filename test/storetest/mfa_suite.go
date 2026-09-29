@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -105,7 +106,7 @@ const (
 //
 //nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
 func assertNewGeneration(
-	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *fakeClock,
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *clockwork.FakeClock,
 ) {
 	begunOn(ctx, t, s, suiteID(1))
 	proveDevice(ctx, t, p, suiteID(1), 1000, emailCode)
@@ -125,7 +126,7 @@ func assertNewGeneration(
 //
 //nolint:revive // context-as-argument: the table-test assert signature puts t before ctx.
 func assertConfirmKeepsStep(
-	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *fakeClock,
+	t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, _ *clockwork.FakeClock,
 ) {
 	begunOn(ctx, t, s, suiteID(1))
 	e := proveDevice(ctx, t, p, suiteID(1), 1001, emailCode)
@@ -168,7 +169,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 	cases := []suiteCase[mfa.EnrolmentStore]{
 		{
 			name: "a user with no enrolment is absent, without an error",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				assertNotEnrolled(ctx, t, s, mfaUser)
 			},
 		},
@@ -176,7 +177,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 			// A begin starts unconfirmed with no step spent whatever it is
 			// handed, so a caller cannot begin an enrolment already confirmed.
 			name: "a begin is stored pending with no step spent, whatever confirmation and step it is given",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				given := pendingEnrolment(mfaUser, "secret-1", 1)
 				given.ConfirmedAt = suiteStart.Add(time.Hour)
 				given.LastStep = 1000
@@ -189,7 +190,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 			// Replacing a pending enrolment is a store's other write path, and
 			// it starts afresh as a first begin does.
 			name: "a second begin while pending replaces it, pending with no step spent whatever it is given",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				require.NoError(t, s.PutPending(ctx, pendingEnrolment(mfaUser, "secret-1", 1)))
 
 				given := pendingEnrolment(mfaUser, "secret-2", 2)
@@ -202,7 +203,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "a begin over a confirmed enrolment is refused and leaves it unchanged",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				confirmed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
 
 				err := s.PutPending(ctx, pendingEnrolment(mfaUser, "attacker-secret", 2))
@@ -213,7 +214,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "confirming records its time and step, and a second confirm is refused",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				confirmed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
 				assertEnrolment(ctx, t, s, confirmed)
 
@@ -226,7 +227,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "confirming with no enrolment is refused and enrols no one",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				confirmed, err := s.Confirm(ctx, mfaUser, 1000, suiteStart)
 				require.NoError(t, err)
 				assert.False(t, confirmed)
@@ -236,7 +237,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "a step is not accepted for a pending or absent enrolment",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				e := pendingEnrolment(mfaUser, "secret-1", 1)
 				require.NoError(t, s.PutPending(ctx, e))
 
@@ -252,7 +253,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "a step is accepted only when it is after the recorded one",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				e := confirmEnrolment(ctx, t, s, mfaUser, 1000)
 
 				// A refused step records nothing: the recorded step after each
@@ -280,7 +281,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "enrolment times keep at least microsecond precision",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				begun := pendingEnrolment(mfaUser, "secret-1", 0)
 				begun.CreatedAt = preciseStart
 				require.NoError(t, s.PutPending(ctx, begun))
@@ -298,7 +299,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "users differing only in case are enrolled separately",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				confirmed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
 				folded := pendingEnrolment("alice@example.com", "secret-of-folded", 2)
 				require.NoError(t, s.PutPending(ctx, folded), "another user's enrolment is not this user's")
@@ -309,7 +310,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		},
 		{
 			name: "deleting removes that user's enrolment, and deleting an absent one is not an error",
-			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
 				confirmEnrolment(ctx, t, s, mfaUser, 1000)
 				other := pendingEnrolment("bob", "secret-of-bob", 1)
 				require.NoError(t, s.PutPending(ctx, other))

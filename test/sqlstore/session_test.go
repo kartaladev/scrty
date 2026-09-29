@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
@@ -36,8 +37,8 @@ func TestSessionStore(t *testing.T) {
 	c := storefix.TestCipher(t)
 
 	t.Run("sqlstore", func(t *testing.T) {
-		storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
-			return newSessionStore(t, emptied(t, db, "sessions"), c, sqlstore.WithClock(now))
+		storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+			return newSessionStore(t, emptied(t, db, "sessions"), c, sqlstore.WithClock(clk))
 		})
 	})
 }
@@ -82,7 +83,7 @@ func TestNewSessionStore(t *testing.T) {
 			name:   "it honours a clock and an id generator",
 			db:     db,
 			cipher: c,
-			opts:   []sqlstore.Option{sqlstore.WithClock(time.Now), sqlstore.WithIDGenerator(id.NewV7Generator())},
+			opts:   []sqlstore.Option{sqlstore.WithClock(clock.System()), sqlstore.WithIDGenerator(id.NewV7Generator())},
 			assert: accepted,
 		},
 		{name: "a missing cipher is refused", db: db, assert: refused("the cipher is nil")},
@@ -118,7 +119,7 @@ func TestSessionStore_Durable(t *testing.T) {
 	db := migratedDB(t).DB
 	keys := storefix.NewKeys(t)
 	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
-	at := func(clock time.Time) sqlstore.Option { return sqlstore.WithClock(func() time.Time { return clock }) }
+	at := func(clock time.Time) sqlstore.Option { return sqlstore.WithClock(storefix.NewClock(clock)) }
 
 	// store seals under both keys, k2 active, and reads the clock at now.
 	store := newSessionStore(t, db, keys.Rotated(t), at(now))

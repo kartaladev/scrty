@@ -4,11 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/sqlstore"
@@ -90,7 +90,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 			name:   "a clock does not apply to signing keys",
 			db:     db,
 			cipher: c,
-			opts:   []sqlstore.Option{sqlstore.WithClock(time.Now)},
+			opts:   []sqlstore.Option{sqlstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 	}

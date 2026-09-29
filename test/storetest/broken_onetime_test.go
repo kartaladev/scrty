@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -48,7 +49,7 @@ const (
 // shipped store never exposes. Without a defect it conforms.
 type oneTimeStore struct {
 	defect oneTimeDefect
-	now    func() time.Time
+	clock  clock.Clock
 
 	mu      sync.Mutex
 	records map[id.ID]onetime.Token
@@ -59,8 +60,8 @@ var (
 	_ onetime.Reaper = (*oneTimeStore)(nil)
 )
 
-func newOneTimeStore(defect oneTimeDefect, now func() time.Time) *oneTimeStore {
-	return &oneTimeStore{defect: defect, now: now, records: make(map[id.ID]onetime.Token)}
+func newOneTimeStore(defect oneTimeDefect, clk clock.Clock) *oneTimeStore {
+	return &oneTimeStore{defect: defect, clock: clk, records: make(map[id.ID]onetime.Token)}
 }
 
 func cloneToken(tok onetime.Token) onetime.Token {
@@ -91,7 +92,7 @@ func (s *oneTimeStore) FindByID(_ context.Context, tokenID id.ID) (*onetime.Toke
 	switch {
 	case !ok,
 		s.defect == oneTimeFindRefusesExpiredBySystem && !time.Now().Before(tok.ExpiresAt),
-		s.defect == oneTimeFindRefusesExpiredByStore && !s.now().Before(tok.ExpiresAt):
+		s.defect == oneTimeFindRefusesExpiredByStore && !s.clock.Now().Before(tok.ExpiresAt):
 		return nil, onetime.ErrTokenNotFound
 	}
 	out := cloneToken(tok)
@@ -110,7 +111,7 @@ func (s *oneTimeStore) Consume(_ context.Context, tokenID id.ID, at time.Time) e
 	case !ok,
 		!tok.ConsumedAt.IsZero() && s.defect != oneTimeConsumeMovesTime,
 		s.defect == oneTimeConsumeRefusesExpiredBySystem && !time.Now().Before(tok.ExpiresAt),
-		s.defect == oneTimeConsumeRefusesExpiredByStore && !s.now().Before(tok.ExpiresAt):
+		s.defect == oneTimeConsumeRefusesExpiredByStore && !s.clock.Now().Before(tok.ExpiresAt):
 		return onetime.ErrTokenNotFound
 	}
 	tok.ConsumedAt = at
@@ -122,7 +123,7 @@ func (s *oneTimeStore) CountRecentBySubject(_ context.Context, purpose, subject 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now()
+	now := s.clock.Now()
 	n := 0
 	for _, tok := range s.records {
 		switch {
@@ -144,7 +145,7 @@ func (s *oneTimeStore) DeleteExpiredBefore(_ context.Context, purpose string, re
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now()
+	now := s.clock.Now()
 	n := 0
 	for key, tok := range s.records {
 		before := tok.IssuedAt.Before(retainSince) || retainSince.IsZero() ||

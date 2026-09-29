@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,7 +29,7 @@ func TestIdentityReuse_GuardOverStore(t *testing.T) {
 	// PostgreSQL keeps microseconds, so the fixed time is one it stores as is.
 	now := time.Date(2033, 4, 5, 6, 7, 8, 123456000, time.UTC)
 	guard, err := password.NewReuseGuard(store, enc, 3,
-		password.WithReuseClock(func() time.Time { return now }))
+		password.WithReuseClock(clockwork.NewFakeClockAt(now)))
 	require.NoError(t, err)
 
 	write, err := password.ProvisionerWrite(store)

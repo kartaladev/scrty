@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -136,7 +137,7 @@ func alterText(defect sessionDefect, stored *session.Session) {
 // exposes. Without a defect it conforms.
 type sessionStore struct {
 	defect sessionDefect
-	now    func() time.Time
+	clock  clock.Clock
 
 	mu      sync.Mutex
 	records map[string]*session.Session
@@ -144,8 +145,8 @@ type sessionStore struct {
 
 var _ session.Store = (*sessionStore)(nil)
 
-func newSessionStore(defect sessionDefect, now func() time.Time) *sessionStore {
-	return &sessionStore{defect: defect, now: now, records: make(map[string]*session.Session)}
+func newSessionStore(defect sessionDefect, clk clock.Clock) *sessionStore {
+	return &sessionStore{defect: defect, clock: clk, records: make(map[string]*session.Session)}
 }
 
 func cloneSession(sess *session.Session) *session.Session {
@@ -269,7 +270,7 @@ func (s *sessionStore) Load(_ context.Context, sessionID string) (*session.Sessi
 	switch {
 	case !exists:
 		return nil, session.ErrSessionNotFound
-	case expiredSession(stored, s.now()):
+	case expiredSession(stored, s.clock.Now()):
 		return nil, session.ErrSessionExpired
 	}
 	out := cloneSession(stored)
@@ -327,7 +328,7 @@ func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now()
+	now := s.clock.Now()
 	n := 0
 	for _, sess := range s.records {
 		expired := expiredSession(sess, now)
@@ -342,7 +343,7 @@ func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID
 }
 
 func (s *sessionStore) DeleteExpired(_ context.Context) (int, error) {
-	now := s.now()
+	now := s.clock.Now()
 	return s.removeWhere(func(sess *session.Session) bool { return expiredSession(sess, now) }), nil
 }
 

@@ -28,6 +28,7 @@ import (
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/seal"
@@ -188,24 +189,24 @@ func (b backends) sessionStore(t *testing.T, name string) session.Store {
 	}
 }
 
-// clockedSessionStore is sessionStore, wired to clock instead of time.Now, so
-// a test can move a durable store's own expiry judgement without waiting for
-// it: each backend's session store judges expiry against its own clock
-// option, separately from whatever session.Manager it is wrapped in.
-func (b backends) clockedSessionStore(t *testing.T, name string, clock func() time.Time) session.Store {
+// clockedSessionStore is sessionStore, wired to clk instead of the system
+// clock, so a test can move a durable store's own expiry judgement without
+// waiting for it: each backend's session store judges expiry against its own
+// clock option, separately from whatever session.Manager it is wrapped in.
+func (b backends) clockedSessionStore(t *testing.T, name string, clk clock.Clock) session.Store {
 	t.Helper()
 
 	switch name {
 	case "sqlstore":
-		s, err := sqlstore.NewSessionStore(b.conn.DB, b.cipher, sqlstore.WithClock(clock))
+		s, err := sqlstore.NewSessionStore(b.conn.DB, b.cipher, sqlstore.WithClock(clk))
 		require.NoError(t, err)
 		return s
 	case "pgx":
-		s, err := pgxstore.NewSessionStore(b.pool, b.cipher, pgxstore.WithClock(clock))
+		s, err := pgxstore.NewSessionStore(b.pool, b.cipher, pgxstore.WithClock(clk))
 		require.NoError(t, err)
 		return s
 	case "gorm":
-		s, err := gormstore.NewSessionStore(b.gdb, b.cipher, gormstore.WithClock(clock))
+		s, err := gormstore.NewSessionStore(b.gdb, b.cipher, gormstore.WithClock(clk))
 		require.NoError(t, err)
 		return s
 	default:
@@ -745,17 +746,17 @@ func testEnrolmentDurableFlow(t *testing.T, b backends) {
 			ctx := t.Context()
 
 			at := time.Now().UTC().Truncate(time.Microsecond)
-			clock := func() time.Time { return at }
+			clk := storefix.NewClock(at)
 
 			sessions, err := session.NewManager(
-				session.WithStore(b.clockedSessionStore(t, name, clock)),
-				session.WithClock(clock),
+				session.WithStore(b.clockedSessionStore(t, name, clk)),
+				session.WithClock(clk),
 				session.WithIdleTimeout(idleTimeout),
 				session.WithAbsoluteTimeout(absoluteTimeout),
 			)
 			require.NoError(t, err)
 
-			method, err := mfa.NewTOTP(b.enrolmentStore(t, name), "Durable "+name, mfa.WithClock(clock))
+			method, err := mfa.NewTOTP(b.enrolmentStore(t, name), "Durable "+name, mfa.WithClock(clk))
 			require.NoError(t, err)
 
 			user := identity.UserID("u-enrolment-flow-" + name)

@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -156,7 +157,7 @@ func TestNewEnrolmentStore(t *testing.T) {
 			name:   "it honours a clock, which decides an emailed code's expiry",
 			pool:   pool,
 			cipher: c,
-			opts:   []pgxstore.Option{pgxstore.WithClock(time.Now)},
+			opts:   []pgxstore.Option{pgxstore.WithClock(clock.System())},
 			assert: accepted,
 		},
 		{
@@ -310,7 +311,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				until := proveUnderK1(ctx, t, db.Pool, keys, user, time.Now().Add(-time.Hour))
 
 				before := until.Add(-time.Minute)
-				s := newEnrolmentStore(t, db.Pool, keys.OnlyK2(t), pgxstore.WithClock(func() time.Time { return before }))
+				s := newEnrolmentStore(t, db.Pool, keys.OnlyK2(t), pgxstore.WithClock(storefix.NewClock(before)))
 				e, ok, err := s.Get(ctx, user)
 				refusedOpen(t, e, ok, err, seal.ErrUnknownKeyID)
 			},

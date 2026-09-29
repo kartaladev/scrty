@@ -3,13 +3,13 @@ package gormstore_test
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	gormdb "gorm.io/gorm"
 
 	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/signingkey"
@@ -94,7 +94,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 			name:   "a clock does not apply to signing keys",
 			db:     db,
 			cipher: c,
-			opts:   []gormstore.Option{gormstore.WithClock(time.Now)},
+			opts:   []gormstore.Option{gormstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 	}

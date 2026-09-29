@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )
 
@@ -49,8 +50,8 @@ var everyHandoffDefect = []handoffDefect{
 // one deliberate defect. It is written on its own rather than wrapped around
 // the shipped store, so the suite, not an inherited correctness, decides.
 type brokenHandoffStore struct {
-	d   handoffDefect
-	now func() time.Time
+	d     handoffDefect
+	clock clock.Clock
 
 	mu      sync.Mutex
 	records map[string]*oidc.HandoffRecord
@@ -62,8 +63,8 @@ type brokenHandoffStore struct {
 
 var _ oidc.HandoffStore = (*brokenHandoffStore)(nil)
 
-func newBrokenHandoffStore(d handoffDefect, now func() time.Time) *brokenHandoffStore {
-	return &brokenHandoffStore{d: d, now: now, records: make(map[string]*oidc.HandoffRecord)}
+func newBrokenHandoffStore(d handoffDefect, clk clock.Clock) *brokenHandoffStore {
+	return &brokenHandoffStore{d: d, clock: clk, records: make(map[string]*oidc.HandoffRecord)}
 }
 
 // meet blocks until want callers have reached it, or until a short deadline
@@ -144,7 +145,7 @@ func (s *brokenHandoffStore) DeleteExpired(_ context.Context, before time.Time) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := s.now()
+	now := s.clock.Now()
 	removed := 0
 	for k, rec := range s.records {
 		expired := !now.Before(rec.ExpiresAt)
@@ -168,9 +169,9 @@ func TestBrokenHandoffStoreConformance(t *testing.T) {
 
 	t.Logf("defect under test: %q", d)
 
-	oidctest.RunHandoffStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.HandoffStore {
+	oidctest.RunHandoffStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.HandoffStore {
 		t.Helper()
-		return newBrokenHandoffStore(handoffDefect(d), now)
+		return newBrokenHandoffStore(handoffDefect(d), clk)
 	})
 }
 

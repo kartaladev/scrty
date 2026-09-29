@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )
 
@@ -67,8 +68,8 @@ var everyFlowDefect = []flowDefect{
 // deliberate defect. It is written on its own rather than wrapped around the
 // shipped store, so the suite, not an inherited correctness, decides.
 type brokenFlowStore struct {
-	d   flowDefect
-	now func() time.Time
+	d     flowDefect
+	clock clock.Clock
 
 	mu    sync.Mutex
 	flows map[string]oidc.Flow
@@ -81,8 +82,8 @@ type brokenFlowStore struct {
 
 var _ oidc.FlowStore = (*brokenFlowStore)(nil)
 
-func newBrokenFlowStore(d flowDefect, now func() time.Time) *brokenFlowStore {
-	return &brokenFlowStore{d: d, now: now, flows: make(map[string]oidc.Flow)}
+func newBrokenFlowStore(d flowDefect, clk clock.Clock) *brokenFlowStore {
+	return &brokenFlowStore{d: d, clock: clk, flows: make(map[string]oidc.Flow)}
 }
 
 // meet blocks until want callers have reached it, or until a short deadline
@@ -114,7 +115,7 @@ func (s *brokenFlowStore) Begin(_ context.Context, f oidc.Flow) (string, error) 
 func (s *brokenFlowStore) accepts(f oidc.Flow, provider, state string) bool {
 	providerOK := f.Provider == provider || s.d == flowDefectIgnoresProvider
 	stateOK := (state != "" && state == f.State) || (state == "" && s.d == flowDefectEmptyStateMatches)
-	liveOK := s.now().Before(f.ExpiresAt) || s.d == flowDefectIgnoresExpiry
+	liveOK := s.clock.Now().Before(f.ExpiresAt) || s.d == flowDefectIgnoresExpiry
 	return providerOK && stateOK && liveOK
 }
 
@@ -184,9 +185,9 @@ func TestBrokenFlowStoreConformance(t *testing.T) {
 
 	t.Logf("defect under test: %q", d)
 
-	oidctest.RunFlowStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.FlowStore {
+	oidctest.RunFlowStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.FlowStore {
 		t.Helper()
-		return newBrokenFlowStore(flowDefect(d), now)
+		return newBrokenFlowStore(flowDefect(d), clk)
 	})
 }
 

@@ -206,7 +206,7 @@ func assertConsumerOwnedIdentity(ctx context.Context, t *testing.T, pool *pgxpoo
 	assert.Equal(t, 1, n)
 
 	clock := storefix.NewClock(storefix.OIDCStart)
-	flows := newFlowStore(t, pool, pgxstore.WithClock(clock.Now))
+	flows := newFlowStore(t, pool, pgxstore.WithClock(clock))
 	h, err := flows.Begin(ctx, storefix.Flow("identity", "identity-state"))
 	require.NoError(t, err)
 	_, err = flows.Complete(ctx, h, "identity", "identity-state")

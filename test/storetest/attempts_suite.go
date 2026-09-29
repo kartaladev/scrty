@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -59,7 +60,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 	cases := []suiteCase[policy.AttemptStore]{
 		{
 			name: "the failure count is exact and excludes a failure recorded at since",
-			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice",
 					since.Add(-time.Second), since, since.Add(time.Microsecond), since.Add(time.Minute))
 
@@ -70,7 +71,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		},
 		{
 			name: "an identifier with no failures counts zero",
-			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", since.Add(time.Minute))
 
 				assertFailureCount(ctx, t, s, "bob", suiteStart, 0)
@@ -78,7 +79,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		},
 		{
 			name: "a reset clears that identifier's failures and no other's",
-			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", since.Add(time.Minute), since.Add(2*time.Minute))
 				recordFailures(ctx, t, s, "bob", since.Add(time.Minute))
 
@@ -90,7 +91,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		},
 		{
 			name: "resetting an identifier with no failures is not an error",
-			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *clockwork.FakeClock) {
 				require.NoError(t, s.Reset(ctx, "nobody"))
 
 				recordFailures(ctx, t, s, "nobody", since.Add(time.Minute))
@@ -99,7 +100,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		},
 		{
 			name: "identifiers differing only in case or spacing are distinct",
-			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", since.Add(time.Minute))
 				recordFailures(ctx, t, s, "Alice", since.Add(time.Minute), since.Add(2*time.Minute))
 				recordFailures(ctx, t, s, "alice ", since.Add(time.Minute), since.Add(2*time.Minute),
@@ -121,7 +122,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 			// one, with errors that do not echo it, or keep it exactly; it may
 			// never alter it into another identifier.
 			name: "a username holding a NUL byte is refused or counted as given, never altered",
-			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s policy.AttemptStore, _ *clockwork.FakeClock) {
 				const canary = "canary-3b8e"
 				username := "alice\x00" + canary
 
@@ -147,7 +148,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		optionalCase(
 			cfg.requireReaper,
 			"a purge with a zero cutoff is refused and deletes nothing",
-			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper policy.AttemptReaper, _ *fakeClock) {
+			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper policy.AttemptReaper, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", suiteStart, since)
 
 				n, err := reaper.DeleteAttemptsBefore(ctx, time.Time{})
@@ -159,7 +160,7 @@ func RunAttemptStoreSuite(t *testing.T, newStore func(t *testing.T) policy.Attem
 		optionalCase(
 			cfg.requireReaper,
 			"a purge removes exactly the failures recorded strictly before the cutoff, for every identifier",
-			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper policy.AttemptReaper, _ *fakeClock) {
+			func(t *testing.T, ctx context.Context, s policy.AttemptStore, reaper policy.AttemptReaper, _ *clockwork.FakeClock) {
 				recordFailures(ctx, t, s, "alice", since.Add(-time.Second), since, since.Add(time.Second))
 				recordFailures(ctx, t, s, "bob", since.Add(-time.Minute))
 

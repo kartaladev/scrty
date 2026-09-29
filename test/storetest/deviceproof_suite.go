@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -131,7 +132,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 	cases := []suiteCase[DeviceProofEnrolmentStore]{
 		{
 			name: "a proof on the current generation records its step, time, code and expiry, with no attempt charged",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
@@ -140,7 +141,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "Device proof on a stale generation",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := pendingOn(mfaUser, "secret-2", 2, g2)
 				require.NoError(t, s.PutPending(ctx, e))
@@ -152,7 +153,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "Device proven twice",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
@@ -165,7 +166,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 			// A begin records no step, so the recorded step is 0: a proof at
 			// 0 is at it, not after it.
 			name: "a proof at a step not later than the recorded one is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				e := begunOn(ctx, t, s, g1)
 
 				refuseProof(ctx, t, s, g1, 0, "a proof at a step not later than the recorded one")
@@ -175,7 +176,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "a proof on a confirmed enrolment is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				e := begunOn(ctx, t, s, g1)
 				at := suiteStart.Add(time.Hour)
 				confirmed, err := s.Confirm(ctx, mfaUser, 1000, at)
@@ -203,7 +204,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 			// seed a proven enrolment with no generation through its
 			// harness's Raw and complete and charge it with id.Nil.
 			name: "nil generation",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				e := begunOn(ctx, t, s, id.Nil)
 
 				refuseProof(ctx, t, s, id.Nil, 1000, "nil generation")
@@ -216,7 +217,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "Completion before device proof",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				e := begunOn(ctx, t, s, g1)
 
 				refuseCompletion(ctx, t, s, g1, "Completion before device proof")
@@ -226,7 +227,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "A newer begin invalidates an earlier proof",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				proveDevice(ctx, t, s, g1, 1000, emailCode)
 				e := pendingOn(mfaUser, "secret-2", 2, g2)
@@ -241,7 +242,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 			// The newer generation is proven here, so only the generation
 			// named keeps the completion from confirming it.
 			name: "a completion naming an earlier generation of a proven enrolment is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				require.NoError(t, s.PutPending(ctx, pendingOn(mfaUser, "secret-1", 1, g2)))
 				e := proveDevice(ctx, t, s, g2, 1000, emailCode)
@@ -253,7 +254,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "a completion on the proven generation confirms it once, clears the code and keeps its expiry",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
@@ -271,7 +272,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		{
 			// "Concurrent charges against one code", one charge after another.
 			name: "charges against one code count up to the cap and are then refused, the code kept",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
@@ -290,7 +291,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "Expired code is not charged",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
@@ -302,7 +303,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		{
 			// A code stops being accepted at its expiry, not after it.
 			name: "Code charged at its expiry instant",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
@@ -313,7 +314,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "a charge with no code issued is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, nil)
 
@@ -329,7 +330,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 			// chargeAt isolates the missing code: only "email_code IS NOT
 			// NULL" can be refusing the charge below.
 			name: "a charge after a proof that issued no code is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				proven, err := s.ProveDevice(ctx, mfaUser, g1, 1000, nil, codeUntil, provenAt)
 				require.NoError(t, err)
@@ -346,7 +347,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "a charge before device proof, or naming another generation, is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				e := begunOn(ctx, t, s, g1)
 				refuseCharge(ctx, t, s, g1, chargeAt, "a charge before device proof")
 				assertEnrolment(ctx, t, s, e)
@@ -358,7 +359,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 		},
 		{
 			name: "a charge after completion is refused",
-			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *fakeClock) {
+			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 				completed, err := s.Complete(ctx, mfaUser, g1, chargeAt)
@@ -384,9 +385,9 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 // withDeviceProof adapts a case written against the two ports apart to a
 // store holding both.
 func withDeviceProof(
-	assert func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, clock *fakeClock),
-) func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, clock *fakeClock) {
-	return func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, clock *fakeClock) {
+	assert func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, p mfa.DeviceProofStore, clock *clockwork.FakeClock),
+) func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, clock *clockwork.FakeClock) {
+	return func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, clock *clockwork.FakeClock) {
 		assert(t, ctx, s, s, clock)
 	}
 }

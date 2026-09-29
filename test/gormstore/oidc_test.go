@@ -14,6 +14,7 @@ import (
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
@@ -68,8 +69,8 @@ func TestFlowStore(t *testing.T) {
 	d := migratedDB(t)
 
 	t.Run("gorm", func(t *testing.T) {
-		oidctest.RunFlowStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.FlowStore {
-			return newFlowStore(t, emptied(t, d, "oidc_flows"), gormstore.WithClock(now))
+		oidctest.RunFlowStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.FlowStore {
+			return newFlowStore(t, emptied(t, d, "oidc_flows"), gormstore.WithClock(clk))
 		})
 	})
 }
@@ -80,7 +81,7 @@ func TestHandoffStore(t *testing.T) {
 	d := migratedDB(t)
 
 	t.Run("gorm", func(t *testing.T) {
-		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ func() time.Time) oidc.HandoffStore {
+		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ clock.Clock) oidc.HandoffStore {
 			return newHandoffStore(t, emptied(t, d, "oidc_handoffs"))
 		})
 	})
@@ -131,7 +132,7 @@ func TestNewOIDCStores(t *testing.T) {
 	refused := refusedConfig[any]
 	accepted := storefix.AcceptedConfig[any]
 	generator := gormstore.WithIDGenerator(id.NewV7Generator())
-	clock := gormstore.WithClock(time.Now)
+	clock := gormstore.WithClock(clock.System())
 
 	cases := []testCase{
 		{name: "links: a handle is all it needs", build: links, db: db, assert: accepted},
@@ -192,7 +193,7 @@ func TestOIDCStores_Durable(t *testing.T) {
 	clockedFlows := func(t *testing.T, db *gormdb.DB) (*gormstore.FlowStore, *storefix.Clock) {
 		t.Helper()
 		clock := storefix.NewClock(storefix.OIDCStart)
-		return newFlowStore(t, db, gormstore.WithClock(clock.Now)), clock
+		return newFlowStore(t, db, gormstore.WithClock(clock)), clock
 	}
 	// countLinks counts the links at issuer, out of band.
 	countLinks := func(ctx context.Context, t *testing.T, db *sql.DB, issuer string) int {

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
@@ -37,8 +38,8 @@ func TestSessionStore(t *testing.T) {
 	c := storefix.TestCipher(t)
 
 	t.Run("pgx", func(t *testing.T) {
-		storetest.RunSessionStoreSuite(t, func(t *testing.T, now func() time.Time) session.Store {
-			return newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(now))
+		storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+			return newSessionStore(t, emptied(t, db, "sessions"), c, pgxstore.WithClock(clk))
 		})
 	})
 }
@@ -66,7 +67,7 @@ func TestNewSessionStore(t *testing.T) {
 			name:   "it honours a clock and an id generator",
 			pool:   pool,
 			cipher: c,
-			opts:   []pgxstore.Option{pgxstore.WithClock(time.Now), pgxstore.WithIDGenerator(id.NewV7Generator())},
+			opts:   []pgxstore.Option{pgxstore.WithClock(clock.System()), pgxstore.WithIDGenerator(id.NewV7Generator())},
 			assert: accepted,
 		},
 		{name: "a missing cipher is refused", pool: pool, assert: refused("the cipher is nil")},
@@ -127,7 +128,7 @@ func TestSessionStore_Durable(t *testing.T) {
 	db, pool := conn.DB, conn.Pool
 	keys := storefix.NewKeys(t)
 	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
-	at := func(clock time.Time) pgxstore.Option { return pgxstore.WithClock(func() time.Time { return clock }) }
+	at := func(clock time.Time) pgxstore.Option { return pgxstore.WithClock(storefix.NewClock(clock)) }
 
 	// store seals under both keys, k2 active, and reads the clock at now.
 	store := newSessionStore(t, pool, keys.Rotated(t), at(now))

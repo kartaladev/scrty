@@ -11,6 +11,7 @@ import (
 	gormdb "gorm.io/gorm"
 
 	gormstore "github.com/kartaladev/scrty/gorm"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -215,7 +216,7 @@ func TestNewAttemptStore(t *testing.T) {
 		{
 			name:   "a clock does not apply to attempts, whose instants come from the caller",
 			db:     db,
-			opts:   []gormstore.Option{gormstore.WithClock(time.Now)},
+			opts:   []gormstore.Option{gormstore.WithClock(clock.System())},
 			assert: refused("WithClock does not apply to this store"),
 		},
 		{

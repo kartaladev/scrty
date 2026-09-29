@@ -7,36 +7,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 )
 
 // flowSuiteStart is the store's clock at the start of every case. It is whole
 // seconds so a durable store that truncates sub-second precision still
 // compares equal.
 var flowSuiteStart = time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
-
-// flowSuiteClock is the clock a case hands the store and advances by hand. It
-// is safe for concurrent use, since the race row reads it from many
-// goroutines.
-type flowSuiteClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *flowSuiteClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *flowSuiteClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
 
 // flowSuiteTTL is how long after flowSuiteStart every suite flow expires.
 const flowSuiteTTL = 10 * time.Minute
@@ -119,16 +101,16 @@ func flowSuiteRefused(ctx context.Context, t *testing.T, s oidc.FlowStore, h, pr
 // test in their own module:
 //
 //	func TestMyFlowStoreConformance(t *testing.T) {
-//	    oidctest.RunFlowStoreSuite(t, func(t *testing.T, now func() time.Time) oidc.FlowStore {
-//	        return newMyFlowStore(t, now)
+//	    oidctest.RunFlowStoreSuite(t, func(t *testing.T, clk clock.Clock) oidc.FlowStore {
+//	        return newMyFlowStore(t, clk)
 //	    })
 //	}
-func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time.Time) oidc.FlowStore) {
+func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Clock) oidc.FlowStore) {
 	t.Helper()
 
 	type testCase struct {
 		name   string
-		assert func(t *testing.T, ctx context.Context, s oidc.FlowStore, clock *flowSuiteClock)
+		assert func(t *testing.T, ctx context.Context, s oidc.FlowStore, clock *clockwork.FakeClock)
 	}
 
 	victim := flowSuiteFlow("a", "state-victim")
@@ -136,13 +118,13 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 	cases := []testCase{
 		{
 			name: "a begun flow completes unchanged",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				flowSuiteCompletes(ctx, t, s, flowSuiteBegin(ctx, t, s, victim), victim)
 			},
 		},
 		{
 			name: "two flows get distinct handles and each completes as its own",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				other := flowSuiteFlow("a", "state-other")
 				h1 := flowSuiteBegin(ctx, t, s, victim)
 				h2 := flowSuiteBegin(ctx, t, s, other)
@@ -156,7 +138,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "an unknown handle is refused, and the flow still completes",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				flowSuiteRefused(ctx, t, s, "unknown-handle", victim.Provider, victim.State)
 				flowSuiteCompletes(ctx, t, s, h, victim)
@@ -164,7 +146,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a wrong provider is refused, and the flow still completes through its own",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				flowSuiteRefused(ctx, t, s, h, "b", victim.State)
 				flowSuiteCompletes(ctx, t, s, h, victim)
@@ -172,7 +154,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a wrong state is refused, and the flow still completes",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				flowSuiteRefused(ctx, t, s, h, victim.Provider, "attacker")
 				flowSuiteCompletes(ctx, t, s, h, victim)
@@ -180,7 +162,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "an empty state is refused, and the flow still completes",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				flowSuiteRefused(ctx, t, s, h, victim.Provider, "")
 				flowSuiteCompletes(ctx, t, s, h, victim)
@@ -188,7 +170,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a flow completes one second before its expiry",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, clock *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, clock *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				clock.Advance(flowSuiteTTL - time.Second)
 				flowSuiteCompletes(ctx, t, s, h, victim)
@@ -196,7 +178,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a flow is refused one second after its expiry",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, clock *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, clock *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				clock.Advance(flowSuiteTTL + time.Second)
 				flowSuiteRefused(ctx, t, s, h, victim.Provider, victim.State)
@@ -204,7 +186,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a completed flow is refused the second time",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 				flowSuiteCompletes(ctx, t, s, h, victim)
 				flowSuiteRefused(ctx, t, s, h, victim.Provider, victim.State)
@@ -212,7 +194,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "eight concurrent completions of one flow: exactly one succeeds",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				h := flowSuiteBegin(ctx, t, s, victim)
 
 				var (
@@ -248,7 +230,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "deleting expired flows removes only those before the cutoff and reports the count",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				early := flowSuiteFlow("a", "state-early")
 				early.ExpiresAt = flowSuiteStart.Add(-time.Minute)
 				hEarly := flowSuiteBegin(ctx, t, s, early)
@@ -264,7 +246,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a flow whose expiry equals the cutoff is not deleted, and still completes",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				atCutoff := flowSuiteFlow("a", "state-at-cutoff")
 				h := flowSuiteBegin(ctx, t, s, atCutoff)
 
@@ -278,7 +260,7 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 		},
 		{
 			name: "a zero cutoff is refused and deletes nothing; every flow still completes",
-			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *flowSuiteClock) {
+			assert: func(t *testing.T, ctx context.Context, s oidc.FlowStore, _ *clockwork.FakeClock) {
 				other := flowSuiteFlow("a", "state-other")
 				h1 := flowSuiteBegin(ctx, t, s, victim)
 				h2 := flowSuiteBegin(ctx, t, s, other)
@@ -296,8 +278,8 @@ func RunFlowStoreSuite(t *testing.T, newStore func(t *testing.T, now func() time
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Helper()
-			clock := &flowSuiteClock{now: flowSuiteStart}
-			tc.assert(t, t.Context(), newStore(t, clock.Now), clock)
+			clk := clockwork.NewFakeClockAt(flowSuiteStart)
+			tc.assert(t, t.Context(), newStore(t, clk), clk)
 		})
 	}
 }

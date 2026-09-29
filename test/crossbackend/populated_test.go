@@ -23,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // populatedFixtureDir and populatedVersionTable name the test-only migration
@@ -116,9 +117,9 @@ func seedPopulated(t *testing.T, db *sql.DB, c seal.Cipher) populatedSeed {
 		flowState:    map[string]string{},
 	}
 
-	clock := func() time.Time { return now }
+	clk := storefix.NewClock(now)
 
-	sessions, err := sqlstore.NewSessionStore(db, c, sqlstore.WithClock(clock))
+	sessions, err := sqlstore.NewSessionStore(db, c, sqlstore.WithClock(clk))
 	require.NoError(t, err)
 	require.NoError(t, sessions.Create(ctx, crossBackendSession(seed.sessionID)))
 
@@ -172,7 +173,7 @@ func seedPopulated(t *testing.T, db *sql.DB, c seal.Cipher) populatedSeed {
 		UserID: "populated-user", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
 	}))
 
-	flows, err := sqlstore.NewFlowStore(db, sqlstore.WithClock(clock))
+	flows, err := sqlstore.NewFlowStore(db, sqlstore.WithClock(clk))
 	require.NoError(t, err)
 	for _, name := range backendNames {
 		state := "populated-state-" + name

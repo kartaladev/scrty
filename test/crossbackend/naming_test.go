@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/sqlstore"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )
@@ -55,7 +56,7 @@ func TestNamingBrokenHandoffStore(t *testing.T) {
 	conn := migratedConn(t)
 
 	t.Run("sqlstore", func(t *testing.T) {
-		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ func() time.Time) oidc.HandoffStore {
+		oidctest.RunHandoffStoreSuite(t, func(t *testing.T, _ clock.Clock) oidc.HandoffStore {
 			t.Helper()
 
 			s, err := sqlstore.NewHandoffStore(conn.DB)

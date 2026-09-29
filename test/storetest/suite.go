@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
@@ -30,36 +31,11 @@ func suiteID(n int) id.ID {
 	return id.MustParse(fmt.Sprintf("01926a4e-0000-7000-8000-%012x", n))
 }
 
-// fakeClock is the store clock a suite hands its factory and advances itself,
-// so no case ever waits for time to pass.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock(at time.Time) *fakeClock { return &fakeClock{now: at} }
-
-// Now is the clock the factory builds the store on.
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return c.now
-}
-
-// Set moves the clock to at.
-func (c *fakeClock) Set(at time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.now = at
-}
-
 // suiteCase is one row of a suite: a name the failure reports, and the check
 // it runs on a store of its own.
 type suiteCase[S any] struct {
 	name   string
-	assert func(t *testing.T, ctx context.Context, s S, clock *fakeClock)
+	assert func(t *testing.T, ctx context.Context, s S, clk *clockwork.FakeClock)
 }
 
 // optionalCase is a case for a capability the contract leaves optional, such
@@ -67,15 +43,15 @@ type suiteCase[S any] struct {
 // one it fails when required, and otherwise logs that the case did not run
 // and passes.
 func optionalCase[S, R any](
-	required bool, name string, assert func(t *testing.T, ctx context.Context, s S, r R, clock *fakeClock),
+	required bool, name string, assert func(t *testing.T, ctx context.Context, s S, r R, clk *clockwork.FakeClock),
 ) suiteCase[S] {
 	return suiteCase[S]{
 		name: name,
-		assert: func(t *testing.T, ctx context.Context, s S, clock *fakeClock) {
+		assert: func(t *testing.T, ctx context.Context, s S, clk *clockwork.FakeClock) {
 			r, ok := any(s).(R)
 			switch {
 			case ok:
-				assert(t, ctx, s, r, clock)
+				assert(t, ctx, s, r, clk)
 			case required:
 				t.Fatalf("store does not implement %v, which RequireReaper demands", reflect.TypeFor[R]())
 			default:
@@ -86,21 +62,22 @@ func optionalCase[S, R any](
 }
 
 // runSuite runs each case in its own subtest, on a store the factory builds
-// for that case alone over a clock starting at suiteStart.
-func runSuite[S any](t *testing.T, cases []suiteCase[S], newStore func(t *testing.T, now func() time.Time) S) {
+// for that case alone over a clock starting at suiteStart. The suite drives
+// time through this clock, never by waiting (store-conformance).
+func runSuite[S any](t *testing.T, cases []suiteCase[S], newStore func(t *testing.T, clk clock.Clock) S) {
 	t.Helper()
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			clock := newFakeClock(suiteStart)
-			tc.assert(t, t.Context(), newStore(t, clock.Now), clock)
+			clk := clockwork.NewFakeClockAt(suiteStart)
+			tc.assert(t, t.Context(), newStore(t, clk), clk)
 		})
 	}
 }
 
 // withoutClock adapts a factory for a store that takes no clock.
-func withoutClock[S any](newStore func(t *testing.T) S) func(t *testing.T, _ func() time.Time) S {
-	return func(t *testing.T, _ func() time.Time) S { return newStore(t) }
+func withoutClock[S any](newStore func(t *testing.T) S) func(t *testing.T, _ clock.Clock) S {
+	return func(t *testing.T, _ clock.Clock) S { return newStore(t) }
 }
 
 // assertTimeEqual compares instants, so a store that returns another location

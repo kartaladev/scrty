@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/sqlstore"
@@ -155,7 +156,7 @@ func TestNewEnrolmentStore(t *testing.T) {
 			name:   "it honours a clock, which decides an emailed code's expiry",
 			db:     db,
 			cipher: c,
-			opts:   []sqlstore.Option{sqlstore.WithClock(time.Now)},
+			opts:   []sqlstore.Option{sqlstore.WithClock(clock.System())},
 			assert: accepted,
 		},
 		{
@@ -325,7 +326,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				until := proveUnderK1(ctx, t, conn.DB, keys, user, time.Now().Add(-time.Hour))
 
 				before := until.Add(-time.Minute)
-				s := newEnrolmentStore(t, conn.DB, keys.OnlyK2(t), sqlstore.WithClock(func() time.Time { return before }))
+				s := newEnrolmentStore(t, conn.DB, keys.OnlyK2(t), sqlstore.WithClock(storefix.NewClock(before)))
 				e, ok, err := s.Get(ctx, user)
 				refusedOpen(t, e, ok, err, seal.ErrUnknownKeyID)
 			},

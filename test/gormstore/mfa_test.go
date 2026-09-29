@@ -14,6 +14,7 @@ import (
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/test/internal/storefix"
@@ -156,7 +157,7 @@ func TestNewEnrolmentStore(t *testing.T) {
 			name:   "it honours a clock, which decides an emailed code's expiry",
 			db:     db,
 			cipher: c,
-			opts:   []gormstore.Option{gormstore.WithClock(time.Now)},
+			opts:   []gormstore.Option{gormstore.WithClock(clock.System())},
 			assert: accepted,
 		},
 		{
@@ -294,7 +295,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 				until := proveUnderK1(ctx, t, d.db, keys, user, time.Now().Add(-time.Hour))
 
 				before := until.Add(-time.Minute)
-				s := newEnrolmentStore(t, d.db, keys.OnlyK2(t), gormstore.WithClock(func() time.Time { return before }))
+				s := newEnrolmentStore(t, d.db, keys.OnlyK2(t), gormstore.WithClock(storefix.NewClock(before)))
 				e, ok, err := s.Get(ctx, user)
 				refusedOpen(t, e, ok, err, seal.ErrUnknownKeyID)
 			},
