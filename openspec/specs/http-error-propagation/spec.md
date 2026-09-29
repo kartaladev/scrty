@@ -56,9 +56,12 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | malformed login, invalid federated logout token | 400 |
 | unknown identity provider named in a federated login or logout path | 404 |
 | request too large | 413 |
+| new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
 | account locked | 423 |
 | too many sessions | 429 |
 | any other error | 500 |
+
+A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.
 
 Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code SHALL be identifiable as the invalid second-factor code refusal.
 
@@ -121,6 +124,14 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Consumer refines the mapping
 - **WHEN** the consumer's error handler maps its own error type to 409 and falls back to the library mapping for everything else
 - **THEN** the consumer's error returns 409 and a library refusal keeps its library status
+
+#### Scenario: Reused password
+- **WHEN** a consumer's password-change function returns the password-reused error, wrapped with extra context
+- **THEN** the mapping returns 422
+
+#### Scenario: Password history unavailable
+- **WHEN** the error is the history-unavailable error wrapping a database connection failure
+- **THEN** the mapping returns 500
 
 ### Requirement: A challenge takes precedence over a sentinel
 When an error is, or wraps, a challenge error, the mapping SHALL use the challenge's status even if the error also wraps a refusal sentinel.
