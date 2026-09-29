@@ -86,10 +86,12 @@ func WithTxResolver(r TxResolver) Option {
 }
 
 // WithIDGenerator replaces the source of the identifiers a store mints for
-// records that carry none of their own. It is honoured by the five minting
-// stores: sessions, signing keys, login attempts, MFA enrolments and OIDC
-// flows. The default is id.NewV7Generator, whose identifiers sort by the
-// moment they were minted.
+// records that carry none of their own. It is honoured by the six minting
+// stores: sessions, signing keys, login attempts, MFA enrolments, OIDC flows
+// and the identity store (users, role grants and password-history entries).
+// The default is id.NewV7Generator, whose identifiers sort by the moment they
+// were minted. The identity store never orders by identifier, so a generator
+// whose identifiers do not sort in creation order changes no order it returns.
 //
 // Given to any other store, whose records arrive with their own identifier, it
 // is a configuration error. A nil generator, including an interface holding a
@@ -117,6 +119,9 @@ func WithIDGenerator(g id.Generator) Option {
 // (mfa.WithClock for TOTP), which sets the code's expiry and charges each
 // attempt: a store clock running ahead reads a live code as none, and a
 // correct code is then charged an attempt and refused.
+//
+// The identity store honours it too, as the source of every created_at,
+// updated_at and retired_at it writes; gorm stamps none of them itself.
 //
 // Given to any other store, which takes its times from the caller, it is a
 // configuration error. A nil clock is a configuration error rather than a

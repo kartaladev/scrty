@@ -114,7 +114,7 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 			act: func(t *testing.T, ctx context.Context, h AmbientHarness, user, _ string) {
 				t.Helper()
 
-				txCtx, _, rollback := begin(t, ctx, h)
+				txCtx, _, rollback := begin(ctx, t, h)
 				role := user + "-role"
 
 				created, err := h.Provision(txCtx, user, identity.WithUserRoles(role))
@@ -138,7 +138,7 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 				require.NoError(t, err, "the lookup must read through the caller's transaction")
 				assert.True(t, required)
 
-				assertNotStored(t, ctx, h, user, role, created.ID,
+				assertNotStored(ctx, t, h, user, role, created.ID,
 					"an uncommitted write was visible outside the caller's transaction")
 
 				require.NoError(t, rollback())
@@ -155,7 +155,7 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 			act: func(t *testing.T, ctx context.Context, h AmbientHarness, user, key string) {
 				t.Helper()
 
-				txCtx, commit, _ := begin(t, ctx, h)
+				txCtx, commit, _ := begin(ctx, t, h)
 				require.NoError(t, h.WriteUnrelated(txCtx, key))
 
 				h.FailGrantWrites()
@@ -184,7 +184,7 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 			act: func(t *testing.T, ctx context.Context, h AmbientHarness, user, _ string) {
 				t.Helper()
 
-				txCtx, _, rollback := begin(t, ctx, h)
+				txCtx, _, rollback := begin(ctx, t, h)
 
 				_, err := h.Provision(txCtx, user, identity.WithUserRoles("admin"))
 				require.NoError(t, err)
@@ -208,7 +208,7 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 				_, err := h.Provision(ctx, user, identity.WithUserName("Before"), identity.WithUserRoles("admin"))
 				require.NoError(t, err)
 
-				txCtx, _, rollback := begin(t, ctx, h)
+				txCtx, _, rollback := begin(ctx, t, h)
 
 				_, err = h.Update(txCtx, user, identity.WithUserName("After"), identity.WithUserRoles("viewer"))
 				require.NoError(t, err)
@@ -255,7 +255,7 @@ func RunAmbientTx(t *testing.T, newHarness func(t *testing.T) AmbientHarness) {
 
 // begin starts a caller-owned transaction, failing the case if it cannot.
 func begin(
-	t *testing.T, ctx context.Context, h AmbientHarness,
+	ctx context.Context, t *testing.T, h AmbientHarness,
 ) (txCtx context.Context, commit, rollback func() error) {
 	t.Helper()
 
@@ -276,7 +276,7 @@ func begin(
 // found: answering "not required" or "required" would both read a user that
 // does not exist.
 func assertNotStored(
-	t *testing.T, ctx context.Context, h AmbientHarness,
+	ctx context.Context, t *testing.T, h AmbientHarness,
 	user, role string, id identity.UserID, msg string,
 ) {
 	t.Helper()

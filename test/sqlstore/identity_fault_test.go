@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +103,7 @@ func hasPrefix(prefix string) func(string) bool {
 
 // userRowCount is the number of stored users named username, read outside
 // every transaction.
-func userRowCount(t *testing.T, ctx context.Context, db *sql.DB, username string) int {
+func userRowCount(ctx context.Context, t *testing.T, db *sql.DB, username string) int {
 	t.Helper()
 
 	var n int
@@ -165,9 +166,9 @@ func TestIdentityStore_Interrupted(t *testing.T) {
 				})
 
 				require.NoError(t, tx.Commit())
-				assert.Zero(t, userRowCount(t, ctx, conn.DB, "panicking-provision"),
+				assert.Zero(t, userRowCount(ctx, t, conn.DB, "panicking-provision"),
 					"the panicked provision's user row was committed with the caller's work")
-				assert.Equal(t, 1, userRowCount(t, ctx, conn.DB, "earlier-in-caller-tx"))
+				assert.Equal(t, 1, userRowCount(ctx, t, conn.DB, "earlier-in-caller-tx"))
 			},
 		},
 		{
@@ -189,9 +190,9 @@ func TestIdentityStore_Interrupted(t *testing.T) {
 				})
 
 				require.NoError(t, tx.Commit())
-				assert.Zero(t, userRowCount(t, ctx, conn.DB, "release-panicking-provision"),
+				assert.Zero(t, userRowCount(ctx, t, conn.DB, "release-panicking-provision"),
 					"the write survived a panic while releasing the savepoint")
-				assert.Equal(t, 1, userRowCount(t, ctx, conn.DB, "earlier-before-release-panic"))
+				assert.Equal(t, 1, userRowCount(ctx, t, conn.DB, "earlier-before-release-panic"))
 			},
 		},
 		{
@@ -220,9 +221,9 @@ func TestIdentityStore_Interrupted(t *testing.T) {
 				// with a driver that accepts it, silently discard even the
 				// earlier write.
 				require.NoError(t, tx.Commit(), "the panic left the caller's transaction aborted")
-				assert.Equal(t, 1, userRowCount(t, ctx, conn.DB, "earlier-before-rollback-panic"),
+				assert.Equal(t, 1, userRowCount(ctx, t, conn.DB, "earlier-before-rollback-panic"),
 					"the earlier write was lost when the caller committed an aborted transaction")
-				assert.Zero(t, userRowCount(t, ctx, conn.DB, "rollback-panicking-provision"))
+				assert.Zero(t, userRowCount(ctx, t, conn.DB, "rollback-panicking-provision"))
 			},
 		},
 		{
@@ -258,9 +259,9 @@ func TestIdentityStore_Interrupted(t *testing.T) {
 				require.ErrorIs(t, err, context.Canceled)
 
 				require.NoError(t, tx.Commit(), "the caller's transaction stays usable")
-				assert.Zero(t, userRowCount(t, ctx, conn.DB, "cancelled-provision"),
+				assert.Zero(t, userRowCount(ctx, t, conn.DB, "cancelled-provision"),
 					"the cancelled provision's user row was committed with the caller's work")
-				assert.Equal(t, 1, userRowCount(t, ctx, conn.DB, "earlier-before-cancel"))
+				assert.Equal(t, 1, userRowCount(ctx, t, conn.DB, "earlier-before-cancel"))
 			},
 		},
 		{
@@ -498,6 +499,121 @@ FROM assigned_roles WHERE user_id = $1`,
 
 			_, err := faulty.LoadByUsername(t.Context(), "scan-error-user")
 			tc.assert(t, err)
+		})
+	}
+}
+
+// failingHandle is a consumer's handle whose every statement fails with err,
+// standing in for a driver that refuses a value or loses its connection.
+type failingHandle struct{ err error }
+
+func (h failingHandle) ExecContext(context.Context, string, ...any) (sql.Result, error) {
+	return nil, h.err
+}
+
+func (h failingHandle) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, h.err
+}
+
+func (h failingHandle) QueryRowContext(context.Context, string, ...any) *sql.Row {
+	panic("failingHandle: QueryRowContext is not used by these cases")
+}
+
+// TestIdentityStore_DriverErrorText pins that a database failure's returned
+// text is the library's own, naming the operation and the SQLSTATE a driver
+// error reports through its SQLState method, and never the driver's message,
+// which can quote a value; and that the driver's error is not in the chain,
+// while the context sentinels it matched still are.
+func TestIdentityStore_DriverErrorText(t *testing.T) {
+	t.Parallel()
+
+	quoting := &pgconn.PgError{
+		Severity: "ERROR",
+		Code:     "22P02",
+		Message:  `invalid input syntax for type uuid: "secret-xyz"`,
+		Detail:   "detail-secret",
+	}
+
+	type testCase struct {
+		name   string
+		err    error
+		call   func(ctx context.Context, s *sqlstore.IdentityStore) error
+		assert func(t *testing.T, err error)
+	}
+
+	provision := func(ctx context.Context, s *sqlstore.IdentityStore) error {
+		_, err := s.Provision(ctx, "driver-text-user")
+		return err
+	}
+	privileges := func(ctx context.Context, s *sqlstore.IdentityStore) error {
+		_, err := s.LoadPrivileges(ctx, "driver-text-role")
+		return err
+	}
+
+	assertQuotingCut := func(t *testing.T, err error, op string) {
+		t.Helper()
+		require.Error(t, err)
+
+		var pgErr *pgconn.PgError
+		assert.False(t, errors.As(err, &pgErr), "the driver's error is reachable")
+		assert.Equal(t, "sqlstore: "+op+": database failure (SQLSTATE 22P02)", err.Error())
+		for _, text := range storefix.ErrorTexts(err) {
+			assert.NotContains(t, text, "secret-xyz", "the driver's message quotes a value")
+			assert.NotContains(t, text, "invalid input syntax", "the driver's message is not kept")
+			assert.NotContains(t, text, "detail-secret")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "a statement failing with a message quoting a value",
+			err:  quoting,
+			call: provision,
+			assert: func(t *testing.T, err error) {
+				assertQuotingCut(t, err, "provision user")
+			},
+		},
+		{
+			name: "a query failing with a message quoting a value",
+			err:  quoting,
+			call: privileges,
+			assert: func(t *testing.T, err error) {
+				assertQuotingCut(t, err, "load role privileges")
+			},
+		},
+		{
+			name: "a failure with no SQLSTATE carries no driver text",
+			err:  errors.New("dial tcp 10.0.0.1:5432: secret-host"),
+			call: provision,
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.Equal(t, "sqlstore: provision user: database failure", err.Error())
+				for _, text := range storefix.ErrorTexts(err) {
+					assert.NotContains(t, text, "secret-host")
+					assert.NotContains(t, text, "10.0.0.1")
+				}
+			},
+		},
+		{
+			name: "a cancellation stays matchable under fixed text",
+			err:  fmt.Errorf("driver gave up at secret-stage: %w", context.Canceled),
+			call: privileges,
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Equal(t, "sqlstore: load role privileges: database failure", err.Error())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := newIdentityStore(t, unreachableDB(t), sqlstore.WithTxResolver(
+				func(context.Context) (sqlstore.DBTX, bool) { return failingHandle{err: tc.err}, true }))
+
+			tc.assert(t, tc.call(t.Context(), s))
 		})
 	}
 }

@@ -643,7 +643,7 @@ The catalogue test in `test/migrate_identity_test.go` pins every column, default
 
 - [ ] **Step 1: Write failing tests** mirroring 5.1–5.3 and 5.5 in `test/pgxstore`: all identity suites, `RunAmbientTx` (with `Begin` over `pool.Begin` and `pgx.WithTx`), `RunPasswordHistory`, and construction errors.
 - [ ] **Step 2: See red:** stubs returning errors make the suites FAIL by assertion.
-- [ ] **Step 3: Implement** over the `pgschema` constants with pgx row scanning (`pgx/uuid.go` has the UUID conversion helpers; read them first). Nest through `tx.Begin(ctx)` for savepoints.
+- [ ] **Step 3: Implement** over the `pgschema` constants with pgx row scanning (`pgx/uuid.go` has the UUID conversion helpers; read them first). Issue `SAVEPOINT` / `ROLLBACK TO SAVEPOINT` / `RELEASE SAVEPOINT` on the resolved handle with store-counter names, releasing after rollback too (design Decision 6); pgx's `Tx.Begin` nesting never releases a rolled-back savepoint.
 - [ ] **Step 4: Run** `go test -race -count=1 -run 'TestIdentity' ./pgxstore/` in `test/`, and `go vet ./...` in `pgx/`. Expected: PASS.
 
 ### Task 6.2: pgx interleavings
@@ -661,7 +661,7 @@ The catalogue test in `test/migrate_identity_test.go` pins every column, default
 
 - [ ] **Step 1: Write failing tests** mirroring Task 6.1 in `test/gormstore`.
 - [ ] **Step 2: See red:** stubs make the suites FAIL by assertion.
-- [ ] **Step 3: Implement** with `clause.OnConflict{Columns: []clause.Column{{Name: "username"}}, DoNothing: true}` and `RowsAffected == 0` for the collision; `clause.Locking{Strength: "UPDATE"}` for the lock; and `db.SavePoint`/`RollbackTo` inside an ambient transaction. Partial updates use `map[string]any` built from the fixed column map, so gorm's zero-value skipping never decides what is written. Pruning uses `db.Exec` with the `pgschema` statement text copied into the gorm package as a constant, because the gorm module cannot import `internal/pgschema` across the module boundary. The copy is guarded by a test in `test/gormstore` comparing the two strings.
+- [ ] **Step 3: Implement** with `clause.OnConflict{Columns: []clause.Column{{Name: "username"}}, DoNothing: true}` and `RowsAffected == 0` for the collision; `clause.Locking{Strength: "UPDATE"}` for the lock; and savepoint statements sent through `Exec` inside an ambient transaction, released after rollback too (design Decision 6; gorm's `SavePoint`/`RollbackTo` discard the statement's error and never release). Partial updates use `map[string]any` built from the fixed column map, so gorm's zero-value skipping never decides what is written. Pruning and the reads use `db.Exec`/raw queries over the `pgschema` statement text, imported directly: the gorm module's path sits under the core module's, so Go permits the `internal` import, as the gorm security-state stores already do.
 - [ ] **Step 4: Run** `go test -race -count=1 -run 'TestIdentity' ./gormstore/` in `test/`, and `go vet ./...` in `gorm/`. Expected: PASS.
 
 ### Task 7.2: gorm interleavings
@@ -725,3 +725,40 @@ Settled during implementation. The pgx and gorm lanes must follow these; they ar
 - **Parallel history cases.** The password-history suite's ambient cases call the store outside an open transaction, so a pooled harness needs more connections than the number of cases run in parallel.
 
 Open items noticed, not yet in any task: `password/reuse_test.go` has two unused helper methods (`seed`, `entries`), flagged by gopls. Remove them before the 9.2 lint gate.
+
+## Session handoff (2026-09-29)
+
+Done and reviewed this session: 5.4–5.6, 6.1–6.2, 7.1–7.2 (30/32). Next: lane H — 9.1 (godoc, Sonnet), then 9.2 (final gate and whole-branch review, main session). Nothing is committed yet: the uncommitted tree holds all of this session's work.
+
+Settled during implementation (recorded in design.md Decision 6 where marked):
+- **Every adapter issues its own savepoint statements and releases after rollback too** (Decision 6, updated). pgx's `Tx.Begin` nesting never released a rolled-back savepoint; a review reproduced 70 refused provisions leaving 64 open subtransactions with the cache overflowed. gorm's `SavePoint`/`RollbackTo` discard the statement's error and never release, so gorm sends the statements through `Exec`. Each adapter's `TestIdentityStore_RefusalsLeaveNoOpenSavepoint` pins it, including the panic path. It works on PostgreSQL 15 by writing once in the caller's transaction and counting `transactionid` locks in `pg_locks`, and adds `pg_stat_get_backend_subxact()` on 16+ (read once, last).
+- **gorm imports `internal/pgschema` directly.** No copied constant and no guard test; plans.md 7.1 is corrected.
+- **gorm consumer configurations are pinned:** `PrepareStmt: true` (no savepoint statement is prepared) and `TranslateError: true` (collision still `ErrUserExists`, no driver error in the chain).
+- **Forced-interleaving tests** (`TestIdentityRace` in each adapter) detect the missing row lock through the revoked grant coming back with its old identifier and super role; the final grant names alone stay `[admin]` without the lock.
+- **`ForgetPasswords` runs without a savepoint** by choice: the spec requires only a failed retire to leave the caller's transaction usable, and forgetting runs inside the consumer's user deletion.
+
+Open items, not in any task yet (decide before or during 9.2):
+- The spec sentence "Updates to different users SHALL NOT block each other" (requirement "Concurrent updates of one user serialise") has no test in any adapter or in the suite.
+- The conformance suite has no case clearing an organization through Update (a gorm probe passed; untested everywhere).
+- No test pins that insert and prune in `RetirePassword` roll back together in the store's own transaction (outside a caller's); the savepoint path is tested.
+- Carried from the previous handoff: `password/reuse_test.go` has two unused helpers (`seed`, `entries`); remove before the 9.2 lint gate.
+
+## Final gate (2026-09-29)
+
+9.1 and 9.2 are done (32/32). The gate is green in the core, `pgx`, `gorm`, `ginsec`, `fibersec` and `test` modules: `go test -race -count=1 ./...`, `go vet`, `gofmt -l` and `golangci-lint run` (0 issues).
+
+- **Whole-branch review:** it found no defect. Its coverage findings are all pinned now, in all three adapters and the shared suite, each test seen to fail against a broken copy of the code first:
+  - Provision is atomic outside a caller's transaction.
+  - RetirePassword's insert and prune roll back together, in both modes.
+  - Updates to different users do not block.
+  - The default generator mints UUIDv7.
+  - Update clears an organization.
+- **Error text (design Decision 11.2, updated):** the identity stores return fixed library text naming the operation, plus the SQLSTATE read through `SQLState()`. The driver's primary message is dropped, per the `internal/diag` rule the lint gate enforces. All three adapters give identical text.
+- **Three pre-existing flakes in the test module's container helpers**, fixed with the user's approval, each cause reproduced first:
+  - SMTP teardown: the stop grace equalled the cleanup context.
+  - Keycloak: `WithWaitStrategy` silently caps waits at 60s. It now uses `WithWaitStrategyAndDeadline`.
+  - PostgreSQL: Docker Desktop occasionally runs a container with no published port. The helper now waits for the mapping, and retries such a container up to 3 times.
+
+  The PostgreSQL retry path has no permanent in-tree test. A deterministic `NetworkMode=none` fault would make one.
+- **Not addressed:** the suite has no case clearing an organization via an empty `&identity.Organization{}`. The contract only says a nil organization clears it.
+- **Next:** commit, then `/opsx:archive`.

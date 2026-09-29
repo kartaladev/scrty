@@ -69,6 +69,13 @@ const IdentityVersionTable = "goose_identity"
 // are written only by the consumer's own tooling, which must supply
 // created_at and updated_at: those columns have no database default.
 //
+// Apply it before deploying a release that wires the identity store — the
+// core's sqlstore.IdentityStore, or an adapter's identity store — and keep it
+// applied while that release runs. With a table missing, the store's
+// operations fail with a database error, and its MFA-required lookup denies
+// rather than reporting the requirement as absent, since the policy that
+// calls it already denies on any lookup error.
+//
 // Its default version table is IdentityVersionTable.
 func Identity() Set {
 	return Set{fsys: identityFS, Dir: "identity", VersionTable: IdentityVersionTable}

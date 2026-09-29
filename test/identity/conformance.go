@@ -368,7 +368,7 @@ func runLoadRecordCases(t *testing.T, newFixture Factory) {
 				org := fullOrganization(t)
 				require.NoError(t, f.SeedOrganization(ctx, org))
 
-				mustProvision(t, f, user,
+				mustProvision(ctx, t, f, user,
 					identity.WithUserName("Ada"),
 					identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt),
 					identity.WithUserRoles("auditor", "admin"),
@@ -429,7 +429,7 @@ func runLoadRecordCases(t *testing.T, newFixture Factory) {
 
 				org := &identity.Organization{ID: uniqueID(t, "org"), Name: "solo"}
 				require.NoError(t, f.SeedOrganization(ctx, org))
-				mustProvision(t, f, user, identity.WithUserOrganization(&identity.Organization{ID: org.ID}))
+				mustProvision(ctx, t, f, user, identity.WithUserOrganization(&identity.Organization{ID: org.ID}))
 			},
 			assert: func(t *testing.T, d *identity.Details) {
 				t.Helper()
@@ -443,10 +443,10 @@ func runLoadRecordCases(t *testing.T, newFixture Factory) {
 		},
 		{
 			name: "an organization reference that resolves to nothing loads as no organization",
-			arrange: func(t *testing.T, _ context.Context, f Fixture, user string) {
+			arrange: func(t *testing.T, ctx context.Context, f Fixture, user string) {
 				t.Helper()
 
-				mustProvision(t, f, user,
+				mustProvision(ctx, t, f, user,
 					identity.WithUserOrganization(&identity.Organization{ID: uniqueID(t, "dangling")}))
 			},
 			assert: func(t *testing.T, d *identity.Details) {
@@ -469,7 +469,7 @@ func runLoadRecordCases(t *testing.T, newFixture Factory) {
 
 			tc.arrange(t, ctx, f, user)
 
-			d := mustLoad(t, f, user)
+			d := mustLoad(ctx, t, f, user)
 			assert.Equal(t, user, d.Username)
 			tc.assert(t, d)
 		})
@@ -884,7 +884,7 @@ func runPasswordChangedAtCases(t *testing.T, newFixture Factory) {
 
 	type testCase struct {
 		name   string
-		act    func(t *testing.T, f Fixture, user string) *identity.Details
+		act    func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details
 		assert func(t *testing.T, got *identity.Details)
 	}
 
@@ -927,24 +927,24 @@ func runPasswordChangedAtCases(t *testing.T, newFixture Factory) {
 	cases := []testCase{
 		{
 			name: "provision naming only the password leaves the time zero",
-			act: func(t *testing.T, f Fixture, user string) *identity.Details {
-				return mustProvision(t, f, user, identity.WithUserPassword([]byte("H1")))
+			act: func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details {
+				return mustProvision(ctx, t, f, user, identity.WithUserPassword([]byte("H1")))
 			},
 			assert: isZero,
 		},
 		{
 			name: "provision naming the password and the time records the time",
-			act: func(t *testing.T, f Fixture, user string) *identity.Details {
-				return mustProvision(t, f, user,
+			act: func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details {
+				return mustProvision(ctx, t, f, user,
 					identity.WithUserPasswordChange([]byte("H1"), passwordChangedAtLater))
 			},
 			assert: isLaterWithPassword([]byte("H1")),
 		},
 		{
 			name: "update naming only the password leaves a recorded time",
-			act: func(t *testing.T, f Fixture, user string) *identity.Details {
-				mustProvision(t, f, user, identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt))
-				return mustUpdate(t, f, user, identity.WithUserPassword([]byte("H2")))
+			act: func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details {
+				mustProvision(ctx, t, f, user, identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt))
+				return mustUpdate(ctx, t, f, user, identity.WithUserPassword([]byte("H2")))
 			},
 			assert: isRecorded,
 		},
@@ -956,26 +956,26 @@ func runPasswordChangedAtCases(t *testing.T, newFixture Factory) {
 			// case starts from no recorded time at all, so such a store stamps a
 			// time the caller never named.
 			name: "update naming only the password on a user with no recorded time leaves it zero",
-			act: func(t *testing.T, f Fixture, user string) *identity.Details {
-				mustProvision(t, f, user, identity.WithUserPassword([]byte("H1")))
-				return mustUpdate(t, f, user, identity.WithUserPassword([]byte("H2")))
+			act: func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details {
+				mustProvision(ctx, t, f, user, identity.WithUserPassword([]byte("H1")))
+				return mustUpdate(ctx, t, f, user, identity.WithUserPassword([]byte("H2")))
 			},
 			assert: isZeroWithPassword([]byte("H2")),
 		},
 		{
 			name: "update naming the password and the time records the time",
-			act: func(t *testing.T, f Fixture, user string) *identity.Details {
-				mustProvision(t, f, user, identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt))
-				return mustUpdate(t, f, user,
+			act: func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details {
+				mustProvision(ctx, t, f, user, identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt))
+				return mustUpdate(ctx, t, f, user,
 					identity.WithUserPasswordChange([]byte("H2"), passwordChangedAtLater))
 			},
 			assert: isLaterWithPassword([]byte("H2")),
 		},
 		{
 			name: "update naming the zero time clears it",
-			act: func(t *testing.T, f Fixture, user string) *identity.Details {
-				mustProvision(t, f, user, identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt))
-				return mustUpdate(t, f, user, identity.WithUserPasswordChangedAt(time.Time{}))
+			act: func(t *testing.T, ctx context.Context, f Fixture, user string) *identity.Details {
+				mustProvision(ctx, t, f, user, identity.WithUserPasswordChange([]byte("H1"), passwordChangedAt))
+				return mustUpdate(ctx, t, f, user, identity.WithUserPasswordChangedAt(time.Time{}))
 			},
 			assert: isZero,
 		},
@@ -985,22 +985,23 @@ func runPasswordChangedAtCases(t *testing.T, newFixture Factory) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctx := t.Context()
 			f := newFixture(t)
 			user := uniqueName(t, "pwtime", i)
 
-			got := tc.act(t, f, user)
+			got := tc.act(t, ctx, f, user)
 			tc.assert(t, got)
 			// The stored value, not only the one handed back.
-			tc.assert(t, mustLoad(t, f, user))
+			tc.assert(t, mustLoad(ctx, t, f, user))
 		})
 	}
 }
 
 // mustProvision creates user through the port, failing the case on an error.
-func mustProvision(t *testing.T, f Fixture, user string, opts ...identity.UserOption) *identity.Details {
+func mustProvision(ctx context.Context, t *testing.T, f Fixture, user string, opts ...identity.UserOption) *identity.Details {
 	t.Helper()
 
-	d, err := f.Provision(t.Context(), user, opts...)
+	d, err := f.Provision(ctx, user, opts...)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 
@@ -1008,10 +1009,10 @@ func mustProvision(t *testing.T, f Fixture, user string, opts ...identity.UserOp
 }
 
 // mustUpdate amends user through the port, failing the case on an error.
-func mustUpdate(t *testing.T, f Fixture, user string, opts ...identity.UserOption) *identity.Details {
+func mustUpdate(ctx context.Context, t *testing.T, f Fixture, user string, opts ...identity.UserOption) *identity.Details {
 	t.Helper()
 
-	d, err := f.Update(t.Context(), user, opts...)
+	d, err := f.Update(ctx, user, opts...)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 
@@ -1041,10 +1042,10 @@ func atUTC(d *identity.Details) *identity.Details {
 }
 
 // mustLoad reads user back through the loader, failing the case on an error.
-func mustLoad(t *testing.T, f Fixture, user string) *identity.Details {
+func mustLoad(ctx context.Context, t *testing.T, f Fixture, user string) *identity.Details {
 	t.Helper()
 
-	d, err := f.LoadByUsername(t.Context(), user)
+	d, err := f.LoadByUsername(ctx, user)
 	require.NoError(t, err)
 	require.NotNil(t, d)
 
@@ -1534,7 +1535,7 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 			seed: func(t *testing.T, ctx context.Context, f Fixture, user string) {
 				t.Helper()
 
-				mustProvision(t, f, user)
+				mustProvision(ctx, t, f, user)
 				require.NoError(t, f.SeedRoleGrants(ctx, user, []*identity.AssignedRole{
 					{ID: uniqueID(t, "grant-admin"), Name: "admin", Primary: true},
 				}))
@@ -1574,7 +1575,7 @@ func runRoleRebuildCases(t *testing.T, newFixture Factory) {
 			seed: func(t *testing.T, ctx context.Context, f Fixture, user string) {
 				t.Helper()
 
-				mustProvision(t, f, user)
+				mustProvision(ctx, t, f, user)
 				require.NoError(t, f.SeedRoleGrants(ctx, user, []*identity.AssignedRole{{
 					ID:         uniqueID(t, "grant-admin"),
 					Name:       "admin",
@@ -1724,6 +1725,24 @@ func runUpdateCases(t *testing.T, newFixture Factory) {
 			},
 		},
 		{
+			name: "naming a nil organization clears it and touches nothing else",
+			seed: seedUser,
+			opts: []identity.UserOption{identity.WithUserOrganization(nil)},
+			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
+				require.NoError(t, err)
+				assert.Nil(t, d.Organization,
+					"a named nil organization clears it; a store keyed on the value being "+
+						"non-nil could never take a user out of an organization")
+
+				stored := mustLoad(ctx, t, f, user)
+				assert.Nil(t, stored.Organization, "the cleared organization must be the stored one")
+				assert.Equal(t, "First", stored.Name, "and only the named field is touched")
+				assert.Equal(t, []byte("H1"), stored.Password)
+				require.Len(t, stored.Roles, 1)
+				assert.Equal(t, "viewer", stored.Roles[0].Name)
+			},
+		},
+		{
 			name: "an unknown username is refused and creates nothing",
 			opts: []identity.UserOption{identity.WithUserName("Nobody")},
 			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
@@ -1754,7 +1773,7 @@ func runUpdateCases(t *testing.T, newFixture Factory) {
 		{
 			name: "an update naming nothing changes nothing and returns the complete record",
 			seed: seedUser,
-			assert: func(t *testing.T, _ context.Context, f Fixture, user string, d *identity.Details, err error) {
+			assert: func(t *testing.T, ctx context.Context, f Fixture, user string, d *identity.Details, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, d)
 
@@ -1765,7 +1784,7 @@ func runUpdateCases(t *testing.T, newFixture Factory) {
 				require.NotNil(t, d.Organization)
 				assert.Equal(t, "acme", d.Organization.Name)
 
-				assert.Equal(t, atUTC(d), atUTC(mustLoad(t, f, user)),
+				assert.Equal(t, atUTC(d), atUTC(mustLoad(ctx, t, f, user)),
 					"an update that names nothing writes nothing, and returns what is stored")
 			},
 		},

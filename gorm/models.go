@@ -191,3 +191,45 @@ type handoffRow struct {
 
 // TableName is the table the migration creates for OIDC handoffs.
 func (handoffRow) TableName() string { return "oidc_handoffs" }
+
+// userRow is a row of the users table of the identity migration set, keyed by
+// an identifier the identity store mints. Password is never NULL: a user with
+// no credential stores an empty hash. A nil OrganizationID is no organization,
+// and a nil PasswordChangedAt no recorded change. CreatedAt and UpdatedAt are
+// the store clock's, never gorm's.
+type userRow struct {
+	ID                id.ID      `gorm:"column:id;type:uuid;primaryKey"`
+	Name              string     `gorm:"column:name;type:text"`
+	Username          string     `gorm:"column:username;type:text"`
+	Password          []byte     `gorm:"column:password;type:bytea"`
+	Active            bool       `gorm:"column:active;type:boolean"`
+	Role              string     `gorm:"column:role;type:text"`
+	OrganizationID    *id.ID     `gorm:"column:organization_id;type:uuid"`
+	PasswordChangedAt *time.Time `gorm:"column:password_changed_at;type:timestamptz"`
+	MFARequired       bool       `gorm:"column:mfa_required;type:boolean"`
+	CreatedAt         time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at;type:timestamptz;autoUpdateTime:false"`
+}
+
+// TableName is the table the identity migration creates for users.
+func (userRow) TableName() string { return "users" }
+
+// assignedRoleRow is a row of the assigned_roles table of the identity
+// migration set: one role grant, keyed by its own identifier and ordered by
+// Position, never by that identifier. A nil StartDate or ValidUntil is an
+// open end of the grant's validity window.
+type assignedRoleRow struct {
+	ID         id.ID      `gorm:"column:id;type:uuid;primaryKey"`
+	UserID     id.ID      `gorm:"column:user_id;type:uuid"`
+	RoleName   string     `gorm:"column:role_name;type:text"`
+	Position   int64      `gorm:"column:position;type:integer"`
+	IsPrimary  bool       `gorm:"column:is_primary;type:boolean"`
+	SuperRole  bool       `gorm:"column:super_role;type:boolean"`
+	StartDate  *time.Time `gorm:"column:start_date;type:timestamptz"`
+	ValidUntil *time.Time `gorm:"column:valid_until;type:timestamptz"`
+	CreatedAt  time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
+	UpdatedAt  time.Time  `gorm:"column:updated_at;type:timestamptz;autoUpdateTime:false"`
+}
+
+// TableName is the table the identity migration creates for role grants.
+func (assignedRoleRow) TableName() string { return "assigned_roles" }

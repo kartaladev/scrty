@@ -59,8 +59,9 @@ func TestIdentityMigrations_Independent(t *testing.T) {
 		).DB
 
 		rows := queryStrings(t, db, `SELECT tablename FROM pg_tables WHERE schemaname = current_schema()`)
-		assert.NotContains(t, rows, "users")
-		assert.NotContains(t, rows, migrate.IdentityVersionTable)
+		for _, tbl := range append(slices.Clone(identityTables), migrate.IdentityVersionTable) {
+			assert.NotContains(t, rows, tbl, "the security-state set created identity table %s", tbl)
+		}
 	})
 
 	t.Run("rolling back the identity set leaves security state intact", func(t *testing.T) {
@@ -284,7 +285,7 @@ func identitySchemaChecks() []schemaCheck {
 			           AND c.relname = ANY(string_to_array($1, ','))`,
 			args: []any{tables},
 			assert: func(t *testing.T, rows []string) {
-				want := sortedByTable(identityColumns, column.String)
+				want := sortedByTable(identityColumns, func(c column) string { return c.String() })
 				assert.Equal(t, want, groupByTable(t, rows))
 			},
 		},

@@ -149,8 +149,10 @@ func ApplyUserOptions(opts ...UserOption) *NewUser {
 
 // UserLoader loads users from the consumer's own store.
 //
-// scrty ships no implementation: a component that needs a UserLoader and is
-// given none fails at construction rather than falling back to an empty store.
+// This package ships no implementation. The library's opt-in identity stores
+// (in sqlstore, pgx and gorm) implement it, but a component that needs a
+// UserLoader and is given none fails at construction rather than falling back
+// to an empty store or to one of those.
 type UserLoader interface {
 	// LoadByUsername loads the user with this username, passed exactly as
 	// presented and never trimmed or case-folded. A miss returns ErrUserNotFound;
@@ -173,7 +175,9 @@ type UserLoader interface {
 
 // RoleLoader resolves a role name to the privileges it grants.
 //
-// scrty ships no implementation.
+// This package ships no implementation. The library's opt-in identity stores
+// (in sqlstore, pgx and gorm) implement it, and are used only when a consumer
+// supplies one.
 type RoleLoader interface {
 	// LoadPrivileges returns the resource privileges effective for role. A role
 	// that grants none returns ErrPrivilegesNotFound.
@@ -186,7 +190,9 @@ type RoleLoader interface {
 // upsert would let a caller overwrite an existing account on its first call —
 // the same takeover path as matching identities by email.
 //
-// scrty ships no implementation.
+// This package ships no implementation. The library's opt-in identity stores
+// (in sqlstore, pgx and gorm) implement it, and are used only when a consumer
+// supplies one.
 type UserProvisioner interface {
 	// Provision creates a user from a required username. A taken username returns
 	// ErrUserExists and leaves the existing user untouched, and the collision is
@@ -230,7 +236,9 @@ type UserProvisioner interface {
 // stored user with no requirement recorded is not required, with no error. Any
 // other failure is an error that is not ErrUserNotFound.
 //
-// scrty ships no implementation.
+// This package ships no implementation. The library's opt-in identity stores
+// (in sqlstore, pgx and gorm) implement it, and are used only when a consumer
+// supplies one.
 type MFARequirementLookup interface {
 	Required(ctx context.Context, userID UserID) (bool, error)
 }

@@ -1,4 +1,4 @@
-package sqlstore_test
+package gormstore_test
 
 import (
 	"context"
@@ -20,8 +20,8 @@ import (
 func TestIdentityStore_Refusals(t *testing.T) {
 	t.Parallel()
 
-	conn := migratedIdentityDB(t)
-	s := newIdentityStore(t, conn.DB)
+	d := migratedIdentityDB(t)
+	s := newIdentityStore(t, d.db)
 
 	t.Run("text PostgreSQL cannot store", func(t *testing.T) {
 		t.Parallel()
@@ -42,7 +42,7 @@ func TestIdentityStore_Refusals(t *testing.T) {
 		// absent asserts no user named username was stored.
 		absent := func(t *testing.T, username string) {
 			t.Helper()
-			assert.Zero(t, userRowCount(t.Context(), t, conn.DB, username))
+			assert.Zero(t, userRowCount(t.Context(), t, d.conn.DB, username))
 		}
 
 		type testCase struct {
@@ -163,7 +163,7 @@ func TestIdentityStore_Refusals(t *testing.T) {
 		// whether there is one.
 		stored := func(t *testing.T, username string) (name string, org sql.NullString, ok bool) {
 			t.Helper()
-			err := conn.DB.QueryRowContext(t.Context(),
+			err := d.conn.DB.QueryRowContext(t.Context(),
 				`SELECT name, organization_id::text FROM users WHERE username = $1`, username).Scan(&name, &org)
 			if errors.Is(err, sql.ErrNoRows) {
 				return "", org, false

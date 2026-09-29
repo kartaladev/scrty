@@ -39,19 +39,19 @@ tests that prove it.
 - [x] 5.1 Add `sqlstore.NewIdentityStore(db, opts...)` honouring `WithTxResolver`, `WithIDGenerator` and `WithClock` (refusing other options; the clock binds every `created_at`, `updated_at` and `retired_at` the store writes), and implement the user loader, role loader and MFA lookup; verify with `test/sqlstore` runs of the loader and MFA suites against PostgreSQL, construction errors, and the storage-failure and missing-table scenarios
 - [x] 5.2 Implement Provision and Update: collision decided by the insert, row-locked update naming only named fields (including the password-changed-at time), grant rebuild preserving first-stored attributes by `position`, identifiers from the generator with a mid-provision generator failure writing nothing, and error text without usernames or hashes; verify with the provisioner suite and the descending-generator scenarios
 - [x] 5.3 Run provision and update in a savepoint inside an ambient transaction, and atomically otherwise; verify with `RunAmbientTx` against PostgreSQL
-- [ ] 5.4 Pin the two interleavings with adapter-only tests that hold one transaction at a blocking statement confirmed through `pg_stat_activity`: concurrent provisions produce one user and user-already-exists errors, and revoke-races-re-assert ends with the last committer's grants; verify both fail against a variant with a preceding read or no row lock
-- [ ] 5.5 Implement `password.History` on the store (read newest first by `seq`, retire with same-bytes rule and prune in one savepointed statement group, forget), refusing a malformed reference; verify with `RunPasswordHistory`, the no-port-call-records-history scenario, and the error-text-carries-no-hash scenario
-- [ ] 5.6 Verify the reuse guard end to end over the store with `ProvisionerWrite(store)`: a change inside one transaction that then rolls back leaves neither the password, the history entry nor the time stored; a committed change stores all three, the time being the guard clock's
+- [x] 5.4 Pin the two interleavings with adapter-only tests that hold one transaction at a blocking statement confirmed through `pg_stat_activity`: concurrent provisions produce one user and user-already-exists errors, and revoke-races-re-assert ends with the last committer's grants; verify both fail against a variant with a preceding read or no row lock
+- [x] 5.5 Implement `password.History` on the store (read newest first by `seq`, retire with same-bytes rule and prune in one savepointed statement group, forget), refusing a malformed reference; verify with `RunPasswordHistory`, the no-port-call-records-history scenario, and the error-text-carries-no-hash scenario
+- [x] 5.6 Verify the reuse guard end to end over the store with `ProvisionerWrite(store)`: a change inside one transaction that then rolls back leaves neither the password, the history entry nor the time stored; a committed change stores all three, the time being the guard clock's
 
 ## 6. `pgx` identity store
 
-- [ ] 6.1 Add `pgx.NewIdentityStore(pool, opts...)` implementing the four ports and `password.History` over the shared query text, with savepoints through `Tx.Begin`; verify with `test/pgxstore` runs of the full suite, `RunAmbientTx`, `RunPasswordHistory` and construction errors
-- [ ] 6.2 Port the adapter-only interleaving tests of 5.4 to pgx; verify both fail against a preceding-read or unlocked variant
+- [x] 6.1 Add `pgx.NewIdentityStore(pool, opts...)` implementing the four ports and `password.History` over the shared query text, with savepoints the store issues and releases itself (design Decision 6); verify with `test/pgxstore` runs of the full suite, `RunAmbientTx`, `RunPasswordHistory` and construction errors
+- [x] 6.2 Port the adapter-only interleaving tests of 5.4 to pgx; verify both fail against a preceding-read or unlocked variant
 
 ## 7. `gorm` identity store
 
-- [ ] 7.1 Add `gorm.NewIdentityStore(db, opts...)` implementing the four ports and `password.History`, reaching the same statements through gorm's on-conflict clause, affected-row count and savepoint support; verify with `test/gormstore` runs of the full suite, `RunAmbientTx`, `RunPasswordHistory` and construction errors
-- [ ] 7.2 Port the adapter-only interleaving tests of 5.4 to gorm; verify both fail against a preceding-read or unlocked variant
+- [x] 7.1 Add `gorm.NewIdentityStore(db, opts...)` implementing the four ports and `password.History`, reaching the same statements through gorm's on-conflict clause, affected-row count and savepoint statements it issues and releases itself (design Decision 6); verify with `test/gormstore` runs of the full suite, `RunAmbientTx`, `RunPasswordHistory` and construction errors
+- [x] 7.2 Port the adapter-only interleaving tests of 5.4 to gorm; verify both fail against a preceding-read or unlocked variant
 
 ## 8. HTTP: status row and the resolve endpoint
 
@@ -60,5 +60,5 @@ tests that prove it.
 
 ## 9. Documentation and final gate
 
-- [ ] 9.1 Write the godoc the design requires: the store's defaults and overrides, the migration set, user deletion calling `ForgetPasswords` beside removing grants, the reuse guard's cost per unit of N and its concurrency limit; verify with `go doc` on each new package symbol and `go vet`
-- [ ] 9.2 Run the final gate across every module (`go test -race -count=1`, `go vet`, `gofmt -l`, `golangci-lint run`) and a whole-branch review against every requirement of the change's specs; verify all are green and the review reports no open finding
+- [x] 9.1 Write the godoc the design requires: the store's defaults and overrides, the migration set, user deletion calling `ForgetPasswords` beside removing grants, the reuse guard's cost per unit of N and its concurrency limit; verify with `go doc` on each new package symbol and `go vet`
+- [x] 9.2 Run the final gate across every module (`go test -race -count=1`, `go vet`, `gofmt -l`, `golangci-lint run`) and a whole-branch review against every requirement of the change's specs; verify all are green and the review reports no open finding

@@ -1,12 +1,13 @@
-package sqlstore_test
+package pgxstore_test
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,8 +21,8 @@ import (
 func TestIdentityStore_Refusals(t *testing.T) {
 	t.Parallel()
 
-	conn := migratedIdentityDB(t)
-	s := newIdentityStore(t, conn.DB)
+	db := migratedIdentity(t)
+	s := newIdentityStore(t, db.Pool)
 
 	t.Run("text PostgreSQL cannot store", func(t *testing.T) {
 		t.Parallel()
@@ -42,7 +43,7 @@ func TestIdentityStore_Refusals(t *testing.T) {
 		// absent asserts no user named username was stored.
 		absent := func(t *testing.T, username string) {
 			t.Helper()
-			assert.Zero(t, userRowCount(t.Context(), t, conn.DB, username))
+			assert.Zero(t, userRowCount(t.Context(), t, db.Pool, username))
 		}
 
 		type testCase struct {
@@ -161,11 +162,11 @@ func TestIdentityStore_Refusals(t *testing.T) {
 
 		// stored is the name and organization reference of username's row, and
 		// whether there is one.
-		stored := func(t *testing.T, username string) (name string, org sql.NullString, ok bool) {
+		stored := func(t *testing.T, username string) (name string, org pgtype.Text, ok bool) {
 			t.Helper()
-			err := conn.DB.QueryRowContext(t.Context(),
+			err := db.Pool.QueryRow(t.Context(),
 				`SELECT name, organization_id::text FROM users WHERE username = $1`, username).Scan(&name, &org)
-			if errors.Is(err, sql.ErrNoRows) {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return "", org, false
 			}
 			require.NoError(t, err)
@@ -213,7 +214,7 @@ func TestIdentityStore_Refusals(t *testing.T) {
 			name, org, ok := stored(t, "org-ref-target")
 			require.True(t, ok)
 			assert.Equal(t, "Before", name)
-			assert.Equal(t, sql.NullString{String: canonical, Valid: true}, org)
+			assert.Equal(t, pgtype.Text{String: canonical, Valid: true}, org)
 		}
 
 		cases := []testCase{

@@ -39,6 +39,13 @@
 // seen here. The stores never commit or roll back a transaction they did not
 // open.
 //
+// The identity store's writes are the exception to one statement per
+// operation: Provision, Update and RetirePassword each run several statements
+// as one unit, in a transaction of their own begun on the pool, or, inside a
+// caller's transaction, in a savepoint the store issues on that transaction
+// and releases whether the unit succeeds or fails, so their failure leaves the
+// caller's transaction usable and no savepoint open.
+//
 // Refusals — an already-consumed token, a duplicate identifier, a save of a
 // session that is gone — are reported without a failed statement, so they
 // leave a caller's transaction usable. The limit: any statement a store runs
@@ -52,5 +59,11 @@
 // cancelled context among them, are returned wrapped with the name of the
 // operation ("pgx: consume one-time token: ..."), and are never reported as a
 // refusal or as absence: pgx.ErrNoRows is the only error read as absence.
-// Error text never contains stored values, secrets or user references.
+// Error text never contains stored values, secrets or user references. The
+// security-state stores keep the driver's error in the chain. The identity
+// store does not: its tables hold usernames and password hashes, which a
+// driver error's detail fields can carry, so it returns text of its own
+// naming the operation and the SQLSTATE, with the context and pgx sentinels
+// the driver's error matched, and leaves the driver's error value and message
+// out.
 package pgx

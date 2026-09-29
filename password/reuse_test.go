@@ -569,7 +569,7 @@ func TestReuseGuard_Change(t *testing.T) {
 			name:  "the write receives the record, the new hash and the clock's time",
 			depth: 3,
 			opts:  []password.ReuseOption{password.WithReuseClock(func() time.Time { return fixed })},
-			arrange: func(t *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				return &identity.Details{ID: user, Password: hP1}, "p2", &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, _ *memHistory, u *identity.Details, w *recordingWrite) {
@@ -603,7 +603,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a failed write returns its error unchanged and leaves the retired entry",
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
 				return &identity.Details{ID: user, Password: hP2}, "p3", &recordingWrite{fail: errWrite}
 			},
@@ -633,7 +633,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "another user's history is not consulted",
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed("user-a", hP1)
 				return &identity.Details{ID: "user-b", Password: hP2}, "p1", &recordingWrite{}
 			},
@@ -668,7 +668,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "depth 1 keeps no retired hashes",
 			depth: 1,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
 				return &identity.Details{ID: user, Password: hP2}, "p3", &recordingWrite{}
 			},
@@ -681,7 +681,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a reused password is refused before anything is recorded or written",
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, h *memHistory) (*identity.Details, string, *recordingWrite) {
 				h.seed(user, hP1)
 				return &identity.Details{ID: user, Password: hP2}, "p1", &recordingWrite{}
 			},
@@ -695,7 +695,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a user with no current hash retires nothing",
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				return &identity.Details{ID: user}, "p1", &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
@@ -708,7 +708,7 @@ func TestReuseGuard_Change(t *testing.T) {
 			name:  "an encoder error is returned as is and nothing is written",
 			enc:   bcrypt10,
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				return &identity.Details{ID: user, Password: hP1}, strings.Repeat("a", 73), &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
@@ -720,7 +720,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a nil user is a wiring mistake and touches nothing",
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				return nil, "p1", &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
@@ -733,7 +733,7 @@ func TestReuseGuard_Change(t *testing.T) {
 		{
 			name:  "a nil write is a wiring mistake and touches nothing",
 			depth: 3,
-			arrange: func(t *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
+			arrange: func(_ *testing.T, _ *password.ReuseGuard, _ *memHistory) (*identity.Details, string, *recordingWrite) {
 				return &identity.Details{ID: user, Password: hP1}, "p2", nil
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, _ *recordingWrite) {

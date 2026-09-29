@@ -424,10 +424,10 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 			act: func(t *testing.T, ctx context.Context, h HistoryHarness, user identity.UserID) {
 				t.Helper()
 
-				txCtx, _, rollback := beginHistoryTx(t, ctx, h)
+				txCtx, _, rollback := beginHistoryTx(ctx, t, h)
 
 				require.NoError(t, h.RetirePassword(txCtx, user, h1, 3))
-				assertHistorySeenOnlyInside(t, ctx, txCtx, h, user, h1)
+				assertHistorySeenOnlyInside(ctx, txCtx, t, h, user, h1)
 				require.NoError(t, rollback())
 			},
 			assert: func(t *testing.T, got [][]byte, err error) {
@@ -440,10 +440,10 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 			act: func(t *testing.T, ctx context.Context, h HistoryHarness, user identity.UserID) {
 				t.Helper()
 
-				txCtx, commit, _ := beginHistoryTx(t, ctx, h)
+				txCtx, commit, _ := beginHistoryTx(ctx, t, h)
 
 				require.NoError(t, h.RetirePassword(txCtx, user, h1, 3))
-				assertHistorySeenOnlyInside(t, ctx, txCtx, h, user, h1)
+				assertHistorySeenOnlyInside(ctx, txCtx, t, h, user, h1)
 				require.NoError(t, commit())
 			},
 			assert: func(t *testing.T, got [][]byte, err error) {
@@ -457,7 +457,7 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 			act: func(t *testing.T, ctx context.Context, h HistoryHarness, user identity.UserID) {
 				t.Helper()
 
-				txCtx, commit, _ := beginHistoryTx(t, ctx, h)
+				txCtx, commit, _ := beginHistoryTx(ctx, t, h)
 
 				require.NoError(t, h.RetirePassword(txCtx, user, h1, 3))
 
@@ -479,7 +479,7 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 			act: func(t *testing.T, ctx context.Context, h HistoryHarness, user identity.UserID) {
 				t.Helper()
 
-				txCtx, commit, _ := beginHistoryTx(t, ctx, h)
+				txCtx, commit, _ := beginHistoryTx(ctx, t, h)
 
 				got, err := h.RecentPasswords(txCtx, user, 10)
 				require.NoError(t, err)
@@ -506,7 +506,7 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 				require.NoError(t, h.RetirePassword(ctx, user, h1, 3))
 				require.NoError(t, h.RetirePassword(ctx, other, h1, 3))
 
-				txCtx, commit, _ := beginHistoryTx(t, ctx, h)
+				txCtx, commit, _ := beginHistoryTx(ctx, t, h)
 
 				require.NoError(t, h.ForgetPasswords(txCtx, user))
 
@@ -538,7 +538,7 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 
 				require.NoError(t, h.RetirePassword(ctx, user, h1, 3))
 
-				txCtx, _, rollback := beginHistoryTx(t, ctx, h)
+				txCtx, _, rollback := beginHistoryTx(ctx, t, h)
 
 				require.NoError(t, h.ForgetPasswords(txCtx, user))
 
@@ -576,7 +576,7 @@ func runHistoryAmbientCases(t *testing.T, newHarness func(t *testing.T) HistoryH
 // still open, that the user's history reads as want through it and as empty
 // outside it.
 func assertHistorySeenOnlyInside(
-	t *testing.T, ctx, txCtx context.Context, h HistoryHarness, user identity.UserID, want ...[]byte,
+	ctx, txCtx context.Context, t *testing.T, h HistoryHarness, user identity.UserID, want ...[]byte,
 ) {
 	t.Helper()
 
@@ -593,7 +593,7 @@ func assertHistorySeenOnlyInside(
 // when the case ends, which the harness tolerates after a commit or a first
 // rollback.
 func beginHistoryTx(
-	t *testing.T, ctx context.Context, h HistoryHarness,
+	ctx context.Context, t *testing.T, h HistoryHarness,
 ) (txCtx context.Context, commit, rollback func() error) {
 	t.Helper()
 

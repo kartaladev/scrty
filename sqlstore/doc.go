@@ -51,10 +51,12 @@
 // cancelled by a statement timeout) as much as a write. Refusals never do.
 //
 // The identity store's writes differ: inside a caller's transaction,
-// IdentityStore.Provision and IdentityStore.Update run under a savepoint of
-// their own, and roll back to it when they fail, so a failed provision or
-// update undoes only its own writes and leaves the caller's transaction usable,
-// with the caller's earlier work intact. The identity store's reads follow the
+// IdentityStore.Provision, IdentityStore.Update and
+// IdentityStore.RetirePassword run under a savepoint of their own, and roll
+// back to it when they fail, so a failed provision, update or retire undoes
+// only its own writes and leaves the caller's transaction usable, with the
+// caller's earlier work intact. Outside one, each runs in a transaction of its
+// own. The identity store's reads follow the
 // limit above.
 //
 // # Errors
@@ -64,7 +66,8 @@
 // refusal or as absence. Error text never contains stored values, secrets or
 // user references. The security-state stores keep the driver's error in the
 // chain. The identity store does not: its tables hold usernames and password
-// hashes, which a driver error's detail fields can carry, so it returns the
-// driver's text and the context and database/sql sentinels it matched, and
-// leaves the driver's error value out.
+// hashes, which a driver error's detail fields can carry, so it returns text of
+// its own naming the operation and the SQLSTATE, with the context and
+// database/sql sentinels the driver's error matched, and leaves the driver's
+// error value and message out.
 package sqlstore

@@ -14,12 +14,12 @@ import (
 	"github.com/kartaladev/scrty/migrate"
 )
 
-// migratedColumns reads the security-state migration set and returns, for
-// every table it creates, each column's type as the migration declares it.
-func migratedColumns(t *testing.T) map[string]map[string]string {
+// migratedColumns reads the migration set and returns, for every table it
+// creates, each column's type as the migration declares it. Table-level
+// constraint lines (UNIQUE, PRIMARY KEY) declare no column and are skipped.
+func migratedColumns(t *testing.T, set migrate.Set) map[string]map[string]string {
 	t.Helper()
 
-	set := migrate.SecurityState()
 	files, err := fs.Glob(set.FS(), set.Dir+"/*.sql")
 	require.NoError(t, err)
 	require.NotEmpty(t, files)
@@ -66,7 +66,7 @@ func migratedColumns(t *testing.T) map[string]map[string]string {
 func TestModels(t *testing.T) {
 	t.Parallel()
 
-	migrated := migratedColumns(t)
+	migrated := migratedColumns(t, migrate.SecurityState())
 
 	// A consumer's naming strategy: models must not depend on gorm's default.
 	namers := map[string]schema.Namer{

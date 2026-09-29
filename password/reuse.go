@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
@@ -66,7 +67,10 @@ type reuseConfig struct {
 // depth is required and has no default: published guidance ranges from no
 // history at all to 24 passwords, and a library default would present one of
 // them as the right answer. There is no upper bound; a large depth costs one
-// key derivation per stored hash on every change.
+// key derivation per stored hash on every change, run one after another
+// rather than in parallel, so peak memory stays at one derivation's cost.
+// With Argon2id at 64 MiB and a depth of 24, a change can still take over a
+// second: the cost falls on a rare, authenticated action, not on login.
 //
 // A nil or typed-nil h, enc or matcher, a depth below one, or a nil clock is
 // refused with an error wrapping [ErrConfig] that names the mistake.
@@ -169,7 +173,7 @@ func (g *ReuseGuard) Check(ctx context.Context, user *identity.Details, candidat
 	if n := g.depth - 1; n > 0 {
 		var err error
 		if retired, err = g.history.RecentPasswords(ctx, user.ID, n); err != nil {
-			return &historyError{cause: err}
+			return historyError(err)
 		}
 	}
 
@@ -220,9 +224,11 @@ func (g *ReuseGuard) matches(candidate string, hash []byte) bool {
 // Retiring comes before writing, so every failure before step 5 leaves the
 // password untouched. If write fails, the retired entry stays; it holds the
 // hash that is still current, and retiring the same bytes again adds nothing,
-// so a retry is not refused and does not count the password twice. Run Change
-// inside one transaction with a write over the same store, and the retire and
-// the write commit or roll back together.
+// so a retry is not refused and does not count the password twice. With the
+// default identity store backing both the user and the history, run Change
+// with [ProvisionerWrite](store) inside one transaction attached to ctx with
+// the store's WithTx (or a configured WithTxResolver), so the retire, the
+// prune it carries and the write commit or roll back together.
 //
 // The one record keys everything: user.ID keys the history, user.Password is
 // the current hash, and write receives the same pointer. A nil user or a nil
@@ -243,7 +249,7 @@ func (g *ReuseGuard) Change(ctx context.Context, user *identity.Details, candida
 
 	if len(user.Password) > 0 {
 		if err := g.history.RetirePassword(ctx, user.ID, user.Password, g.depth-1); err != nil {
-			return &historyError{cause: err}
+			return historyError(err)
 		}
 	}
 
@@ -292,13 +298,15 @@ func isType[T Encoder](enc Encoder) bool {
 	return ok
 }
 
+// historyUnavailableText is ErrHistoryUnavailable's text, repeated here
+// as the fixed text of the error a failed read or record returns.
+const historyUnavailableText = "password: password history could not be read or written"
+
 // historyError refuses a change whose history could not be read or recorded.
 // Its text is ErrHistoryUnavailable's alone, so whatever the port put in its
 // own error, a stored hash included, never reaches a response or a log line
 // through the guard. Both ErrHistoryUnavailable and the port's error stay
 // reachable through errors.Is and errors.As.
-type historyError struct{ cause error }
-
-func (e *historyError) Error() string { return ErrHistoryUnavailable.Error() }
-
-func (e *historyError) Unwrap() []error { return []error{ErrHistoryUnavailable, e.cause} }
+func historyError(cause error) error {
+	return diag.Wrap(cause, historyUnavailableText, ErrHistoryUnavailable)
+}

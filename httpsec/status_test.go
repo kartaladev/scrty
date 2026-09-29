@@ -291,7 +291,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 	// Sentinels that are deliberately unmapped, each with the reason. A
 	// configuration error is a wiring fault the consumer sees at construction,
 	// never a refusal a client is answered with.
-	unmapped := map[string]string{
+	unmapped := map[string]string{ //nolint:gosec // G101 false positive: keys are sentinel names such as "password.ErrConfig", values are reasons, none is a credential.
 		"authenticate.ErrConfig":                  "a wiring fault, refused at construction",
 		"authenticate.ErrNoEligibleAuthenticator": "a wiring fault: nothing was configured to judge the credentials",
 		"authenticate.ErrUnsupportedCredentials":  "internal dispatch between providers, never returned to a client",

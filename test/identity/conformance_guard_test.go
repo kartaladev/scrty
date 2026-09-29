@@ -155,6 +155,10 @@ const (
 	defectPlaceholderPassword defect = "placeholder-password"
 	// Provision mints its first grant with a validity window.
 	defectProvisionGrantsWindow defect = "provision-grants-window"
+	// An update naming a nil organization keeps the stored one, as a store
+	// deciding from the value instead of IsSet would, so an organization can
+	// never be cleared.
+	defectKeepsOrganizationOnNamedNil defect = "keeps-organization-on-named-nil"
 )
 
 // variantOtherLocation is not a defect: a store that returns every stored
@@ -221,6 +225,7 @@ var everyDefect = []defect{
 	defectRemintsOnEmptyRoleList,
 	defectPlaceholderPassword,
 	defectProvisionGrantsWindow,
+	defectKeepsOrganizationOnNamedNil,
 }
 
 // brokenStore implements every identity port over process memory, carrying
@@ -828,7 +833,8 @@ func (s *brokenStore) write(d *identity.Details, u *identity.NewUser) {
 		s.writeChangedAt(d, u)
 	}
 
-	if ignore || u.IsSet(identity.FieldOrganization) {
+	keepOrg := s.d == defectKeepsOrganizationOnNamedNil && u.Organization == nil
+	if (ignore || u.IsSet(identity.FieldOrganization)) && !keepOrg {
 		d.Organization = s.orgRef(u.Organization)
 	}
 

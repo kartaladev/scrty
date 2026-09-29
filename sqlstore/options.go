@@ -87,7 +87,8 @@ func WithTxResolver(r TxResolver) Option {
 // WithIDGenerator replaces the source of the identifiers a store mints for
 // records that carry none of their own. It is honoured by the minting stores:
 // sessions, signing keys, login attempts, MFA enrolments, OIDC flows, and the
-// identity store (the users and role grants it creates). The default is
+// identity store (the users, role grants and password-history entries it
+// creates). The default is
 // id.NewV7Generator, whose identifiers sort by the moment they were minted.
 //
 // Given to any other store, whose records arrive with their own identifier, it
@@ -111,8 +112,9 @@ func WithIDGenerator(g id.Generator) Option {
 // (the expiry condition of Complete), the one-time token store's reaper, and
 // the MFA enrolment store (whether an emailed code's EmailCodeUntil has
 // passed, so it is no longer opened on read). The identity store honours it
-// too: its tables have no database default for created_at and updated_at, and
-// the clock binds every such time it writes. The default is time.Now.
+// too: its tables have no database default for created_at, updated_at or a
+// password-history entry's retired_at, and the clock binds every such time it
+// writes. The default is time.Now.
 //
 // For the MFA enrolment store, give it the same clock as the enrolling method
 // (mfa.WithClock for TOTP), which sets the code's expiry and charges each
