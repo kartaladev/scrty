@@ -317,7 +317,7 @@ func (c *config) build() (*Chain, error) {
 	// configured after EnablePasswordChangeGate, so it is handed over here.
 	c.wirePasswordChange()
 
-	// The enrolment path takes the first MFA method EnableMFA was given and the
+	// The enrolment path takes the enrollable methods EnableMFA was given and the
 	// chain's sessions and logout path, any of which an option applied after
 	// EnableMFAEnrolment may still have set.
 	if err := c.wireMFAEnrolment(); err != nil {

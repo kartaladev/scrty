@@ -132,9 +132,9 @@ By default, a user who must use a second factor and has none is refused outright
 Go API (`BeginEnrolment` / `ConfirmEnrolment` on the method, e.g. `mfa.TOTP`) the consumer puts
 behind their own authorised route, reached however they choose. The enrolment path is the
 alternative: turned on explicitly, it lets such a user bind a second factor themselves, from a
-session confined to that one purpose, right after they sign in. The path needs the method to
-implement `mfa.Enroller` over a store that keeps device proofs; `httpsec.EnableMFAEnrolment`
-checks that for you.
+session confined to that one purpose, right after they sign in. The path enrols every configured
+method that implements `mfa.Enroller` over a store that keeps device proofs, or those you name
+with `httpsec.WithEnrolmentMethods`; `httpsec.EnableMFAEnrolment` checks that for you.
 
 Because a password alone would otherwise be enough to bind a second factor of an attacker's
 choosing, the path is off unless both halves are turned on together:
@@ -215,7 +215,7 @@ only logout is let through as well.
 
 ### A lost authenticator
 
-`mfa.ResetEnrolment` is the operator's undo: it removes the enrolment, ends every session of the
+`mfa.ResetEnrolment` is the operator's undo: it removes the user's enrolment on every method it is given, ends every session of the
 user (so one already satisfied by the lost authenticator stops working), and notifies the user by
 default. It is a Go API, not an HTTP endpoint — put it behind whatever authorised administrative
 route the rest of the operator surface already uses. With the enrolment path on, the user's next
