@@ -331,6 +331,8 @@ func TestMagicLinkThenMFA(t *testing.T) {
 	var ch *httpsec.ChallengeError
 	require.ErrorAs(t, redeemed.err, &ch)
 	assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+	assert.Equal(t, []httpsec.MFAMethod{{Name: "totp", Channel: factor.AuthenticatorApp}}, ch.Methods,
+		"the magic-link login's challenge names the method the user can answer it with")
 	require.NotNil(t, ch.Session)
 	assert.Equal(t, factor.MagicLink, ch.Session.FirstFactor)
 	assert.Equal(t, session.MFAPending, ch.Session.MFA)
@@ -350,6 +352,7 @@ func TestMagicLinkThenMFA(t *testing.T) {
 	var gate *httpsec.ChallengeError
 	require.ErrorAs(t, held.err, &gate)
 	assert.Equal(t, policy.ChallengeMFA, gate.Kind)
+	assert.Equal(t, ch.Methods, gate.Methods, "the gate's challenge names the same methods")
 	assert.Empty(t, gate.Token)
 	assert.False(t, held.handlerRan, "the gate holds the protected route")
 

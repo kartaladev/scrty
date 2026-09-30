@@ -33,9 +33,11 @@ A body over the limit SHALL be refused as too large, and a body that is empty, o
 ### Requirement: A challenge method verifies only against a challenge the library issued
 A method MAY declare a begin step. For such a method the library SHALL provide a begin endpoint that matches POST requests to one path per method under a begin prefix, `/mfa/begin` by default and replaceable by an option. Begin SHALL apply the same session, method and usability refusals as verification, SHALL be refused while the user's verification is throttled, and SHALL then issue a pending challenge: a one-time token of a purpose of the method's own, whose subject is the session's user and which is bound to the session's handle, expiring after 5 minutes by default, replaceable by an option. The token string SHALL be the challenge the method builds its begin data around, and the begin data SHALL be written through a replaceable responder. The pending-challenge store SHALL default to the in-memory one-time store and be replaceable by an option, and the documentation SHALL state that the in-memory store serves a single process.
 
-At verification of a challenge method, after the response is read, the library SHALL take from the response the challenge the client answered, check it against the pending challenges it issued for that session, and spend it, before the method verifies the response. A challenge SHALL be spent by any verification attempt that presents it, whether that attempt is accepted or refused. A challenge that is absent, unknown, expired, already spent, or bound to another session SHALL be refused as an invalid second-factor code and counted as a failed verification. A challenge SHALL only ever be compared with one the library issued, never accepted from the request alone.
+At verification of a challenge method, after the response is read, the library SHALL take from the response the challenge the client answered, check it against the pending challenges it issued for that session, and spend it, before the method verifies the response. A challenge SHALL be spent by any verification attempt that presents it on the session it was issued to, whether that attempt is accepted or refused. A challenge presented on another session SHALL be refused without being spent, since it matches no challenge issued to that session. A challenge that is absent, unknown, expired, already spent, or bound to another session SHALL be refused as an invalid second-factor code and counted as a failed verification. A challenge SHALL only ever be compared with one the library issued, never accepted from the request alone.
 
 A begin path naming a method that has no begin step SHALL be refused as an unknown MFA method.
+
+Begin SHALL be refused as throttled, issuing nothing, once the user has been issued as many challenges for that method within the pending-challenge store's issuance window as the challenge limit allows: 10 within one hour by default, the limit replaceable by an option, and a limit of zero or less a configuration error. Because the count and the issue are separate steps, begins that race may together exceed the limit by the number that raced; the documentation SHALL state this. The library SHALL remove a method's expired challenges from the store at most once per issuance window, as part of a begin, so the default store does not grow without bound; a failed removal SHALL NOT refuse the begin.
 
 #### Scenario: Begin then verify
 - **WHEN** a pending session begins a challenge method, and posts a response answering the issued challenge
@@ -56,6 +58,18 @@ A begin path naming a method that has no begin step SHALL be refused as an unkno
 #### Scenario: Consumer challenge lifetime
 - **WHEN** the challenge lifetime is set to 2 minutes and a challenge issued at 12:00 is answered at 12:03
 - **THEN** it is refused as an invalid second-factor code
+
+#### Scenario: Too many challenges
+- **WHEN** a pending session of `u-1` begins the same challenge method 10 times within an hour, then begins it once more
+- **THEN** the eleventh begin is refused as throttled and no challenge is issued
+
+#### Scenario: Consumer challenge limit
+- **WHEN** the challenge limit is set to 3 and `u-1` begins the same method 4 times within an hour
+- **THEN** the fourth begin is refused as throttled
+
+#### Scenario: Expired challenges are removed
+- **WHEN** with the challenge limit raised to 1000, 200 challenges are issued and left unanswered, more than an hour passes, and another begin is made
+- **THEN** the expired challenges are no longer held by the store
 
 #### Scenario: Begin for a method without a begin step
 - **WHEN** a pending session posts to the begin path of the TOTP method

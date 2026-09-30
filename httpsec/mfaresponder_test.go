@@ -30,14 +30,14 @@ func (h *mfaHarness) bearerChain(t *testing.T) *httpsec.Chain {
 		httpsec.WithMFATokens(h.tokens),
 	}, h.mfaOpts...)
 
-	c, err := httpsec.New(
+	c, err := httpsec.New(append([]httpsec.Option{
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 			Verifier: h.tokens,
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
-		httpsec.EnableMFA([]mfa.Method{h.method}, mfaOpts...),
-	)
+		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...),
+	}, h.chainOpts...)...)
 	require.NoError(t, err)
 
 	return c
@@ -59,7 +59,7 @@ func (h *mfaHarness) buildChain(t *testing.T) (*httpsec.Chain, error) {
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
-		httpsec.EnableMFA([]mfa.Method{h.method}, mfaOpts...),
+		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...),
 	)
 }
 
@@ -336,7 +336,9 @@ func TestMFAVerifyWithoutResolvedCaller(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
+	// The body must not be read: this refusal is decided from the session
+	// alone, before anything the caller posted is touched.
+	out := serve(t, c, postUnread(t.Context(), t, testMFAVerifyPath))
 
 	require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 	assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")

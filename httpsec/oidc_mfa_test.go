@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
 )
@@ -51,6 +52,8 @@ func TestOIDCRedeemMFAExemptionRemoved(t *testing.T) {
 				var challenge *httpsec.ChallengeError
 				require.ErrorAs(t, again.err, &challenge, "the code was kept for a later redemption")
 				assert.Equal(t, policy.ChallengeMFA, challenge.Kind)
+				assert.Equal(t, []httpsec.MFAMethod{{Name: "totp", Channel: factor.AuthenticatorApp}},
+					challenge.Methods, "the handoff's challenge names the method the user can answer it with")
 				assert.Equal(t, 1, h.activeSessions(t))
 			},
 		},

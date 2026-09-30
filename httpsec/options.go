@@ -371,6 +371,7 @@ func (c *config) build() (*Chain, error) {
 		limiter:           limiter,
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          c.enforcedChallenges(),
+		mfa:               c.mfaOf(),
 		ipv6Prefix:        c.ipv6Prefix,
 		errorHandler:      c.errorHandler,
 		refusalInterval:   c.refusalInterval,
@@ -1012,8 +1013,23 @@ type MFAOption func(*mfaInterceptor) error
 // Before the body is read the endpoint also refuses a method on the session's
 // first-factor channel with mfa.ErrSameChannel, and a method the user may not
 // use with ErrMFAMethodNotUsable (403), deciding "usable" with
-// policy.UsableMFAMethods; a failed enrolment lookup is returned as the
-// refusal. None of these is counted against the verification limiter.
+// policy.UsableMFAMethods; a failed enrolment lookup is a refusal behind
+// fixed text, with the lookup's error reachable through errors.Is and
+// errors.As but not repeated in the text. None of these is counted against the
+// verification limiter.
+//
+// A method that is an mfa.ChallengeMethod also has a begin step: a POST to
+// the begin prefix, "/" and its name ("/mfa/begin/<name>" by default) makes
+// the same refusals, is refused while the user's verification is throttled,
+// and then issues a pending challenge — a one-time token of the method's own
+// purpose, for the session's user, bound to the session's handle — whose
+// string the method's BeginChallenge builds its data around. The data is
+// written by the begin responder. A begin path naming a method with no begin
+// step is refused with ErrUnknownMFAMethod. At verification of such a method,
+// the challenge its response presents is checked against the ones issued for
+// that session and spent before the method verifies anything, whether the
+// attempt then succeeds or not; an absent, unknown, expired, spent or
+// other-session challenge is refused with mfa.ErrInvalidCode and counted.
 //
 // The policies that raise the challenge must be built from the same methods,
 // through mfa.LookupsFor(methods...), so the endpoint never refuses a method a
@@ -1024,7 +1040,19 @@ type MFAOption func(*mfaInterceptor) error
 // across every method, by an in-memory limiter of 5 failures per 15 minutes
 // (WithMFAVerifyLimiter); and the records those refusals write are sampled
 // over one minute (WithMFALogInterval). A consumer who wires nothing else gets
-// all three.
+// all three. For challenge methods: the begin prefix is DefaultMFABeginPrefix
+// (WithMFABeginPrefix), a pending challenge lives DefaultMFAChallengeTTL
+// (WithMFAChallengeTTL) in an in-memory store serving one process
+// (WithMFAChallengeStore), a user is issued at most DefaultMFAChallengeLimit
+// (10) challenges per method within the store's one-hour issuance window
+// (WithMFAChallengeLimit), and a begin answers with the method's data as a
+// JSON body (WithMFABeginResponder). Begin also sweeps each method's expired
+// challenges out of the store, at most once per issuance window per method in
+// each process, under the begin request's own context; a sweep that fails is
+// logged and retried by a later begin, and never refuses the begin. A store
+// that cannot purge at all (onetime.ErrReapUnsupported) is not retried, since
+// a retry would not change that: it is tried and logged once per issuance
+// window. The verify and begin prefixes must not overlap.
 //
 // Each method's response is read by the library, the way the method's
 // mfa.ResponseFormat declares: one field of an
@@ -1080,6 +1108,10 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			now:          time.Now,
 			verifyPrefix: DefaultMFAVerifyPrefix,
 			respond:      writeMFAResult,
+			beginPrefix:  DefaultMFABeginPrefix,
+			beginRespond: writeMFABegin,
+			challengeTTL: DefaultMFAChallengeTTL,
+			challengeCap: DefaultMFAChallengeLimit,
 		}
 
 		for _, opt := range opts {
@@ -1089,6 +1121,14 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			if err := opt(i); err != nil {
 				return err
 			}
+		}
+
+		// Every POST under either prefix is that endpoint's own, so two
+		// prefixes that overlap would leave one endpoint answering the
+		// other's requests.
+		if underPrefix(i.beginPrefix, i.verifyPrefix) || underPrefix(i.verifyPrefix, i.beginPrefix) {
+			return newConfigError("%s's verify prefix %q and begin prefix %q overlap, so one "+
+				"endpoint would answer the other's requests", option, i.verifyPrefix, i.beginPrefix)
 		}
 
 		c.enable(option, func() error {
@@ -1495,7 +1535,11 @@ func WithAllowedOrigins(origins ...string) MagicLinkOption {
 //
 // Passing false exempts exactly those two refusals. Every other redemption
 // failure is still recorded, including one from a redeemer that discarded the
-// denial and then failed for a reason of its own.
+// denial and then failed for a reason of its own, and an enrolment-store
+// outage while the check before the spend looks up the methods a raised
+// second-factor challenge offers: that is a failure, not a refusal. A policy
+// that reads the outage as a reason to deny is a denial like any other, and
+// is exempted.
 func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		i.countRefusals = count
@@ -1572,7 +1616,11 @@ func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
 // Default: the magic-link manager's own Redeem, which checks everything before
 // it consumes anything. A consumer who replaces it takes on that ordering
 // contract — see Redeemer, which also says what the endpoint still enforces
-// itself and what it cannot.
+// itself and what it cannot. In short: the login completion reuses the
+// decision the endpoint's check made before the link was spent, with no second
+// evaluation after it, and a success whose check never ran, or that returns a
+// user with a different reference or password-change instant than the check
+// was handed, is refused with policy.ErrPolicyDenied.
 //
 // A nil redeemer is refused: there would be nothing to redeem with.
 func WithMagicLinkRedeemer(r Redeemer) MagicLinkOption {

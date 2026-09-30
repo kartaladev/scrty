@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -64,6 +65,31 @@ type ChallengeError struct {
 	// Token is the access token issued alongside the pending session, and is
 	// empty unless one was issued when the challenge was raised.
 	Token string
+
+	// Methods are the second-factor methods the session's user can answer a
+	// challenge of kind policy.ChallengeMFA with, in the order EnableMFA was
+	// given them, as policy.UsableMFAMethods decides — the same decision the
+	// policies made. It is never a partial list: when that decision fails, the
+	// request is refused with the failure instead of this challenge. It is
+	// empty when the lookups succeeded and none is usable, which leaves the
+	// caller only logout. It is nil for every other kind, and for a
+	// second-factor challenge raised without a session.
+	Methods []MFAMethod
+}
+
+// MFAMethod is one way the session's user can answer a second-factor
+// challenge, for the consumer's handler to offer.
+type MFAMethod struct {
+	// Name is the method's name, the path segment its verify path, and its
+	// begin path when it has one, end with.
+	Name string
+
+	// Channel is the medium the method's responses travel over.
+	Channel factor.Channel
+
+	// Begins reports that the method has a begin step: the client posts to its
+	// begin path for a challenge before it can answer.
+	Begins bool
 }
 
 // Error names the challenge kind and nothing else. The session handle and the

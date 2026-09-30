@@ -195,11 +195,17 @@ func (h *HandoffManager) reportSuppressed(reason string, suppressed int) {
 // builder serves both.
 //
 // A check must have no side effects. Several racing redemptions of one code
-// can each run every check, and only one goes on to consume it; and the login
-// completion step evaluates the post-authentication policy again after a
-// successful redemption. That includes any consumer policy the chain's
-// shipped check evaluates. A check that wrote something would write it once
-// per attempt rather than once per sign-in.
+// can each run every check, and only one goes on to consume it. That includes
+// any consumer policy the chain's shipped check evaluates. A check that wrote
+// something would write it once per attempt rather than once per sign-in.
+//
+// A redeemer runs the checks against the user it will return and that user's
+// password-change time. The login completion step reuses the
+// post-authentication decision the chain's shipped check made before the code
+// was spent, rather than evaluating the policies again after it is spent, and
+// refuses a redemption that returns a user with a different reference, or a
+// password-change time that is not the same instant, than the checks were
+// handed.
 //
 // The first check that returns an error stops the redemption, later checks do
 // not run, the error is returned unchanged, and the code stays redeemable.

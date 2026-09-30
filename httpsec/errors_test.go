@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -34,6 +35,29 @@ func TestChallengeError(t *testing.T) {
 				assert.Contains(t, text, policy.ChallengeMFA.String())
 				assert.NotContains(t, text, "eyJhbGciOiJFUzI1NiJ9.secret.sig")
 				assert.NotContains(t, text, "sess-handle-0123456789")
+			},
+		},
+		{
+			// The methods are data for the consumer's handler to render, and
+			// never text: a log of the refusal says a second factor was owed,
+			// not which ones this user holds.
+			name: "a second-factor challenge names none of its methods",
+			err: &httpsec.ChallengeError{ //nolint:gosec // a fake token is the point of the case
+				Kind:    policy.ChallengeMFA,
+				Session: &session.Session{ID: "sess-handle-0123456789"},
+				Token:   "eyJhbGciOiJFUzI1NiJ9.secret.sig",
+				Methods: []httpsec.MFAMethod{
+					{Name: "totp", Channel: factor.AuthenticatorApp},
+					{Name: "passkey", Channel: "authenticator-device", Begins: true},
+				},
+			},
+			assert: func(t *testing.T, text string) {
+				assert.Contains(t, text, policy.ChallengeMFA.String())
+				assert.NotContains(t, text, "eyJhbGciOiJFUzI1NiJ9.secret.sig")
+				assert.NotContains(t, text, "sess-handle-0123456789")
+				assert.NotContains(t, text, "totp")
+				assert.NotContains(t, text, "passkey")
+				assert.NotContains(t, text, string(factor.AuthenticatorApp))
 			},
 		},
 		{

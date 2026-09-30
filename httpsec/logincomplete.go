@@ -43,6 +43,21 @@ type loginTailDeps struct {
 
 	// enforced holds the challenge kinds something on the chain enforces.
 	enforced map[policy.ChallengeKind]bool
+
+	// challengeMethods looks up the methods a raised challenge offers: the
+	// chain's challengeMethods, handed to each first factor at assembly, so a
+	// second-factor challenge carries the usable methods. Nil offers none,
+	// which only a test seam leaves it.
+	challengeMethods challengeMethodsFunc
+
+	// decided is the post-authentication decision already made for this
+	// login, nil when none was. A redemption decides in its check, before the
+	// one-time credential is spent, and hands that decision on here: the tail
+	// evaluating the policies again would run them after the spend, where a
+	// lookup failure would refuse the login and cost the holder the
+	// credential. Form login spends nothing, so it leaves this nil and the
+	// tail evaluates.
+	decided *policy.Decision
 }
 
 // postAuthenticationInput builds the policy input for a login that has just
@@ -187,6 +202,10 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // errors.As, so the status it maps to is unchanged. A policy's reason is the
 // policy's own, and is returned as itself.
 //
+// A caller that has already decided the phase for this login passes the
+// decision in deps.decided, and the tail acts on it rather than evaluating
+// again (see loginTailDeps.decided).
+//
 // With no policy engine wired the phase allows, which is the documented default
 // of WithPolicyEngine: a consumer who registers no policies rests on
 // authentication alone rather than on a phase that refuses everything.
@@ -203,7 +222,11 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	ctx := ex.Context()
 
 	d := policy.Decision{Outcome: policy.Allow}
-	if deps.engine != nil {
+
+	switch {
+	case deps.decided != nil:
+		d = *deps.decided
+	case deps.engine != nil:
 		d = deps.engine.EvaluatePhase(ctx, policy.PostAuthentication, in)
 	}
 
@@ -212,10 +235,24 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	}
 
 	// Refused before the session exists, so an unenforced challenge leaves
-	// neither a marked session nor a token behind.
+	// neither a marked session nor a token behind. The methods the challenge
+	// offers are looked up here too, for the same reason: a lookup that fails
+	// refuses the login before a pending session is written that nobody holds
+	// a credential for.
+	var methods []MFAMethod
+
 	if d.Outcome == policy.Challenge {
 		if err := refuseUnenforced(deps.enforced, d.Challenge); err != nil {
 			return "", err
+		}
+
+		if deps.challengeMethods != nil {
+			var err error
+
+			methods, err = deps.challengeMethods(ctx, d.Challenge, in.User, in.FirstFactor)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
 
@@ -261,7 +298,7 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	ex.SetContext(withSession(WithCaller(ctx, ex.Authentication), s))
 
 	if d.Outcome == policy.Challenge {
-		return tok, &ChallengeError{Kind: d.Challenge, Session: s, Token: tok}
+		return tok, &ChallengeError{Kind: d.Challenge, Session: s, Token: tok, Methods: methods}
 	}
 
 	return tok, nil

@@ -79,6 +79,28 @@ type MagicLinkResult struct {
 type MagicLinkResponder func(ex *Exchange, result MagicLinkResult) error
 
 // Redeemer is the redemption step, replaceable by a consumer.
+//
+// The default is the *magiclink.Manager given to EnableMagicLink, which runs
+// every check before it consumes the link. A replacement takes on that
+// contract: it must run the checks it is handed, against the user it will
+// return and that user's password-change time, return the first check's error
+// unchanged, and consume the link only after every check passed.
+//
+// The login completion step reuses the post-authentication decision the
+// endpoint's own check made before the link was spent; it does not evaluate
+// the post-authentication policies a second time after the link is spent, so
+// a policy lookup failure never spends it. That decision is only reused for
+// the login it was made about. After a replacement reports success, the
+// endpoint refuses the request with policy.ErrPolicyDenied, and establishes
+// no session, when that check never ran, or when the replacement returns a
+// user with a different reference (identity.Principal.ID) or a
+// password-change time that is not the same instant as the one the check was
+// handed. The comparison is not deep equality: the same user loaded again, with
+// the same instant in another location, is the same login. A check that ran
+// and denied refuses with the policy's own reason.
+//
+// What the endpoint cannot do is un-spend a link a replacement consumed before
+// it was refused.
 type Redeemer interface {
 	Redeem(
 		ctx context.Context,
@@ -108,6 +130,10 @@ type magicLinkInterceptor struct {
 	// enforced holds the challenge kinds something on the chain enforces,
 	// handed over by wire; a raised kind outside it refuses the request.
 	enforced map[policy.ChallengeKind]bool
+
+	// challengeMethods looks up the methods a raised challenge offers
+	// (Chain.challengeMethods), before the login's session is created.
+	challengeMethods challengeMethodsFunc
 
 	limiter   ratelimit.Limiter
 	redirects *origin.Allowlist
@@ -160,6 +186,7 @@ func (i *magicLinkInterceptor) wire(c *Chain) {
 	i.sampler = c.sampler
 	i.enrolmentLifetime = c.enrolmentLifetime
 	i.enforced = c.enforced
+	i.challengeMethods = c.challengeMethods
 }
 
 // wireMagicLink builds what the magic-link endpoints cannot build until every
@@ -343,7 +370,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		nonce, _ = ex.Request.Cookie(i.cookieName)
 	}
 
-	check, out := redemptionPolicyCheck(i.engine, i.enforced, factor.MagicLink, i.now)
+	check, out := redemptionPolicyCheck(i.engine, i.enforced, i.challengeMethods, factor.MagicLink, i.now)
 
 	// The policy check runs first and the consumer's own follow, in the order
 	// they were registered: magiclink stops at the first refusal, so a login
@@ -367,7 +394,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 	// Checked before anything is created. A Redeemer is an interface, and an
 	// implementation that skipped or discarded the check has not shown this
 	// login is permitted.
-	if err := guardRedemption(out); err != nil {
+	if err := guardRedemption(out, redemption.Principal, redemption.PasswordChangedAt); err != nil {
 		return err
 	}
 
@@ -381,6 +408,8 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		tokens:            i.tokens,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
+		challengeMethods:  out.challengeMethods(i.challengeMethods),
+		decided:           &out.decision,
 	}, postAuthenticationInput(
 		&redemption.Principal, factor.MagicLink, "", redemption.PasswordChangedAt, i.now()))
 	if err != nil {

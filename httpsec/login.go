@@ -86,6 +86,10 @@ type formLogin struct {
 	// handed over by wire; a raised kind outside it refuses the request.
 	enforced map[policy.ChallengeKind]bool
 
+	// challengeMethods looks up the methods a raised challenge offers
+	// (Chain.challengeMethods), before the login's session is created.
+	challengeMethods challengeMethodsFunc
+
 	now func() time.Time
 
 	path          string
@@ -103,6 +107,7 @@ func (l *formLogin) wire(c *Chain) {
 	l.log = c.logger
 	l.enrolmentLifetime = c.enrolmentLifetime
 	l.enforced = c.enforced
+	l.challengeMethods = c.challengeMethods
 }
 
 // flushRefusalLogs reports what the authenticator is holding back, when it
@@ -157,6 +162,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		tokens:            l.tokens,
 		enrolmentLifetime: l.enrolmentLifetime,
 		enforced:          l.enforced,
+		challengeMethods:  l.challengeMethods,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now))
 	if err != nil {

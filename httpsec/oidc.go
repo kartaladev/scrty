@@ -83,8 +83,25 @@ type CallbackSuccess func(ex *Exchange, res oidc.CallbackResult, next string) er
 //
 // The default is the *oidc.HandoffManager given to EnableOIDCLogin, which
 // runs every check before it consumes the code. A replacement takes on that
-// contract: it must run the checks it is handed, return the first check's
-// error unchanged, and consume the code only after every check passed.
+// contract: it must run the checks it is handed, against the user it will
+// return and that user's password-change time, return the first check's error
+// unchanged, and consume the code only after every check passed.
+//
+// The login completion step reuses the post-authentication decision the
+// endpoint's own check made before the code was spent; it does not evaluate
+// the post-authentication policies a second time after the code is spent, so
+// a policy lookup failure never spends it. That decision is only reused for
+// the login it was made about. After a replacement reports success, the
+// endpoint refuses the request with policy.ErrPolicyDenied, and establishes
+// no session, when that check never ran, or when the replacement returns a
+// user with a different reference (identity.Principal.ID) or a
+// password-change time that is not the same instant as the one the check was
+// handed. The comparison is not deep equality: the same user loaded again, with
+// the same instant in another location, is the same login. A check that ran
+// and denied refuses with the policy's own reason.
+//
+// What the endpoint cannot do is un-spend a code a replacement consumed before
+// it was refused.
 type HandoffRedeemer interface {
 	Redeem(ctx context.Context, code string, checks ...oidc.RedeemCheck) (oidc.HandoffResult, error)
 }
@@ -141,6 +158,10 @@ type oidcInterceptor struct {
 	// handed over by wire; a raised kind outside it refuses the request.
 	enforced map[policy.ChallengeKind]bool
 
+	// challengeMethods looks up the methods a raised challenge offers
+	// (Chain.challengeMethods), before the login's session is created.
+	challengeMethods challengeMethodsFunc
+
 	// limiter, limit and window are what the redemption source guard is built
 	// from. A nil limiter means a dedicated in-memory one of limit per window.
 	limiter       ratelimit.Limiter
@@ -187,6 +208,7 @@ func (i *oidcInterceptor) wire(c *Chain) {
 	i.sampler = c.sampler
 	i.enrolmentLifetime = c.enrolmentLifetime
 	i.enforced = c.enforced
+	i.challengeMethods = c.challengeMethods
 }
 
 // flushRefusalLogs reports what the redemption source guard, the OIDC manager

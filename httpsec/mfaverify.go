@@ -3,12 +3,15 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -70,6 +73,29 @@ type mfaInterceptor struct {
 
 	verifyPrefix string
 
+	// beginPrefix is where a challenge method's pending challenge is issued,
+	// beginRespond answers a successful begin, and challengeTTL and
+	// challengeStore are what the pending challenges are issued with.
+	// challenges holds one manager per challenge method, keyed by name, built
+	// at assembly.
+	beginPrefix    string
+	beginRespond   MFABeginResponder
+	challengeTTL   time.Duration
+	challengeStore onetime.Store
+	challenges     map[string]*onetime.Manager
+
+	// challengeCap is how many challenges begin issues a user for one method
+	// within the store's issuance window (WithMFAChallengeLimit), and sweeps
+	// spaces each challenge method's sweeps of its expired challenges, keyed
+	// by name and built at assembly with the managers.
+	challengeCap int
+	sweeps       map[string]*sweepClock
+
+	// log and sampler are the chain's, handed over once the chain exists: a
+	// sweep that fails is logged through them.
+	log     *slog.Logger
+	sampler *logsample.Sampler
+
 	// logoutPath is handed over at assembly, never configured here.
 	logoutPath string
 }
@@ -100,9 +126,25 @@ func (c *config) wireMFA() error {
 				"session owing a second factor could not log out", i.verifyPrefix, c.logoutPath)
 		}
 
+		if c.logoutPath != "" && underPrefix(c.logoutPath, i.beginPrefix) {
+			return newConfigError("EnableMFA's begin prefix %q claims the logout path %q, so a "+
+				"session owing a second factor could not log out", i.beginPrefix, c.logoutPath)
+		}
+
+		if err := i.wireChallenges(c); err != nil {
+			return err
+		}
+
 		i.throttle = throttle
 		i.sessions = c.sessions
 		i.logoutPath = c.logoutPath
+
+		// The chain's sampler is built after every option has been applied,
+		// so it is handed over with the chain.
+		c.wire(func(ch *Chain) {
+			i.log = ch.logger
+			i.sampler = ch.sampler
+		})
 
 		return nil
 	})
@@ -115,16 +157,20 @@ func (i *mfaInterceptor) flushRefusalLogs() {
 	}
 }
 
-// Intercept is both halves of the second factor: the verify endpoint on its
-// own path, and the gate for everything else.
+// Intercept is every part of the second factor: the verify endpoint and the
+// begin endpoint under their prefixes, and the gate for everything else.
 //
-// They are one interceptor rather than two registrations because the endpoint
-// is the gate's own exemption. Split apart, a consumer or a later release could
-// order the gate outside the endpoint and leave a pending session unable to
-// reach the one request that resolves it.
+// They are one interceptor rather than several registrations because the
+// endpoints are the gate's own exemptions. Split apart, a consumer or a later
+// release could order the gate outside the endpoint and leave a pending
+// session unable to reach the one request that resolves it.
 func (i *mfaInterceptor) Intercept(ex *Exchange, next Next) error {
 	if i.isVerifyRequest(ex.Request) {
 		return i.verify(ex)
+	}
+
+	if i.isBeginRequest(ex.Request) {
+		return i.begin(ex)
 	}
 
 	return i.gate(ex, next)
@@ -157,7 +203,7 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     factor. The user has not failed anything, the deployment has.
 //  4. The user may not use the method, as policy.UsableMFAMethods decides for
 //     the policies too: ErrMFAMethodNotUsable. A lookup that fails is returned
-//     as it is, never read as "not enrolled".
+//     behind fixed text, never read as "not enrolled".
 //  5. The throttle, before the response is read, so guessing costs attempts
 //     rather than time, and a locked-out user learns nothing from a body the
 //     endpoint cannot read. It counts per user across every method.
@@ -165,36 +211,22 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     the URL. A response that cannot be read is ErrCredentialsMissing and one
 //     over the method's limit is ErrRequestTooLarge; neither is counted,
 //     because none was presented.
-//  7. The method verifies it. A wrong response is recorded against the user,
+//  7. For a challenge method only, the challenge the response answers is
+//     checked against the ones issued to this session and spent, whatever
+//     happens next. One that is absent, unreadable, unknown, expired, spent
+//     or another session's is mfa.ErrInvalidCode, and counted.
+//  8. The method verifies it. A wrong response is recorded against the user,
 //     and the method's error is returned unchanged, so a consumer sees mfa's
 //     own sentinel.
-//  8. Success: resolve, rotate, publish, answer.
+//  9. Success: resolve, rotate, publish, answer.
 func (i *mfaInterceptor) verify(ex *Exchange) error {
-	s := ex.Session
-	if s == nil {
-		return ErrAuthenticationRequired
-	}
-
-	// There must also be a resolved caller. The response hands back a
-	// credential issued for somebody, and a session whose first factor
-	// published no caller names nobody to issue one to — see WithCaller, which
-	// is how every built-in first factor publishes both together.
-	if ex.Authentication == nil || ex.Authentication.Principal == nil {
-		return ErrAuthenticationRequired
-	}
-
-	name, ok := methodSegment(ex.Request.Path(), i.verifyPrefix)
-	method, known := i.byName[name]
-	if !ok || !known {
-		return ErrUnknownMFAMethod
+	s, method, err := i.admit(ex, i.verifyPrefix, anyMethod)
+	if err != nil {
+		return err
 	}
 
 	ctx := ex.Context()
 	user := s.UserID
-
-	if err := i.usable(ctx, method, s); err != nil {
-		return err
-	}
 
 	if err := i.throttle.Check(ctx, user); err != nil {
 		return err
@@ -203,6 +235,14 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	response, err := readResponse(ex.Request, method.Response())
 	if err != nil {
 		return err
+	}
+
+	if cm, ok := method.(mfa.ChallengeMethod); ok {
+		if err := i.spendChallenge(ctx, cm, s, response); err != nil {
+			i.throttle.RecordFailure(ctx, user)
+
+			return err
+		}
 	}
 
 	if err := method.Verify(ctx, user, response); err != nil {
@@ -214,11 +254,95 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 	return i.resolve(ex, s)
 }
 
+// spendChallenge checks the challenge a challenge method's response presents
+// against those issued to session s, and spends it. Only a nil return lets the
+// method verify the response.
+//
+// Every attempt that presents a live challenge spends it, whether the method
+// then accepts the response or not. That departs from check-then-consume as
+// the one-time package frames it — where a refusal between the two leaves the
+// token redeemable — on purpose: a pending challenge is not a credential the
+// user holds and would lose, only the server's nonce for one attempt, and one
+// try per challenge is the simpler guarantee to state and to keep. It also
+// settles a race: of several attempts presenting one challenge, the store's
+// compare-and-set lets exactly one through to Verify.
+//
+// Every failure is mfa.ErrInvalidCode, the refusal the method itself gives a
+// wrong response, so a caller learns only that the answer was not good. That
+// includes a store that could not answer: the one-time manager reports its
+// store's failures as an invalid token too, and logs them, so this fails
+// closed rather than letting an attempt reach the method unspent.
+func (i *mfaInterceptor) spendChallenge(
+	ctx context.Context,
+	cm mfa.ChallengeMethod,
+	s *session.Session,
+	response []byte,
+) error {
+	presented, err := cm.PresentedChallenge(response)
+	if err != nil || presented == "" {
+		return mfa.ErrInvalidCode
+	}
+
+	mgr := i.challenges[cm.Name()]
+
+	checked, err := mgr.Check(ctx, presented, s.ID)
+	if err != nil {
+		return mfa.ErrInvalidCode
+	}
+
+	if err := mgr.Consume(ctx, checked); err != nil {
+		return mfa.ErrInvalidCode
+	}
+
+	return nil
+}
+
+// admit makes the refusals the verify and begin endpoints share, steps 1 to 4
+// of verify, all decided from the session and the path before the body is
+// read, and returns the session and the method the path names under prefix.
+// serves reports whether the endpoint serves a configured method at all: a
+// path naming one it does not is refused as unknown, like one naming nothing.
+func (i *mfaInterceptor) admit(
+	ex *Exchange,
+	prefix string,
+	serves func(mfa.Method) bool,
+) (*session.Session, mfa.Method, error) {
+	s := ex.Session
+	if s == nil {
+		return nil, nil, ErrAuthenticationRequired
+	}
+
+	// There must also be a resolved caller. The response hands back a
+	// credential issued for somebody, and a session whose first factor
+	// published no caller names nobody to issue one to — see WithCaller, which
+	// is how every built-in first factor publishes both together.
+	if ex.Authentication == nil || ex.Authentication.Principal == nil {
+		return nil, nil, ErrAuthenticationRequired
+	}
+
+	name, ok := methodSegment(ex.Request.Path(), prefix)
+	method, known := i.byName[name]
+	if !ok || !known || !serves(method) {
+		return nil, nil, ErrUnknownMFAMethod
+	}
+
+	if err := i.usable(ex.Context(), method, s); err != nil {
+		return nil, nil, err
+	}
+
+	return s, method, nil
+}
+
+// anyMethod is what the verify endpoint serves: every configured method.
+func anyMethod(mfa.Method) bool { return true }
+
 // usable refuses a method the session's user may not use as their second
 // factor: one on the first factor's own channel, which has no override, and
 // one policy.UsableMFAMethods does not report, which is the same decision the
-// policies made when they raised the challenge. A lookup error is returned
-// unchanged.
+// policies made when they raised the challenge. A lookup that fails is the
+// consumer's enrolment store failing: it is returned behind the same fixed
+// text a challenge is, with the store's error still reachable through
+// errors.Is and errors.As.
 func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *session.Session) error {
 	if method.Channel() == s.FirstFactor.Channel() {
 		return mfa.ErrSameChannel
@@ -226,7 +350,7 @@ func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *sessi
 
 	usable, err := policy.UsableMFAMethods(ctx, i.lookups, s.UserID, s.FirstFactor)
 	if err != nil {
-		return err
+		return diag.Wrap(err, msgMFAMethodsUnavailable)
 	}
 
 	name := method.Name()
@@ -331,8 +455,8 @@ func writeMFAResult(ex *Exchange, result MFAResult) error {
 // Logout is exempt, which is not obvious. The gate's slot is outside logout's,
 // so without this a caller mid-challenge could not end their own session, and
 // on a device that is not theirs that is the one thing they most need to do.
-// The verify endpoint needs no exemption here because it never reaches this
-// function.
+// The verify and begin endpoints need no exemption here because they never
+// reach this function.
 func (i *mfaInterceptor) gate(ex *Exchange, next Next) error {
 	s := ex.Session
 	if s == nil || s.MFA != session.MFAPending {
@@ -345,7 +469,7 @@ func (i *mfaInterceptor) gate(ex *Exchange, next Next) error {
 
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
-	return &ChallengeError{Kind: policy.ChallengeMFA, Session: s}
+	return i.challenge(ex.Context(), s, "")
 }
 
 // isLogoutRequest reports whether r is the logout the chain was configured

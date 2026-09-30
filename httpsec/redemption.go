@@ -20,12 +20,45 @@ type redemptionCheck = func(ctx context.Context, p identity.Principal, passwordC
 type policyOutcome struct {
 	evaluated bool
 	decision  policy.Decision
-	denyErr   error
-	checkErr  error
+
+	// principal and passwordChangedAt are what decision was made on, so the
+	// login tail reuses it only for the login it was made for (see
+	// guardRedemption).
+	principal         identity.Principal
+	passwordChangedAt time.Time
+
+	denyErr  error
+	checkErr error
 
 	// unenforcedErr is the configuration error a challenge of a kind nothing
 	// on the chain enforces was refused with, nil when there was none.
 	unenforcedErr error
+
+	// methods are the methods the check found the raised challenge of kind
+	// methodsKind offers, and looked reports that it looked them up.
+	methods     []MFAMethod
+	methodsKind policy.ChallengeKind
+	looked      bool
+}
+
+// challengeMethods is the lookup the login tail offers a raised challenge's
+// methods through, after the credential is spent: the methods the check
+// already looked up for a challenge of the same kind, and lookup for any
+// other. The tail acts on the check's own decision (loginTailDeps.decided), so
+// the kinds agree; they are compared rather than assumed all the same, so a
+// tail handed some other decision can never offer the wrong kind's methods.
+func (out *policyOutcome) challengeMethods(lookup challengeMethodsFunc) challengeMethodsFunc {
+	return func(ctx context.Context, kind policy.ChallengeKind, user identity.UserID, first factor.Kind) ([]MFAMethod, error) {
+		if out.looked && kind == out.methodsKind {
+			return out.methods, nil
+		}
+
+		if lookup == nil {
+			return nil, nil
+		}
+
+		return lookup(ctx, kind, user, first)
+	}
 }
 
 // redemptionPolicyCheck builds the refusal check a redemption runs for a login
@@ -40,8 +73,19 @@ type policyOutcome struct {
 // credential: the login tail would refuse it anyway (see refuseUnenforced), and
 // refusing it only there would cost the user a credential for a wiring fault
 // that was never theirs.
+//
+// methods looks up what a raised challenge offers, and it is asked here too,
+// inside the check, for the same reason: a lookup that fails refuses the login,
+// and it must do so before the credential is spent, not after. The methods it
+// found are kept on the outcome for the login tail (policyOutcome.
+// challengeMethods), so the tail does not look them up a second time. A nil
+// methods looks nothing up.
 func redemptionPolicyCheck(
-	engine *policy.Engine, enforced map[policy.ChallengeKind]bool, first factor.Kind, now func() time.Time,
+	engine *policy.Engine,
+	enforced map[policy.ChallengeKind]bool,
+	methods challengeMethodsFunc,
+	first factor.Kind,
+	now func() time.Time,
 ) (redemptionCheck, *policyOutcome) {
 	out := &policyOutcome{}
 
@@ -51,6 +95,7 @@ func redemptionPolicyCheck(
 
 		out.evaluated = true
 		out.decision = d
+		out.principal, out.passwordChangedAt = p, passwordChangedAt
 
 		if d.Outcome == policy.Deny {
 			// Never nil for a refusal. A nil return reads as "no refusal" to
@@ -75,6 +120,15 @@ func redemptionPolicyCheck(
 				out.unenforcedErr = err
 
 				return err
+			}
+
+			if methods != nil {
+				offered, err := methods(ctx, d.Challenge, p.ID, first)
+				if err != nil {
+					return err
+				}
+
+				out.methods, out.methodsKind, out.looked = offered, d.Challenge, true
 			}
 		}
 
@@ -119,16 +173,31 @@ func wrapChecks[C ~func(context.Context, identity.Principal, time.Time) error](
 }
 
 // guardRedemption refuses a redemption whose policy check was denied, raised a
-// challenge nothing on the chain enforces, or was skipped.
+// challenge nothing on the chain enforces, was skipped, or was made for a
+// login other than the one the redeemer returned (p and passwordChangedAt).
 //
 // "Never evaluated" is a denial rather than an allow: a redeemer that did not
 // run the checks has not shown the login is permitted, and the safe reading of
 // "I do not know" is no.
 //
+// The login tail acts on the check's decision rather than evaluating again,
+// so that decision must be the returned login's. A redeemer that checked one
+// user, or one password-change time, and returned another has not shown the
+// returned login is permitted, and is refused the same way. "Another" means a
+// different user reference, or a password-change time that is not the same
+// instant. It is not deep equality: a redeemer that loads the same user again
+// returns a separate value, and may carry its times in another location, and
+// that is still the login the check decided on. The built-in redeemers check
+// exactly what they return.
+//
 // What this cannot do is un-spend a credential such an implementation already
 // consumed. The refusal protects the session, not the credential.
-func guardRedemption(out *policyOutcome) error {
+func guardRedemption(out *policyOutcome, p identity.Principal, passwordChangedAt time.Time) error {
 	if !out.evaluated {
+		return policy.ErrPolicyDenied
+	}
+
+	if out.principal.ID != p.ID || !out.passwordChangedAt.Equal(passwordChangedAt) {
 		return policy.ErrPolicyDenied
 	}
 
@@ -159,7 +228,11 @@ func guardRedemption(out *policyOutcome) error {
 // the run recorded: the refusal the endpoint's own check produced, and the
 // consumer's own check error. Everything else is still recorded — including a
 // failure from a redeemer that discarded the denial and then failed for some
-// other reason, which is not the refusal the consumer opted out of.
+// other reason, which is not the refusal the consumer opted out of, and an
+// enrolment-store outage while the check looks up the methods a raised
+// challenge offers, which is a failure of the check rather than its refusal.
+// A policy that denies because it could not read enrolment has produced the
+// refusal, and is exempted like any denial.
 func countsAgainstSource(countRefusals bool, err error, out *policyOutcome) bool {
 	if countRefusals {
 		return true

@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -727,4 +728,104 @@ func TestCompleteLoginEnrolmentMagicLink(t *testing.T) {
 	assert.True(t, stored.AbsoluteExpiresAt.Equal(start.Add(15*time.Minute)),
 		"with no lifetime configured the documented default applies, got %s", stored.AbsoluteExpiresAt)
 	assert.False(t, stored.EnrolmentOriginDeadline.IsZero(), "the enrolment-origin marker is set")
+}
+
+// TestCompleteLoginMFAMethods pins that a login challenged for a second factor
+// tells the consumer which methods the user can answer it with, computed as the
+// policies compute usability, and that a lookup that fails refuses the login
+// instead of offering an empty or partial list.
+func TestCompleteLoginMFAMethods(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// totpErr is what the TOTP method's enrolment lookup fails with.
+		totpErr error
+		stub    func(c *challengeStub)
+		// writesNothing expects no session to be created or saved and no
+		// token to be issued.
+		writesNothing bool
+		assert        func(t *testing.T, s served)
+	}
+
+	errLookup := errors.New("logincomplete_test: enrolment store unavailable for alice@example.com")
+
+	cases := []testCase{
+		{
+			name: "challenge carries the usable methods",
+			assert: func(t *testing.T, s served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, s.err, &ch)
+				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+				assert.Equal(t, "issued-token", ch.Token)
+				assert.Equal(t, []httpsec.MFAMethod{
+					{Name: "totp", Channel: factor.AuthenticatorApp},
+					{Name: "passkey", Channel: testDeviceChannel, Begins: true},
+				}, ch.Methods)
+			},
+		},
+		{
+			name: "challenge omits methods the user cannot use",
+			stub: func(c *challengeStub) { c.enrolled = false },
+			assert: func(t *testing.T, s served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, s.err, &ch)
+				assert.Equal(t, []httpsec.MFAMethod{{Name: "totp", Channel: factor.AuthenticatorApp}},
+					ch.Methods)
+			},
+		},
+		{
+			// The methods are looked up before the session is created, so a
+			// failed lookup leaves no pending session behind and issues no
+			// token; and the store's own text stays out of the refusal.
+			name:          "a failed lookup never yields an empty list",
+			totpErr:       errLookup,
+			writesNothing: true,
+			assert: func(t *testing.T, s served) {
+				require.ErrorIs(t, s.err, errLookup)
+				assert.NotContains(t, s.err.Error(), "alice@example.com")
+
+				var ch *httpsec.ChallengeError
+				assert.NotErrorAs(t, s.err, &ch, "the failure replaces the challenge")
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(s.err))
+				assert.Empty(t, s.rec.Body.String())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+			h.expectAuthenticated(testPrincipal())
+			h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
+			if !tc.writesNothing {
+				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(nil)
+				h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil)
+			}
+
+			totp := NewMockMethod(gomock.NewController(t))
+			totp.EXPECT().Name().Return("totp").AnyTimes()
+			totp.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totp.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
+			totp.EXPECT().Enrolled(gomock.Any(), identity.UserID("u-1")).Return(tc.totpErr == nil, tc.totpErr).AnyTimes()
+
+			passkey := newChallengeStub()
+			if tc.stub != nil {
+				tc.stub(passkey)
+			}
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableFormLogin(h.formLoginDeps()),
+				httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA)),
+				httpsec.EnableMFA([]mfa.Method{totp, passkey}, httpsec.WithMFATokens(h.tokens)),
+			)
+			require.NoError(t, err)
+
+			tc.assert(t, serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")))
+		})
+	}
 }

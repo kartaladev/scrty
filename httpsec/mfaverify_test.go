@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -55,6 +57,11 @@ type mfaHarness struct {
 	// extra are methods configured after the harness's own, in order.
 	extra []mfa.Method
 
+	// totpUnenrolled makes the harness's method report the user not enrolled,
+	// as after an operator removed the enrolment. It is set before the chain
+	// serves anything.
+	totpUnenrolled bool
+
 	// tokens issues the credential a caller carries away from a successful
 	// verification, and verifies the one it arrived with. It is one double
 	// because token.Generator is a Verifier too, and because the point of
@@ -71,6 +78,10 @@ type mfaHarness struct {
 	// same way and only the configuration under test varies.
 	mfaOpts    []httpsec.MFAOption
 	logoutOpts []httpsec.LogoutOption
+
+	// chainOpts are chain options the bearer chain is also built with, such
+	// as a logger a case reads back.
+	chainOpts []httpsec.Option
 
 	// resolved is the session the chain published by the time the request left
 	// it, which on a successful verification is the rotated one. It is how a
@@ -106,7 +117,8 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 	// The user is enrolled on the harness's method, so it is usable whenever
 	// its channel differs from the first factor's. A case about enrolment
 	// configures a method of its own in h.extra.
-	m.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(true, nil).AnyTimes()
+	m.EXPECT().Enrolled(gomock.Any(), testMFAUser).AnyTimes().
+		DoAndReturn(func(context.Context, identity.UserID) (bool, error) { return !h.totpUnenrolled, nil })
 
 	// A token names the session it was issued for, exactly as a real one does
 	// through its jti. That is the whole mechanism this group is about: a
@@ -469,6 +481,20 @@ func TestEnableMFA(t *testing.T) {
 			assert:  configError,
 		},
 		{
+			// A format with no room for a response could never be read, so
+			// every verification on the method would be refused as too large.
+			name: "a method declaring a malformed response format",
+			methods: one(func(t *testing.T) mfa.Method {
+				m := NewMockMethod(gomock.NewController(t))
+				m.EXPECT().Name().Return("totp").AnyTimes()
+				m.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+				m.EXPECT().Response().Return(mfa.FormField("code", 0)).AnyTimes()
+
+				return m
+			}),
+			assert: configError,
+		},
+		{
 			name:    "an empty verify prefix",
 			methods: authenticator,
 			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("")},
@@ -507,6 +533,117 @@ func TestEnableMFA(t *testing.T) {
 					httpsec.WithLogoutRequestPath(httpsec.DefaultMFAVerifyPrefix+"/logout")))
 			},
 			assert: configError,
+		},
+		{
+			name:    "a consumer's begin prefix, challenge lifetime, store and responder",
+			methods: authenticator,
+			opts: []httpsec.MFAOption{
+				httpsec.WithMFABeginPrefix("/auth/second-factor/begin"),
+				httpsec.WithMFAChallengeTTL(2 * time.Minute),
+				httpsec.WithMFAChallengeStore(onetime.NewMemoryStore()),
+				httpsec.WithMFABeginResponder(func(*httpsec.Exchange, json.RawMessage) error { return nil }),
+			},
+			assert: built,
+		},
+		{
+			name:    "an empty begin prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("")},
+			assert:  configError,
+		},
+		{
+			name:    "the root as the begin prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("/")},
+			assert:  configError,
+		},
+		{
+			name:    "a begin prefix without a leading slash",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("mfa/begin")},
+			assert:  configError,
+		},
+		{
+			// Every POST under the verify prefix is the verify endpoint's, so
+			// no begin could ever be reached.
+			name:    "a begin prefix equal to the verify prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix(httpsec.DefaultMFAVerifyPrefix + "/")},
+			assert:  configError,
+		},
+		{
+			name:    "a verify prefix moved onto the begin prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(httpsec.DefaultMFABeginPrefix)},
+			assert:  configError,
+		},
+		{
+			name:    "a begin prefix under the verify prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix(httpsec.DefaultMFAVerifyPrefix + "/begin")},
+			assert:  configError,
+		},
+		{
+			// The verify prefix sits under this one, so every begin POST
+			// there would be the verify endpoint's.
+			name:    "a begin prefix above the verify prefix",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix("/mfa")},
+			assert:  configError,
+		},
+		{
+			name:    "a begin prefix that is the logout path",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginPrefix(httpsec.DefaultLogoutPath)},
+			assert:  configError,
+		},
+		{
+			name:    "a consumer challenge limit",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(3)},
+			assert:  built,
+		},
+		{
+			name:    "a challenge limit of zero",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(0)},
+			assert:  configError,
+		},
+		{
+			name:    "a negative challenge limit",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(-1)},
+			assert:  configError,
+		},
+		{
+			name:    "a challenge lifetime of zero",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeTTL(0)},
+			assert:  configError,
+		},
+		{
+			name:    "a negative challenge lifetime",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeTTL(-time.Minute)},
+			assert:  configError,
+		},
+		{
+			name:    "a nil challenge store",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeStore(nil)},
+			assert:  configError,
+		},
+		{
+			name:    "a challenge store interface holding a nil pointer",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFAChallengeStore((*onetime.MemoryStore)(nil))},
+			assert:  configError,
+		},
+		{
+			name:    "a nil begin responder",
+			methods: authenticator,
+			opts:    []httpsec.MFAOption{httpsec.WithMFABeginResponder(nil)},
+			assert:  configError,
 		},
 		{
 			name:     "no token generator",
@@ -577,7 +714,10 @@ func TestMFAVerifyOrdering(t *testing.T) {
 		channel factor.Channel
 		session func(t *testing.T, h *mfaHarness) *session.Session
 		wire    func(t *testing.T, h *mfaHarness)
-		assert  func(t *testing.T, h *mfaHarness, s *session.Session, out served)
+		// unread posts a body that fails the test if it is read, for the
+		// refusals decided before the body is touched.
+		unread bool
+		assert func(t *testing.T, h *mfaHarness, s *session.Session, out served)
 	}
 
 	noSession := func(*testing.T, *mfaHarness) *session.Session { return nil }
@@ -595,6 +735,7 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			name:    "no session",
 			channel: factor.AuthenticatorApp,
 			session: noSession,
+			unread:  true,
 			wire: func(_ *testing.T, h *mfaHarness) {
 				// Nothing is read and nothing is counted: there is no session
 				// to add a second factor to, and no user to count against.
@@ -675,7 +816,12 @@ func TestMFAVerifyOrdering(t *testing.T) {
 			s := tc.session(t, h)
 			tc.wire(t, h)
 
-			out := serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath))
+			req := postCode(t.Context(), testMFAVerifyPath)
+			if tc.unread {
+				req = postUnread(t.Context(), t, testMFAVerifyPath)
+			}
+
+			out := serve(t, h.chain(t, s), req)
 			tc.assert(t, h, s, out)
 		})
 	}
@@ -853,7 +999,7 @@ func TestMFAVerify(t *testing.T) {
 
 	const consumerPrefix = "/auth/second-factor"
 
-	errLookup := errors.New("mfaverify_test: enrolment store unavailable")
+	errLookup := errors.New("mfaverify_test: enrolment store unavailable for alice@example.com")
 
 	type testCase struct {
 		name string
@@ -1002,7 +1148,12 @@ func TestMFAVerify(t *testing.T) {
 				email.EXPECT().Enrolled(gomock.Any(), testMFAUser).Return(false, errLookup).AnyTimes()
 				untouched(h, email)
 			},
-			assert: refusedAs(errLookup, http.StatusInternalServerError),
+			// The dependency's text stays out of the refusal; its error stays
+			// reachable.
+			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
+				refusedAs(errLookup, http.StatusInternalServerError)(t, h, s, out)
+				assert.NotContains(t, out.err.Error(), "alice@example.com")
+			},
 		},
 		{
 			name: "a method named in the query or the body",
@@ -1059,7 +1210,11 @@ func TestMFAVerify(t *testing.T) {
 			name:    "the default prefix once the consumer has moved it",
 			mfaOpts: []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix(consumerPrefix)},
 			request: postTo(httpsec.DefaultMFAVerifyPrefix + "/totp"),
-			wire:    untouched,
+			wire: func(h *mfaHarness, email *MockMethod) {
+				untouched(h, email)
+				// The gate's challenge lists the methods the user can use.
+				enrolledOnEmail(email, false)
+			},
 			assert: func(t *testing.T, h *mfaHarness, s *session.Session, out served) {
 				var ch *httpsec.ChallengeError
 				require.ErrorAs(t, out.err, &ch, "it is an ordinary route, held by the gate")

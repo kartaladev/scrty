@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -248,6 +249,117 @@ func TestMFAGateVerifyExempt(t *testing.T) {
 			s := h.pendingSession(t, factor.Password)
 
 			tc.assert(t, h, serve(t, h.chain(t, s), postCode(t.Context(), tc.path)))
+		})
+	}
+}
+
+// TestMFAGateMethods pins what the gate's challenge tells the consumer: the
+// methods this session's user can answer it with, as the policies decide
+// usability, in configuration order — or, when that cannot be decided, no
+// challenge at all.
+func TestMFAGateMethods(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		wire func(h *mfaHarness, passkey *challengeStub)
+		// first is the factor the session was established by: password
+		// unless a case needs another.
+		first  factor.Kind
+		assert func(t *testing.T, s *session.Session, out served)
+	}
+
+	totp := httpsec.MFAMethod{Name: "totp", Channel: factor.AuthenticatorApp}
+	passkey := httpsec.MFAMethod{Name: "passkey", Channel: testDeviceChannel, Begins: true}
+
+	challengedWith := func(want ...httpsec.MFAMethod) func(*testing.T, *session.Session, served) {
+		return func(t *testing.T, s *session.Session, out served) {
+			t.Helper()
+
+			var ch *httpsec.ChallengeError
+			require.ErrorAs(t, out.err, &ch)
+			assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+			require.NotNil(t, ch.Session)
+			assert.Equal(t, s.ID, ch.Session.ID)
+			if len(want) == 0 {
+				assert.Empty(t, ch.Methods)
+			} else {
+				assert.Equal(t, want, ch.Methods)
+			}
+			assert.False(t, out.handlerRan)
+		}
+	}
+
+	errLookup := errors.New("mfagate_test: enrolment store unavailable")
+
+	cases := []testCase{
+		{
+			name:   "the challenge carries every usable method, in configuration order",
+			wire:   func(*mfaHarness, *challengeStub) {},
+			assert: challengedWith(totp, passkey),
+		},
+		{
+			name:   "the challenge omits a method the user is not enrolled on",
+			wire:   func(_ *mfaHarness, p *challengeStub) { p.enrolled = false },
+			assert: challengedWith(totp),
+		},
+		{
+			// An email method is on a magic link's own channel, so it is no
+			// second factor after one.
+			name:   "the challenge omits a method on the first factor's channel",
+			first:  factor.MagicLink,
+			wire:   func(_ *mfaHarness, p *challengeStub) { p.channel = factor.Email },
+			assert: challengedWith(totp),
+		},
+		{
+			// The lookups answered, and the answer is that nothing is left:
+			// the challenge still holds the session, and the client can only
+			// log out.
+			name: "no usable method left after the enrolments were removed",
+			wire: func(h *mfaHarness, p *challengeStub) {
+				h.totpUnenrolled = true
+				p.enrolled = false
+			},
+			assert: challengedWith(),
+		},
+		{
+			name: "a failed lookup never yields an empty list",
+			wire: func(_ *mfaHarness, p *challengeStub) { p.enrolledErr = errLookup },
+			assert: func(t *testing.T, _ *session.Session, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, errLookup)
+
+				var ch *httpsec.ChallengeError
+				assert.NotErrorAs(t, out.err, &ch, "the failure replaces the challenge")
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.NotContains(t, out.err.Error(), errLookup.Error(),
+					"the dependency's text stays out of the refusal")
+				assert.False(t, out.handlerRan)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp).neverVerifies().neverChecked().recordsNoFailure()
+
+			stub := newChallengeStub()
+			h.extra = []mfa.Method{stub}
+			tc.wire(h, stub)
+
+			first := tc.first
+			if first == "" {
+				first = factor.Password
+			}
+
+			s := h.pendingSession(t, first)
+
+			tc.assert(t, s, serve(t, h.chain(t, s),
+				httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil)))
 		})
 	}
 }

@@ -68,6 +68,7 @@ None.
 - `http-error-propagation`: the challenge error carries the usable methods when it is the MFA challenge, and a request naming a method that is not configured, or that the user may not use, maps to a status row.
 - `http-security-chain`: the opt-in MFA method-listing endpoint, and the per-method verify and begin paths the chain registers.
 - `one-time-tokens`: no requirement changes. Pending challenges use one-time token managers under their own purposes, as the settled capability already allows.
+- `magic-link` and `oidc-login`: a one-time-credential login reuses the post-authentication decision its pre-consume check made, so a policy lookup failure never spends the credential, and a replaced redeemer that returns a different user than it checked is refused (found while fixing the method lookup's placement).
 - `security-policy`: the enrolment lookup, the second-factor challenge policy and the MFA requirement policy work over a set of methods and each user's usable enrolments.
 
 ## Impact

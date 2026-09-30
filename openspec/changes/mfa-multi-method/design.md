@@ -132,9 +132,13 @@ A missing, unknown, expired, spent or mismatched challenge is refused as the inv
 - **Override:**
   - `WithMFAChallengeTTL(d)`;
   - `WithMFAChallengeStore(onetime.Store)`, for several replicas;
-  - `WithMFABeginResponder(fn)`.
+  - `WithMFABeginResponder(fn)`;
+  - `WithMFAChallengeLimit(n)`, default 10 per issuance window.
 
   The begin prefix is replaceable by `WithMFABeginPrefix`. A begin path naming a method with no begin step is refused as an unknown method (D9).
+- **Bounded issuance.** Begin counts the challenges it issued to the user for that method within the one-time manager's issuance window (`IssuedCount`, one hour by default), and refuses as throttled at the limit, 10 by default, replaceable by `WithMFAChallengeLimit(n)`. It also purges the method's expired challenges (`PurgeExpired`) at most once per issuance window, ignoring and logging a failed purge. Found in review: without both, a session past its first factor could grow the default store without bound. The resend limit of the magic link is the established precedent for counting issuance this way.
+  - **Stated limit:** the count and the issue are separate steps, so begins that race can exceed the limit by the number that raced, as the magic-link resend limit can. The godoc of `WithMFAChallengeLimit` says so. Making it exact would need a conditional insert in every one-time store, a store contract change this design rules out (D1).
+  - **Sweep timing:** the sweep runs under the begin's own context, so a slow store never holds a begin past its deadline. A sweep that fails or is cancelled gives back its turn, and a later begin tries again. The exception is a store that cannot purge at all (`onetime.ErrReapUnsupported`), which would not start purging on a retry. It keeps its turn and is logged once per window. It is at most once per issuance window per method **per process**: several replicas each sweep. This is harmless, because a sweep only removes records that are both expired and older than the window.
 - **Stated limit:** the default in-memory challenge store is per process. On several replicas, a begin and a verify that land on different replicas fail. The godoc says so, as it does for the other in-memory defaults.
 
 ### D4. One definition of "usable", exported from `policy`
@@ -196,13 +200,16 @@ Steps 1–4 happen before the body is read. The method choice is only ever read 
 
   Wiring mistakes fail at construction:
   - an empty prefix, `/`, or no leading `/`;
-  - the verify and begin prefixes are equal, or either equals the logout path or the listing path.
+  - the verify and begin prefixes are equal, or one lies under the other, since one endpoint would then answer the other's POSTs;
+  - either prefix equals the logout path or the listing path.
 
 ### D6. The MFA challenge error carries the usable methods
 
 `httpsec.ChallengeError` gains `Methods []MFAMethod`, where `type MFAMethod struct{ Name string; Channel factor.Channel; Begins bool }`.
 
 For `Kind == policy.ChallengeMFA`, the chain fills it from `UsableMFAMethods` at the one place it builds MFA challenges. That covers the per-request gate and the login completions (form login, magic link, OIDC handoff). A lookup error replaces the challenge with that error, so a failed lookup never yields an empty list.
+
+For a login whose first factor is a one-time credential (magic link, OIDC handoff), the method lookup runs in the side-effect-free checks before the credential is spent. A failed lookup therefore refuses without spending it, as the project's check-then-consume rule requires. Found in review. For the same reason, the login tail of such a login reuses the policy decision the pre-consume check made, rather than evaluating the post-authentication policies again after the credential is spent. Before this change, a policy lookup failing on that second evaluation refused the login and still spent the credential. Review reproduced this with `TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential`, and it is fixed here because this change's refactor is what carries the decision to the tail. Reusing a decision is only sound for the principal it was made about. A redeemer (the consumer can supply their own) that returns a different principal or password-change time than the one its check saw is therefore refused with `policy.ErrPolicyDenied` before any session exists. "Different" means a different user reference, or a password-change time that is not equal. The comparison is by user reference and instant, not deep equality, so a redeemer that reloads the same user with times in another location is not refused. The built-in redeemers always return the principal they checked.
 
 `Error()` is unchanged, so names stay out of the text. Nothing else about rendering changes: with nothing wired, the response is still a bare 401.
 

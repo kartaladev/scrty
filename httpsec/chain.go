@@ -48,6 +48,11 @@ type Chain struct {
 	// at runtime that nothing enforces is refused rather than marked and served.
 	enforced map[policy.ChallengeKind]bool
 
+	// mfa is the MFA interceptor EnableMFA registered, and nil without one.
+	// Every second-factor challenge the chain returns carries the methods it
+	// looks up (challengeMethods).
+	mfa *mfaInterceptor
+
 	ipv6Prefix int
 
 	// errorHandler is what a refusal is answered with, and nil means the

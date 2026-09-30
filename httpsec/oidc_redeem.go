@@ -34,7 +34,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		return oidc.ErrInvalidHandoff
 	}
 
-	check, out := redemptionPolicyCheck(i.engine, i.enforced, factor.OIDC, i.now)
+	check, out := redemptionPolicyCheck(i.engine, i.enforced, i.challengeMethods, factor.OIDC, i.now)
 
 	res, err := i.redeemer.Redeem(ctx, code, oidc.RedeemCheck(check))
 	if err != nil {
@@ -51,7 +51,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 	// Checked before anything is created. A HandoffRedeemer is an interface,
 	// and an implementation that skipped or discarded the check has not shown
 	// this login is permitted.
-	if err := guardRedemption(out); err != nil {
+	if err := guardRedemption(out, res.Principal, res.PasswordChangedAt); err != nil {
 		return err
 	}
 
@@ -68,6 +68,8 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		tokens:            i.tokens,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
+		challengeMethods:  out.challengeMethods(i.challengeMethods),
+		decided:           &out.decision,
 	}, postAuthenticationInput(&res.Principal, factor.OIDC, "", res.PasswordChangedAt, i.now()),
 		session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken))
 	if err != nil {

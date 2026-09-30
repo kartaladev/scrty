@@ -13,7 +13,7 @@
 
 **Tech Stack:** Go 1.27, `onetime` (pending challenges), clockwork fakes in tests, testify, gopls, and testcontainers (the `test` module).
 
-**Spec:** `openspec/changes/mfa-multi-method/` — `proposal.md`, `design.md` (D1–D12), `specs/multi-factor-auth`, `specs/security-policy`, `specs/http-error-propagation`, `specs/http-security-chain`, and `tasks.md`. Task numbers below (`1.1`…`6.3`) are `tasks.md`'s.
+**Spec:** `openspec/changes/mfa-multi-method/` — `proposal.md`, `design.md` (D1–D12), `specs/multi-factor-auth`, `specs/security-policy`, `specs/http-error-propagation`, `specs/http-security-chain`, `specs/magic-link`, `specs/oidc-login`, and `tasks.md`. Task numbers below (`1.1`…`6.3`) are `tasks.md`'s.
 
 ## Global Constraints
 
@@ -75,7 +75,7 @@ Each group leaves the whole workspace compiling and green, including the `test` 
 | 1 | 1.1–1.3 | `policy/**`, and every caller of `NewMFAPolicy`, `NewMFARequirementPolicy` and `MFAMethodLookup` test doubles in `mfa/`, `httpsec/` and `test/` | Opus | Security refusal logic, and an interface later groups compile against |
 | 2 | 2.1–2.3 | `mfa/**`, `httpsec/mfaverify.go` (bytes hand-off only), and every caller of `LookupFor`/`Verify`/`ResetDeps` | Opus | Port change across packages |
 | 3 | 3.1–3.3 | `httpsec/**` (verify path, readers, status) and the `test` module's `EnableMFA` callers | Opus | Refusal ordering before the body is read |
-| 4 | 4.1–4.3 | `httpsec/**` (begin, challenges, challenge error), `fibersec`/`ginsec` tests if affected | Opus | A spend-on-every-attempt variant of check-then-consume; concurrency |
+| 4 | 4.1–4.7 | `httpsec/**` (begin, challenges, challenge error), `fibersec`/`ginsec` tests if affected | Opus | A spend-on-every-attempt variant of check-then-consume; concurrency |
 | 5 | 5.1–5.2 | `httpsec/**` (listing, enrolment prefixes), `test/httpsecconformance` enrolment callers | Opus | Settings-in-option wiring, and an enrolment refactor across several files |
 | 6 | 6.1 | `test/**` | Sonnet | Mechanical move of the conformance scenarios |
 | 7 | 6.2 | `README.md` | Sonnet | Documentation snippet, compiled in a scratch copy |
@@ -603,6 +603,78 @@ return &ChallengeError{Kind: policy.ChallengeMFA, Session: s, Token: token, Meth
 
   Route every `ChallengeMFA` construction through it. The chain reaches the MFA interceptor through the assembled chain, so a login completion asks the chain for the builder; when MFA is not enabled no MFA challenge can be raised (existing enforcer rule). `Error()` stays as it is.
 - [ ] **Step 4: Run** `go test -race -count=1 ./httpsec/...` and `go test -count=1 ./...` in `fibersec` and `ginsec`. Expected: PASS.
+
+
+### Task 4.4: Review fixes for group 4
+
+**Files:** `httpsec/mfabegin.go` (limit option, count, sweep), `httpsec/mfaverify.go` (`usable`), `httpsec/mfachallengeerr.go`, `httpsec/logincomplete.go`, and every first factor that hands the login its method-list callback (`httpsec/login.go`, `magiclink.go`, `oidc.go`, `oidc_redeem.go`, `chain.go`), `httpsec/options.go` (default), and the tests `httpsec/mfabegin_test.go`, `httpsec/logincomplete_test.go`, `httpsec/mfaverify_test.go`, `httpsec/mfaresponder_test.go`, `httpsec/mfachallenge_stub_test.go`.
+
+**Interfaces:** `func WithMFAChallengeLimit(n int) MFAOption` (`n <= 0` is refused); `const DefaultMFAChallengeLimit = 10`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - "too many challenges": 10 begins are allowed, and the eleventh gives `mfa.ErrVerifyThrottled` with no `BeginChallenge` call.
+  - "consumer challenge limit": with a limit of 3, the fourth begin is throttled.
+  - "expired challenges are removed": inside synctest, 200 begins, sleep past the TTL plus the issuance window, one begin, and the store holds only the newest record. Assert through a consumer `onetime.Store` passed with `WithMFAChallengeStore`, counting records.
+  - "a lookup failure at verify and at begin keeps the dependency's text out": a lookup error quoting `alice@example.com`; the returned error's text does not contain it, and `errors.Is` still finds the dependency's error.
+  - "a failed login lookup writes no session": gomock expects no `Create` or `Save`.
+  - "a challenge is spent before Verify runs": the stub's `Verify` asserts, through the consumer store, that the challenge is already consumed. It must fail under a Check, then Verify, then Consume ordering.
+  - "a challenge presented on another session is not spent": after B's refused attempt, A's answer still verifies.
+  - "two challenge methods keep their purposes apart": a challenge from method A presented to method B gives `ErrInvalidCode`.
+  - "begin prefix above the verify prefix": `WithMFABeginPrefix("/mfa")` gives `ErrConfig`.
+  - "the dependency text stays out of a failed login lookup".
+- [ ] **Step 2: Run** `go test -run 'TestMFABegin|TestMFAChallengeVerify|TestCompleteLoginMFAMethods|TestMFAVerify|TestEnableMFA' -count=1 ./httpsec/`. Expected: FAIL on the limit, purge, redaction and no-session rows. The ordering, other-session, purpose and prefix rows pin behaviour that already exists; prove each by a temporary inversion and edit it back by hand.
+- [ ] **Step 3: Implement.**
+  - Before issuing, begin calls `mgr.IssuedCount(ctx, user)`. At or over the limit it returns `mfa.ErrVerifyThrottled`; a count error is returned behind fixed text.
+  - A per-method `lastPurge` time, under a mutex, lets begin call `mgr.PurgeExpired(ctx)` at most once per `mgr.IssuanceWindow()`. A purge error is logged through the chain's sampler, not returned.
+  - `usable` wraps its lookup error with `diag.Wrap(err, <fixed text>)`.
+  - Login completion builds the method list before `sessions.Create`.
+- [ ] **Step 4: Run** `go test -race -count=3 ./httpsec/...` and `go test ./...` in `fibersec` and `ginsec`. Expected: PASS.
+
+
+### Task 4.5: Second review fixes for group 4
+
+**Files:** `httpsec/mfabegin.go` (`sweepExpired`, `sweepClock`), `httpsec/magiclink.go` and `httpsec/oidc_redeem.go` (the redemption checks), `httpsec/logincomplete.go` (accept a precomputed method list), `httpsec/options.go` (godoc), and the tests `httpsec/mfabegin_test.go`, `httpsec/authmethods_integration_test.go` or the magic-link and OIDC tests.
+
+- [ ] **Step 1: Write the failing tests.**
+  - "a slow sweep does not hold the begin past its deadline": a store whose purge blocks until its context ends; a begin with a 100ms deadline returns within about the deadline, and a later begin sweeps again.
+  - "a failed method lookup does not spend the magic link": the lookup fails once; the refused redeem leaves the link redeemable, and a second redeem after recovery succeeds.
+  - The same row for the OIDC handoff.
+  - "a sweep leaves the count intact": challenges expired but inside the window survive, and the limit still refuses.
+  - "concurrent begins sweep once": 16 begins under `-race` after the window elapses, with the purge counted once.
+  - "the store-unavailable log reason": a purge returning a store error logs `reason=store-unavailable`.
+- [ ] **Step 2: Run** `go test -run 'TestMFABeginIssuance|TestMagicLink|TestOIDC' -count=1 ./httpsec/`. Expected: FAIL on the deadline row (about 3s) and the spend rows (`magiclink: invalid link` on the second redeem). The rows that pin existing behaviour are proven by a temporary inversion, then edited back by hand.
+- [ ] **Step 3: Implement.**
+  - Sweep with the request `ctx`; on a purge error, including cancellation, reset the method's `lastPurge` so the turn is given back.
+  - For magic link and OIDC handoff, compute the usable-method list inside the redemption checks. These are the side-effect-free checks passed to `Redeem` before its consume. Carry the list into the login tail, which then skips its own lookup.
+  - Document the per-process sweep, the default limit of 10, and the fixed-text lookup refusal on `EnableMFA`.
+- [ ] **Step 4: Run** `go test -race -count=3 ./httpsec/...`, `go test ./...` in `fibersec` and `ginsec`, and `go vet ./...` in `test/`. Expected: PASS.
+
+
+### Task 4.6: Third review round for group 4
+
+**Files:** `httpsec/logincomplete.go` (`loginTailDeps` gains the decision already made), `httpsec/magiclink.go` and `httpsec/oidc_redeem.go` (pass `&out.decision`), `httpsec/redemption.go` (records the checked principal and password-change time; `guardRedemption` refuses a redeemer that returns another; opt-out godoc), `httpsec/options.go` and `httpsec/oidc_options.go` (`EnableMFA`, `WithMagicLinkCountRefusals` and `WithHandoffCountRefusals` godoc), and the tests `httpsec/redemption_mfamethods_test.go` and `httpsec/mfabegin_test.go`.
+
+- [ ] **Step 1: Write the failing tests.**
+  - `TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential`, for magic link and OIDC handoff: a real `policy.NewMFAPolicy(mfa.LookupsFor(method), WithMFAExemption(never))` whose `Enrolled` fails on the third call. The first redemption is refused, and a second must still succeed as a challenge. The reviewer's reproduction is at `…/scratchpad/review45/zz_repro_postredeem_test.go.keep`; rewrite it in the project's table form.
+  - "a store that cannot purge keeps its turn": two begins within a window give one log record and one reap attempt.
+  - "the sweep claim is atomic": a reaper that blocks its first purge until the other 15 begins have arrived, and the purge count is still 1.
+- [ ] **Step 2: Run** `go test -run 'TestRedemption|TestMFABeginIssuance' -count=1 ./httpsec/`. Expected: FAIL on the post-redeem row (`magiclink: invalid link` and `oidc: invalid handoff code` on the second redemption). The two sweep rows pin existing behaviour; prove each by the reviewer's inversions (release on every error; record the sweep after the purge), then edit back by hand.
+- Add "the decision binds the checked principal": a consumer redeemer that checks one principal and returns another is refused with `policy.ErrPolicyDenied` before any session is created, for magic link and OIDC handoff.
+- [ ] **Step 3: Implement.** `loginTailDeps.decided *policy.Decision`: when set, `completeLogin` uses it instead of calling `EvaluatePhase` again. Form login leaves it nil, so its behaviour is unchanged. Fix the two godocs.
+- [ ] **Step 4: Run** `go test -race -count=3 ./httpsec/...`, `go test ./...` in `fibersec` and `ginsec`, and `go vet ./...` and `go test ./...` in `test/`. Expected: PASS.
+
+
+### Task 4.7: Fourth review round for group 4
+
+**Files:** `httpsec/redemption.go` (`guardRedemption`), `httpsec/magiclink.go`, `httpsec/oidc.go`, `httpsec/options.go`, `httpsec/oidc_options.go`, `oidc/handoff.go` (godoc only), and the tests `httpsec/redemption_mfamethods_test.go` and the count-refusals tests.
+
+- [ ] **Step 1: Write the failing tests.**
+  - "the same user reloaded is not refused": the same user reference, and the same password-change instant in another location, completes the login. Today it fails with `policy: denied by policy`.
+  - "a different password-change time with the same user is refused": `ErrPolicyDenied`.
+  - "an enrolment-store outage during the method lookup counts under the opt-out": with `WithMagicLinkCountRefusals(false)` and `WithHandoffCountRefusals(false)`, the source guard records a failure.
+- [ ] **Step 2: Run** `go test -run 'TestRedemption' -count=1 ./httpsec/`. Expected: the reload row fails. The other two rows pin existing behaviour; prove each by inversion (drop the time comparison; exempt the lookup error), then edit back by hand.
+- [ ] **Step 3: Implement.** `guardRedemption` compares `principal.UserID` (or the principal's user reference field) and `passwordChangedAt.Equal`. Update the named godocs.
+- [ ] **Step 4: Run** `go test -race -count=3 ./httpsec/... ./oidc/... ./magiclink/...`, `go test ./...` in `fibersec` and `ginsec`, and `go vet ./...` in `test/`. Expected: PASS.
 
 ---
 

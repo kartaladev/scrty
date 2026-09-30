@@ -541,8 +541,12 @@ func WithCallbackSuccess(fn CallbackSuccess) OIDCOption {
 //
 // Default: the *oidc.HandoffManager given to EnableOIDCLogin, which runs
 // every check before it consumes the code. A replacement takes on that
-// contract; the endpoint still refuses a success whose policy check never ran
-// or denied, but it cannot un-spend a code the replacement consumed. A nil
+// contract (see HandoffRedeemer). The login completion reuses the decision the
+// endpoint's check made before the code was spent, with no second evaluation
+// after it; the endpoint still refuses a success whose policy check never ran
+// or denied, or that returns a user with a different reference or
+// password-change instant than the check was handed, but it cannot un-spend a
+// code the replacement consumed. A nil
 // redeemer, including an interface holding a nil pointer, is refused. This
 // option is redemption-only: given beside WithCallbackSuccess, which issues
 // no handoff code for it to redeem, it is refused.
@@ -610,7 +614,11 @@ func WithHandoffRateLimit(limit int, window time.Duration) OIDCOption {
 //
 // Default: true, so a code the policy refuses cannot be replayed without limit
 // for as long as it lives. Passing false exempts exactly those two refusals;
-// every other failed redemption, outages included, is still recorded. This
+// every other failed redemption, outages included, is still recorded. That
+// includes an enrolment-store outage while the check before the spend looks up
+// the methods a raised second-factor challenge offers: a failure, not a
+// refusal. A policy that reads the outage as a reason to deny is a denial like
+// any other, and is exempted. This
 // option is redemption-only: given beside WithCallbackSuccess, which issues
 // no code for a refusal to count against, it is refused.
 func WithHandoffCountRefusals(count bool) OIDCOption {
