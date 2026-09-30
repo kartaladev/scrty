@@ -176,6 +176,22 @@ func TestEnrolmentGate(t *testing.T) {
 			assert: challenged,
 		},
 		{
+			// The MFA begin prefix is a different endpoint from the
+			// enrolment path's own begin prefix; the gate confines an
+			// enrolment-only session away from it too.
+			name:    "the MFA begin endpoint",
+			state:   session.MFAEnrolmentPending,
+			request: postTo(httpsec.DefaultMFABeginPrefix+"/totp", ""),
+			refused: true,
+			reached: func(t *testing.T, _ *gateWitnesses, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod,
+					"the MFA slot judges the request: totp has no begin step")
+			},
+			assert: challenged,
+		},
+		{
 			name:    "the password-change resolve endpoint",
 			state:   session.MFAEnrolmentPending,
 			request: postTo(passwordResolvePath, "password=new"),

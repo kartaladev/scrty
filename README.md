@@ -140,13 +140,19 @@ Because a password alone would otherwise be enough to bind a second factor of an
 choosing, the path is off unless both halves are turned on together:
 
 ```go
-requirement, err := policy.NewMFARequirementPolicy(requirementLookup, lookup,
+methods := []mfa.Method{totp} // one mfa.Method per second factor offered, e.g. mfa.NewTOTP
+
+lookups, err := mfa.LookupsFor(methods...)
+
+requirement, err := policy.NewMFARequirementPolicy(requirementLookup, lookups,
 	policy.WithMFAEnrolmentPath(), // policy.WithEnrolmentFirstFactors, policy.WithEnrolmentPathUntil
 )
 
 chain, err := httpsec.New(
 	// ... your other chain options (login, sessions) ...
-	httpsec.EnableMFA(totp), // an mfa.Enroller, e.g. mfa.NewTOTP
+	httpsec.EnableMFA(methods), // each method verifies at "/mfa/verify/<name>" (httpsec.WithMFAVerifyPrefix);
+	// a challenge method also begins at "/mfa/begin/<name>" (httpsec.WithMFABeginPrefix);
+	// httpsec.WithMFAMethodListing turns on GET /mfa/methods, off by default
 	httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{
 		Users:  users,        // identity.UserLoader
 		Sender: queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
@@ -156,17 +162,20 @@ chain, err := httpsec.New(
 
 ### Flow
 
-1. **Begin** (`POST /mfa/enrol/begin`) provisions a secret and returns it, with a QR-code URI, to
-   the confined session the login just received.
-2. **Confirm** (`POST /mfa/enrol/confirm`, form field `code`) proves the device with a code from
-   it. The device is proven, but the enrolment does not count yet.
-3. **Emailed code** (`POST /mfa/enrol/confirm-email`, form field `code`) — by default, an
-   out-of-band code is sent to the user's address once the device is proven, and entering it here
-   is what completes the enrolment. This is what stops a password holder from binding an
-   authenticator the account's owner never sees: the mailbox owner takes part in every binding.
-4. **Verify** (`POST /mfa/totp`, `httpsec.EnableMFA`'s own endpoint) resolves the session's
-   pending second-factor challenge with a fresh code, exactly as it would for an enrolment made
-   out of band. Only this step marks the session satisfied and rotates its handle.
+1. **Begin** (`POST /mfa/enrol/begin/<name>`, e.g. `/mfa/enrol/begin/totp`) provisions a secret and
+   returns it, with a QR-code URI, to the confined session the login just received.
+2. **Confirm** (`POST /mfa/enrol/confirm/<name>`, e.g. `/mfa/enrol/confirm/totp`, form field
+   `code`) proves the device with a code from it. The device is proven, but the enrolment does not
+   count yet.
+3. **Emailed code** (`POST /mfa/enrol/confirm-email/<name>`, e.g. `/mfa/enrol/confirm-email/totp`,
+   form field `code`) — by default, an out-of-band code is sent to the user's address once the
+   device is proven, and entering it here is what completes the enrolment. This is what stops a
+   password holder from binding an authenticator the account's owner never sees: the mailbox owner
+   takes part in every binding.
+4. **Verify** (`POST /mfa/verify/<name>`, e.g. `/mfa/verify/totp`, `httpsec.EnableMFA`'s own
+   endpoint) resolves the session's pending second-factor challenge with a fresh code, exactly as
+   it would for an enrolment made out of band. Only this step marks the session satisfied and
+   rotates its handle.
 
 Every other request a confined session makes — the password-change endpoint, a consumer route,
 the authorizer, the handler — is refused with the enrolment challenge until verification succeeds;
@@ -176,7 +185,8 @@ only logout is let through as well.
 
 | What | Default | Replaced by |
 |---|---|---|
-| Endpoint paths | `/mfa/enrol/begin`, `/mfa/enrol/confirm`, `/mfa/enrol/confirm-email` | `httpsec.WithEnrolmentBeginPath`, `WithEnrolmentConfirmPath`, `WithEnrolmentEmailConfirmPath` |
+| Endpoint path prefixes | `/mfa/enrol/begin`, `/mfa/enrol/confirm`, `/mfa/enrol/confirm-email`, each with `/<name>` appended per method | `httpsec.WithEnrolmentBeginPrefix`, `WithEnrolmentConfirmPrefix`, `WithEnrolmentEmailConfirmPrefix` |
+| Methods enrolled | every method `EnableMFA` was given that implements `mfa.Enroller` and supports the path | `httpsec.WithEnrolmentMethods` |
 | First factors admitted | `password`, `magic-link`, unrecorded | `policy.WithEnrolmentFirstFactors` |
 | Confined session lifetime | 15 minutes | `httpsec.WithEnrolmentSessionTTL` |
 | Begin limit | 5 per hour, per user, in-memory | `httpsec.WithEnrolmentBeginLimiter` |

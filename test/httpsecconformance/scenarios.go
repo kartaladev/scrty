@@ -32,11 +32,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
@@ -468,12 +470,21 @@ func bearerOptions(e *Effects) []httpsec.Option {
 
 // mfaGateFor is the real second-factor gate the login-challenge scenario
 // needs wired in: a stand-in occupying the MFA slot no longer counts as
-// enforcing the challenge, so this builds the smallest real one.
+// enforcing the challenge, so this builds the smallest real one. The
+// scenario's user is enrolled on it, so the challenge it raises lists a
+// usable method rather than an empty set.
 func mfaGateFor(t *testing.T) httpsec.Option {
 	t.Helper()
 
 	method, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example")
 	require.NoError(t, err)
+
+	provisioning, err := method.BeginEnrolment(t.Context(), UserID, Username)
+	require.NoError(t, err)
+
+	code, err := totp.GenerateCode(provisioning.Secret, time.Now())
+	require.NoError(t, err)
+	require.NoError(t, method.ConfirmEnrolment(t.Context(), UserID, code))
 
 	return httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(fixtureTokens{}))
 }
@@ -818,6 +829,10 @@ func loginChallenge() Scenario {
 				"a consumer rendering the prompt reads the challenge from the refusal")
 			assert.Equal(t, policy.ChallengeMFA, challenge.Kind)
 			assert.NotEmpty(t, challenge.Token, "the prompt is answered with the token issued here")
+
+			require.Len(t, challenge.Methods, 1, "the challenge lists the enrolled method")
+			assert.Equal(t, "totp", challenge.Methods[0].Name)
+			assert.Equal(t, factor.AuthenticatorApp, challenge.Methods[0].Channel)
 
 			require.Equal(t, 1, res.Effects.ActiveSessions(t))
 			assert.Equal(t, session.MFAPending, res.Effects.LoadSession(t, challenge.Session.ID).MFA,

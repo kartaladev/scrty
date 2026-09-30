@@ -410,6 +410,53 @@ func TestEnrolmentBegin(t *testing.T) {
 				nothingBegun(t, h, s)
 			},
 		},
+		{
+			// WithEnrolmentMethods narrows what the path enrols: a second
+			// enrollable method configured beside the named one is refused at
+			// its own path, exactly as a method EnableMFA was never given.
+			name:  "a method narrowed out by WithEnrolmentMethods",
+			first: factor.Password,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{renamedTOTP(t, h, "totp-backup", mfa.NewMemoryEnrolmentStore())}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods("totp")}
+			},
+			path: httpsec.DefaultEnrolmentBeginPrefix + "/totp-backup",
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+				assert.Equal(t, http.StatusNotFound, httpsec.StatusForError(out.err))
+				nothingBegun(t, h, s)
+
+				backup := h.extraMethods[0].(renamedTOTPMethod)
+				_, ok, err := backup.store.Get(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.False(t, ok, "the narrowed-out method's own store holds nothing")
+			},
+		},
+		{
+			// The path names no enrollable method at all: the limiter double
+			// carries no expectations, so any call to it fails the test, and
+			// this proves the name is checked before the limiter runs.
+			name:  "an unknown method is refused before the limiter runs",
+			first: factor.Password,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.enrolOpts = []httpsec.EnrolmentOption{
+					httpsec.WithEnrolmentBeginLimiter(NewMockLimiter(gomock.NewController(t))),
+				}
+			},
+			path: httpsec.DefaultEnrolmentBeginPrefix + "/sms",
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+				nothingBegun(t, h, s)
+			},
+		},
 	}
 
 	for _, tc := range cases {

@@ -128,7 +128,13 @@ func TestMFAMethodListing(t *testing.T) {
 			wire:    listing(),
 			state:   session.MFAPending,
 			request: get(httpsec.DefaultMFAMethodListingPath),
-			assert:  lists(defaultListing),
+			assert: func(t *testing.T, out served) {
+				t.Helper()
+
+				lists(defaultListing)(t, out)
+				assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"),
+					"the default listing carries the user's usable methods, which no cache may keep")
+			},
 		},
 		{
 			name: "a method with a begin step is listed as one, in configuration order",
