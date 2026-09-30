@@ -77,6 +77,10 @@ func TestEnrolmentBegin(t *testing.T) {
 		// chain it will run on.
 		before func(t *testing.T, h *enrolHarness, c *httpsec.Chain, s *session.Session)
 
+		// path is where the begin is posted: TOTP's begin path unless a
+		// case names another method.
+		path string
+
 		body string
 		ctx  func(ctx context.Context) context.Context
 
@@ -86,7 +90,7 @@ func TestEnrolmentBegin(t *testing.T) {
 	beginOn := func(t *testing.T, c *httpsec.Chain) served {
 		t.Helper()
 
-		return serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+		return serve(t, c, post(t.Context(), enrolBeginPath, ""))
 	}
 
 	// nothingBegun pins that the refusal generated and recorded nothing: no
@@ -192,12 +196,79 @@ func TestEnrolmentBegin(t *testing.T) {
 
 				h.method = m
 			},
+			path: httpsec.DefaultEnrolmentBeginPrefix + "/email-code",
 			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
 				t.Helper()
 
 				require.ErrorIs(t, out.err, mfa.ErrSameChannel)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 				assert.True(t, h.stored(t, s.ID).EnrolmentGeneration.IsZero())
+			},
+		},
+		{
+			// The same-channel test is the named method's: an emailed method
+			// beside TOTP does not stop a magic-link session enrolling TOTP.
+			name:  "a magic-link session begins on TOTP beside an emailed method",
+			first: factor.MagicLink,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				m := NewMockEnroller(gomock.NewController(t))
+				m.EXPECT().Name().Return("email-code").AnyTimes()
+				m.EXPECT().Response().Return(mfa.FormField("code", 4<<10)).AnyTimes()
+				m.EXPECT().Channel().Return(factor.Email).AnyTimes()
+				m.EXPECT().SupportsEnrolmentPath().Return(true).AnyTimes()
+				m.EXPECT().BeginEnrolmentGeneration(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+				h.extraMethods = []mfa.Method{m}
+			},
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
+				t.Helper()
+
+				begun(t, out)
+
+				e, ok := h.enrolment(t)
+				require.True(t, ok, "TOTP's store holds the pending enrolment")
+				assert.Equal(t, e.Generation, h.stored(t, s.ID).EnrolmentGeneration)
+			},
+		},
+		{
+			name:  "a begin path naming no enrollable method",
+			first: factor.Password,
+			path:  httpsec.DefaultEnrolmentBeginPrefix + "/sms",
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+				assert.Equal(t, http.StatusNotFound, httpsec.StatusForError(out.err))
+				nothingBegun(t, h, s)
+			},
+		},
+		{
+			// The path names the method, and the begin is that method's
+			// alone: its store holds the pending enrolment and draws the
+			// generation the session records.
+			name:  "a begin on another enrollable method",
+			first: factor.Password,
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{renamedTOTP(t, h, "totp-backup", mfa.NewMemoryEnrolmentStore())}
+			},
+			path: httpsec.DefaultEnrolmentBeginPrefix + "/totp-backup",
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, out served) {
+				t.Helper()
+
+				begun(t, out)
+
+				_, ok := h.enrolment(t)
+				assert.False(t, ok, "TOTP's store holds nothing")
+
+				backup := h.extraMethods[0].(renamedTOTPMethod)
+				e, ok, err := backup.store.Get(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				require.True(t, ok, "the named method's store holds the pending enrolment")
+				assert.Equal(t, e.Generation, h.stored(t, s.ID).EnrolmentGeneration)
 			},
 		},
 		{
@@ -362,7 +433,12 @@ func TestEnrolmentBegin(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			tc.assert(t, h, s, serveIn(ctx, t, c, post(ctx, httpsec.DefaultEnrolmentBeginPath, tc.body)))
+			path := tc.path
+			if path == "" {
+				path = enrolBeginPath
+			}
+
+			tc.assert(t, h, s, serveIn(ctx, t, c, post(ctx, path, tc.body)))
 		})
 	}
 }

@@ -311,7 +311,7 @@ func (d *e2eDeployment) confined(t *testing.T, credential string) {
 func (d *e2eDeployment) enrolAndVerify(t *testing.T, credential string, emailed bool) string {
 	t.Helper()
 
-	begun := d.send(t, httpsec.DefaultEnrolmentBeginPath, credential, nil)
+	begun := d.send(t, enrolBeginPath, credential, nil)
 	require.NoError(t, begun.err)
 
 	var doc beginBody
@@ -320,7 +320,7 @@ func (d *e2eDeployment) enrolAndVerify(t *testing.T, credential string, emailed 
 
 	sentBefore := d.sender.count()
 
-	proven := d.send(t, httpsec.DefaultEnrolmentConfirmPath, credential,
+	proven := d.send(t, enrolConfirmPath, credential,
 		url.Values{"code": {d.code(t, doc.Secret)}})
 	require.NoError(t, proven.err)
 	assert.Equal(t, http.StatusNoContent, proven.rec.Code)
@@ -331,7 +331,7 @@ func (d *e2eDeployment) enrolAndVerify(t *testing.T, credential string, emailed 
 		require.NoError(t, err)
 		require.False(t, enrolled, "a proven device alone does not count")
 
-		redeemed := d.send(t, httpsec.DefaultEnrolmentEmailConfirmPath, credential,
+		redeemed := d.send(t, enrolEmailPath, credential,
 			url.Values{"code": {d.lastEmailed(t)}})
 		require.NoError(t, redeemed.err)
 		assert.Equal(t, http.StatusNoContent, redeemed.rec.Code)

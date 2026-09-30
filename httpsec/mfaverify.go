@@ -96,6 +96,10 @@ type mfaInterceptor struct {
 	log     *slog.Logger
 	sampler *logsample.Sampler
 
+	// listing is the method-listing endpoint's configuration, and nil while
+	// the endpoint is off (WithMFAMethodListing).
+	listing *listingConfig
+
 	// logoutPath is handed over at assembly, never configured here.
 	logoutPath string
 }
@@ -131,6 +135,15 @@ func (c *config) wireMFA() error {
 				"session owing a second factor could not log out", i.beginPrefix, c.logoutPath)
 		}
 
+		// The listing answers GET on exactly its path, and logout POST on
+		// its own, but one path serving both would be a route whose meaning
+		// depends on the verb, and a proxy rule naming either would catch the
+		// other.
+		if i.listing != nil && c.logoutPath != "" && i.listing.path == c.logoutPath {
+			return newConfigError("EnableMFA's WithMFAMethodListing path %q is the logout path",
+				i.listing.path)
+		}
+
 		if err := i.wireChallenges(c); err != nil {
 			return err
 		}
@@ -158,7 +171,8 @@ func (i *mfaInterceptor) flushRefusalLogs() {
 }
 
 // Intercept is every part of the second factor: the verify endpoint and the
-// begin endpoint under their prefixes, and the gate for everything else.
+// begin endpoint under their prefixes, the method listing when it is on, and
+// the gate for everything else.
 //
 // They are one interceptor rather than several registrations because the
 // endpoints are the gate's own exemptions. Split apart, a consumer or a later
@@ -171,6 +185,10 @@ func (i *mfaInterceptor) Intercept(ex *Exchange, next Next) error {
 
 	if i.isBeginRequest(ex.Request) {
 		return i.begin(ex)
+	}
+
+	if i.isListingRequest(ex.Request) {
+		return i.list(ex)
 	}
 
 	return i.gate(ex, next)
@@ -455,8 +473,8 @@ func writeMFAResult(ex *Exchange, result MFAResult) error {
 // Logout is exempt, which is not obvious. The gate's slot is outside logout's,
 // so without this a caller mid-challenge could not end their own session, and
 // on a device that is not theirs that is the one thing they most need to do.
-// The verify and begin endpoints need no exemption here because they never
-// reach this function.
+// The verify, begin and listing endpoints need no exemption here because they
+// never reach this function.
 func (i *mfaInterceptor) gate(ex *Exchange, next Next) error {
 	s := ex.Session
 	if s == nil || s.MFA != session.MFAPending {

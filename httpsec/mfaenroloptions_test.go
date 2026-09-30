@@ -247,29 +247,167 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 			assert: refused("EnableMFAEnrolment", "user loader"),
 		},
 		{
-			name: "an empty begin path",
+			name: "an empty begin prefix",
 			prepare: func(_ *testing.T, h *enrolHarness) {
-				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPath("")}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPrefix("")}
 			},
-			assert: refused("WithEnrolmentBeginPath"),
+			assert: refused("WithEnrolmentBeginPrefix"),
 		},
 		{
-			name: "two enrolment endpoints on one path",
+			name: "a confirm prefix that matches no request",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentConfirmPrefix("mfa/enrol/confirm")}
+			},
+			assert: refused("WithEnrolmentConfirmPrefix"),
+		},
+		{
+			name: "the root as the emailed-code prefix",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentEmailConfirmPrefix("/")}
+			},
+			assert: refused("WithEnrolmentEmailConfirmPrefix"),
+		},
+		{
+			name: "two enrolment endpoints on one prefix",
 			prepare: func(_ *testing.T, h *enrolHarness) {
 				h.enrolOpts = []httpsec.EnrolmentOption{
-					httpsec.WithEnrolmentConfirmPath(httpsec.DefaultEnrolmentBeginPath),
+					httpsec.WithEnrolmentConfirmPrefix(httpsec.DefaultEnrolmentBeginPrefix),
 				}
 			},
-			assert: refused("EnableMFAEnrolment", httpsec.DefaultEnrolmentBeginPath),
+			assert: refused("EnableMFAEnrolment", httpsec.DefaultEnrolmentBeginPrefix),
 		},
 		{
-			name: "an enrolment endpoint on the logout path",
+			name: "one enrolment prefix under another",
 			prepare: func(_ *testing.T, h *enrolHarness) {
 				h.enrolOpts = []httpsec.EnrolmentOption{
-					httpsec.WithEnrolmentEmailConfirmPath(httpsec.DefaultLogoutPath),
+					httpsec.WithEnrolmentConfirmPrefix(httpsec.DefaultEnrolmentBeginPrefix + "/device"),
+				}
+			},
+			assert: refused("EnableMFAEnrolment", httpsec.DefaultEnrolmentBeginPrefix),
+		},
+		{
+			// With email confirmation off the emailed-code endpoint does not
+			// exist, so its prefix claims nothing.
+			name: "the emailed-code prefix on another's with email confirmation off",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{
+					httpsec.WithoutEmailConfirmation(),
+					httpsec.WithEnrolmentEmailConfirmPrefix(httpsec.DefaultEnrolmentBeginPrefix),
+				}
+			},
+			assert: assembles,
+		},
+		{
+			name: "an enrolment prefix on the logout path",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{
+					httpsec.WithEnrolmentEmailConfirmPrefix(httpsec.DefaultLogoutPath),
 				}
 			},
 			assert: refused("EnableMFAEnrolment", httpsec.DefaultLogoutPath),
+		},
+		{
+			name: "an enrolment prefix above the logout path",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPrefix("/account/2fa/start")}
+				h.logoutOpts = []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/account/2fa/start/sign-out")}
+			},
+			assert: refused("EnableMFAEnrolment", "/account/2fa/start/sign-out"),
+		},
+		{
+			name: "an enrolment prefix on the MFA verify prefix",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPrefix(httpsec.DefaultMFAVerifyPrefix)}
+			},
+			assert: refused("EnableMFAEnrolment", httpsec.DefaultMFAVerifyPrefix),
+		},
+		{
+			name: "an enrolment prefix above the MFA verify prefix",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.mfaOpts = []httpsec.MFAOption{httpsec.WithMFAVerifyPrefix("/2fa/verify")}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentConfirmPrefix("/2fa")}
+			},
+			assert: refused("EnableMFAEnrolment", "/2fa/verify"),
+		},
+		{
+			name: "an enrolment prefix under the MFA begin prefix",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{
+					httpsec.WithEnrolmentConfirmPrefix(httpsec.DefaultMFABeginPrefix + "/enrol"),
+				}
+			},
+			assert: refused("EnableMFAEnrolment", httpsec.DefaultMFABeginPrefix),
+		},
+		{
+			// Only TOTP can enrol through the path; the other method is
+			// verified, and simply not offered here.
+			name: "TOTP beside a method that cannot enrol",
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{emailCodeMethod(t)}
+			},
+			assert: assembles,
+		},
+		{
+			name: "TOTP beside a TOTP whose store cannot record a device proof",
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{renamedTOTP(t, h, "totp-legacy", singleCallStore{mfa.NewMemoryEnrolmentStore()})}
+			},
+			assert: assembles,
+		},
+		{
+			name: "the consumer names TOTP",
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{emailCodeMethod(t)}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods("totp")}
+			},
+			assert: assembles,
+		},
+		{
+			name: "the consumer names a method that cannot enrol",
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{emailCodeMethod(t)}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods("email-code")}
+			},
+			assert: refused("WithEnrolmentMethods", "email-code", "mfa.Enroller"),
+		},
+		{
+			name: "the consumer names a TOTP whose store cannot record a device proof",
+			prepare: func(t *testing.T, h *enrolHarness) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{renamedTOTP(t, h, "totp-legacy", singleCallStore{mfa.NewMemoryEnrolmentStore()})}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods("totp", "totp-legacy")}
+			},
+			assert: refused("WithEnrolmentMethods", "totp-legacy", "DeviceProofStore"),
+		},
+		{
+			name: "the consumer names a method EnableMFA was not given",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods("sms")}
+			},
+			assert: refused("WithEnrolmentMethods", "sms"),
+		},
+		{
+			name: "the consumer names a method twice",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods("totp", "totp")}
+			},
+			assert: refused("WithEnrolmentMethods", "totp"),
+		},
+		{
+			name: "the consumer names no method",
+			prepare: func(_ *testing.T, h *enrolHarness) {
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentMethods()}
+			},
+			assert: refused("WithEnrolmentMethods"),
 		},
 		{
 			name: "the path enabled twice",
@@ -312,8 +450,31 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 	}
 }
 
+// renamedTOTPMethod is a TOTP method under another name, over its own store,
+// so one chain can hold two TOTP methods whose enrolments are kept apart.
+type renamedTOTPMethod struct {
+	*mfa.TOTP
+	name string
+
+	// store is the method's own store, for a test to read back.
+	store mfa.EnrolmentStore
+}
+
+func (m renamedTOTPMethod) Name() string { return m.name }
+
+// renamedTOTP is a TOTP method named name over store, on the harness's clock.
+func renamedTOTP(t *testing.T, h *enrolHarness, name string, store mfa.EnrolmentStore) renamedTOTPMethod {
+	t.Helper()
+
+	m, err := mfa.NewTOTP(store, enrolIssuer, mfa.WithClock(h.clock))
+	require.NoError(t, err)
+
+	return renamedTOTPMethod{TOTP: m, name: name, store: store}
+}
+
 // compile-time proof that the doubles are what the path is wired to.
 var (
 	_ mfa.Enroller = (*MockEnroller)(nil)
 	_ mfa.Enroller = (*mfa.TOTP)(nil)
+	_ mfa.Enroller = renamedTOTPMethod{}
 )

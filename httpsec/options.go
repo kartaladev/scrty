@@ -1054,6 +1054,9 @@ type MFAOption func(*mfaInterceptor) error
 // a retry would not change that: it is tried and logged once per issuance
 // window. The verify and begin prefixes must not overlap.
 //
+// The method-listing endpoint, a GET a pending session sends to learn which
+// methods its user can use, is off unless WithMFAMethodListing turns it on.
+//
 // Each method's response is read by the library, the way the method's
 // mfa.ResponseFormat declares: one field of an
 // "application/x-www-form-urlencoded" POST body (TOTP reads "code", up to
@@ -1129,6 +1132,10 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 		if underPrefix(i.beginPrefix, i.verifyPrefix) || underPrefix(i.verifyPrefix, i.beginPrefix) {
 			return newConfigError("%s's verify prefix %q and begin prefix %q overlap, so one "+
 				"endpoint would answer the other's requests", option, i.verifyPrefix, i.beginPrefix)
+		}
+
+		if err := i.checkListing(option); err != nil {
+			return err
 		}
 
 		c.enable(option, func() error {

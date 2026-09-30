@@ -131,6 +131,22 @@ func TestEnrolmentGate(t *testing.T) {
 		require.Error(t, err, "the session is ended, and its handle no longer loads")
 	}
 
+	unknownMethod := func(t *testing.T, h *enrolHarness, s *session.Session, w *gateWitnesses, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+		assert.Equal(t, http.StatusNotFound, httpsec.StatusForError(out.err))
+
+		var ch *httpsec.ChallengeError
+		assert.NotErrorAs(t, out.err, &ch, "the endpoint refuses it, not the gate")
+		assert.False(t, out.handlerRan)
+		assert.False(t, w.consumer.Load(), "nothing behind the gate runs")
+
+		_, ok := h.enrolment(t)
+		assert.False(t, ok, "nothing is stored")
+		assert.True(t, h.stored(t, s.ID).EnrolmentGeneration.IsZero())
+	}
+
 	cases := []testCase{
 		{
 			name:    "a protected route",
@@ -175,14 +191,14 @@ func TestEnrolmentGate(t *testing.T) {
 		{
 			name:    "a GET on the begin path",
 			state:   session.MFAEnrolmentPending,
-			request: get(httpsec.DefaultEnrolmentBeginPath),
+			request: get(enrolBeginPath),
 			refused: true,
 			assert:  challenged,
 		},
 		{
 			name:    "a GET on the confirm path",
 			state:   session.MFAEnrolmentPending,
-			request: get(httpsec.DefaultEnrolmentConfirmPath),
+			request: get(enrolConfirmPath),
 			refused: true,
 			assert:  challenged,
 		},
@@ -202,19 +218,46 @@ func TestEnrolmentGate(t *testing.T) {
 			name:      "the emailed-code path with email confirmation off",
 			state:     session.MFAEnrolmentPending,
 			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithoutEmailConfirmation()},
-			request:   postTo(httpsec.DefaultEnrolmentEmailConfirmPath, "code=123456"),
+			request:   postTo(enrolEmailPath, "code=123456"),
 			refused:   true,
 			assert:    challenged,
 		},
 		{
 			// A moved endpoint takes its exemption with it: the default path
 			// is then a route like any other.
-			name:      "the default begin path once the begin path is moved",
+			name:      "the default begin path once the begin prefix is moved",
 			state:     session.MFAEnrolmentPending,
-			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPath("/account/2fa/start")},
-			request:   postTo(httpsec.DefaultEnrolmentBeginPath, ""),
+			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPrefix("/account/2fa/start")},
+			request:   postTo(enrolBeginPath, ""),
 			refused:   true,
 			assert:    challenged,
+		},
+		{
+			// Every POST under an enrolment prefix is that endpoint's, so one
+			// naming no enrollable method is refused by the endpoint as
+			// unknown, rather than challenged by the gate or passed on.
+			name:    "a begin path naming no enrollable method",
+			state:   session.MFAEnrolmentPending,
+			request: postTo(httpsec.DefaultEnrolmentBeginPrefix+"/sms", ""),
+			assert:  unknownMethod,
+		},
+		{
+			name:    "the bare begin prefix",
+			state:   session.MFAEnrolmentPending,
+			request: postTo(httpsec.DefaultEnrolmentBeginPrefix, ""),
+			assert:  unknownMethod,
+		},
+		{
+			name:    "a confirm path with an extra segment",
+			state:   session.MFAEnrolmentPending,
+			request: postTo(enrolConfirmPath+"/x", "code=123456"),
+			assert:  unknownMethod,
+		},
+		{
+			name:    "an emailed-code path with an empty segment",
+			state:   session.MFAEnrolmentPending,
+			request: postTo(httpsec.DefaultEnrolmentEmailConfirmPrefix+"/", "code=123456"),
+			assert:  unknownMethod,
 		},
 		{
 			name:    "logout",
@@ -233,10 +276,10 @@ func TestEnrolmentGate(t *testing.T) {
 			assert:     loggedOut,
 		},
 		{
-			name:      "a consumer begin path",
+			name:      "a consumer begin prefix",
 			state:     session.MFAEnrolmentPending,
-			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPath("/account/2fa/start")},
-			request:   postTo("/account/2fa/start", ""),
+			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithEnrolmentBeginPrefix("/account/2fa/start")},
+			request:   postTo("/account/2fa/start/totp", ""),
 			assert: func(t *testing.T, h *enrolHarness, _ *session.Session, w *gateWitnesses, out served) {
 				t.Helper()
 

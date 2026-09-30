@@ -65,6 +65,7 @@ var statusTable = []statusRow{
 	{policy.ErrSecondFactorSameChannel, http.StatusForbidden},
 	{mfa.ErrSameChannel, http.StatusForbidden},
 	{ErrMFAMethodNotUsable, http.StatusForbidden},
+	{ErrNoMFAChallengePending, http.StatusForbidden},
 	{mfa.ErrAlreadyEnrolled, http.StatusForbidden},
 }
 

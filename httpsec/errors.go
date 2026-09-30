@@ -43,6 +43,13 @@ var (
 	// session's user may not use: one they are not enrolled on. It maps to
 	// 403: the caller is known, and may not take this step.
 	ErrMFAMethodNotUsable = errors.New("httpsec: MFA method not usable")
+
+	// ErrNoMFAChallengePending refuses a method listing (WithMFAMethodListing)
+	// asked for by a session that owes no second factor, a fully
+	// authenticated one included. The endpoint exists only for the pending
+	// state. It maps to 403: the caller is known, and has nothing to list
+	// methods for.
+	ErrNoMFAChallengePending = errors.New("httpsec: no MFA challenge pending")
 )
 
 // ChallengeError refuses a request that must satisfy a challenge before it

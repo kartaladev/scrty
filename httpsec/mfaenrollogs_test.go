@@ -62,11 +62,11 @@ func beginsPastTheLimit(t *testing.T, c *httpsec.Chain, n int) {
 	t.Helper()
 
 	for range 5 {
-		require.NoError(t, serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, "")).err)
+		require.NoError(t, serve(t, c, post(t.Context(), enrolBeginPath, "")).err)
 	}
 
 	for range n {
-		out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+		out := serve(t, c, post(t.Context(), enrolBeginPath, ""))
 		require.ErrorIs(t, out.err, mfa.ErrEnrolmentThrottled)
 	}
 }
@@ -109,7 +109,7 @@ func TestEnrolmentLogs(t *testing.T) {
 				// A device code after the proof, which the proof already
 				// spent; a wrong emailed code; and a malformed one.
 				device := h.codeFor(t, doc.Secret)
-				require.ErrorIs(t, serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+				require.ErrorIs(t, serve(t, c, post(t.Context(), enrolConfirmPath,
 					"code="+device)).err, mfa.ErrInvalidCode)
 				require.ErrorIs(t, serve(t, c, emailCodeRequest(t.Context(), wrong)).err, mfa.ErrEmailCodeInvalid)
 				require.ErrorIs(t, serve(t, c, emailCodeRequest(t.Context(), " "+emailed)).err,
@@ -224,7 +224,7 @@ func TestEnrolmentLogs(t *testing.T) {
 				secret := h.beginDoc(t, c).Secret
 
 				for range 3 {
-					out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+					out := serve(t, c, post(t.Context(), enrolConfirmPath,
 						"code="+h.wrongCodeFor(t, secret)))
 					require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
 				}
@@ -356,7 +356,7 @@ func TestEnrolmentVoidFailureLogged(t *testing.T) {
 			c := h.chain(t, h.enrolmentOnly(t, factor.Password))
 			secret := h.beginDoc(t, c).Secret
 
-			out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath, "code="+h.codeFor(t, secret)))
+			out := serve(t, c, post(t.Context(), enrolConfirmPath, "code="+h.codeFor(t, secret)))
 			require.ErrorIs(t, out.err, notify.ErrQueueFull, "the send failure is what the request answers")
 			assert.Equal(t, "httpsec: the enrolment message could not be sent", out.err.Error())
 
@@ -392,6 +392,11 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 		name    string
 		first   factor.Kind
 		prepare func(t *testing.T, h *enrolHarness)
+
+		// path is where the begin is posted: TOTP's begin path unless a
+		// case names another method.
+		path string
+
 		reason  string
 		hasType bool
 	}
@@ -429,7 +434,16 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 
 				h.method = m
 			},
+			path:    httpsec.DefaultEnrolmentBeginPrefix + "/email-code",
 			reason:  "same-channel",
+			hasType: false,
+		},
+		{
+			name:    "a path naming no enrollable method is the library's own decision",
+			first:   factor.Password,
+			prepare: func(*testing.T, *enrolHarness) {},
+			path:    httpsec.DefaultEnrolmentBeginPrefix + "/sms",
+			reason:  "unknown-method",
 			hasType: false,
 		},
 	}
@@ -444,8 +458,13 @@ func TestEnrolmentRefusalRecordCarriesErrorType(t *testing.T) {
 
 			tc.prepare(t, h)
 
+			path := tc.path
+			if path == "" {
+				path = enrolBeginPath
+			}
+
 			c := h.chain(t, h.enrolmentOnly(t, tc.first))
-			serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+			serve(t, c, post(t.Context(), path, ""))
 
 			refused := withReason(recordsNamed(logs, msgEnrolmentRefused), tc.reason)
 			require.Len(t, refused, 1, "the refusal is recorded under its reason")

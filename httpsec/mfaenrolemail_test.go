@@ -29,14 +29,14 @@ import (
 // emailCodeRequest posts code to the emailed-code endpoint as a URL-encoded
 // form, so a code with spaces or non-ASCII digits reaches it as it was typed.
 func emailCodeRequest(ctx context.Context, code string) *http.Request {
-	return post(ctx, httpsec.DefaultEnrolmentEmailConfirmPath, url.Values{"code": {code}}.Encode())
+	return post(ctx, enrolEmailPath, url.Values{"code": {code}}.Encode())
 }
 
 // beginDoc runs a begin through c and returns the document it answered with.
 func (h *enrolHarness) beginDoc(t *testing.T, c *httpsec.Chain) beginBody {
 	t.Helper()
 
-	out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+	out := serve(t, c, post(t.Context(), enrolBeginPath, ""))
 	require.NoError(t, out.err)
 
 	var body beginBody
@@ -50,7 +50,7 @@ func (h *enrolHarness) beginDoc(t *testing.T, c *httpsec.Chain) beginBody {
 func (h *enrolHarness) prove(t *testing.T, c *httpsec.Chain, o *outbox, secret string) string {
 	t.Helper()
 
-	out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath, "code="+h.codeFor(t, secret)))
+	out := serve(t, c, post(t.Context(), enrolConfirmPath, "code="+h.codeFor(t, secret)))
 	require.NoError(t, out.err)
 
 	return lastEmailedCode(t, o)
@@ -396,7 +396,7 @@ func TestEnrolmentEmailCode(t *testing.T) {
 			name:    "a code the endpoint cannot read",
 			prepare: func(t *testing.T, h *enrolHarness, _ *outbox) { t.Helper(); failuresRecorded(t, h, 0) },
 			request: func(ctx context.Context, code string) *http.Request {
-				req := post(ctx, httpsec.DefaultEnrolmentEmailConfirmPath, `{"code":"`+code+`"}`)
+				req := post(ctx, enrolEmailPath, `{"code":"`+code+`"}`)
 				req.Header.Set("Content-Type", "application/json")
 
 				return req
@@ -693,7 +693,7 @@ func TestEnrolmentNotifiesWhenSessionUnsaved(t *testing.T) {
 				secret := h.beginDoc(t, c).Secret
 				failing.Store(true)
 
-				return serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+				return serve(t, c, post(t.Context(), enrolConfirmPath,
 					"code="+h.codeFor(t, secret)))
 			},
 			assert: func(t *testing.T, sent []notify.Message) {

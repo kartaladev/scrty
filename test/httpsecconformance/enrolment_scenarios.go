@@ -315,7 +315,7 @@ func enrolmentBeginAnswers() Scenario {
 	return Scenario{
 		Name:    "an enrolment begins",
 		Build:   enrolmentBuild(stepConfined),
-		Request: enrolmentPost(httpsec.DefaultEnrolmentBeginPath, nil),
+		Request: enrolmentPost(httpsec.DefaultEnrolmentBeginPrefix+"/totp", nil),
 		Assert: func(t *testing.T, res Result) {
 			require.NoError(t, res.Refusal)
 			assert.Equal(t, http.StatusOK, res.Status)
@@ -340,7 +340,7 @@ func enrolmentConfirmEmailsACode() Scenario {
 	return Scenario{
 		Name:  "a device proof emails a code",
 		Build: enrolmentBuild(stepBegun),
-		Request: enrolmentPost(httpsec.DefaultEnrolmentConfirmPath,
+		Request: enrolmentPost(httpsec.DefaultEnrolmentConfirmPrefix+"/totp",
 			codeField(func(spec ChainSpec) string {
 				c, err := totp.GenerateCode(spec.Effects.Enrolment.Secret, spec.Effects.Enrolment.Now())
 				if err != nil {
@@ -371,7 +371,7 @@ func enrolmentEmailedCodeCompletes() Scenario {
 	return Scenario{
 		Name:  "the emailed code completes the enrolment",
 		Build: enrolmentBuild(stepProven),
-		Request: enrolmentPost(httpsec.DefaultEnrolmentEmailConfirmPath,
+		Request: enrolmentPost(httpsec.DefaultEnrolmentEmailConfirmPrefix+"/totp",
 			codeField(func(spec ChainSpec) string { return spec.Effects.Enrolment.EmailedCode })),
 		Assert: func(t *testing.T, res Result) {
 			require.NoError(t, res.Refusal)

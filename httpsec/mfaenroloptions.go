@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -10,20 +11,23 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-// The paths the enrolment endpoints answer POST requests on when the consumer
-// names none. They are constants rather than bare literals so a client, a test
-// or a proxy rule naming the same endpoint names the same thing this package
+// The prefixes the enrolment endpoints answer POST requests under when the
+// consumer names none. Each endpoint serves one method per path: the prefix,
+// "/" and the method's name, so TOTP begins at "/mfa/enrol/begin/totp" by
+// default. They are constants rather than bare literals so a client, a test or
+// a proxy rule naming the same endpoint names the same thing this package
 // does.
 const (
-	// DefaultEnrolmentBeginPath begins, or begins again, a pending enrolment.
-	DefaultEnrolmentBeginPath = "/mfa/enrol/begin"
+	// DefaultEnrolmentBeginPrefix begins, or begins again, a pending
+	// enrolment.
+	DefaultEnrolmentBeginPrefix = "/mfa/enrol/begin"
 
-	// DefaultEnrolmentConfirmPath proves the device with a code from it.
-	DefaultEnrolmentConfirmPath = "/mfa/enrol/confirm"
+	// DefaultEnrolmentConfirmPrefix proves the device with a code from it.
+	DefaultEnrolmentConfirmPrefix = "/mfa/enrol/confirm"
 
-	// DefaultEnrolmentEmailConfirmPath completes the enrolment with the code
+	// DefaultEnrolmentEmailConfirmPrefix completes the enrolment with the code
 	// emailed to the user once their device was proven.
-	DefaultEnrolmentEmailConfirmPath = "/mfa/enrol/confirm-email"
+	DefaultEnrolmentEmailConfirmPrefix = "/mfa/enrol/confirm-email"
 )
 
 // The limits the default in-memory enrolment limiters count against.
@@ -49,10 +53,10 @@ const enrolmentEmailCodeTTL = 10 * time.Minute
 
 // EnrolmentDeps are the collaborators the enrolment path is wired to.
 //
-// The MFA method and the session manager are not among them: the method is the
-// first method EnableMFA was given, because the verify endpoint that completes the
-// upgrade must verify the very factor that was enrolled, and the sessions are
-// the chain's own.
+// The MFA methods and the session manager are not among them: the methods are
+// drawn from those EnableMFA was given, because the verify endpoint that
+// completes the upgrade must verify the very factor that was enrolled, and the
+// sessions are the chain's own.
 type EnrolmentDeps struct {
 	// Users loads the session user's details, which the label and contact
 	// resolvers read. Required.
@@ -78,20 +82,36 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 // unless both are set, because it gives a password alone the power to begin
 // binding a second factor.
 //
-// A session in the enrolment-pending state reaches only POST on the three
-// enrolment paths and the chain's logout. Every other request — the verify
-// endpoint, the password-change resolve endpoint, the authorizer, every
-// consumer interceptor after OrderMFAEnrolment and the handler — is refused
+// Each endpoint serves one method per path: its prefix, "/" and the method's
+// name, so TOTP begins at "/mfa/enrol/begin/totp", proves its device at
+// "/mfa/enrol/confirm/totp" and takes its emailed code at
+// "/mfa/enrol/confirm-email/totp" by default. The method is read from the path
+// and nowhere else. A POST under a prefix naming no enrollable method — an
+// unknown, empty or extra segment, or the bare prefix — is refused with
+// ErrUnknownMFAMethod (404) before anything is counted or stored. Begin
+// refuses the named method when it is on the session's first-factor channel.
+// The generation a begin records on the session belongs to the method that
+// drew it: a confirmation naming another method is refused by that method's
+// store as a stale generation is, and proves nothing.
+//
+// A session in the enrolment-pending state reaches only POST under the three
+// enrolment prefixes and the chain's logout. Every other request — the MFA
+// verify, begin and method-listing endpoints, the password-change resolve
+// endpoint, the authorizer, every consumer interceptor after OrderMFAEnrolment
+// and the handler — is refused
 // with a ChallengeError of kind policy.ChallengeMFAEnrolment carrying the
 // session. There is no option to let further routes through. Consumer
 // interceptors registered between the bearer slot and OrderMFAEnrolment do run
 // for such a session, and see its principal.
 //
 // Defaults, each replaced by the option named:
-//   - the endpoints answer POST on DefaultEnrolmentBeginPath,
-//     DefaultEnrolmentConfirmPath and DefaultEnrolmentEmailConfirmPath
-//     (WithEnrolmentBeginPath, WithEnrolmentConfirmPath,
-//     WithEnrolmentEmailConfirmPath), and read only the "code" field of an
+//   - the methods enrolled are every method EnableMFA was given that
+//     implements mfa.Enroller and reports SupportsEnrolmentPath
+//     (WithEnrolmentMethods);
+//   - the endpoints answer POST under DefaultEnrolmentBeginPrefix,
+//     DefaultEnrolmentConfirmPrefix and DefaultEnrolmentEmailConfirmPrefix
+//     (WithEnrolmentBeginPrefix, WithEnrolmentConfirmPrefix,
+//     WithEnrolmentEmailConfirmPrefix), and read only the "code" field of an
 //     "application/x-www-form-urlencoded" POST body, never the URL query. This
 //     is a limit, not a default: a body of any other type, multipart and JSON
 //     included, one that does not parse, and one without the field are
@@ -137,17 +157,24 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 // it, and the failure is logged by the fixed reason "not-voided" and the
 // error's Go type, never the store's own text.
 //
-// The method enrolled is the first method EnableMFA was given, which must implement
-// mfa.Enroller over a store that implements mfa.DeviceProofStore. New refuses
-// the chain when there is no EnableMFA, when its method cannot enrol, when its
-// store cannot record a device proof, when there is no session manager, and
-// when the lifetime is longer than that manager's absolute timeout.
+// A method can enrol through the path when it implements mfa.Enroller over a
+// store that implements mfa.DeviceProofStore; a store that does not still
+// serves out-of-band enrolment. New refuses the chain when there is no
+// EnableMFA, when none of its methods can enrol through the path, when
+// WithEnrolmentMethods names a method EnableMFA was not given or one that
+// cannot enrol, when an enrolment prefix overlaps another, the MFA verify or
+// begin prefix, or claims the logout path, when there is no session manager,
+// and when the lifetime is longer than that manager's absolute timeout.
 //
-// It must also be the method the MFA requirement policy looks up (the
-// policy.MFAMethodLookup given to policy.NewMFARequirementPolicy), which New
-// cannot check. If the two differ, the policy's same-channel test can admit a
-// login to the path that begin then refuses as same-channel, and that user
-// stays confined until the enrolment-only session ends.
+// The MFA requirement policy admits a login to the path when one of its
+// methods can enrol through the path on a channel other than the first
+// factor's (policy.NewMFARequirementPolicy). Its methods must be the ones
+// EnableMFA was given, through mfa.LookupsFor, and the enrolled set should
+// hold every method the policy counts on for that admission, which New cannot
+// check. If the policy admits a login on a method this path does not enrol,
+// or one only a same-channel method here could serve, begin refuses what the
+// user can reach, and that user stays confined until the enrolment-only
+// session ends.
 func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 	const option = "EnableMFAEnrolment"
 
@@ -156,9 +183,9 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 			users:             d.Users,
 			sender:            d.Sender,
 			now:               time.Now,
-			beginPath:         DefaultEnrolmentBeginPath,
-			confirmPath:       DefaultEnrolmentConfirmPath,
-			emailPath:         DefaultEnrolmentEmailConfirmPath,
+			beginPrefix:       DefaultEnrolmentBeginPrefix,
+			confirmPrefix:     DefaultEnrolmentConfirmPrefix,
+			emailPrefix:       DefaultEnrolmentEmailConfirmPrefix,
 			lifetime:          defaultEnrolmentLifetime,
 			logInterval:       defaultEnrolmentLogInterval,
 			emailConfirmation: true,
@@ -195,55 +222,83 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 	}
 }
 
-// WithEnrolmentBeginPath answers begins on path instead.
+// WithEnrolmentBeginPrefix answers begins under prefix instead: a method's
+// enrolment begins at prefix, "/" and its name.
 //
-// Default: DefaultEnrolmentBeginPath. Only POST on that exact path begins an
-// enrolment. An empty path is refused, and so is one another enrolment
-// endpoint or logout answers on: whichever matched first would swallow the
-// other.
-func WithEnrolmentBeginPath(path string) EnrolmentOption {
+// Default: DefaultEnrolmentBeginPrefix. Only POST under the prefix is a begin,
+// and every POST under it is the endpoint's: one naming no enrollable method is
+// refused with ErrUnknownMFAMethod. A trailing slash is dropped. An empty
+// prefix is refused, as are one that does not start with "/" and the root
+// "/". New also refuses a prefix that overlaps another enrolment endpoint's,
+// the MFA verify or begin prefix, or claims the logout path: whichever
+// matched first would swallow the other's requests.
+func WithEnrolmentBeginPrefix(prefix string) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if path == "" {
-			return newConfigError("WithEnrolmentBeginPath was given no path, so an " +
-				"enrolment-only session could never begin an enrolment")
+		p, err := mfaPrefix("WithEnrolmentBeginPrefix", prefix)
+		if err != nil {
+			return err
 		}
 
-		i.beginPath = path
+		i.beginPrefix = p
 
 		return nil
 	}
 }
 
-// WithEnrolmentConfirmPath answers device proofs on path instead.
+// WithEnrolmentConfirmPrefix answers device proofs under prefix instead: a
+// method's device is proven at prefix, "/" and its name.
 //
-// Default: DefaultEnrolmentConfirmPath. The same rules as
-// WithEnrolmentBeginPath apply.
-func WithEnrolmentConfirmPath(path string) EnrolmentOption {
+// Default: DefaultEnrolmentConfirmPrefix. The same rules as
+// WithEnrolmentBeginPrefix apply.
+func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if path == "" {
-			return newConfigError("WithEnrolmentConfirmPath was given no path, so an " +
-				"enrolment-only session could never prove its device")
+		p, err := mfaPrefix("WithEnrolmentConfirmPrefix", prefix)
+		if err != nil {
+			return err
 		}
 
-		i.confirmPath = path
+		i.confirmPrefix = p
 
 		return nil
 	}
 }
 
-// WithEnrolmentEmailConfirmPath answers emailed codes on path instead.
+// WithEnrolmentEmailConfirmPrefix answers emailed codes under prefix instead:
+// a method's emailed code is entered at prefix, "/" and its name.
 //
-// Default: DefaultEnrolmentEmailConfirmPath. The same rules as
-// WithEnrolmentBeginPath apply. With WithoutEmailConfirmation the endpoint does
-// not exist, and a request to path is refused like any other route.
-func WithEnrolmentEmailConfirmPath(path string) EnrolmentOption {
+// Default: DefaultEnrolmentEmailConfirmPrefix. The same rules as
+// WithEnrolmentBeginPrefix apply. With WithoutEmailConfirmation the endpoint
+// does not exist, and a request under prefix is refused like any other route.
+func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
-		if path == "" {
-			return newConfigError("WithEnrolmentEmailConfirmPath was given no path, so an " +
-				"emailed code could never be entered")
+		p, err := mfaPrefix("WithEnrolmentEmailConfirmPrefix", prefix)
+		if err != nil {
+			return err
 		}
 
-		i.emailPath = path
+		i.emailPrefix = p
+
+		return nil
+	}
+}
+
+// WithEnrolmentMethods enrols only the methods named, by the names their paths
+// end with.
+//
+// Default: every method EnableMFA was given that implements mfa.Enroller and
+// reports SupportsEnrolmentPath. A name is one of those or New refuses the
+// chain: a name EnableMFA was not given, one whose method cannot enrol through
+// the path, and a name given twice are each a configuration error. So is
+// giving the option no names at all, which would leave a path nobody could
+// enrol through; omit the option to keep the default.
+func WithEnrolmentMethods(names ...string) EnrolmentOption {
+	return func(i *enrolmentInterceptor) error {
+		if len(names) == 0 {
+			return newConfigError("WithEnrolmentMethods was given no method; omit the option to " +
+				"enrol every method that can enrol through the path")
+		}
+
+		i.names = slices.Clone(names)
 
 		return nil
 	}

@@ -135,7 +135,7 @@ func TestEnrolmentNotificationLogsCarryNoAddress(t *testing.T) {
 			c := h.chain(t, s)
 			secret := h.begin(t, c)
 
-			out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath, "code="+h.codeFor(t, secret)))
+			out := serve(t, c, post(t.Context(), enrolConfirmPath, "code="+h.codeFor(t, secret)))
 			require.NoError(t, out.err, "the enrolment stands, told or not")
 			noRecordCarries(t, logs, enrolUsername)
 
@@ -318,7 +318,7 @@ func TestEnrolmentRefusalsCarryNoAddress(t *testing.T) {
 			s := h.enrolmentOnly(t, factor.Password)
 			c := h.chain(t, s)
 
-			out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+			out := serve(t, c, post(t.Context(), enrolBeginPath, ""))
 
 			if tc.confirm {
 				require.NoError(t, out.err)
@@ -326,7 +326,7 @@ func TestEnrolmentRefusalsCarryNoAddress(t *testing.T) {
 				var body beginBody
 				require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &body))
 
-				out = serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+				out = serve(t, c, post(t.Context(), enrolConfirmPath,
 					"code="+h.codeFor(t, body.Secret)))
 			}
 
@@ -360,13 +360,13 @@ func TestEnrolmentLimiterLogsCarryNoUser(t *testing.T) {
 		{
 			name:    "the begin limiter",
 			limit:   func(l *MockLimiter) httpsec.EnrolmentOption { return httpsec.WithEnrolmentBeginLimiter(l) },
-			path:    httpsec.DefaultEnrolmentBeginPath,
+			path:    enrolBeginPath,
 			limiter: "begin",
 		},
 		{
 			name:    "the confirmation limiter",
 			limit:   func(l *MockLimiter) httpsec.EnrolmentOption { return httpsec.WithEnrolmentConfirmLimiter(l) },
-			path:    httpsec.DefaultEnrolmentConfirmPath,
+			path:    enrolConfirmPath,
 			limiter: "confirm",
 		},
 	}
@@ -393,7 +393,7 @@ func TestEnrolmentLimiterLogsCarryNoUser(t *testing.T) {
 
 			// A wrong code, which the confirmation limiter records; the begin
 			// limiter records every begin.
-			serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+			serve(t, c, post(t.Context(), enrolBeginPath, ""))
 			serve(t, c, post(t.Context(), tc.path, "code=000000"))
 
 			noRecordCarries(t, logs, enrolUsername)
@@ -624,12 +624,12 @@ func TestEnrolmentOutagesCarryNoAddress(t *testing.T) {
 				secret := h.begin(t, c)
 				failing.Store(tc.failSave)
 
-				out = serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+				out = serve(t, c, post(t.Context(), enrolConfirmPath,
 					"code="+h.codeFor(t, secret)))
 			} else {
 				failing.Store(tc.failSave)
 
-				req := post(t.Context(), httpsec.DefaultEnrolmentBeginPath, "")
+				req := post(t.Context(), enrolBeginPath, "")
 				if tc.failWrite {
 					out = serveThrough(t, c, req, brokenWriter{})
 				} else {

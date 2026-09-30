@@ -29,6 +29,14 @@ const enrolUsername = "ana@example.com"
 // enrolIssuer is the issuer the TOTP method is built with.
 const enrolIssuer = "Example"
 
+// The enrolment endpoints' paths for the harness's TOTP method, named "totp",
+// under the default prefixes.
+const (
+	enrolBeginPath   = httpsec.DefaultEnrolmentBeginPrefix + "/totp"
+	enrolConfirmPath = httpsec.DefaultEnrolmentConfirmPrefix + "/totp"
+	enrolEmailPath   = httpsec.DefaultEnrolmentEmailConfirmPrefix + "/totp"
+)
+
 // queuedSender is a sender double that declares itself non-blocking, as
 // notify.QueuedSender does, so the enrolment path accepts it without the
 // synchronous-delivery option. What it is asked to send is the mock's to pin.
@@ -61,8 +69,10 @@ type enrolHarness struct {
 	username string
 
 	// method is what EnableMFA is given, the TOTP method unless a case
-	// replaces it.
-	method mfa.Method
+	// replaces it, and extraMethods are further methods given after it, in
+	// order.
+	method       mfa.Method
+	extraMethods []mfa.Method
 
 	enrolOpts  []httpsec.EnrolmentOption
 	logoutOpts []httpsec.LogoutOption
@@ -154,7 +164,7 @@ func (h *enrolHarness) options(t *testing.T, s *session.Session) []httpsec.Optio
 	return append([]httpsec.Option{
 		httpsec.WithPolicyEngine(enrolmentEngine(t)),
 		h.carries(s),
-		httpsec.EnableMFA([]mfa.Method{h.method}, append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
+		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extraMethods...), append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
 		enrolment,
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
 	}, h.extra...)

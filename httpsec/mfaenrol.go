@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -30,16 +32,21 @@ type enrolmentInterceptor struct {
 	users  identity.UserLoader
 	sender notify.Sender
 
-	// method, sessions, logoutPath and log are handed over at assembly,
-	// never configured here.
-	method     mfa.Enroller
+	// methods, sessions, logoutPath and log are handed over at assembly,
+	// never configured here. methods are the enrollable methods, keyed by the
+	// path segment that names each.
+	methods    map[string]mfa.Enroller
 	sessions   *session.Manager
 	logoutPath string
 	log        *slog.Logger
 
-	beginPath   string
-	confirmPath string
-	emailPath   string
+	beginPrefix   string
+	confirmPrefix string
+	emailPrefix   string
+
+	// names are the methods WithEnrolmentMethods named, nil when it was not
+	// given.
+	names []string
 
 	lifetime time.Duration
 
@@ -74,7 +81,7 @@ func (i *enrolmentInterceptor) check(option string) error {
 		return err
 	}
 
-	if err := i.checkPaths(option); err != nil {
+	if err := i.checkPrefixes(option); err != nil {
 		return err
 	}
 
@@ -103,17 +110,19 @@ func (i *enrolmentInterceptor) check(option string) error {
 	return nil
 }
 
-// checkPaths refuses two enrolment endpoints on one path: whichever matched
-// first would swallow the other. The logout path is compared at assembly,
-// because it may be configured after this option.
-func (i *enrolmentInterceptor) checkPaths(option string) error {
-	paths := i.paths()
+// checkPrefixes refuses two enrolment endpoints whose prefixes overlap: every
+// POST under a prefix is that endpoint's, so whichever matched first would
+// swallow the other's requests. The logout path and the MFA endpoints are
+// compared at assembly, because they may be configured after this option.
+func (i *enrolmentInterceptor) checkPrefixes(option string) error {
+	prefixes := i.prefixes()
 
-	for a := range paths {
-		for b := a + 1; b < len(paths); b++ {
-			if paths[a] == paths[b] {
-				return newConfigError("%s was given one path, %q, for two enrolment endpoints, "+
-					"so whichever matched first would swallow the other", option, paths[a])
+	for a := range prefixes {
+		for b := a + 1; b < len(prefixes); b++ {
+			if overlap(prefixes[a], prefixes[b]) {
+				return newConfigError("%s was given the overlapping prefixes %q and %q for two "+
+					"enrolment endpoints, so whichever matched first would swallow the other",
+					option, prefixes[a], prefixes[b])
 			}
 		}
 	}
@@ -121,15 +130,20 @@ func (i *enrolmentInterceptor) checkPaths(option string) error {
 	return nil
 }
 
-// paths is every enrolment endpoint's path. The emailed-code endpoint is
-// among them only while email confirmation is on: without it that endpoint
+// overlap reports whether one of two prefixes is the other or lies below it.
+func overlap(a, b string) bool {
+	return underPrefix(a, b) || underPrefix(b, a)
+}
+
+// prefixes is every enrolment endpoint's prefix. The emailed-code endpoint's
+// is among them only while email confirmation is on: without it that endpoint
 // does not exist.
-func (i *enrolmentInterceptor) paths() []string {
+func (i *enrolmentInterceptor) prefixes() []string {
 	if !i.emailConfirmation {
-		return []string{i.beginPath, i.confirmPath}
+		return []string{i.beginPrefix, i.confirmPrefix}
 	}
 
-	return []string{i.beginPath, i.confirmPath, i.emailPath}
+	return []string{i.beginPrefix, i.confirmPrefix, i.emailPrefix}
 }
 
 // wire takes the settings the chain resolved, once every option has been
@@ -190,8 +204,12 @@ func (c *config) wireMFAEnrolment() error {
 				option, policy.ChallengeMFAEnrolment)
 		}
 
-		method, err := c.enrolmentMethod(option)
+		methods, err := c.enrollableMethods(option, i.names)
 		if err != nil {
+			return err
+		}
+
+		if err := i.checkClaims(option, c); err != nil {
 			return err
 		}
 
@@ -206,11 +224,6 @@ func (c *config) wireMFAEnrolment() error {
 				"the deadline it already has", i.lifetime, limit)
 		}
 
-		if c.logoutPath != "" && slices.Contains(i.paths(), c.logoutPath) {
-			return newConfigError("%s was given the logout path, %q, for an enrolment endpoint, "+
-				"so whichever matched first would swallow the other", option, c.logoutPath)
-		}
-
 		beginLimiter, err := c.enrolmentLimiter(i.beginLimiter,
 			defaultEnrolmentBeginLimit, defaultEnrolmentBeginWindow)
 		if err != nil {
@@ -223,7 +236,7 @@ func (c *config) wireMFAEnrolment() error {
 			return err
 		}
 
-		i.method = method
+		i.methods = methods
 		i.sessions = c.sessions
 		i.logoutPath = c.logoutPath
 		i.beginLimiter, i.confirmLimiter = beginLimiter, confirmLimiter
@@ -237,39 +250,113 @@ func (c *config) declares(kind policy.ChallengeKind) bool {
 	return c.engine != nil && slices.Contains(c.engine.DeclaredChallenges(), kind)
 }
 
-// enrolmentMethod is the MFA method the enrolment path enrols: the first one
-// EnableMFA was given, which must be able to enrol through the path.
+// checkClaims refuses an enrolment prefix that claims a path another endpoint
+// of the chain answers: the logout path, which an enrolment-only session must
+// always reach, and the MFA verify and begin prefixes, which it must never
+// reach. The enrolment endpoints run ahead of both for such a session, so an
+// overlap would hand one endpoint's requests to the other.
+func (i *enrolmentInterceptor) checkClaims(option string, c *config) error {
+	var others []struct{ name, prefix string }
+	if m := c.mfaOf(); m != nil {
+		others = append(others,
+			struct{ name, prefix string }{"EnableMFA's verify prefix", m.verifyPrefix},
+			struct{ name, prefix string }{"EnableMFA's begin prefix", m.beginPrefix})
+	}
+
+	for _, p := range i.prefixes() {
+		if c.logoutPath != "" && underPrefix(c.logoutPath, p) {
+			return newConfigError("%s's prefix %q claims the logout path %q, so an "+
+				"enrolment-only session could not log out", option, p, c.logoutPath)
+		}
+
+		for _, o := range others {
+			if overlap(p, o.prefix) {
+				return newConfigError("%s's prefix %q overlaps %s %q, so whichever matched "+
+					"first would swallow the other's requests", option, p, o.name, o.prefix)
+			}
+		}
+	}
+
+	return nil
+}
+
+// enrollableMethods are the MFA methods the enrolment path enrols, keyed by
+// name: every method EnableMFA was given that can enrol through the path, or,
+// when the consumer named some (WithEnrolmentMethods), exactly those.
 //
-// It is that method and no other because the verify endpoint completes the
-// upgrade by verifying it: a factor enrolled on any other method could never
-// be verified, and the session would stay confined until it expired.
-func (c *config) enrolmentMethod(option string) (mfa.Enroller, error) {
-	var method mfa.Method
-
-	_ = eachInterceptor(c, func(i *mfaInterceptor) error {
-		method = i.methods[0]
-
-		return nil
-	})
-
-	if method == nil {
-		return nil, newConfigError("%s needs EnableMFA: the factor it enrols is the one the "+
+// They are drawn from EnableMFA's methods and no others because the verify
+// endpoint completes the upgrade by verifying one: a factor enrolled on a
+// method it does not verify could never be verified, and the session would
+// stay confined until it expired.
+func (c *config) enrollableMethods(option string, names []string) (map[string]mfa.Enroller, error) {
+	m := c.mfaOf()
+	if m == nil {
+		return nil, newConfigError("%s needs EnableMFA: the factors it enrols are the ones the "+
 			"verify endpoint verifies", option)
 	}
 
-	enroller, ok := method.(mfa.Enroller)
+	out := make(map[string]mfa.Enroller, len(m.methods))
+
+	if names == nil {
+		var reasons []string
+
+		for _, method := range m.methods {
+			e, reason := enrollable(method)
+			if e == nil {
+				reasons = append(reasons, reason)
+
+				continue
+			}
+
+			out[method.Name()] = e
+		}
+
+		if len(out) == 0 {
+			return nil, newConfigError("%s needs a method EnableMFA was given that implements "+
+				"mfa.Enroller over a store implementing mfa.DeviceProofStore, and none does: %s",
+				option, strings.Join(reasons, "; "))
+		}
+
+		return out, nil
+	}
+
+	for _, name := range names {
+		if _, dup := out[name]; dup {
+			return nil, newConfigError("WithEnrolmentMethods names %q twice", name)
+		}
+
+		method, ok := m.byName[name]
+		if !ok {
+			return nil, newConfigError("WithEnrolmentMethods names %q, which is not among the "+
+				"methods EnableMFA was given", name)
+		}
+
+		e, reason := enrollable(method)
+		if e == nil {
+			return nil, newConfigError("WithEnrolmentMethods names %q, which cannot enrol "+
+				"through the path: %s", name, reason)
+		}
+
+		out[name] = e
+	}
+
+	return out, nil
+}
+
+// enrollable is m as an mfa.Enroller that can serve the path, or nil and why
+// it cannot.
+func enrollable(m mfa.Method) (mfa.Enroller, string) {
+	e, ok := m.(mfa.Enroller)
 	if !ok {
-		return nil, newConfigError("%s needs the first method EnableMFA was given to implement "+
-			"mfa.Enroller, and %q does not", option, method.Name())
+		return nil, fmt.Sprintf("%q does not implement mfa.Enroller", m.Name())
 	}
 
-	if !enroller.SupportsEnrolmentPath() {
-		return nil, newConfigError("%s needs the store of the first method EnableMFA was given to "+
-			"implement mfa.DeviceProofStore, and the store of %q does not; it still serves "+
-			"out-of-band enrolment", option, method.Name())
+	if !e.SupportsEnrolmentPath() {
+		return nil, fmt.Sprintf("the store of %q does not implement mfa.DeviceProofStore; it "+
+			"still serves out-of-band enrolment", m.Name())
 	}
 
-	return enroller, nil
+	return e, ""
 }
 
 // enrolmentLimiter is l, or the documented in-memory default of limit per
@@ -297,12 +384,12 @@ func (c *config) enrolmentLimiter(l ratelimit.Limiter, limit int, window time.Du
 // confinement.
 //
 // A request whose session is not enrolment-only passes untouched, the
-// enrolment paths included: the endpoints serve that state alone, and for any
+// enrolment prefixes included: the endpoints serve that state alone, and for any
 // other session their paths are routes like any other. A request carrying no
 // session passes too; whether it may go on is the authentication
 // interceptors' business.
 //
-// For an enrolment-only session, only POST on an enrolment path and the
+// For an enrolment-only session, only POST under an enrolment prefix and the
 // chain's logout pass. Every other request, whatever its method or path, is
 // refused before anything behind the gate runs. Logout is exempt because the
 // gate sits outside it, and a caller confined here must always be able to end
@@ -318,12 +405,12 @@ func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 	r := ex.Request
 
 	switch {
-	case isPost(r, i.beginPath):
-		return i.refused(ex.Context(), endpointBegin, i.begin(ex, s))
-	case isPost(r, i.confirmPath):
-		return i.refused(ex.Context(), endpointConfirm, i.confirm(ex, s))
-	case i.emailConfirmation && isPost(r, i.emailPath):
-		return i.refused(ex.Context(), endpointEmail, i.redeemEmailCode(ex, s))
+	case isPostUnder(r, i.beginPrefix):
+		return i.serve(ex, s, endpointBegin, i.beginPrefix, i.begin)
+	case isPostUnder(r, i.confirmPrefix):
+		return i.serve(ex, s, endpointConfirm, i.confirmPrefix, i.confirm)
+	case i.emailConfirmation && isPostUnder(r, i.emailPrefix):
+		return i.serve(ex, s, endpointEmail, i.emailPrefix, i.redeemEmailCode)
 	case isLogoutPost(i.logoutPath, r):
 		return next(ex)
 	}
@@ -331,6 +418,28 @@ func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
 	return &ChallengeError{Kind: policy.ChallengeMFAEnrolment, Session: s}
+}
+
+// serve runs one enrolment endpoint on the method the request's path names
+// under prefix, and records its refusal. A path naming no enrollable method —
+// an unknown, empty or extra segment, or the bare prefix — is refused with
+// ErrUnknownMFAMethod before anything else, so it neither reaches the
+// endpoint's limiter nor stores anything. The method is read from the path and
+// nowhere else.
+func (i *enrolmentInterceptor) serve(
+	ex *Exchange,
+	s *session.Session,
+	endpoint, prefix string,
+	run func(*Exchange, *session.Session, mfa.Enroller) error,
+) error {
+	name, ok := methodSegment(ex.Request.Path(), prefix)
+	method, known := i.methods[name]
+
+	if !ok || !known {
+		return i.refused(ex.Context(), endpoint, ErrUnknownMFAMethod)
+	}
+
+	return i.refused(ex.Context(), endpoint, run(ex, s, method))
 }
 
 // The names the path's records give its endpoints.
@@ -410,13 +519,16 @@ var refusalReasons = []struct {
 	{mfa.ErrAlreadyEnrolled, "already-enrolled", slog.LevelInfo},
 	{ErrCredentialsMissing, "code-unread", slog.LevelInfo},
 	{ErrRequestTooLarge, "too-large", slog.LevelInfo},
+	{ErrUnknownMFAMethod, "unknown-method", slog.LevelInfo},
 }
 
-// isPost reports whether r is a POST on exactly path. Only POST: every
+// isPostUnder reports whether r is a POST at or under prefix. Only POST: every
 // enrolment endpoint changes something, and one a link could trigger is one
-// another site could trigger for a caller who never asked.
-func isPost(r Request, path string) bool {
-	return r.Method() == http.MethodPost && r.Path() == path
+// another site could trigger for a caller who never asked. Every POST under
+// the prefix is the endpoint's, including one naming no method, so that one is
+// refused as unknown rather than challenged by the gate.
+func isPostUnder(r Request, prefix string) bool {
+	return r.Method() == http.MethodPost && underPrefix(r.Path(), prefix)
 }
 
 // begin begins a pending enrolment for the session's user, or begins it
@@ -439,7 +551,7 @@ func isPost(r Request, path string) bool {
 //  6. The new generation is recorded on the session and saved before the
 //     response, since every later step acts only on the generation this
 //     session holds.
-func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session) error {
+func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session, method mfa.Enroller) error {
 	ctx := ex.Context()
 	key := EnrolmentBeginThrottleKey(s.UserID)
 
@@ -449,7 +561,7 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session) error {
 
 	i.record(ctx, i.beginLimiter, key, limiterBegin)
 
-	if i.method.Channel() == s.FirstFactor.Channel() {
+	if method.Channel() == s.FirstFactor.Channel() {
 		return mfa.ErrSameChannel
 	}
 
@@ -463,7 +575,7 @@ func (i *enrolmentInterceptor) begin(ex *Exchange, s *session.Session) error {
 		return newEnrolmentFault(reasonLabelUnresolved, msgLabelUnresolved, err)
 	}
 
-	provisioning, gen, err := i.method.BeginEnrolmentGeneration(ctx, s.UserID, label)
+	provisioning, gen, err := method.BeginEnrolmentGeneration(ctx, s.UserID, label)
 	if errors.Is(err, mfa.ErrAlreadyEnrolled) {
 		// The store decides this refusal, and may word it itself.
 		return refusedAs(mfa.ErrAlreadyEnrolled, textMFAAlreadyEnrolled, err)
@@ -593,7 +705,7 @@ const msgEnrolmentNotRecorded = "httpsec: an enrolment attempt could not be reco
 //     is logged by the fixed reason "not-voided".
 //  5. With it off, the enrolment is completed on the same generation, and the
 //     session moves on to verification.
-func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
+func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session, method mfa.Enroller) error {
 	ctx := ex.Context()
 	key := EnrolmentConfirmThrottleKey(s.UserID)
 
@@ -619,7 +731,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 
 	gen := s.EnrolmentGeneration
 
-	emailed, err := i.method.ProveDevice(ctx, s.UserID, gen, code, i.emailConfirmation, enrolmentEmailCodeTTL)
+	emailed, err := method.ProveDevice(ctx, s.UserID, gen, code, i.emailConfirmation, enrolmentEmailCodeTTL)
 	if err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
@@ -634,7 +746,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 		subject, body := i.messages.Code(emailed, i.now().Add(enrolmentEmailCodeTTL))
 
 		if err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
-			i.voidEmailCode(ctx, s.UserID, gen)
+			i.voidEmailCode(ctx, method, s.UserID, gen)
 
 			return newEnrolmentFault(reasonSendRefused, msgSendRefused, err)
 		}
@@ -644,7 +756,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 		return nil
 	}
 
-	if err := i.method.CompleteEnrolment(ctx, s.UserID, gen); err != nil {
+	if err := method.CompleteEnrolment(ctx, s.UserID, gen); err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			return refusedAs(mfa.ErrInvalidCode, textMFAInvalidCode, err)
 		}
@@ -652,7 +764,7 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 		return newEnrolmentFault(reasonNotCompleted, msgNotCompleted, err)
 	}
 
-	return i.completed(ex, s)
+	return i.completed(ex, s, method)
 }
 
 // voidEmailCode voids the emailed code of generation gen after the sender
@@ -664,8 +776,8 @@ func (i *enrolmentInterceptor) confirm(ex *Exchange, s *session.Session) error {
 // with; it is logged, sampled, through [diag.Failure] — the fixed reason and
 // the error's Go type, never the failure's own text, which a store may word
 // with the user reference.
-func (i *enrolmentInterceptor) voidEmailCode(ctx context.Context, user identity.UserID, gen id.ID) {
-	if err := mfa.VoidEmailCode(context.WithoutCancel(ctx), i.method, user, gen); err != nil {
+func (i *enrolmentInterceptor) voidEmailCode(ctx context.Context, method mfa.Enroller, user identity.UserID, gen id.ID) {
+	if err := mfa.VoidEmailCode(context.WithoutCancel(ctx), method, user, gen); err != nil {
 		i.logSampled(ctx, slog.LevelError, reasonNotVoided, msgEmailCodeNotVoided,
 			diag.Failure(reasonNotVoided, err)...)
 	}
@@ -690,14 +802,14 @@ const msgEmailCodeNotVoided = "httpsec: an undelivered enrolment code could not 
 // fails, the session is left as it was in memory too, and the request fails;
 // the enrolment stands, so a new login is challenged for the factor rather
 // than for enrolment.
-func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session) error {
+func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, method mfa.Enroller) error {
 	ctx := ex.Context()
 
 	s.MFA = session.MFAPending
 
 	saveErr := i.sessions.Save(ctx, s)
 
-	i.notifyBound(ctx, s.UserID)
+	i.notifyBound(ctx, s.UserID, method.Name())
 
 	if saveErr != nil {
 		s.MFA = session.MFAEnrolmentPending
@@ -720,7 +832,7 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session) error
 // synchronous sender's refusal quotes the recipient back ("RCPT TO: 550
 // <ana@example.com>"), and a loader's or resolver's may quote the username,
 // which by default is the address.
-func (i *enrolmentInterceptor) notifyBound(ctx context.Context, user identity.UserID) {
+func (i *enrolmentInterceptor) notifyBound(ctx context.Context, user identity.UserID, method string) {
 	if !i.notification {
 		return
 	}
@@ -740,7 +852,7 @@ func (i *enrolmentInterceptor) notifyBound(ctx context.Context, user identity.Us
 			reason = fault.reason
 		}
 	} else {
-		subject, body := i.messages.Bound(i.method.Name(), i.now())
+		subject, body := i.messages.Bound(method, i.now())
 		if err := i.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
 			reason = reasonSendRefused
 		}
@@ -880,7 +992,7 @@ const (
 //     caller cannot cancel. Any other failure is an outage, not a guess, and
 //     is not counted.
 //  4. The session moves on to verification, and the user is notified.
-func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session) error {
+func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session, method mfa.Enroller) error {
 	ctx := ex.Context()
 	key := EnrolmentConfirmThrottleKey(s.UserID)
 
@@ -893,7 +1005,7 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session)
 		return err
 	}
 
-	if err := i.method.RedeemEmailCode(ctx, s.UserID, s.EnrolmentGeneration, code); err != nil {
+	if err := method.RedeemEmailCode(ctx, s.UserID, s.EnrolmentGeneration, code); err != nil {
 		if errors.Is(err, mfa.ErrInvalidCode) {
 			i.record(ctx, i.confirmLimiter, key, limiterConfirm)
 
@@ -903,7 +1015,7 @@ func (i *enrolmentInterceptor) redeemEmailCode(ex *Exchange, s *session.Session)
 		return newEnrolmentFault(reasonNotCompleted, msgNotCompleted, err)
 	}
 
-	return i.completed(ex, s)
+	return i.completed(ex, s, method)
 }
 
 // EnrolmentMessages renders the two plain-text messages the enrolment path

@@ -80,7 +80,7 @@ func (proofOutageStore) ProveDevice(
 func (h *enrolHarness) begin(t *testing.T, c *httpsec.Chain) string {
 	t.Helper()
 
-	out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentBeginPath, ""))
+	out := serve(t, c, post(t.Context(), enrolBeginPath, ""))
 	require.NoError(t, out.err)
 
 	var body beginBody
@@ -186,7 +186,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 	// body is a POST of payload declared as contentType.
 	body := func(contentType, payload string) func(ctx context.Context, code string) *http.Request {
 		return func(ctx context.Context, code string) *http.Request {
-			req := post(ctx, httpsec.DefaultEnrolmentConfirmPath, strings.ReplaceAll(payload, "{code}", code))
+			req := post(ctx, enrolConfirmPath, strings.ReplaceAll(payload, "{code}", code))
 			req.Header.Set("Content-Type", contentType)
 
 			return req
@@ -315,7 +315,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 			prepare: countingLimiter(0),
 			code:    valid,
 			request: func(ctx context.Context, code string) *http.Request {
-				return post(ctx, httpsec.DefaultEnrolmentConfirmPath+"?code="+code, "")
+				return post(ctx, enrolConfirmPath+"?code="+code, "")
 			},
 			assert: unread,
 		},
@@ -353,7 +353,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 			prepare: countingLimiter(0),
 			code:    valid,
 			request: func(ctx context.Context, _ string) *http.Request {
-				req := post(ctx, httpsec.DefaultEnrolmentConfirmPath, "")
+				req := post(ctx, enrolConfirmPath, "")
 				req.Body = io.NopCloser(iotest.ErrReader(errTransportReset))
 
 				return req
@@ -428,7 +428,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 				t.Helper()
 
 				for range 5 {
-					out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+					out := serve(t, c, post(t.Context(), enrolConfirmPath,
 						"code="+h.wrongCodeFor(t, secret)))
 					require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
 				}
@@ -597,6 +597,59 @@ func TestEnrolmentConfirm(t *testing.T) {
 				assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA)
 			},
 		},
+		{
+			// The session's generation was drawn by TOTP's store. Another
+			// method's store has no pending enrolment of that generation, so
+			// it refuses the proof as it refuses any stale generation, even
+			// with a code that is right for TOTP's secret.
+			name: "a generation belongs to the method that issued it",
+			prepare: func(t *testing.T, h *enrolHarness, _ *outbox) {
+				t.Helper()
+
+				h.extraMethods = []mfa.Method{renamedTOTP(t, h, "totp-backup", mfa.NewMemoryEnrolmentStore())}
+				h.sender.EXPECT().Send(gomock.Any(), gomock.Any()).Times(0)
+			},
+			code: valid,
+			request: func(ctx context.Context, code string) *http.Request {
+				return post(ctx, httpsec.DefaultEnrolmentConfirmPrefix+"/totp-backup", "code="+code)
+			},
+			assert: func(t *testing.T, h *enrolHarness, s *session.Session, o *outbox, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
+				assert.Empty(t, o.messages())
+
+				e, ok := h.enrolment(t)
+				require.True(t, ok)
+				assert.True(t, e.DeviceProvenAt.IsZero(), "TOTP's device is not proven")
+
+				backup := h.extraMethods[0].(renamedTOTPMethod)
+				_, ok, err := backup.store.Get(t.Context(), testMFAUser)
+				require.NoError(t, err)
+				assert.False(t, ok, "the other method's store holds nothing")
+				assert.Equal(t, session.MFAEnrolmentPending, h.stored(t, s.ID).MFA)
+			},
+		},
+		{
+			name: "a confirm path naming no enrollable method",
+			prepare: func(_ *testing.T, h *enrolHarness, _ *outbox) {
+				h.sender.EXPECT().Send(gomock.Any(), gomock.Any()).Times(0)
+			},
+			code: valid,
+			request: func(ctx context.Context, code string) *http.Request {
+				return post(ctx, httpsec.DefaultEnrolmentConfirmPrefix+"/sms", "code="+code)
+			},
+			assert: func(t *testing.T, h *enrolHarness, _ *session.Session, o *outbox, out served) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrUnknownMFAMethod)
+				assert.Empty(t, o.messages())
+
+				e, ok := h.enrolment(t)
+				require.True(t, ok)
+				assert.True(t, e.DeviceProvenAt.IsZero(), "the device is not proven")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -625,7 +678,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			req := post(ctx, httpsec.DefaultEnrolmentConfirmPath, "code="+tc.code(t, h, secret))
+			req := post(ctx, enrolConfirmPath, "code="+tc.code(t, h, secret))
 			if tc.request != nil {
 				req = tc.request(ctx, tc.code(t, h, secret))
 			}
@@ -732,12 +785,12 @@ func TestEnrolmentThrottleLeavesVerificationAlone(t *testing.T) {
 			secret := h.begin(t, c)
 
 			for range 5 {
-				out := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+				out := serve(t, c, post(t.Context(), enrolConfirmPath,
 					"code="+h.wrongCodeFor(t, secret)))
 				require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
 			}
 
-			throttled := serve(t, c, post(t.Context(), httpsec.DefaultEnrolmentConfirmPath,
+			throttled := serve(t, c, post(t.Context(), enrolConfirmPath,
 				"code="+h.codeFor(t, secret)))
 			require.ErrorIs(t, throttled.err, mfa.ErrEnrolmentThrottled, "u-1's confirmations are exhausted")
 
