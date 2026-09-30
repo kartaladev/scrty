@@ -21,19 +21,34 @@ Interceptors and guards SHALL report every refusal by returning an error. The li
 The library SHALL expose distinguishable public refusal errors for at least these cases:
 - authentication required;
 - malformed login;
-- request too large.
+- request too large;
+- an unknown MFA method named in a second-factor path;
+- an MFA method the session's user may not use;
+- a request to the MFA method-listing endpoint from a session that owes no MFA challenge.
 
 A refusal a core already names SHALL be reported as that core's own error rather than restated under a second name. In particular, a policy that denies without giving a reason SHALL be reported as the security-policy capability's reasonless-deny error, because the policy engine already substitutes it: a second sentinel for the same condition would be unreachable, and a consumer matching one identity would miss the other. Where this capability's own refusal and a core's name the same condition, the chain SHALL wrap the core's with its own so that either identity matches.
 
-It SHALL also expose one challenge error type, and SHALL map the refusal errors that the authentication, authorization, session, security-policy and second-factor cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. No refusal error's text SHALL contain an access token, a session handle or a submitted credential. A refusal caused by a consumer-supplied dependency SHALL carry fixed library text, with the dependency's error reachable by identity and type, as the diagnostic-redaction capability requires; this SHALL NOT change the status it maps to.
+It SHALL also expose one challenge error type, and SHALL map the refusal errors that the authentication, authorization, session, security-policy and second-factor cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. A challenge error of the second-factor kind SHALL also carry the session user's usable MFA methods, each with its name, its channel and whether it has a begin step, computed by the one function the security policies use to decide usability; when that computation fails, the request SHALL be refused with the failure instead of the challenge, and SHALL NEVER carry an empty or partial list. No refusal error's text SHALL contain an access token, a session handle, a submitted credential or a method name. A refusal caused by a consumer-supplied dependency SHALL carry fixed library text, with the dependency's error reachable by identity and type, as the diagnostic-redaction capability requires; this SHALL NOT change the status it maps to.
 
 #### Scenario: Challenge error contents
 - **WHEN** form login is challenged for a second factor
 - **THEN** the challenge error carries the second-factor kind, the pending session and the token
 
+#### Scenario: Challenge carries the usable methods
+- **WHEN** TOTP and a challenge method named `passkey` are configured, `u-1` is enrolled on both, and `u-1`'s password login is challenged for a second factor
+- **THEN** the challenge error lists `totp` on the authenticator-app channel without a begin step, then `passkey` with a begin step
+
+#### Scenario: Challenge omits methods the user cannot use
+- **WHEN** `u-1` is enrolled on TOTP only and a session of `u-1` with the challenge pending requests `/invoices`
+- **THEN** the challenge error lists `totp` only
+
+#### Scenario: A failed lookup never yields an empty list
+- **WHEN** a session with the challenge pending requests `/invoices` and a method's enrolment lookup fails
+- **THEN** the request is refused with that failure and no challenge error is returned
+
 #### Scenario: Challenge text carries no secret
 - **WHEN** a challenge error carrying a token is converted to text
-- **THEN** the text names the challenge kind and contains neither the token nor the session handle
+- **THEN** the text names the challenge kind and contains neither the token, the session handle nor any method name
 
 #### Scenario: Challenge raised on a later request
 - **WHEN** the password-change gate refuses a session
@@ -52,9 +67,9 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | challenge of kind password change, challenge of kind second-factor enrolment | 403 |
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment | 401 |
-| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled | 403 |
+| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending | 403 |
 | malformed login, invalid federated logout token | 400 |
-| unknown identity provider named in a federated login or logout path | 404 |
+| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path | 404 |
 | request too large | 413 |
 | new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
 | account locked | 423 |
@@ -63,7 +78,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 
 A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.
 
-Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code SHALL be identifiable as the invalid second-factor code refusal.
+Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code, and an absent, unknown, expired, spent or mismatched pending MFA challenge, SHALL be identifiable as the invalid second-factor code refusal.
 
 #### Scenario: Wrapped sentinel
 - **WHEN** an error wraps the access-denied refusal with extra context
@@ -89,6 +104,10 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 - **WHEN** the error is the invalid second-factor code refusal returned by the verify endpoint
 - **THEN** the mapping returns 401
 
+#### Scenario: Spent pending challenge
+- **WHEN** the error is the refusal of a pending MFA challenge that was already spent
+- **THEN** the mapping returns 401
+
 #### Scenario: Expired emailed code
 - **WHEN** the error is the refusal of an expired emailed enrolment code
 - **THEN** the mapping returns 401
@@ -99,6 +118,18 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 
 #### Scenario: Already enrolled
 - **WHEN** the error is the already-enrolled refusal
+- **THEN** the mapping returns 403
+
+#### Scenario: Unknown MFA method
+- **WHEN** the error is the unknown-MFA-method refusal of a verify path
+- **THEN** the mapping returns 404
+
+#### Scenario: MFA method not usable
+- **WHEN** the error is the refusal of an MFA method the session's user is not enrolled on
+- **THEN** the mapping returns 403
+
+#### Scenario: No MFA challenge pending
+- **WHEN** the error is the refusal of the method-listing endpoint for a fully authenticated session
 - **THEN** the mapping returns 403
 
 #### Scenario: Unrecognised error
