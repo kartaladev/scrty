@@ -5,7 +5,7 @@
 ### Requirement: A recovery-pending session reaches only the binding endpoints and logout
 When recovery is enabled, a request whose session is in the recovery-pending state SHALL be refused with a challenge error of the account-recovery kind carrying that session. The refusal SHALL come before the password-change gate, the enrolment gate, the MFA challenge gate and any interceptor after them run, whatever the request's method or path. These requests are exempt:
 - a POST under an MFA enrolment prefix, when the enrolment path is enabled;
-- a POST to the passkey registration begin, finish, saved-code confirm and emailed-code confirm paths, when passkey registration is enabled;
+- a POST to the passkey registration begin, finish, saved-code confirm and emailed-code confirm paths, when passkey registration is enabled and the passkey MFA method is on the MFA slot, so a registered passkey can resolve the challenge the binding raises;
 - a POST to the password-change resolve endpoint, when one is registered;
 - the logout endpoint, wherever it is placed in the chain relative to the gate.
 
@@ -24,6 +24,10 @@ The per-request policy phase SHALL still be evaluated for a recovery-pending ses
 #### Scenario: Passkey registration reachable
 - **WHEN** passkey registration is enabled and a recovery-pending session posts to `/passkey/register/begin`
 - **THEN** a registration challenge is issued
+
+#### Scenario: Passkey registration without the passkey method
+- **WHEN** passkey registration is enabled, the passkey MFA method is not on the MFA slot, and a recovery-pending session posts to `/passkey/register/begin`
+- **THEN** it is refused with an account-recovery challenge error, and no registration challenge is issued
 
 #### Scenario: Passkey listing not reachable
 - **WHEN** a recovery-pending session sends a GET to `/passkey/credentials`
