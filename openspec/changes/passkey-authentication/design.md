@@ -190,7 +190,7 @@ The core implements `(*Manager).FinishRegistration(ctx, s *session.Session, body
 6. Decide the pending reasons:
    - **AwaitingEmailCode** when the session is enrolment-pending and the path's email confirmation is on.
    - **AwaitingSavedCodes** when codes are wired (`Deps.Recovery`), the optional mode is off, and `WayBackCheck.HasWayBack` reports no. A check error refuses.
-7. Delete any credential of the user still awaiting saved codes, when the new one awaits them too. This makes the abandoned registration replaceable.
+7. Delete any credential of the user still awaiting saved codes, when the new one awaits them too, and any credential still awaiting an emailed code, when the new one awaits one too. This makes the abandoned registration replaceable, and it is the only way to replace a lost or expired emailed code, since there is no resend. The manager lists and deletes; a concurrent finish for the same user may leave an extra pending credential, which the next registration removes.
 8. If AwaitingSavedCodes is set, generate codes.
 9. If AwaitingEmailCode is set, generate the 6-digit code and queue it. A refused queue fails the finish before the insert.
 10. Insert. A duplicate credential ID is the authentication-failed refusal.
@@ -443,6 +443,7 @@ type SecondFactorProof = assurance.Proof
 - **[The passwordless begin writes a token per anonymous request.]** → It is source-throttled (30 per 15 minutes), purged inline, and the in-memory store's per-replica limit is documented. A consumer at scale shares a limiter.
 - **[A copied proof value.]** → Only code that already received a holding proof could copy one, and that code is the library or a consumer's own code handling the result. It is documented on the type.
 - **[The enrolment path through passkeys sends the emailed code after a password alone, as it does for TOTP.]** → This is the same assurance the path already states. After a magic-link login the code adds nothing, which is already documented on the path.
+- **[Concurrent registration begins can exceed the issuance limit.]** → The count and the issue are separate calls, as in every other begin step that uses `onetime`'s issuance window (magic link, recovery start, MFA begin). The limit is a soft brake on challenge minting, not a security boundary: each challenge is still single-use, session-bound and short-lived. An atomic count-and-issue belongs to `onetime`, for every caller at once.
 - **[Removing a user's last passkey.]** → It is allowed and documented. Recovery remains, and the consumer's interface warns.
 - **[Browsers may prompt for consent before sharing direct attestation (record mode).]** → Not re-verified (proposal). The godoc says "may", and the claim is checked before it is stated as behaviour.
 
