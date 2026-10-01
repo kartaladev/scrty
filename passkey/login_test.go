@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -124,6 +125,15 @@ type loginEnv struct {
 	mu        sync.Mutex
 	requested []passkey.RequestInput
 	verifies  int
+	verifyErr error // when set, the verifier fails with it
+}
+
+// failVerifier makes the verifier fail every assertion with err.
+func (e *loginEnv) failVerifier(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.verifyErr = err
 }
 
 // newLoginEnv wires the fixture for login. seed may adjust the credential
@@ -174,7 +184,12 @@ func newLoginEnv(t *testing.T, seed func(c *passkey.Credential)) *loginEnv {
 		) (*passkey.AssertionResult, error) {
 			e.mu.Lock()
 			e.verifies++
+			failure := e.verifyErr
 			e.mu.Unlock()
+
+			if failure != nil {
+				return nil, failure
+			}
 
 			b := p.(parsedAssertion).b
 			signed, _ := passkey.DecodeChallenge(b.Challenge)
@@ -646,6 +661,30 @@ func TestLogin(t *testing.T) {
 				assert.Zero(t, e.creds.finds.Load(), "no credential lookup")
 				assert.Zero(t, e.creds.records.Load(), "no counter write")
 				assert.Zero(t, e.verifyCount())
+			},
+		},
+		{
+			name:   "a verifier cancelled mid-flight is a context error, not a bad signature",
+			before: func(_ *testing.T, e *loginEnv, _ string) { e.failVerifier(context.Canceled) },
+			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, res)
+				unchanged(t, e)
+			},
+		},
+		{
+			name: "a verifier past its deadline is a context error, not a bad signature",
+			before: func(_ *testing.T, e *loginEnv, _ string) {
+				e.failVerifier(fmt.Errorf("verify: %w", context.DeadlineExceeded))
+			},
+			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, res)
+				unchanged(t, e)
 			},
 		},
 		{

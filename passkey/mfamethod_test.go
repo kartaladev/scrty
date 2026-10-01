@@ -1,6 +1,7 @@
 package passkey_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
@@ -29,6 +31,13 @@ const slotChallenge = "mfa-slot-challenge-token"
 
 // errStore is the failure brokenCredentials reports.
 var errStore = errors.New("credential store unavailable")
+
+// brokenHandles is a handle store whose lookups fail.
+type brokenHandles struct{ passkey.HandleStore }
+
+func (brokenHandles) UserFor(context.Context, []byte) (identity.UserID, bool, error) {
+	return "", false, errStore
+}
 
 // brokenCredentials is a memory store whose reads and bulk deletes fail.
 type brokenCredentials struct {
@@ -414,14 +423,16 @@ func TestMFAMethodVerify(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		seed   func(c *passkey.Credential)
-		opts   []passkey.Option
-		user   identity.UserID
-		body   []byte
-		broken bool
-		ctx    func(ctx context.Context) context.Context
-		assert func(t *testing.T, e *loginEnv, err error)
+		name          string
+		seed          func(c *passkey.Credential)
+		opts          []passkey.Option
+		user          identity.UserID
+		body          []byte
+		broken        bool
+		verifyErr     error
+		brokenHandles bool
+		ctx           func(ctx context.Context) context.Context
+		assert        func(t *testing.T, e *loginEnv, err error)
 	}
 
 	// refusedUnchanged asserts an invalid code with the credential as seeded.
@@ -571,6 +582,71 @@ func TestMFAMethodVerify(t *testing.T) {
 			},
 		},
 		{
+			name:      "a verifier cancelled mid-flight is a context error, not an invalid code",
+			user:      "u-1",
+			body:      assertion(slotChallenge, nil),
+			verifyErr: context.Canceled,
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, context.Canceled)
+				assert.NotErrorIs(t, err, mfa.ErrInvalidCode)
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, uint32(42), e.stored(t).SignCount)
+			},
+		},
+		{
+			name: "a user handle that maps to the user is accepted",
+			user: "u-1",
+			body: assertion(slotChallenge, func(b *assertionBody) { b.Handle = handleU1 }),
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, uint32(43), e.stored(t).SignCount)
+			},
+		},
+		{
+			name: "an absent user handle is accepted",
+			user: "u-1",
+			body: assertion(slotChallenge, func(b *assertionBody) { b.Handle = nil }),
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.Equal(t, uint32(43), e.stored(t).SignCount)
+			},
+		},
+		{
+			name: "another user's handle is an invalid code and nothing is written",
+			user: "u-1",
+			body: assertion(slotChallenge, func(b *assertionBody) { b.Handle = handleU2 }),
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				refusedUnchanged(t, e, err)
+				assert.Zero(t, e.creds.records.Load())
+			},
+		},
+		{
+			name: "an unknown user handle is an invalid code and nothing is written",
+			user: "u-1",
+			body: assertion(slotChallenge, func(b *assertionBody) { b.Handle = bytes.Repeat([]byte{0x09}, passkey.HandleSize) }),
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				refusedUnchanged(t, e, err)
+				assert.Zero(t, e.creds.records.Load())
+			},
+		},
+		{
+			name:          "a user handle lookup failure is returned, not an invalid code",
+			user:          "u-1",
+			body:          assertion(slotChallenge, nil),
+			brokenHandles: true,
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, errStore)
+				assert.NotErrorIs(t, err, mfa.ErrInvalidCode)
+				assert.Equal(t, uint32(42), e.stored(t).SignCount)
+			},
+		},
+		{
 			name: "a cancelled context verifies nothing",
 			user: "u-1",
 			body: assertion(slotChallenge, nil),
@@ -597,6 +673,12 @@ func TestMFAMethodVerify(t *testing.T) {
 				e.f.deps.Credentials = brokenCredentials{e.f.creds}
 			}
 
+			if tc.brokenHandles {
+				e.f.deps.Handles = brokenHandles{e.f.deps.Handles}
+			}
+
+			e.failVerifier(tc.verifyErr)
+
 			ctx := t.Context()
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
@@ -612,10 +694,11 @@ func TestMFAMethodRemoveEnrolment(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		user   identity.UserID
-		broken bool
-		assert func(t *testing.T, e *loginEnv, err error)
+		name      string
+		user      identity.UserID
+		broken    bool
+		verifyErr error
+		assert    func(t *testing.T, e *loginEnv, err error)
 	}
 
 	cases := []testCase{

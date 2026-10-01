@@ -278,16 +278,21 @@ func (m *Manager) matchHandle(ctx context.Context, c *Credential, handle []byte)
 // login check and records the use. It is shared by the passwordless login and
 // the second factor; c must already be known to be active and the caller's.
 //
-// A verifier error, a missing user verification under UVRequired and a
+// A verifier error that is not a context error, a missing user verification under UVRequired and a
 // backup-eligible flag that differs from the stored one are
 // authenticate.ErrAuthenticationFailed. The login check's error is returned
-// unchanged. Nothing is written on any refusal.
+// unchanged. A verifier error matching context.Canceled or
+// context.DeadlineExceeded is returned wrapped, still matchable with
+// errors.Is, and is not a refusal. Nothing is written on any refusal.
 func (m *Manager) verifyAssertion(
 	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
 ) (*AssertionResult, error) {
 	res, err := m.verifier.VerifyAssertion(ctx, p, c, exp)
 
 	switch {
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// An interrupted check says nothing about the assertion.
+		return nil, diag.Wrap(err, "passkey: verification interrupted")
 	case err != nil:
 		_ = m.refused(ctx, "verify", c.ID, diag.Failure("verify", err)...)
 		return nil, authenticate.ErrAuthenticationFailed

@@ -139,22 +139,30 @@ func (pm *MFAMethod) PresentedChallenge(response []byte) (string, error) {
 	return challenge, nil
 }
 
-// Verify verifies the assertion in response as user's second factor. The MFA
-// slot has already checked and spent the challenge it answers, which is why
-// Verify takes the challenge from the response itself.
+// Verify verifies the assertion in response as user's second factor. It takes
+// the challenge from the response itself, so it is safe only behind the MFA
+// slot's check-and-spend of that challenge: the slot issues the challenge
+// bound to the session and spends it before calling Verify. A consumer must
+// not call Verify on its own, since nothing else ties the challenge to the
+// session or makes it single use.
 //
 // The assertion must come from one of user's active passkeys. It is verified
 // as at a passwordless finish — signature, user verification, the stored
 // backup-eligible flag, the consumer's login check, then the counter write
 // under the clone rule — except that the user handle is not required, and,
 // under UVPreferred, user presence without user verification is accepted,
-// since a second factor proves possession.
+// since a second factor proves possession. A user handle the response does
+// carry must map to user (WebAuthn L3 section 7.2 step 6); an absent one is
+// accepted.
 //
 // The refusals:
 //   - a suspended passkey is ErrSuspended, and a suspected clone
 //     ErrCloneSuspected; both wrap mfa.ErrAuthenticatorRefused, so the slot
 //     does not count them as a wrong guess;
 //   - the consumer's login check error is returned unchanged;
+//   - an error from the verifier matching context.Canceled or
+//     context.DeadlineExceeded is returned wrapped, still matchable, and is
+//     not an invalid code, so the slot does not count it as a wrong guess;
 //   - every other refusal — an unreadable response, an unknown, pending or
 //     other user's credential, a signature that does not verify, missing user
 //     verification under UVRequired — is mfa.ErrInvalidCode, so a caller
@@ -206,6 +214,21 @@ func (pm *MFAMethod) Verify(ctx context.Context, user identity.UserID, response 
 	default:
 		_ = m.refused(ctx, "state", c.ID)
 		return mfa.ErrInvalidCode
+	}
+
+	// WebAuthn L3 §7.2 step 6: the user is known before the ceremony, so a
+	// user handle the response carries must map to that user. An absent one
+	// is accepted.
+	if handle := parsed.UserHandle(); len(handle) > 0 {
+		owner, ok, err := m.handles.UserFor(ctx, handle)
+		if err != nil {
+			return diag.Wrap(err, "passkey: could not look up the user handle")
+		}
+
+		if !ok || owner != user {
+			_ = m.refused(ctx, "handle", c.ID)
+			return mfa.ErrInvalidCode
+		}
 	}
 
 	_, err = m.verifyAssertion(ctx, parsed, c, AssertionExpectation{Challenge: challenge, UV: m.uv})
