@@ -22,6 +22,16 @@ import (
 // only guessed a code.
 var ErrInvalidCode = errors.New("mfa: invalid code")
 
+// ErrAuthenticatorRefused is what a method's refusal wraps when it refuses the
+// authenticator itself rather than the response it gave: an authenticator
+// suspected to be a clone, or one that is suspended. The response may well have
+// been genuine, so it is not a wrong guess.
+//
+// A method returns an error wrapping it, never this sentinel bare when it has
+// more to say. The verify endpoint returns that error unchanged and does not
+// count it against the verification throttle; every other refusal is counted.
+var ErrAuthenticatorRefused = errors.New("mfa: the authenticator itself was refused")
+
 // ErrAlreadyEnrolled refuses an enrolment for a user who already has a
 // confirmed one. The existing enrolment is left exactly as it was: replacing a
 // working second factor silently is how a user is locked out of their account.

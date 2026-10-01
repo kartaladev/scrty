@@ -61,6 +61,11 @@ func TestStatusForError(t *testing.T) {
 		{name: "second-factor method on the first factor's channel", err: mfa.ErrSameChannel, want: 403},
 		{name: "already enrolled", err: mfa.ErrAlreadyEnrolled, want: 403},
 		{
+			name: "authenticator itself refused",
+			err:  fmt.Errorf("%w: suspected clone", mfa.ErrAuthenticatorRefused),
+			want: 403,
+		},
+		{
 			name: "an invalid, expired or voided emailed code, answered by the invalid-code row",
 			err:  mfa.ErrEmailCodeInvalid,
 			want: 401,
@@ -233,13 +238,14 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrUnsupportedAttributes":  authorize.ErrUnsupportedAttributes,
 	},
 	"github.com/kartaladev/scrty/mfa": {
-		"mfa.ErrAlreadyEnrolled":    mfa.ErrAlreadyEnrolled,
-		"mfa.ErrConfig":             mfa.ErrConfig,
-		"mfa.ErrEmailCodeInvalid":   mfa.ErrEmailCodeInvalid,
-		"mfa.ErrEnrolmentThrottled": mfa.ErrEnrolmentThrottled,
-		"mfa.ErrInvalidCode":        mfa.ErrInvalidCode,
-		"mfa.ErrSameChannel":        mfa.ErrSameChannel,
-		"mfa.ErrVerifyThrottled":    mfa.ErrVerifyThrottled,
+		"mfa.ErrAlreadyEnrolled":      mfa.ErrAlreadyEnrolled,
+		"mfa.ErrAuthenticatorRefused": mfa.ErrAuthenticatorRefused,
+		"mfa.ErrConfig":               mfa.ErrConfig,
+		"mfa.ErrEmailCodeInvalid":     mfa.ErrEmailCodeInvalid,
+		"mfa.ErrEnrolmentThrottled":   mfa.ErrEnrolmentThrottled,
+		"mfa.ErrInvalidCode":          mfa.ErrInvalidCode,
+		"mfa.ErrSameChannel":          mfa.ErrSameChannel,
+		"mfa.ErrVerifyThrottled":      mfa.ErrVerifyThrottled,
 	},
 	"github.com/kartaladev/scrty/oidc": {
 		"oidc.ErrConfig":              oidc.ErrConfig,

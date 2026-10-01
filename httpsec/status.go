@@ -79,6 +79,11 @@ var statusTable = []statusRow{
 	{ErrMFAMethodNotUsable, http.StatusForbidden},
 	{ErrNoMFAChallengePending, http.StatusForbidden},
 	{mfa.ErrAlreadyEnrolled, http.StatusForbidden},
+
+	// A second factor whose authenticator itself is refused: suspected to be
+	// a clone, or suspended. The response was not a wrong guess, and trying
+	// again with the same authenticator will not succeed, which 403 says.
+	{mfa.ErrAuthenticatorRefused, http.StatusForbidden},
 	{recovery.ErrCooldown, http.StatusForbidden},
 	{recovery.ErrReauthenticationRequired, http.StatusForbidden},
 }

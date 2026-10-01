@@ -27,8 +27,9 @@ type WayBackDeps struct {
 	Codes *Codes
 
 	// Kinds are the authenticator kinds registered with the recovery reset,
-	// such as MFAEnrolments. A user holding any of them can pair it with an
-	// issued code. None is allowed: then only a password counts for pairing.
+	// such as MFAEnrolments. A user holding a usable authenticator of any of
+	// them can pair it with an issued code; see UsableLister. None is allowed:
+	// then only a password counts for pairing.
 	Kinds []AuthenticatorKind
 
 	// IssuedCodes reports whether issued codes are enabled, so a password or
@@ -106,9 +107,11 @@ func NewWayBackCheck(deps WayBackDeps, opts ...WayBackOption) (*WayBackCheck, er
 // HasWayBack reports whether user has another way back in. It is yes when any
 // of these holds:
 //   - the user holds at least one unspent saved code;
-//   - issued codes are enabled, and the user has a password or holds an
+//   - issued codes are enabled, and the user has a password or holds a usable
 //     authenticator of a registered kind, either of which pairs with an issued
-//     code;
+//     code. A kind implementing UsableLister is counted by what Usable lists,
+//     so a pending or suspended authenticator does not count; any other kind
+//     is counted by what Held lists;
 //   - a linked login's kind is exempt from the second factor.
 //
 // It checks in that order, cheapest first, and stops at the first yes. With
@@ -149,7 +152,7 @@ func (c *WayBackCheck) HasWayBack(ctx context.Context, user identity.UserID) (bo
 	return slices.ContainsFunc(kinds, c.exempt), nil
 }
 
-// pairsWithIssuedCode reports whether user has a password or holds an
+// pairsWithIssuedCode reports whether user has a password or holds a usable
 // authenticator of a registered kind.
 func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.UserID) (bool, error) {
 	d, err := c.users.LoadByUserID(ctx, user)
@@ -161,7 +164,7 @@ func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.Us
 	}
 
 	for _, k := range c.kinds {
-		refs, err := k.Held(ctx, user)
+		refs, err := usable(ctx, k, user)
 		if err != nil {
 			return false, diag.Wrap(err, errTextResetListing)
 		}
@@ -171,4 +174,15 @@ func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.Us
 	}
 
 	return false, nil
+}
+
+// usable lists the authenticators of kind k that user can authenticate with
+// now: what k's UsableLister reports when k implements it, and everything k
+// holds otherwise.
+func usable(ctx context.Context, k AuthenticatorKind, user identity.UserID) ([]AuthenticatorRef, error) {
+	if u, ok := k.(UsableLister); ok {
+		return u.Usable(ctx, user)
+	}
+
+	return k.Held(ctx, user)
 }
