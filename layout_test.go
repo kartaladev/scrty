@@ -217,7 +217,7 @@ func TestWebAuthnTypesStayInsideTheAdapter(t *testing.T) {
 			fixture:   "testdata/layout/apileak",
 			forbidden: "example.com/forbidden",
 			assert: func(t *testing.T, vs []violation) {
-				for _, name := range []string{"Leak", "Options", "Verifier", "Embedded", "Alias", "Default", "Hidden"} {
+				for _, name := range []string{"Leak", "Options", "Verifier", "Embedded", "Alias", "Default", "Hidden", "Generic", "Box", "Outer"} {
 					hasViolation(fixturePkg, name+" exposes ")(t, vs)
 				}
 				for _, v := range vs {

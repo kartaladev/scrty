@@ -47,3 +47,14 @@ func (w *wrapped) config() forbidden.Config { return w.cfg } //nolint:unused // 
 
 // Clean exposes nothing of the library.
 func Clean() int { return 0 }
+
+// Generic constrains a type parameter by an interface returning a library type.
+func Generic[T interface{ Get() forbidden.Config }]() {}
+
+// Box constrains its type parameter by an interface returning a library type.
+type Box[T interface{ Get() forbidden.Config }] struct{}
+
+type inner struct{ Exposed forbidden.Config }
+
+// Outer promotes an exported library-typed field from an embedded unexported struct.
+type Outer struct{ inner }

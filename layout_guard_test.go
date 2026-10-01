@@ -383,6 +383,9 @@ func (w *apiWalker) walk(typ types.Type) {
 		w.walk(t.Key())
 		w.walk(t.Elem())
 	case *types.Signature:
+		for tp := range t.TypeParams().TypeParams() {
+			w.walk(tp.Constraint())
+		}
 		w.walk(t.Params())
 		w.walk(t.Results())
 	case *types.Tuple:
@@ -391,7 +394,8 @@ func (w *apiWalker) walk(typ types.Type) {
 		}
 	case *types.Struct:
 		for f := range t.Fields() {
-			if f.Exported() {
+			// An embedded unexported struct still promotes its exported members.
+			if f.Exported() || f.Embedded() {
 				w.walk(f.Type())
 			}
 		}
@@ -415,6 +419,9 @@ func (w *apiWalker) walk(typ types.Type) {
 func (w *apiWalker) named(t *types.Named) {
 	for arg := range t.TypeArgs().Types() {
 		w.walk(arg)
+	}
+	for tp := range t.TypeParams().TypeParams() {
+		w.walk(tp.Constraint())
 	}
 	obj := t.Obj()
 	if obj.Pkg() == nil {

@@ -51,16 +51,26 @@ const credentialIDLen = 32
 //
 // The exported fields are read at each ceremony, so a test may change them
 // between ceremonies. An Authenticator is not safe for concurrent use.
+//
+// The testing.TB given to New receives every failure the Authenticator
+// reports, so build it inside the test or subtest that uses it, not in a
+// parent test whose subtests share it.
 type Authenticator struct {
 	// Counter is the signature counter. Assert increments it before signing
 	// unless it is 0, which models an authenticator that keeps no counter.
 	// New sets 0.
+	//
+	// Because of that first increment, to make the next assertion report N
+	// of 2 or more, set Counter to N-1 beforehand. To replay or regress a
+	// counter, set the field again to the value wanted.
 	Counter uint32
 	// UV sets the user-verified flag. New sets true.
 	UV bool
 	// BE sets the backup-eligible flag. New sets false.
 	BE bool
-	// BS sets the backup-state flag. New sets false.
+	// BS sets the backup-state flag. New sets false. BS without BE is
+	// invalid under WebAuthn; it is settable only so that negative tests can
+	// produce that combination.
 	BS bool
 	// Transports are reported in the registration response. New sets
 	// "internal" and "hybrid".
