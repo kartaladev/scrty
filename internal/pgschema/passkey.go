@@ -13,6 +13,7 @@ import (
 const (
 	// passkeyCredentialColumns is every column of a credential, in the order
 	// the inserts bind and the selects return them.
+	//nolint:gosec // G101: SQL text, not a credential
 	passkeyCredentialColumns = `id, user_id, credential_id, public_key, sign_count, backup_eligible, backup_state,
   transports, aaguid, attestation_format, attestation_statement, name, created_at, last_used_at,
   state, pending, email_code, email_code_expires_at, email_code_attempts`
@@ -45,7 +46,7 @@ FROM passkey_credentials WHERE id = $1 AND user_id = $2`
 FROM passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
 
 	// PasskeyCredentialCount counts user $1's credentials in every state.
-	PasskeyCredentialCount = `SELECT count(*) FROM passkey_credentials WHERE user_id = $1`
+	PasskeyCredentialCount = `SELECT count(*) FROM passkey_credentials WHERE user_id = $1` //nolint:gosec // G101: SQL text, not a credential
 
 	// PasskeyRecordAssertion sets credential $1's counter to $2, its backup
 	// state to $3 and its last use to $4, only while it is active (state 1)
@@ -116,7 +117,7 @@ ON CONFLICT DO NOTHING`
 	PasskeyHandleOfUser = `SELECT handle FROM passkey_user_handles WHERE user_id = $1`
 
 	// PasskeyHandleUser reads the user holding handle $1.
-	PasskeyHandleUser = `SELECT user_id FROM passkey_user_handles WHERE handle = $1`
+	PasskeyHandleUser = `SELECT user_id FROM passkey_user_handles WHERE handle = $1` //nolint:gosec // G101: SQL text, not a credential
 )
 
 // The transports column holds a credential's transports one per line, in

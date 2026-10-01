@@ -183,7 +183,7 @@ func WithPasswordlessPrefix(prefix string) PasskeyOption {
 // passkey ceremony starts and finishes in one browser.
 func PasswordlessCookieName(name string) PasswordlessSetting {
 	return func(cfg *passwordlessConfig) error {
-		if err := (&http.Cookie{Name: name, Value: "v"}).Valid(); name == "" || err != nil {
+		if err := (&http.Cookie{Name: name, Value: "v"}).Valid(); name == "" || err != nil { //nolint:gosec // G124: a probe for Valid(), never written to a response
 			return newConfigError("PasswordlessCookieName was given %q, which is not a cookie "+
 				"name a browser would send back", name)
 		}
@@ -412,7 +412,7 @@ func (i *passwordlessInterceptor) begin(ex *Exchange) error {
 
 // msgPasswordlessBindingUnavailable is the fixed text of a begin whose
 // random source failed.
-const msgPasswordlessBindingUnavailable = "httpsec: the passwordless ceremony binding could not be drawn"
+const msgPasswordlessBindingUnavailable = "httpsec: the passwordless ceremony binding could not be drawn" //nolint:gosec // G101: a fixed log message, not a credential
 
 // cookie is the ceremony cookie carrying value for maxAge seconds; a
 // negative maxAge clears it.
@@ -518,4 +518,4 @@ func (i *passwordlessInterceptor) loadUser(ex *Exchange, user identity.UserID) (
 
 // msgPasswordlessUserUnavailable is the fixed text of a passwordless login
 // whose user could not be loaded.
-const msgPasswordlessUserUnavailable = "httpsec: the passwordless login's user could not be loaded"
+const msgPasswordlessUserUnavailable = "httpsec: the passwordless login's user could not be loaded" //nolint:gosec // G101: a fixed log message, not a credential

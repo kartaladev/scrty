@@ -402,7 +402,7 @@ func TestFinishRegistrationRacingFinishesVerifyOnce(t *testing.T) {
 		wg.Go(func() {
 			<-start
 
-			_, err := m.FinishRegistration(t.Context(), s, regBody(challenge, "cred-"+string(rune('a'+n)), ""),
+			_, err := m.FinishRegistration(t.Context(), s, regBody(challenge, "cred-"+string(rune('a'+n)), ""), //nolint:gosec // G115: a small test index
 				passkey.RegistrationContext{})
 			if err == nil {
 				mu.Lock()

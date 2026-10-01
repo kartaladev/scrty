@@ -178,7 +178,7 @@ func TestClone(t *testing.T) {
 					return false, err
 				}
 			},
-			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+			assert: func(t *testing.T, _ *loginEnv, res *passkey.LoginResult, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, passkey.ErrSuspended)
 				assert.Nil(t, res)
@@ -193,7 +193,7 @@ func TestClone(t *testing.T) {
 					return false, errors.New("store down")
 				}
 			},
-			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+			assert: func(t *testing.T, _ *loginEnv, res *passkey.LoginResult, err error) {
 				t.Helper()
 				require.Error(t, err)
 				assert.ErrorContains(t, err, "could not record the assertion")

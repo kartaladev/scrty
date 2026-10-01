@@ -28,7 +28,7 @@ func passkeyCredential(n int, user identity.UserID, credID string) *passkey.Cred
 		SignCount:            42,
 		BackupEligible:       true,
 		Transports:           []string{"internal", "hybrid"},
-		AAGUID:               bytes.Repeat([]byte{byte(n)}, 16),
+		AAGUID:               bytes.Repeat([]byte{byte(n)}, 16), //nolint:gosec // G115: a small test index
 		AttestationFormat:    "packed",
 		AttestationStatement: []byte("statement-" + credID),
 		Name:                 "Laptop",

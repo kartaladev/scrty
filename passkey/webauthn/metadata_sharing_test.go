@@ -51,10 +51,9 @@ func (g *gatedFetch) fetch(ctx context.Context) ([]byte, error) {
 // gatedRegistrar is a verifier requiring trusted attestation from a source
 // whose fetch is gated, and a supply of registration bodies to verify.
 type gatedRegistrar struct {
-	env   *attestationEnv
-	gate  *gatedFetch
-	v     *webauthn.Verifier
-	clock *fakeClock
+	env  *attestationEnv
+	gate *gatedFetch
+	v    *webauthn.Verifier
 }
 
 func newGatedRegistrar(t *testing.T, fail bool) *gatedRegistrar {

@@ -87,7 +87,7 @@ func (p *passkeyInterceptor) bound(ctx context.Context, s *session.Session) erro
 // after a passkey bound on it became active. The session store's own text may
 // carry the user reference, so it is reachable through errors.Is and
 // errors.As, never repeated.
-const msgPasskeySessionUnsaved = "httpsec: the session a passkey was bound on could not be saved"
+const msgPasskeySessionUnsaved = "httpsec: the session a passkey was bound on could not be saved" //nolint:gosec // G101: a fixed log message, not a credential
 
 // passkeyBeginDocument is the begin endpoints' default answer.
 type passkeyBeginDocument struct {
@@ -185,4 +185,4 @@ func writePasskeyDocument(ex *Exchange, body any) error {
 
 // msgPasskeyNotWritten is the fixed text of a passkey response that could not
 // be written.
-const msgPasskeyNotWritten = "httpsec: the passkey response could not be written"
+const msgPasskeyNotWritten = "httpsec: the passkey response could not be written" //nolint:gosec // G101: a fixed log message, not a credential

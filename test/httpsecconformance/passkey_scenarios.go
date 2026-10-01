@@ -31,7 +31,7 @@ import (
 // the chain accepts has been checked against them by the real verifier.
 const (
 	passkeyRPID            = "example.com"
-	passkeyOrigin          = "https://example.com"
+	passkeyOrigin          = "https://example.com" //nolint:gosec // G101: a fixture string, not a credential
 	passkeyRegisterBegin   = httpsec.DefaultPasskeyRegistrationPrefix + "/begin"
 	passkeyRegisterFinish  = httpsec.DefaultPasskeyRegistrationPrefix + "/finish"
 	passkeyConfirm         = httpsec.DefaultPasskeyRegistrationPrefix + "/confirm"

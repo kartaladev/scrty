@@ -401,7 +401,7 @@ func TestMemoryCredentialStore_RecordAssertion(t *testing.T) {
 			seed:      zeroCounter(),
 			callers:   8,
 			signCount: 0,
-			assert: func(t *testing.T, wins int, after *passkey.Credential) {
+			assert: func(t *testing.T, wins int, _ *passkey.Credential) {
 				assert.Equal(t, 8, wins)
 			},
 		},
@@ -821,7 +821,7 @@ func TestMemoryCredentialStore_ChargeEmailAttempt(t *testing.T) {
 				return c
 			}(),
 			user: "u-1", at: before, callers: 1,
-			assert: func(t *testing.T, wins int, codes []*passkey.EmailCode, after *passkey.Credential) {
+			assert: func(t *testing.T, wins int, _ []*passkey.EmailCode, after *passkey.Credential) {
 				assert.Zero(t, wins)
 				assert.Zero(t, after.EmailCode.Attempts)
 			},
@@ -999,7 +999,7 @@ func TestMemoryCredentialStore_Writes(t *testing.T) {
 			write: func(ctx context.Context, s passkey.CredentialStore) (any, error) {
 				return s.DeleteUser(ctx, "u-9")
 			},
-			assert: func(t *testing.T, s passkey.CredentialStore, got any, err error) {
+			assert: func(t *testing.T, _ passkey.CredentialStore, got any, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 0, got)
 			},

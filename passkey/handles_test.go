@@ -32,7 +32,7 @@ func assignConcurrently(t *testing.T, s passkey.HandleStore, user identity.UserI
 		wg.Go(func() {
 			<-start
 
-			h, err := s.Assign(t.Context(), user, offer(byte(i+1)))
+			h, err := s.Assign(t.Context(), user, offer(byte(i+1))) //nolint:gosec // G115: a small test index
 
 			mu.Lock()
 			defer mu.Unlock()

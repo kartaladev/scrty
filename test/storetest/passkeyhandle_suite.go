@@ -34,7 +34,7 @@ func assignOffers(ctx context.Context, t *testing.T, s passkey.HandleStore, user
 	for i := range n {
 		wg.Go(func() {
 			<-start
-			h, err := s.Assign(ctx, user, passkeyOffer(byte(i+1)))
+			h, err := s.Assign(ctx, user, passkeyOffer(byte(i+1))) //nolint:gosec // G115: a small test index
 
 			mu.Lock()
 			defer mu.Unlock()

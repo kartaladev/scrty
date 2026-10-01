@@ -694,11 +694,10 @@ func TestMFAMethodRemoveEnrolment(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name      string
-		user      identity.UserID
-		broken    bool
-		verifyErr error
-		assert    func(t *testing.T, e *loginEnv, err error)
+		name   string
+		user   identity.UserID
+		broken bool
+		assert func(t *testing.T, e *loginEnv, err error)
 	}
 
 	cases := []testCase{

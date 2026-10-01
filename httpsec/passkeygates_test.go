@@ -105,20 +105,20 @@ func TestPasskeyGates(t *testing.T) {
 				name:      "recovery-pending session reaches POST " + path,
 				recovered: true,
 				setup:     func(h *passkeyHarness) { h.withRecoveryGate, h.passkeyMethod = true, true },
-				request:   httptest.NewRequest(http.MethodPost, path, nil),
+				request:   httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil),
 				assert:    func(t *testing.T, out served) { reachedEndpoint(t, path, out) },
 			},
 			testCase{
 				name:      "recovery-pending session is refused POST " + path + " without the passkey method",
 				recovered: true,
 				setup:     func(h *passkeyHarness) { h.withRecoveryGate = true },
-				request:   httptest.NewRequest(http.MethodPost, path, nil),
+				request:   httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil),
 				assert:    challengedAs(policy.ChallengeAccountRecovery),
 			},
 			testCase{
 				name:    "enrolment-only session reaches POST " + path + " when passkeys serve the path",
 				setup:   func(h *passkeyHarness) { h.passkeyMethod = true },
-				request: httptest.NewRequest(http.MethodPost, path, nil),
+				request: httptest.NewRequestWithContext(t.Context(), http.MethodPost, path, nil),
 				assert:  func(t *testing.T, out served) { reachedEndpoint(t, path, out) },
 			})
 	}
@@ -128,14 +128,14 @@ func TestPasskeyGates(t *testing.T) {
 			name:       "recovery-pending session is refused registration, with no challenge issued, without the passkey method",
 			recovered:  true,
 			setup:      func(h *passkeyHarness) { h.withRecoveryGate = true },
-			request:    httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			request:    httptest.NewRequestWithContext(t.Context(), http.MethodPost, passkeyBeginPath, nil),
 			noneIssued: true,
 			assert:     challengedAs(policy.ChallengeAccountRecovery),
 		},
 		testCase{
 			name:       "the passkey endpoints refuse a recovery-pending session without the passkey method, behind no gate",
 			recovered:  true,
-			request:    httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			request:    httptest.NewRequestWithContext(t.Context(), http.MethodPost, passkeyBeginPath, nil),
 			noneIssued: true,
 			assert:     challengedAs(policy.ChallengeAccountRecovery),
 		},
@@ -143,14 +143,14 @@ func TestPasskeyGates(t *testing.T) {
 			name:      "recovery-pending session is refused the listing",
 			recovered: true,
 			setup:     func(h *passkeyHarness) { h.withRecoveryGate, h.passkeyMethod = true, true },
-			request:   httptest.NewRequest(http.MethodGet, passkeyListPath, nil),
+			request:   httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil),
 			assert:    challengedAs(policy.ChallengeAccountRecovery),
 		},
 		testCase{
 			name:      "recovery-pending session is refused a GET on a registration path",
 			recovered: true,
 			setup:     func(h *passkeyHarness) { h.withRecoveryGate, h.passkeyMethod = true, true },
-			request:   httptest.NewRequest(http.MethodGet, passkeyBeginPath, nil),
+			request:   httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyBeginPath, nil),
 			assert:    challengedAs(policy.ChallengeAccountRecovery),
 		},
 		testCase{
@@ -160,7 +160,7 @@ func TestPasskeyGates(t *testing.T) {
 				h.withRecoveryGate, h.passkeyMethod = true, true
 				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationPrefix("/account/passkeys"))
 			},
-			request: httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodPost, passkeyBeginPath, nil),
 			assert:  challengedAs(policy.ChallengeAccountRecovery),
 		},
 		testCase{
@@ -170,7 +170,7 @@ func TestPasskeyGates(t *testing.T) {
 				h.withRecoveryGate, h.passkeyMethod = true, true
 				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationPrefix("/account/passkeys"))
 			},
-			request: httptest.NewRequest(http.MethodPost, "/account/passkeys/begin", nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/account/passkeys/begin", nil),
 			assert: func(t *testing.T, out served) {
 				require.NoError(t, out.err)
 				assert.Equal(t, http.StatusOK, out.rec.Code)
@@ -179,13 +179,13 @@ func TestPasskeyGates(t *testing.T) {
 		testCase{
 			name:    "enrolment-only session is refused the listing",
 			setup:   func(h *passkeyHarness) { h.passkeyMethod = true },
-			request: httptest.NewRequest(http.MethodGet, passkeyListPath, nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyListPath, nil),
 			assert:  challengedAs(policy.ChallengeMFAEnrolment),
 		},
 		testCase{
 			name:    "enrolment-only session is refused a GET on a registration path",
 			setup:   func(h *passkeyHarness) { h.passkeyMethod = true },
-			request: httptest.NewRequest(http.MethodGet, passkeyBeginPath, nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, passkeyBeginPath, nil),
 			assert:  challengedAs(policy.ChallengeMFAEnrolment),
 		},
 		testCase{
@@ -194,12 +194,12 @@ func TestPasskeyGates(t *testing.T) {
 				h.passkeyMethod = true
 				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentMethods("totp"))
 			},
-			request: httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodPost, passkeyBeginPath, nil),
 			assert:  challengedAs(policy.ChallengeMFAEnrolment),
 		},
 		testCase{
 			name:    "enrolment-only session is refused registration when the passkey method is not on the MFA slot",
-			request: httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodPost, passkeyBeginPath, nil),
 			assert:  challengedAs(policy.ChallengeMFAEnrolment),
 		},
 		testCase{
@@ -208,7 +208,7 @@ func TestPasskeyGates(t *testing.T) {
 				h.passkeyMethod = true
 				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentMethods("passkey"))
 			},
-			request: httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			request: httptest.NewRequestWithContext(t.Context(), http.MethodPost, passkeyBeginPath, nil),
 			assert:  func(t *testing.T, out served) { reachedEndpoint(t, passkeyBeginPath, out) },
 		},
 	)

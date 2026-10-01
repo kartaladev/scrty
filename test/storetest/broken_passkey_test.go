@@ -36,7 +36,7 @@ const (
 	credFindAcrossUsers      credDefect = "find-across-users"
 	credListUnordered        credDefect = "list-unordered"
 	credCountActiveOnly      credDefect = "count-active-only"
-	credFindSharesRecord     credDefect = "find-shares-record"
+	credFindSharesRecord     credDefect = "find-shares-record" //nolint:gosec // G101: a fixture string, not a credential
 	credRecordEqual          credDefect = "record-accepts-equal-counter"
 	credRecordRefusesZero    credDefect = "record-refuses-zero-counter"
 	credRecordPending        credDefect = "record-pending"
@@ -49,7 +49,7 @@ const (
 	credClearKeepsCode       credDefect = "clear-keeps-code"
 	credChargeNoCap          credDefect = "charge-no-cap"
 	credChargeReadThenWrite  credDefect = "charge-read-then-write"
-	credChargeAtExpiry       credDefect = "charge-at-expiry"
+	credChargeAtExpiry       credDefect = "charge-at-expiry" //nolint:gosec // G101: a fixture string, not a credential
 	credRenameAcrossUsers    credDefect = "rename-across-users"
 	credDeleteAwaitingAll    credDefect = "delete-awaiting-all-users"
 )

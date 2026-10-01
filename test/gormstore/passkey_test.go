@@ -131,7 +131,7 @@ func TestPasskeyCredentialStore_Rows(t *testing.T) {
 				require.NoError(t, s.Insert(gormstore.WithTx(ctx, tx), cred))
 				require.NoError(t, tx.Rollback().Error)
 
-				assert.False(t, storefix.Exists(t, d.conn.DB,
+				assert.False(t, storefix.Exists(t, d.conn.DB, //nolint:contextcheck // storefix.Exists reads with the test's own context
 					`SELECT EXISTS (SELECT 1 FROM passkey_credentials WHERE id = $1)`, cred.ID),
 					"the credential survived its caller's rollback")
 			},

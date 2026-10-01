@@ -150,7 +150,7 @@ func TestPasskeyRegistration(t *testing.T) {
 			act: func(t *testing.T, h *passkeyHarness, chain *httpsec.Chain) served {
 				return h.register(t, chain, "cred-1")
 			},
-			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+			assert: func(t *testing.T, _ *passkeyHarness, _ *session.Session, out served) {
 				require.NoError(t, out.err)
 
 				var doc passkeyFinishDocument
@@ -164,7 +164,7 @@ func TestPasskeyRegistration(t *testing.T) {
 		{
 			name:  "a form body is missing credentials",
 			state: session.MFANone,
-			act: finishWith(func(h *passkeyHarness, challenge string) string {
+			act: finishWith(func(_ *passkeyHarness, challenge string) string {
 				return url.Values{"response": {registrationBody(challenge, "cred-1")}}.Encode()
 			}, "application/x-www-form-urlencoded"),
 			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {

@@ -313,7 +313,7 @@ func TestNew(t *testing.T) {
 		{name: "missing repudiation contact", noRepu: true, assert: refused},
 		{
 			name: "invalid relying party",
-			deps: func(t *testing.T, f *fixture) {
+			deps: func(_ *testing.T, f *fixture) {
 				v := NewMockVerifier(f.ctrl)
 				v.EXPECT().RelyingParty().Return(passkey.RelyingParty{ID: "https://example.com"}).AnyTimes()
 				f.deps.Verifier = v

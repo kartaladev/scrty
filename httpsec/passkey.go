@@ -19,12 +19,12 @@ const (
 	// DefaultPasskeyRegistrationPrefix is where registration answers: POST
 	// "<prefix>/begin", "<prefix>/finish", "<prefix>/confirm" and
 	// "<prefix>/confirm-email" (WithPasskeyRegistrationPrefix).
-	DefaultPasskeyRegistrationPrefix = "/passkey/register"
+	DefaultPasskeyRegistrationPrefix = "/passkey/register" //nolint:gosec // G101: a route path, not a credential
 
 	// DefaultPasskeyCredentialsPrefix is where a user's passkeys are listed
 	// (GET "<prefix>"), renamed (POST "<prefix>/rename") and removed (POST
 	// "<prefix>/remove") (WithPasskeyCredentialsPrefix).
-	DefaultPasskeyCredentialsPrefix = "/passkey/credentials"
+	DefaultPasskeyCredentialsPrefix = "/passkey/credentials" //nolint:gosec // G101: a route path, not a credential
 
 	// DefaultPasswordlessPrefix is where passwordless login answers, when it
 	// is enabled: POST "<prefix>/begin" and "<prefix>/finish".

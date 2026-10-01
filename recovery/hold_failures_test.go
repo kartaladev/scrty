@@ -272,7 +272,7 @@ func TestRecoverer_CancelFailures(t *testing.T) {
 			name:   "a user lookup failure still cancels, but sends no notice",
 			arm:    func(e *completeEnv) { e.failLookup(errStore) },
 			disarm: func(e *completeEnv) { e.failLookup(nil) },
-			assert: func(t *testing.T, e *completeEnv, r *recovery.Recoverer, rid id.ID, tokens *recordingTokenStore) {
+			assert: func(t *testing.T, e *completeEnv, _ *recovery.Recoverer, rid id.ID, tokens *recordingTokenStore) {
 				assert.Empty(t, e.out.cancelledNotices())
 				assert.Len(t, e.out.messages(), 1, "only the held notice")
 				assert.Equal(t, []string{recovery.CancelTokenPurpose}, tokens.consumedPurposes())

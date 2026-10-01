@@ -493,5 +493,5 @@ func blobSigningKey(hdr jws.Headers, root *x509.Certificate, now time.Time) (any
 
 // configError wraps a source's wiring mistake for New.
 func configError(err error) error {
-	return fmt.Errorf("%w: webauthn trusted attestation: %s", passkey.ErrConfig, err.Error())
+	return fmt.Errorf("%w: webauthn trusted attestation: %s", passkey.ErrConfig, err.Error()) //nolint:forbidigo // configErr comes from the library's own metadata sources (unexported method), never a consumer dependency's error
 }

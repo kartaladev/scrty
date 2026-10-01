@@ -43,7 +43,7 @@ func (rp RelyingParty) Validate() error {
 	rpID := strings.ToLower(rp.ID)
 	for i, o := range rp.Origins {
 		if err := validateOrigin(o, rpID); err != nil {
-			return fmt.Errorf("%w: relying-party origin %d (%q) %s", ErrConfig, i, o, err.Error())
+			return fmt.Errorf("%w: relying-party origin %d (%q) %s", ErrConfig, i, o, err.Error()) //nolint:forbidigo // validateOrigin returns only library-written text, never a dependency's
 		}
 	}
 
