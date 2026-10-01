@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"net/http"
+	"slices"
 
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
@@ -19,6 +20,10 @@ type recoveryGate struct {
 	// enrolPrefixes are the enrolment path's endpoint prefixes, and empty when
 	// the chain has no enrolment path.
 	enrolPrefixes []string
+
+	// passkeyPaths are the passkey registration endpoints' paths, and empty
+	// when the chain has no passkey endpoints.
+	passkeyPaths []string
 
 	// resolvePath is the password-change gate's resolve endpoint, and empty
 	// when the chain registered none.
@@ -45,6 +50,8 @@ type recoveryGate struct {
 // caller follow must not:
 //
 //   - a request under an enrolment prefix, when the enrolment path is on;
+//   - the passkey registration begin, finish, saved-code confirm and
+//     emailed-code confirm endpoints, when passkeys are enabled;
 //   - the password-change resolve endpoint, when one is registered;
 //   - the chain's logout, so the session can always be ended.
 //
@@ -92,6 +99,10 @@ func (g *recoveryGate) exempt(r Request) bool {
 
 	path := r.Path()
 
+	if slices.Contains(g.passkeyPaths, path) {
+		return true
+	}
+
 	return (g.resolvePath != "" && path == g.resolvePath) || (g.logoutPath != "" && path == g.logoutPath)
 }
 
@@ -107,8 +118,9 @@ func (g *recoveryGate) exempt(r Request) bool {
 // refuseGateOnly).
 //
 // The gate's exemptions are handed over once the chain exists, because the
-// enrolment path, the password-change resolve endpoint and logout may each be
-// enabled, or moved, by an option applied after this one.
+// enrolment path, the passkey endpoints, the password-change resolve endpoint
+// and logout may each be enabled, or moved, by an option applied after this
+// one.
 func (c *config) enableRecoveryGate(codes *recoveryInterceptor) {
 	g := &recoveryGate{codes: codes}
 
@@ -133,4 +145,8 @@ func (c *config) wireRecoveryGate(g *recoveryGate) {
 
 		return nil
 	})
+
+	if p := c.passkeysOf(); p != nil {
+		g.passkeyPaths = p.registrationPaths()
+	}
 }

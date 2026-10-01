@@ -107,8 +107,9 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 
 	if !c.hasRecoveryBinding() {
 		return newConfigError("%s needs a way to bind the recovered session: enable "+
-			"EnableMFAEnrolment or a password-change resolve endpoint (WithChangePasswordEndpoint), "+
-			"or a recovery-pending session could never become a full one", option)
+			"EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA, or a "+
+			"password-change resolve endpoint (WithChangePasswordEndpoint), or a "+
+			"recovery-pending session could never become a full one", option)
 	}
 
 	if i.tokens == nil && c.formLogin() == nil {
@@ -171,9 +172,11 @@ func (c *config) formLogin() *formLogin {
 }
 
 // hasRecoveryBinding reports whether the chain can bind a recovery-pending
-// session: an enrolment path, or a password-change resolve endpoint.
+// session: an enrolment path, passkey registration with the passkey method on
+// the MFA slot to prove the new passkey at, or a password-change resolve
+// endpoint.
 func (c *config) hasRecoveryBinding() bool {
-	found := false
+	found := c.passkeysOf() != nil && c.hasPasskeyMethod()
 
 	_ = eachInterceptor(c, func(*enrolmentInterceptor) error {
 		found = true

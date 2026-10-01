@@ -67,7 +67,7 @@ Task numbers below (`1.1`…`9.3`) are `tasks.md`'s.
   | `ErrReauthenticationRequired` | — | 403 |
   | `ErrNotFound` | — | 404 |
   | `ErrRegistrationThrottled` | `ratelimit.ErrThrottled` | 401 |
-  | `ErrMalformedResponse` | — | 401: an unreadable ceremony response; `httpsec` maps it to `ErrCredentialsMissing` (there is no core `authenticate.ErrMissingCredentials`) |
+  | `ErrMalformedResponse` | — | 400: an unreadable ceremony response; `httpsec` refuses it as `ErrCredentialsMissing` (there is no core `authenticate.ErrMissingCredentials`) |
   | `ErrDuplicateCredential` (store) | — | — (finish maps it to `authenticate.ErrAuthenticationFailed`) |
 
   A refused ceremony is `authenticate.ErrAuthenticationFailed`, or `mfa.ErrInvalidCode` as a second factor. `mfa.ErrAuthenticatorRefused` maps to 403 by itself.

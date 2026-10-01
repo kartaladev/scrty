@@ -25,12 +25,14 @@ func builtInSlots() []namedSlot {
 		{"FormLogin", httpsec.OrderFormLogin},
 		{"MagicLink", httpsec.OrderMagicLink},
 		{"AccountRecoveryEndpoints", httpsec.OrderAccountRecoveryEndpoints},
+		{"PasskeyLogin", httpsec.OrderPasskeyLogin},
 		{"BasicAuth", httpsec.OrderBasicAuth},
 		{"APIKey", httpsec.OrderAPIKey},
 		{"MTLS", httpsec.OrderMTLS},
 		{"BearerToken", httpsec.OrderBearerToken},
 		{"MFAChallenge", httpsec.OrderMFAChallenge},
 		{"PasswordChange", httpsec.OrderPasswordChange},
+		{"Passkeys", httpsec.OrderPasskeys},
 		{"Logout", httpsec.OrderLogout},
 		{"SessionTouch", httpsec.OrderSessionTouch},
 		{"Authorizer", httpsec.OrderAuthorizer},
@@ -83,6 +85,20 @@ func TestOrder(t *testing.T) {
 		assert.Equal(t, httpsec.Order(375), httpsec.OrderAccountRecoveryEndpoints)
 		assert.Greater(t, httpsec.OrderAccountRecoveryEndpoints, httpsec.OrderMagicLink)
 		assert.Less(t, httpsec.OrderAccountRecoveryEndpoints, httpsec.OrderBasicAuth)
+
+		// Passwordless login is a first factor of its own, after the one-time
+		// link slot and before Basic authentication.
+		assert.Equal(t, httpsec.Order(380), httpsec.OrderPasskeyLogin)
+		assert.Greater(t, httpsec.OrderPasskeyLogin, httpsec.OrderMagicLink)
+		assert.Greater(t, httpsec.OrderPasskeyLogin, httpsec.OrderAccountRecoveryEndpoints)
+		assert.Less(t, httpsec.OrderPasskeyLogin, httpsec.OrderBasicAuth)
+
+		// The session-bound passkey endpoints run inside every gate, the
+		// password-change gate included, and before logout.
+		assert.Equal(t, httpsec.Order(660), httpsec.OrderPasskeys)
+		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderPasswordChange)
+		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderMFAChallenge)
+		assert.Less(t, httpsec.OrderPasskeys, httpsec.OrderLogout)
 
 		// "The refusal SHALL come before the password-change gate, the
 		// enrolment gate, the MFA challenge gate": the recovery gate runs

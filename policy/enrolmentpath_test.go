@@ -243,6 +243,43 @@ func TestMFARequirementEnrolmentPath(t *testing.T) {
 	}
 }
 
+// TestPasskeyRegistrationServesEnrolmentPath pins the passkey method on the
+// enrolment path: the only configured method is a passkey method, on the
+// public-key channel, and a required, unenrolled user logs in by password.
+// Whether the path is entered turns on the method's own declaration that
+// passkey registration serves the path.
+func TestPasskeyRegistrationServesEnrolmentPath(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		serves bool
+		assert func(t *testing.T, d policy.Decision)
+	}
+
+	cases := []testCase{
+		{name: "passkey registration serves the path", serves: true, assert: challengedForEnrolment},
+		{name: "nothing serves the path", serves: false, assert: deniedForEnrolment},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			passkeyMethod := enrollable{
+				MFAMethodLookup: namedMFAMethod(t, "passkey", factor.PublicKey, false, nil),
+				supports:        tc.serves,
+			}
+
+			p := mfaRequirementPolicyOver(t, mfaRequirementLookup(t, true, true, nil),
+				mfaMethods(passkeyMethod), policy.WithMFAEnrolmentPath())
+
+			in := &policy.Input{User: mfaUser, FirstFactor: factor.Password, Now: mfaNow}
+			tc.assert(t, p.Evaluate(mfaPhaseContext(t, policy.PostAuthentication), in))
+		})
+	}
+}
+
 // TestEnrolmentFirstFactors pins the path's allowlist of first-factor kinds: its
 // default, a consumer's replacement of it, and the kinds that can never be on
 // it.

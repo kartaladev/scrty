@@ -8,6 +8,7 @@ import (
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -44,6 +45,11 @@ var statusTable = []statusRow{
 	// rows above answer them 401, exactly as a failed login.
 
 	{ErrCredentialsMissing, http.StatusBadRequest},
+
+	// A passkey ceremony response the verifier could not read. The chain's
+	// endpoints answer it as ErrCredentialsMissing, wrapping it; this row
+	// answers it the same way where it reaches StatusForError alone.
+	{passkey.ErrMalformedResponse, http.StatusBadRequest},
 	{recovery.ErrMalformed, http.StatusBadRequest},
 	{oidc.ErrInvalidLogoutToken, http.StatusBadRequest},
 	{ErrRequestTooLarge, http.StatusRequestEntityTooLarge},
@@ -69,6 +75,10 @@ var statusTable = []statusRow{
 	{oidc.ErrUnknownProvider, http.StatusNotFound},
 	{ErrUnknownMFAMethod, http.StatusNotFound},
 
+	// A passkey identifier naming no passkey of the session's user: another
+	// user's and none at all are deliberately the same refusal.
+	{passkey.ErrNotFound, http.StatusNotFound},
+
 	{authorize.ErrAccessDenied, http.StatusForbidden},
 	{policy.ErrPolicyDenied, http.StatusForbidden},
 	{policy.ErrMFARequired, http.StatusForbidden},
@@ -86,6 +96,19 @@ var statusTable = []statusRow{
 	{mfa.ErrAuthenticatorRefused, http.StatusForbidden},
 	{recovery.ErrCooldown, http.StatusForbidden},
 	{recovery.ErrReauthenticationRequired, http.StatusForbidden},
+
+	// Passkey refusals of an authenticated caller who must act differently,
+	// not present credentials again: a passkey still pending its
+	// confirmation, an attestation the policy refuses, a user at the passkey
+	// limit, and a session too old or under-assured to change its passkeys.
+	// A suspected clone and a suspended passkey need no rows: they wrap
+	// mfa.ErrAuthenticatorRefused, answered 403 above. A throttled
+	// registration begin needs none either: it wraps ratelimit.ErrThrottled,
+	// answered 401.
+	{passkey.ErrPending, http.StatusForbidden},
+	{passkey.ErrAttestationRefused, http.StatusForbidden},
+	{passkey.ErrLimitReached, http.StatusForbidden},
+	{passkey.ErrReauthenticationRequired, http.StatusForbidden},
 }
 
 // StatusForError maps a refusal to the status it is answered with.

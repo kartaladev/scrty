@@ -227,6 +227,7 @@ This was the user's decision (2026-10-01): an enrolment-only session can registe
 - **The upgrade.** When a credential becomes active for an `MFAEnrolmentPending` or `MFARecoveryPending` session, the endpoint sets `s.MFA = MFAPending`, keeps `EnrolmentOriginDeadline` and `RecoveredAt`, and saves. The user then runs `/mfa/begin/passkey` and `/mfa/verify/passkey`. The verify endpoint already restores the deadlines and rotates for a marked session.
 - **No AAL check on the upgrade.** The new passkey's channel (`public-key`) differs from the session's first factor (password, magic link or recovery), so it is usable at verify.
 - **Recovery gate.** The gate exempts the same four POSTs whenever passkey registration is enabled. `EnableAccountRecovery`'s "nothing to bind" check accepts passkey registration plus the passkey method on the MFA slot as a binding route.
+- **The sender.** `RegistrationContext` carries the path's confirmation setting, contact resolver and limiter, not its sender. An enrolment-only session's emailed code and binding notice therefore go through the passkey manager's `Deps.Sender`, not `EnrolmentDeps.Sender`. A consumer wires the same sender to both.
 - **Alternative rejected:** activating the passkey and making the session full at once. That would give a second resolver of the MFA challenge, against `mfa-multi-method`'s single-resolver rule.
 
 ### D9. Passwordless login
@@ -326,6 +327,7 @@ type SecondFactorProof = assurance.Proof
 
   Missing metadata with trusted attestation required is `ErrConfig` at `webauthn.New`.
 - **Decided during implementation:**
+  - **The BLOB's JWT is checked with `lestrrat-go/jwx`,** the project's JOSE library, as `oidc` does: one key only (the x5c leaf's, or the root's when there is no x5c), an explicit ES/RS/PS algorithm list, no key set and no fetcher, so an embedded `jwk` or a `jku` header is never used. `golang-jwt` stays in the adapter's module graph only as go-webauthn's own dependency.
   - **The BLOB is verified by scrty, not by the library's decoder.** go-webauthn's metadata decoder checks the signing chain's revocation through `http.DefaultClient`, which would send a request past the confined client (reproduced by `TestMetadata_NoRequestLeavesOutsideTheConfinedClient`). The adapter checks the JWT itself (x5c chain to the configured root at the clock's time; ES, RS and PS algorithms only; `x5u` refused) and hands only the verified payload to the library's parser. The cost is that the signing chain's revocation is not looked up online. A consumer who needs it mirrors the BLOB and supplies it through `MetadataBlob`.
   - **Freshness of the BLOB.** A BLOB already past its `nextUpdate`, or whose serial number goes backwards, is refused. On expiry the cached copy is dropped before the refetch, so a failed refetch refuses rather than trusting stale data. A metadata outage in trusted mode is `ErrAttestationRefused`, which fails closed.
   - **Options.** `MetadataBlob(fetch, opts…)` and `MetadataFromMDS(client, opts…)` take `MDSOption`s: `WithMDSURL` (default `DefaultMDSURL`), `WithMDSRoot` (default the FIDO production root) and `WithMDSClock`. `MaxMetadataAge` is 24 hours.
@@ -389,7 +391,7 @@ type SecondFactorProof = assurance.Proof
 | passwordless begin | `POST /passkey/login/begin` | none | `{"publicKey":{…request options…}}` |
 | passwordless finish | `POST /passkey/login/finish` | JSON ≤ 16 KiB | form login's credential response |
 
-- **Paths.** Each path group is replaceable by a prefix option: `PasskeyRegistrationPrefix`, `PasskeyCredentialsPrefix`, `PasswordlessPrefix`.
+- **Paths.** Each path group is replaceable by a prefix option: `WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasswordlessPrefix`. A passkey path under the enrolment path's prefix is refused at assembly, since the enrolment interceptor would serve it first.
 - **Responders.** Each endpoint has a replaceable responder.
 - **Readers.** Bodies are read through `httpsec`'s own readers, `postedJSON` and `postedFieldLimited`, which the MFA slot already uses.
 - **Routing.** Other HTTP methods pass through.
@@ -408,7 +410,7 @@ type SecondFactorProof = assurance.Proof
 | `passkey.ErrReauthenticationRequired` | — | 403 |
 | `passkey.ErrNotFound` | — | 404 |
 | `passkey.ErrRegistrationThrottled` | `ratelimit.ErrThrottled` | 401 |
-| `passkey.ErrMalformedResponse` | — | 401 (the chain maps it to its missing-credentials refusal) |
+| `passkey.ErrMalformedResponse` | — | 400 (the chain refuses an unreadable response as missing credentials, as the spec requires) |
 | refused ceremony | `authenticate.ErrAuthenticationFailed` | 401 |
 | refused emailed or saved code at confirm | `mfa.ErrInvalidCode` | 401 |
 
