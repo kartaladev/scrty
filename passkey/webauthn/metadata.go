@@ -14,7 +14,9 @@ import (
 
 	"github.com/go-webauthn/webauthn/metadata"
 	"github.com/go-webauthn/webauthn/metadata/providers/memory"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 	"golang.org/x/sync/singleflight"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -350,8 +352,14 @@ func (c *metadataCache) refresh(ctx context.Context) (metadata.Provider, error) 
 	return p, nil
 }
 
-// blobSigningMethods are the JWS algorithms a BLOB may be signed with.
-var blobSigningMethods = []string{"ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
+// blobSigningAlgs are the JWS algorithms a BLOB may be signed with, by the
+// name its protected header gives. Any other, including none, the HMAC
+// family and EdDSA, is refused before a key is chosen.
+var blobSigningAlgs = map[string]jwa.SignatureAlgorithm{
+	"ES256": jwa.ES256(), "ES384": jwa.ES384(), "ES512": jwa.ES512(),
+	"RS256": jwa.RS256(), "RS384": jwa.RS384(), "RS512": jwa.RS512(),
+	"PS256": jwa.PS256(), "PS384": jwa.PS384(), "PS512": jwa.PS512(),
+}
 
 // decodeBlob checks raw, an MDS3 JWT, against root at now, and decodes its
 // entries. Entries that do not parse are left out, so the authenticators they
@@ -362,26 +370,45 @@ var blobSigningMethods = []string{"ES256", "ES384", "ES512", "RS256", "RS384", "
 // revocation status of the chain over the network with an HTTP client of its
 // own, outside the confined client. The chain is checked against root at now
 // only; its revocation is not looked up.
+//
+// The signature is checked with exactly one key, chosen by blobSigningKey from
+// the x5c chain or root: a key or key location the header names otherwise
+// (jwk, jku) is never used, and nothing is fetched. exp and nbf, when the
+// payload carries them, are judged at now.
 func decodeBlob(raw []byte, root *x509.Certificate, now time.Time) (*metadata.Metadata, error) {
-	claims := jwt.MapClaims{}
-	parser := jwt.NewParser(
-		jwt.WithValidMethods(blobSigningMethods),
-		jwt.WithTimeFunc(func() time.Time { return now }),
-	)
-
-	if _, err := parser.ParseWithClaims(string(raw), claims, func(tok *jwt.Token) (any, error) {
-		return blobSigningKey(tok.Header, root, now)
-	}); err != nil {
-		return nil, err
+	msg, err := jws.Parse(raw, jws.WithCompact())
+	if err != nil || len(msg.Signatures()) != 1 {
+		return nil, errors.New("webauthn: metadata BLOB is not a compact JWS")
 	}
 
-	encoded, err := json.Marshal(claims)
+	hdr := msg.Signatures()[0].ProtectedHeaders()
+
+	name, ok := hdr.Algorithm()
+	if !ok {
+		return nil, errors.New("webauthn: metadata BLOB names no signing algorithm")
+	}
+
+	alg, ok := blobSigningAlgs[name.String()]
+	if !ok {
+		return nil, fmt.Errorf("webauthn: metadata BLOB signing algorithm %q is not accepted", name.String())
+	}
+
+	key, err := blobSigningKey(hdr, root, now)
 	if err != nil {
 		return nil, err
 	}
 
-	var payload metadata.PayloadJSON
-	if err := json.Unmarshal(encoded, &payload); err != nil {
+	payload, err := jws.Verify(raw, jws.WithKey(alg, key))
+	if err != nil {
+		return nil, errors.New("webauthn: metadata BLOB signature does not verify")
+	}
+
+	if err := validateBlobTimes(payload, now); err != nil {
+		return nil, err
+	}
+
+	var parsed metadata.PayloadJSON
+	if err := json.Unmarshal(payload, &parsed); err != nil {
 		return nil, err
 	}
 
@@ -390,36 +417,53 @@ func decodeBlob(raw []byte, root *x509.Certificate, now time.Time) (*metadata.Me
 		return nil, err
 	}
 
-	return d.Parse(&payload)
+	return d.Parse(&parsed)
+}
+
+// validateBlobTimes refuses a verified payload whose exp has passed or whose
+// nbf has not yet come at now. Neither claim is required; iat is not judged.
+func validateBlobTimes(payload []byte, now time.Time) error {
+	tok, err := jwt.ParseInsecure(payload)
+	if err != nil {
+		return errors.New("webauthn: metadata BLOB payload does not parse")
+	}
+
+	if err := jwt.Validate(tok,
+		jwt.WithResetValidators(true),
+		jwt.WithValidator(jwt.IsExpirationValid()),
+		jwt.WithValidator(jwt.IsNbfValid()),
+		jwt.WithClock(jwt.ClockFunc(func() time.Time { return now })),
+		jwt.WithTruncation(0),
+	); err != nil {
+		return errors.New("webauthn: metadata BLOB is not valid at the source's clock")
+	}
+
+	return nil
 }
 
 // blobSigningKey returns the key a BLOB's signature is checked with: that of
 // the first certificate of its x5c header, once the chain verifies to root at
 // now, or root's own when the header carries no chain, as MDS3 allows.
-func blobSigningKey(header map[string]any, root *x509.Certificate, now time.Time) (any, error) {
-	if _, ok := header["x5u"]; ok {
+func blobSigningKey(hdr jws.Headers, root *x509.Certificate, now time.Time) (any, error) {
+	if hdr.Has(jws.X509URLKey) {
 		return nil, errors.New("webauthn: metadata x5u header is not supported")
 	}
 
-	raw, ok := header["x5c"]
-	if !ok {
+	if !hdr.Has(jws.X509CertChainKey) {
 		return root.PublicKey, nil
 	}
 
-	list, ok := raw.([]any)
-	if !ok || len(list) == 0 {
+	chain, ok := hdr.X509CertChain()
+	if !ok || chain.Len() == 0 {
 		return nil, errors.New("webauthn: metadata x5c header is malformed")
 	}
 
-	certs := make([]*x509.Certificate, 0, len(list))
+	certs := make([]*x509.Certificate, 0, chain.Len())
 
-	for _, entry := range list {
-		s, ok := entry.(string)
-		if !ok {
-			return nil, errors.New("webauthn: metadata x5c header is malformed")
-		}
+	for i := range chain.Len() {
+		entry, _ := chain.Get(i)
 
-		cert, err := parseStdCert(s)
+		cert, err := parseStdCert(string(entry))
 		if err != nil {
 			return nil, errors.New("webauthn: metadata x5c certificate does not parse")
 		}

@@ -10,13 +10,16 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math/big"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/lestrrat-go/jwx/v4/cert"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/passkey/webauthn/webauthntest"
@@ -163,6 +166,7 @@ type blob struct {
 	no         int
 	nextUpdate time.Time
 	entries    []map[string]any
+	claims     map[string]any // further payload members, such as exp or nbf
 }
 
 // sign encodes b as an MDS3 JWT signed by signer, whose chain (signer first)
@@ -173,29 +177,48 @@ func (b blob) sign(t *testing.T, signer *testCA, chain ...*x509.Certificate) []b
 	for _, c := range chain {
 		x5c = append(x5c, stdB64(c))
 	}
-	return b.signWith(t, jwt.SigningMethodES256, signer.key, map[string]any{"x5c": x5c})
+	return b.signWith(t, jwa.ES256(), signer.key, map[string]any{"x5c": x5c})
 }
 
-// signWith encodes b as a JWT signed by key under method, with header's
-// members added to the JOSE header.
-func (b blob) signWith(t *testing.T, method jwt.SigningMethod, key any, header map[string]any) []byte {
+// signWith encodes b as a compact JWS signed by key under alg, with header's
+// members added to the protected header. An x5c member is a list of
+// standard-base64 DER certificates; alg none leaves the token unsigned.
+func (b blob) signWith(t *testing.T, alg jwa.SignatureAlgorithm, key any, header map[string]any) []byte {
 	t.Helper()
 	entries := b.entries
 	if entries == nil {
 		entries = []map[string]any{}
 	}
-	tok := jwt.NewWithClaims(method, jwt.MapClaims{
+	members := map[string]any{
 		"legalHeader": "test",
 		"no":          b.no,
 		"nextUpdate":  b.nextUpdate.UTC().Format(time.DateOnly),
 		"entries":     entries,
-	})
-	for k, v := range header {
-		tok.Header[k] = v
 	}
-	s, err := tok.SignedString(key)
+	maps.Copy(members, b.claims)
+	payload, err := json.Marshal(members)
 	require.NoError(t, err)
-	return []byte(s)
+
+	h := jws.NewHeaders()
+	require.NoError(t, h.Set(jws.TypeKey, "JWT"))
+	for k, v := range header {
+		if list, ok := v.([]string); ok && k == jws.X509CertChainKey {
+			var chain cert.Chain
+			for _, c := range list {
+				require.NoError(t, chain.AddString(c))
+			}
+			v = &chain
+		}
+		require.NoError(t, h.Set(k, v))
+	}
+
+	var opt jws.SignOption = jws.WithKey(alg, key, jws.WithProtectedHeaders(h))
+	if alg == jwa.NoSignature() {
+		opt = jws.WithInsecureNoSignature(jws.WithProtectedHeaders(h))
+	}
+	s, err := jws.Sign(payload, opt)
+	require.NoError(t, err)
+	return s
 }
 
 // fakeClock is a settable clock.

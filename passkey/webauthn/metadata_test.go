@@ -6,13 +6,16 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -276,35 +279,35 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 		{
 			name: "a BLOB with no x5c signed by the root's own key is accepted",
 			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
-				return b.signWith(t, jwt.SigningMethodES256, e.mdsRoot.key, nil)
+				return b.signWith(t, jwa.ES256(), e.mdsRoot.key, nil)
 			},
 			assert: trustedOK,
 		},
 		{
 			name: "a BLOB with no x5c signed by a key other than the root's is refused",
 			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
-				return b.signWith(t, jwt.SigningMethodES256, e.signer.key, nil)
+				return b.signWith(t, jwa.ES256(), e.signer.key, nil)
 			},
 			assert: refused,
 		},
 		{
 			name: "an unsigned BLOB (alg none) is refused",
 			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
-				return b.signWith(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, nil)
+				return b.signWith(t, jwa.NoSignature(), nil, nil)
 			},
 			assert: refused,
 		},
 		{
 			name: "an HS256 BLOB keyed with the root's public key is refused",
 			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
-				return b.signWith(t, jwt.SigningMethodHS256, e.mdsRoot.cert.RawSubjectPublicKeyInfo, nil)
+				return b.signWith(t, jwa.HS256(), e.mdsRoot.cert.RawSubjectPublicKeyInfo, nil)
 			},
 			assert: refused,
 		},
 		{
 			name: "an EdDSA BLOB is refused, even signed by an Ed25519 root's own key",
 			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
-				return b.signWith(t, jwt.SigningMethodEdDSA, ed25519Root(t).key, nil)
+				return b.signWith(t, jwa.EdDSA(), ed25519Root(t).key, nil)
 			},
 			root:   func(t *testing.T) *x509.Certificate { return ed25519Root(t).cert },
 			assert: refused,
@@ -314,7 +317,56 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
 				h := x5c(e.signer, e.mdsRoot)
 				h["x5u"] = "https://mds.example.com/chain.pem"
-				return b.signWith(t, jwt.SigningMethodES256, e.signer.key, h)
+				return b.signWith(t, jwa.ES256(), e.signer.key, h)
+			},
+			assert: refused,
+		},
+		{
+			name: "a BLOB signed by the key its own jwk header embeds is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				embedded, err := jwk.Import[jwk.Key](e.signer.key.Public())
+				require.NoError(t, err)
+				return b.signWith(t, jwa.ES256(), e.signer.key, map[string]any{"jwk": embedded})
+			},
+			assert: refused,
+		},
+		{
+			name: "a BLOB naming a jku header is refused when signed by a key other than the root's, and the jku is never fetched",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				// The jku serves the signer's key, so honouring it would accept the BLOB.
+				embedded, err := jwk.Import[jwk.Key](e.signer.key.Public())
+				require.NoError(t, err)
+				require.NoError(t, embedded.Set(jwk.AlgorithmKey, jwa.ES256()))
+				require.NoError(t, embedded.Set(jwk.KeyIDKey, "mds"))
+				set := jwk.NewSet()
+				require.NoError(t, set.AddKey(embedded))
+				var fetches atomic.Int32
+				srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					fetches.Add(1)
+					_ = json.NewEncoder(w).Encode(set)
+				}))
+				t.Cleanup(func() {
+					srv.Close()
+					assert.Zero(t, fetches.Load(), "the jku was fetched")
+				})
+				return b.signWith(t, jwa.ES256(), e.signer.key, map[string]any{"jku": srv.URL, "kid": "mds"})
+			},
+			assert: refused,
+		},
+		{
+			name: "a BLOB whose exp has passed at the source's clock is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				b.claims = map[string]any{"exp": time.Now().Add(day).Unix()}
+				return b.signWith(t, jwa.ES256(), e.mdsRoot.key, nil)
+			},
+			advance: 2 * day,
+			assert:  refused,
+		},
+		{
+			name: "a BLOB whose nbf is still ahead of the source's clock is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				b.claims = map[string]any{"nbf": time.Now().Add(day).Unix()}
+				return b.signWith(t, jwa.ES256(), e.mdsRoot.key, nil)
 			},
 			assert: refused,
 		},
@@ -322,7 +374,7 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 			name: "a signing certificate expired at the source's clock is refused",
 			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
 				leaf := issueUntil(t, e.mdsRoot, pkix.Name{CommonName: "Short-lived MDS Signer"}, false, "", time.Now().Add(day))
-				return b.signWith(t, jwt.SigningMethodES256, leaf.key, x5c(leaf, e.mdsRoot))
+				return b.signWith(t, jwa.ES256(), leaf.key, x5c(leaf, e.mdsRoot))
 			},
 			advance: 2 * day,
 			assert:  refused,
@@ -332,7 +384,7 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
 				foreign := newRoot(t, "Foreign MDS Root")
 				leaf := issue(t, foreign, pkix.Name{CommonName: "Foreign MDS Signer"}, false, "")
-				return b.signWith(t, jwt.SigningMethodES256, leaf.key, x5c(leaf, foreign))
+				return b.signWith(t, jwa.ES256(), leaf.key, x5c(leaf, foreign))
 			},
 			assert: refused,
 		},
@@ -340,7 +392,7 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 			name: "a BLOB signed by a key other than its x5c certificate's is refused",
 			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
 				impostor := issue(t, nil, pkix.Name{CommonName: "Impostor"}, false, "")
-				return b.signWith(t, jwt.SigningMethodES256, impostor.key, x5c(e.signer, e.mdsRoot))
+				return b.signWith(t, jwa.ES256(), impostor.key, x5c(e.signer, e.mdsRoot))
 			},
 			assert: refused,
 		},
