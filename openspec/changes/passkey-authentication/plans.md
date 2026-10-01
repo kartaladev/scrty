@@ -382,7 +382,7 @@ if err := method.Verify(ctx, user, response); err != nil {
   - `types_test.go` pins `NormaliseName`: `" Work laptop "` gives `"Work laptop"`; 64 runes are kept; 65 runes and `"a\nb"` give the date name; an empty name gives the date name.
   - It also pins `DecodeChallenge` round trips with `base64.RawURLEncoding`, and refuses padded or standard-alphabet input.
 - [ ] **Step 2: Run** `go test -count=1 ./passkey/...`. **Expected:** with stub functions returning nil and `""`, the rows fail on their asserted values.
-- [ ] **Step 3: Implement.** Origin parsing uses `net/url`. The host compare is case-insensitive and exact or suffixed with `.`+ID. Loopback is `localhost`, `*.localhost`, or a loopback IP host in the origin with ID `localhost`.
+- [ ] **Step 3: Implement.** Origin parsing uses `net/url`. The host compare is case-insensitive and exact or suffixed with `.`+ID. Loopback is `localhost` or `*.localhost`; the origin host must still equal the ID or end in `.`+ID, so a loopback IP origin is refused for ID `localhost` (the spec's rule, which browsers also enforce). An origin must equal its serialised form (`scheme://host[:port]`): no path (not even `/`), query, fragment, user info, empty port or default port.
 - [ ] **Step 4: Run** `go test -race ./passkey/...`. **Expected:** PASS.
 - [ ] **Step 5: Commit** `feat(passkey): types, relying party and the verifier port`
 
@@ -415,7 +415,7 @@ if err := method.Verify(ctx, user, response); err != nil {
   ```
 - **Write semantics.** These are what every driver later matches:
   - `RecordAssertion` succeeds only when `State==Active && (stored < new || (stored == 0 && new == 0))`.
-  - `ClearReason` succeeds only when the bit is set and the state is pending. It returns the resulting state.
+  - `ClearReason` takes exactly one reason (any other value is refused); it succeeds only when that bit is set and the state is pending, clears the emailed code with `AwaitingEmailCode`, and returns the resulting state.
   - `ChargeEmailAttempt` succeeds only when the state is pending, the `AwaitingEmailCode` bit is set, the code is non-nil, `at < ExpiresAt`, and `Attempts < 5`. It increments `Attempts` and returns the stored code to compare.
   - `DeleteAwaitingSavedCodes` deletes the user's credentials with the bit set.
 
@@ -1060,7 +1060,7 @@ ALTER TABLE sessions ADD COLUMN mfa_at_first_factor boolean NOT NULL DEFAULT fal
 - [ ] **Step 3: Implement** the design D19 SQL, shared in `internal/pgschema/passkey.go`:
   - `RecordAssertion`: `UPDATE passkey_credentials SET sign_count=$2, backup_state=$3, last_used_at=$4 WHERE id=$1 AND state=1 AND (sign_count < $2 OR (sign_count = 0 AND $2 = 0))`, then check `RowsAffected`.
   - `Suspend`: `UPDATE … SET state=3 WHERE id=$1 AND state=1`.
-  - `ClearReason`: `UPDATE … SET pending = pending & ~$3, state = CASE WHEN pending & ~$3 = 0 THEN 1 ELSE state END, email_code = CASE WHEN $3 = 2 THEN NULL ELSE email_code END WHERE id=$1 AND user_id=$2 AND state=2 AND pending & $3 <> 0 RETURNING state`.
+  - `ClearReason`: `UPDATE … SET pending = pending & ~$3, state = CASE WHEN pending & ~$3 = 0 THEN 1 ELSE state END, email_code = CASE WHEN $3 = 2 THEN NULL ELSE email_code END WHERE id=$1 AND user_id=$2 AND state=2 AND pending & $3 <> 0 RETURNING state`. `$3` is exactly one reason (1 or 2); the driver refuses any other value before the query, as the contract does.
   - `ChargeEmailAttempt`: `UPDATE … SET email_code_attempts = email_code_attempts + 1 WHERE id=$1 AND user_id=$2 AND state=2 AND pending & 2 <> 0 AND email_code IS NOT NULL AND email_code_expires_at > $3 AND email_code_attempts < 5 RETURNING email_code, email_code_expires_at, email_code_attempts`, then open the sealed code.
   - `Insert`: a `23505` violation on `passkey_credentials_credential_id_key` → `passkey.ErrDuplicateCredential`.
   - `Assign`: savepoint or own transaction; `INSERT INTO passkey_user_handles (id,user_id,handle) VALUES ($1,$2,$3) ON CONFLICT (user_id) DO NOTHING`, then `SELECT handle FROM passkey_user_handles WHERE user_id=$1`.
