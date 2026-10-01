@@ -243,7 +243,7 @@ This was the user's decision (2026-10-01): an enrolment-only session can registe
 - **Finish.** `POST /passkey/login/finish` runs the spec's order. Steps 3–8 are core (`(*Manager).Authenticate(ctx, body, binding)`), which returns a `LoginResult{User, Credential, Proof}`. The interceptor then loads the user (`identity.UserLoader.LoadByID`) and calls `completeLogin` with `factor.Passkey` and the proof.
 - **The default response** is form login's JSON credential response, and is replaceable as the form login responder is.
 - **The cookie** is cleared on every outcome. The clearing header is set at the start of finish, before the body is read, since a header set after the responder has written never reaches the client.
-- **Uniform refusal.** An unknown credential, a handle mismatch, a bad signature and a missing or mismatched cookie are all `authenticate.ErrAuthenticationFailed`.
+- **Uniform refusal.** An unknown credential, a handle mismatch, a bad signature and a missing or mismatched cookie are all `authenticate.ErrAuthenticationFailed`. The pending and suspended refusals come only after the signature verifies, so a client without the private key cannot learn a credential's existence or state (found in review; the step order was changed during implementation).
 - **Discoverable only.** Registration asks `residentKey: required` by default, so every passkey can sign in without a username.
   - **Override:** `passkey.WithResidentKey(passkey.ResidentKeyPreferred)`. Its godoc states that a non-discoverable credential then serves only as a second factor.
 - **Slot.** A new `OrderPasskeyLogin` (380), between the one-time link slot and Basic.

@@ -277,6 +277,10 @@ A credential in the pending or suspended state SHALL NOT complete a passwordless
 - **WHEN** `u-1` presents a valid assertion from a pending credential at the passwordless finish
 - **THEN** it is refused with the pending-passkey refusal and no session is created
 
+#### Scenario: Suspended credential without its key
+- **WHEN** a client presents the ID of a suspended or pending credential at the passwordless finish with an assertion its private key did not sign
+- **THEN** it is refused with the authentication-failed refusal, as for an unknown credential
+
 #### Scenario: Only pending passkeys
 - **WHEN** `u-1`'s only passkey is pending and `u-1` logs in by password
 - **THEN** the usable methods offered do not include `passkey`
@@ -385,15 +389,15 @@ The passwordless finish endpoint SHALL answer POST requests, and SHALL, in order
 1. read the assertion as a JSON body;
 2. take from it the challenge the client answered, then check and spend the challenge against the ceremony cookie's binding;
 3. find the credential by its ID, refusing an unknown one with the authentication-failed refusal;
-4. refuse a pending or suspended credential, as defined for those states;
-5. require the response's user handle, and require it to equal the handle mapped to the credential's user, refusing a mismatch with the authentication-failed refusal;
-6. verify the assertion against the stored public key, the relying-party ID, the allowed origins and the challenge, requiring user presence, and user verification unless relaxed;
+4. require the response's user handle, and require it to equal the handle mapped to the credential's user, refusing a mismatch with the authentication-failed refusal;
+5. verify the assertion against the stored public key, the relying-party ID, the allowed origins and the challenge, requiring user presence, and user verification unless relaxed;
+6. refuse a pending or suspended credential, as defined for those states, only now that the client has shown it holds the credential's private key;
 7. run the consumer's login check;
 8. record the counter and flags, applying the clone rule;
 9. load the user by the credential's user reference, refusing an unknown or disabled user with the authentication-failed refusal;
 10. complete the login through the chain's login completion step, recording the `passkey` first factor.
 
-Every refusal SHALL leave no session. A refused finish SHALL NOT reveal whether the credential exists to a client that does not hold its private key: an unknown credential, a handle mismatch and a bad signature SHALL be the same refusal.
+Every refusal SHALL leave no session. A refused finish SHALL NOT reveal whether the credential exists to a client that does not hold its private key: an unknown credential, a handle mismatch and a bad signature SHALL be the same refusal, whatever the credential's state.
 
 #### Scenario: Passwordless login
 - **WHEN** `u-1` answers a passwordless challenge with a valid, user-verified assertion from an active passkey
