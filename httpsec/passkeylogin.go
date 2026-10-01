@@ -466,9 +466,8 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 	principal := identity.PrincipalFromDetails(details)
 	now := i.now()
 
-	ex.Authentication = &authenticate.Authentication{Principal: principal, Time: now,
-		PasswordChangedAt: details.PasswordChangedAt}
-
+	// No authentication record is published, as for a magic link and OIDC:
+	// only form login, whose authenticator issues an event, has one.
 	in := postAuthenticationInput(principal, factor.Passkey, details.Username, details.PasswordChangedAt, now)
 	in.SecondFactorAtLogin = res.Proof
 

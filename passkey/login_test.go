@@ -559,24 +559,58 @@ func TestLogin(t *testing.T) {
 			assert: refused,
 		},
 		{
-			name: "a pending credential is refused as pending",
+			name: "a pending credential with a valid assertion is refused as pending",
 			seed: func(c *passkey.Credential) { c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes },
 			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, passkey.ErrPending)
 				assert.Nil(t, res)
-				assert.Zero(t, e.verifyCount())
+				assert.Equal(t, 1, e.verifyCount(), "the assertion is verified before the state is revealed")
+				assert.Zero(t, e.creds.records.Load())
 				unchanged(t, e)
 			},
 		},
 		{
-			name: "a suspended credential is refused as suspended",
+			name: "a suspended credential with a valid assertion is refused as suspended",
 			seed: func(c *passkey.Credential) { c.State = passkey.StateSuspended },
 			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, passkey.ErrSuspended)
 				assert.Nil(t, res)
-				assert.Zero(t, e.verifyCount())
+				assert.Equal(t, 1, e.verifyCount(), "the assertion is verified before the state is revealed")
+				assert.Zero(t, e.creds.records.Load())
+				unchanged(t, e)
+			},
+		},
+		{
+			name:   "a pending credential's ID with a signature its key did not make is refused like an unknown one",
+			seed:   func(c *passkey.Credential) { c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes },
+			body:   withBody(func(b *assertionBody) { b.Sig = "forged" }),
+			assert: refused,
+		},
+		{
+			name:   "a suspended credential's ID with a signature its key did not make is refused like an unknown one",
+			seed:   func(c *passkey.Credential) { c.State = passkey.StateSuspended },
+			body:   withBody(func(b *assertionBody) { b.Sig = "forged" }),
+			assert: refused,
+		},
+		{
+			name:   "a suspended credential's ID with another user's handle is refused like an unknown one",
+			seed:   func(c *passkey.Credential) { c.State = passkey.StateSuspended },
+			body:   withBody(func(b *assertionBody) { b.Handle = handleU2 }),
+			assert: refused,
+		},
+		{
+			name: "a suspended credential is refused as suspended before the login check runs",
+			seed: func(c *passkey.Credential) { c.State = passkey.StateSuspended },
+			opts: []passkey.Option{passkey.WithLoginCheck(func(context.Context, passkey.LoginFacts) error {
+				return consumerErr
+			})},
+			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, passkey.ErrSuspended)
+				assert.NotErrorIs(t, err, consumerErr)
+				assert.Nil(t, res)
 				unchanged(t, e)
 			},
 		},

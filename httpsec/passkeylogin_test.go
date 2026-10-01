@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -21,7 +23,9 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/magiclink"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
@@ -36,6 +40,10 @@ const (
 	passwordlessBeginPath  = httpsec.DefaultPasswordlessPrefix + "/begin"
 	passwordlessFinishPath = httpsec.DefaultPasswordlessPrefix + "/finish"
 )
+
+// pwlLoaderCause is the text of a user loader's outage, which no response
+// may carry.
+const pwlLoaderCause = "db password=hunter2 unreachable"
 
 // pwlMaxPasswordAge is the password-age policy's limit when a case turns it
 // on; the user's password is then twice as old.
@@ -63,6 +71,11 @@ type pwlDeployment struct {
 	inactive          atomic.Bool
 	passwordChangedAt time.Time
 
+	// loaderFails makes LoadByUserID fail with loaderCause, an outage, and
+	// loaderOtherUser makes it answer the details of another user.
+	loaderFails     atomic.Bool
+	loaderOtherUser atomic.Bool
+
 	// hash is the user's password hash, for form login, and totpClock the
 	// TOTP method's clock.
 	hash      []byte
@@ -80,6 +93,10 @@ type pwlDeployment struct {
 	settings            []httpsec.PasswordlessSetting
 	withoutPasswordless bool
 
+	// withoutPasskeyMFA leaves the passkey MFA method out of the policies
+	// and the MFA slot, as a consumer who only signs in with passkeys does.
+	withoutPasskeyMFA bool
+
 	// passwordAge adds the password-age policy and the password-change gate,
 	// and mfaLimiter replaces the MFA slot's verification limiter.
 	passwordAge bool
@@ -87,6 +104,14 @@ type pwlDeployment struct {
 
 	// extra are further chain options.
 	extra []httpsec.Option
+
+	// responded is what a consumer's responder saw of the exchange when it
+	// ran.
+	responded struct {
+		ran       bool
+		auth      *authenticate.Authentication
+		inContext bool
+	}
 
 	// slots are the slot markers a request passed, in order.
 	slots []string
@@ -141,11 +166,20 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 		})
 	d.users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, user identity.UserID) (*identity.Details, error) {
+			if d.loaderFails.Load() {
+				return nil, errors.New(pwlLoaderCause)
+			}
+
 			if user != e2eUser {
 				return nil, identity.ErrUserNotFound
 			}
 
-			return details(), nil
+			out := details()
+			if d.loaderOtherUser.Load() {
+				out.ID = "u-someone-else"
+			}
+
+			return out, nil
 		})
 
 	d.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
@@ -186,7 +220,12 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 
 	d.manager = m
 
-	lookups, err := mfa.LookupsFor(d.totp, m.MFAMethod())
+	methods := []mfa.Method{d.totp, m.MFAMethod()}
+	if d.withoutPasskeyMFA {
+		methods = methods[:1]
+	}
+
+	lookups, err := mfa.LookupsFor(methods...)
 	require.NoError(t, err)
 
 	challenge, err := policy.NewMFAPolicy(lookups)
@@ -223,7 +262,7 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 			Authenticator: authn, Sessions: d.sessions, Tokens: d.tokens, Attempts: policy.NewMemoryAttemptStore(),
 		}),
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: d.tokens, Sessions: d.sessions, Users: d.users}),
-		httpsec.EnableMFA([]mfa.Method{d.totp, m.MFAMethod()}, mfaOpts...),
+		httpsec.EnableMFA(methods, mfaOpts...),
 		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: d.sessions, Users: d.users}, passkeyOpts...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 	}
@@ -347,6 +386,19 @@ func (d *pwlDeployment) sessionCount(t *testing.T, out served) int {
 	}
 
 	return 1
+}
+
+// finishedSession is the session a successful finish's access token names.
+func (d *pwlDeployment) finishedSession(t *testing.T, out served) *session.Session {
+	t.Helper()
+
+	require.NoError(t, out.err)
+
+	var doc loginBody
+	require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc))
+	require.NotEmpty(t, doc.AccessToken)
+
+	return d.sessionOf(t, doc.AccessToken)
 }
 
 // clearedCookie asserts the response clears the ceremony cookie named name on
@@ -760,6 +812,226 @@ func TestPasswordless(t *testing.T) {
 				var doc loginBody
 				require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc))
 				assert.Equal(t, "consumer-token", doc.AccessToken)
+			},
+		},
+		{
+			name: "a passwordless login publishes no authentication record, as a magic link publishes none",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.settings = append(d.settings, httpsec.PasswordlessResponder(
+					func(ex *httpsec.Exchange, _ httpsec.LoginResult) error {
+						d.responded.ran = true
+						d.responded.auth = ex.Authentication
+						_, d.responded.inContext = authenticate.AuthenticationFromContext(ex.Context())
+
+						return nil
+					}))
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.NoError(t, out.err)
+				require.True(t, d.responded.ran)
+				assert.Nil(t, d.responded.auth, "the exchange carries no authentication")
+				assert.False(t, d.responded.inContext, "the context carries no authentication")
+			},
+		},
+		{
+			name: "a suspended credential's ID with a signature its key did not make is refused as failed",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateSuspended)
+				d.verifier.refuseAssertions.Store(true)
+
+				return d.login(t, "cred-1", handle)
+			},
+			assert: refusedAsFailed,
+		},
+		{
+			name: "a pending credential's ID with a signature its key did not make is refused as failed",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StatePending)
+				d.verifier.refuseAssertions.Store(true)
+
+				return d.login(t, "cred-1", handle)
+			},
+			assert: refusedAsFailed,
+		},
+		{
+			name: "a suspended credential with a valid assertion is refused as suspended",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateSuspended))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrSuspended)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, d.sessionCount(t, out))
+			},
+		},
+		{
+			name: "the handle of another user is refused",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+				other := d.seed(t, "u-2", "cred-2", passkey.StateActive)
+
+				return d.login(t, "cred-1", other)
+			},
+			assert: refusedAsFailed,
+		},
+		{
+			name: "a challenge the client invented is refused and spends nothing",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+				cookie, challenge := d.begun(t)
+
+				refusedAsFailed(t, d, d.finish(t, handleAssertionBody("invented-by-the-client", "cred-1", handle), cookie))
+
+				return d.finish(t, handleAssertionBody(challenge, "cred-1", handle), cookie)
+			},
+			assert: func(t *testing.T, _ *pwlDeployment, out served) {
+				require.NoError(t, out.err, "the issued challenge was not spent by the invented one")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name: "an assertion in the query string is missing credentials",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+				cookie, challenge := d.begun(t)
+
+				query := url.Values{"challenge": {encodeChallenge(challenge)}, "id": {"cred-1"}, "handle": {string(handle)}}
+				req := jsonPost(t.Context(), passwordlessFinishPath+"?"+query.Encode(), "")
+				req.AddCookie(&http.Cookie{Name: httpsec.DefaultPasswordlessCookieName, Value: cookie}) //nolint:gosec // G124: a request cookie
+
+				return serve(t, d.chain, req)
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrCredentialsMissing)
+				assert.Zero(t, d.sessionCount(t, out))
+				clearedCookie(t, out, httpsec.DefaultPasswordlessCookieName, passwordlessFinishPath)
+			},
+		},
+		{
+			name: "a throttled passwordless source is not throttled on form login or a magic link",
+			setup: func(t *testing.T, d *pwlDeployment) {
+				d.required.on.Store(false)
+
+				onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
+				require.NoError(t, err)
+
+				links, err := magiclink.NewManager(onetimes, d.users, d.notices, "https://app.example.com")
+				require.NoError(t, err)
+
+				d.extra = append(d.extra, httpsec.EnableMagicLink(links,
+					httpsec.WithMagicLinkSessions(d.sessions), httpsec.WithMagicLinkTokens(d.tokens)))
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				for i := range 30 {
+					require.NoError(t, d.begin(t).err, "begin %d", i+1)
+				}
+
+				require.ErrorIs(t, d.begin(t).err, ratelimit.ErrThrottled)
+
+				// The source the helpers' requests come from by default.
+				const source = "192.0.2.1"
+
+				form := serve(t, d.chain, postValues(t.Context(), httpsec.DefaultLoginPath, source, url.Values{
+					httpsec.DefaultLoginUsernameParam: {e2eAddress},
+					httpsec.DefaultLoginPasswordParam: {e2ePassword},
+				}))
+				require.NoError(t, form.err, "form login has its own limiter")
+
+				asked := serve(t, d.chain, postValues(t.Context(), httpsec.DefaultMagicLinkRequestPath, source,
+					url.Values{httpsec.DefaultMagicLinkAddressParam: {e2eAddress}, httpsec.DefaultMagicLinkNextParam: {"/"}}))
+				require.NoError(t, asked.err)
+
+				cookie := cookieNamed(asked.rec, httpsec.DefaultBindingCookieName)
+				require.NotNil(t, cookie)
+
+				req := postValues(t.Context(), httpsec.DefaultMagicLinkConsumePath, source,
+					url.Values{httpsec.DefaultMagicLinkTokenParam: {d.notices.lastToken(t)}})
+				req.AddCookie(bindingCookie(cookie.Value))
+
+				return serve(t, d.chain, req)
+			},
+			assert: func(t *testing.T, _ *pwlDeployment, out served) {
+				require.NoError(t, out.err, "a magic link's redemption has its own limiter")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name:  "a user loader outage is an internal error behind fixed text",
+			setup: func(_ *testing.T, d *pwlDeployment) { d.loaderFails.Store(true) },
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.Error(t, out.err)
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.NotContains(t, out.err.Error(), pwlLoaderCause)
+				assert.NotContains(t, out.rec.Body.String(), pwlLoaderCause)
+				assert.Zero(t, d.sessionCount(t, out))
+				clearedCookie(t, out, httpsec.DefaultPasswordlessCookieName, passwordlessFinishPath)
+			},
+		},
+		{
+			name:  "a user loader answering a different user is refused",
+			setup: func(_ *testing.T, d *pwlDeployment) { d.loaderOtherUser.Store(true) },
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: refusedAsFailed,
+		},
+		{
+			name: "a required second factor the passkey cannot give is a challenge listing the other methods",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.pkOpts = append(d.pkOpts, passkey.WithoutSecondFactorAtLogin())
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				d.enrolTOTP(t)
+
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ch)
+				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+				require.Len(t, ch.Methods, 1)
+				assert.Equal(t, "totp", ch.Methods[0].Name)
+				require.NotNil(t, ch.Session)
+				assert.Equal(t, session.MFAPending, d.sessionOf(t, ch.Token).MFA)
+			},
+		},
+		{
+			name: "a required second factor with nothing else enrolled is refused as enrolment required",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.withoutPasskeyMFA = true
+				d.pkOpts = append(d.pkOpts, passkey.WithoutSecondFactorAtLogin())
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+				assert.Zero(t, d.sessionCount(t, out))
+			},
+		},
+		{
+			name: "relaxed user verification logs in on the first factor alone",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.withoutPasskeyMFA = true
+				d.required.on.Store(false)
+				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UVPreferred))
+				d.verifier.notUserVerified.Store(true)
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				s := d.finishedSession(t, out)
+				assert.Equal(t, factor.Passkey, s.FirstFactor)
+				assert.NotEqual(t, session.MFASatisfied, s.MFA, "possession alone satisfies no second factor")
+				assert.False(t, s.MFAAtFirstFactor)
 			},
 		},
 		{

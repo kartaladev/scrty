@@ -146,13 +146,14 @@ func (m *Manager) purgeLogin(ctx context.Context) {
 //     A challenge of any other purpose, a registration's included, is refused
 //     before any credential is looked up.
 //  3. Find the credential by its ID.
-//  4. Refuse a pending credential with ErrPending and a suspended one with
-//     ErrSuspended.
-//  5. Require the response's user handle to be the one mapped to the
+//  4. Require the response's user handle to be the one mapped to the
 //     credential's user.
-//  6. Verify the assertion against the stored public key and the challenge,
+//  5. Verify the assertion against the stored public key and the challenge,
 //     with the configured user verification, and refuse one whose
 //     backup-eligible flag differs from the stored one.
+//  6. Only then refuse a pending credential with ErrPending and a suspended
+//     one with ErrSuspended, so the state is shown only to a holder of the
+//     key. Nothing is written for either.
 //  7. Run the consumer's login check; its error is returned unchanged.
 //  8. Record the counter, the backup state and the time of last use, under
 //     the clone rule.
@@ -197,6 +198,17 @@ func (m *Manager) Authenticate(ctx context.Context, body []byte, binding string)
 		return nil, m.refused(ctx, "unknown-credential", id.Nil)
 	}
 
+	if err := m.matchHandle(ctx, c, parsed.UserHandle()); err != nil {
+		return nil, err
+	}
+
+	res, err := m.checkAssertion(ctx, parsed, c, AssertionExpectation{Challenge: challenge, UV: m.uv})
+	if err != nil {
+		return nil, err
+	}
+
+	// The state is revealed only to a holder of the key: an assertion its
+	// key did not make is refused as for an unknown credential.
 	switch c.State {
 	case StateActive:
 	case StatePending:
@@ -209,12 +221,7 @@ func (m *Manager) Authenticate(ctx context.Context, body []byte, binding string)
 		return nil, m.refused(ctx, "state", c.ID)
 	}
 
-	if err := m.matchHandle(ctx, c, parsed.UserHandle()); err != nil {
-		return nil, err
-	}
-
-	res, err := m.verifyAssertion(ctx, parsed, c, AssertionExpectation{Challenge: challenge, UV: m.uv})
-	if err != nil {
+	if err := m.acceptAssertion(ctx, c, res); err != nil {
 		return nil, err
 	}
 
@@ -275,8 +282,10 @@ func (m *Manager) matchHandle(ctx context.Context, c *Credential, handle []byte)
 }
 
 // verifyAssertion verifies p against c and exp, then runs the consumer's
-// login check and records the use. It is shared by the passwordless login and
-// the second factor; c must already be known to be active and the caller's.
+// login check and records the use. It is the second factor's path; c must
+// already be known to be active and the caller's. The passwordless login
+// runs its two halves, checkAssertion and acceptAssertion, with the state
+// refusal between them.
 //
 // A verifier error that is not a context error, a missing user verification under UVRequired and a
 // backup-eligible flag that differs from the stored one are
@@ -285,6 +294,24 @@ func (m *Manager) matchHandle(ctx context.Context, c *Credential, handle []byte)
 // context.DeadlineExceeded is returned wrapped, still matchable with
 // errors.Is, and is not a refusal. Nothing is written on any refusal.
 func (m *Manager) verifyAssertion(
+	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
+) (*AssertionResult, error) {
+	res, err := m.checkAssertion(ctx, p, c, exp)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := m.acceptAssertion(ctx, c, res); err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+// checkAssertion verifies p against c and exp, with the user verification and
+// backup-eligibility rules, and writes nothing. Its refusals are those of
+// verifyAssertion.
+func (m *Manager) checkAssertion(
 	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
 ) (*AssertionResult, error) {
 	res, err := m.verifier.VerifyAssertion(ctx, p, c, exp)
@@ -304,6 +331,12 @@ func (m *Manager) verifyAssertion(
 		return nil, m.refused(ctx, "backup-eligibility", c.ID)
 	}
 
+	return res, nil
+}
+
+// acceptAssertion runs the consumer's login check on a verified res, then
+// records the use. The login check's error is returned unchanged.
+func (m *Manager) acceptAssertion(ctx context.Context, c *Credential, res *AssertionResult) error {
 	if m.loginCheck != nil {
 		if err := m.loginCheck(ctx, LoginFacts{
 			User:           c.User,
@@ -313,15 +346,11 @@ func (m *Manager) verifyAssertion(
 			BackupState:    res.BackupState,
 			UserVerified:   res.UserVerified,
 		}); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	if err := m.recordUse(ctx, c, res); err != nil {
-		return nil, err
-	}
-
-	return res, nil
+	return m.recordUse(ctx, c, res)
 }
 
 // recordUse records res's counter, backup state and the time on c. A write

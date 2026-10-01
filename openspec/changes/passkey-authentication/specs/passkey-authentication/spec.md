@@ -457,8 +457,12 @@ Every ceremony SHALL ask for user verification `required`, and an assertion or a
 - **THEN** it is refused with the authentication-failed refusal
 
 #### Scenario: Consumer relaxes user verification
-- **WHEN** user verification is `preferred` and `u-1`, who is not required to use MFA and is enrolled on no other method, logs in with an assertion without the user-verified flag
+- **WHEN** user verification is `preferred`, the passkey MFA method is not on the MFA slot, and `u-1`, who is not required to use MFA and is enrolled on no other method, logs in with an assertion without the user-verified flag
 - **THEN** the login completes on the first factor alone, and the session records no satisfied second factor
+
+#### Scenario: Relaxed user verification with the passkey method on the slot
+- **WHEN** user verification is `preferred`, the passkey MFA method is on the MFA slot, and `u-1`, holding only passkeys, logs in with an assertion without the user-verified flag
+- **THEN** the login is refused because `u-1`'s only second factor arrives on the first factor's own channel
 
 ### Requirement: A user-verified passkey login satisfies the second factor
 A passwordless login whose assertion carried the user-verified flag SHALL hand the login completion step a proof that its second factor was met at the first factor. Only the library's own passkey verification SHALL be able to produce that proof. Its type SHALL have no public constructor, and its zero value SHALL prove nothing. The login completion step SHALL create the session with its second factor satisfied, recording the satisfied time and that the passkey login met it, in the write that creates the session. The MFA challenge SHALL therefore never be raised for that login. The proof is not an MFA exemption: the `passkey` kind stays non-exempt, and a login without the proof is judged like any other non-exempt login. A consumer SHALL be able to require a separate second factor even after a user-verified passkey login, by an option on passwordless login that stops the proof from being produced. The user must then complete a second factor on a channel other than the passkey's.
@@ -472,8 +476,12 @@ A passwordless login whose assertion carried the user-verified flag SHALL hand t
 - **THEN** the login is refused with an MFA challenge listing `totp` only
 
 #### Scenario: Separate factor with nothing else enrolled
-- **WHEN** the same option is set, the enrolment path is off, and `u-1`, required to use MFA and holding only passkeys, logs in with a user-verified passkey
+- **WHEN** the same option is set, the enrolment path is off, the passkey MFA method is not on the MFA slot, and `u-1`, required to use MFA and holding only passkeys, logs in with a user-verified passkey
 - **THEN** the login is refused with the enrolment-required reason
+
+#### Scenario: Separate factor with only the passkey method on the slot
+- **WHEN** the same option is set, the passkey MFA method is on the MFA slot, and `u-1`, holding only passkeys, logs in with a user-verified passkey
+- **THEN** the login is refused because `u-1`'s only second factor arrives on the first factor's own channel
 
 ### Requirement: Passkeys serve as a challenge-capable MFA method
 The library SHALL provide an MFA method named `passkey` that reports the `public-key` channel and declares a begin step and a JSON body response. A user SHALL be enrolled on it when they hold at least one active passkey. A failed lookup SHALL be an error, never "not enrolled". Its begin data SHALL be request options listing the user's active credentials as allowed credentials, including credentials that are not discoverable. The challenge SHALL be the one the MFA slot issued. Verification SHALL require the assertion to come from one of the session's user's active credentials, and SHALL verify it as at the passwordless finish, except that user presence without user verification SHALL be accepted when user verification is relaxed to `preferred`, since a second factor proves possession. The method's channel SHALL equal the `passkey` kind's channel, so a passkey never serves as the second factor of a passkey login. The method SHALL be able to remove all of a user's passkeys for the operator reset.

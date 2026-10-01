@@ -111,6 +111,10 @@ func TestPasskeyManage(t *testing.T) {
 		pending   bool
 		anonymous bool
 
+		// mfa is the second-factor state the carried session is in; the
+		// zero value is no second factor asked for.
+		mfa session.MFAState
+
 		setup  func(t *testing.T, h *passkeyHarness)
 		act    func(t *testing.T, f fixture, chain *httpsec.Chain) served
 		assert func(t *testing.T, h *passkeyHarness, f fixture, out served)
@@ -303,6 +307,37 @@ func TestPasskeyManage(t *testing.T) {
 			},
 		},
 		{
+			name: "a session owing account recovery's binding is refused with that challenge",
+			mfa:  session.MFARecoveryPending,
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {f.own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ch)
+				assert.Equal(t, policy.ChallengeAccountRecovery, ch.Kind)
+				assert.True(t, stillHeld(t, h, testMFAUser, f.own.ID), "nothing is removed")
+			},
+		},
+		{
+			name:  "a session owing a second factor's enrolment is refused with that challenge",
+			mfa:   session.MFAEnrolmentPending,
+			setup: func(_ *testing.T, h *passkeyHarness) { h.withoutEnrolment = true },
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRenamePath,
+					url.Values{"id": {f.own.ID.String()}, "name": {"Old phone"}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, out.err, &ch)
+				assert.Equal(t, policy.ChallengeMFAEnrolment, ch.Kind)
+
+				stored, err := h.creds.Find(t.Context(), testMFAUser, f.own.ID)
+				require.NoError(t, err)
+				assert.Equal(t, f.own.Name, stored.Name, "nothing is renamed")
+			},
+		},
+		{
 			name:    "a session owing a challenge is refused",
 			pending: true,
 			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
@@ -382,7 +417,7 @@ func TestPasskeyManage(t *testing.T) {
 
 			var s *session.Session
 			if !tc.anonymous {
-				s = h.sessionIn(t, factor.Password, session.MFANone)
+				s = h.sessionIn(t, factor.Password, tc.mfa)
 				if tc.pending {
 					s.PasswordChangePending = true
 					require.NoError(t, h.sessions.Save(t.Context(), s))
