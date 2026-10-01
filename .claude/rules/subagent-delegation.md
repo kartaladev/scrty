@@ -77,30 +77,43 @@ for it explicitly.
 4. **One whole-branch review runs before the final gate and before archive**, against every spec
    requirement the change covers.
 
-## Choosing the implementer's model
+## Choosing the model
 
-The main session chooses the model of every implementer subagent. It sets it explicitly on each
-dispatch, and never leaves it to the default. It chooses from the complexity of that dispatch:
+The main session chooses the model of every subagent it dispatches, implementer or not. It sets it
+explicitly on each dispatch, and never leaves it to the default. The aim is the lowest token cost
+that keeps the work's quality: the cheapest model that can do the dispatch right the first time.
 
-- **Sonnet** when the work is well specified and local. The plan gives the signatures and the tests,
-  and the dispatch applies a known pattern: a single-file seam change, an in-memory store
-  against a stated contract, a conformance case in an existing suite, option plumbing, adapter
-  scenarios, test fixtures, or godoc.
-- **Opus** when the dispatch needs judgement the plan cannot fully carry. That includes:
+- **Haiku** never writes code. It takes read-only and purely mechanical work:
+  - searching and locating: Explore sweeps, finding callers, summarising a package's API;
+  - checking a report against the tree: that the files, tests and commands it names exist;
+  - an edit whose exact diff the prompt gives: godoc wording, a `go generate` rerun, a rename the
+    existing tests cover.
+- **Sonnet** is the default implementer. It takes the work a plan or a finding already decides:
+  - code whose signatures and tests the plan gives, applying a known pattern: a single-file seam
+    change, an in-memory store against a stated contract, a conformance case in an existing suite,
+    option plumbing, adapter scenarios, test fixtures, or godoc;
+  - folding review findings whose fix the finding states, and test additions that strengthen
+    coverage.
+- **Opus** takes the dispatches that need judgement the plan or the finding cannot carry. Only
+  these count as needing it:
   - concurrency, or ordering under races: singleflight, cooldowns, backoff, conditional writes,
     barrier tests;
-  - security-critical verification or refusal logic: token and signature checks, check-then-consume,
-    policy guards, redaction;
+  - security-critical verification or refusal logic, written for the first time: token and
+    signature checks, check-then-consume, policy guards, redaction;
   - a refactor that must keep existing behaviour while extracting shared code;
   - a change that touches several packages or an interface other lanes compile against;
+  - a finding whose fix needs a design choice the finding does not make;
   - any dispatch where a mistake would pass the tests and still be wrong.
-- **When the two are close, choose Opus.** A redo costs more than the difference.
+- **When two models are close, choose the cheaper one.** Escalation is the safety net.
 - **Escalate on failure.** A dispatch that comes back failing verification or review for a reason
-  the stronger model would likely have avoided goes back on Opus, not Sonnet again.
+  the stronger model would likely have avoided goes back on the next model up, not the same one
+  again.
+
+**Reviewers** follow the same aim. A dispatch on Opus's list gets an Opus reviewer. A small fix or a
+test addition gets a Sonnet reviewer. Haiku never reviews.
 
 The main session names the chosen model and a one-line reason when it announces each dispatch, so
-the user can overrule it. Reviewer agents are outside this rule; the main session picks their model
-as it sees fit.
+the user can overrule it.
 
 ## What every delegation prompt carries
 
