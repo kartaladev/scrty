@@ -14,8 +14,8 @@ every task group. Section names in parentheses are the spec requirements the tas
 
 ## 2. Seams in MFA and recovery (`multi-factor-auth`, `account-recovery`)
 
-- [ ] 2.1 `mfa.ErrAuthenticatorRefused`; the MFA verify endpoint returns a method error matching it unchanged and records no failure, while every other method error is still counted (D12; ADDED multi-factor-auth "A suspected clone at verification is not counted as a failed verification", both scenarios, with a stub challenge method). Verify with `go test -race ./mfa/... ./httpsec/...`
-- [ ] 2.2 `recovery.UsableLister`; `WayBackCheck` counts a kind's `Usable` list when it implements it and `Held` otherwise; godoc of `AuthenticatorKind` describes the split (D15; MODIFIED account-recovery "The library reports whether a user has another way back in", scenarios "Active passkey with issued codes", "Only a suspended passkey", with a stub kind). Verify with `go test -race ./recovery/...`
+- [x] 2.1 `mfa.ErrAuthenticatorRefused`; the MFA verify endpoint returns a method error matching it unchanged and records no failure, while every other method error is still counted (D12; ADDED multi-factor-auth "A suspected clone at verification is not counted as a failed verification", both scenarios, with a stub challenge method). Verify with `go test -race ./mfa/... ./httpsec/...`
+- [x] 2.2 `recovery.UsableLister`; `WayBackCheck` counts a kind's `Usable` list when it implements it and `Held` otherwise; godoc of `AuthenticatorKind` describes the split (D15; MODIFIED account-recovery "The library reports whether a user has another way back in", scenarios "Active passkey with issued codes", "Only a suspended passkey", with a stub kind). Verify with `go test -race ./recovery/...`
 
 ## 3. Core `passkey`: records, ports and in-memory stores (`passkey-authentication`, `security-state-stores`)
 
