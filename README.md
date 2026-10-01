@@ -222,6 +222,135 @@ route the rest of the operator surface already uses. With the enrolment path on,
 login goes straight back into the confined state above; with it off, they are refused until
 enrolled out of band.
 
+## Account recovery
+
+`recovery` lets a user who has lost every authenticator their account depends on get back in with
+two independent proofs, never one; `httpsec.EnableAccountRecovery` answers the HTTP endpoints for
+it. Wire the pieces in order:
+
+```go
+codes, err := recovery.NewCodes() // WithSetSize, WithLowThreshold, WithCodeStore, WithCodeLimiter, ...
+
+mfaReset, err := recovery.MFAEnrolments(totp) // one AuthenticatorKind per kind of authenticator recovery resets
+
+chain, err := httpsec.New(
+	// ... your other chain options, including a binding route (see below) ...
+	httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
+		Users:    users,        // identity.UserLoader
+		Sessions: sessions,     // *session.Manager
+		Sender:   queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
+		Codes:    codes,
+	},
+		httpsec.WithRecoveryTokens(tokens), // required unless EnableFormLogin is also on the chain
+		httpsec.WithRecoveryCore(
+			recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
+			recovery.WithRepudiationContact("Contact support@example.com if you did not request this."),
+			recovery.WithAuthenticatorKinds(mfaReset),
+		),
+	),
+)
+```
+
+`recovery.WithProofs`, `recovery.WithRepudiationContact` and `recovery.WithAuthenticatorKinds` have
+no default: a chain that enables recovery names at least these. A recovery completes with two
+proofs of different kinds, at least one of them a recovery code (`recovery.ProofSaved`,
+`recovery.ProofIssued`); `recovery.ProofPassword` also needs `httpsec.EnableFormLogin` on the same
+chain, and `recovery.ProofMFA` needs `recovery.WithMFAMethods`.
+
+### Endpoints
+
+| Default path | Method | Purpose | Enabled when |
+|---|---|---|---|
+| `/recovery/start` (`httpsec.WithRecoveryStartPath`) | POST | emails an issued code | `recovery.ProofIssued` |
+| `/recovery/complete` (`httpsec.WithRecoveryCompletePath`) | POST | completes a recovery with two proofs | always |
+| `/recovery/finish` (`httpsec.WithRecoveryFinishPath`) | POST | finishes a held recovery | a delay or a risk hook is configured |
+| `/recovery/cancel` (`httpsec.WithRecoveryCancelPath`) | POST | cancels a held recovery | a delay or a risk hook is configured |
+| `/recovery/codes` (`httpsec.WithRecoveryCodesPath`) | GET / POST | counts / regenerates saved codes | `recovery.ProofSaved` |
+
+### A binding route
+
+A completed recovery does not produce a full session: it produces a recovery-pending session,
+confined to the endpoints that can bind a new authenticator, following the enrolment path's own
+confinement pattern (above). `EnableAccountRecovery` fails construction without one of:
+
+- the MFA enrolment path (`httpsec.EnableMFAEnrolment`), whose verify endpoint resolves the
+  binding, exactly as it does for an ordinary enrolment; or
+- a password-change resolve endpoint (`httpsec.EnablePasswordChangeGate` with
+  `httpsec.WithChangePasswordEndpoint`), whose success clears the confinement without rotating the
+  session — the recovery minted it for this caller already.
+
+`passkey-authentication` adds passkey registration as a third binding route.
+
+### The MFA reset kind
+
+By default a recovery removes every authenticator the user holds, except one they proved
+possession of in that same recovery. `recovery.MFAEnrolments(totp, ...)` is the
+`recovery.AuthenticatorKind` that reaches MFA enrolments: it lists a user's confirmed enrolments and
+removes them through each method's `mfa.EnrolmentRemover`. Register it, and any of a consumer's own
+`recovery.AuthenticatorKind` implementations, with `recovery.WithAuthenticatorKinds`.
+`recovery.WithResetReported` removes only what the user names as lost instead, and
+`recovery.WithResetPolicy` hands the decision to a consumer function.
+
+### "Is there another way back in?"
+
+`recovery.NewWayBackCheck` reports whether a user could still recover their account without the
+saved codes they have not generated yet — a saved code already held, a password or enrolled
+authenticator paired with an issued code, or a linked login exempt from the second factor:
+
+```go
+check, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
+	Users:       users, // identity.UserLoader
+	Codes:       codes,
+	Kinds:       []recovery.AuthenticatorKind{mfaReset},
+	IssuedCodes: true, // recovery.ProofIssued is enabled
+})
+
+ok, err := check.HasWayBack(ctx, userID)
+```
+
+`passkey-authentication` calls it before letting a passwordless-only user register their first
+passkey without saved codes: such a user's passkey stays pending until they have generated a set and
+proved they kept it.
+
+### Holds, cool-down and regeneration
+
+- **No waiting period by default.** A recovery that presents its two proofs completes at once.
+  `recovery.WithDelay` holds every recovery for a fixed time before it can complete, and
+  `recovery.WithCancelLink` is required with any hold — a delay or `recovery.WithRisk`'s hook: the
+  held-recovery notice links to it, so a normal login, or the link itself, cancels a recovery the
+  real user did not make.
+- **A cool-down after recovery.** `httpsec.EnableRecoveryCooldown(records, d, routes...)` refuses
+  the routes a consumer marks as sensitive — changing the account's email address, say — for `d`
+  after the user's latest completed recovery. It is per user, not per session, so logging out and
+  back in does not end it, and it is independent of `EnableAccountRecovery`: it only reads the
+  record store.
+- **Regeneration.** `GET`/`POST /recovery/codes` count and regenerate a user's saved codes for a
+  full session. A `POST` needs a session whose latest authentication is within the freshness window
+  and is refused with `recovery.ErrReauthenticationRequired` (403) otherwise.
+
+### Defaults
+
+| What | Default | Replaced by |
+|---|---|---|
+| Codes per set | 10 | `recovery.WithSetSize` |
+| Issued code lifetime | 15 minutes | `recovery.WithIssuedCodeTTL` |
+| Recovery-pending session lifetime | 15 minutes | `recovery.WithSessionLifetime` (via `httpsec.WithRecoveryCore`) |
+| Regeneration freshness window | 15 minutes | `httpsec.WithRegenerationFreshness` |
+| Authenticator reset | everything held, except what was proved | `recovery.WithResetReported`, `recovery.WithResetPolicy` |
+| Other sessions of the user | ended on recovery | `recovery.WithoutSessionRevocation` |
+| Waiting period | none | `recovery.WithDelay`, `recovery.WithRisk` |
+| Cool-down after recovery | off | `httpsec.EnableRecoveryCooldown` |
+| Recovery record store (`RecoveryDeps.Records`) | in-memory, one process only | `recovery.NewMemoryRecordStore` replaced by a durable `recovery.RecordStore` |
+| Issued-code token store | in-memory, one process only | `recovery.WithIssuedCodeStore` |
+| Hold token store | in-memory, one process only | `recovery.WithHoldTokenStore` |
+
+Each in-memory default above holds its state in the process that created it and forgets it on
+restart; a second replica never sees the first one's records or tokens. A deployment running more
+than one replica supplies durable stores instead: `pgx.NewRecoveryRecordStore`,
+`gorm.NewRecoveryRecordStore` or `sqlstore.NewRecoveryRecordStore` for `RecoveryDeps.Records`, and
+`pgx.NewOneTimeStore`, `gorm.NewOneTimeStore` or `sqlstore.NewOneTimeStore` — the same `onetime.Store`
+implementation — for both `recovery.WithIssuedCodeStore` and `recovery.WithHoldTokenStore`.
+
 ## Development
 
 ```sh
