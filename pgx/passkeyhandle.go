@@ -28,8 +28,11 @@ var errPasskeyHandleHeld = errors.New("the offered user handle is held by anothe
 // the handle is held, followed by a read of the handle the user holds. The
 // table's unique indexes decide, so of concurrent assignments for one user,
 // on this process or on another replica, every caller receives the same
-// handle. Neither statement fails on a conflict, so an assignment never
-// aborts a caller's transaction, and rows are never changed once written, so
+// handle. Neither statement fails on a conflict, so under READ COMMITTED an
+// assignment never aborts a caller's transaction (under a caller-owned
+// REPEATABLE READ or SERIALIZABLE one, a conflicting row committed after the
+// snapshot is a serialization failure, SQLSTATE 40001, and the caller
+// retries), and rows are never changed once written, so
 // the two need no transaction of the store's own.
 type PasskeyHandleStore struct {
 	c *config
@@ -54,7 +57,11 @@ func NewPasskeyHandleStore(pool *pgxpool.Pool, opts ...Option) (*PasskeyHandleSt
 }
 
 // Assign stores offered as user's handle when user has none, and returns the
-// handle user holds afterwards. An offer that is not passkey.HandleSize bytes
+// handle user holds afterwards. Under READ COMMITTED a conflict never aborts a
+// caller's transaction; under a caller-owned REPEATABLE READ or SERIALIZABLE
+// one, a conflicting row committed after the caller's snapshot is a
+// serialization failure (SQLSTATE 40001) that aborts it, and the caller
+// retries. An offer that is not passkey.HandleSize bytes
 // is refused with an error wrapping passkey.ErrConfig, and an offer another
 // user holds with an error naming no handle bytes.
 func (s *PasskeyHandleStore) Assign(ctx context.Context, user identity.UserID, offered []byte) ([]byte, error) {

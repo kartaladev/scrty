@@ -33,6 +33,12 @@ import (
 // database failure is returned wrapped with the operation's name, never as a
 // refusal or as absence.
 //
+// Limit, stated: the refusal never aborting a caller's transaction holds under
+// READ COMMITTED, the PostgreSQL default. Under a caller-owned REPEATABLE READ
+// or SERIALIZABLE transaction, a conflicting row committed after the caller's
+// snapshot surfaces as a serialization failure (SQLSTATE 40001) that aborts
+// the caller's transaction, and the caller retries it.
+//
 // The emailed code is sealed with the store's cipher before it is written,
 // bound to the credential's library identifier and user reference
 // (seal.PasskeyEmailCodeAAD), and stored base64url-encoded; it is opened when
@@ -75,7 +81,11 @@ func NewPasskeyCredentialStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (*P
 }
 
 // Insert stores c, refusing a credential ID or library identifier already
-// stored with passkey.ErrDuplicateCredential.
+// stored with passkey.ErrDuplicateCredential. Under READ COMMITTED the refusal
+// never aborts a caller's transaction; under a caller-owned REPEATABLE READ or
+// SERIALIZABLE one, a conflicting row committed after the caller's snapshot is
+// a serialization failure (SQLSTATE 40001) that aborts it, and the caller
+// retries. That failure is returned as a database failure, not as a refusal.
 func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
 	const op = "insert passkey credential"
 
@@ -354,7 +364,9 @@ func (s *PasskeyCredentialStore) ClearReason(
 
 // ChargeEmailAttempt charges one attempt against the outstanding, unexpired
 // emailed code of user's pending credential cid, in one conditional update
-// that returns the sealed code, which is then opened.
+// that returns the sealed code, which is then opened. When the stored code
+// cannot be opened, the attempt has already been charged and committed, and an
+// error is returned: it fails closed, and the attempt is not refunded.
 func (s *PasskeyCredentialStore) ChargeEmailAttempt(
 	ctx context.Context, user identity.UserID, cid id.ID, at time.Time,
 ) (*passkey.EmailCode, bool, error) {

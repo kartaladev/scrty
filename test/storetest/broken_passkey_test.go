@@ -30,26 +30,28 @@ import (
 type credDefect string
 
 const (
-	credConforming          credDefect = "conforming"
-	credInsertReplaces      credDefect = "insert-replaces-duplicate"
-	credInsertReadThenWrite credDefect = "insert-read-then-write"
-	credFindAcrossUsers     credDefect = "find-across-users"
-	credListUnordered       credDefect = "list-unordered"
-	credCountActiveOnly     credDefect = "count-active-only"
-	credFindSharesRecord    credDefect = "find-shares-record"
-	credRecordEqual         credDefect = "record-accepts-equal-counter"
-	credRecordRefusesZero   credDefect = "record-refuses-zero-counter"
-	credRecordPending       credDefect = "record-pending"
-	credRecordReadThenWrite credDefect = "record-read-then-write"
-	credSuspendPending      credDefect = "suspend-pending"
-	credUseSetsCounter      credDefect = "use-sets-counter"
-	credUsePending          credDefect = "use-records-pending"
-	credClearCombination    credDefect = "clear-accepts-combination"
-	credClearKeepsCode      credDefect = "clear-keeps-code"
-	credChargeNoCap         credDefect = "charge-no-cap"
-	credChargeAtExpiry      credDefect = "charge-at-expiry"
-	credRenameAcrossUsers   credDefect = "rename-across-users"
-	credDeleteAwaitingAll   credDefect = "delete-awaiting-all-users"
+	credConforming           credDefect = "conforming"
+	credInsertReplaces       credDefect = "insert-replaces-duplicate"
+	credInsertReadThenWrite  credDefect = "insert-read-then-write"
+	credFindAcrossUsers      credDefect = "find-across-users"
+	credListUnordered        credDefect = "list-unordered"
+	credCountActiveOnly      credDefect = "count-active-only"
+	credFindSharesRecord     credDefect = "find-shares-record"
+	credRecordEqual          credDefect = "record-accepts-equal-counter"
+	credRecordRefusesZero    credDefect = "record-refuses-zero-counter"
+	credRecordPending        credDefect = "record-pending"
+	credRecordReadThenWrite  credDefect = "record-read-then-write"
+	credSuspendPending       credDefect = "suspend-pending"
+	credSuspendReadThenWrite credDefect = "suspend-read-then-write"
+	credUseSetsCounter       credDefect = "use-sets-counter"
+	credUsePending           credDefect = "use-records-pending"
+	credClearCombination     credDefect = "clear-accepts-combination"
+	credClearKeepsCode       credDefect = "clear-keeps-code"
+	credChargeNoCap          credDefect = "charge-no-cap"
+	credChargeReadThenWrite  credDefect = "charge-read-then-write"
+	credChargeAtExpiry       credDefect = "charge-at-expiry"
+	credRenameAcrossUsers    credDefect = "rename-across-users"
+	credDeleteAwaitingAll    credDefect = "delete-awaiting-all-users"
 )
 
 // credTable is the state the instances of one fake credential store share,
@@ -218,7 +220,7 @@ func (s *credFake) RecordAssertion(
 		if !ok {
 			return false, nil
 		}
-		runtime.Gosched()
+		time.Sleep(time.Millisecond) // long enough that every goroutine has checked
 		s.table.mu.Lock()
 		defer s.table.mu.Unlock()
 		c := s.table.rows[cid]
@@ -253,6 +255,21 @@ func (s *credFake) RecordUse(_ context.Context, cid id.ID, backupState bool, at 
 }
 
 func (s *credFake) Suspend(_ context.Context, cid id.ID) (bool, error) {
+	if s.defect == credSuspendReadThenWrite {
+		s.table.mu.Lock()
+		c := s.table.rows[cid]
+		ok := c != nil && c.State == passkey.StateActive
+		s.table.mu.Unlock()
+		if !ok {
+			return false, nil
+		}
+		time.Sleep(time.Millisecond) // long enough that every goroutine has checked
+		s.table.mu.Lock()
+		defer s.table.mu.Unlock()
+		s.table.rows[cid].State = passkey.StateSuspended
+		return true, nil
+	}
+
 	s.table.mu.Lock()
 	defer s.table.mu.Unlock()
 
@@ -289,6 +306,25 @@ func (s *credFake) ClearReason(
 func (s *credFake) ChargeEmailAttempt(
 	_ context.Context, user identity.UserID, cid id.ID, at time.Time,
 ) (*passkey.EmailCode, bool, error) {
+	if s.defect == credChargeReadThenWrite {
+		s.table.mu.Lock()
+		c := s.table.rows[cid]
+		ok := c != nil && c.User == user && c.State == passkey.StatePending &&
+			c.Pending&passkey.AwaitingEmailCode != 0 && c.EmailCode != nil &&
+			at.Before(c.EmailCode.ExpiresAt) && c.EmailCode.Attempts < passkey.MaxEmailCodeAttempts
+		s.table.mu.Unlock()
+		if !ok {
+			return nil, false, nil
+		}
+		time.Sleep(time.Millisecond) // long enough that every goroutine has checked
+		s.table.mu.Lock()
+		defer s.table.mu.Unlock()
+		code := s.table.rows[cid].EmailCode
+		code.Attempts++
+		out := *code
+		return &out, true, nil
+	}
+
 	s.table.mu.Lock()
 	defer s.table.mu.Unlock()
 
@@ -543,6 +579,10 @@ var passkeyVariants = []storefix.BrokenVariant{
 		"a reason that is not exactly one known reason is refused and changes nothing"),
 	credSuiteVariant(credClearKeepsCode,
 		"two reasons cleared one by one: pending, then active, the emailed code dropped"),
+	credSuiteVariant(credRecordReadThenWrite, "8 concurrent recordings of one counter: exactly one wins"),
+	credSuiteVariant(credSuspendReadThenWrite,
+		"an active credential is suspended once: of 8 concurrent suspensions exactly one reports it"),
+	credSuiteVariant(credChargeReadThenWrite, "20 concurrent charges: exactly five succeed"),
 	credSuiteVariant(credChargeNoCap, "the fifth attempt is the last, and a sixth is refused"),
 	credSuiteVariant(credChargeAtExpiry, "a charge at the expiry is refused"),
 	credSuiteVariant(credRenameAcrossUsers, "rename is within the user"),

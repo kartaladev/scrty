@@ -90,6 +90,8 @@ func TestPasskeyCredentialStore_Durable(t *testing.T) {
 				return newPasskeyCredentialStore(t, db, c)
 			}))
 		storefix.RunPasskeyCodeAtRest(t, conn.DB, newPasskeyCredentialStore(t, conn.DB, c))
+		storefix.RunPasskeyCodeBinding(t, conn.DB, newPasskeyCredentialStore(t, conn.DB, c))
+		storefix.RunPasskeyClearedCodeRow(t, conn.DB, newPasskeyCredentialStore(t, conn.DB, c))
 	})
 }
 

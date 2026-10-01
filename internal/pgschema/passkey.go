@@ -21,8 +21,11 @@ const (
 	// passkeyCredentialColumns' order as $1 to $19. Zero rows affected means
 	// its credential ID, or its library identifier, is already stored: the
 	// unique index decides, so of concurrent inserts of one credential ID
-	// exactly one stores it, and the refusal fails no statement, so it never
-	// aborts a caller's transaction.
+	// exactly one stores it, and the refusal fails no statement, so under READ
+	// COMMITTED it never aborts a caller's transaction. Under a caller-owned
+	// REPEATABLE READ or SERIALIZABLE transaction, a conflicting row committed
+	// after the caller's snapshot is a serialization failure (SQLSTATE 40001)
+	// that aborts it, and the caller retries.
 	PasskeyCredentialInsert = `INSERT INTO passkey_credentials (` + passkeyCredentialColumns + `)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 ON CONFLICT DO NOTHING`
@@ -97,7 +100,9 @@ RETURNING email_code, email_code_expires_at, email_code_attempts`
 
 // Passkey user-handle statements. An assignment is PasskeyHandleInsert, then
 // PasskeyHandleOfUser: the insert stores the offer only when neither the user
-// nor the handle is held, without failing a statement, and the select reads
+// nor the handle is held, without failing a statement under READ COMMITTED
+// (a caller-owned REPEATABLE READ or SERIALIZABLE transaction can still see a
+// serialization failure, SQLSTATE 40001, and retries), and the select reads
 // what the user holds afterwards, whichever insert stored it. No row from the
 // select means the offered handle is another user's. Rows are never updated
 // or deleted, so the two statements need no transaction between them.

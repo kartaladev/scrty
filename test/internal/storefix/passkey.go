@@ -404,3 +404,81 @@ func RunPasskeyCodeAtRest(t *testing.T, raw *sql.DB, s passkey.CredentialStore) 
 		assert.NotContains(t, string(decoded), PasskeySentinel, "the decoded column holds the code")
 	})
 }
+
+// RunPasskeyCodeBinding requires the emailed code to be bound to both the
+// credential's library identifier and its user reference, one at a time: a
+// sealed code moved to another credential of the same user, and one left in
+// its own row after the row is reassigned to another user, must each fail to
+// open with seal.ErrDecryptionFailed. The shared sealed-column suite moves a
+// code between records differing in both, which does not tell the two
+// components apart. raw reaches the database s is over.
+func RunPasskeyCodeBinding(t *testing.T, raw *sql.DB, s passkey.CredentialStore) {
+	t.Helper()
+
+	t.Run("Emailed code bound to its credential and to its user", func(t *testing.T) {
+		ctx := t.Context()
+
+		t.Run("the library identifier alone differs", func(t *testing.T) {
+			const user identity.UserID = "binding-id-user"
+			from := PasskeyAwaitingCode(PasskeyCredential(derivedID("binding-id-from"), user, "binding-id-from"), "111111")
+			to := PasskeyAwaitingCode(PasskeyCredential(derivedID("binding-id-to"), user, "binding-id-to"), "222222")
+			require.NoError(t, s.Insert(ctx, from))
+			require.NoError(t, s.Insert(ctx, to))
+
+			_, err := raw.ExecContext(ctx, `UPDATE passkey_credentials
+SET email_code = (SELECT email_code FROM passkey_credentials WHERE credential_id = $1) WHERE credential_id = $2`,
+				from.CredentialID, to.CredentialID)
+			require.NoError(t, err)
+
+			got, err := s.FindByCredentialID(ctx, to.CredentialID)
+			require.Error(t, err, "a code moved to another credential of the same user opened: it is not bound to the credential")
+			assert.ErrorIs(t, err, seal.ErrDecryptionFailed)
+			assert.Nil(t, got)
+		})
+
+		t.Run("the user reference alone differs", func(t *testing.T) {
+			c := PasskeyAwaitingCode(PasskeyCredential(derivedID("binding-user"), "binding-owner", "binding-user"), "333333")
+			require.NoError(t, s.Insert(ctx, c))
+
+			_, err := raw.ExecContext(ctx,
+				`UPDATE passkey_credentials SET user_id = $2 WHERE credential_id = $1`, c.CredentialID, "binding-other")
+			require.NoError(t, err)
+
+			got, err := s.FindByCredentialID(ctx, c.CredentialID)
+			require.Error(t, err, "a code left in a row reassigned to another user opened: it is not bound to the user")
+			assert.ErrorIs(t, err, seal.ErrDecryptionFailed)
+			assert.Nil(t, got)
+		})
+	})
+}
+
+// RunPasskeyClearedCodeRow requires clearing the emailed-code reason to drop
+// both the stored code and its expiry, read from the row through raw, since
+// the expiry is not observable through the store once the code is gone.
+func RunPasskeyClearedCodeRow(t *testing.T, raw *sql.DB, s passkey.CredentialStore) {
+	t.Helper()
+
+	t.Run("Clearing the emailed-code reason drops the code and its expiry", func(t *testing.T) {
+		ctx := t.Context()
+		c := PasskeyAwaitingCode(PasskeyCredential(derivedID("cleared-code"), "cleared-code-user", "cleared-code"), "444444")
+		require.NoError(t, s.Insert(ctx, c))
+
+		var code, until bool
+		row := func() {
+			require.NoError(t, raw.QueryRowContext(ctx,
+				`SELECT email_code IS NOT NULL, email_code_expires_at IS NOT NULL FROM passkey_credentials WHERE id = $1`,
+				c.ID).Scan(&code, &until))
+		}
+		row()
+		require.True(t, code && until, "the awaiting credential stores no code or no expiry")
+
+		state, ok, err := s.ClearReason(ctx, c.User, c.ID, passkey.AwaitingEmailCode)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, passkey.StateActive, state)
+
+		row()
+		assert.False(t, code, "the sealed code is still stored")
+		assert.False(t, until, "the code's expiry is still stored")
+	})
+}
