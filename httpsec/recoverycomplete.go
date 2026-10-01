@@ -120,16 +120,23 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 	return nil
 }
 
-// checkPaths refuses a recovery path that is empty, lacks a leading "/", or
-// collides with another recovery path, the login path or the logout path.
-func (i *recoveryInterceptor) checkPaths(c *config, option string) error {
-	paths := []struct{ name, path string }{
+// endpointPaths are every path the recovery endpoints answer, named for a
+// configuration error.
+func (i *recoveryInterceptor) endpointPaths() []struct{ name, path string } {
+	return []struct{ name, path string }{
 		{"complete", i.completePath},
 		{"start", i.startPath},
 		{"finish", i.finishPath},
 		{"cancel", i.cancelPath},
 		{"codes", i.codesPath},
 	}
+}
+
+// checkPaths refuses a recovery path that is empty, lacks a leading "/", or
+// collides with another recovery path, the login path or the logout path.
+// A collision with a passkey path is the passkey endpoints' check.
+func (i *recoveryInterceptor) checkPaths(c *config, option string) error {
+	paths := i.endpointPaths()
 
 	taken := map[string]string{}
 	if l := c.formLogin(); l != nil {

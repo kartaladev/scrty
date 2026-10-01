@@ -22,7 +22,7 @@ type recoveryGate struct {
 	enrolPrefixes []string
 
 	// passkeyPaths are the passkey registration endpoints' paths, and empty
-	// when the chain has no passkey endpoints.
+	// when the chain has no passkey endpoints or no passkey MFA method.
 	passkeyPaths []string
 
 	// resolvePath is the password-change gate's resolve endpoint, and empty
@@ -51,7 +51,9 @@ type recoveryGate struct {
 //
 //   - a request under an enrolment prefix, when the enrolment path is on;
 //   - the passkey registration begin, finish, saved-code confirm and
-//     emailed-code confirm endpoints, when passkeys are enabled;
+//     emailed-code confirm endpoints, when passkeys are enabled and the
+//     passkey MFA method is on the MFA slot, so the passkey the session binds
+//     can be proven there;
 //   - the password-change resolve endpoint, when one is registered;
 //   - the chain's logout, so the session can always be ended.
 //
@@ -146,7 +148,7 @@ func (c *config) wireRecoveryGate(g *recoveryGate) {
 		return nil
 	})
 
-	if p := c.passkeysOf(); p != nil {
+	if p := c.passkeysOf(); p != nil && c.hasPasskeyMethod() {
 		g.passkeyPaths = p.registrationPaths()
 	}
 }

@@ -59,9 +59,27 @@ func challengedAs(kind policy.ChallengeKind) func(t *testing.T, out served) {
 	}
 }
 
+// passkeyLookalike is a consumer's method shaped as the passkey method is: it
+// declares it can serve the enrolment path and is not an mfa.Enroller. It is
+// not the passkey method, and the chain must not take it for one.
+type passkeyLookalike struct{}
+
+func (passkeyLookalike) Name() string                 { return "custom" }
+func (passkeyLookalike) Channel() factor.Channel      { return factor.PublicKey }
+func (passkeyLookalike) Response() mfa.ResponseFormat { return mfa.JSONBody(1024) }
+func (passkeyLookalike) SupportsEnrolmentPath() bool  { return true }
+
+func (passkeyLookalike) Enrolled(context.Context, identity.UserID) (bool, error) {
+	return false, nil
+}
+
+func (passkeyLookalike) Verify(context.Context, identity.UserID, []byte) error {
+	return mfa.ErrInvalidCode
+}
+
 // TestPasskeyGates pins which passkey endpoints a confined session reaches:
-// the four registration POSTs, through the recovery gate whenever passkeys
-// are enabled and through the enrolment gate when passkey registration serves
+// the four registration POSTs, through the recovery gate when passkeys are
+// enabled with the passkey method on the MFA slot, and through the enrolment gate when passkey registration serves
 // the path; never the listing.
 func TestPasskeyGates(t *testing.T) {
 	t.Parallel()
@@ -72,6 +90,9 @@ func TestPasskeyGates(t *testing.T) {
 		setup     func(h *passkeyHarness)
 		request   *http.Request
 		assert    func(t *testing.T, out served)
+
+		// noneIssued asserts no registration challenge was rendered.
+		noneIssued bool
 	}
 
 	registration := []string{passkeyBeginPath, passkeyFinishPath, passkeyConfirmPath, passkeyConfirmEmailPath}
@@ -83,9 +104,16 @@ func TestPasskeyGates(t *testing.T) {
 			testCase{
 				name:      "recovery-pending session reaches POST " + path,
 				recovered: true,
-				setup:     func(h *passkeyHarness) { h.withRecoveryGate = true },
+				setup:     func(h *passkeyHarness) { h.withRecoveryGate, h.passkeyMethod = true, true },
 				request:   httptest.NewRequest(http.MethodPost, path, nil),
 				assert:    func(t *testing.T, out served) { reachedEndpoint(t, path, out) },
+			},
+			testCase{
+				name:      "recovery-pending session is refused POST " + path + " without the passkey method",
+				recovered: true,
+				setup:     func(h *passkeyHarness) { h.withRecoveryGate = true },
+				request:   httptest.NewRequest(http.MethodPost, path, nil),
+				assert:    challengedAs(policy.ChallengeAccountRecovery),
 			},
 			testCase{
 				name:    "enrolment-only session reaches POST " + path + " when passkeys serve the path",
@@ -97,16 +125,31 @@ func TestPasskeyGates(t *testing.T) {
 
 	cases = append(cases,
 		testCase{
+			name:       "recovery-pending session is refused registration, with no challenge issued, without the passkey method",
+			recovered:  true,
+			setup:      func(h *passkeyHarness) { h.withRecoveryGate = true },
+			request:    httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			noneIssued: true,
+			assert:     challengedAs(policy.ChallengeAccountRecovery),
+		},
+		testCase{
+			name:       "the passkey endpoints refuse a recovery-pending session without the passkey method, behind no gate",
+			recovered:  true,
+			request:    httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
+			noneIssued: true,
+			assert:     challengedAs(policy.ChallengeAccountRecovery),
+		},
+		testCase{
 			name:      "recovery-pending session is refused the listing",
 			recovered: true,
-			setup:     func(h *passkeyHarness) { h.withRecoveryGate = true },
+			setup:     func(h *passkeyHarness) { h.withRecoveryGate, h.passkeyMethod = true, true },
 			request:   httptest.NewRequest(http.MethodGet, passkeyListPath, nil),
 			assert:    challengedAs(policy.ChallengeAccountRecovery),
 		},
 		testCase{
 			name:      "recovery-pending session is refused a GET on a registration path",
 			recovered: true,
-			setup:     func(h *passkeyHarness) { h.withRecoveryGate = true },
+			setup:     func(h *passkeyHarness) { h.withRecoveryGate, h.passkeyMethod = true, true },
 			request:   httptest.NewRequest(http.MethodGet, passkeyBeginPath, nil),
 			assert:    challengedAs(policy.ChallengeAccountRecovery),
 		},
@@ -114,7 +157,7 @@ func TestPasskeyGates(t *testing.T) {
 			name:      "recovery gate exempts the consumer's registration paths, not the defaults",
 			recovered: true,
 			setup: func(h *passkeyHarness) {
-				h.withRecoveryGate = true
+				h.withRecoveryGate, h.passkeyMethod = true, true
 				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationPrefix("/account/passkeys"))
 			},
 			request: httptest.NewRequest(http.MethodPost, passkeyBeginPath, nil),
@@ -124,7 +167,7 @@ func TestPasskeyGates(t *testing.T) {
 			name:      "recovery gate exempts the consumer's registration begin",
 			recovered: true,
 			setup: func(h *passkeyHarness) {
-				h.withRecoveryGate = true
+				h.withRecoveryGate, h.passkeyMethod = true, true
 				h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyRegistrationPrefix("/account/passkeys"))
 			},
 			request: httptest.NewRequest(http.MethodPost, "/account/passkeys/begin", nil),
@@ -189,6 +232,10 @@ func TestPasskeyGates(t *testing.T) {
 			chain := h.build(t, s)
 
 			tc.assert(t, serve(t, chain, tc.request.WithContext(t.Context())))
+
+			if tc.noneIssued {
+				assert.Empty(t, h.verifier.creations, "a registration challenge was issued")
+			}
 		})
 	}
 }
@@ -207,6 +254,10 @@ func TestPasskeyEnrolmentAssembly(t *testing.T) {
 		passkeys    bool
 		onlyPasskey bool
 		enrolOpts   []httpsec.EnrolmentOption
+
+		// lookalike puts a consumer method shaped like the passkey method
+		// where the passkey method would go.
+		lookalike bool
 
 		assert func(t *testing.T, err error)
 	}
@@ -234,6 +285,20 @@ func TestPasskeyEnrolmentAssembly(t *testing.T) {
 		},
 		{name: "the passkey method the only one on the MFA slot", passkeys: true, onlyPasskey: true, assert: assembles},
 		{name: "the passkey method the only one, without registration", onlyPasskey: true, assert: refused},
+		{
+			name:      "a consumer method shaped like the passkey method, beside TOTP, without registration",
+			lookalike: true,
+			assert:    assembles,
+		},
+		{
+			name:      "a consumer method shaped like the passkey method, alone, is left out with its reason",
+			lookalike: true, onlyPasskey: true,
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), `"custom" does not implement mfa.Enroller`)
+				assert.NotContains(t, err.Error(), "passkey registration is not enabled")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -247,10 +312,15 @@ func TestPasskeyEnrolmentAssembly(t *testing.T) {
 				passkey.WithRepudiationContact("help@example.com"))
 			require.NoError(t, err)
 
+			var method mfa.Method = m.MFAMethod()
+			if tc.lookalike {
+				method = passkeyLookalike{}
+			}
+
 			if tc.onlyPasskey {
-				h.method = m.MFAMethod()
+				h.method = method
 			} else {
-				h.extraMethods = []mfa.Method{m.MFAMethod()}
+				h.extraMethods = []mfa.Method{method}
 			}
 
 			h.enrolOpts = tc.enrolOpts
@@ -389,7 +459,15 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 		name     string
 		passkeys bool
 		method   bool
-		assert   func(t *testing.T, err error)
+
+		// lookalike serves a consumer method shaped like the passkey method
+		// in its place.
+		lookalike bool
+
+		// recOpts are further recovery options.
+		recOpts []httpsec.RecoveryOption
+
+		assert func(t *testing.T, err error)
 	}
 
 	cases := []testCase{
@@ -401,6 +479,20 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
 		{name: "neither",
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
+		{name: "registration and a method shaped like the passkey method", passkeys: true, method: true, lookalike: true,
+			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
+		{name: "a registration path is the recovery complete path", passkeys: true, method: true,
+			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryCompletePath(passkeyBeginPath)},
+			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
+		{name: "a registration path is the recovery start path", passkeys: true, method: true,
+			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryStartPath(passkeyFinishPath)},
+			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
+		{name: "a registration path is the saved-codes path", passkeys: true, method: true,
+			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryCodesPath(passkeyConfirmPath)},
+			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
+		{name: "the credentials listing is the recovery cancel path", passkeys: true, method: true,
+			recOpts: []httpsec.RecoveryOption{httpsec.WithRecoveryCancelPath(passkeyListPath)},
+			assert:  func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) }},
 	}
 
 	for _, tc := range cases {
@@ -416,14 +508,21 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 			require.NoError(t, err)
 
 			if tc.method {
+				var method mfa.Method = m.MFAMethod()
+				if tc.lookalike {
+					method = passkeyLookalike{}
+				}
+
 				h.chainOpts = append(h.chainOpts,
-					httpsec.EnableMFA([]mfa.Method{h.totp, m.MFAMethod()}, httpsec.WithMFATokens(h.tokens)))
+					httpsec.EnableMFA([]mfa.Method{h.totp, method}, httpsec.WithMFATokens(h.tokens)))
 			}
 
 			if tc.passkeys {
 				h.chainOpts = append(h.chainOpts,
 					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}))
 			}
+
+			h.recOpts = append(h.recOpts, tc.recOpts...)
 
 			_, err = httpsec.New(h.options(t)...)
 			tc.assert(t, err)

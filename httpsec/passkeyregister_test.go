@@ -442,6 +442,9 @@ func TestPasskeyRegistration(t *testing.T) {
 			switch {
 			case tc.anonymous:
 			case tc.recovered:
+				// A recovery-pending session registers only with the passkey
+				// method on the MFA slot to prove the new passkey at.
+				h.passkeyMethod = true
 				s = h.recoveryPending(t)
 			default:
 				s = h.sessionIn(t, factor.Password, tc.state)
@@ -507,6 +510,30 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 				}, httpsec.WithLoginRequestPath(passkeyBeginPath)))
 			},
 			assert: refused,
+		},
+		{
+			name: "the password-change resolve path is a registration path",
+			setup: func(_ *testing.T, h *passkeyHarness) {
+				h.extra = append(h.extra, httpsec.EnablePasswordChangeGate(h.sessions,
+					httpsec.WithChangePasswordEndpoint(passkeyBeginPath, func(*httpsec.Exchange) error { return nil })))
+			},
+			assert: refused,
+		},
+		{
+			name: "the password-change resolve path is a credentials path",
+			setup: func(_ *testing.T, h *passkeyHarness) {
+				h.extra = append(h.extra, httpsec.EnablePasswordChangeGate(h.sessions,
+					httpsec.WithChangePasswordEndpoint(passkeyListPath+"/remove", func(*httpsec.Exchange) error { return nil })))
+			},
+			assert: refused,
+		},
+		{
+			name: "a password-change resolve path elsewhere assembles",
+			setup: func(_ *testing.T, h *passkeyHarness) {
+				h.extra = append(h.extra, httpsec.EnablePasswordChangeGate(h.sessions,
+					httpsec.WithChangePasswordEndpoint("/account/password", func(*httpsec.Exchange) error { return nil })))
+			},
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "a credentials path equal to a registration path",

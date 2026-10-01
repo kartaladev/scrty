@@ -74,6 +74,12 @@ type passkeyInterceptor struct {
 	respondBegin        PasskeyBeginResponder
 	respondRegistration PasskeyRegistrationResponder
 
+	// method reports, from assembly on, that the passkey MFA method is on the
+	// MFA slot, so a passkey bound on a recovery-pending session can be proven
+	// there. Without it a recovery-pending session is refused registration:
+	// the binding would leave it owing a second factor nothing could resolve.
+	method bool
+
 	// enrolment is the chain's enrolment path, handed over at assembly when
 	// the path counts the passkey method among its enrolling methods, and nil
 	// otherwise. Its email confirmation, contact resolver and confirmation
@@ -144,8 +150,11 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //
 // Which sessions reach the endpoints is the gates' decision. A full session
 // is admitted by the manager's own rule (assurance and freshness). A
-// recovery-pending session reaches the four registration endpoints, because
-// the recovery gate exempts them. An enrolment-only session reaches them only
+// recovery-pending session reaches the four registration endpoints only when
+// the passkey MFA method is on the MFA slot (EnableMFA), because the recovery
+// gate then exempts them; without the method it is refused with a
+// ChallengeError of kind policy.ChallengeAccountRecovery, since a passkey it
+// bound could never be proven. An enrolment-only session reaches them only
 // when the passkey MFA method is among the enrolment path's enrolling
 // methods (EnableMFAEnrolment, WithEnrolmentMethods); its registration then
 // follows the path's email confirmation (WithoutEmailConfirmation), contact
@@ -161,8 +170,9 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //
 // New refuses the chain when the manager or the session manager is missing,
 // when EnablePasskeys is given twice, and when any passkey path is empty,
-// does not start with "/", equals another passkey path, the login path or the
-// logout path, or lies under the MFA verify or begin prefix or an enrolment
+// does not start with "/", equals another passkey path, the login path, the
+// logout path, the password-change resolve path or an account-recovery
+// endpoint path, or lies under the MFA verify or begin prefix or an enrolment
 // prefix.
 func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 	const option = "EnablePasskeys"
@@ -220,18 +230,15 @@ func (c *config) passkeysOf() *passkeyInterceptor {
 	return found
 }
 
-// servedByPasskeys reports whether m is a second-factor method passkey
-// registration enrols: one that declares it can serve the enrolment path but
-// is not an mfa.Enroller, since the enrolment path's own endpoints cannot
-// enrol it. The library's passkey.MFAMethod is one.
+// servedByPasskeys reports whether m is the library's passkey MFA method,
+// the one passkey registration enrols (passkey.Manager.MFAMethod). It is
+// recognised by its type, never by its shape: a consumer's method that also
+// declares it serves the enrolment path without being an mfa.Enroller is
+// not enrolled by passkey registration, and is judged as any other method.
 func servedByPasskeys(m mfa.Method) bool {
-	if _, enroller := m.(mfa.Enroller); enroller {
-		return false
-	}
+	_, ok := m.(*passkey.MFAMethod)
 
-	s, ok := m.(interface{ SupportsEnrolmentPath() bool })
-
-	return ok && s.SupportsEnrolmentPath()
+	return ok
 }
 
 // hasPasskeyMethod reports whether the chain's MFA slot serves a method
@@ -267,6 +274,8 @@ func (c *config) wirePasskeys() error {
 		return err
 	}
 
+	p.method = c.hasPasskeyMethod()
+
 	_ = eachInterceptor(c, func(i *enrolmentInterceptor) error {
 		if i.passkeys {
 			p.enrolment = i
@@ -280,7 +289,8 @@ func (c *config) wirePasskeys() error {
 }
 
 // checkPaths refuses a passkey path that collides with another passkey path,
-// the login path or the logout path, or that lies under a prefix another
+// the login path, the logout path, the password-change resolve path or an
+// account-recovery endpoint path, or that lies under a prefix another
 // endpoint answers every POST under: the MFA verify and begin prefixes, and
 // the enrolment prefixes.
 func (p *passkeyInterceptor) checkPaths(option string, c *config) error {
@@ -291,6 +301,22 @@ func (p *passkeyInterceptor) checkPaths(option string, c *config) error {
 	if c.logoutPath != "" {
 		taken[c.logoutPath] = "the logout path"
 	}
+
+	_ = eachInterceptor(c, func(g *passwordChangeGate) error {
+		if g.change != nil {
+			taken[g.path] = "the password-change resolve path"
+		}
+
+		return nil
+	})
+
+	_ = eachInterceptor(c, func(i *recoveryInterceptor) error {
+		for _, r := range i.endpointPaths() {
+			taken[r.path] = "the recovery " + r.name + " path"
+		}
+
+		return nil
+	})
 
 	var prefixes []struct{ name, prefix string }
 	if m := c.mfaOf(); m != nil {
@@ -378,6 +404,12 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	// interceptor a consumer placed between the two.
 	if s.MFA == session.MFAEnrolmentPending && p.enrolment == nil {
 		return &ChallengeError{Kind: policy.ChallengeMFAEnrolment, Session: s}
+	}
+
+	// Likewise the recovery gate lets a recovery-pending session through only
+	// when the passkey method is on the MFA slot to prove the new passkey at.
+	if s.MFA == session.MFARecoveryPending && !p.method {
+		return &ChallengeError{Kind: policy.ChallengeAccountRecovery, Session: s}
 	}
 
 	return serve(ex, s)
