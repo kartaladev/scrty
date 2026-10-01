@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"math/big"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -219,6 +220,26 @@ func (b blob) signWith(t *testing.T, alg jwa.SignatureAlgorithm, key any, header
 	s, err := jws.Sign(payload, opt)
 	require.NoError(t, err)
 	return s
+}
+
+// signNullX5c encodes b as an ES256 compact JWS whose protected header carries
+// "x5c": null, which the JOSE library will not build, so the token is assembled
+// by hand.
+func (b blob) signNullX5c(t *testing.T, key *ecdsa.PrivateKey) []byte {
+	t.Helper()
+	// Borrow the payload of an ordinary token; only the header differs.
+	parts := strings.Split(string(b.signWith(t, jwa.ES256(), key, nil)), ".")
+	require.Len(t, parts, 3)
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256","typ":"JWT","x5c":null}`))
+	input := header + "." + parts[1]
+	digest := sha256.Sum256([]byte(input))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	require.NoError(t, err)
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return []byte(input + "." + base64.RawURLEncoding.EncodeToString(sig))
 }
 
 // fakeClock is a settable clock.

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -291,6 +292,23 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 			assert: refused,
 		},
 		{
+			name: "a BLOB with a null x5c signed by a key other than the root's is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				return b.signNullX5c(t, e.signer.key)
+			},
+			assert: refused,
+		},
+		{
+			// A null x5c is not "no chain": it is refused even under the root's own key,
+			// whereas an absent x5c is accepted. Pinned so a null never falls through
+			// to the root's key.
+			name: "a BLOB with a null x5c is refused even when signed by the root's own key",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				return b.signNullX5c(t, e.mdsRoot.key)
+			},
+			assert: refused,
+		},
+		{
 			name: "an unsigned BLOB (alg none) is refused",
 			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
 				return b.signWith(t, jwa.NoSignature(), nil, nil)
@@ -340,11 +358,18 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 				require.NoError(t, embedded.Set(jwk.KeyIDKey, "mds"))
 				set := jwk.NewSet()
 				require.NoError(t, set.AddKey(embedded))
+				// Count connection attempts, not handler hits: a fetcher that does not
+				// trust the test certificate fails the handshake before any handler runs.
 				var fetches atomic.Int32
-				srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-					fetches.Add(1)
+				srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					_ = json.NewEncoder(w).Encode(set)
 				}))
+				srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+					if state == http.StateNew {
+						fetches.Add(1)
+					}
+				}
+				srv.StartTLS()
 				t.Cleanup(func() {
 					srv.Close()
 					assert.Zero(t, fetches.Load(), "the jku was fetched")
