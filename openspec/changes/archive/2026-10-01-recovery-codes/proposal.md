@@ -12,8 +12,9 @@ scrty has no account recovery. A user who loses every authenticator the account 
   - a set holds 10 codes by default. This is the user's decision, the count Google and Dropbox issue. An option replaces the count, and a count of zero or less is refused at construction;
   - proving the set was kept, by entering one code back at passkey registration, spends nothing: it is a check, not a recovery;
   - when one or two codes remain, the recovery result and the code listing report it, so the consumer's interface can prompt a regeneration. The library reports the count and renders nothing;
-  - a code is spent on its first use;
+  - a code is spent on its first use. A recovery that spends a saved code replaces the user's whole set and returns the new codes once, with the recovery's result, as NIST SP 800-63B-4 §4.2.2.1 requires a new saved code after each use. The old sheet's unused codes stop working, and the recovery notice covers the reissue. This is the user's decision: a recovering user's sheet is of uncertain integrity, and one fresh sheet is simpler to present than a mixed one;
   - the user can see how many remain, and regenerating replaces the whole set;
+  - regenerating needs a recent authentication, by default within 15 minutes of the session's creation or its second factor, whichever is later, and an option replaces the window. Every regeneration notifies the user. This is the user's decision: a stolen long-lived session must not be able to mint a lasting way back in. Seeing the remaining count needs only a full session;
   - presentation is throttled per user.
 
   No code is ever written to a log or an error.
@@ -30,7 +31,11 @@ scrty has no account recovery. A user who loses every authenticator the account 
   - one recovery code and an authenticator the user still holds: the password, or a method enrolled on the MFA slot `mfa-multi-method` introduces, such as TOTP.
 
   One proof alone never recovers an account, and an emailed code alone is never enough. Every proof is checked before any is spent, so a refused attempt consumes nothing.
-- **A confined recovery session.** A completed recovery does not produce a full session. It produces a recovery-pending session, confined to the endpoints that bind a new authenticator, with a short lifetime. It becomes a full session only once a new authenticator is bound and proven. This follows the enrolment-pending pattern the MFA enrolment path already uses.
+- **A confined recovery session.** A completed recovery does not produce a full session. It produces a recovery-pending session, confined to the endpoints that bind a new authenticator, with a short lifetime. It becomes a full session only once a new authenticator is bound. This follows the enrolment-pending pattern the MFA enrolment path already uses. By the user's decision, two bindings complete it:
+  - an MFA enrolment through the enrolment path, then verified at the verify endpoint, which stays the only place that resolves the MFA challenge;
+  - a successful password change at the password-change resolve endpoint. The session then carries no MFA state, and the usual policies decide what it owes next.
+
+  Recovery needs at least one of the two wired, or construction fails. `passkey-authentication` adds passkey registration as a third.
 - **After recovery:**
   - the user is notified at every address the contact resolver gives, as NIST requires of a recovery. The notice gives clear instructions and contact details for repudiating a recovery the user did not make, as SP 800-63B-4 §4.6 requires;
   - every other session of the user ends by default, following the operator reset. Keeping them takes an explicit option, documented as weakening recovery;
@@ -73,6 +78,12 @@ scrty has no account recovery. A user who loses every authenticator the account 
   - **No assurance to rely on:** a federated login that declares no assurance carries none, and scrty does not read provider assurance today.
   - **Not independent:** a provider account is typically recoverable by the same email inbox that would receive the issued code, so the two proofs would not be independent, the cascading dependency recovery research describes.
   - **Nothing lost:** a linked identity that already admits the user is a way back in on its own. Making it a proof would add nothing but that dependency.
+- **A per-user recovery record.** By the user's decision, each recovery is recorded per user in a store of its own:
+  - a delayed recovery waits in it, so any normal login by the user can cancel it;
+  - it carries the proofs and reported losses to a delayed completion;
+  - it keeps the time of the last completed recovery, so the cool-down survives logging out and back in. A time kept only on the session would be lost at the next login.
+
+  With no delay, the record costs one insert per completed recovery.
 - **Off by default.** No recovery endpoint exists until the consumer enables it. Each proof kind is enabled separately. Wiring mistakes, such as recovery enabled with no second proof kind available, fail at construction.
 - **Not in this change:** recovery contacts (the third NIST kind), and repeated identity proofing, which stays the consumer's process behind the operator reset.
 
@@ -87,18 +98,22 @@ scrty has no account recovery. A user who loses every authenticator the account 
   - the confined recovery session and its completion;
   - the authenticator reset on recovery, its opt-in alternatives and the guarantees no option removes;
   - post-recovery notification and session revocation;
+  - the per-user recovery record: the delay, its cancellation, the risk hold and the cool-down;
+  - the check that reports whether a user has another way back in;
   - the rule that recovery is never weaker than the authentication it replaces.
 
 ### Modified Capabilities
 
 - `http-error-propagation`: status rows for the new refusals: recovery refused, a request from a recovery-pending session outside its confined endpoints, a route refused during a cool-down, and a cancelled or not-yet-completable delayed recovery.
 - `one-time-tokens` and `rate-limiting`: no requirement changes. Issued codes use a one-time token manager under a recovery purpose, and the per-user and per-source throttles use the existing limiters and source guard, as both settled capabilities already allow.
+- `identity-model`: a `recovery` first-factor kind, which reports no channel and is not exempt, for the session a recovery produces.
 - `sessions`: a recovery-pending state with its own shortened deadlines, and the time a session was recovered (`RecoveredAt`), both written only by the library.
 - `http-security-chain`: the recovery endpoints, the gate that confines a recovery-pending session, the cancel endpoint for a delayed recovery, and the opt-in guard that refuses sensitive routes during a cool-down.
+- `security-policy`: the enrolment path's default first-factor allowlist admits the `recovery` kind, so a required user's recovery session is offered enrolment rather than refused.
 - `multi-factor-auth`: a recovery-pending session may bind a new second factor through the enrolment path, which by then serves several methods (`mfa-multi-method`), and a completed recovery removes MFA enrolments through the authenticator-reset port.
-- `security-state-stores`: the saved-recovery-code store contract, with one-time spending decided by a conditional write and ambient-transaction participation.
-- `schema-migrations`: the saved-recovery-code table in the security-state migration set.
-- `store-conformance`: conformance cases for the saved-recovery-code store.
+- `security-state-stores`: the saved-recovery-code store contract, with one-time spending decided by a conditional write, and the recovery-record store contract, with completion and cancellation decided by conditional writes. Both take part in ambient transactions.
+- `schema-migrations`: the saved-recovery-code and recovery-record tables in the security-state migration set, and the session's recovery time.
+- `store-conformance`: conformance cases for both stores.
 
 ## Impact
 
@@ -108,7 +123,7 @@ scrty has no account recovery. A user who loses every authenticator the account 
   - `session` gains the recovery-pending state;
   - `onetime` is reused under a recovery purpose;
   - `notify` is reused for the emailed code and the notice.
-- **Stores:** `sqlstore`, `pgx` and `gorm` gain the saved-code store. `migrate` gains its security-state table.
+- **Stores:** `sqlstore`, `pgx` and `gorm` gain the saved-code store and the recovery-record store. `migrate` gains their security-state tables and the session's recovery time.
 - **Dependencies:** none. Hashing and randomness come from the standard library.
 - **Ordering:** the queue is `default-identity-store`, then `mfa-multi-method`, then this change, then `passkey-authentication`, by the user's decision.
   - This change builds on `mfa-multi-method`'s slot, because both change the enrolment path and the chain.
@@ -123,11 +138,15 @@ None open. Every question raised during exploration was decided by the user:
 - saved codes required for a user with no other way back in;
 - a linked OIDC identity is not a recovery proof;
 - no waiting period by default, with the opt-in delays and cool-down;
-- 10 codes per set.
+- 10 codes per set;
+- a new whole set after a recovery that spends a saved code (2026-09-30);
+- MFA enrolment or a password change completes a recovery session (2026-09-30);
+- a per-user recovery-record store (2026-09-30);
+- regeneration needs an authentication within 15 minutes by default (2026-09-30).
 
 ## References
 
-All sources below are **Researched**: they were consulted while exploring this change, on 2026-09-28, and are grouped by the decision they informed. The one exception is marked: scrty's own `apikey` godoc, cited as project precedent.
+All sources below are **Researched**: they were consulted while exploring this change, on 2026-09-28 unless a group states 2026-09-30, and are grouped by the decision they informed. The one exception is marked: scrty's own `apikey` godoc, cited as project precedent.
 
 ### Recovery proofs and what a recovery requires
 - [NIST SP 800-63B-4: Authenticator Event Management](https://pages.nist.gov/800-63-4/sp800-63b/events/):
@@ -188,6 +207,18 @@ All sources below are **Researched**: they were consulted while exploring this c
 - [Configuring two-factor authentication recovery methods (GitHub Docs)](https://docs.github.com/en/authentication/securing-your-account-with-two-factor-authentication-2fa/configuring-two-factor-authentication-recovery-methods): 16 codes, and regenerating invalidates the old set
 - [Need help signing in using 25 character recovery code (Microsoft Q&A)](https://learn.microsoft.com/en-us/answers/questions/3864786/need-help-signing-in-using-25-character-recovery-c): a single 25-character code
 - [NIST SP 800-63B-4: Authenticator Event Management](https://pages.nist.gov/800-63-4/sp800-63b/events/): no count specified
+
+### A new whole set after a saved code is spent (researched 2026-09-30)
+- [NIST SP 800-63B-4: Authenticator Event Management](https://pages.nist.gov/800-63-4/sp800-63b/events/): "Following the use of a saved recovery code, the CSP SHALL invalidate that recovery code and SHALL issue a new saved recovery code to the subscriber", and "The issuance of a replacement recovery code SHALL result in an account recovery notification" (§4.2.2.1); issued codes sent to an email address are valid for at most 24 hours (§4.2.2.2)
+
+### A recovery session completes by binding a new authenticator (researched 2026-09-30)
+- [NIST SP 800-63B-4: Authenticator Event Management](https://pages.nist.gov/800-63-4/sp800-63b/events/): after recovery "the subscriber can bind one or more new authenticators to their subscriber account" (§4.2)
+
+### Regeneration needs a recent authentication (researched 2026-09-30)
+- [Sudo mode (GitHub Docs)](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/sudo-mode): "Viewing, downloading, printing, or regenerating authentication or SSO recovery codes" requires re-authentication, and the window is two hours
+
+### A per-user recovery record
+- Reasoned from scrty's own settled specs (`sessions`, `one-time-tokens`, `security-state-stores`): a session-only recovery time is lost on the next login, and a one-time token holds only a subject, so neither can carry a cancellable hold or the proofs to a delayed completion
 
 ### How major services recover accounts
 - [Recovering your account if you lose your 2FA credentials (GitHub Docs)](https://docs.github.com/en/authentication/securing-your-account-with-two-factor-authentication-2fa/recovering-your-account-if-you-lose-your-2fa-credentials): saved recovery codes, and no support bypass

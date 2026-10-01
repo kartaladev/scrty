@@ -70,6 +70,14 @@ For stores with single-use consumption or unique inserts, a race suite SHALL rel
 - **WHEN** the race suite runs against a store variant whose consumption reads the record and then updates it unconditionally
 - **THEN** the suite fails
 
+#### Scenario: Saved-code spend race
+- **WHEN** the race suite releases 8 callers spending the same saved code for each of 50 independent users at once
+- **THEN** it passes only if every code has exactly one successful spend
+
+#### Scenario: Recovery completion race
+- **WHEN** the race suite releases 8 completions and 8 cancellations for each of 50 independent pending recovery records at once
+- **THEN** it passes only if every record has exactly one successful completion or cancellation
+
 ### Requirement: The ambient-transaction suite proves transaction participation
 Every durable store scrty ships SHALL pass an ambient-transaction suite. The suite SHALL show that:
 - work performed inside a caller-owned transaction is rolled back and committed with it;
@@ -128,3 +136,14 @@ The test module SHALL provide a helper that gives each call an isolated PostgreS
 #### Scenario: Native uuid round trip
 - **WHEN** a library-owned identifier is written to a uuid column in a helper database and read back
 - **THEN** the identifier read back equals the one written
+
+### Requirement: The recovery stores have behavioural suites
+The test module SHALL publish a behavioural suite for the saved-recovery-code store contract and one for the recovery-record store contract. Every durable store of either contract that scrty ships SHALL run its suite, the race suite and the ambient-transaction suite on every supported backend, and the in-memory defaults SHALL run the behavioural suites. The saved-code suite SHALL show that replacing a set inside a caller's transaction that is rolled back leaves the previous set whole.
+
+#### Scenario: Replacement rolled back with the caller
+- **WHEN** the suite begins a caller-owned transaction, replaces a user's set inside it, and rolls back
+- **THEN** the suite asserts, through a separate connection, that the previous set's unspent codes still match
+
+#### Scenario: In-memory saved-code store
+- **WHEN** the saved-code suite runs against the in-memory default store
+- **THEN** every case passes
