@@ -311,6 +311,7 @@ type SecondFactorProof = assurance.Proof
 - **Overrides.**
   - `passkey.WithCloneResponse(passkey.CloneSignalOnly)` allows the login, leaves the stored counter as it is, and writes a sampled warning. This is the library's own behaviour.
   - `passkey.WithClonePolicy(func(ctx, CloneSignal) CloneAction)` returns `Allow`, `Refuse` or `RefuseAndSuspend`.
+- **An allowed clone still records use.** When signal-only or the consumer's policy allows an assertion whose counter write was refused, the manager calls `RecordUse(ctx, id, backupState, at)`: `UPDATE … SET backup_state=$bs, last_used_at=$at WHERE id=$id AND state='active'`. The stored counter is kept, and the flags and last use are recorded, as for every accepted assertion (decided during implementation).
 - **Backup eligibility.** An assertion whose BE flag differs from the stored one is refused as authentication failed. BE is fixed for a credential's life (WebAuthn L3 §6.1.3).
 
 ### D14. Attestation and metadata, in the adapter
