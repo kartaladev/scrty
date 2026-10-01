@@ -1,6 +1,7 @@
 package policy_test
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +46,16 @@ func TestMFAPolicies_HonourSecondFactorProof(t *testing.T) {
 		SecondFactorAtLogin: policy.MintProofForTest(factor.Passkey, at), Now: at,
 	}
 	withoutProof := policy.Input{User: mfaUser, FirstFactor: factor.Passkey, Now: at}
+
+	// exemptionCalls counts the calls made to a replaced exemption rule that
+	// exempts nothing, for the row pinning that the proof is decided without
+	// consulting it.
+	var exemptionCalls atomic.Int64
+	countingExemption := policy.WithMFAExemption(func(factor.Kind) bool {
+		exemptionCalls.Add(1)
+
+		return false
+	})
 
 	type testCase struct {
 		name   string
@@ -102,6 +113,15 @@ func TestMFAPolicies_HonourSecondFactorProof(t *testing.T) {
 			in:    withProof,
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Allow, d.Outcome)
+			},
+		},
+		{
+			name:  "requirement policy does not consult the exemption rule on the proof in post-authentication",
+			build: requiredForAll(passkeyOnly, countingExemption),
+			in:    withProof,
+			assert: func(t *testing.T, d policy.Decision) {
+				assert.Equal(t, policy.Allow, d.Outcome)
+				assert.Zero(t, exemptionCalls.Load(), "the exemption rule was consulted")
 			},
 		},
 	}

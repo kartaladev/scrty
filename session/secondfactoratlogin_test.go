@@ -13,18 +13,31 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
-// createCountingStore counts the creating writes that reach the store it
-// wraps, so a case can pin that a session was created satisfied in one write.
-type createCountingStore struct {
+// writeCountingStore counts the creating and updating writes that reach the
+// store it wraps, so a case can pin that a session was created satisfied in
+// one write and needed no later save.
+type writeCountingStore struct {
 	session.Store
 
 	creates atomic.Int32
+	saves   atomic.Int32
 }
 
-func (s *createCountingStore) Create(ctx context.Context, sess *session.Session) error {
+func (s *writeCountingStore) Create(ctx context.Context, sess *session.Session) error {
 	s.creates.Add(1)
 
 	return s.Store.Create(ctx, sess)
+}
+
+func (s *writeCountingStore) Save(ctx context.Context, sess *session.Session) error {
+	s.saves.Add(1)
+
+	return s.Store.Save(ctx, sess)
+}
+
+// storeWrites is how many writes of each kind reached the store.
+type storeWrites struct {
+	creates, saves int32
 }
 
 func TestSecondFactorAtLogin(t *testing.T) {
@@ -35,7 +48,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		// act drives the manager and returns the session as the store now
 		// holds it.
 		act    func(t *testing.T, m *session.Manager) *session.Session
-		assert func(t *testing.T, got *session.Session, creates int32)
+		assert func(t *testing.T, got *session.Session, writes storeWrites)
 	}
 
 	cases := []testCase{
@@ -51,12 +64,13 @@ func TestSecondFactorAtLogin(t *testing.T) {
 
 				return loaded
 			},
-			assert: func(t *testing.T, got *session.Session, creates int32) {
+			assert: func(t *testing.T, got *session.Session, writes storeWrites) {
 				assert.Equal(t, session.MFASatisfied, got.MFA)
 				assert.Equal(t, createdAt, got.MFASatisfiedAt, "satisfied at the creation time")
 				assert.Equal(t, got.CreatedAt, got.MFASatisfiedAt)
 				assert.True(t, got.MFAAtFirstFactor)
-				assert.Equal(t, int32(1), creates, "the satisfied state is in the creating write")
+				assert.Equal(t, int32(1), writes.creates, "the satisfied state is in the creating write")
+				assert.Zero(t, writes.saves, "no save follows the creating write")
 			},
 		},
 		{
@@ -74,7 +88,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 
 				return loaded
 			},
-			assert: func(t *testing.T, got *session.Session, _ int32) {
+			assert: func(t *testing.T, got *session.Session, _ storeWrites) {
 				assert.Equal(t, session.MFASatisfied, got.MFA)
 				assert.Equal(t, createdAt, got.MFASatisfiedAt)
 				assert.True(t, got.MFAAtFirstFactor)
@@ -94,7 +108,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 
 				return loaded
 			},
-			assert: func(t *testing.T, got *session.Session, _ int32) {
+			assert: func(t *testing.T, got *session.Session, _ storeWrites) {
 				assert.False(t, got.MFAAtFirstFactor)
 				assert.Equal(t, session.MFANone, got.MFA)
 				assert.Equal(t, "true", got.Data["mfa_at_first_factor"], "consumer data is kept unchanged")
@@ -116,9 +130,46 @@ func TestSecondFactorAtLogin(t *testing.T) {
 
 				return loaded
 			},
-			assert: func(t *testing.T, got *session.Session, _ int32) {
+			assert: func(t *testing.T, got *session.Session, _ storeWrites) {
 				assert.Equal(t, session.MFASatisfied, got.MFA)
 				assert.False(t, got.MFAAtFirstFactor)
+			},
+		},
+		{
+			name: "a later save cannot set the marker",
+			act: func(t *testing.T, m *session.Manager) *session.Session {
+				s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
+				require.NoError(t, err)
+
+				s.MFAAtFirstFactor = true
+				require.NoError(t, m.Save(t.Context(), s))
+
+				loaded, err := m.Load(t.Context(), s.ID)
+				require.NoError(t, err)
+
+				return loaded
+			},
+			assert: func(t *testing.T, got *session.Session, _ storeWrites) {
+				assert.False(t, got.MFAAtFirstFactor, "only the creating write sets the marker")
+			},
+		},
+		{
+			name: "a later save cannot clear the marker",
+			act: func(t *testing.T, m *session.Manager) *session.Session {
+				s, err := m.Create(t.Context(), testUser,
+					session.WithFirstFactor(factor.Passkey), session.WithSecondFactorAtLogin())
+				require.NoError(t, err)
+
+				s.MFAAtFirstFactor = false
+				require.NoError(t, m.Save(t.Context(), s))
+
+				loaded, err := m.Load(t.Context(), s.ID)
+				require.NoError(t, err)
+
+				return loaded
+			},
+			assert: func(t *testing.T, got *session.Session, _ storeWrites) {
+				assert.True(t, got.MFAAtFirstFactor, "only the creating write sets the marker")
 			},
 		},
 	}
@@ -128,11 +179,11 @@ func TestSecondFactorAtLogin(t *testing.T) {
 			t.Parallel()
 
 			clk := clockwork.NewFakeClockAt(createdAt)
-			store := &createCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+			store := &writeCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
 			m := managerFor(t, session.WithStore(store), session.WithClock(clk))
 
 			got := tc.act(t, m)
-			tc.assert(t, got, store.creates.Load())
+			tc.assert(t, got, storeWrites{creates: store.creates.Load(), saves: store.saves.Load()})
 		})
 	}
 }

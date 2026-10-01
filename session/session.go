@@ -118,8 +118,11 @@ type Session struct {
 	// factor of the login that created this session, as a user-verified
 	// passkey login does, rather than by answering a challenge afterwards.
 	// WithSecondFactorAtLogin sets it in the creating write, and Rotate
-	// carries it over. Library-owned: a consumer cannot set it through Data,
-	// and a session satisfied by answering a challenge never carries it.
+	// carries it over into the new session's creating write. Write-once: the
+	// Store writes it in Create only, and Save keeps the stored value, so
+	// changing it here and saving changes nothing. Library-owned: a consumer
+	// cannot set it through Data, and a session satisfied by answering a
+	// challenge never carries it.
 	MFAAtFirstFactor bool
 
 	// PasswordChangePending marks that this session owes a password change.

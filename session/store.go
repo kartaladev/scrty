@@ -63,9 +63,13 @@ type Store interface {
 	// already holding it.
 	Create(ctx context.Context, s *Session) error
 
-	// Save updates the stored session with this identifier, whole, and
-	// reports ErrSessionNotFound when there is no longer one to update. It
-	// never inserts.
+	// Save updates the stored session with this identifier, whole except for
+	// MFAAtFirstFactor, and reports ErrSessionNotFound when there is no longer
+	// one to update. It never inserts.
+	//
+	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
+	// whatever the session handed to it says, so no later save can set or
+	// clear the marker. A SQL store leaves its column out of the UPDATE.
 	Save(ctx context.Context, s *Session) error
 
 	// Load returns the session with this identifier, ErrSessionNotFound when

@@ -194,7 +194,9 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 	return nil
 }
 
-// Save updates the stored session, whole, and never inserts.
+// Save updates the stored session, whole except for MFAAtFirstFactor, and
+// never inserts. The stored marker is kept as Create wrote it, whatever the
+// saved session says.
 //
 // A session that is no longer stored is ErrSessionNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
@@ -204,10 +206,13 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.records[sess.ID]; !exists {
+	stored, exists := s.records[sess.ID]
+	if !exists {
 		return ErrSessionNotFound
 	}
-	s.records[sess.ID] = sess.clone()
+	rec := sess.clone()
+	rec.MFAAtFirstFactor = stored.MFAAtFirstFactor
+	s.records[sess.ID] = rec
 
 	return nil
 }
