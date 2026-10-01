@@ -15,6 +15,7 @@ import (
 	"github.com/go-webauthn/webauthn/metadata"
 	"github.com/go-webauthn/webauthn/metadata/providers/memory"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/outbound"
@@ -42,7 +43,12 @@ const MaxMetadataAge = 24 * time.Hour
 // place, so the source fails closed.
 //
 // One source may be shared by several Verifiers; it is safe for concurrent
-// use, and concurrent registrations share one fetch.
+// use. Registrations that need the BLOB while it is being fetched wait for
+// that one fetch and share its result, success or failure. Each waits only as
+// long as its own context allows, and a registration whose context ends
+// returns the context's error rather than a refusal. The fetch runs detached
+// from the cancellation of the registration that started it, so that one
+// registration giving up does not fail the others.
 type MetadataSource interface {
 	// provider returns the metadata trusted attestation is judged against
 	// now, fetching it first when the cached BLOB has expired.
@@ -109,6 +115,11 @@ func (c *mdsConfig) fail(reason string) {
 // MetadataBlob returns a source whose BLOB fetch returns: the MDS3 JWT,
 // as the Metadata Service serves it. fetch is called when the cached BLOB has
 // expired, and must not be nil.
+//
+// Concurrent registrations share one call of fetch, so its context carries
+// the values of the registration that started it but not its cancellation or
+// deadline. fetch must bound its own duration: while it runs, every
+// registration that needs metadata waits for it.
 //
 // The consumer decides where the bytes come from, and so takes on what
 // fetching them means: scrty only decodes and checks them.
@@ -207,6 +218,8 @@ type metadataCache struct {
 	clock clock.Clock
 	err   error
 
+	flight singleflight.Group
+
 	mu      sync.Mutex
 	current metadata.Provider
 	number  int
@@ -228,22 +241,75 @@ func (c *metadataCache) configErr() error {
 
 var errMetadataUnavailable = errors.New("webauthn: attestation metadata unavailable")
 
+// provider returns the cached metadata while it is fresh. Otherwise it joins
+// the fetch in flight, or starts one, and waits for it as long as ctx allows.
+//
+// The fetch is shared by every caller that arrives while it runs, so it runs
+// detached from the cancellation of the caller that started it: one caller
+// giving up must not fail the others. It keeps that caller's context values,
+// and is bounded by the fetch itself (the confined client's timeout for
+// MetadataFromMDS). A caller whose context ends while it waits returns the
+// context's error; the fetch carries on for the rest.
 func (c *metadataCache) provider(ctx context.Context) (metadata.Provider, error) {
+	if p := c.fresh(c.clock.Now()); p != nil {
+		return p, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	detached := context.WithoutCancel(ctx)
+	ch := c.flight.DoChan("blob", func() (any, error) { return c.refresh(detached) })
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("webauthn: waiting for attestation metadata: %w", ctx.Err())
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+
+		p, ok := res.Val.(metadata.Provider)
+		if !ok {
+			return nil, errMetadataUnavailable
+		}
+
+		return p, nil
+	}
+}
+
+// fresh returns the cached metadata if it has not expired at now.
+func (c *metadataCache) fresh(now time.Time) metadata.Provider {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := c.clock.Now()
 	if c.current != nil && now.Before(c.expires) {
-		return c.current, nil
+		return c.current
+	}
+
+	return nil
+}
+
+// refresh fetches, checks and caches the BLOB. Only one refresh runs at a
+// time, as the single flight's function.
+func (c *metadataCache) refresh(ctx context.Context) (metadata.Provider, error) {
+	now := c.clock.Now()
+
+	c.mu.Lock()
+	if c.current != nil && now.Before(c.expires) {
+		// A flight that ended after this caller looked has refreshed it.
+		p := c.current
+		c.mu.Unlock()
+
+		return p, nil
 	}
 
 	// The cached BLOB has expired: it is dropped before the refetch, so a
 	// failed refetch leaves nothing to fall back on.
 	c.current = nil
-
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+	number, loaded := c.number, c.loaded
+	c.mu.Unlock()
 
 	raw, err := c.fetch(ctx)
 	if err != nil {
@@ -256,7 +322,7 @@ func (c *metadataCache) provider(ctx context.Context) (metadata.Provider, error)
 	}
 
 	next := parsed.Parsed.NextUpdate
-	if !next.After(now) || (c.loaded && parsed.Parsed.Number < c.number) {
+	if !next.After(now) || (loaded && parsed.Parsed.Number < number) {
 		return nil, errMetadataUnavailable
 	}
 
@@ -272,12 +338,14 @@ func (c *metadataCache) provider(ctx context.Context) (metadata.Provider, error)
 		return nil, errMetadataUnavailable
 	}
 
-	c.current, c.number, c.loaded = p, parsed.Parsed.Number, true
-	c.expires = now.Add(MaxMetadataAge)
-
-	if next.Before(c.expires) {
-		c.expires = next
+	expires := now.Add(MaxMetadataAge)
+	if next.Before(expires) {
+		expires = next
 	}
+
+	c.mu.Lock()
+	c.current, c.number, c.loaded, c.expires = p, parsed.Parsed.Number, true, expires
+	c.mu.Unlock()
 
 	return p, nil
 }

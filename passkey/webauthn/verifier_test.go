@@ -317,6 +317,7 @@ func TestVerifier_Registration(t *testing.T) {
 		name      string
 		configure func(a *webauthntest.Authenticator)
 		origin    string
+		rpID      string // the relying party the authenticator answers for; empty means rpID
 		presented string // the challenge the client was handed; empty means challenge
 		exp       passkey.RegistrationExpectation
 		body      func(body []byte) []byte
@@ -349,6 +350,14 @@ func TestVerifier_Registration(t *testing.T) {
 				assert.Empty(t, nc.AttestationFormat, "the default mode records no format")
 				assert.Empty(t, nc.AttestationStatement)
 				assert.False(t, nc.AttestationTrusted)
+			},
+		},
+		{
+			name: "an all-zero AAGUID means the authenticator reported none, so it is nil",
+			exp:  required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.NoError(t, err)
+				assert.Nil(t, nc.AAGUID)
 			},
 		},
 		{
@@ -408,6 +417,60 @@ func TestVerifier_Registration(t *testing.T) {
 			},
 		},
 		{
+			name:      "no user presence is refused, even under preferred user verification",
+			configure: func(a *webauthntest.Authenticator) { a.UP = false },
+			exp:       passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVPreferred},
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, nc)
+			},
+		},
+		{
+			name:      "a cross-origin ceremony is refused",
+			configure: func(a *webauthntest.Authenticator) { a.CrossOrigin = true },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, nc)
+			},
+		},
+		{
+			name:      "a cross-origin ceremony under a top origin of the relying party's own is refused",
+			configure: func(a *webauthntest.Authenticator) { a.CrossOrigin, a.TopOrigin = true, rpOrigin },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, nc)
+			},
+		},
+		{
+			name:      "a top origin without the cross-origin flag is refused",
+			configure: func(a *webauthntest.Authenticator) { a.TopOrigin = rpOrigin },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, nc)
+			},
+		},
+		{
+			name: "a response for another relying party ID is refused",
+			rpID: "other.example",
+			exp:  required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, nc)
+			},
+		},
+		{
+			name:      "an authentication response presented at registration is refused",
+			configure: func(a *webauthntest.Authenticator) { a.ClientDataType = "webauthn.get" },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, nc)
+			},
+		},
+		{
 			name: "an empty expected challenge is refused",
 			exp:  passkey.RegistrationExpectation{UV: passkey.UVRequired},
 			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, _ *passkey.NewCredential, err error) {
@@ -449,7 +512,11 @@ func TestVerifier_Registration(t *testing.T) {
 			if presented == "" {
 				presented = challenge
 			}
-			body := a.Create(rpID, origin, presented, []byte("handle-0123456789"), webauthntest.AttestationNone)
+			answerFor := tc.rpID
+			if answerFor == "" {
+				answerFor = rpID
+			}
+			body := a.Create(answerFor, origin, presented, []byte("handle-0123456789"), webauthntest.AttestationNone)
 			if tc.body != nil {
 				body = tc.body(body)
 			}
@@ -483,6 +550,7 @@ func TestVerifier_Assertion(t *testing.T) {
 		name      string
 		configure func(a *webauthntest.Authenticator)
 		origin    string
+		rpID      string                      // the relying party the authenticator answers for; empty means rpID
 		stored    func(c *passkey.Credential) // alters the stored credential
 		exp       passkey.AssertionExpectation
 		assert    func(t *testing.T, a *webauthntest.Authenticator, p passkey.ParsedAssertion, r *passkey.AssertionResult, err error)
@@ -522,6 +590,60 @@ func TestVerifier_Assertion(t *testing.T) {
 			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
 				require.NoError(t, err)
 				assert.False(t, r.UserVerified)
+			},
+		},
+		{
+			name:      "no user presence is refused, even under preferred user verification",
+			configure: func(a *webauthntest.Authenticator) { a.UP = false },
+			exp:       passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UVPreferred},
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, r)
+			},
+		},
+		{
+			name:      "a cross-origin ceremony is refused",
+			configure: func(a *webauthntest.Authenticator) { a.CrossOrigin = true },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, r)
+			},
+		},
+		{
+			name:      "a cross-origin ceremony under a top origin of the relying party's own is refused",
+			configure: func(a *webauthntest.Authenticator) { a.CrossOrigin, a.TopOrigin = true, rpOrigin },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, r)
+			},
+		},
+		{
+			name:      "a top origin without the cross-origin flag is refused",
+			configure: func(a *webauthntest.Authenticator) { a.TopOrigin = rpOrigin },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, r)
+			},
+		},
+		{
+			name: "an assertion for another relying party ID is refused",
+			rpID: "other.example",
+			exp:  required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, r)
+			},
+		},
+		{
+			name:      "a registration response presented at authentication is refused",
+			configure: func(a *webauthntest.Authenticator) { a.ClientDataType = "webauthn.create" },
+			exp:       required,
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+				assert.Nil(t, r)
 			},
 		},
 		{
@@ -575,7 +697,11 @@ func TestVerifier_Assertion(t *testing.T) {
 				origin = rpOrigin
 			}
 
-			p, err := v.ParseAssertion(a.Assert(rpID, origin, loginChallenge))
+			answerFor := tc.rpID
+			if answerFor == "" {
+				answerFor = rpID
+			}
+			p, err := v.ParseAssertion(a.Assert(answerFor, origin, loginChallenge))
 			require.NoError(t, err)
 			r, err := v.VerifyAssertion(t.Context(), p, stored, tc.exp)
 			tc.assert(t, a, p, r, err)

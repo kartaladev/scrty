@@ -332,6 +332,7 @@ type SecondFactorProof = assurance.Proof
   - **Response size.** The production BLOB is several megabytes, above `outbound`'s default response cap, so a consumer of `MetadataFromMDS` raises `WithMaxResponseBytes`. The godoc and README say so.
   - **Trusted mode accepts** only basic, AttCA or AnonCA attestation with an x5c chain and a non-zero AAGUID. `none`, self attestation and SafetyNet are refused.
   - **AAGUID.** An all-zero AAGUID means the authenticator reported none, so it is stored as nil.
+  - **One fetch at a time.** Concurrent registrations share one in-flight metadata fetch, successful or failed. The fetch runs detached from any single caller's cancellation, and each caller still returns on its own context. `MetadataFromMDS` is bounded by the confined client's timeout; a `MetadataBlob` fetch is the consumer's function and must bound its own duration, which its godoc states.
 - **Per-user stricter policy** ("the design settles how"). It goes through two core hooks:
   - `passkey.WithRegistrationCheck(func(ctx, RegistrationFacts) error)`, which receives the user, AAGUID, backup flags, format, and whether the attestation was trusted;
   - `passkey.WithLoginCheck(func(ctx, LoginFacts) error)`.

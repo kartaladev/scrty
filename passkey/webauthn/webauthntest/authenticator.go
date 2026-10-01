@@ -64,6 +64,11 @@ type Authenticator struct {
 	// of 2 or more, set Counter to N-1 beforehand. To replay or regress a
 	// counter, set the field again to the value wanted.
 	Counter uint32
+	// UP sets the user-present flag. New sets true. It is a test-only knob:
+	// a real authenticator always reports user presence for a ceremony that
+	// asked for it, and clearing it lets a negative test check the relying
+	// party refuses a response without it.
+	UP bool
 	// UV sets the user-verified flag. New sets true.
 	UV bool
 	// BE sets the backup-eligible flag. New sets false.
@@ -79,6 +84,21 @@ type Authenticator struct {
 	// data. New leaves it all zero, as authenticators do under "none"
 	// attestation.
 	AAGUID [16]byte
+
+	// CrossOrigin sets the client data's crossOrigin member. New sets false.
+	// It is a test-only knob modelling a ceremony run in a cross-origin
+	// iframe, for negative tests.
+	CrossOrigin bool
+	// TopOrigin, when not empty, is put in the client data's topOrigin
+	// member. New leaves it empty, and the member out. It is a test-only
+	// knob: a browser sets topOrigin only alongside crossOrigin, and a test
+	// may set either without the other.
+	TopOrigin string
+	// ClientDataType, when not empty, replaces the client data's type member,
+	// which is otherwise "webauthn.create" for Create and "webauthn.get" for
+	// Assert. New leaves it empty. It is a test-only knob for presenting one
+	// ceremony's response as the other's.
+	ClientDataType string
 
 	tb         testing.TB
 	key        *ecdsa.PrivateKey
@@ -99,6 +119,7 @@ func New(tb testing.TB) *Authenticator {
 		tb.Fatalf("webauthntest: generate credential ID: %v", err)
 	}
 	return &Authenticator{
+		UP:         true,
 		UV:         true,
 		Transports: []string{"internal", "hybrid"},
 		tb:         tb,
@@ -169,12 +190,16 @@ func (a *Authenticator) Assert(rpID, origin, challenge string) []byte {
 }
 
 func (a *Authenticator) clientData(typ, origin, challenge string) []byte {
+	if a.ClientDataType != "" {
+		typ = a.ClientDataType
+	}
 	data, err := json.Marshal(struct {
 		Type        string `json:"type"`
 		Challenge   string `json:"challenge"`
 		Origin      string `json:"origin"`
 		CrossOrigin bool   `json:"crossOrigin"`
-	}{typ, b64([]byte(challenge)), origin, false})
+		TopOrigin   string `json:"topOrigin,omitempty"`
+	}{typ, b64([]byte(challenge)), origin, a.CrossOrigin, a.TopOrigin})
 	if err != nil {
 		a.tb.Fatalf("webauthntest: marshal client data: %v", err)
 	}
@@ -183,7 +208,10 @@ func (a *Authenticator) clientData(typ, origin, challenge string) []byte {
 
 // authData returns rpIdHash, flags and counter, with extra flags set.
 func (a *Authenticator) authData(rpID string, extra byte) []byte {
-	flags := flagUP | extra
+	flags := extra
+	if a.UP {
+		flags |= flagUP
+	}
 	if a.UV {
 		flags |= flagUV
 	}

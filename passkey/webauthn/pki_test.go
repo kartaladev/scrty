@@ -44,6 +44,12 @@ func nextSerial() *big.Int {
 // parent is nil).
 func issue(t *testing.T, parent *testCA, subject pkix.Name, isCA bool, crlURL string) *testCA {
 	t.Helper()
+	return issueUntil(t, parent, subject, isCA, crlURL, time.Now().Add(60*24*time.Hour))
+}
+
+// issueUntil is issue with the certificate valid until notAfter.
+func issueUntil(t *testing.T, parent *testCA, subject pkix.Name, isCA bool, crlURL string, notAfter time.Time) *testCA {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
@@ -51,7 +57,7 @@ func issue(t *testing.T, parent *testCA, subject pkix.Name, isCA bool, crlURL st
 		SerialNumber:          nextSerial(),
 		Subject:               subject,
 		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(60 * 24 * time.Hour),
+		NotAfter:              notAfter,
 		BasicConstraintsValid: true,
 		IsCA:                  isCA,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
@@ -163,22 +169,31 @@ type blob struct {
 // goes in the x5c header.
 func (b blob) sign(t *testing.T, signer *testCA, chain ...*x509.Certificate) []byte {
 	t.Helper()
+	x5c := []string{stdB64(signer.cert)}
+	for _, c := range chain {
+		x5c = append(x5c, stdB64(c))
+	}
+	return b.signWith(t, jwt.SigningMethodES256, signer.key, map[string]any{"x5c": x5c})
+}
+
+// signWith encodes b as a JWT signed by key under method, with header's
+// members added to the JOSE header.
+func (b blob) signWith(t *testing.T, method jwt.SigningMethod, key any, header map[string]any) []byte {
+	t.Helper()
 	entries := b.entries
 	if entries == nil {
 		entries = []map[string]any{}
 	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+	tok := jwt.NewWithClaims(method, jwt.MapClaims{
 		"legalHeader": "test",
 		"no":          b.no,
 		"nextUpdate":  b.nextUpdate.UTC().Format(time.DateOnly),
 		"entries":     entries,
 	})
-	x5c := []string{stdB64(signer.cert)}
-	for _, c := range chain {
-		x5c = append(x5c, stdB64(c))
+	for k, v := range header {
+		tok.Header[k] = v
 	}
-	tok.Header["x5c"] = x5c
-	s, err := tok.SignedString(signer.key)
+	s, err := tok.SignedString(key)
 	require.NoError(t, err)
 	return []byte(s)
 }

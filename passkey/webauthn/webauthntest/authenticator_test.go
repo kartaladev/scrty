@@ -115,6 +115,22 @@ func TestAuthenticator_Create(t *testing.T) {
 			},
 		},
 		{
+			name: "the test-only knobs are reported in the flags and the client data",
+			configure: func(a *webauthntest.Authenticator) {
+				a.UP, a.CrossOrigin, a.TopOrigin, a.ClientDataType = false, true, "https://top.example", "webauthn.get"
+			},
+			attestation: "none",
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, parsed *protocol.ParsedCredentialCreationData, err error) {
+				require.Error(t, err)
+				require.NotNil(t, parsed)
+				assert.False(t, parsed.Response.AttestationObject.AuthData.Flags.HasUserPresent())
+				cd := parsed.Response.CollectedClientData
+				assert.Equal(t, "webauthn.get", string(cd.Type))
+				assert.True(t, cd.CrossOrigin)
+				assert.Equal(t, "https://top.example", cd.TopOrigin)
+			},
+		},
+		{
 			name:        "a response from another origin does not verify",
 			attestation: "none",
 			origin:      "https://evil.example",

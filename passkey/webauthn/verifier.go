@@ -231,7 +231,7 @@ func (v *Verifier) VerifyRegistration(
 		BackupEligible:       authData.Flags.HasBackupEligible(),
 		BackupState:          authData.Flags.HasBackupState(),
 		Transports:           transports,
-		AAGUID:               slices.Clone(authData.AttData.AAGUID),
+		AAGUID:               reportedAAGUID(authData.AttData.AAGUID),
 		AttestationFormat:    att.format,
 		AttestationStatement: att.statement,
 		AttestationTrusted:   att.trusted,
@@ -294,6 +294,17 @@ func (v *Verifier) VerifyAssertion(
 		BackupEligible: flags.HasBackupEligible(),
 		BackupState:    flags.HasBackupState(),
 	}, nil
+}
+
+// reportedAAGUID returns aaguid, or nil when it is all zero: an
+// authenticator that identifies no model reports zeroes, as under "none"
+// attestation.
+func reportedAAGUID(aaguid []byte) []byte {
+	if !slices.ContainsFunc(aaguid, func(b byte) bool { return b != 0 }) {
+		return nil
+	}
+
+	return slices.Clone(aaguid)
 }
 
 // encodeChallenge is the clientDataJSON form of a challenge string: the

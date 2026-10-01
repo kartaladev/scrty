@@ -1,6 +1,10 @@
 package webauthn_test
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -236,4 +241,172 @@ func TestMetadata_NoRequestLeavesOutsideTheConfinedClient(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Zero(t, crlHits, "the BLOB decoder sent a request outside the confined client")
+}
+
+// TestMetadataBlob_SigningRules pins how a BLOB's JWT signature is judged:
+// the algorithms allowed, the headers refused, the signing chain checked
+// against the configured root at the source's clock, and the root's own key
+// when the BLOB carries no chain.
+func TestMetadataBlob_SigningRules(t *testing.T) {
+	t.Parallel()
+
+	day := 24 * time.Hour
+
+	type testCase struct {
+		name    string
+		token   func(t *testing.T, e *attestationEnv, b blob) []byte
+		advance time.Duration                        // how far the source's clock is ahead of real time
+		root    func(t *testing.T) *x509.Certificate // the configured root; nil means the env's
+		assert  func(t *testing.T, nc *passkey.NewCredential, err error)
+	}
+
+	refused := func(t *testing.T, nc *passkey.NewCredential, err error) {
+		require.ErrorIs(t, err, passkey.ErrAttestationRefused)
+		assert.Nil(t, nc)
+	}
+	x5c := func(certs ...*testCA) map[string]any {
+		out := make([]string, 0, len(certs))
+		for _, c := range certs {
+			out = append(out, stdB64(c.cert))
+		}
+		return map[string]any{"x5c": out}
+	}
+
+	cases := []testCase{
+		{
+			name: "a BLOB with no x5c signed by the root's own key is accepted",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				return b.signWith(t, jwt.SigningMethodES256, e.mdsRoot.key, nil)
+			},
+			assert: trustedOK,
+		},
+		{
+			name: "a BLOB with no x5c signed by a key other than the root's is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				return b.signWith(t, jwt.SigningMethodES256, e.signer.key, nil)
+			},
+			assert: refused,
+		},
+		{
+			name: "an unsigned BLOB (alg none) is refused",
+			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
+				return b.signWith(t, jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, nil)
+			},
+			assert: refused,
+		},
+		{
+			name: "an HS256 BLOB keyed with the root's public key is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				return b.signWith(t, jwt.SigningMethodHS256, e.mdsRoot.cert.RawSubjectPublicKeyInfo, nil)
+			},
+			assert: refused,
+		},
+		{
+			name: "an EdDSA BLOB is refused, even signed by an Ed25519 root's own key",
+			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
+				return b.signWith(t, jwt.SigningMethodEdDSA, ed25519Root(t).key, nil)
+			},
+			root:   func(t *testing.T) *x509.Certificate { return ed25519Root(t).cert },
+			assert: refused,
+		},
+		{
+			name: "a BLOB naming an x5u header is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				h := x5c(e.signer, e.mdsRoot)
+				h["x5u"] = "https://mds.example.com/chain.pem"
+				return b.signWith(t, jwt.SigningMethodES256, e.signer.key, h)
+			},
+			assert: refused,
+		},
+		{
+			name: "a signing certificate expired at the source's clock is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				leaf := issueUntil(t, e.mdsRoot, pkix.Name{CommonName: "Short-lived MDS Signer"}, false, "", time.Now().Add(day))
+				return b.signWith(t, jwt.SigningMethodES256, leaf.key, x5c(leaf, e.mdsRoot))
+			},
+			advance: 2 * day,
+			assert:  refused,
+		},
+		{
+			name: "a signing chain ending at a root other than the configured one is refused",
+			token: func(t *testing.T, _ *attestationEnv, b blob) []byte {
+				foreign := newRoot(t, "Foreign MDS Root")
+				leaf := issue(t, foreign, pkix.Name{CommonName: "Foreign MDS Signer"}, false, "")
+				return b.signWith(t, jwt.SigningMethodES256, leaf.key, x5c(leaf, foreign))
+			},
+			assert: refused,
+		},
+		{
+			name: "a BLOB signed by a key other than its x5c certificate's is refused",
+			token: func(t *testing.T, e *attestationEnv, b blob) []byte {
+				impostor := issue(t, nil, pkix.Name{CommonName: "Impostor"}, false, "")
+				return b.signWith(t, jwt.SigningMethodES256, impostor.key, x5c(e.signer, e.mdsRoot))
+			},
+			assert: refused,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e := newAttestationEnv(t)
+			clk := newFakeClock()
+			clk.Advance(tc.advance)
+			b := blob{no: 1, nextUpdate: time.Now().Add(5 * day), entries: []map[string]any{mdsEntry(e.aaguid, e.attRoot, "FIDO_CERTIFIED")}}
+			raw := tc.token(t, e, b)
+			root := e.mdsRoot.cert
+			if tc.root != nil {
+				root = tc.root(t)
+			}
+			src := webauthn.MetadataBlob(func(context.Context) ([]byte, error) { return raw, nil },
+				webauthn.WithMDSRoot(root), webauthn.WithMDSClock(clk))
+			v := newVerifier(t, webauthn.WithTrustedAttestation(src))
+
+			a := webauthntest.New(t)
+			a.AAGUID = e.aaguid
+			p, err := v.ParseRegistration(basicAttestation(t, a, e.att))
+			require.NoError(t, err)
+			nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+			tc.assert(t, nc, err)
+		})
+	}
+}
+
+// ed25519RootCA is a self-signed Ed25519 root, made once: the EdDSA case
+// needs the same root to sign the BLOB and to be configured.
+var ed25519RootCA = struct {
+	sync.Once
+	cert *x509.Certificate
+	key  ed25519.PrivateKey
+	err  error
+}{}
+
+type ed25519CA struct {
+	cert *x509.Certificate
+	key  ed25519.PrivateKey
+}
+
+func ed25519Root(t *testing.T) ed25519CA {
+	t.Helper()
+	ed25519RootCA.Do(func() {
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			ed25519RootCA.err = err
+			return
+		}
+		tmpl := &x509.Certificate{
+			SerialNumber: nextSerial(), Subject: pkix.Name{CommonName: "Ed25519 MDS Root"},
+			NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(60 * 24 * time.Hour),
+			BasicConstraintsValid: true, IsCA: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, key)
+		if err != nil {
+			ed25519RootCA.err = err
+			return
+		}
+		ed25519RootCA.cert, ed25519RootCA.err = x509.ParseCertificate(der)
+		ed25519RootCA.key = key
+	})
+	require.NoError(t, ed25519RootCA.err)
+	return ed25519CA{cert: ed25519RootCA.cert, key: ed25519RootCA.key}
 }
