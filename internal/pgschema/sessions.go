@@ -13,18 +13,21 @@ const (
 	// $13 external_issuer, $14 external_session_id, $15 external_id_token,
 	// $16 data, $17 enrolment_origin_deadline (NULL when not marked),
 	// $18 enrolment_generation (NULL for none), $19 recovered_at (NULL when
-	// never recovered). Zero rows affected means the digest is already
-	// stored.
+	// never recovered), $20 mfa_at_first_factor (a second factor met at the
+	// first factor). Zero rows affected means the digest is already stored.
 	SessionInsert = `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
   password_change_pending, external_provider, external_issuer, external_session_id,
-  external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+  external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
+  mfa_at_first_factor)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
 ON CONFLICT (id_digest) DO NOTHING`
 
 	// SessionUpdate replaces every field of the session with digest $1, in
-	// SessionInsert's order from $2 user_id to $18 recovered_at. Zero rows
-	// affected means there is no longer a session to update.
+	// SessionInsert's order from $2 user_id to $18 recovered_at. It leaves
+	// mfa_at_first_factor out: only the insert writes it, so no later save can
+	// set or clear it. Zero rows affected means there is no longer a session
+	// to update.
 	SessionUpdate = `UPDATE sessions SET user_id = $2, created_at = $3, last_accessed_at = $4,
   idle_expires_at = $5, absolute_expires_at = $6, first_factor = $7, mfa_state = $8,
   mfa_satisfied_at = $9, password_change_pending = $10, external_provider = $11,
@@ -37,7 +40,8 @@ WHERE id_digest = $1`
 	SessionSelect = `SELECT user_id, created_at, last_accessed_at, idle_expires_at,
   absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at, password_change_pending,
   external_provider, external_issuer, external_session_id, external_id_token, data,
-  enrolment_origin_deadline, enrolment_generation, recovered_at
+  enrolment_origin_deadline, enrolment_generation, recovered_at,
+  mfa_at_first_factor
 FROM sessions WHERE id_digest = $1`
 
 	// SessionDelete removes the session with digest $1.

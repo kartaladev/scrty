@@ -101,6 +101,19 @@ func recoveryPendingSession(sessionID string, user identity.UserID) *session.Ses
 	return s
 }
 
+// secondFactorAtLoginSession returns a satisfied session for user whose
+// second factor was met at the first factor: the marker set, the first factor a
+// passkey, and the satisfied time the creation time.
+func secondFactorAtLoginSession(sessionID string, user identity.UserID) *session.Session {
+	s := sessionRecord(sessionID, user)
+	s.FirstFactor = factor.Passkey
+	s.MFA = session.MFASatisfied
+	s.MFASatisfiedAt = s.CreatedAt
+	s.PasswordChangePending = false
+	s.MFAAtFirstFactor = true
+	return s
+}
+
 // idleExpiredSession returns a session whose idle deadline has passed by the
 // time the suite's clock reaches suiteStart plus sessionIdle.
 func idleExpiredSession(sessionID string, user identity.UserID) *session.Session {
@@ -129,6 +142,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assertTimeEqual(t, want.EnrolmentOriginDeadline, got.EnrolmentOriginDeadline, "EnrolmentOriginDeadline")
 	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
 	assertTimeEqual(t, want.RecoveredAt, got.RecoveredAt, "RecoveredAt")
+	assert.Equal(t, want.MFAAtFirstFactor, got.MFAAtFirstFactor, "MFAAtFirstFactor")
 	assert.Equal(t, want.ExternalProvider, got.ExternalProvider)
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
@@ -445,6 +459,66 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				require.NoError(t, s.Create(ctx, want))
 
 				assertSessionsLoad(ctx, t, s, want)
+			},
+		},
+		{
+			// The marker is stored in a column of its own, and comes back
+			// with the state and satisfied time it was created beside.
+			name: "marker round trip",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := secondFactorAtLoginSession("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, want))
+				require.NoError(t, s.Save(ctx, want))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assertSession(t, want, got)
+				assert.True(t, got.MFAAtFirstFactor)
+				assert.Equal(t, session.MFASatisfied, got.MFA)
+				assertTimeEqual(t, want.MFASatisfiedAt, got.MFASatisfiedAt, "MFASatisfiedAt")
+			},
+		},
+		{
+			name: "unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				totp := sessionRecord("sess-a", "u-1")
+				totp.FirstFactor = factor.Password
+				require.NoError(t, s.Create(ctx, totp))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.Equal(t, session.MFASatisfied, got.MFA)
+				assert.False(t, got.MFAAtFirstFactor, "a session created without the marker loads unmarked")
+			},
+		},
+		{
+			// Only Create writes the marker: a save keeps the stored value,
+			// so a later save can never set it.
+			name: "a save does not set the marker",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.MFAAtFirstFactor = true
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.False(t, got.MFAAtFirstFactor, "a save must not set the marker")
+			},
+		},
+		{
+			name: "a save does not clear the marker",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := secondFactorAtLoginSession("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.MFAAtFirstFactor = false
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.True(t, got.MFAAtFirstFactor, "a save keeps the stored marker")
 			},
 		},
 		{

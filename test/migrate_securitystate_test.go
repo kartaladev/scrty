@@ -66,11 +66,11 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// securityStateTables lists the eleven tables the security-state set creates.
+// securityStateTables lists the thirteen tables the security-state set creates.
 var securityStateTables = []string{
 	"sessions", "signing_keys", "login_attempts", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
-	"recovery_codes", "account_recoveries",
+	"recovery_codes", "account_recoveries", "passkey_credentials", "passkey_user_handles",
 }
 
 // column is one column of the security-state set as the catalogue reports
@@ -157,6 +157,7 @@ var securityStateColumns = map[string][]column{
 		optional("enrolment_origin_deadline", colTimestamptz),
 		optional("enrolment_generation", colUUID),
 		optional("recovered_at", colTimestamptz),
+		defaulted("mfa_at_first_factor", colBoolean, "false"),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -258,6 +259,32 @@ var securityStateColumns = map[string][]column{
 		required("reported", colText),
 		defaulted("saved_spent", colBoolean, "false"),
 	},
+	"passkey_credentials": {
+		required("id", colUUID),
+		required("user_id", colText),
+		required("credential_id", colBytea),
+		required("public_key", colBytea),
+		required("sign_count", colBigint),
+		required("backup_eligible", colBoolean),
+		required("backup_state", colBoolean),
+		required("transports", colText),
+		optional("aaguid", colBytea),
+		optional("attestation_format", colText),
+		optional("attestation_statement", colBytea),
+		required("name", colText),
+		required("created_at", colTimestamptz),
+		optional("last_used_at", colTimestamptz),
+		required("state", colSmallint),
+		required("pending", colSmallint),
+		optional("email_code", colText),
+		optional("email_code_expires_at", colTimestamptz),
+		defaulted("email_code_attempts", colSmallint, "0"),
+	},
+	"passkey_user_handles": {
+		required("id", colUUID),
+		required("user_id", colText),
+		required("handle", colBytea),
+	},
 }
 
 // securityStateIndexes pins every index of every security-state table, keyed
@@ -322,6 +349,16 @@ var securityStateIndexes = map[string][]string{
 		"CREATE UNIQUE INDEX account_recoveries_pkey ON account_recoveries USING btree (id)",
 		"CREATE INDEX account_recoveries_user ON account_recoveries USING btree (user_id)",
 	},
+	"passkey_credentials": {
+		"CREATE UNIQUE INDEX passkey_credentials_pkey ON passkey_credentials USING btree (id)",
+		"CREATE UNIQUE INDEX passkey_credentials_credential_id_key ON passkey_credentials USING btree (credential_id)",
+		"CREATE INDEX passkey_credentials_user_id_idx ON passkey_credentials USING btree (user_id)",
+	},
+	"passkey_user_handles": {
+		"CREATE UNIQUE INDEX passkey_user_handles_pkey ON passkey_user_handles USING btree (id)",
+		"CREATE UNIQUE INDEX passkey_user_handles_user_id_key ON passkey_user_handles USING btree (user_id)",
+		"CREATE UNIQUE INDEX passkey_user_handles_handle_key ON passkey_user_handles USING btree (handle)",
+	},
 }
 
 // groupByTable splits rows of "table|value" into a map from table to its
@@ -375,7 +412,7 @@ type schemaCheck struct {
 func securityStateSchemaChecks(versionTable string) []schemaCheck {
 	return []schemaCheck{
 		{
-			name:  "fresh database has the eleven tables and the version table",
+			name:  "fresh database has the thirteen tables and the version table",
 			query: `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1`,
 			assert: func(t *testing.T, rows []string) {
 				want := append(slices.Clone(securityStateTables), versionTable)
@@ -415,8 +452,9 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			         WHERE column_name = 'user_id' AND table_schema = current_schema()`,
 			assert: func(t *testing.T, rows []string) {
 				// sessions, mfa_enrolments, api_keys, oidc_links, oidc_handoffs,
-				// recovery_codes, account_recoveries
-				require.Len(t, rows, 7)
+				// recovery_codes, account_recoveries, passkey_credentials,
+				// passkey_user_handles
+				require.Len(t, rows, 9)
 				for _, r := range rows {
 					assert.True(t, strings.HasSuffix(r, ":text"), r)
 				}

@@ -52,6 +52,8 @@ type sessionRow struct {
 	EnrolmentGeneration     *id.ID     `gorm:"column:enrolment_generation;type:uuid"`
 	// RecoveredAt is NULL for a session no account recovery ever produced.
 	RecoveredAt *time.Time `gorm:"column:recovered_at;type:timestamptz"`
+	// MFAAtFirstFactor is written by the insert only; the update omits it.
+	MFAAtFirstFactor bool `gorm:"column:mfa_at_first_factor;type:boolean"`
 }
 
 // TableName is the table the migration creates for sessions.

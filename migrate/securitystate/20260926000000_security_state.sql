@@ -30,7 +30,10 @@ CREATE TABLE sessions (
     enrolment_origin_deadline timestamptz NULL,
     enrolment_generation      uuid NULL,
     -- Account recovery. NULL = never recovered.
-    recovered_at        timestamptz NULL
+    recovered_at        timestamptz NULL,
+    -- Set once, at creation, when a second factor was met at the first factor
+    -- (a passkey with user verification). Never written by an update.
+    mfa_at_first_factor boolean NOT NULL DEFAULT false
 );
 -- +goose StatementEnd
 -- Issuer leads: a provider session id is unique only within its issuer.
@@ -178,8 +181,41 @@ CREATE TABLE account_recoveries (
 );
 CREATE INDEX account_recoveries_user ON account_recoveries (user_id);
 
+-- Passkeys: credentials and the per-user WebAuthn user handle.
+CREATE TABLE passkey_credentials (
+    id                    uuid PRIMARY KEY,
+    user_id               text NOT NULL,
+    credential_id         bytea NOT NULL,
+    public_key            bytea NOT NULL,
+    sign_count            bigint NOT NULL,
+    backup_eligible       boolean NOT NULL,
+    backup_state          boolean NOT NULL,
+    transports            text NOT NULL,
+    aaguid                bytea NULL,
+    attestation_format    text NULL,
+    attestation_statement bytea NULL,
+    name                  text NOT NULL,
+    created_at            timestamptz NOT NULL,
+    last_used_at          timestamptz NULL,
+    state                 smallint NOT NULL,
+    pending               smallint NOT NULL,
+    email_code            text NULL,
+    email_code_expires_at timestamptz NULL,
+    email_code_attempts   smallint NOT NULL DEFAULT 0,
+    CONSTRAINT passkey_credentials_credential_id_key UNIQUE (credential_id)
+);
+CREATE INDEX passkey_credentials_user_id_idx ON passkey_credentials (user_id);
+
+CREATE TABLE passkey_user_handles (
+    id      uuid PRIMARY KEY,
+    user_id text NOT NULL UNIQUE,
+    handle  bytea NOT NULL UNIQUE
+);
+
 -- +goose Down
 -- Reverse creation order; IF EXISTS so teardown completes after a test drops a table.
+DROP TABLE IF EXISTS passkey_user_handles;
+DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS account_recoveries;
 DROP TABLE IF EXISTS recovery_codes;
 DROP TABLE IF EXISTS oidc_handoffs;

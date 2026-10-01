@@ -83,6 +83,13 @@ const (
 	// Load hands back no enrolment generation, as a column the read leaves
 	// out would.
 	sessionLoadDropsEnrolmentGeneration sessionDefect = "load-drops-enrolment-generation"
+	// Create does not keep the second-factor-at-login marker.
+	sessionCreateDropsMarker sessionDefect = "create-drops-second-factor-marker"
+	// Save writes the marker from the incoming session, so a save sets it.
+	sessionSaveSetsMarker sessionDefect = "save-sets-second-factor-marker"
+	// Save writes the marker from the incoming session, so a save clears it
+	// too; the suite tells the two apart by which case fails.
+	sessionSaveClearsMarker sessionDefect = "save-clears-second-factor-marker"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -172,6 +179,9 @@ func (s *sessionStore) Create(_ context.Context, sess *session.Session) error {
 		}
 	}
 	stored := cloneSession(sess)
+	if s.defect == sessionCreateDropsMarker {
+		stored.MFAAtFirstFactor = false
+	}
 	if s.defect == sessionCreateSharesData {
 		stored.Data = sess.Data
 	}
@@ -187,6 +197,12 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	stored, exists := s.records[sess.ID]
 	if !exists {
 		return session.ErrSessionNotFound
+	}
+	// Only Create writes the marker: a conforming save keeps the stored one.
+	if s.defect != sessionSaveSetsMarker && s.defect != sessionSaveClearsMarker {
+		kept := cloneSession(sess)
+		kept.MFAAtFirstFactor = stored.MFAAtFirstFactor
+		sess = kept
 	}
 	if s.defect == sessionSaveRefusesTextAfterPartialWrite {
 		stored.LastAccessedAt = sess.LastAccessedAt

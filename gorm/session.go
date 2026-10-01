@@ -110,6 +110,8 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		EnrolmentGeneration:     nullID(sess.EnrolmentGeneration),
 		// NULL when the session was never recovered.
 		RecoveredAt: nullTs(sess.RecoveredAt),
+		// Written on Create only: Save omits the column.
+		MFAAtFirstFactor: sess.MFAAtFirstFactor,
 	}, nil
 }
 
@@ -142,7 +144,8 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 }
 
 // Save replaces the stored session whole, and never inserts: one UPDATE of
-// every column but the keys, whose zero rows affected is
+// every column but the keys and the marker (MFAAtFirstFactor, written on
+// Create only), whose zero rows affected is
 // session.ErrSessionNotFound.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	const op = "save session"
@@ -161,7 +164,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	// field would silently keep the stored value. The keys are left out: id
 	// is minted once on Create, and id_digest is what the row is found by.
 	res := q.Model(&sessionRow{}).Where("id_digest = ?", row.IDDigest).
-		Select("*").Omit("id", "id_digest").Updates(&row)
+		Select("*").Omit("id", "id_digest", "mfa_at_first_factor").Updates(&row)
 	if res.Error != nil {
 		return failed(op, res.Error)
 	}
@@ -212,6 +215,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		ExternalIDToken:         row.ExternalIDToken,
 		EnrolmentOriginDeadline: fromNull(row.EnrolmentOriginDeadline),
 		RecoveredAt:             fromNull(row.RecoveredAt),
+		MFAAtFirstFactor:        row.MFAAtFirstFactor,
 	}
 	if row.EnrolmentGeneration != nil {
 		sess.EnrolmentGeneration = *row.EnrolmentGeneration
