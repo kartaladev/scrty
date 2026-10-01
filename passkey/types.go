@@ -62,7 +62,9 @@ const (
 )
 
 // MaxEmailCodeAttempts is the number of attempts a CredentialStore charges
-// against one emailed code before refusing every further one.
+// against one emailed code before refusing every further one. The store
+// contract fixes it at five and it is not configurable: the specification
+// sets the limit, so a consumer cannot raise it and weaken the guarantee.
 const MaxEmailCodeAttempts = 5
 
 // EmailCode is the code emailed to confirm a pending credential, its expiry
@@ -167,9 +169,9 @@ type AssertionResult struct {
 
 // NormaliseName returns raw trimmed of surrounding white space, or the
 // default name "Passkey <YYYY-MM-DD>" for created's date, in created's own
-// location, when the trimmed name
-// is empty, longer than 64 characters, or holds a control character. A name
-// is replaced, never truncated or refused.
+// location, when the trimmed name is empty, is not valid UTF-8, is longer
+// than 64 characters, or holds a control character. A name is replaced,
+// never truncated or refused.
 func NormaliseName(raw string, created time.Time) string {
 	name := strings.TrimSpace(raw)
 	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameRunes ||

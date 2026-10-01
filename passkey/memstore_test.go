@@ -570,6 +570,42 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 			},
 		},
 		{
+			name:  "both reasons at once are refused and change nothing",
+			seed:  pending(credential("u-1", 1, "C"), both),
+			steps: []step{{user: "u-1", reason: both}},
+			assert: func(t *testing.T, results []result, after *passkey.Credential) {
+				assert.Equal(t, []result{{0, false}}, results)
+				assert.Equal(t, pending(credential("u-1", 1, "C"), both), after)
+			},
+		},
+		{
+			name:  "a known reason with an unknown bit is refused and changes nothing",
+			seed:  pending(credential("u-1", 1, "C"), both),
+			steps: []step{{user: "u-1", reason: passkey.AwaitingSavedCodes | 4}},
+			assert: func(t *testing.T, results []result, after *passkey.Credential) {
+				assert.Equal(t, []result{{0, false}}, results)
+				assert.Equal(t, pending(credential("u-1", 1, "C"), both), after)
+			},
+		},
+		{
+			name:  "the zero reason is refused and changes nothing",
+			seed:  pending(credential("u-1", 1, "C"), both),
+			steps: []step{{user: "u-1", reason: 0}},
+			assert: func(t *testing.T, results []result, after *passkey.Credential) {
+				assert.Equal(t, []result{{0, false}}, results)
+				assert.Equal(t, pending(credential("u-1", 1, "C"), both), after)
+			},
+		},
+		{
+			name:  "an unknown reason is refused and changes nothing",
+			seed:  pending(credential("u-1", 1, "C"), both),
+			steps: []step{{user: "u-1", reason: 4}},
+			assert: func(t *testing.T, results []result, after *passkey.Credential) {
+				assert.Equal(t, []result{{0, false}}, results)
+				assert.Equal(t, pending(credential("u-1", 1, "C"), both), after)
+			},
+		},
+		{
 			name:  "another user's credential is refused",
 			seed:  pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
 			steps: []step{{user: "u-2", reason: passkey.AwaitingSavedCodes}},

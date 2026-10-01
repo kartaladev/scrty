@@ -91,6 +91,10 @@ func validateOrigin(origin, rpID string) error {
 		return errors.New("must be scheme, host and port only")
 	}
 
+	if origin != u.Scheme+"://"+u.Host || strings.HasSuffix(u.Host, ":") || isDefaultPort(u) {
+		return errors.New("must be written as scheme://host[:port], with no empty port or fragment and no default port")
+	}
+
 	host := strings.ToLower(u.Hostname())
 	if host != rpID && !strings.HasSuffix(host, "."+rpID) {
 		return errors.New("is outside the relying-party ID")
@@ -107,5 +111,18 @@ func validateOrigin(origin, rpID string) error {
 		return errors.New("must use https outside a loopback host")
 	default:
 		return errors.New("must use https")
+	}
+}
+
+// isDefaultPort reports an explicit port that is the default of u's scheme,
+// which a serialised origin leaves out.
+func isDefaultPort(u *url.URL) bool {
+	switch u.Port() {
+	case "443":
+		return u.Scheme == "https"
+	case "80":
+		return u.Scheme == "http"
+	default:
+		return false
 	}
 }

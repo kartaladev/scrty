@@ -33,7 +33,8 @@ type CredentialStore interface {
 	// Find returns user's credential cid, or ErrNotFound when there is none or
 	// it is another user's.
 	Find(ctx context.Context, user identity.UserID, cid id.ID) (*Credential, error)
-	// List returns user's credentials in every state, oldest CreatedAt first.
+	// List returns user's credentials in every state, ordered by
+	// CreatedAt, ties broken by the library ID (SQL: ORDER BY created_at, id).
 	List(ctx context.Context, user identity.UserID) ([]*Credential, error)
 	// Count counts user's credentials in every state.
 	Count(ctx context.Context, user identity.UserID) (int, error)
@@ -47,7 +48,9 @@ type CredentialStore interface {
 	// whether this call did. Suspension is terminal.
 	Suspend(ctx context.Context, cid id.ID) (bool, error)
 	// ClearReason clears the pending reason r of user's credential cid, only
-	// where the credential is pending with r set. Clearing the last reason
+	// where r is exactly one reason, AwaitingSavedCodes or AwaitingEmailCode,
+	// and the credential is pending with it set; any other r, such as zero, a
+	// combination or an unknown bit, is refused and changes nothing. Clearing the last reason
 	// makes it active in the same write, and clearing AwaitingEmailCode drops
 	// its emailed code. It returns the state that results and true, or the
 	// zero State and false when refused.

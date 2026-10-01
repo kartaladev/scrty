@@ -24,7 +24,9 @@ type HandleStore interface {
 	// write, and returns the handle user holds afterwards, whether newly
 	// stored or already present. Of concurrent assignments for one user, every
 	// caller receives the same handle. An offer that is not HandleSize bytes
-	// is refused with an error wrapping ErrConfig.
+	// is refused with an error wrapping ErrConfig. An offered handle that another
+	// user already holds is refused with a non-nil error that carries no
+	// handle bytes.
 	Assign(ctx context.Context, user identity.UserID, offered []byte) ([]byte, error)
 	// UserFor returns the user holding handle, or false when no user does.
 	UserFor(ctx context.Context, handle []byte) (identity.UserID, bool, error)

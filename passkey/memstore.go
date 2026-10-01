@@ -174,9 +174,10 @@ func (s *MemoryCredentialStore) Suspend(_ context.Context, cid id.ID) (bool, err
 	return true, nil
 }
 
-// ClearReason clears reason r of user's pending credential cid where it is
-// set, activating the credential when no reason remains and dropping its
-// emailed code when r includes AwaitingEmailCode.
+// ClearReason clears the single reason r of user's pending credential cid
+// where it is set, activating the credential when no reason remains and
+// dropping its emailed code when r is AwaitingEmailCode. Any other r is
+// refused.
 func (s *MemoryCredentialStore) ClearReason(
 	_ context.Context, user identity.UserID, cid id.ID, r PendingReason,
 ) (State, bool, error) {
@@ -184,7 +185,8 @@ func (s *MemoryCredentialStore) ClearReason(
 	defer s.mu.Unlock()
 
 	c := s.owned(user, cid)
-	if c == nil || c.State != StatePending || c.Pending&r == 0 {
+	if (r != AwaitingSavedCodes && r != AwaitingEmailCode) || c == nil ||
+		c.State != StatePending || c.Pending&r == 0 {
 		return 0, false, nil
 	}
 

@@ -69,6 +69,10 @@ func TestRelyingParty_Validate(t *testing.T) {
 		{name: "origin with query", rp: rp("example.com", "https://example.com?x=1"), assert: refused("origin")},
 		{name: "origin with user info", rp: rp("example.com", "https://u@example.com"), assert: refused("origin")},
 		{name: "relative origin", rp: rp("example.com", "example.com"), assert: refused("origin")},
+		{name: "origin with empty fragment", rp: rp("example.com", "https://example.com#"), assert: refused("origin")},
+		{name: "origin with empty port", rp: rp("example.com", "https://example.com:"), assert: refused("origin")},
+		{name: "https origin with default port", rp: rp("example.com", "https://example.com:443"), assert: refused("origin")},
+		{name: "http loopback origin with default port", rp: rp("localhost", "http://localhost:80"), assert: refused("origin")},
 		{name: "other scheme", rp: rp("example.com", "ftp://example.com"), assert: refused("origin")},
 		{
 			name:   "one bad origin among good ones",
