@@ -430,6 +430,11 @@ type SecondFactorProof = assurance.Proof
   - `ChargeEmailAttempt`, guarded on code non-null, unexpired and attempts < 5;
   - `Assign` as `INSERT … ON CONFLICT (user_id) DO NOTHING` followed by a select of the row. It runs inside a savepoint under a caller transaction, or its own transaction otherwise.
 - **Sealing.** `email_code` is sealed with `seal.Cipher` under `seal.PasskeyEmailCodeAAD(id, user)`. `sqlstore`, `pgx` and `gorm` `NewPasskeyCredentialStore(db, cipher, opts…)` require the cipher, as their MFA enrolment stores do. `NewPasskeyHandleStore(db, opts…)` takes `WithTxResolver` and `WithIDGenerator`.
+- **Decided during implementation:**
+  - **No write aborts a caller's transaction.** The credential insert is `INSERT … ON CONFLICT DO NOTHING`, and zero rows inserted is `ErrDuplicateCredential`. `Assign` is `INSERT … ON CONFLICT DO NOTHING` followed by a select of the user's row, so neither statement can fail on a conflict and no savepoint is needed. A select that finds no row for the user means the offered handle is another user's, which is an error naming no handle bytes.
+  - **Identifiers.** The credential store takes no `WithIDGenerator`, since credentials carry the library ID the manager gave them; it is refused, as on the recovery record store. The handle store takes it for the row's own ID.
+  - **`RecordUse`** is `UPDATE … SET backup_state, last_used_at WHERE id AND state = active` (D13).
+  - **Clearing the emailed-code reason** nulls the code and its expiry.
 - **Clocks.** Neither store reads a clock, so `WithClock` is refused, matching the recovery stores.
 - **Migration.** The migration is edited in place, as recovery-codes D15 decided while nothing is tagged. The table list in `test/migrate_securitystate_test.go` grows to thirteen.
 
