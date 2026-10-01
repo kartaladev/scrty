@@ -1052,7 +1052,7 @@ ALTER TABLE sessions ADD COLUMN mfa_at_first_factor boolean NOT NULL DEFAULT fal
 
 **Interfaces:**
 - Produces: `sqlstore.NewPasskeyCredentialStore(db *sql.DB, c seal.Cipher, opts ...Option) (*PasskeyCredentialStore, error)` and `sqlstore.NewPasskeyHandleStore(db *sql.DB, opts ...Option) (*PasskeyHandleStore, error)`.
-  - Both take `WithTxResolver` and `WithIDGenerator`.
+  - Both take `WithTxResolver`. The handle store takes `WithIDGenerator`; the credential store refuses it, because its records carry the library ID the manager gave them (D19).
   - `WithClock` is `ErrConfig`.
   - A nil db, nil cipher or nil option is `ErrConfig`.
 
