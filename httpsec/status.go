@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/recovery"
 )
 
 // statusRow is one refusal and the status it answers with. The table is
@@ -37,7 +38,13 @@ var statusTable = []statusRow{
 	{mfa.ErrVerifyThrottled, http.StatusUnauthorized},
 	{mfa.ErrEnrolmentThrottled, http.StatusUnauthorized},
 
+	// A refused recovery (recovery.ErrRefused) and a throttled saved-code
+	// presentation (recovery.ErrCodeThrottled) need no rows: they wrap
+	// authenticate.ErrAuthenticationFailed and ratelimit.ErrThrottled, so the
+	// rows above answer them 401, exactly as a failed login.
+
 	{ErrCredentialsMissing, http.StatusBadRequest},
+	{recovery.ErrMalformed, http.StatusBadRequest},
 	{oidc.ErrInvalidLogoutToken, http.StatusBadRequest},
 	{ErrRequestTooLarge, http.StatusRequestEntityTooLarge},
 
@@ -50,6 +57,11 @@ var statusTable = []statusRow{
 
 	{policy.ErrAccountLocked, http.StatusLocked},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
+
+	// A held recovery presented before its hold ends: well formed and
+	// authentic, but in conflict with the record's state. A client can retry
+	// once the hold is over, which a 403 would not say.
+	{recovery.ErrNotYetCompletable, http.StatusConflict},
 
 	// A federated-login path segment naming no registered provider, and a
 	// second-factor path segment naming no configured method. Which providers
@@ -67,6 +79,8 @@ var statusTable = []statusRow{
 	{ErrMFAMethodNotUsable, http.StatusForbidden},
 	{ErrNoMFAChallengePending, http.StatusForbidden},
 	{mfa.ErrAlreadyEnrolled, http.StatusForbidden},
+	{recovery.ErrCooldown, http.StatusForbidden},
+	{recovery.ErrReauthenticationRequired, http.StatusForbidden},
 }
 
 // StatusForError maps a refusal to the status it is answered with.
@@ -80,9 +94,9 @@ var statusTable = []statusRow{
 //
 // A challenge is checked first, so a challenge that also wraps a refusal
 // sentinel is answered as the challenge: the caller can still satisfy it. A
-// password-change or enrolment challenge is 403, because the caller is
-// authenticated and must act rather than present credentials again; every other
-// kind, a consumer's own included, is 401.
+// password-change, enrolment or account-recovery challenge is 403, because the
+// caller is authenticated and must act rather than present credentials again;
+// every other kind, a consumer's own included, is 401.
 //
 // A new password a consumer's password-change function refused as reused
 // ([password.ErrPasswordReused]) is 422: the request is well formed and the
@@ -100,7 +114,7 @@ func StatusForError(err error) int {
 	var ch *ChallengeError
 	if errors.As(err, &ch) {
 		switch ch.Kind {
-		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment:
+		case policy.ChallengePasswordChange, policy.ChallengeMFAEnrolment, policy.ChallengeAccountRecovery:
 			return http.StatusForbidden
 		default:
 			return http.StatusUnauthorized

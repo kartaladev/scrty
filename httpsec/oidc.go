@@ -162,6 +162,10 @@ type oidcInterceptor struct {
 	// (Chain.challengeMethods), before the login's session is created.
 	challengeMethods challengeMethodsFunc
 
+	// cancelHeld cancels the user's held account recoveries at login, set at
+	// assembly when the chain's recovery may hold one, and nil otherwise.
+	cancelHeld heldRecoveryCanceller
+
 	// limiter, limit and window are what the redemption source guard is built
 	// from. A nil limiter means a dedicated in-memory one of limit per window.
 	limiter       ratelimit.Limiter

@@ -31,6 +31,12 @@ const (
 	// OrderMagicLink is reserved for one-time link requests and redemptions.
 	OrderMagicLink Order = 350
 
+	// OrderAccountRecoveryEndpoints is the account-recovery endpoints, which
+	// answer callers who cannot log in. They sit outside Basic, API key and
+	// bearer authentication, so a stale credential a client still sends
+	// cannot refuse a recovery before it is heard. See EnableAccountRecovery.
+	OrderAccountRecoveryEndpoints Order = 375
+
 	// OrderBasicAuth is HTTP Basic authentication.
 	OrderBasicAuth Order = 400
 
@@ -77,6 +83,19 @@ const (
 // already been refused. Registered before it, it runs ahead of the enrolment
 // gate and sees such a session, as every interceptor outside the gate does.
 const OrderMFAEnrolment = OrderMFAChallenge - 1
+
+// OrderAccountRecovery is the recovery gate, which confines a session an
+// account recovery created to the endpoints that bind a new authenticator or
+// change its password, and to logout. It is Before(OrderMFAEnrolment), after
+// bearer authentication has resolved the session and outside every gate a
+// recovery-pending session must not be judged by first: the enrolment gate,
+// the second-factor gate and the password-change gate. Like OrderMFAEnrolment
+// it is not spaced from its neighbour, so that no other named slot lies
+// between the recovery gate and the enrolment gate.
+//
+// A consumer interceptor registered at Before(OrderMFAEnrolment) shares this
+// slot, and slot-mates run in the order they were registered.
+const OrderAccountRecovery = OrderMFAEnrolment - 1
 
 // Before is the slot immediately outside o, which runs just before it.
 func Before(o Order) Order { return o - 1 }

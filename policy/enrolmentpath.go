@@ -86,9 +86,18 @@ func WithMFAEnrolmentPath(opts ...EnrolmentPathOption) MFARequirementOption {
 
 // WithEnrolmentFirstFactors replaces the allowlist of first-factor kinds whose
 // logins may enter the enrolment path. The default is factor.Password,
-// factor.MagicLink and the empty kind — a login that did not record its first
-// factor. The kinds given replace that list; they are not added to it, so a
-// consumer who wants to keep a default kind lists it.
+// factor.MagicLink, factor.Recovery and the empty kind — a login that did not
+// record its first factor. The kinds given replace that list; they are not
+// added to it, so a consumer who wants to keep a default kind lists it.
+//
+// factor.Recovery is on the default because a session it names rests on two
+// proofs of different kinds and exists for one purpose: binding a new
+// authenticator. A consumer who replaces the list and leaves factor.Recovery
+// off gives a required user left with no usable second factor after a
+// recovery no enrolment route at all — every request of theirs is refused
+// with ErrMFAEnrollmentRequired instead, exactly as it would be with the path
+// off. Such a user can then only reach a route the consumer wired to accept a
+// recovery-pending session before it is bound, such as a password change.
 //
 // The list governs only whether a login the policy would otherwise refuse with
 // ErrMFAEnrollmentRequired enters the path. It changes neither whether a user
@@ -152,9 +161,11 @@ type enrolmentPath struct {
 }
 
 // defaultEnrolmentFirstFactors is the allowlist a path starts with: password,
-// magic link, and a first factor the login did not record.
+// magic link, account recovery, and a first factor the login did not record.
 func defaultEnrolmentFirstFactors() map[factor.Kind]bool {
-	return map[factor.Kind]bool{factor.Password: true, factor.MagicLink: true, "": true}
+	return map[factor.Kind]bool{
+		factor.Password: true, factor.MagicLink: true, factor.Recovery: true, "": true,
+	}
 }
 
 // enrolmentPathCapable is what a method lookup implements to say whether a user

@@ -121,9 +121,14 @@ func TestChallengeKindString(t *testing.T) {
 			assert:    named("ChallengeMFAEnrolment"),
 		},
 		{
+			name:      "account recovery",
+			challenge: policy.ChallengeAccountRecovery,
+			assert:    named("ChallengeAccountRecovery"),
+		},
+		{
 			name:      "a value naming no challenge prints its number",
-			challenge: policy.ChallengeKind(4),
-			assert:    named("ChallengeKind(4)"),
+			challenge: policy.ChallengeKind(5),
+			assert:    named("ChallengeKind(5)"),
 		},
 	}
 
@@ -162,6 +167,7 @@ func TestChallengeKindValues(t *testing.T) {
 		{name: "mfa", challenge: policy.ChallengeMFA, assert: valued(1)},
 		{name: "password change", challenge: policy.ChallengePasswordChange, assert: valued(2)},
 		{name: "mfa enrolment is appended", challenge: policy.ChallengeMFAEnrolment, assert: valued(3)},
+		{name: "account recovery is appended", challenge: policy.ChallengeAccountRecovery, assert: valued(4)},
 	}
 
 	for _, tc := range cases {

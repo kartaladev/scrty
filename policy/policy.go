@@ -228,6 +228,15 @@ const (
 	// It is appended rather than inserted, because durable stores keep these
 	// values by number.
 	ChallengeMFAEnrolment
+
+	// ChallengeAccountRecovery is the refusal of a session a completed account
+	// recovery created, until that session binds a new authenticator or
+	// changes its password. No policy raises it: the recovery gate the chain
+	// registers for an enabled account recovery refuses with it directly.
+	//
+	// It is appended rather than inserted, because durable stores keep these
+	// values by number.
+	ChallengeAccountRecovery
 )
 
 // String returns the constant's own name, so a log line reads "ChallengeMFA"
@@ -242,6 +251,8 @@ func (c ChallengeKind) String() string {
 		return "ChallengePasswordChange"
 	case ChallengeMFAEnrolment:
 		return "ChallengeMFAEnrolment"
+	case ChallengeAccountRecovery:
+		return "ChallengeAccountRecovery"
 	default:
 		return unnamed("ChallengeKind", int(c))
 	}

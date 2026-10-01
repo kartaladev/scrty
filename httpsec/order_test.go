@@ -24,6 +24,7 @@ func builtInSlots() []namedSlot {
 		{"OIDC", httpsec.OrderOIDC},
 		{"FormLogin", httpsec.OrderFormLogin},
 		{"MagicLink", httpsec.OrderMagicLink},
+		{"AccountRecoveryEndpoints", httpsec.OrderAccountRecoveryEndpoints},
 		{"BasicAuth", httpsec.OrderBasicAuth},
 		{"APIKey", httpsec.OrderAPIKey},
 		{"MTLS", httpsec.OrderMTLS},
@@ -76,6 +77,22 @@ func TestOrder(t *testing.T) {
 		// before Basic authentication"
 		assert.Greater(t, httpsec.OrderMagicLink, httpsec.OrderFormLogin)
 		assert.Less(t, httpsec.OrderMagicLink, httpsec.OrderBasicAuth)
+
+		// The recovery endpoints answer callers who cannot log in, between
+		// the one-time link slot and Basic authentication.
+		assert.Equal(t, httpsec.Order(375), httpsec.OrderAccountRecoveryEndpoints)
+		assert.Greater(t, httpsec.OrderAccountRecoveryEndpoints, httpsec.OrderMagicLink)
+		assert.Less(t, httpsec.OrderAccountRecoveryEndpoints, httpsec.OrderBasicAuth)
+
+		// "The refusal SHALL come before the password-change gate, the
+		// enrolment gate, the MFA challenge gate": the recovery gate runs
+		// after bearer authentication has resolved the session and
+		// immediately outside the enrolment gate.
+		assert.Equal(t, httpsec.Before(httpsec.OrderMFAEnrolment), httpsec.OrderAccountRecovery)
+		assert.Greater(t, httpsec.OrderAccountRecovery, httpsec.OrderBearerToken)
+		assert.Less(t, httpsec.OrderAccountRecovery, httpsec.OrderMFAEnrolment)
+		assert.Less(t, httpsec.OrderAccountRecovery, httpsec.OrderMFAChallenge)
+		assert.Less(t, httpsec.OrderAccountRecovery, httpsec.OrderPasswordChange)
 
 		// The authorization stage is innermost of the built-ins, so everything
 		// it judges has already been resolved.

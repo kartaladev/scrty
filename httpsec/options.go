@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -144,6 +145,13 @@ type config struct {
 	logout *logout
 
 	ipv6Prefix int
+
+	// recoverer is the account recovery EnableAccountRecovery's endpoints run,
+	// built at assembly (wireAccountRecovery), and nil on a chain without
+	// recovery. It is kept here so the other built-ins that take part in a
+	// recovery — the held-recovery endpoints and login's cancellation of a
+	// held recovery — reach the same one.
+	recoverer *recovery.Recoverer
 
 	errorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
@@ -336,6 +344,13 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// Account recovery builds its Recoverer here: its password proof is the
+	// chain's form login, and its logger is the chain's, either of which may
+	// be configured after EnableAccountRecovery.
+	if err := c.wireAccountRecovery(); err != nil {
+		return nil, err
+	}
+
 	// Activity is recorded for every chain, with no option to enable: a session
 	// whose idle deadline stops moving while its owner is using it is logged
 	// out mid-work, and that is not a behaviour worth being able to switch off.
@@ -477,6 +492,10 @@ func WithChallengeEnforcer(kind policy.ChallengeKind) Option {
 	return func(c *config) error {
 		if kind == policy.ChallengeNone {
 			return newConfigError("WithChallengeEnforcer was given ChallengeNone, which is not a challenge")
+		}
+
+		if err := refuseGateOnly(kind, "WithChallengeEnforcer was given"); err != nil {
+			return err
 		}
 
 		if b, ok := builtInEnforcers[kind]; ok {

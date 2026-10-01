@@ -154,11 +154,26 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	case policy.Deny:
 		return policyDenyReason(d)
 	case policy.Challenge:
-		// Marked and continued, not refused here: the gate for this challenge
-		// enforces it at its own slot, and refusing at this one would also
-		// block the very endpoint the caller must reach to resolve it.
-		if err := b.markChallenge(ctx, s, d.Challenge); err != nil {
+		// A kind nothing on the chain enforces is refused before anything is
+		// marked, whatever state the session is in; see refuseUnenforced.
+		if err := refuseUnenforced(b.enforced, d.Challenge); err != nil {
 			return err
+		}
+
+		// A recovery-pending session is not marked: marking would move it out
+		// of that state without a binding, and the recovery gate is its only
+		// enforcer until one completes. It goes on to that gate, which
+		// refuses it unless the request is one that can bind it. Only the
+		// mark is skipped: the check above and the record below still apply.
+		//
+		// Otherwise it is marked and continued, not refused here: the gate for
+		// this challenge enforces it at its own slot, and refusing at this one
+		// would also block the very endpoint the caller must reach to resolve
+		// it.
+		if s.MFA != session.MFARecoveryPending {
+			if err := b.markChallenge(ctx, s, d.Challenge); err != nil {
+				return err
+			}
 		}
 
 		// A consumer kind has no field on the session to be marked in, so it

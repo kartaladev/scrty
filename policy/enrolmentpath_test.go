@@ -283,6 +283,13 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 		{name: "password is on the default list", first: factor.Password, assert: challenged},
 		{name: "magic link is on the default list", first: factor.MagicLink, assert: challenged},
 		{name: "an unrecorded first factor is on the default list", first: "", assert: challenged},
+		{
+			// A recovery session rests on two proofs of different kinds and
+			// exists to bind a new authenticator, so a required user left with no
+			// usable second factor is challenged for enrolment rather than denied
+			// outright.
+			name: "recovery is on the default list", first: factor.Recovery, assert: challenged,
+		},
 		{name: "oidc is off the default list", first: factor.OIDC, assert: denied},
 		{
 			name:  "a consumer list admits oidc",
@@ -358,6 +365,21 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 			tc.assert(t, p.Evaluate(mfaPhaseContext(t, policy.PostAuthentication), in), nil)
 		})
 	}
+}
+
+// TestDefaultEnrolmentFirstFactorsExactly pins the enrolment path's default
+// allowlist as an exact set: a password, a magic link, a recovery and the
+// unrecorded kind, and nothing else. TestEnrolmentFirstFactors pins how each
+// kind it names is treated; this pins that no kind it does not name was added.
+func TestDefaultEnrolmentFirstFactorsExactly(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, map[factor.Kind]bool{
+		factor.Password:  true,
+		factor.MagicLink: true,
+		factor.Recovery:  true,
+		"":               true,
+	}, policy.DefaultEnrolmentFirstFactors())
 }
 
 // TestEnrolmentPathUntil pins the instant after which the path is closed. The

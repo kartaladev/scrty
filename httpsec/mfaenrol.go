@@ -396,28 +396,46 @@ func (c *config) enrolmentLimiter(l ratelimit.Limiter, limit int, window time.Du
 // the session — on a device that is not theirs, it is the one thing they most
 // need to do. There is deliberately no way to exempt anything else: every
 // further route would reopen a surface this state exists to close.
+//
+// A recovery-pending session is served on the same endpoints, on its own
+// user, exactly as an enrolment-only session is. Every other request it makes
+// passes on untouched: the recovery gate outside this one has already decided
+// which requests such a session may make, and refusing here too would only
+// restate that decision under the enrolment challenge's name.
 func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 	s := ex.Session
-	if s == nil || s.MFA != session.MFAEnrolmentPending {
+	if s == nil || (s.MFA != session.MFAEnrolmentPending && s.MFA != session.MFARecoveryPending) {
 		return next(ex)
 	}
 
-	r := ex.Request
+	if served, err := i.endpoint(ex, s); served {
+		return err
+	}
 
-	switch {
-	case isPostUnder(r, i.beginPrefix):
-		return i.serve(ex, s, endpointBegin, i.beginPrefix, i.begin)
-	case isPostUnder(r, i.confirmPrefix):
-		return i.serve(ex, s, endpointConfirm, i.confirmPrefix, i.confirm)
-	case i.emailConfirmation && isPostUnder(r, i.emailPrefix):
-		return i.serve(ex, s, endpointEmail, i.emailPrefix, i.redeemEmailCode)
-	case isLogoutPost(i.logoutPath, r):
+	if s.MFA == session.MFARecoveryPending || isLogoutPost(i.logoutPath, ex.Request) {
 		return next(ex)
 	}
 
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
 	return &ChallengeError{Kind: policy.ChallengeMFAEnrolment, Session: s}
+}
+
+// endpoint serves ex when it is a request to one of the path's endpoints. It
+// reports whether it was one, and the endpoint's answer when it was.
+func (i *enrolmentInterceptor) endpoint(ex *Exchange, s *session.Session) (bool, error) {
+	r := ex.Request
+
+	switch {
+	case isPostUnder(r, i.beginPrefix):
+		return true, i.serve(ex, s, endpointBegin, i.beginPrefix, i.begin)
+	case isPostUnder(r, i.confirmPrefix):
+		return true, i.serve(ex, s, endpointConfirm, i.confirmPrefix, i.confirm)
+	case i.emailConfirmation && isPostUnder(r, i.emailPrefix):
+		return true, i.serve(ex, s, endpointEmail, i.emailPrefix, i.redeemEmailCode)
+	}
+
+	return false, nil
 }
 
 // serve runs one enrolment endpoint on the method the request's path names
@@ -794,7 +812,8 @@ const msgEmailCodeNotVoided = "httpsec: an undelivered enrolment code could not 
 // not a second factor, and the verify endpoint, with its own throttle,
 // same-channel check and rotation, is the one place a challenge is resolved.
 // The enrolment-origin marker and the lowered deadline stay until that
-// verification restores them.
+// verification restores them, and so does a recovery-pending session's
+// recovery time, which is kept for good.
 //
 // The user is notified whether or not the session can then be saved. The
 // binding is already written, and the owner is told of every binding: a save
@@ -805,6 +824,7 @@ const msgEmailCodeNotVoided = "httpsec: an undelivered enrolment code could not 
 func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, method mfa.Enroller) error {
 	ctx := ex.Context()
 
+	was := s.MFA
 	s.MFA = session.MFAPending
 
 	saveErr := i.sessions.Save(ctx, s)
@@ -812,7 +832,7 @@ func (i *enrolmentInterceptor) completed(ex *Exchange, s *session.Session, metho
 	i.notifyBound(ctx, s.UserID, method.Name())
 
 	if saveErr != nil {
-		s.MFA = session.MFAEnrolmentPending
+		s.MFA = was
 
 		return newEnrolmentFault(reasonSessionUnsaved, msgSessionUnsaved, saveErr)
 	}

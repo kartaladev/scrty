@@ -105,3 +105,23 @@ var WithSession = withSession
 // ReadResponse exposes the reader the verify endpoint hands a method's
 // response through, so its rules can be pinned without a chain.
 var ReadResponse = readResponse
+
+// EnableRecoveryGateForTest registers the recovery gate exactly as
+// EnableAccountRecovery does, without the recovery endpoints, so a test can
+// pin what the gate lets through before those endpoints exist.
+func EnableRecoveryGateForTest() Option {
+	return func(c *config) error {
+		c.enableRecoveryGate(nil)
+		return nil
+	}
+}
+
+// WithRecoveryClockForTest replaces the clock the recovery endpoints judge
+// time by, which is otherwise time.Now, so a test can judge the regeneration
+// window on the same fake clock its sessions were created on.
+func WithRecoveryClockForTest(now func() time.Time) RecoveryOption {
+	return func(i *recoveryInterceptor) error {
+		i.now = now
+		return nil
+	}
+}

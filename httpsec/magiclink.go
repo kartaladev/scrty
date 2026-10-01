@@ -135,6 +135,10 @@ type magicLinkInterceptor struct {
 	// (Chain.challengeMethods), before the login's session is created.
 	challengeMethods challengeMethodsFunc
 
+	// cancelHeld cancels the user's held account recoveries at login, set at
+	// assembly when the chain's recovery may hold one, and nil otherwise.
+	cancelHeld heldRecoveryCanceller
+
 	limiter   ratelimit.Limiter
 	redirects *origin.Allowlist
 
@@ -410,6 +414,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  out.challengeMethods(i.challengeMethods),
 		decided:           &out.decision,
+		cancelHeld:        i.cancelHeld,
 	}, postAuthenticationInput(
 		&redemption.Principal, factor.MagicLink, "", redemption.PasswordChangedAt, i.now()))
 	if err != nil {

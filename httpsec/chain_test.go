@@ -487,6 +487,17 @@ func TestWithChallengeEnforcer(t *testing.T) {
 		{name: "the built-in password change", kind: policy.ChallengePasswordChange, assert: refused},
 		{name: "the built-in enrolment", kind: policy.ChallengeMFAEnrolment, assert: refused},
 		{
+			name: "the recovery gate's own kind",
+			kind: policy.ChallengeAccountRecovery,
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.ErrorContains(t, err, "only the recovery gate raises",
+					"the refusal says no policy may raise the kind, not that a gate is missing")
+			},
+		},
+		{
 			name: "a consumer kind",
 			kind: policy.ChallengeKind(100),
 			assert: func(t *testing.T, err error) {
@@ -678,6 +689,24 @@ func TestUnenforcedChallengeAtRuntime(t *testing.T) {
 
 				refusedNaming(t, out, "ChallengeMFAEnrolment")
 				assert.NotEqual(t, session.MFAEnrolmentPending, stored.MFA, "the session is not marked")
+			},
+		},
+		{
+			// Only the recovery gate raises this kind, and only on a
+			// recovery-pending session. Raised by a policy on an ordinary
+			// session, nothing would confine it, so it is refused rather than
+			// served.
+			name:    "the account-recovery kind, with the recovery gate on",
+			phase:   policy.PerRequest,
+			kind:    policy.ChallengeAccountRecovery,
+			wire:    bearer,
+			options: bearerOn(httpsec.EnableRecoveryGateForTest()),
+			request: bearerReq,
+			assert: func(t *testing.T, out served, _ *session.Session) {
+				t.Helper()
+
+				refusedNaming(t, out, "ChallengeAccountRecovery")
+				assert.ErrorContains(t, out.err, "only the recovery gate raises", "the error names the reason")
 			},
 		},
 		{

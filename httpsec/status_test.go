@@ -26,6 +26,7 @@ import (
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -110,6 +111,18 @@ func TestStatusForError(t *testing.T) {
 			err:  &httpsec.ChallengeError{Kind: policy.ChallengeMFAEnrolment},
 			want: 403,
 		},
+		{
+			name: "account-recovery challenge",
+			err:  &httpsec.ChallengeError{Kind: policy.ChallengeAccountRecovery},
+			want: 403,
+		},
+		{name: "refused recovery", err: recovery.ErrRefused, want: 401},
+		{name: "wrapped refused recovery", err: fmt.Errorf("completing: %w", recovery.ErrRefused), want: 401},
+		{name: "malformed recovery", err: recovery.ErrMalformed, want: 400},
+		{name: "recovery not yet completable", err: recovery.ErrNotYetCompletable, want: 409},
+		{name: "recovery cool-down", err: recovery.ErrCooldown, want: 403},
+		{name: "reauthentication required", err: recovery.ErrReauthenticationRequired, want: 403},
+		{name: "throttled saved-code presentation", err: recovery.ErrCodeThrottled, want: 401},
 		{
 			name: "a consumer's own challenge kind",
 			err:  &httpsec.ChallengeError{Kind: policy.ChallengeKind(100)},
@@ -277,6 +290,16 @@ var sentinelRegistry = map[string]map[string]error{
 		"ratelimit.ErrSourceUnspecified":    ratelimit.ErrSourceUnspecified,
 		"ratelimit.ErrThrottled":            ratelimit.ErrThrottled,
 	},
+	"github.com/kartaladev/scrty/recovery": {
+		"recovery.ErrCodeThrottled":            recovery.ErrCodeThrottled,
+		"recovery.ErrConfig":                   recovery.ErrConfig,
+		"recovery.ErrCooldown":                 recovery.ErrCooldown,
+		"recovery.ErrMalformed":                recovery.ErrMalformed,
+		"recovery.ErrNotYetCompletable":        recovery.ErrNotYetCompletable,
+		"recovery.ErrReauthenticationRequired": recovery.ErrReauthenticationRequired,
+		"recovery.ErrRecordNotFound":           recovery.ErrRecordNotFound,
+		"recovery.ErrRefused":                  recovery.ErrRefused,
+	},
 	"github.com/kartaladev/scrty/httpsec": {
 		"httpsec.ErrAuthenticationRequired": httpsec.ErrAuthenticationRequired,
 		"httpsec.ErrConfig":                 httpsec.ErrConfig,
@@ -340,6 +363,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"password.ErrWeakParameters":              "a wiring fault, refused at construction",
 		"password.ErrHistoryUnavailable":          "a dependency failure, deliberately 500",
 		"password.ErrPasswordTooLong":             "the encoder's error is returned as is, and the consumer decides",
+		"recovery.ErrConfig":                      "a wiring fault, refused at construction",
+		"recovery.ErrRecordNotFound":              "a store outcome the recovery core converts to ErrRefused before it leaves the core",
 	}
 
 	for _, pkg := range []string{
@@ -351,6 +376,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"github.com/kartaladev/scrty/password",
 		"github.com/kartaladev/scrty/policy",
 		"github.com/kartaladev/scrty/ratelimit",
+		"github.com/kartaladev/scrty/recovery",
 		"github.com/kartaladev/scrty/session",
 	} {
 		for name, err := range exportedSentinels(t, pkg) {

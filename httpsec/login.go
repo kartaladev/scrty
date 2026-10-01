@@ -90,6 +90,10 @@ type formLogin struct {
 	// (Chain.challengeMethods), before the login's session is created.
 	challengeMethods challengeMethodsFunc
 
+	// cancelHeld cancels the user's held account recoveries at login, set at
+	// assembly when the chain's recovery may hold one, and nil otherwise.
+	cancelHeld heldRecoveryCanceller
+
 	now func() time.Time
 
 	path          string
@@ -133,22 +137,8 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 	now := l.now()
 
-	// Before the credential is checked, so a locked account is refused without
-	// its password ever being tested. Testing it first would make the refusal
-	// an oracle: a locked account would answer differently for a right guess
-	// than for a wrong one.
-	pre := evaluatePhase(ctx, l.engine, policy.PreAuthentication, &policy.Input{
-		Username: username,
-		Now:      now,
-	})
-	if err := refusePreAuthentication(pre, l.enforced); err != nil {
-		return err
-	}
-
-	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	auth, err := l.authenticatePassword(ctx, username, password, now)
 	if err != nil {
-		l.recordFailure(ctx, username, now)
-
 		return err
 	}
 
@@ -163,6 +153,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		enrolmentLifetime: l.enrolmentLifetime,
 		enforced:          l.enforced,
 		challengeMethods:  l.challengeMethods,
+		cancelHeld:        l.cancelHeld,
 	}, postAuthenticationInput(
 		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now))
 	if err != nil {
@@ -173,6 +164,51 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// behind the chain serves the application, and there is no application
 	// route for the library's own endpoint.
 	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session})
+}
+
+// authenticatePassword judges a password the way a login does, and is the one
+// place that sequence lives, so account recovery's password proof cannot drift
+// from it.
+//
+// The pre-authentication phase runs before the credential is checked, so a
+// locked account is refused without its password ever being tested. Testing
+// it first would make the refusal an oracle: a locked account would answer
+// differently for a right guess than for a wrong one. A credential the
+// authenticator refuses is recorded as a failed attempt. Clearing the failures
+// a success supersedes is left to the caller, because only a login is a
+// success in that sense.
+func (l *formLogin) authenticatePassword(
+	ctx context.Context,
+	username string,
+	password []byte,
+	now time.Time,
+) (*authenticate.Authentication, error) {
+	pre := evaluatePhase(ctx, l.engine, policy.PreAuthentication, &policy.Input{
+		Username: username,
+		Now:      now,
+	})
+	if err := refusePreAuthentication(pre, l.enforced); err != nil {
+		return nil, err
+	}
+
+	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	if err != nil {
+		l.recordFailure(ctx, username, now)
+
+		return nil, err
+	}
+
+	return auth, nil
+}
+
+// checkPassword is account recovery's password proof (recovery.PasswordCheck):
+// this login's pre-authentication phase, authenticator and attempt recording,
+// in that order. A correct password clears no recorded failures, since a
+// recovery that passes its password proof may still be refused.
+func (l *formLogin) checkPassword(ctx context.Context, username string, password []byte) error {
+	_, err := l.authenticatePassword(ctx, username, password, l.now())
+
+	return err
 }
 
 // bind reads the submitted identifier and password out of the request.

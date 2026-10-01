@@ -70,6 +70,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		enforced:          i.enforced,
 		challengeMethods:  out.challengeMethods(i.challengeMethods),
 		decided:           &out.decision,
+		cancelHeld:        i.cancelHeld,
 	}, postAuthenticationInput(&res.Principal, factor.OIDC, "", res.PasswordChangedAt, i.now()),
 		session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken))
 	if err != nil {

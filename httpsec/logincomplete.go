@@ -58,7 +58,18 @@ type loginTailDeps struct {
 	// credential. Form login spends nothing, so it leaves this nil and the
 	// tail evaluates.
 	decided *policy.Decision
+
+	// cancelHeld cancels the user's held account recoveries, and is nil when
+	// the chain holds none: account recovery is off, or configured with no
+	// hold. The chain hands it to each first factor at assembly. The tail
+	// calls it before anything else, ahead of the policy phase.
+	cancelHeld heldRecoveryCanceller
 }
+
+// heldRecoveryCanceller cancels every pending recovery of a user: the
+// recovery core's CancelPending, which reports a store failure behind fixed
+// text.
+type heldRecoveryCanceller func(ctx context.Context, user identity.UserID) error
 
 // postAuthenticationInput builds the policy input for a login that has just
 // succeeded.
@@ -136,7 +147,9 @@ type challengeMarker struct {
 }
 
 // refuseUnenforced refuses a challenge of a kind nothing on the chain
-// enforces, with a configuration error, before anything is marked.
+// enforces, with a configuration error, before anything is marked. A kind only
+// a built-in gate raises is refused the same way, whatever is enabled; see
+// refuseGateOnly.
 //
 // Chain assembly refuses a policy that declares such a kind, but it can only
 // read the policies registered when the chain is built. A policy added to the
@@ -146,6 +159,10 @@ type challengeMarker struct {
 // visible on the first request that reaches it, and satisfies nothing it
 // should not.
 func refuseUnenforced(enforced map[policy.ChallengeKind]bool, kind policy.ChallengeKind) error {
+	if err := refuseGateOnly(kind, "a policy raised"); err != nil {
+		return err
+	}
+
 	if enforced[kind] {
 		return nil
 	}
@@ -202,6 +219,13 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // errors.As, so the status it maps to is unchanged. A policy's reason is the
 // policy's own, and is returned as itself.
 //
+// When the chain may hold account recoveries, the user's held recoveries are
+// cancelled first, as soon as the first factor has authenticated: before the
+// policy phase and before the session is created. A login the policy then
+// denies or challenges has still cancelled them, since completing the first
+// factor is the evidence the real user still has access. A failure to cancel
+// refuses the login (see loginTailDeps.cancelHeld).
+//
 // A caller that has already decided the phase for this login passes the
 // decision in deps.decided, and the tail acts on it rather than evaluating
 // again (see loginTailDeps.decided).
@@ -220,6 +244,20 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // replace the factor the policy phase was just evaluated on.
 func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...session.CreateOption) (string, error) {
 	ctx := ex.Context()
+
+	// A user who completes a first factor can still get into their account,
+	// so a recovery held for it is cancelled here, before the policy phase:
+	// a login the policy denies still showed the user holds their first
+	// factor. A cancellation that cannot be recorded refuses the login, which
+	// fails closed: letting the recovery stand would let it finish later
+	// against a user who showed they had not lost their account. As for a
+	// session-store failure below, a one-time login credential may already be
+	// spent.
+	if deps.cancelHeld != nil {
+		if err := deps.cancelHeld(ctx, in.User); err != nil {
+			return "", err
+		}
+	}
 
 	d := policy.Decision{Outcome: policy.Allow}
 

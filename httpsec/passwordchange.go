@@ -92,6 +92,19 @@ func (g *passwordChangeGate) isResolveRequest(r Request) bool {
 
 // resolve runs the consumer's change, and records the debt as paid only when
 // it reports that it was.
+//
+// On a recovery-pending session a successful change also completes the
+// recovery: the session's deadlines are restored, its second-factor state
+// becomes none, and the security policies decide on the next request what it
+// owes, such as an MFA challenge or an enrolment. The session is saved, not
+// rotated. The consumer's function owns the response, so there is nowhere to
+// hand a new credential back; and nothing is lost by keeping the handle, since
+// the recovery created this session for this caller moments ago and it has
+// had no earlier holder. A change that fails leaves the session
+// recovery-pending. A session already past its lowered deadline is refused
+// before the consumer's function runs, so no password is changed on a request
+// that is then refused; and a session that cannot be saved afterwards is left
+// in memory as it was.
 func (g *passwordChangeGate) resolve(ex *Exchange) error {
 	// The endpoint changes this caller's own password, so there has to be a
 	// caller: without a session it would be an unauthenticated password change
@@ -100,16 +113,55 @@ func (g *passwordChangeGate) resolve(ex *Exchange) error {
 		return ErrAuthenticationRequired
 	}
 
+	s := ex.Session
+
+	// What the session becomes is worked out before the consumer's function
+	// runs, so that a recovery-pending session already past its lowered
+	// deadline is refused before any password is changed: it has ended, is
+	// not revived, and the caller is answered as for any session that no
+	// longer loads.
+	resolved := *s
+	if s.MFA == session.MFARecoveryPending {
+		if err := g.sessions.RestoreEnrolmentDeadlines(&resolved); err != nil {
+			return ErrAuthenticationRequired
+		}
+
+		resolved.MFA = session.MFANone
+	}
+
+	resolved.PasswordChangePending = false
+
 	if err := g.change(ex); err != nil {
 		// The consumer's error is the refusal, unchanged: they know why they
 		// refused, and restating it here would lose that.
 		return err
 	}
 
-	ex.Session.PasswordChangePending = false
+	previous := *s
+	adoptResolution(s, &resolved)
 
 	// Persisted before the response returns, because the marker is what every
 	// later request is judged on: a change that cleared the flag in memory
-	// alone would be owed again on the next request.
-	return g.sessions.Save(ex.Context(), ex.Session)
+	// alone would be owed again on the next request. A session that cannot be
+	// saved keeps, in memory too, the state it was stored in.
+	if err := g.sessions.Save(ex.Context(), s); err != nil {
+		adoptResolution(s, &previous)
+
+		return err
+	}
+
+	return nil
+}
+
+// adoptResolution copies onto dst the fields resolve changes, from src: the
+// second-factor state, the password-change marker and the deadlines a
+// recovery-pending session's resolution restores. Every other field is left
+// as dst holds it, including anything the consumer's function set.
+func adoptResolution(dst, src *session.Session) {
+	dst.MFA = src.MFA
+	dst.PasswordChangePending = src.PasswordChangePending
+	dst.AbsoluteExpiresAt = src.AbsoluteExpiresAt
+	dst.IdleExpiresAt = src.IdleExpiresAt
+	dst.EnrolmentOriginDeadline = src.EnrolmentOriginDeadline
+	dst.EnrolmentGeneration = src.EnrolmentGeneration
 }

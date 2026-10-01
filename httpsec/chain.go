@@ -170,6 +170,31 @@ var builtInEnforcers = map[policy.ChallengeKind]builtInEnforcer{
 	policy.ChallengeMFA:            {option: "EnableMFA", what: "a second factor"},
 	policy.ChallengePasswordChange: {option: "EnablePasswordChangeGate", what: "a password change"},
 	policy.ChallengeMFAEnrolment:   {option: "EnableMFAEnrolment", what: "a second-factor enrolment"},
+
+	// The account-recovery kind is listed so WithChallengeEnforcer refuses it
+	// as a library kind rather than accepting it as the consumer's. It never
+	// counts as enforced: no policy may raise it (see refuseGateOnly).
+	policy.ChallengeAccountRecovery: {option: "EnableAccountRecovery", what: "an account recovery's binding"},
+}
+
+// refuseGateOnly refuses kind when it is one only a built-in gate raises,
+// never a policy.
+//
+// The account-recovery kind is the one such kind. The recovery gate raises it
+// directly, and only on a session an account recovery created; nothing would
+// confine an ordinary session a policy challenged with it. Accepting such a
+// declaration and letting the challenged request through would relax the
+// policy silently, so assembly refuses a policy that declares it, and a policy
+// added later that raises it refuses the request, whether or not the recovery
+// gate is on.
+func refuseGateOnly(kind policy.ChallengeKind, subject string) error {
+	if kind != policy.ChallengeAccountRecovery {
+		return nil
+	}
+
+	return newConfigError("%s %s, which only the recovery gate raises: it confines a session "+
+		"an account recovery created, and nothing would confine an ordinary session a policy "+
+		"challenged with it, so remove it from the policy", subject, kind)
 }
 
 // refuseUnenforcedChallenges refuses a chain whose policies can raise a
@@ -200,6 +225,10 @@ func (c *config) refuseUnenforcedChallenges() error {
 	enforced := c.enforcedChallenges()
 
 	for _, kind := range c.engine.DeclaredChallenges() {
+		if err := refuseGateOnly(kind, "a registered policy declares"); err != nil {
+			return err
+		}
+
 		if enforced[kind] {
 			continue
 		}
