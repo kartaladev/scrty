@@ -154,11 +154,73 @@ func ExampleNew_durableStores() {
 	_ = manager
 }
 
+// ExampleWithCloneResponse overrides what the manager does about a suspected
+// clone. By default it refuses, suspends the credential and notifies the user;
+// CloneSignalOnly allows the login and only writes a warning. WithClonePolicy
+// hands each decision to the consumer instead and wins over the response.
+func ExampleWithCloneResponse() {
+	deps := passkey.Deps{
+		Verifier: exampleVerifier{rp: passkey.RelyingParty{
+			ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},
+		}},
+		Users:  exampleUser(),
+		Sender: exampleSender{},
+	}
+	contact := passkey.WithRepudiationContact("Contact support@example.com if you did not do this.")
+
+	signalOnly, err := passkey.New(deps, contact, passkey.WithCloneResponse(passkey.CloneSignalOnly))
+	if err != nil {
+		panic(err)
+	}
+
+	decided, err := passkey.New(deps, contact,
+		passkey.WithClonePolicy(func(_ context.Context, s passkey.CloneSignal) passkey.CloneAction {
+			if s.BackupState { // a synced passkey's counter is unreliable: allow it
+				return passkey.CloneAllow
+			}
+
+			return passkey.CloneRefuseSuspend
+		}),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(signalOnly != nil, decided != nil)
+
+	// Output: true true
+}
+
+// ExampleWithoutSecondFactorAtLogin stops a passwordless login from proving
+// the second factor. By default a user-verified passkey login meets it, so no
+// MFA challenge follows; with this option a user the policies require to use
+// MFA completes a second factor on another channel, as after any other login.
+func ExampleWithoutSecondFactorAtLogin() {
+	manager, err := passkey.New(passkey.Deps{
+		Verifier: exampleVerifier{rp: passkey.RelyingParty{
+			ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},
+		}},
+		Users:  exampleUser(),
+		Sender: exampleSender{},
+	},
+		passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
+		passkey.WithoutSecondFactorAtLogin(),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(manager != nil)
+
+	// Output: true
+}
+
 // Example_recovery wires saved recovery codes. The way-back check counts
 // passkeys through the passkey kind, and a manager's recovery dependencies need
 // the check, so the kind is built first with NewRecoveryKind over the same
-// credential store the manager will use. Without WithOptionalRecoveryCodes a passkey waits pending until its
-// user has confirmed a set of saved codes when they have no other way back in.
+// credential store the manager will use. Without WithOptionalRecoveryCodes a
+// passkey waits pending until its user has confirmed a set of saved codes when
+// they have no other way back in.
 func Example_recovery() {
 	verifier := exampleVerifier{rp: passkey.RelyingParty{
 		ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},

@@ -406,6 +406,35 @@ manager, err := passkey.New(passkey.Deps{
 | Response to a suspected clone | refuse, suspend the credential, notify | `passkey.WithCloneResponse`, `passkey.WithClonePolicy` |
 | Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |
 | Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasswordlessPrefix` |
+| Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
+| Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
+| Passkeys per user | 25, every state counted | `passkey.WithPasskeyLimit` |
+| Freshness to register or remove a passkey | latest authentication within 15 minutes | `passkey.WithManagementFreshness` |
+| User verification | required | `passkey.WithUserVerification` |
+| Resident (discoverable) key | required; a non-resident passkey serves only as a second factor | `passkey.WithResidentKey` |
+| Emailed confirmation code | 6 digits, valid 10 minutes, 5 attempts | not configurable: the store contract fixes the attempts (`passkey.MaxEmailCodeAttempts`) |
+| Request body caps | 64 KiB registration (`passkey.RegistrationBodyLimit`), 16 KiB assertion (`passkey.AssertionBodyLimit`) | not configurable |
+| Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
+| Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
+| Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
+
+Two overrides, compiled as `ExampleWithCloneResponse` and `ExampleWithoutSecondFactorAtLogin` in
+`passkey/example_test.go`:
+
+```go
+// Allow a suspected clone and only warn; or decide each one yourself (the policy wins).
+passkey.WithCloneResponse(passkey.CloneSignalOnly)
+passkey.WithClonePolicy(func(_ context.Context, s passkey.CloneSignal) passkey.CloneAction {
+	if s.BackupState { // a synced passkey's counter is unreliable
+		return passkey.CloneAllow
+	}
+
+	return passkey.CloneRefuseSuspend
+})
+
+// A passwordless login no longer meets the second factor; MFA follows where policy requires it.
+passkey.WithoutSecondFactorAtLogin()
+```
 
 The in-memory stores hold one process's records and forget them on restart; behind several replicas
 a ceremony must also finish on the replica that began it. A deployment that runs more than one
