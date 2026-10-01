@@ -324,6 +324,13 @@ type SecondFactorProof = assurance.Proof
   - `webauthn.MetadataFromMDS(client *outbound.Client, opts…)`: a fetch through scrty's confined client, cached until the blob's `nextUpdate` and at most 24 hours, refetched lazily on the next registration after expiry. A failed refresh keeps refusing trusted attestation rather than accepting unverified, so it fails closed.
 
   Missing metadata with trusted attestation required is `ErrConfig` at `webauthn.New`.
+- **Decided during implementation:**
+  - **The BLOB is verified by scrty, not by the library's decoder.** go-webauthn's metadata decoder checks the signing chain's revocation through `http.DefaultClient`, which would send a request past the confined client (reproduced by `TestMetadata_NoRequestLeavesOutsideTheConfinedClient`). The adapter checks the JWT itself (x5c chain to the configured root at the clock's time; ES, RS and PS algorithms only; `x5u` refused) and hands only the verified payload to the library's parser. The cost is that the signing chain's revocation is not looked up online. A consumer who needs it mirrors the BLOB and supplies it through `MetadataBlob`.
+  - **Freshness of the BLOB.** A BLOB already past its `nextUpdate`, or whose serial number goes backwards, is refused. On expiry the cached copy is dropped before the refetch, so a failed refetch refuses rather than trusting stale data. A metadata outage in trusted mode is `ErrAttestationRefused`, which fails closed.
+  - **Options.** `MetadataBlob(fetch, opts…)` and `MetadataFromMDS(client, opts…)` take `MDSOption`s: `WithMDSURL` (default `DefaultMDSURL`), `WithMDSRoot` (default the FIDO production root) and `WithMDSClock`. `MaxMetadataAge` is 24 hours.
+  - **Response size.** The production BLOB is several megabytes, above `outbound`'s default response cap, so a consumer of `MetadataFromMDS` raises `WithMaxResponseBytes`. The godoc and README say so.
+  - **Trusted mode accepts** only basic, AttCA or AnonCA attestation with an x5c chain and a non-zero AAGUID. `none`, self attestation and SafetyNet are refused.
+  - **AAGUID.** An all-zero AAGUID means the authenticator reported none, so it is stored as nil.
 - **Per-user stricter policy** ("the design settles how"). It goes through two core hooks:
   - `passkey.WithRegistrationCheck(func(ctx, RegistrationFacts) error)`, which receives the user, AAGUID, backup flags, format, and whether the attestation was trusted;
   - `passkey.WithLoginCheck(func(ctx, LoginFacts) error)`.
