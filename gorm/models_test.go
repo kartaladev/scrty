@@ -90,6 +90,8 @@ func TestModels(t *testing.T) {
 		{name: "OIDC links", model: &linkRow{}, table: "oidc_links"},
 		{name: "OIDC flows", model: &flowRow{}, table: "oidc_flows"},
 		{name: "OIDC handoffs", model: &handoffRow{}, table: "oidc_handoffs"},
+		{name: "recovery codes", model: &recoveryCodeRow{}, table: "recovery_codes"},
+		{name: "account recoveries", model: &accountRecoveryRow{}, table: "account_recoveries"},
 	}
 
 	for _, tc := range cases {

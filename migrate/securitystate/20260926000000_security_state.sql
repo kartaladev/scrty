@@ -26,8 +26,11 @@ CREATE TABLE sessions (
     external_id_token   text NOT NULL DEFAULT '',
     data                jsonb NOT NULL DEFAULT '{}',
     -- The absolute deadline held before an enrolment mark; NULL = not marked.
+    -- Also the confinement marker of a session an account recovery produced.
     enrolment_origin_deadline timestamptz NULL,
-    enrolment_generation      uuid NULL
+    enrolment_generation      uuid NULL,
+    -- Account recovery. NULL = never recovered.
+    recovered_at        timestamptz NULL
 );
 -- +goose StatementEnd
 -- Issuer leads: a provider session id is unique only within its issuer.
@@ -147,8 +150,38 @@ CREATE TABLE oidc_handoffs (
 );
 CREATE INDEX oidc_handoffs_expiry ON oidc_handoffs (expires_at);
 
+-- Account recovery: saved recovery codes and recovery records.
+CREATE TABLE recovery_codes (
+    id         uuid PRIMARY KEY,
+    user_id    text NOT NULL,
+    code_hash  bytea NOT NULL,
+    created_at timestamptz NOT NULL,
+    -- Nullable guard with no default: single use is "spent_at IS NULL".
+    spent_at   timestamptz NULL,
+    UNIQUE (user_id, code_hash)
+);
+
+CREATE TABLE account_recoveries (
+    id           uuid PRIMARY KEY,
+    user_id      text NOT NULL,
+    started_at   timestamptz NOT NULL,
+    not_before   timestamptz NOT NULL,
+    -- Nullable guards with no default: neither completed nor cancelled is
+    -- "completed_at IS NULL AND cancelled_at IS NULL".
+    completed_at timestamptz NULL,
+    cancelled_at timestamptz NULL,
+    -- Newline-joined "kind:id" authenticator refs; a kind and an id never
+    -- contain a newline.
+    proven       text NOT NULL,
+    reported     text NOT NULL,
+    saved_spent  boolean NOT NULL DEFAULT false
+);
+CREATE INDEX account_recoveries_user ON account_recoveries (user_id);
+
 -- +goose Down
 -- Reverse creation order; IF EXISTS so teardown completes after a test drops a table.
+DROP TABLE IF EXISTS account_recoveries;
+DROP TABLE IF EXISTS recovery_codes;
 DROP TABLE IF EXISTS oidc_handoffs;
 DROP TABLE IF EXISTS oidc_flows;
 DROP TABLE IF EXISTS oidc_links;

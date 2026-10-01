@@ -38,7 +38,9 @@ import (
 // The enrolment-origin marker and the enrolment generation of a session
 // confined to MFA enrolment are kept in columns of their own, NULL when the
 // session is not marked or has begun no enrolment, and read back as the zero
-// time and id.Nil. They are not secrets and are not sealed.
+// time and id.Nil. They are not secrets and are not sealed. RecoveredAt, the
+// time an account recovery produced the session, is kept the same way: NULL
+// when the session was never recovered, and read back as the zero time.
 //
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
@@ -73,7 +75,7 @@ func NewSessionStore(db *sql.DB, c seal.Cipher, opts ...Option) (session.Store, 
 type sessionStore struct{ c *config }
 
 // sessionColumns returns the values of sess's columns from user_id to
-// enrolment_generation, in the order SessionUpdate takes them, or the
+// recovered_at, in the order SessionUpdate takes them, or the
 // refusal of a session this store cannot hold without altering it.
 func sessionColumns(op string, sess *session.Session) ([]any, error) {
 	if err := storekit.CheckSession(sess); err != nil {
@@ -96,6 +98,7 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		sess.PasswordChangePending, sess.ExternalProvider, sess.ExternalIssuer, sess.ExternalSessionID,
 		sess.ExternalIDToken, string(encoded),
 		nullTs(sess.EnrolmentOriginDeadline), nullID(sess.EnrolmentGeneration),
+		nullTs(sess.RecoveredAt),
 	}, nil
 }
 
@@ -159,11 +162,12 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		idle, abs     time.Time
 		origin        sql.NullTime
 		generation    sql.Null[id.ID]
+		recovered     sql.NullTime
 	)
 	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
-		&sess.ExternalIDToken, &encoded, &origin, &generation)
+		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -187,6 +191,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	sess.MFA = session.MFAState(mfaState)
 	sess.MFASatisfiedAt = fromNull(mfaSatisfied)
 	sess.EnrolmentOriginDeadline, sess.EnrolmentGeneration = fromNull(origin), generation.V
+	sess.RecoveredAt = fromNull(recovered)
 	sess.CreatedAt, sess.LastAccessedAt = created.UTC(), last.UTC()
 	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = idle.UTC(), abs.UTC()
 

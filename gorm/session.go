@@ -37,7 +37,9 @@ import (
 // The enrolment path's session state is stored and returned whole: the
 // enrolment-origin marker, NULL when the session is not marked, and the
 // enrolment generation, NULL when the session has begun no enrolment. Neither
-// is a secret, and neither is sealed.
+// is a secret, and neither is sealed. RecoveredAt, the time an account
+// recovery produced the session, is kept the same way: NULL when the session
+// was never recovered.
 //
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
@@ -106,6 +108,8 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		// NULL when the session is not marked, or has begun no enrolment.
 		EnrolmentOriginDeadline: nullTs(sess.EnrolmentOriginDeadline),
 		EnrolmentGeneration:     nullID(sess.EnrolmentGeneration),
+		// NULL when the session was never recovered.
+		RecoveredAt: nullTs(sess.RecoveredAt),
 	}, nil
 }
 
@@ -207,6 +211,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		ExternalSessionID:       row.ExternalSessionID,
 		ExternalIDToken:         row.ExternalIDToken,
 		EnrolmentOriginDeadline: fromNull(row.EnrolmentOriginDeadline),
+		RecoveredAt:             fromNull(row.RecoveredAt),
 	}
 	if row.EnrolmentGeneration != nil {
 		sess.EnrolmentGeneration = *row.EnrolmentGeneration

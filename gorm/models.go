@@ -50,6 +50,8 @@ type sessionRow struct {
 	// no enrolment.
 	EnrolmentOriginDeadline *time.Time `gorm:"column:enrolment_origin_deadline;type:timestamptz"`
 	EnrolmentGeneration     *id.ID     `gorm:"column:enrolment_generation;type:uuid"`
+	// RecoveredAt is NULL for a session no account recovery ever produced.
+	RecoveredAt *time.Time `gorm:"column:recovered_at;type:timestamptz"`
 }
 
 // TableName is the table the migration creates for sessions.
@@ -233,3 +235,38 @@ type assignedRoleRow struct {
 
 // TableName is the table the identity migration creates for role grants.
 func (assignedRoleRow) TableName() string { return "assigned_roles" }
+
+// recoveryCodeRow is a row of the recovery_codes table: one saved recovery
+// code's hash, keyed by an identifier the store mints and found by its user
+// and hash. A nil SpentAt is an unspent code. CreatedAt is the caller's,
+// never gorm's.
+type recoveryCodeRow struct {
+	ID        id.ID      `gorm:"column:id;type:uuid;primaryKey"`
+	UserID    string     `gorm:"column:user_id;type:text"`
+	CodeHash  []byte     `gorm:"column:code_hash;type:bytea"`
+	CreatedAt time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
+	SpentAt   *time.Time `gorm:"column:spent_at;type:timestamptz"`
+}
+
+// TableName is the table the migration creates for saved recovery codes.
+func (recoveryCodeRow) TableName() string { return "recovery_codes" }
+
+// accountRecoveryRow is a row of the account_recoveries table, keyed by the
+// record's own identifier. A nil CompletedAt or CancelledAt is a record not
+// yet completed or cancelled. Proven and Reported hold the authenticator
+// references as internal/pgschema writes them. SavedSpent carries no gorm
+// default, so a false value is written, never left to the column's.
+type accountRecoveryRow struct {
+	ID          id.ID      `gorm:"column:id;type:uuid;primaryKey"`
+	UserID      string     `gorm:"column:user_id;type:text"`
+	StartedAt   time.Time  `gorm:"column:started_at;type:timestamptz"`
+	NotBefore   time.Time  `gorm:"column:not_before;type:timestamptz"`
+	CompletedAt *time.Time `gorm:"column:completed_at;type:timestamptz"`
+	CancelledAt *time.Time `gorm:"column:cancelled_at;type:timestamptz"`
+	Proven      string     `gorm:"column:proven;type:text"`
+	Reported    string     `gorm:"column:reported;type:text"`
+	SavedSpent  bool       `gorm:"column:saved_spent;type:boolean"`
+}
+
+// TableName is the table the migration creates for account recoveries.
+func (accountRecoveryRow) TableName() string { return "account_recoveries" }

@@ -86,10 +86,10 @@ func WithTxResolver(r TxResolver) Option {
 
 // WithIDGenerator replaces the source of the identifiers a store mints for
 // records that carry none of their own. It is honoured by the minting stores:
-// sessions, signing keys, login attempts, MFA enrolments, OIDC flows, and the
-// identity store (the users, role grants and password-history entries it
-// creates). The default is
-// id.NewV7Generator, whose identifiers sort by the moment they were minted.
+// sessions, signing keys, login attempts, MFA enrolments, OIDC flows, saved
+// recovery codes, and the identity store (the users, role grants and
+// password-history entries it creates). The default is id.NewV7Generator,
+// whose identifiers sort by the moment they were minted.
 //
 // Given to any other store, whose records arrive with their own identifier, it
 // is a configuration error. A nil generator, including an interface holding a
