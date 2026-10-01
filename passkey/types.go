@@ -170,16 +170,23 @@ type AssertionResult struct {
 // NormaliseName returns raw trimmed of surrounding white space, or the
 // default name "Passkey <YYYY-MM-DD>" for created's date, in created's own
 // location, when the trimmed name is empty, is not valid UTF-8, is longer
-// than 64 characters, or holds a control character. A name is replaced,
-// never truncated or refused.
+// than 64 characters, or holds a control character or a Unicode format
+// character (category Cf, such as a bidirectional override or a zero-width
+// character). A name is replaced, never truncated or refused.
 func NormaliseName(raw string, created time.Time) string {
 	name := strings.TrimSpace(raw)
 	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameRunes ||
-		strings.ContainsFunc(name, unicode.IsControl) {
+		strings.ContainsFunc(name, isUnsafeNameRune) {
 		return "Passkey " + created.Format(time.DateOnly)
 	}
 
 	return name
+}
+
+// isUnsafeNameRune reports whether r is a control or format character, which
+// could hide or reorder a name when it is displayed.
+func isUnsafeNameRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 }
 
 // maxNameRunes is the longest name, in characters, a credential keeps.

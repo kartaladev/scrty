@@ -26,6 +26,14 @@ import (
 // at every other guarded endpoint.
 const passwordlessFlow = "passkey-login"
 
+// The reasons a passwordless login's user is refused, each the tail of the
+// sampler key its record is written under.
+const (
+	reasonUserUnknown  = "user-unknown"
+	reasonUserInactive = "user-inactive"
+	reasonUserMismatch = "user-mismatch"
+)
+
 // The allowance a source gets before passwordless begins are refused. Every
 // begin is recorded, not only failures: a begin writes a challenge before
 // anyone has authenticated.
@@ -346,16 +354,35 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 func (i *passwordlessInterceptor) wire(c *Chain) {
 	i.engine = c.engine
 	i.log = c.logger
-	i.sampler = c.sampler
+	i.sampler = i.newSampler(c)
 	i.enrolmentLifetime = c.enrolmentLifetime
 	i.enforced = c.enforced
 	i.challengeMethods = c.challengeMethods
 }
 
-// flushRefusalLogs reports what the begin's source guard is holding back.
+// newSampler builds the passwordless endpoints' own log sampler over the
+// passkey manager's window (passkey.WithLogInterval), so the option governing
+// passkey logs governs their refusals too, not the chain's
+// WithRefusalLogInterval. Held-back counts go to the chain's reporter, the
+// consumer's when WithRefusalLogReporter gave one.
+func (i *passwordlessInterceptor) newSampler(c *Chain) *logsample.Sampler {
+	reporter := c.refusalReporter
+	if reporter == nil {
+		reporter = c.reportSuppressedRefusals
+	}
+
+	return logsample.New(i.manager.LogInterval(), logsample.WithReporter(reporter))
+}
+
+// flushRefusalLogs reports what the begin's source guard and the endpoints'
+// own sampler are holding back.
 func (i *passwordlessInterceptor) flushRefusalLogs() {
 	if i.guard != nil {
 		i.guard.Flush()
+	}
+
+	if i.sampler != nil {
+		i.sampler.Flush()
 	}
 }
 
@@ -497,18 +524,23 @@ func (i *passwordlessInterceptor) loadUser(ex *Exchange, user identity.UserID) (
 
 	switch {
 	case errors.Is(err, identity.ErrUserNotFound):
-		i.log.LogAttrs(ctx, slog.LevelDebug, "httpsec: a passwordless login's user no longer exists")
+		logSampled(ctx, i.sampler, i.log, slog.LevelDebug, i.now(),
+			passwordlessFlow+sampleKeySeparator+reasonUserUnknown, "httpsec: a passwordless login's user no longer exists",
+			slog.String("flow", passwordlessFlow), slog.String("reason", reasonUserUnknown))
 
 		return nil, authenticate.ErrAuthenticationFailed
 	case err != nil:
 		return nil, diag.Wrap(err, msgPasswordlessUserUnavailable)
 	case details == nil || !details.Active:
-		i.log.LogAttrs(ctx, slog.LevelDebug, "httpsec: a passwordless login's user is not active")
+		logSampled(ctx, i.sampler, i.log, slog.LevelDebug, i.now(),
+			passwordlessFlow+sampleKeySeparator+reasonUserInactive, "httpsec: a passwordless login's user is not active",
+			slog.String("flow", passwordlessFlow), slog.String("reason", reasonUserInactive))
 
 		return nil, authenticate.ErrAuthenticationFailed
 	case details.ID != user:
-		i.log.LogAttrs(ctx, slog.LevelError,
-			"httpsec: the user loader returned a different user than the passkey records")
+		logSampled(ctx, i.sampler, i.log, slog.LevelError, i.now(),
+			passwordlessFlow+sampleKeySeparator+reasonUserMismatch, "httpsec: the user loader returned a different user than the passkey records",
+			slog.String("flow", passwordlessFlow), slog.String("reason", reasonUserMismatch))
 
 		return nil, authenticate.ErrAuthenticationFailed
 	}

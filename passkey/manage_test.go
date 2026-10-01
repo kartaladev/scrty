@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -295,7 +296,8 @@ func TestManageRemove(t *testing.T) {
 		name    string
 		session func(e *manageEnv) *session.Session
 		target  func(e *manageEnv) id.ID
-		totp    bool // the user is enrolled on a TOTP second factor
+		totp    bool // the user is enrolled on a TOTP second factor, listed in Deps
+		rcTOTP  bool // the user is enrolled on a TOTP second factor, listed in the context only
 		advance time.Duration
 		broken  bool
 		ctx     func(ctx context.Context) context.Context
@@ -385,6 +387,11 @@ func TestManageRemove(t *testing.T) {
 			assert: refusedKept(passkey.ErrReauthenticationRequired),
 		},
 		{
+			name:    "the context's second factors decide when Deps lists none",
+			session: fresh, target: mine, rcTOTP: true,
+			assert: refusedKept(passkey.ErrReauthenticationRequired),
+		},
+		{
 			name: "a recovery-pending session is refused",
 			session: func(*manageEnv) *session.Session {
 				s := fullSession("sess-1", "u-1")
@@ -411,6 +418,17 @@ func TestManageRemove(t *testing.T) {
 			session: func(*manageEnv) *session.Session {
 				s := fullSession("sess-1", "u-1")
 				s.MFA = session.MFAPending
+
+				return s
+			},
+			target: mine,
+			assert: refusedKept(passkey.ErrReauthenticationRequired),
+		},
+		{
+			name: "a session owing a password change is refused",
+			session: func(*manageEnv) *session.Session {
+				s := fullSession("sess-1", "u-1")
+				s.PasswordChangePending = true
 
 				return s
 			},
@@ -466,7 +484,12 @@ func TestManageRemove(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			err := m.Remove(ctx, tc.session(e), tc.target(e))
+			var rc passkey.RegistrationContext
+			if tc.rcTOTP {
+				rc.MFAMethods = []policy.MFAMethodLookup{e.f.totp(true, nil)}
+			}
+
+			err := m.Remove(ctx, tc.session(e), tc.target(e), rc)
 			tc.assert(t, e, err)
 		})
 	}

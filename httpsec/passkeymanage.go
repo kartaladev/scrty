@@ -106,8 +106,10 @@ func (p *passkeyInterceptor) manage(ex *Exchange) (bool, error) {
 		return false, nil
 	}
 
+	// There must be a session and a resolved caller for it: a session whose
+	// first factor published no caller names nobody whose passkeys to manage.
 	s := ex.Session
-	if s == nil {
+	if s == nil || ex.Authentication == nil || ex.Authentication.Principal == nil {
 		return true, ErrAuthenticationRequired
 	}
 
@@ -176,7 +178,7 @@ func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
 		return err
 	}
 
-	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid); err != nil {
+	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid, p.registrationContext(s)); err != nil {
 		return err
 	}
 

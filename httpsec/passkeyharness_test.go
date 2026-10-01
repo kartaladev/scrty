@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/passkey"
@@ -280,7 +281,7 @@ func (h *passkeyHarness) chainOptions(t *testing.T, s *session.Session) []httpse
 		h.extraMethods = append(h.extraMethods, m.MFAMethod())
 	}
 
-	h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions}, h.passkeyOpts...))
+	h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...))
 	if h.withRecoveryGate {
 		h.extra = append(h.extra, httpsec.EnableRecoveryGateForTest())
 	}
@@ -304,6 +305,31 @@ func withoutEnrolmentPath(t *testing.T, h *passkeyHarness, s *session.Session) [
 			append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
 	}, h.extra...)
+}
+
+// withEnrolledMethod builds the chain with no enrolment path and puts on the
+// MFA slot a second method the user is enrolled on, listed nowhere else: the
+// manager's Deps carry no MFA methods, so only the chain can tell it the
+// session owes a second factor.
+func (h *passkeyHarness) withEnrolledMethod(t *testing.T) {
+	t.Helper()
+
+	enrolled := NewMockMethod(gomock.NewController(t))
+	enrolled.EXPECT().Name().Return("emailcode").AnyTimes()
+	enrolled.EXPECT().Channel().Return(factor.Email).AnyTimes()
+	enrolled.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+	enrolled.EXPECT().Response().Return(mfa.FormField("code", 64)).AnyTimes()
+
+	h.withoutEnrolment = true
+	h.extraMethods = append(h.extraMethods, enrolled)
+}
+
+// withPasswordless serves passwordless login on the chain, minting its tokens
+// with the harness's generator, over a manager in the optional recovery-codes
+// mode.
+func (h *passkeyHarness) withPasswordless() {
+	h.pkOpts = append(h.pkOpts, passkey.WithOptionalRecoveryCodes())
+	h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasswordlessLogin(httpsec.PasswordlessTokens(h.tokens)))
 }
 
 // register begins and finishes a registration through chain, returning the

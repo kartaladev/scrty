@@ -244,6 +244,29 @@ func TestPasskeyMFA(t *testing.T) {
 			},
 		},
 		{
+			name: "a wrong signature over an issued challenge is refused and counted",
+			setup: func(t *testing.T, d *pwlDeployment) {
+				d.mfaLimiter = limiterCounting(t, 1)
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+
+				ch := challenged(t, d.passwordLogin(t))
+				challenge := d.mfaBegun(t, ch.Token)
+
+				d.verifier.refuseAssertions.Store(true)
+
+				out := d.mfaVerify(t, ch.Token, assertionBody(challenge, "cred-1"))
+				stillPending(t, d, ch.Token)
+
+				return out
+			},
+			assert: func(t *testing.T, _ *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, mfa.ErrInvalidCode)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
 			name: "another user's passkey is an invalid code",
 			setup: func(t *testing.T, d *pwlDeployment) {
 				d.mfaLimiter = limiterCounting(t, 1)

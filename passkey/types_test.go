@@ -43,6 +43,12 @@ func TestNormaliseName(t *testing.T) {
 		{name: "invalid UTF-8 replaced", raw: "a\xffb", assert: is(dateName)},
 		{name: "empty replaced", raw: "", assert: is(dateName)},
 		{name: "blank replaced", raw: " \t ", assert: is(dateName)},
+		{name: "bidi override replaced", raw: "evil\u202Efdp.exe", assert: is(dateName)},
+		{name: "zero-width space replaced", raw: "a\u200Bb", assert: is(dateName)},
+		{name: "zero-width joiner replaced", raw: "a\u200Db", assert: is(dateName)},
+		{name: "byte order mark replaced", raw: "a\uFEFFb", assert: is(dateName)},
+		{name: "non-ASCII letters and emoji kept", raw: "Café 🔑", assert: is("Café 🔑")},
+		{name: "emoji without joiner kept", raw: "Phone 📱", assert: is("Phone 📱")},
 	}
 
 	for _, tc := range cases {

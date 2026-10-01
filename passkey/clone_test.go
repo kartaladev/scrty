@@ -6,12 +6,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -331,4 +333,82 @@ func TestCloneConcurrentAssertionsWithOneCounter(t *testing.T) {
 	assert.Equal(t, 1, clone, "exactly one suspected clone")
 	assert.Equal(t, passkey.StateSuspended, e.stored(t).State)
 	assert.Equal(t, uint32(43), e.stored(t).SignCount)
+}
+
+// gatedSender blocks every Send until release is closed, then records the
+// message on delivered.
+type gatedSender struct {
+	release   chan struct{}
+	delivered chan notify.Message
+}
+
+func (g *gatedSender) Send(_ context.Context, m notify.Message) error {
+	<-g.release
+	g.delivered <- m
+
+	return nil
+}
+
+// TestCloneRefusalDoesNotWaitForDelivery pins that the suspension notice is
+// queued, not delivered inline: the refusal returns while the sender is still
+// blocked, and the notice is delivered once it is released.
+func TestCloneRefusalDoesNotWaitForDelivery(t *testing.T) {
+	t.Parallel()
+
+	gate := &gatedSender{release: make(chan struct{}), delivered: make(chan notify.Message, 1)}
+	q, err := notify.NewQueuedSender(gate)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		select {
+		case <-gate.release:
+		default:
+			close(gate.release)
+		}
+
+		assert.NoError(t, q.Close(context.WithoutCancel(t.Context())))
+	})
+
+	e := newLoginEnv(t, nil)
+	e.f.deps.Sender = q
+	e.manager(t)
+
+	type outcome struct {
+		res *passkey.LoginResult
+		err error
+	}
+
+	body := assertion(e.begin(t), func(b *assertionBody) { b.Count = 41 })
+	done := make(chan outcome, 1)
+
+	go func() {
+		res, err := e.m.Authenticate(t.Context(), body, e.binding)
+		done <- outcome{res, err}
+	}()
+
+	select {
+	case got := <-done:
+		require.ErrorIs(t, got.err, passkey.ErrCloneSuspected)
+		assert.Nil(t, got.res)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the clone refusal waited for the notice to be delivered")
+	}
+
+	assert.Equal(t, passkey.StateSuspended, e.stored(t).State)
+
+	select {
+	case m := <-gate.delivered:
+		t.Fatalf("notice delivered while the sender was blocked: %+v", m)
+	default:
+	}
+
+	close(gate.release)
+
+	select {
+	case m := <-gate.delivered:
+		assert.Equal(t, "ana@example.com", m.To)
+		assert.Contains(t, m.TextBody, "Security key")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the suspension notice was not delivered after the sender was released")
+	}
 }

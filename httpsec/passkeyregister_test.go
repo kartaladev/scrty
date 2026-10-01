@@ -63,6 +63,8 @@ func TestPasskeyRegistration(t *testing.T) {
 		state     session.MFAState
 		anonymous bool
 		recovered bool
+		// nobody carries a full session but resolves no caller for it.
+		nobody bool
 
 		setup  func(t *testing.T, h *passkeyHarness)
 		act    func(t *testing.T, h *passkeyHarness, chain *httpsec.Chain) served
@@ -90,7 +92,71 @@ func TestPasskeyRegistration(t *testing.T) {
 		assert.Zero(t, n, "a refused finish stored a passkey")
 	}
 
+	beginRefused := func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+		t.Helper()
+		require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+		assert.Empty(t, h.verifier.creations, "no creation options are issued")
+	}
+	begin := func(t *testing.T, _ *passkeyHarness, chain *httpsec.Chain) served {
+		return serve(t, chain, post(t.Context(), passkeyBeginPath, ""))
+	}
+
 	cases := []testCase{
+		{
+			name:   "a method on the MFA slot the session has not met refuses begin",
+			state:  session.MFANone,
+			setup:  func(t *testing.T, h *passkeyHarness) { h.withEnrolledMethod(t) },
+			act:    begin,
+			assert: beginRefused,
+		},
+		{
+			name:  "the passkey method on the MFA slot the session has not met refuses begin",
+			state: session.MFANone,
+			setup: func(t *testing.T, h *passkeyHarness) {
+				h.withoutEnrolment = true
+				h.passkeyMethod = true
+				seedPasskey(t, h, testMFAUser, "cred-held", passkey.StateActive)
+			},
+			act:    begin,
+			assert: beginRefused,
+		},
+		{
+			name:  "under passwordless login a passkey holder's password session must step up to begin",
+			state: session.MFANone,
+			setup: func(t *testing.T, h *passkeyHarness) {
+				h.withPasswordless()
+				seedPasskey(t, h, testMFAUser, "cred-held", passkey.StateActive)
+			},
+			act:    begin,
+			assert: beginRefused,
+		},
+		{
+			name:  "under passwordless login a passkey holder's session that stepped up begins",
+			state: session.MFASatisfied,
+			setup: func(t *testing.T, h *passkeyHarness) {
+				h.withPasswordless()
+				seedPasskey(t, h, testMFAUser, "cred-held", passkey.StateActive)
+			},
+			act: begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				t.Helper()
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.NotEmpty(t, h.verifier.lastCreation(t))
+			},
+		},
+		{
+			name:  "a session that met the slot's second factor begins",
+			state: session.MFASatisfied,
+			setup: func(t *testing.T, h *passkeyHarness) { h.withEnrolledMethod(t) },
+			act:   begin,
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				t.Helper()
+				require.NoError(t, out.err)
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.NotEmpty(t, h.verifier.lastCreation(t))
+			},
+		},
 		{
 			name:  "begin answers the creation options",
 			state: session.MFANone,
@@ -252,6 +318,20 @@ func TestPasskeyRegistration(t *testing.T) {
 		{
 			name:      "a begin without a session needs authentication",
 			anonymous: true,
+			act: func(t *testing.T, _ *passkeyHarness, chain *httpsec.Chain) served {
+				return serve(t, chain, post(t.Context(), passkeyBeginPath, ""))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, _ *session.Session, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+				assert.Empty(t, h.verifier.creations)
+			},
+		},
+		{
+			name:   "a begin with a session but no resolved caller needs authentication",
+			state:  session.MFANone,
+			nobody: true,
 			act: func(t *testing.T, _ *passkeyHarness, chain *httpsec.Chain) served {
 				return serve(t, chain, post(t.Context(), passkeyBeginPath, ""))
 			},
@@ -450,11 +530,28 @@ func TestPasskeyRegistration(t *testing.T) {
 				s = h.sessionIn(t, factor.Password, tc.state)
 			}
 
-			chain := h.build(t, s)
+			carried := s
+			if tc.nobody {
+				carried = nil
+				h.extra = append(h.extra, httpsec.RegisterInterceptor(sessionWithoutCaller(s), httpsec.OrderBearerToken))
+			}
+
+			chain := h.build(t, carried)
 
 			tc.assert(t, h, s, tc.act(t, h, chain))
 		})
 	}
+}
+
+// sessionWithoutCaller carries s on the exchange and in its context without
+// resolving a caller for it: no Authentication, so nobody is named.
+func sessionWithoutCaller(s *session.Session) httpsec.Interceptor {
+	return httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		ex.Session = s
+		ex.SetContext(httpsec.WithSession(ex.Context(), s))
+
+		return next(ex)
+	})
 }
 
 // TestPasskeyRegistrationConstruction pins the wiring EnablePasskeys refuses.

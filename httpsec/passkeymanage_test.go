@@ -110,6 +110,8 @@ func TestPasskeyManage(t *testing.T) {
 		// anonymous carries no session.
 		pending   bool
 		anonymous bool
+		// nobody carries a full session but resolves no caller for it.
+		nobody bool
 
 		// mfa is the second-factor state the carried session is in; the
 		// zero value is no second factor asked for.
@@ -249,6 +251,43 @@ func TestPasskeyManage(t *testing.T) {
 			},
 		},
 		{
+			name:  "a method on the MFA slot the session has not met refuses remove",
+			setup: func(t *testing.T, h *passkeyHarness) { h.withEnrolledMethod(t) },
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {f.own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+				assert.True(t, stillHeld(t, h, testMFAUser, f.own.ID), "the passkey still exists")
+				assert.Zero(t, h.notices.count(), "no removal notice is queued")
+			},
+		},
+		{
+			name:  "under passwordless login a passkey holder's password session must step up to remove",
+			setup: func(_ *testing.T, h *passkeyHarness) { h.withPasswordless() },
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {f.own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrReauthenticationRequired)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.True(t, stillHeld(t, h, testMFAUser, f.own.ID), "the passkey still exists")
+				assert.Zero(t, h.notices.count(), "no removal notice is queued")
+			},
+		},
+		{
+			name:  "under passwordless login a passkey holder's session that stepped up removes",
+			mfa:   session.MFASatisfied,
+			setup: func(_ *testing.T, h *passkeyHarness) { h.withPasswordless() },
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {f.own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				require.NoError(t, out.err)
+				assert.False(t, stillHeld(t, h, testMFAUser, f.own.ID))
+			},
+		},
+		{
 			name: "an identifier that does not parse is not found",
 			act: func(t *testing.T, _ fixture, chain *httpsec.Chain) served {
 				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {"not-an-id"}}))
@@ -304,6 +343,19 @@ func TestPasskeyManage(t *testing.T) {
 			assert: func(t *testing.T, _ *passkeyHarness, _ fixture, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				assert.False(t, out.handlerRan)
+			},
+		},
+		{
+			name:   "a session with no resolved caller is refused and removes nothing",
+			nobody: true,
+			act: func(t *testing.T, f fixture, chain *httpsec.Chain) served {
+				return serve(t, chain, managePost(t, passkeyRemovePath, url.Values{"id": {f.own.ID.String()}}))
+			},
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+				assert.True(t, stillHeld(t, h, testMFAUser, f.own.ID))
 			},
 		},
 		{
@@ -424,7 +476,13 @@ func TestPasskeyManage(t *testing.T) {
 				}
 			}
 
-			chain := h.build(t, s)
+			carried := s
+			if tc.nobody {
+				carried = nil
+				h.extra = append(h.extra, httpsec.RegisterInterceptor(sessionWithoutCaller(s), httpsec.OrderBearerToken))
+			}
+
+			chain := h.build(t, carried)
 
 			tc.assert(t, h, f, tc.act(t, f, chain))
 		})

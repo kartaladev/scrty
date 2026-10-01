@@ -314,7 +314,7 @@ func Example_chain() {
 		Credentials: credentials,
 		Users:       users,
 		Sender:      exampleSender{},
-		MFAMethods:  lookups, // the other second factors a session may have met
+		MFAMethods:  lookups, // for direct calls; inside a chain the MFA slot's methods decide
 	}
 
 	wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{

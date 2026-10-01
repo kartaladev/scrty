@@ -12,6 +12,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
@@ -19,9 +20,15 @@ import (
 // BeginRegistration starts a registration for s's user and returns the
 // creation options for the browser, as the verifier renders them.
 //
-// It admits s first (see the package's admission rule): a stale or
-// insufficiently assured full session is refused with
-// ErrReauthenticationRequired. A user issued the registration challenge limit
+// It admits s first, by the rule the package documentation's Admission
+// section states, deciding over rc.MFAMethods, or Deps.MFAMethods when rc
+// lists none, and over the user's own active passkeys when a passkey route
+// can meet the second factor: a stale or insufficiently assured full session
+// is refused with ErrReauthenticationRequired. A password session steps up
+// through the passkey MFA method; a session whose first factor is a passkey
+// cannot, and signs in again with user verification, or by password and then
+// the passkey step-up. A nil entry in rc.MFAMethods is ErrConfig, whatever the
+// session's MFA state. A user issued the registration challenge limit
 // within the hour is refused with ErrRegistrationThrottled, as is one the
 // challenge store cannot count for. Nothing is issued on any refusal.
 //
@@ -30,12 +37,14 @@ import (
 // "passkey-registration", its subject the user and bound to s's ID, and its
 // string is the challenge the options carry. Every credential the user holds,
 // in any state, is listed for the authenticator to exclude.
-func (m *Manager) BeginRegistration(ctx context.Context, s *session.Session) (json.RawMessage, error) {
+func (m *Manager) BeginRegistration(
+	ctx context.Context, s *session.Session, rc RegistrationContext,
+) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
-	if err := m.admit(ctx, s); err != nil {
+	if err := m.admit(ctx, s, rc); err != nil {
 		return nil, err
 	}
 
@@ -128,6 +137,25 @@ type RegistrationContext struct {
 	// EmailConfirmThrottleKey. Nil uses the manager's own, which allows 5 per
 	// 15 minutes per user in this process.
 	ConfirmLimiter ratelimit.Limiter
+	// MFAMethods are the configured second-factor methods admission decides
+	// over: when the user can use any of them, a full session must have met
+	// its second factor to register or remove a passkey. Empty uses
+	// Deps.MFAMethods. A chain passes its MFA slot's methods here, including
+	// the passkey MFA method when it is on the slot, which Deps.MFAMethods
+	// cannot list since it exists only once the manager does. The manager's
+	// own passkey MFA method among them also makes the user's active passkeys
+	// count as a second factor the account has. A nil entry, typed nil
+	// included, refuses the call with ErrConfig.
+	MFAMethods []policy.MFAMethodLookup
+	// PasswordlessLogin reports whether the caller's chain serves
+	// passwordless login over this manager. It is read whatever MFAMethods
+	// holds. When it is true and the manager's passwordless login proves the
+	// second factor (WithoutSecondFactorAtLogin not set), the user's active
+	// passkeys count as a second factor the account has, so a full session of
+	// a passkey holder must have met its second factor to register or remove
+	// a passkey. False, the default, leaves passwordless login out of the
+	// decision; a chain sets it when it serves passwordless login.
+	PasswordlessLogin bool
 }
 
 // RegistrationResult is a finished registration.
@@ -171,8 +199,8 @@ type RegistrationResult struct {
 // and no refusal stores anything.
 //
 // The passkey is named by the response's proposed name, normalised by
-// NormaliseName: a name that is too long or holds a control character is
-// replaced by the default date name, never truncated or refused.
+// NormaliseName: a name that is too long or holds a control or format
+// character is replaced by the default date name, never truncated or refused.
 func (m *Manager) FinishRegistration(
 	ctx context.Context, s *session.Session, body []byte, rc RegistrationContext,
 ) (*RegistrationResult, error) {

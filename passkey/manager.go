@@ -59,8 +59,10 @@ type Deps struct {
 	// Required.
 	Users identity.UserLoader
 	// MFAMethods are the configured second-factor methods, which decide
-	// whether a full session must have met its second factor to register.
-	// May be empty.
+	// whether a full session must have met its second factor to register or
+	// remove a passkey. They are used by a direct caller of the manager, and
+	// whenever the RegistrationContext carries no MFAMethods of its own; a
+	// chain passes its MFA slot's methods there instead. May be empty.
 	MFAMethods []policy.MFAMethodLookup
 	// Sender delivers the emailed code and the notices. Required, and it must
 	// report notify.NonBlocking unless WithSynchronousDelivery is given.
@@ -338,17 +340,32 @@ func constantTimeEqual(stored, presented string) bool {
 // admit decides whether s may change the user's authenticators: register a
 // passkey, or remove one.
 //
-// A recovery-pending or enrolment-only session is admitted without further
+// A session with no user, or owing a password change, is refused, and a nil
+// entry in rc.MFAMethods is then ErrConfig, whatever the session's MFA state. A
+// recovery-pending or enrolment-only session is then admitted without further
 // checks: the recovery is its authentication, its user has no usable second
 // factor, and its life is short by construction. A full session — no pending
-// challenge, never confined — must have met its second factor when its user
-// can use any configured MFA method, and its latest authentication, the later
-// of its creation and its second factor, must be within the freshness window.
-// Anything else, a session with a pending challenge among it, is refused with
-// ErrReauthenticationRequired. A failed MFA lookup refuses with fixed text.
-func (m *Manager) admit(ctx context.Context, s *session.Session) error {
-	if s == nil || s.UserID == "" {
+// challenge, never confined — must have met its second factor when its
+// account has one (owesSecondFactor): a configured MFA method its user can
+// use, or the user's own active passkeys while a passkey route can meet the
+// second factor. Its latest authentication, the later of its creation and its
+// second factor, must also be within the freshness window. The configured
+// methods are rc.MFAMethods, or Deps.MFAMethods when rc lists none. Anything
+// else, such as a session with a pending MFA challenge, is refused. Every
+// refusal is ErrReauthenticationRequired, except that a failed MFA or passkey
+// lookup refuses with fixed text, and a nil entry in rc.MFAMethods with
+// ErrConfig.
+func (m *Manager) admit(ctx context.Context, s *session.Session, rc RegistrationContext) error {
+	if s == nil || s.UserID == "" || s.PasswordChangePending {
 		return ErrReauthenticationRequired
+	}
+
+	// A nil entry is a wiring mistake whatever the session, so it is checked
+	// before any session is admitted.
+	for _, lk := range rc.MFAMethods {
+		if nilcheck.IsNil(lk) {
+			return fmt.Errorf("%w: an MFA method entry of the registration context is nil", ErrConfig)
+		}
 	}
 
 	switch s.MFA {
@@ -362,13 +379,20 @@ func (m *Manager) admit(ctx context.Context, s *session.Session) error {
 		return ErrReauthenticationRequired
 	}
 
-	usable, err := policy.UsableMFAMethods(ctx, m.methods, s.UserID, s.FirstFactor)
-	if err != nil {
-		return diag.Wrap(err, "passkey: could not read the user's second factors")
+	methods := rc.MFAMethods
+	if len(methods) == 0 {
+		methods = m.methods
 	}
 
-	if len(usable) > 0 && s.MFA != session.MFASatisfied {
-		return ErrReauthenticationRequired
+	if s.MFA != session.MFASatisfied {
+		owed, err := m.owesSecondFactor(ctx, s, methods, rc.PasswordlessLogin)
+		if err != nil {
+			return err
+		}
+
+		if owed {
+			return ErrReauthenticationRequired
+		}
 	}
 
 	latest := s.CreatedAt
@@ -381,4 +405,56 @@ func (m *Manager) admit(ctx context.Context, s *session.Session) error {
 	}
 
 	return nil
+}
+
+// owesSecondFactor reports whether the account of s's user has a second
+// factor s has not met: a configured method usable against s's first factor,
+// or the user's own active passkeys while a passkey route can meet the second
+// factor. The routes are this manager's passkey MFA method among methods, and
+// passwordless login on the caller's chain, which meets the second factor
+// unless WithoutSecondFactorAtLogin is set. The passkeys count whatever s's
+// first factor, since the account's assurance does not depend on how s was
+// established; with no route they meet no second factor, and counting them
+// would leave their holder unable ever to manage passkeys. A failed lookup is
+// an error with fixed text.
+func (m *Manager) owesSecondFactor(
+	ctx context.Context, s *session.Session, methods []policy.MFAMethodLookup, passwordless bool,
+) (bool, error) {
+	usable, err := policy.UsableMFAMethods(ctx, methods, s.UserID, s.FirstFactor)
+	if err != nil {
+		return false, diag.Wrap(err, "passkey: could not read the user's second factors")
+	}
+
+	if len(usable) > 0 {
+		return true, nil
+	}
+
+	if !m.passkeyRoute(methods, passwordless) {
+		return false, nil
+	}
+
+	active, err := m.activeCredentials(ctx, s.UserID)
+	if err != nil {
+		return false, err
+	}
+
+	return len(active) > 0, nil
+}
+
+// passkeyRoute reports whether a passkey of this manager can meet a second
+// factor: its own MFA method is among methods, recognised by type and by the
+// manager it belongs to, never by name; or passwordless login is served and
+// proves the second factor.
+func (m *Manager) passkeyRoute(methods []policy.MFAMethodLookup, passwordless bool) bool {
+	if passwordless && !m.noProofAtLogin {
+		return true
+	}
+
+	for _, lk := range methods {
+		if pm, ok := lk.(*MFAMethod); ok && pm.m == m {
+			return true
+		}
+	}
+
+	return false
 }

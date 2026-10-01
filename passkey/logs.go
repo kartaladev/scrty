@@ -86,3 +86,10 @@ func (m *Manager) FlushRefusalLogs() error {
 
 	return nil
 }
+
+// LogInterval is the window of the manager's log sampler: the one
+// WithLogInterval set, or one minute when none was given. An interval of zero
+// or less means every record is written. It is for an integration that
+// samples records about passkeys of its own and wants the same window the
+// consumer chose for the manager's, so one option governs both.
+func (m *Manager) LogInterval() time.Duration { return m.logInterval }

@@ -1,11 +1,13 @@
 package httpsec_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -85,6 +87,10 @@ type pwlDeployment struct {
 	// without it the optional mode is chosen.
 	pkOpts   []passkey.Option
 	recovery *passkey.RecoveryDeps
+
+	// challenges is the passkey manager's challenge store; nil keeps the
+	// manager's default.
+	challenges onetime.Store
 
 	// passkeyOpts are further EnablePasskeys options, and settings the
 	// passwordless settings; withoutPasswordless leaves passwordless login
@@ -215,6 +221,7 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 		Users:       d.users,
 		Sender:      d.notices,
 		Recovery:    d.recovery,
+		Challenges:  d.challenges,
 	}, append(pkOpts, d.pkOpts...)...)
 	require.NoError(t, err)
 
@@ -371,21 +378,23 @@ func (d *pwlDeployment) login(t *testing.T, credID string, handle []byte) served
 	return d.finish(t, handleAssertionBody(challenge, credID, handle), cookie)
 }
 
-// sessionCount is 1 when out answered a login document carrying an access
-// token, and 0 otherwise.
-func (d *pwlDeployment) sessionCount(t *testing.T, out served) int {
+// sessionCount is the number of sessions the deployment's session store
+// holds for the users the tests sign in, however the response looked: a
+// session saved before a refusal counts, whatever the body says. out is
+// unused and kept so a case reads the same wherever it asserts.
+func (d *pwlDeployment) sessionCount(t *testing.T, _ served) int {
 	t.Helper()
 
-	if out.rec.Code != http.StatusOK {
-		return 0
+	total := 0
+
+	for _, user := range []identity.UserID{e2eUser, "u-gone", "u-someone-else"} {
+		n, err := d.sessions.CountActiveByUser(t.Context(), user)
+		require.NoError(t, err)
+
+		total += n
 	}
 
-	var doc loginBody
-	if json.Unmarshal(out.rec.Body.Bytes(), &doc) != nil || doc.AccessToken == "" {
-		return 0
-	}
-
-	return 1
+	return total
 }
 
 // finishedSession is the session a successful finish's access token names.
@@ -504,6 +513,9 @@ func TestPasswordless(t *testing.T) {
 		},
 		{
 			name: "the 31st begin from one source is throttled",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.challenges = &countingChallenges{Store: onetime.NewMemoryStore()}
+			},
 			act: func(t *testing.T, d *pwlDeployment) served {
 				for i := range 30 {
 					require.NoError(t, d.begin(t).err, "begin %d", i+1)
@@ -516,6 +528,7 @@ func TestPasswordless(t *testing.T) {
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 				assert.Nil(t, cookieNamed(out.rec, httpsec.DefaultPasswordlessCookieName), "no cookie is set")
 				assert.Len(t, d.verifier.requests, 30, "no challenge is issued")
+				assert.EqualValues(t, 30, d.challenges.(*countingChallenges).inserts.Load(), "no challenge is stored")
 			},
 		},
 		{
@@ -1035,6 +1048,35 @@ func TestPasswordless(t *testing.T) {
 			},
 		},
 		{
+			name: "relaxed user verification with the passkey method on the slot is refused as the same channel",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UVPreferred))
+				d.verifier.notUserVerified.Store(true)
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, policy.ErrSecondFactorSameChannel)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, d.sessionCount(t, out), "no session is created")
+			},
+		},
+		{
+			name: "a separate factor with only the passkey method on the slot is refused as the same channel",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.pkOpts = append(d.pkOpts, passkey.WithoutSecondFactorAtLogin())
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, policy.ErrSecondFactorSameChannel)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, d.sessionCount(t, out), "no session is created")
+			},
+		},
+		{
 			name: "form login's responder is the default",
 			act: func(t *testing.T, d *pwlDeployment) served {
 				opts := d.options(t)
@@ -1384,4 +1426,216 @@ func TestPasswordless_CancelsHeldRecovery(t *testing.T) {
 	h.clock.Advance(recoveryHoldDelay)
 
 	refusedFinish(t, h.finish(t, held.completion))
+}
+
+// countingChallenges counts the challenges inserted into the store it wraps.
+type countingChallenges struct {
+	onetime.Store
+
+	inserts atomic.Int64
+}
+
+func (c *countingChallenges) Insert(ctx context.Context, tok onetime.Token) error {
+	c.inserts.Add(1)
+
+	return c.Store.Insert(ctx, tok)
+}
+
+func TestPasswordless_SamplesUserRefusals(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  func(t *testing.T, d *pwlDeployment)
+		user   identity.UserID
+		assert func(t *testing.T, logs string)
+	}
+
+	cases := []testCase{
+		{
+			name: "unknown user",
+			user: "u-gone",
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 1, strings.Count(logs, "a passwordless login's user no longer exists"), "the refusal is logged once")
+				assert.Contains(t, logs, "level=DEBUG")
+				assert.Contains(t, logs, "flow=passkey-login")
+				assert.Contains(t, logs, "reason=user-unknown")
+			},
+		},
+		{
+			name:  "inactive user",
+			setup: func(_ *testing.T, d *pwlDeployment) { d.inactive.Store(true) },
+			user:  e2eUser,
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 1, strings.Count(logs, "a passwordless login's user is not active"), "the refusal is logged once")
+				assert.Contains(t, logs, "level=DEBUG")
+				assert.Contains(t, logs, "flow=passkey-login")
+				assert.Contains(t, logs, "reason=user-inactive")
+			},
+		},
+		{
+			name:  "user mismatch",
+			setup: func(_ *testing.T, d *pwlDeployment) { d.loaderOtherUser.Store(true) },
+			user:  e2eUser,
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 1, strings.Count(logs, "the user loader returned a different user"), "the refusal is logged once")
+				assert.Contains(t, logs, "level=ERROR")
+				assert.Contains(t, logs, "flow=passkey-login")
+				assert.Contains(t, logs, "reason=user-mismatch")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			d := newPwlDeployment(t)
+			d.extra = append(d.extra, httpsec.WithLogger(logger))
+
+			if tc.setup != nil {
+				tc.setup(t, d)
+			}
+
+			d.build(t)
+
+			handle := d.seed(t, tc.user, "cred-1", passkey.StateActive)
+
+			for range 5 {
+				out := d.login(t, "cred-1", handle)
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+			}
+
+			tc.assert(t, buf.String())
+		})
+	}
+}
+
+// TestPasswordless_RefusalLogsFollowPasskeyInterval pins that the passwordless
+// endpoints' refusals are sampled over the passkey manager's window
+// (passkey.WithLogInterval), not the chain's (httpsec.WithRefusalLogInterval),
+// and that a chain flush reports what they held back.
+func TestPasswordless_RefusalLogsFollowPasskeyInterval(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  func(t *testing.T, d *pwlDeployment)
+		drive  func(t *testing.T, d *pwlDeployment)
+		assert func(t *testing.T, logs string)
+	}
+
+	unknownUser := func(t *testing.T, d *pwlDeployment) {
+		t.Helper()
+
+		handle := d.seed(t, "u-gone", "cred-1", passkey.StateActive)
+
+		for range 5 {
+			out := d.login(t, "cred-1", handle)
+			require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+		}
+	}
+
+	throttled := func(t *testing.T, d *pwlDeployment) {
+		t.Helper()
+
+		for range 5 {
+			out := serve(t, d.chain, postValues(t.Context(), passwordlessBeginPath, flushSource, url.Values{}))
+			require.Error(t, out.err)
+		}
+	}
+
+	withThrottle := func(t *testing.T, d *pwlDeployment) {
+		t.Helper()
+
+		d.settings = append(d.settings, httpsec.PasswordlessLimiter(exceededLimiter(t)))
+	}
+
+	const (
+		unknownMsg  = "a passwordless login's user no longer exists"
+		throttleMsg = "httpsec: source throttled"
+	)
+
+	cases := []testCase{
+		{
+			name: "the passkey interval writing every record governs a user refusal",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.pkOpts = append(d.pkOpts, passkey.WithLogInterval(-1))
+			},
+			drive: unknownUser,
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 5, strings.Count(logs, unknownMsg))
+			},
+		},
+		{
+			name: "the chain interval does not govern a user refusal",
+			setup: func(_ *testing.T, d *pwlDeployment) {
+				d.extra = append(d.extra, httpsec.WithRefusalLogInterval(-1))
+			},
+			drive: unknownUser,
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 1, strings.Count(logs, unknownMsg))
+			},
+		},
+		{
+			name: "the passkey interval writing every record governs the begin throttle",
+			setup: func(t *testing.T, d *pwlDeployment) {
+				withThrottle(t, d)
+				d.pkOpts = append(d.pkOpts, passkey.WithLogInterval(-1))
+			},
+			drive: throttled,
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 5, strings.Count(logs, throttleMsg))
+			},
+		},
+		{
+			name: "the chain interval does not govern the begin throttle",
+			setup: func(t *testing.T, d *pwlDeployment) {
+				withThrottle(t, d)
+				d.extra = append(d.extra, httpsec.WithRefusalLogInterval(-1))
+			},
+			drive: throttled,
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 1, strings.Count(logs, throttleMsg))
+			},
+		},
+		{
+			name: "a chain flush reports what the passwordless sampler held back",
+			drive: func(t *testing.T, d *pwlDeployment) {
+				unknownUser(t, d)
+				d.chain.FlushRefusalLogs()
+			},
+			assert: func(t *testing.T, logs string) {
+				assert.Equal(t, 1, strings.Count(logs, unknownMsg))
+				assert.Contains(t, logs, "refusal logs suppressed")
+				assert.Contains(t, logs, "key=passkey-login|user-unknown")
+				assert.Contains(t, logs, "suppressed=4")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+
+			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			d := newPwlDeployment(t)
+			d.extra = append(d.extra, httpsec.WithLogger(logger))
+
+			if tc.setup != nil {
+				tc.setup(t, d)
+			}
+
+			d.build(t)
+			tc.drive(t, d)
+			tc.assert(t, buf.String())
+		})
+	}
 }

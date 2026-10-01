@@ -3,7 +3,10 @@ package storetest
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,6 +266,36 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 				_, err := s.FindByCredentialID(ctx, []byte("D"))
 				require.ErrorIs(t, err, passkey.ErrNotFound)
 				assertCredential(t, passkeyCredential(1, "u-1", "C"), storedCredential(ctx, t, s, "C"))
+			},
+		},
+		{
+			name: "concurrent inserts of one credential ID: exactly one wins, the rest are duplicates",
+			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
+				var next atomic.Int64
+				wins := concurrently(t, 8, func() (bool, error) {
+					n := int(next.Add(1))
+					err := s.Insert(ctx, passkeyCredential(n, identity.UserID(fmt.Sprintf("u-%d", n)), "C"))
+					if errors.Is(err, passkey.ErrDuplicateCredential) {
+						return false, nil
+					}
+
+					return err == nil, err
+				})
+				assert.Equal(t, 1, wins, "inserts of one credential ID that succeeded")
+
+				winner := storedCredential(ctx, t, s, "C")
+				assert.Equal(t, []byte("C"), winner.CredentialID)
+				stored := 0
+				for n := 1; n <= 8; n++ {
+					c, err := s.Find(ctx, identity.UserID(fmt.Sprintf("u-%d", n)), suiteID(n))
+					if err == nil {
+						stored++
+						assertCredential(t, winner, c)
+					} else {
+						require.ErrorIs(t, err, passkey.ErrNotFound)
+					}
+				}
+				assert.Equal(t, 1, stored, "credentials stored under the contested credential ID")
 			},
 		},
 		{

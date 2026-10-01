@@ -93,6 +93,16 @@ type passkeyInterceptor struct {
 	// the binding would leave it owing a second factor nothing could resolve.
 	method bool
 
+	// mfaMethods are the MFA slot's methods, the passkey method among them
+	// when it is there, resolved at assembly and nil with no MFA slot. The
+	// manager decides registration and removal admission over them.
+	mfaMethods []policy.MFAMethodLookup
+
+	// passwordlessLogin reports, from assembly on, that the chain serves
+	// passwordless login, so the manager counts the user's own passkeys as a
+	// second factor the account has when the login proves one.
+	passwordlessLogin bool
+
 	// enrolment is the chain's enrolment path, handed over at assembly when
 	// the path counts the passkey method among its enrolling methods, and nil
 	// otherwise. Its email confirmation, contact resolver and confirmation
@@ -140,9 +150,17 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // the registration prefix, DefaultPasskeyRegistrationPrefix by default
 // (WithPasskeyRegistrationPrefix):
 //
-//   - "<prefix>/begin" admits the session (passkey.Manager.BeginRegistration)
-//     and answers 200 with {"publicKey":{…creation options…}} and
-//     Cache-Control: no-store (WithPasskeyBeginResponder);
+//   - "<prefix>/begin" admits the session (passkey.Manager.BeginRegistration),
+//     deciding whether it owes a second factor over the MFA slot's methods,
+//     the passkey method among them when it is there, and over the user's own
+//     active passkeys when that method is there or WithPasswordlessLogin is
+//     given and its login proves the second factor. A password session steps
+//     up through the passkey MFA method (recognised by identity: a wrapped
+//     method opens no route); a passkey-first session cannot, and signs in
+//     again with user verification, or by password and then the passkey
+//     step-up. It answers 200 with
+//     {"publicKey":{…creation options…}} and Cache-Control: no-store
+//     (WithPasskeyBeginResponder);
 //   - "<prefix>/finish" reads the authenticator's response as a JSON body of
 //     at most passkey.RegistrationBodyLimit (64 KiB), finishes the
 //     registration, and answers 200 with
@@ -187,7 +205,8 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // factor at OrderPasskeyLogin.
 //
 // Any other method on these paths passes through untouched, and so does
-// every other path. A request without a session is refused with
+// every other path. A request without a session, or whose session carries no
+// resolved caller (no Exchange.Authentication principal), is refused with
 // ErrAuthenticationRequired.
 //
 // The response is read by the library and never from the URL query: a body
@@ -360,6 +379,10 @@ func (c *config) wirePasskeys() error {
 	}
 
 	p.method = c.hasPasskeyMethod()
+	p.passwordlessLogin = p.passwordless != nil
+	if m := c.mfaOf(); m != nil {
+		p.mfaMethods = m.lookups
+	}
 
 	_ = eachInterceptor(c, func(i *enrolmentInterceptor) error {
 		if i.passkeys {
@@ -483,8 +506,10 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
+	// There must be a session and a resolved caller for it: a session whose
+	// first factor published no caller names nobody to register for.
 	s := ex.Session
-	if s == nil {
+	if s == nil || ex.Authentication == nil || ex.Authentication.Principal == nil {
 		return ErrAuthenticationRequired
 	}
 
@@ -504,18 +529,21 @@ func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
 	return serve(ex, s)
 }
 
-// registrationContext is what the manager is told about s's registration:
+// registrationContext is what the manager is told about s's registration or
+// removal: always the MFA slot's methods and whether the chain serves
+// passwordless login, which admission decides over; and,
 // for an enrolment-only session, the enrolment path's email confirmation,
-// contact resolver and confirmation limiter; for any other, nothing, so the
-// manager's own apply.
+// contact resolver and confirmation limiter, where any other session leaves
+// the manager's own to apply.
 func (p *passkeyInterceptor) registrationContext(s *session.Session) passkey.RegistrationContext {
+	rc := passkey.RegistrationContext{MFAMethods: p.mfaMethods, PasswordlessLogin: p.passwordlessLogin}
 	if s.MFA != session.MFAEnrolmentPending || p.enrolment == nil {
-		return passkey.RegistrationContext{}
+		return rc
 	}
 
-	return passkey.RegistrationContext{
-		EmailConfirmation: p.enrolment.emailConfirmation,
-		ContactResolver:   p.enrolment.contact,
-		ConfirmLimiter:    p.enrolment.confirmLimiter,
-	}
+	rc.EmailConfirmation = p.enrolment.emailConfirmation
+	rc.ContactResolver = p.enrolment.contact
+	rc.ConfirmLimiter = p.enrolment.confirmLimiter
+
+	return rc
 }

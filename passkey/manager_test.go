@@ -209,7 +209,7 @@ func (f *fixture) begin(t *testing.T, m *passkey.Manager, s *session.Session) st
 
 	before := len(f.creations())
 
-	_, err := m.BeginRegistration(t.Context(), s)
+	_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 	require.NoError(t, err)
 
 	in := f.creations()
@@ -234,11 +234,18 @@ func (f *fixture) manager(t *testing.T, opts ...passkey.Option) *passkey.Manager
 // withTOTP configures one TOTP lookup on the authenticator-app channel, which
 // reports enrolled and err for every user.
 func (f *fixture) withTOTP(enrolled bool, err error) {
+	f.deps.MFAMethods = []policy.MFAMethodLookup{f.totp(enrolled, err)}
+}
+
+// totp is a TOTP lookup on the authenticator-app channel, which reports the
+// user enrolled or not, or err.
+func (f *fixture) totp(enrolled bool, err error) policy.MFAMethodLookup {
 	lk := NewMockMFAMethodLookup(f.ctrl)
 	lk.EXPECT().Name().Return("totp").AnyTimes()
 	lk.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 	lk.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(enrolled, err).AnyTimes()
-	f.deps.MFAMethods = []policy.MFAMethodLookup{lk}
+
+	return lk
 }
 
 // creations returns a copy of the creation inputs the verifier was given.

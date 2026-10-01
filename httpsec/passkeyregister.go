@@ -15,7 +15,7 @@ import (
 // creation options. The manager admits the session, throttles the user and
 // issues the challenge; its refusals are returned unchanged.
 func (p *passkeyInterceptor) begin(ex *Exchange, s *session.Session) error {
-	options, err := p.deps.Passkeys.BeginRegistration(ex.Context(), s)
+	options, err := p.deps.Passkeys.BeginRegistration(ex.Context(), s, p.registrationContext(s))
 	if err != nil {
 		return err
 	}

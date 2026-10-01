@@ -70,9 +70,9 @@ func (m *Manager) List(ctx context.Context, user identity.UserID) ([]Summary, er
 
 // Rename names user's passkey cid, in any state, under the registration's
 // name rules (NormaliseName): the name is trimmed, and one that is empty,
-// longer than 64 characters or holds a control character is replaced by the
-// default name for the date the passkey was registered, never truncated or
-// refused.
+// longer than 64 characters or holds a control or format character is
+// replaced by the default name for the date the passkey was registered, never
+// truncated or refused.
 //
 // A cid that names no passkey of user — another user's, or none — is
 // ErrNotFound, and nothing changes. Renaming changes no authenticator, so it
@@ -99,13 +99,18 @@ func (m *Manager) Rename(ctx context.Context, user identity.UserID, cid id.ID, n
 // included — and queues the Removed notice naming it.
 //
 // Removal changes the user's authenticators, so s must be a full session at
-// the account's assurance, as for a registration: when the user can use any
-// configured MFA method, s must have met its second factor, and its latest
+// the account's assurance, as for a registration (see the package
+// documentation's Admission section): when the user can use any of the
+// configured MFA methods (rc.MFAMethods, or Deps.MFAMethods when rc lists
+// none), or holds an active passkey while a passkey route can meet the second
+// factor, s must have met its second factor, and its latest
 // authentication, the later of its creation and its second factor, must be
 // within the management freshness window (WithManagementFreshness, 15 minutes
 // by default). A recovery-pending or enrolment-only session, a session with a
-// pending challenge, and no session at all are refused too. Every such refusal
-// is ErrReauthenticationRequired.
+// pending MFA challenge or owing a password change, and no session at all are
+// refused too. Every such refusal is ErrReauthenticationRequired; a failed MFA
+// or passkey lookup refuses with fixed text, and a nil entry in rc.MFAMethods
+// with ErrConfig.
 //
 // A cid that names no passkey of the user — another user's, or none — is
 // ErrNotFound, and nothing changes. A notice that cannot be queued is logged
@@ -113,12 +118,12 @@ func (m *Manager) Rename(ctx context.Context, user identity.UserID, cid id.ID, n
 //
 // Removing a passwordless user's last active passkey leaves them only account
 // recovery to sign in with.
-func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID) error {
+func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID, rc RegistrationContext) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	if err := m.admitRemoval(ctx, s); err != nil {
+	if err := m.admitRemoval(ctx, s, rc); err != nil {
 		return err
 	}
 
@@ -143,12 +148,12 @@ func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID) err
 
 // admitRemoval admits only a full session, by admit's rule for one: a
 // confined session, which admit lets register, may not remove.
-func (m *Manager) admitRemoval(ctx context.Context, s *session.Session) error {
+func (m *Manager) admitRemoval(ctx context.Context, s *session.Session, rc RegistrationContext) error {
 	if s == nil || s.MFA == session.MFARecoveryPending || s.MFA == session.MFAEnrolmentPending {
 		return ErrReauthenticationRequired
 	}
 
-	return m.admit(ctx, s)
+	return m.admit(ctx, s, rc)
 }
 
 // findOwn returns user's credential cid, or ErrNotFound when it is not one.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
@@ -26,6 +28,7 @@ func TestBeginRegistration(t *testing.T) {
 		setup   func(t *testing.T, f *fixture)
 		opts    []passkey.Option
 		session func() *session.Session
+		rc      func(f *fixture) passkey.RegistrationContext
 		at      time.Duration // after regStart, when the begin runs
 		before  func(t *testing.T, f *fixture, m *passkey.Manager, s *session.Session)
 		ctx     func(ctx context.Context) context.Context
@@ -114,6 +117,38 @@ func TestBeginRegistration(t *testing.T) {
 			assert:  reauth,
 		},
 		{
+			name:    "the context's second factors decide when Deps lists none",
+			session: full,
+			rc: func(f *fixture) passkey.RegistrationContext {
+				return passkey.RegistrationContext{MFAMethods: []policy.MFAMethodLookup{f.totp(true, nil)}}
+			},
+			at:     5 * time.Minute,
+			assert: reauth,
+		},
+		{
+			name:    "the context's second factors replace Deps'",
+			setup:   func(_ *testing.T, f *fixture) { f.withTOTP(true, nil) },
+			session: full,
+			rc: func(f *fixture) passkey.RegistrationContext {
+				return passkey.RegistrationContext{MFAMethods: []policy.MFAMethodLookup{f.totp(false, nil)}}
+			},
+			at:     5 * time.Minute,
+			assert: issued,
+		},
+		{
+			name: "a recovery-pending session owing a password change",
+			session: func() *session.Session {
+				s := full()
+				s.MFA, s.FirstFactor = session.MFARecoveryPending, ""
+				s.EnrolmentOriginDeadline, s.RecoveredAt = regStart.Add(time.Hour), regStart
+				s.PasswordChangePending = true
+
+				return s
+			},
+			at:     time.Minute,
+			assert: reauth,
+		},
+		{
 			name:    "an MFA lookup failure refuses",
 			setup:   func(_ *testing.T, f *fixture) { f.withTOTP(false, lookupErr) },
 			session: full,
@@ -131,6 +166,17 @@ func TestBeginRegistration(t *testing.T) {
 			session: func() *session.Session {
 				s := full()
 				s.MFA = session.MFAPending
+
+				return s
+			},
+			at:     time.Minute,
+			assert: reauth,
+		},
+		{
+			name: "a session owing a password change",
+			session: func() *session.Session {
+				s := full()
+				s.PasswordChangePending = true
 
 				return s
 			},
@@ -196,7 +242,7 @@ func TestBeginRegistration(t *testing.T) {
 			at:      time.Minute,
 			before: func(t *testing.T, _ *fixture, m *passkey.Manager, s *session.Session) {
 				for range 10 {
-					_, err := m.BeginRegistration(t.Context(), s)
+					_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 					require.NoError(t, err)
 				}
 			},
@@ -214,7 +260,7 @@ func TestBeginRegistration(t *testing.T) {
 			session: full,
 			at:      time.Minute,
 			before: func(t *testing.T, _ *fixture, m *passkey.Manager, s *session.Session) {
-				_, err := m.BeginRegistration(t.Context(), s)
+				_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 				require.NoError(t, err)
 			},
 			assert: func(t *testing.T, _ *fixture, _ json.RawMessage, err error) {
@@ -226,7 +272,7 @@ func TestBeginRegistration(t *testing.T) {
 			name:    "the handle is reused a day later",
 			session: full,
 			before: func(t *testing.T, f *fixture, m *passkey.Manager, s *session.Session) {
-				_, err := m.BeginRegistration(t.Context(), s)
+				_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 				require.NoError(t, err)
 
 				f.clock.Advance(24 * time.Hour)
@@ -240,6 +286,46 @@ func TestBeginRegistration(t *testing.T) {
 				require.Len(t, in, 2)
 				assert.Len(t, in[0].UserHandle, passkey.HandleSize)
 				assert.Equal(t, in[0].UserHandle, in[1].UserHandle)
+			},
+		},
+		{
+			name:    "concurrent first registrations share one handle",
+			session: full,
+			at:      time.Minute,
+			before: func(t *testing.T, _ *fixture, m *passkey.Manager, s *session.Session) {
+				const callers = 8
+
+				start := make(chan struct{})
+				errs := make(chan error, callers)
+
+				var wg sync.WaitGroup
+				for range callers {
+					wg.Go(func() {
+						<-start
+
+						_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
+						errs <- err
+					})
+				}
+
+				close(start)
+				wg.Wait()
+				close(errs)
+
+				for err := range errs {
+					require.NoError(t, err)
+				}
+			},
+			assert: func(t *testing.T, f *fixture, _ json.RawMessage, err error) {
+				t.Helper()
+				require.NoError(t, err)
+
+				in := f.creations()
+				require.Len(t, in, 9)
+
+				for _, c := range in[1:] {
+					assert.Equal(t, in[0].UserHandle, c.UserHandle)
+				}
 			},
 		},
 		{
@@ -321,7 +407,12 @@ func TestBeginRegistration(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			raw, err := m.BeginRegistration(ctx, s)
+			var rc passkey.RegistrationContext
+			if tc.rc != nil {
+				rc = tc.rc(f)
+			}
+
+			raw, err := m.BeginRegistration(ctx, s, rc)
 			tc.assert(t, f, raw, err)
 		})
 	}
