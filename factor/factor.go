@@ -30,6 +30,11 @@ const (
 	OIDC      Kind = "oidc"
 	Basic     Kind = "basic"
 	APIKey    Kind = "api-key"
+
+	// Recovery is the kind of the session an account recovery produces. The
+	// recovery rested on two proofs of different kinds rather than on one
+	// channel, so it reports no channel, and it is not exempt from MFA.
+	Recovery Kind = "recovery"
 )
 
 // Channel is the medium a factor travels over.
@@ -52,8 +57,8 @@ const (
 
 // Channel reports the channel k travels over.
 //
-// A kind the library does not name, including the empty kind, reports the empty
-// channel, which matches no enrolled method.
+// Recovery, the empty kind and any kind the library does not name all report
+// the empty channel, which matches no enrolled method.
 func (k Kind) Channel() Channel {
 	switch k {
 	case Password, Basic:
@@ -74,8 +79,8 @@ func (k Kind) Channel() Channel {
 //
 // Only OIDC and APIKey are exempt: the first has already authenticated at the
 // provider, and the second is a machine caller with no one to prompt. Every
-// other kind is enforced, including the empty kind and kinds the library does
-// not name.
+// other kind is enforced, including Recovery, the empty kind and kinds the
+// library does not name.
 //
 // The exemption is data, not a decision. Whether an exempt login is accepted
 // for a user who requires a second factor belongs to the security-policy

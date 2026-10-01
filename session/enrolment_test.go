@@ -35,7 +35,8 @@ func TestMFAState(t *testing.T) {
 		{name: "pending", state: session.MFAPending, value: 1, text: "pending"},
 		{name: "satisfied", state: session.MFASatisfied, value: 2, text: "satisfied"},
 		{name: "enrolment pending is appended", state: session.MFAEnrolmentPending, value: 3, text: "enrolment-pending"},
-		{name: "unnamed prints its number", state: session.MFAState(4), value: 4, text: "MFAState(4)"},
+		{name: "recovery pending is appended", state: session.MFARecoveryPending, value: 4, text: "recovery-pending"},
+		{name: "unnamed prints its number", state: session.MFAState(5), value: 5, text: "MFAState(5)"},
 	}
 
 	for _, tc := range cases {

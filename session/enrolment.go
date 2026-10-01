@@ -31,6 +31,32 @@ import (
 // A lifetime of zero or less leaves a session that has already expired; the
 // caller validates the lifetime it configures.
 func (m *Manager) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
+	m.confine(s, lifetime)
+	s.MFA = MFAEnrolmentPending
+}
+
+// MarkRecoveryPending records on s, in memory, that an account recovery
+// produced it at the time at: it sets the MFARecoveryPending state and
+// RecoveredAt, and confines s exactly as MarkEnrolmentPending does, with
+// lifetime, the recovery lifetime, in place of the enrolment lifetime. The
+// caller saves s, so the state, the recovery time and the deadlines land in
+// one persisted change.
+//
+// RestoreEnrolmentDeadlines gives the deadlines back when s leaves the state
+// through a binding, as it does for an enrolment-only session. RecoveredAt is
+// kept when s leaves the state.
+//
+// A lifetime of zero or less leaves a session that has already expired; the
+// caller validates the lifetime it configures.
+func (m *Manager) MarkRecoveryPending(s *Session, lifetime time.Duration, at time.Time) {
+	m.confine(s, lifetime)
+	s.MFA = MFARecoveryPending
+	s.RecoveredAt = at
+}
+
+// confine sets the confinement marker on s, unless it already carries one,
+// and lowers its deadlines so it ends no later than lifetime from now.
+func (m *Manager) confine(s *Session, lifetime time.Duration) {
 	if s.EnrolmentOriginDeadline.IsZero() {
 		s.EnrolmentOriginDeadline = s.AbsoluteExpiresAt
 	}
@@ -41,14 +67,14 @@ func (m *Manager) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
 	if s.IdleExpiresAt.After(s.AbsoluteExpiresAt) {
 		s.IdleExpiresAt = s.AbsoluteExpiresAt
 	}
-
-	s.MFA = MFAEnrolmentPending
 }
 
-// RestoreEnrolmentDeadlines undoes MarkEnrolmentPending on s, in memory, once
-// its second factor has been satisfied. The caller persists s, normally by
-// passing it to Rotate straight after, which carries the restored deadlines
-// over as it carries every other field.
+// RestoreEnrolmentDeadlines undoes the confinement MarkEnrolmentPending or
+// MarkRecoveryPending applied to s, in memory, once s leaves the confined
+// state through a binding: its second factor satisfied, or, for a recovery, a
+// password change resolved. The caller persists s, normally by passing it to
+// Rotate straight after, which carries the restored deadlines over as it
+// carries every other field.
 //
 // The absolute deadline becomes the earlier of CreatedAt plus the manager's
 // absolute timeout and the deadline recorded in EnrolmentOriginDeadline, the
@@ -64,9 +90,10 @@ func (m *Manager) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
 // rather than rotates cannot bring it back. A caller treats that error as the
 // session having ended.
 //
-// A session without the marker is left unchanged and the result is nil, so
-// calling it on every satisfied session is safe. It does not change the
-// second-factor state; marking the session satisfied is the caller's step.
+// A session without the confinement marker is left unchanged and the result
+// is nil, so calling it on every satisfied session is safe. It does not change
+// the second-factor state or RecoveredAt; moving the session out of its state
+// is the caller's step.
 func (m *Manager) RestoreEnrolmentDeadlines(s *Session) error {
 	if s.EnrolmentOriginDeadline.IsZero() {
 		return nil

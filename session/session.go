@@ -35,6 +35,13 @@ const (
 	// enrolment endpoints and logout. It is appended after the other states,
 	// never inserted among them, because a durable store keeps the ordinal.
 	MFAEnrolmentPending
+
+	// MFARecoveryPending means the session was produced by an account
+	// recovery and has not yet been bound to a working second factor or a new
+	// password. Manager.MarkRecoveryPending confines it as it confines an
+	// enrolment-only session. It is appended after MFAEnrolmentPending, never
+	// inserted among the states, because a durable store keeps the ordinal.
+	MFARecoveryPending
 )
 
 // String returns the constant's own name, so a log line reads "pending" rather
@@ -50,6 +57,8 @@ func (s MFAState) String() string {
 		return "satisfied"
 	case MFAEnrolmentPending:
 		return "enrolment-pending"
+	case MFARecoveryPending:
+		return "recovery-pending"
 	default:
 		return "MFAState(" + strconv.Itoa(int(s)) + ")"
 	}
@@ -83,10 +92,10 @@ type Session struct {
 
 	// AbsoluteExpiresAt is the deadline activity never extends. A session in
 	// constant use still ends at the hour it was always going to end.
-	// Manager.MarkEnrolmentPending lowers it for an enrolment-only session,
-	// and Manager.RestoreEnrolmentDeadlines gives it back on the upgrade, to no
-	// later than CreatedAt plus the absolute timeout and no later than the
-	// deadline held before the mark.
+	// Manager.MarkEnrolmentPending and Manager.MarkRecoveryPending lower it
+	// for a confined session, and Manager.RestoreEnrolmentDeadlines gives it
+	// back on the upgrade, to no later than CreatedAt plus the absolute
+	// timeout and no later than the deadline held before the mark.
 	AbsoluteExpiresAt time.Time
 
 	// FirstFactor is the kind of factor the login that established this
@@ -109,14 +118,16 @@ type Session struct {
 	// Library-owned.
 	PasswordChangePending bool
 
-	// EnrolmentOriginDeadline is the enrolment-origin marker. A non-zero value
-	// means this session entered the second-factor flow through the enrolment
-	// path, which lowered its absolute deadline; the value is the absolute
-	// deadline the session held immediately before it was marked, the latest
-	// Manager.RestoreEnrolmentDeadlines may give back. The zero value means
-	// the session was never marked. It stays set after the enrolment is
-	// confirmed and the session moves to MFAPending, until the restore clears
-	// it on the upgrade. Library-owned.
+	// EnrolmentOriginDeadline is the confinement marker, set by the enrolment
+	// path (Manager.MarkEnrolmentPending) or by an account recovery
+	// (Manager.MarkRecoveryPending). A non-zero value means this session was
+	// confined, which lowered its absolute deadline; the value is the
+	// absolute deadline the session held immediately before it was marked,
+	// the latest Manager.RestoreEnrolmentDeadlines may give back. The zero
+	// value means the session was never marked. It stays set after an
+	// enrolment is confirmed and the session moves to MFAPending, until the
+	// restore clears it on the upgrade. The name predates recovery and is
+	// kept so durable stores need no rename. Library-owned.
 	EnrolmentOriginDeadline time.Time
 
 	// EnrolmentGeneration is the generation of the enrolment this session
@@ -124,6 +135,13 @@ type Session struct {
 	// while the pending enrolment's generation equals it, which ties them to
 	// the session that began it. Library-owned.
 	EnrolmentGeneration id.ID
+
+	// RecoveredAt is when an account recovery produced this session, read
+	// from the manager's clock, and is zero for a session no recovery
+	// produced. Manager.MarkRecoveryPending sets it; it is kept when the
+	// session leaves the recovery-pending state, and Rotate carries it over.
+	// Library-owned: a consumer cannot set it through Data.
+	RecoveredAt time.Time
 
 	// ExternalProvider names the identity provider a federated login came
 	// from, as the consumer configured it.
@@ -146,9 +164,9 @@ type Session struct {
 	// Data is the consumer's own map. The library stores and returns it
 	// byte-for-byte, and never reads, adds, renames or removes an entry. No
 	// library state is kept in it: the first factor, the second-factor state,
-	// the enrolment marker and generation, and the password-change marker are
-	// fields above, so a consumer key can neither forge nor erase a challenge
-	// state.
+	// the confinement marker, the enrolment generation, the recovery time and
+	// the password-change marker are fields above, so a consumer key can
+	// neither forge nor erase a challenge state.
 	//
 	// It is map[string]string rather than a map of arbitrary values because
 	// "returned unchanged" has to survive a durable store, where a number

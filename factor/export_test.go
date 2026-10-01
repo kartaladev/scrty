@@ -12,4 +12,4 @@ package factor
 // rather than suppress that, the list sits where its only readers are. Being in
 // package factor, it still names the constants directly, and it reaches no
 // consumer's build.
-var AllKinds = []Kind{Password, MagicLink, OIDC, Basic, APIKey}
+var AllKinds = []Kind{Password, MagicLink, OIDC, Basic, APIKey, Recovery}

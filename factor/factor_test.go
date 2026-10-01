@@ -59,6 +59,15 @@ func TestKind(t *testing.T) {
 			},
 		},
 		{
+			name: "recovery reports no channel and is not exempt",
+			kind: factor.Recovery,
+			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
+				assert.Empty(t, channel, "a recovery rested on two proofs of different kinds, not one channel")
+				assert.False(t, exempt)
+				assert.Equal(t, factor.Kind("recovery"), factor.Recovery)
+			},
+		},
+		{
 			name: "the empty kind fails closed",
 			kind: factor.Kind(""),
 			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
