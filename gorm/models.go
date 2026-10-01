@@ -272,3 +272,42 @@ type accountRecoveryRow struct {
 
 // TableName is the table the migration creates for account recoveries.
 func (accountRecoveryRow) TableName() string { return "account_recoveries" }
+
+// passkeyCredentialRow is a row of the passkey_credentials table. The
+// transports are one per line, the state and pending reasons are
+// passkey.State and passkey.PendingReason as numbers, and EmailCode is the
+// sealed code, base64url-encoded, NULL while none is outstanding.
+type passkeyCredentialRow struct {
+	ID                   id.ID      `gorm:"column:id;type:uuid;primaryKey"`
+	UserID               string     `gorm:"column:user_id;type:text"`
+	CredentialID         []byte     `gorm:"column:credential_id;type:bytea"`
+	PublicKey            []byte     `gorm:"column:public_key;type:bytea"`
+	SignCount            int64      `gorm:"column:sign_count;type:bigint"`
+	BackupEligible       bool       `gorm:"column:backup_eligible;type:boolean"`
+	BackupState          bool       `gorm:"column:backup_state;type:boolean"`
+	Transports           string     `gorm:"column:transports;type:text"`
+	AAGUID               []byte     `gorm:"column:aaguid;type:bytea"`
+	AttestationFormat    *string    `gorm:"column:attestation_format;type:text"`
+	AttestationStatement []byte     `gorm:"column:attestation_statement;type:bytea"`
+	Name                 string     `gorm:"column:name;type:text"`
+	CreatedAt            time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
+	LastUsedAt           *time.Time `gorm:"column:last_used_at;type:timestamptz"`
+	State                int64      `gorm:"column:state;type:smallint"`
+	Pending              int64      `gorm:"column:pending;type:smallint"`
+	EmailCode            *string    `gorm:"column:email_code;type:text"`
+	EmailCodeExpiresAt   *time.Time `gorm:"column:email_code_expires_at;type:timestamptz"`
+	EmailCodeAttempts    int64      `gorm:"column:email_code_attempts;type:smallint"`
+}
+
+// TableName is the table the migration creates for passkey credentials.
+func (passkeyCredentialRow) TableName() string { return "passkey_credentials" }
+
+// passkeyHandleRow is a row of the passkey_user_handles table.
+type passkeyHandleRow struct {
+	ID     id.ID  `gorm:"column:id;type:uuid;primaryKey"`
+	UserID string `gorm:"column:user_id;type:text"`
+	Handle []byte `gorm:"column:handle;type:bytea"`
+}
+
+// TableName is the table the migration creates for passkey user handles.
+func (passkeyHandleRow) TableName() string { return "passkey_user_handles" }

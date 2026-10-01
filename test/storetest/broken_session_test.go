@@ -85,10 +85,13 @@ const (
 	sessionLoadDropsEnrolmentGeneration sessionDefect = "load-drops-enrolment-generation"
 	// Create does not keep the second-factor-at-login marker.
 	sessionCreateDropsMarker sessionDefect = "create-drops-second-factor-marker"
-	// Save writes the marker from the incoming session, so a save sets it.
+	// Save sets a stored marker that is unset when the incoming session
+	// carries it, and otherwise keeps the stored one: a save sets it, never
+	// clears it.
 	sessionSaveSetsMarker sessionDefect = "save-sets-second-factor-marker"
-	// Save writes the marker from the incoming session, so a save clears it
-	// too; the suite tells the two apart by which case fails.
+	// Save clears a stored marker that is set when the incoming session does
+	// not carry it, and otherwise keeps the stored one: a save clears it,
+	// never sets it.
 	sessionSaveClearsMarker sessionDefect = "save-clears-second-factor-marker"
 )
 
@@ -199,11 +202,18 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 		return session.ErrSessionNotFound
 	}
 	// Only Create writes the marker: a conforming save keeps the stored one.
-	if s.defect != sessionSaveSetsMarker && s.defect != sessionSaveClearsMarker {
-		kept := cloneSession(sess)
-		kept.MFAAtFirstFactor = stored.MFAAtFirstFactor
-		sess = kept
+	// Each marker defect lets one direction of change through, and only
+	// that one.
+	marker := stored.MFAAtFirstFactor
+	switch {
+	case s.defect == sessionSaveSetsMarker && !marker && sess.MFAAtFirstFactor:
+		marker = true
+	case s.defect == sessionSaveClearsMarker && marker && !sess.MFAAtFirstFactor:
+		marker = false
 	}
+	kept := cloneSession(sess)
+	kept.MFAAtFirstFactor = marker
+	sess = kept
 	if s.defect == sessionSaveRefusesTextAfterPartialWrite {
 		stored.LastAccessedAt = sess.LastAccessedAt
 		stored.IdleExpiresAt = sess.IdleExpiresAt

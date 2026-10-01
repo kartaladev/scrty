@@ -28,6 +28,11 @@ const (
 	// canonical 36-character text form, a ':' and the user reference, byte
 	// for byte.
 	AADMFAEmailCodePrefix = "scrty/mfa:email-code:"
+
+	// AADPasskeyEmailCodePrefix is followed by the passkey credential's
+	// library identifier, in its canonical 36-character text form, a ':' and
+	// the user reference, byte for byte.
+	AADPasskeyEmailCodePrefix = "scrty/passkey:email-code:"
 )
 
 // SigningKeyAAD returns the additional data a signing key's private material
@@ -48,4 +53,12 @@ func MFASecretAAD(user identity.UserID) []byte {
 // reference, so no two (generation, user) pairs share additional data.
 func MFAEmailCodeAAD(gen id.ID, user identity.UserID) []byte {
 	return []byte(AADMFAEmailCodePrefix + gen.String() + ":" + string(user))
+}
+
+// PasskeyEmailCodeAAD returns the additional data the code emailed to confirm
+// a pending passkey is sealed against. The fixed-length credential identifier
+// precedes the free-form user reference, so no two (credential, user) pairs
+// share additional data.
+func PasskeyEmailCodeAAD(cid id.ID, user identity.UserID) []byte {
+	return []byte(AADPasskeyEmailCodePrefix + cid.String() + ":" + string(user))
 }

@@ -16,7 +16,8 @@ import (
 
 // migratedColumns reads the migration set and returns, for every table it
 // creates, each column's type as the migration declares it. Table-level
-// constraint lines (UNIQUE, PRIMARY KEY) declare no column and are skipped.
+// constraint lines (UNIQUE, PRIMARY KEY, CONSTRAINT) declare no column and are
+// skipped.
 func migratedColumns(t *testing.T, set migrate.Set) map[string]map[string]string {
 	t.Helper()
 
@@ -41,7 +42,7 @@ func migratedColumns(t *testing.T, set migrate.Set) map[string]map[string]string
 			case strings.HasPrefix(line, ");"):
 				table = ""
 			case line == "", strings.HasPrefix(line, "--"), strings.HasPrefix(line, "UNIQUE"),
-				strings.HasPrefix(line, "PRIMARY"):
+				strings.HasPrefix(line, "PRIMARY"), strings.HasPrefix(line, "CONSTRAINT"):
 			default:
 				f := strings.Fields(line)
 				require.GreaterOrEqual(t, len(f), 2, "cannot read column line %q", line)
@@ -92,6 +93,8 @@ func TestModels(t *testing.T) {
 		{name: "OIDC handoffs", model: &handoffRow{}, table: "oidc_handoffs"},
 		{name: "recovery codes", model: &recoveryCodeRow{}, table: "recovery_codes"},
 		{name: "account recoveries", model: &accountRecoveryRow{}, table: "account_recoveries"},
+		{name: "passkey credentials", model: &passkeyCredentialRow{}, table: "passkey_credentials"},
+		{name: "passkey user handles", model: &passkeyHandleRow{}, table: "passkey_user_handles"},
 	}
 
 	for _, tc := range cases {

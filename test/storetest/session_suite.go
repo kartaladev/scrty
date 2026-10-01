@@ -484,11 +484,12 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				totp := sessionRecord("sess-a", "u-1")
 				totp.FirstFactor = factor.Password
 				require.NoError(t, s.Create(ctx, totp))
+				require.NoError(t, s.Save(ctx, totp))
 
 				got, err := s.Load(ctx, "sess-a")
 				require.NoError(t, err)
 				assert.Equal(t, session.MFASatisfied, got.MFA)
-				assert.False(t, got.MFAAtFirstFactor, "a session created without the marker loads unmarked")
+				assert.False(t, got.MFAAtFirstFactor, "a session saved without the marker loads unmarked")
 			},
 		},
 		{
