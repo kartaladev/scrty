@@ -266,7 +266,8 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 // cancelHeldAtLogin hands cancel to every first factor that ends its login
 // through completeLogin, so each cancels the user's held recoveries as soon as
 // its first factor has authenticated, before the policy phase and before it
-// creates the session: form login, magic link and OIDC.
+// creates the session: form login, magic link, OIDC and passwordless
+// passkey login.
 func (c *config) cancelHeldAtLogin(cancel heldRecoveryCanceller) {
 	_ = eachInterceptor(c, func(l *formLogin) error {
 		l.cancelHeld = cancel
@@ -281,6 +282,12 @@ func (c *config) cancelHeldAtLogin(cancel heldRecoveryCanceller) {
 	})
 
 	_ = eachInterceptor(c, func(i *oidcInterceptor) error {
+		i.cancelHeld = cancel
+
+		return nil
+	})
+
+	_ = eachInterceptor(c, func(i *passwordlessInterceptor) error {
 		i.cancelHeld = cancel
 
 		return nil

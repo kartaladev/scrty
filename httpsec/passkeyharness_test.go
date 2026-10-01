@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -49,6 +50,14 @@ type passkeyVerifierStub struct {
 	requests   []string // challenges rendered into request options
 	allowed    [][]passkey.Descriptor
 	parseCalls int
+
+	// notUserVerified makes every assertion verify with user presence only,
+	// refuseAssertions makes every assertion fail to verify, as a bad
+	// signature does, and signCount is the counter every verified assertion
+	// reports.
+	notUserVerified  atomic.Bool
+	refuseAssertions atomic.Bool
+	signCount        atomic.Uint32
 }
 
 func newPasskeyVerifierStub(t *testing.T) *passkeyVerifierStub {
@@ -129,12 +138,14 @@ func newPasskeyVerifierStub(t *testing.T) *passkeyVerifierStub {
 		})
 	v.mock.EXPECT().VerifyAssertion(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
 		DoAndReturn(func(_ context.Context, p passkey.ParsedAssertion, c *passkey.Credential, exp passkey.AssertionExpectation) (*passkey.AssertionResult, error) {
-			if p.Challenge() != encodeChallenge(exp.Challenge) || !bytes.Equal(p.CredentialID(), c.CredentialID) {
+			if v.refuseAssertions.Load() || p.Challenge() != encodeChallenge(exp.Challenge) ||
+				!bytes.Equal(p.CredentialID(), c.CredentialID) {
 				return nil, errors.New("stub: assertion does not verify")
 			}
 
 			return &passkey.AssertionResult{
-				UserVerified: true, BackupEligible: c.BackupEligible, BackupState: c.BackupState,
+				SignCount:    v.signCount.Load(),
+				UserVerified: !v.notUserVerified.Load(), BackupEligible: c.BackupEligible, BackupState: c.BackupState,
 			}, nil
 		})
 
@@ -174,6 +185,14 @@ func (v *passkeyVerifierStub) lastRequest(t *testing.T) string {
 // credential credID.
 func registrationBody(challenge, credID string) string {
 	b, _ := json.Marshal(map[string]string{"challenge": encodeChallenge(challenge), "id": credID, "name": "Laptop"})
+
+	return string(b)
+}
+
+// handleAssertionBody is an assertion answering challenge from credential
+// credID, carrying the user handle handle, as a passwordless login's does.
+func handleAssertionBody(challenge, credID string, handle []byte) string {
+	b, _ := json.Marshal(map[string]any{"challenge": encodeChallenge(challenge), "id": credID, "handle": handle})
 
 	return string(b)
 }

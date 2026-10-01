@@ -82,20 +82,22 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //  1. The chain's own sampler (WithRefusalLogInterval, WithRefusalLogReporter).
 //  2. The enrolment path of EnableMFAEnrolment.
 //  3. The verification throttle EnableMFA builds.
-//  4. The per-source guards of EnableAPIKey, EnableMagicLink and handoff
-//     redemption under EnableOIDCLogin, whether built over the default limiter
-//     or over one the consumer supplied.
+//  4. The per-source guards of EnableAPIKey, EnableMagicLink, handoff
+//     redemption under EnableOIDCLogin and the passwordless begin under
+//     EnablePasskeys, whether built over the default limiter or over one the
+//     consumer supplied.
 //  5. The authenticator given to EnableFormLogin or EnableBasicAuth, when it
 //     implements authenticate.RefusalLogFlusher.
 //  6. The oidc.Manager given to EnableOIDCLogin, which in turn flushes its
 //     identity broker when that can flush, and the oidc.HandoffManager given
 //     beside it, when there is one.
-//  7. The policy engine given to WithPolicyEngine, which flushes every
+//  7. The passkey.Manager given to EnablePasskeys.
+//  8. The policy engine given to WithPolicyEngine, which flushes every
 //     registered policy implementing policy.RefusalLogFlusher, including one
 //     registered after the chain was built.
 //
 // The chain's own sampler is flushed first and the policy engine last; items 2
-// to 6 are reached through the registered built-ins holding them, in the order
+// to 7 are reached through the registered built-ins holding them, in the order
 // the chain runs those built-ins.
 //
 // A flush reports what is pending and forgets it, so calling this more than

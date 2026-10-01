@@ -409,3 +409,81 @@ func recoveryDeps(
 
 	return &passkey.RecoveryDeps{Codes: codes, WayBack: check}
 }
+
+// TestManagerRequiresRecoveryCodes pins what a passwordless login's wiring
+// check reads: a manager needs saved codes wired unless they are, or the
+// optional mode is chosen.
+func TestManagerRequiresRecoveryCodes(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		deps   func(t *testing.T, f *fixture)
+		opts   []passkey.Option
+		assert func(t *testing.T, requires bool)
+	}
+
+	cases := []testCase{
+		{
+			name:   "neither recovery nor the optional mode",
+			assert: func(t *testing.T, requires bool) { assert.True(t, requires) },
+		},
+		{
+			name:   "the optional mode",
+			opts:   []passkey.Option{passkey.WithOptionalRecoveryCodes()},
+			assert: func(t *testing.T, requires bool) { assert.False(t, requires) },
+		},
+		{
+			name: "recovery wired",
+			deps: func(t *testing.T, f *fixture) {
+				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
+			},
+			assert: func(t *testing.T, requires bool) { assert.False(t, requires) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t)
+			if tc.deps != nil {
+				tc.deps(t, f)
+			}
+
+			tc.assert(t, f.manager(t, tc.opts...).RequiresRecoveryCodes())
+		})
+	}
+}
+
+// TestManagerChallengeTTL pins the lifetime a ceremony cookie is given: the
+// default, or the consumer's.
+func TestManagerChallengeTTL(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []passkey.Option
+		assert func(t *testing.T, ttl time.Duration)
+	}
+
+	cases := []testCase{
+		{
+			name:   "default",
+			assert: func(t *testing.T, ttl time.Duration) { assert.Equal(t, 5*time.Minute, ttl) },
+		},
+		{
+			name:   "consumer lifetime",
+			opts:   []passkey.Option{passkey.WithChallengeTTL(90 * time.Second)},
+			assert: func(t *testing.T, ttl time.Duration) { assert.Equal(t, 90*time.Second, ttl) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, newFixture(t).manager(t, tc.opts...).ChallengeTTL())
+		})
+	}
+}

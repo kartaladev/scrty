@@ -308,6 +308,23 @@ func (m *Manager) validate() error {
 	return m.verifier.RelyingParty().Validate()
 }
 
+// ChallengeTTL reports how long a ceremony challenge m issues stays valid:
+// the default of 5 minutes, or what WithChallengeTTL set. A caller that binds
+// a passwordless challenge to a cookie gives the cookie this lifetime.
+func (m *Manager) ChallengeTTL() time.Duration {
+	return m.ttl
+}
+
+// RequiresRecoveryCodes reports whether a passwordless login over m would
+// still need saved recovery codes wired: true when Deps.Recovery is not set
+// and WithOptionalRecoveryCodes is not given. A user signing in with passkeys
+// alone has no password to fall back on, so a caller that serves passwordless
+// login refuses such a manager at construction rather than strand the user
+// with no way back in.
+func (m *Manager) RequiresRecoveryCodes() bool {
+	return m.recovery == nil && !m.optionalCodes
+}
+
 // usernameAsNames is the default NameResolver: the username, for both names.
 func usernameAsNames(_ context.Context, d *identity.Details) (string, string, error) {
 	return d.Username, d.Username, nil

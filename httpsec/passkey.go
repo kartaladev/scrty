@@ -71,8 +71,21 @@ type passkeyInterceptor struct {
 	regPrefix  string
 	credPrefix string
 
+	// loginPrefix is the passwordless prefix, and loginPrefixSet reports
+	// that WithPasswordlessPrefix moved it.
+	loginPrefix    string
+	loginPrefixSet bool
+
+	// passwordless holds the passwordless settings when WithPasswordlessLogin
+	// was given, and login the passwordless endpoints built from them.
+	passwordless *passwordlessConfig
+	login        *passwordlessInterceptor
+
 	respondBegin        PasskeyBeginResponder
 	respondRegistration PasskeyRegistrationResponder
+	respondList         PasskeyListResponder
+	respondRename       PasskeyChangeResponder
+	respondRemove       PasskeyChangeResponder
 
 	// method reports, from assembly on, that the passkey MFA method is on the
 	// MFA slot, so a passkey bound on a recovery-pending session can be proven
@@ -101,7 +114,7 @@ func (p *passkeyInterceptor) registrationPaths() []string {
 // paths are every path the passkey endpoints answer, named for a
 // configuration error.
 func (p *passkeyInterceptor) paths() []struct{ name, path string } {
-	return []struct{ name, path string }{
+	paths := []struct{ name, path string }{
 		{"registration begin", p.regPrefix + passkeyBeginSegment},
 		{"registration finish", p.regPrefix + passkeyFinishSegment},
 		{"saved-code confirm", p.regPrefix + passkeyConfirmSegment},
@@ -110,6 +123,14 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 		{"rename", p.credPrefix + passkeyRenameSegment},
 		{"remove", p.credPrefix + passkeyRemoveSegment},
 	}
+
+	if p.login != nil {
+		paths = append(paths,
+			struct{ name, path string }{"passwordless begin", p.login.beginPath},
+			struct{ name, path string }{"passwordless finish", p.login.finishPath})
+	}
+
+	return paths
 }
 
 // EnablePasskeys serves passkey registration on the chain, at OrderPasskeys,
@@ -136,6 +157,34 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //   - "<prefix>/confirm-email" reads the "code" field likewise and redeems
 //     the code emailed for a passkey registered from an enrolment-only
 //     session, answering 204.
+//
+// The management endpoints answer under the credentials prefix,
+// DefaultPasskeyCredentialsPrefix by default (WithPasskeyCredentialsPrefix):
+//
+//   - GET "<prefix>" lists the session user's passkeys in every state, with
+//     no public key (passkey.Manager.List), answering 200 with
+//     {"passkeys":[…]} and Cache-Control: no-store
+//     (WithPasskeyListResponder);
+//   - POST "<prefix>/rename" reads the "id" and "name" fields of a
+//     URL-encoded body and names the passkey under the registration's name
+//     rules (passkey.Manager.Rename), answering 204
+//     (WithPasskeyRenameResponder);
+//   - POST "<prefix>/remove" reads the "id" field likewise and removes the
+//     passkey, in any state, under the registration's assurance and
+//     freshness (passkey.Manager.Remove), answering 204
+//     (WithPasskeyRemoveResponder). A stale or under-assured session is
+//     refused with passkey.ErrReauthenticationRequired (403). Removing a
+//     passwordless-only user's last active passkey leaves them only account
+//     recovery to sign in with.
+//
+// They serve full sessions only: a confined session, or one owing an MFA or
+// password-change challenge, is refused with the ChallengeError it owes. An
+// identifier that does not parse, names another user's passkey or names
+// none is passkey.ErrNotFound (404), and nothing changes.
+//
+// Passwordless login is off by default and is enabled with
+// WithPasswordlessLogin, which serves its own two endpoints as a first
+// factor at OrderPasskeyLogin.
 //
 // Any other method on these paths passes through untouched, and so does
 // every other path. A request without a session is refused with
@@ -168,6 +217,9 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 // restore the session's deadlines and rotate it. A registration on a full
 // session leaves its second-factor state alone.
 //
+// Flushing the chain's refusal logs (Chain.FlushRefusalLogs) flushes the
+// passkey manager's sampler too.
+//
 // New refuses the chain when the manager or the session manager is missing,
 // when EnablePasskeys is given twice, and when any passkey path is empty,
 // does not start with "/", equals another passkey path, the login path, the
@@ -182,8 +234,12 @@ func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 			deps:                deps,
 			regPrefix:           DefaultPasskeyRegistrationPrefix,
 			credPrefix:          DefaultPasskeyCredentialsPrefix,
+			loginPrefix:         DefaultPasswordlessPrefix,
 			respondBegin:        writePasskeyBegin,
 			respondRegistration: writePasskeyRegistration,
+			respondList:         writePasskeyList,
+			respondRename:       writePasskeyChanged,
+			respondRemove:       writePasskeyChanged,
 		}
 
 		for _, opt := range opts {
@@ -204,13 +260,31 @@ func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 				return err
 			}
 
-			return requireDep(option, "session manager (PasskeyDeps.Sessions)", deps.Sessions)
+			if err := requireDep(option, "session manager (PasskeyDeps.Sessions)", deps.Sessions); err != nil {
+				return err
+			}
+
+			return p.checkPasswordless(option)
 		})
 
 		c.useSessions(deps.Sessions)
 		c.register(p, OrderPasskeys)
 
+		if p.passwordless != nil {
+			p.login = p.newPasswordless()
+			c.register(p.login, OrderPasskeyLogin)
+			c.wire(p.login.wire)
+		}
+
 		return nil
+	}
+}
+
+// flushRefusalLogs reports what the passkey manager's sampler is holding
+// back.
+func (p *passkeyInterceptor) flushRefusalLogs() {
+	if p.deps.Passkeys != nil {
+		_ = p.deps.Passkeys.FlushRefusalLogs() // documented never to fail: its reporter only logs
 	}
 }
 
@@ -270,8 +344,19 @@ func (c *config) wirePasskeys() error {
 		return nil
 	}
 
+	if p.loginPrefixSet && p.passwordless == nil {
+		return newConfigError("%s was given WithPasswordlessPrefix without WithPasswordlessLogin, "+
+			"so the prefix would move no endpoint", option)
+	}
+
 	if err := p.checkPaths(option, c); err != nil {
 		return err
+	}
+
+	if p.login != nil {
+		if err := p.login.resolve(option, c); err != nil {
+			return err
+		}
 	}
 
 	p.method = c.hasPasskeyMethod()
@@ -374,6 +459,10 @@ func passkeyPrefix(option, prefix string) (string, error) {
 
 // Intercept serves the passkey endpoints, and passes every other request on.
 func (p *passkeyInterceptor) Intercept(ex *Exchange, next Next) error {
+	if served, err := p.manage(ex); served {
+		return err
+	}
+
 	r := ex.Request
 	if r.Method() != http.MethodPost {
 		return next(ex)
