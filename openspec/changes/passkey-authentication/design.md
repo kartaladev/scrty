@@ -204,6 +204,10 @@ The core implements `(*Manager).FinishRegistration(ctx, s *session.Session, body
   - **`/passkey/register/confirm-email`:** follows `security-state-stores`' charge, compare and clear write order, with the enrolment path's confirmation limiter (`EnrolmentConfirmThrottleKey`).
 
   A clear that activates the credential runs step 11.
+- **An abandoned registration still awaits codes** (decided during implementation). While the user holds a credential awaiting saved codes, step 6 sets AwaitingSavedCodes again without asking the way-back check. The codes generated for the abandoned registration are unspent, so the check would otherwise report a way back and activate the replacement at once, against the spec's "Abandoned registration is replaced". The cost is that a user who has meanwhile gained another way back is still asked to confirm codes, which fails safe.
+- **The limit counts the abandoned credential.** Step 5 runs before step 7, so a user at the limit whose credentials include one awaiting codes is refused rather than replaced. The user removes a passkey first.
+- **Finish does not repeat the admission check.** The challenge is bound to the session and issued only after admission, at most one challenge TTL earlier.
+- **Saved-code confirm errors.** A wrong code (`recovery.ErrRefused`) is `mfa.ErrInvalidCode`, a throttled one is returned unchanged, and any other failure is returned as an outage, not as a wrong code.
 - **Optional mode.** `passkey.WithOptionalRecoveryCodes()`. Its godoc says it allows accounts that only the operator can recover.
 - **Wiring.** Passwordless login without `Deps.Recovery` and without the optional mode is `ErrConfig`, as recovery-codes decided.
 
@@ -395,6 +399,7 @@ type SecondFactorProof = assurance.Proof
 | `passkey.ErrReauthenticationRequired` | — | 403 |
 | `passkey.ErrNotFound` | — | 404 |
 | `passkey.ErrRegistrationThrottled` | `ratelimit.ErrThrottled` | 401 |
+| `passkey.ErrMalformedResponse` | — | 401 (the chain maps it to its missing-credentials refusal) |
 | refused ceremony | `authenticate.ErrAuthenticationFailed` | 401 |
 | refused emailed or saved code at confirm | `mfa.ErrInvalidCode` | 401 |
 
