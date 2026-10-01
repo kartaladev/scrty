@@ -342,6 +342,12 @@ func TestNew(t *testing.T) {
 		{name: "nil clock", opts: []passkey.Option{passkey.WithClock(nil)}, assert: refused},
 		{name: "nil random", opts: []passkey.Option{passkey.WithRandom(nil)}, assert: refused},
 		{name: "nil id generator", opts: []passkey.Option{passkey.WithIDGenerator(nil)}, assert: refused},
+		{name: "nil login check", opts: []passkey.Option{passkey.WithLoginCheck(nil)}, assert: refused},
+		{name: "unknown clone response", opts: []passkey.Option{passkey.WithCloneResponse(9)}, assert: refused},
+		{name: "nil clone policy", opts: []passkey.Option{passkey.WithClonePolicy(nil)}, assert: refused},
+		{name: "nil messages", opts: []passkey.Option{passkey.WithMessages(nil)}, assert: refused},
+		{name: "nil contact resolver", opts: []passkey.Option{passkey.WithContactResolver(nil)}, assert: refused},
+		{name: "zero log interval writes every record", opts: []passkey.Option{passkey.WithLogInterval(0)}, assert: accepted},
 		{
 			name:   "nil MFA method entry",
 			deps:   func(_ *testing.T, f *fixture) { f.deps.MFAMethods = []policy.MFAMethodLookup{nil} },

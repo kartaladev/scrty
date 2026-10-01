@@ -197,22 +197,12 @@ func (m *Manager) drawEmailCode() (string, error) {
 func (m *Manager) sendEmailCode(
 	ctx context.Context, user identity.UserID, rc RegistrationContext, code string, until time.Time,
 ) error {
-	details, err := m.users.LoadByUserID(ctx, user)
+	to, err := m.contactOf(ctx, user, rc.ContactResolver)
 	if err != nil {
-		return diag.Wrap(err, "passkey: could not load the user")
+		return err
 	}
 
-	resolve := rc.ContactResolver
-	if resolve == nil {
-		resolve = m.contact
-	}
-
-	to, err := resolve(ctx, details)
-	if err != nil {
-		return diag.Wrap(err, "passkey: could not resolve the user's contact address")
-	}
-
-	subject, body := m.emailCodeMessage(code, until)
+	subject, body := m.messages.EmailCode(code, until)
 
 	if err := m.sender.Send(ctx, notify.Message{To: to, Subject: subject, TextBody: body}); err != nil {
 		return diag.Wrap(err, "passkey: could not queue the emailed code")
@@ -221,25 +211,21 @@ func (m *Manager) sendEmailCode(
 	return nil
 }
 
-// emailCodeMessage renders the message carrying the emailed code.
-func (m *Manager) emailCodeMessage(code string, until time.Time) (string, string) {
-	return "Your passkey confirmation code",
-		"Your code to finish adding a passkey to your account is " + code + ".\n\n" +
-			"It can be used until " + until.UTC().Format(emailTimeLayout) + ".\n\n" +
-			"If you did not ask for it, contact " + m.repudiation + ".\n"
-}
-
 // ConfirmSavedCode confirms that s's user kept the saved recovery codes their
 // pending passkey awaits, and clears that reason. It returns the passkey when
 // the confirmation made it active, so the caller can finish the activation,
-// or nil when another reason still holds it pending.
+// or nil when another reason still holds it pending. rc is the registration's
+// context: its contact resolver, when set, addresses the binding notice an
+// activation sends.
 //
 // The code is checked with the saved-code check, which spends nothing and is
 // throttled per user: a throttled presentation is returned unchanged, wrapping
 // ratelimit.ErrThrottled. A wrong code, no passkey of the user awaiting saved
 // codes, or a reason already cleared is mfa.ErrInvalidCode, and the passkey
 // stays pending.
-func (m *Manager) ConfirmSavedCode(ctx context.Context, s *session.Session, code string) (*Credential, error) {
+func (m *Manager) ConfirmSavedCode(
+	ctx context.Context, s *session.Session, code string, rc RegistrationContext,
+) (*Credential, error) {
 	if s == nil || s.UserID == "" || m.recovery == nil {
 		return nil, mfa.ErrInvalidCode
 	}
@@ -264,7 +250,7 @@ func (m *Manager) ConfirmSavedCode(ctx context.Context, s *session.Session, code
 		}
 	}
 
-	return m.clearReason(ctx, c, AwaitingSavedCodes, RegistrationContext{})
+	return m.clearReason(ctx, c, AwaitingSavedCodes, rc)
 }
 
 // ConfirmEmailCode redeems the code emailed for s's user's pending passkey,
@@ -403,6 +389,10 @@ func (m *Manager) clearReason(
 }
 
 // activated is the one place a passkey becoming active is handled, whether at
-// finish or at the confirmation that clears its last reason. Moving a confined
-// session on is the caller's: the manager does not hold the session store.
-func (m *Manager) activated(_ context.Context, _ *Credential, _ RegistrationContext) {}
+// finish or at the confirmation that clears its last reason: it queues the
+// binding notice, addressed by rc's contact resolver when it has one. Moving a
+// confined session on is the caller's: the manager does not hold the session
+// store.
+func (m *Manager) activated(ctx context.Context, c *Credential, rc RegistrationContext) {
+	m.notify(ctx, noticeRegistered, c, rc.ContactResolver)
+}

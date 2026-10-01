@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
@@ -24,6 +25,7 @@ import (
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -79,8 +81,20 @@ type Manager struct {
 	recovery    *RecoveryDeps
 
 	registration   *onetime.Manager
+	login          *onetime.Manager
+	purgeMu        sync.Mutex
+	lastPurge      time.Time
+	loginCheck     func(ctx context.Context, f LoginFacts) error
+	loginCheckSet  bool
+	noProofAtLogin bool
+	cloneResponse  CloneResponse
+	clonePolicy    func(ctx context.Context, s CloneSignal) CloneAction
+	clonePolicySet bool
 	confirmLimiter ratelimit.Limiter
 	contact        mfa.ContactResolver
+	contactSet     bool
+	messages       Messages
+	messagesSet    bool
 
 	ttl           time.Duration
 	issueLimit    int
@@ -102,6 +116,8 @@ type Manager struct {
 	ids           id.Generator
 	idsSet        bool
 	logger        *slog.Logger
+	sampler       *logsample.Sampler
+	logInterval   time.Duration
 	compare       func(stored, presented string) bool
 }
 
@@ -115,6 +131,7 @@ const (
 	registrationPurpose  = "passkey-registration"
 	defaultConfirmLimit  = 5
 	defaultConfirmWindow = 15 * time.Minute
+	defaultLogInterval   = time.Minute
 )
 
 // New returns a Manager over deps, with the defaults every Option names.
@@ -138,19 +155,21 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 		sender:      deps.Sender,
 		recovery:    deps.Recovery,
 
-		contact:      mfa.UsernameAsAddress,
-		ttl:          defaultChallengeTTL,
-		issueLimit:   defaultIssueLimit,
-		passkeyLimit: defaultPasskeyLimit,
-		freshness:    defaultFreshness,
-		uv:           UVRequired,
-		residentKey:  ResidentKeyRequired,
-		names:        usernameAsNames,
-		clock:        clock.System(),
-		random:       rand.Reader,
-		ids:          id.NewV7Generator(),
-		logger:       slog.Default(),
-		compare:      constantTimeEqual,
+		contact:       mfa.UsernameAsAddress,
+		ttl:           defaultChallengeTTL,
+		issueLimit:    defaultIssueLimit,
+		passkeyLimit:  defaultPasskeyLimit,
+		freshness:     defaultFreshness,
+		uv:            UVRequired,
+		residentKey:   ResidentKeyRequired,
+		cloneResponse: CloneSuspend,
+		names:         usernameAsNames,
+		clock:         clock.System(),
+		random:        rand.Reader,
+		ids:           id.NewV7Generator(),
+		logger:        slog.Default(),
+		logInterval:   defaultLogInterval,
+		compare:       constantTimeEqual,
 	}
 
 	for _, opt := range opts {
@@ -162,6 +181,12 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 	if err := m.validate(); err != nil {
 		return nil, err
 	}
+
+	if !m.messagesSet {
+		m.messages = defaultMessages{repudiation: m.repudiation}
+	}
+
+	m.sampler = logsample.New(m.logInterval, logsample.WithReporter(m.reportSuppressed))
 
 	if nilcheck.IsNil(m.credentials) {
 		m.credentials = NewMemoryCredentialStore()
@@ -190,6 +215,21 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 	}
 
 	m.registration = reg
+
+	login, err := onetime.NewManager(loginPurpose,
+		onetime.WithStore(challenges),
+		onetime.WithTTL(m.ttl),
+		onetime.WithIssuanceWindow(m.ttl),
+		onetime.WithClock(m.clock),
+		onetime.WithRandom(m.random),
+		onetime.WithIDGenerator(m.ids),
+		onetime.WithLogger(m.logger),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("%w: login challenges: %w", ErrConfig, err)
+	}
+
+	m.login = login
 
 	limiter, err := ratelimit.NewMemoryLimiter(defaultConfirmLimit, defaultConfirmWindow,
 		ratelimit.WithMemoryLimiterClock(m.clock), ratelimit.WithMemoryLimiterLogger(m.logger))
@@ -231,12 +271,22 @@ func (m *Manager) validate() error {
 		missing = "the name resolver must not be nil"
 	case m.regCheckSet && m.regCheck == nil:
 		missing = "the registration check must not be nil"
+	case m.loginCheckSet && m.loginCheck == nil:
+		missing = "the login check must not be nil"
+	case m.cloneResponse != CloneSuspend && m.cloneResponse != CloneSignalOnly:
+		missing = "unknown clone response"
+	case m.clonePolicySet && m.clonePolicy == nil:
+		missing = "the clone policy must not be nil"
 	case m.clockSet && nilcheck.IsNil(m.clock):
 		missing = "the clock must not be nil"
 	case m.randomSet && nilcheck.IsNil(m.random):
 		missing = "the random source must not be nil"
 	case m.idsSet && nilcheck.IsNil(m.ids):
 		missing = "the identifier generator must not be nil"
+	case m.messagesSet && nilcheck.IsNil(m.messages):
+		missing = "the messages must not be nil"
+	case m.contactSet && m.contact == nil:
+		missing = "the contact resolver must not be nil"
 	case m.recovery != nil && (m.recovery.Codes == nil || m.recovery.WayBack == nil):
 		missing = "recovery needs both saved codes and a way-back check"
 	}

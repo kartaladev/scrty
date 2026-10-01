@@ -159,7 +159,10 @@ func TestPending(t *testing.T) {
 		require.NotNil(t, res)
 		assert.True(t, res.Activated)
 		assert.Empty(t, res.RecoveryCodes)
-		assert.Empty(t, e.f.messages())
+
+		msgs := e.f.messages()
+		require.Len(t, msgs, 1, "only the binding notice")
+		assert.Contains(t, msgs[0].TextBody, "was added to your account")
 		assert.Equal(t, passkey.StateActive, onlyCredential(t, e.f, "u-1").State)
 	}
 
@@ -179,7 +182,7 @@ func TestPending(t *testing.T) {
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				awaitingCodes(t, e, res, err)
 
-				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[3])
+				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[3], e.rc)
 				require.NoError(t, err)
 				require.NotNil(t, c)
 				assert.Equal(t, passkey.StateActive, c.State)
@@ -197,7 +200,7 @@ func TestPending(t *testing.T) {
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				awaitingCodes(t, e, res, err)
 
-				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GG")
+				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GG", e.rc)
 				require.ErrorIs(t, err, mfa.ErrInvalidCode)
 				assert.Nil(t, c)
 				stillPending(t, e)
@@ -210,11 +213,11 @@ func TestPending(t *testing.T) {
 				awaitingCodes(t, e, res, err)
 
 				for range 5 {
-					_, err := e.m.ConfirmSavedCode(t.Context(), e.s, "wrong")
+					_, err := e.m.ConfirmSavedCode(t.Context(), e.s, "wrong", e.rc)
 					require.ErrorIs(t, err, mfa.ErrInvalidCode)
 				}
 
-				_, err = e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0])
+				_, err = e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0], e.rc)
 				require.ErrorIs(t, err, recovery.ErrCodeThrottled)
 				stillPending(t, e)
 			},
@@ -229,7 +232,7 @@ func TestPending(t *testing.T) {
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				activeAtOnce(t, e, res, err)
 
-				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, "anything")
+				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, "anything", e.rc)
 				require.ErrorIs(t, err, mfa.ErrInvalidCode)
 				assert.Nil(t, c)
 			},
@@ -402,7 +405,7 @@ func TestPending(t *testing.T) {
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				awaitingCodes(t, e, res, err)
 
-				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0])
+				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0], e.rc)
 				require.ErrorIs(t, err, codeStoreErr)
 				require.NotErrorIs(t, err, mfa.ErrInvalidCode)
 				assert.Nil(t, c)
@@ -564,7 +567,7 @@ func TestPending(t *testing.T) {
 				assert.Nil(t, c)
 				stillPending(t, e)
 
-				c, err = e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0])
+				c, err = e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0], e.rc)
 				require.NoError(t, err)
 				require.NotNil(t, c)
 				assert.Equal(t, passkey.StateActive, onlyCredential(t, e.f, "u-1").State)
@@ -580,7 +583,7 @@ func TestPending(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, res.RecoveryCodes, 10)
 
-				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0])
+				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0], e.rc)
 				require.NoError(t, err)
 				assert.Nil(t, c)
 				stillPending(t, e)

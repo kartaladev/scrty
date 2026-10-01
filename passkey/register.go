@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -141,8 +142,9 @@ type RegistrationResult struct {
 	RecoveryCodes []string
 	// BackupEligible mirrors the new passkey's backup-eligible flag.
 	BackupEligible bool
-	// NoSyncedPasskey reports that none of the user's active passkeys is
-	// backup-eligible, for the consumer's interface to advise a second one.
+	// NoSyncedPasskey reports that neither the new passkey, active or
+	// pending, nor any of the user's active passkeys is backup-eligible, for
+	// the consumer's interface to advise registering a second one.
 	NoSyncedPasskey bool
 	// RecoveryNotSetUp reports, in the optional recovery-codes mode, that the
 	// user has no other way back in.
@@ -284,8 +286,34 @@ func (m *Manager) FinishRegistration(
 		Activated:        activated,
 		RecoveryCodes:    plan.codes,
 		BackupEligible:   c.BackupEligible,
+		NoSyncedPasskey:  m.noSyncedPasskey(ctx, c),
 		RecoveryNotSetUp: plan.recoveryNotSetUp,
 	}, nil
+}
+
+// noSyncedPasskey reports whether neither the new passkey c nor any active
+// passkey of its user is backup-eligible. The answer is advice for the
+// consumer's interface, so a store that cannot list is logged and answered
+// false rather than failing a registration already stored.
+func (m *Manager) noSyncedPasskey(ctx context.Context, c *Credential) bool {
+	if c.BackupEligible {
+		return false
+	}
+
+	held, err := m.credentials.List(ctx, c.User)
+	if err != nil {
+		m.sampled(ctx, slog.LevelError, "list|synced", msgSyncedUnknown, diag.Failure("list", err)...)
+
+		return false
+	}
+
+	for _, h := range held {
+		if h.State == StateActive && h.BackupEligible {
+			return false
+		}
+	}
+
+	return true
 }
 
 // spendRegistration checks and spends the registration challenge presented,
