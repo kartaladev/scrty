@@ -68,6 +68,16 @@ func TestKind(t *testing.T) {
 			},
 		},
 		{
+			name: "passkey reports public-key and is not exempt",
+			kind: factor.Passkey,
+			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
+				assert.Equal(t, factor.PublicKey, channel)
+				assert.Equal(t, factor.Channel("public-key"), channel)
+				assert.Equal(t, factor.Kind("passkey"), factor.Passkey)
+				assert.False(t, exempt, "a passkey login is not an exemption")
+			},
+		},
+		{
 			name: "the empty kind fails closed",
 			kind: factor.Kind(""),
 			assert: func(t *testing.T, channel factor.Channel, exempt bool) {

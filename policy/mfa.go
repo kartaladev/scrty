@@ -248,6 +248,9 @@ type mfaPolicy struct {
 // which a login can still be turned into a challenge. It answers:
 //
 //   - a login that has already satisfied a second factor: allow;
+//   - a login carrying a holding Input.SecondFactorAtLogin, the library's
+//     proof that its second factor was met at the first: allow. The proof is
+//     not an exemption, and the exemption rule is not consulted for it;
 //   - an exempt first factor: allow;
 //   - any method's enrolment lookup failed: deny, even when another method
 //     reports the user enrolled, so a lost or unreadable enrolment never
@@ -260,6 +263,10 @@ type mfaPolicy struct {
 //   - enrolled only on methods on the first factor's own channel: whatever
 //     WithSameChannelEnrolment says, which by default is a refusal;
 //   - enrolled on no method: allow.
+//
+// A consumer who wants a separate second factor even after a user-verified
+// passkey login sets passkey.WithoutSecondFactorAtLogin on the passkey login,
+// so no proof is minted and this policy never sees one.
 //
 // It decides nothing about users who are *required* to use a second factor;
 // that is the policy NewMFARequirementPolicy returns, and a deployment that
@@ -337,7 +344,10 @@ func (p *mfaPolicy) Phases() []Phase { return []Phase{PostAuthentication} }
 func (p *mfaPolicy) Challenges() []ChallengeKind { return []ChallengeKind{ChallengeMFA} }
 
 func (p *mfaPolicy) Evaluate(ctx context.Context, in *Input) Decision {
-	if in.MFASatisfied || p.exempt(in.FirstFactor) {
+	// The library's proof is checked apart from the exemption rule: a
+	// user-verified passkey login met the second factor, it was not excused
+	// from one, so a replaced rule must not be able to hide it.
+	if in.MFASatisfied || in.SecondFactorAtLogin.Holds() || p.exempt(in.FirstFactor) {
 		return Decision{Outcome: Allow}
 	}
 

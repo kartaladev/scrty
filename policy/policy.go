@@ -8,6 +8,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -349,12 +350,35 @@ type Input struct {
 	// talked out of a requirement states that it does not honour it.
 	MFASatisfied bool
 
+	// SecondFactorAtLogin is the library's proof that this login met its
+	// second factor at its first. It is the only post-authentication
+	// second-factor fact the MFA policies honour: a holding proof lets the
+	// login through both of them without a challenge, and neither consults
+	// the exemption rule for it. The zero value proves nothing, and a login
+	// without a holding proof is judged like any other login of its kind.
+	//
+	// Only library code can mint one that holds. A consumer that wants a
+	// separate second factor even after a user-verified passkey login turns
+	// the proof off at the passkey login, with
+	// passkey.WithoutSecondFactorAtLogin.
+	SecondFactorAtLogin SecondFactorProof
+
 	// Now is the instant the phase is being evaluated at, taken from the
 	// caller's clock. Every policy in the phase judges against the same
 	// instant, so two policies cannot disagree about whether a deadline has
 	// passed.
 	Now time.Time
 }
+
+// SecondFactorProof is the library's proof that a login's second factor was
+// met at its first factor, as a user-verified passkey login does.
+//
+// The type has no public constructor and its zero value proves nothing
+// (Holds reports false). Only the library's own passkey verification produces
+// one that holds; a consumer can name the type and copy a value it was handed,
+// and nothing more. Copying a proof from one login into the input of another is
+// the consumer's own act, and the library cannot tell it happened.
+type SecondFactorProof = assurance.Proof
 
 // unnamed renders a value that names no constant of an enumeration, as
 // "Phase(7)". Printing the number is deliberately not the same as printing one

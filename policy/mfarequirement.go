@@ -205,7 +205,11 @@ type mfaRequirementPolicy struct {
 //  4. the stateless-authentication phase, or no method configured: deny
 //     ErrMFARequired — there is no later point at which such a request could
 //     answer a challenge;
-//  5. the per-request phase with the second factor already satisfied: allow;
+//  5. the per-request phase with the second factor already satisfied: allow.
+//     The post-authentication phase with a holding Input.SecondFactorAtLogin,
+//     the library's proof that the second factor was met at the first: allow
+//     too, before the usability check, so the enrolment challenge never fires
+//     for such a login. No exemption rule is consulted for it;
 //  6. no usable enrolment, as UsableMFAMethods decides — enrolled on no
 //     method, or only on methods on the first factor's own channel: with the
 //     enrolment path on (WithMFAEnrolmentPath) and admitting this login,
@@ -221,6 +225,10 @@ type mfaRequirementPolicy struct {
 // In the post-authentication phase Input.MFASatisfied is not honoured. It is a
 // claim the login makes about itself, and a policy that can be talked out of a
 // requirement does not enforce one.
+// Only the library's proof in Input.SecondFactorAtLogin is. A consumer who
+// wants a separate second factor even after a user-verified passkey login
+// sets passkey.WithoutSecondFactorAtLogin on the passkey login, so no proof is
+// minted and this policy never sees one.
 //
 // Construction fails, wrapping ErrConfig, with ErrMFARequirementLookupMissing
 // when there is no lookup and no requirement for all — the policy could answer
@@ -367,6 +375,15 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	// claim is honoured here and nowhere else: in the post-authentication phase
 	// it is the login's own word for itself.
 	if phase == PerRequest && in.MFASatisfied {
+		return Decision{Outcome: Allow}
+	}
+
+	// 5, at login. A login carrying the library's proof that its second factor was met
+	// at the first factor is done, before the usability check, so the
+	// enrolment challenge never fires for it. Unlike the claim in step 5 the
+	// proof cannot be made by the login itself, and it is not an exemption:
+	// no exemption rule is consulted for it.
+	if phase == PostAuthentication && in.SecondFactorAtLogin.Holds() {
 		return Decision{Outcome: Allow}
 	}
 

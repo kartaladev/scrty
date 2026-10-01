@@ -1,5 +1,7 @@
 package policy
 
+import "github.com/kartaladev/scrty/internal/assurance"
+
 // This file exposes what the package's tests need and consumers must not have.
 // It is a test file, so nothing here reaches a production build.
 
@@ -13,3 +15,9 @@ var ContextWithPhase = contextWithPhase
 // who may bind a second factor, and a behavioural test only sees the kinds it
 // thinks to ask about.
 var DefaultEnrolmentFirstFactors = defaultEnrolmentFirstFactors
+
+// MintProofForTest mints a second-factor proof, which only library code can do.
+// The policy tests need one that holds to show both MFA policies honour it,
+// and a test file of the package is the one place outside the passkey
+// verification that may.
+var MintProofForTest = assurance.New

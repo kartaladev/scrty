@@ -35,6 +35,12 @@ const (
 	// recovery rested on two proofs of different kinds rather than on one
 	// channel, so it reports no channel, and it is not exempt from MFA.
 	Recovery Kind = "recovery"
+
+	// Passkey is the kind of a passwordless login with a WebAuthn passkey. It
+	// travels on the PublicKey channel and is not exempt from MFA: whether a
+	// user-verified passkey login also met the second factor is recorded by the
+	// library as a separate proof, never inferred from the kind.
+	Passkey Kind = "passkey"
 )
 
 // Channel is the medium a factor travels over.
@@ -42,7 +48,8 @@ const (
 // Two channels belong to second factors rather than first: AuthenticatorApp is
 // the channel of authenticator-app second factors such as TOTP, and Email is
 // the channel of email-delivered second factors as well as of a magic-link
-// login. Comparing a first factor's channel with an enrolled second factor's is
+// login. PublicKey is shared by a passkey login and the passkey second factor,
+// so a passkey never serves as the second factor of a passkey login. Comparing a first factor's channel with an enrolled second factor's is
 // how a policy detects that both would arrive the same way.
 type Channel string
 
@@ -53,6 +60,11 @@ const (
 	AuthenticatorApp Channel = "authenticator-app"
 	Federated        Channel = "federated"
 	Machine          Channel = "machine"
+
+	// PublicKey is the channel of credentials an authenticator holds as a key
+	// pair and proves by signing a challenge; also the channel of the passkey
+	// second factor. The name follows WebAuthn's credential type "public-key".
+	PublicKey Channel = "public-key"
 )
 
 // Channel reports the channel k travels over.
@@ -69,6 +81,8 @@ func (k Kind) Channel() Channel {
 		return Federated
 	case APIKey:
 		return Machine
+	case Passkey:
+		return PublicKey
 	default:
 		return ""
 	}
