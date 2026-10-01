@@ -11,6 +11,7 @@ require (
 	github.com/kartaladev/scrty/fibersec v0.0.0-00010101000000-000000000000
 	github.com/kartaladev/scrty/ginsec v0.0.0-00010101000000-000000000000
 	github.com/kartaladev/scrty/gorm v0.0.0
+	github.com/kartaladev/scrty/passkey/webauthn v0.0.0
 	github.com/kartaladev/scrty/pgx v0.0.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/pquerna/otp v1.5.0
@@ -45,6 +46,7 @@ require (
 	github.com/docker/go-units v0.5.0 // indirect
 	github.com/ebitengine/purego v0.10.1 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
+	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
@@ -53,10 +55,15 @@ require (
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.30.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/go-webauthn/webauthn v0.18.2 // indirect
+	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gofiber/schema v1.8.3 // indirect
 	github.com/gofiber/utils/v2 v2.4.1 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
+	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -103,6 +110,7 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.73.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -140,3 +148,9 @@ replace github.com/kartaladev/scrty/fibersec => ../fibersec
 replace github.com/kartaladev/scrty/pgx => ../pgx
 
 replace github.com/kartaladev/scrty/gorm => ../gorm
+
+// The passkey adapter is not tagged either. It is a module of its own so the
+// core carries no WebAuthn dependency, and this module imports it for the same
+// reason it imports the framework adapters: the conformance suite runs real
+// ceremonies through it. It must not require this module.
+replace github.com/kartaladev/scrty/passkey/webauthn => ../passkey/webauthn

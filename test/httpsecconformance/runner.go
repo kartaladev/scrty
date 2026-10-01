@@ -23,6 +23,19 @@ func Run(t *testing.T, adapter Adapter) {
 
 			spec := sc.Build(t)
 
+			if sc.Steps != nil {
+				sc.Steps(t, spec, func(req RequestSpec) Result {
+					t.Helper()
+
+					res := adapter.Serve(t, spec, req)
+					res.Effects = spec.Effects
+
+					return res
+				})
+
+				return
+			}
+
 			res := adapter.Serve(t, spec, sc.Request(spec))
 
 			// Carried rather than looked up, so an assertion reads the response

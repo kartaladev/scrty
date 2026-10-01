@@ -139,6 +139,10 @@ type Effects struct {
 	// scenario.
 	Recovery *RecoveryFixture
 
+	// Passkey is the passkey wiring of a passkey scenario, over the same
+	// durable stores as Recovery, and nil for every other scenario.
+	Passkey *PasskeyFixture
+
 	// SessionID is the session Build pre-created, for the scenarios that need a
 	// request to arrive already authenticated. It is empty where none was.
 	SessionID string
@@ -431,6 +435,18 @@ type Scenario struct {
 
 	// Assert is what must be true of the run, whichever framework produced it.
 	Assert func(t *testing.T, res Result)
+
+	// Steps, when set, replaces Request and Assert for a behaviour that is a
+	// conversation rather than one request: a ceremony begun and then
+	// finished, a credential presented that an earlier response issued.
+	//
+	// It is handed the built spec and a send function that serves one request
+	// through the adapter under test, so every request of the conversation goes
+	// through the same framework, over the stores Build wired and nothing
+	// else. Each send builds the framework's chain afresh from spec's options,
+	// which is why a scenario that uses it keeps whatever must outlive one
+	// request, such as a challenge store, in the stores and not in the chain.
+	Steps func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result)
 }
 
 // Adapter runs one scenario on one framework.
@@ -467,7 +483,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(oidcScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios())...)
+	}, slices.Concat(oidcScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios(), passkeyScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.
