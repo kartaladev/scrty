@@ -383,11 +383,13 @@ func TestNew(t *testing.T) {
 
 // recoveryDeps wires in-memory saved codes and a way-back check over them,
 // with the fixture's clock. Unset fields of wb default to the fixture's
-// loader and those codes.
-func recoveryDeps(t *testing.T, f *fixture, wb recovery.WayBackDeps) *passkey.RecoveryDeps {
+// loader and those codes. opts configure the codes after the clock.
+func recoveryDeps(
+	t *testing.T, f *fixture, wb recovery.WayBackDeps, opts ...recovery.CodesOption,
+) *passkey.RecoveryDeps {
 	t.Helper()
 
-	codes, err := recovery.NewCodes(recovery.WithCodesClock(f.clock))
+	codes, err := recovery.NewCodes(append([]recovery.CodesOption{recovery.WithCodesClock(f.clock)}, opts...)...)
 	require.NoError(t, err)
 
 	if wb.Users == nil {

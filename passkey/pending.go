@@ -60,9 +60,12 @@ type pendingPlan struct {
 //     and the user has no other way back in (see hasWayBack). A failed check
 //     refuses. In the optional mode the answer is reported instead.
 //  3. With AwaitingSavedCodes, any passkey of the user still awaiting saved
-//     codes is deleted, so an abandoned registration is replaced, and a new
-//     set of saved codes is generated.
-//  4. With AwaitingEmailCode, the code is drawn and queued. A sender that
+//     codes is deleted, so an abandoned registration is replaced. With
+//     AwaitingEmailCode, any passkey of the user still awaiting an emailed
+//     code is deleted: registering again is the only way to replace a lost
+//     or expired code.
+//  4. With AwaitingSavedCodes, a new set of saved codes is generated.
+//  5. With AwaitingEmailCode, the code is drawn and queued. A sender that
 //     refuses to queue it fails the finish.
 //
 // Codes are generated before the insert so a failed generation never leaves
@@ -96,7 +99,15 @@ func (m *Manager) preparePending(
 		if _, err := m.credentials.DeleteAwaitingSavedCodes(ctx, s.UserID); err != nil {
 			return nil, diag.Wrap(err, "passkey: could not remove an abandoned registration")
 		}
+	}
 
+	if p.reasons&AwaitingEmailCode != 0 {
+		if err := m.deleteAwaitingEmailCode(ctx, s.UserID); err != nil {
+			return nil, err
+		}
+	}
+
+	if p.reasons&AwaitingSavedCodes != 0 {
 		codes, err := m.recovery.Codes.Generate(ctx, s.UserID)
 		if err != nil {
 			return nil, diag.Wrap(err, "passkey: could not generate saved recovery codes")
@@ -120,6 +131,29 @@ func (m *Manager) preparePending(
 	}
 
 	return &p, nil
+}
+
+// deleteAwaitingEmailCode deletes every pending passkey of user still
+// awaiting an emailed code. It lists, then deletes each by its own write, so a
+// concurrent finish for the same user may leave an extra pending passkey,
+// which the next registration removes.
+func (m *Manager) deleteAwaitingEmailCode(ctx context.Context, user identity.UserID) error {
+	held, err := m.credentials.List(ctx, user)
+	if err != nil {
+		return diag.Wrap(err, "passkey: could not list the user's passkeys")
+	}
+
+	for _, c := range held {
+		if c.State != StatePending || c.Pending&AwaitingEmailCode == 0 {
+			continue
+		}
+
+		if _, err := m.credentials.Delete(ctx, user, c.ID); err != nil {
+			return diag.Wrap(err, "passkey: could not remove a passkey awaiting a lost emailed code")
+		}
+	}
+
+	return nil
 }
 
 // hasWayBack reports whether user has a way back in other than the passkey

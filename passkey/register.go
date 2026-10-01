@@ -290,8 +290,9 @@ func (m *Manager) FinishRegistration(
 
 // spendRegistration checks and spends the registration challenge presented,
 // as clientDataJSON carries it, for s, and returns its token string. It must
-// be one this manager issued for s's user, bound to s's ID. Every refusal is
-// authenticate.ErrAuthenticationFailed.
+// be one this manager issued for s's user, bound to s's ID. A challenge bound
+// to s's ID is spent before its user is compared, so an attempt for another
+// user spends it too. Every refusal is authenticate.ErrAuthenticationFailed.
 func (m *Manager) spendRegistration(ctx context.Context, s *session.Session, presented string) (string, error) {
 	challenge, err := DecodeChallenge(presented)
 	if err != nil || challenge == "" {
@@ -303,11 +304,13 @@ func (m *Manager) spendRegistration(ctx context.Context, s *session.Session, pre
 		return "", authenticate.ErrAuthenticationFailed
 	}
 
-	if checked.Token().Subject != string(s.UserID) {
+	// Spent before the subject is compared: any attempt that presents a
+	// challenge bound to s's ID spends it, whatever its outcome.
+	if err := m.registration.Consume(ctx, checked); err != nil {
 		return "", authenticate.ErrAuthenticationFailed
 	}
 
-	if err := m.registration.Consume(ctx, checked); err != nil {
+	if checked.Token().Subject != string(s.UserID) {
 		return "", authenticate.ErrAuthenticationFailed
 	}
 

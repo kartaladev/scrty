@@ -64,6 +64,16 @@ func wrongCode(code string) string {
 	return "000000"
 }
 
+// failingMatch is a saved-code store whose lookups fail with err.
+type failingMatch struct {
+	*recovery.MemoryCodeStore
+	err error
+}
+
+func (s failingMatch) Match(context.Context, identity.UserID, []byte) (bool, error) {
+	return false, s.err
+}
+
 // permissive is a limiter that never refuses, so a test sees the store's own
 // cap on emailed-code attempts.
 func permissive(t *testing.T) ratelimit.Limiter {
@@ -101,6 +111,7 @@ func TestPending(t *testing.T) {
 		name    string
 		opts    []passkey.Option
 		codes   bool                                  // wire saved codes with a way-back check
+		codeOpt []recovery.CodesOption                // options of the wired saved codes
 		wayBack func(f *fixture) recovery.WayBackDeps // nil: the fixture's loader, no issued codes
 		setup   func(t *testing.T, e *env)            // before the begin
 		session func() *session.Session               // nil: a full session of u-1
@@ -153,6 +164,8 @@ func TestPending(t *testing.T) {
 	}
 
 	loaderErr := errors.New("user store down")
+	codeStoreErr := errors.New("code store down")
+	limiterErr := errors.New("limiter store down")
 
 	cases := []testCase{
 		{
@@ -383,6 +396,101 @@ func TestPending(t *testing.T) {
 			},
 		},
 		{
+			name:    "a saved-code store failure is an outage, not a wrong code",
+			codes:   true,
+			codeOpt: []recovery.CodesOption{recovery.WithCodeStore(failingMatch{recovery.NewMemoryCodeStore(), codeStoreErr})},
+			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
+				awaitingCodes(t, e, res, err)
+
+				c, err := e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0])
+				require.ErrorIs(t, err, codeStoreErr)
+				require.NotErrorIs(t, err, mfa.ErrInvalidCode)
+				assert.Nil(t, c)
+				stillPending(t, e)
+			},
+		},
+		{
+			name:    "registering again replaces a passkey awaiting a lost emailed code",
+			session: enrolling,
+			rc:      email,
+			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
+				awaitingEmail(t, e, res, err)
+				first := emailedCode(t, e.f)
+
+				e.f.clock.Advance(11 * time.Minute)
+
+				challenge := e.f.begin(t, e.m, e.s)
+				res2, err := e.m.FinishRegistration(t.Context(), e.s, regBody(challenge, "cred-b", ""), e.rc)
+				require.NoError(t, err)
+				assert.False(t, res2.Activated)
+
+				held, err := e.f.creds.List(t.Context(), "u-1")
+				require.NoError(t, err)
+				require.Len(t, held, 1, "the credential awaiting the lost code should have been deleted")
+				assert.Equal(t, []byte("cred-b"), held[0].CredentialID)
+				assert.Equal(t, passkey.AwaitingEmailCode, held[0].Pending)
+
+				msgs := e.f.messages()
+				require.Len(t, msgs, 2)
+				second := sixDigits.FindString(msgs[1].TextBody)
+				require.NotEmpty(t, second)
+
+				if second != first {
+					_, err = e.m.ConfirmEmailCode(t.Context(), e.s, first, e.rc)
+					require.ErrorIs(t, err, mfa.ErrInvalidCode)
+				}
+
+				c, err := e.m.ConfirmEmailCode(t.Context(), e.s, second, e.rc)
+				require.NoError(t, err)
+				require.NotNil(t, c)
+				assert.Equal(t, []byte("cred-b"), c.CredentialID)
+				assert.Equal(t, passkey.StateActive, onlyCredential(t, e.f, "u-1").State)
+			},
+		},
+		{
+			name:    "a limiter that cannot decide refuses the emailed code as throttled",
+			session: enrolling,
+			rc: func(t *testing.T) passkey.RegistrationContext {
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), "mfa-enrol-confirm:u-1").Return(false, limiterErr)
+
+				return passkey.RegistrationContext{EmailConfirmation: true, ConfirmLimiter: l}
+			},
+			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
+				awaitingEmail(t, e, res, err)
+
+				c, err := e.m.ConfirmEmailCode(t.Context(), e.s, emailedCode(t, e.f), e.rc)
+				require.ErrorIs(t, err, mfa.ErrEnrolmentThrottled)
+				assert.Nil(t, c)
+				stillPending(t, e)
+			},
+		},
+		{
+			name:    "a refused emailed code is counted even when the request was cancelled",
+			session: enrolling,
+			rc: func(t *testing.T) passkey.RegistrationContext {
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), "mfa-enrol-confirm:u-1").Return(false, nil)
+				l.EXPECT().RecordFailure(gomock.Any(), "mfa-enrol-confirm:u-1").DoAndReturn(
+					func(ctx context.Context, _ string) error {
+						assert.NoError(t, ctx.Err(), "the failure should be recorded under a context the caller cannot cancel")
+
+						return nil
+					})
+
+				return passkey.RegistrationContext{EmailConfirmation: true, ConfirmLimiter: l}
+			},
+			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
+				awaitingEmail(t, e, res, err)
+
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+
+				_, err = e.m.ConfirmEmailCode(ctx, e.s, wrongCode(emailedCode(t, e.f)), e.rc)
+				require.ErrorIs(t, err, mfa.ErrInvalidCode)
+			},
+		},
+		{
 			name:    "another user cannot confirm the emailed code",
 			session: enrolling,
 			rc:      emailPermissive,
@@ -529,7 +637,7 @@ func TestPending(t *testing.T) {
 					wb = tc.wayBack(f)
 				}
 
-				e.recv = recoveryDeps(t, f, wb)
+				e.recv = recoveryDeps(t, f, wb, tc.codeOpt...)
 				f.deps.Recovery = e.recv
 			}
 

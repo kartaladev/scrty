@@ -162,6 +162,19 @@ func TestFinishRegistration(t *testing.T) {
 			},
 		},
 		{
+			name:   "a challenge issued to another user of the same session ID is refused and spent",
+			finish: func(*env) *session.Session { return fullSession("sess-a", "u-2") },
+			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
+				failed(t, e, res, err)
+				assert.Empty(t, e.f.verifications())
+
+				_, err = e.m.FinishRegistration(t.Context(), e.s, regBody(e.challenge, "cred-a", ""),
+					passkey.RegistrationContext{})
+				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed, "the challenge should have been spent")
+				nothingStored(t, e)
+			},
+		},
+		{
 			name:   "a challenge the library never issued",
 			body:   func(*env) []byte { return regBody("invented.challenge", "cred-a", "") },
 			assert: failed,

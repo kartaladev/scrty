@@ -163,6 +163,27 @@ func TestBeginRegistration(t *testing.T) {
 			assert: issued,
 		},
 		{
+			name: "a confined session with no second factor is not a full session",
+			session: func() *session.Session {
+				s := full()
+				s.EnrolmentOriginDeadline = regStart.Add(time.Hour)
+
+				return s
+			},
+			assert: reauth,
+		},
+		{
+			name: "a confined session with its second factor met is not a full session",
+			session: func() *session.Session {
+				s := full()
+				s.MFA, s.MFASatisfiedAt = session.MFASatisfied, regStart
+				s.EnrolmentOriginDeadline = regStart.Add(time.Hour)
+
+				return s
+			},
+			assert: reauth,
+		},
+		{
 			name:    "consumer freshness window",
 			opts:    []passkey.Option{passkey.WithManagementFreshness(time.Hour)},
 			session: full,
