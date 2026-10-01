@@ -158,6 +158,25 @@ func (s *MemoryCredentialStore) RecordAssertion(
 	return true, nil
 }
 
+// RecordUse records the backup state and last use of an active credential,
+// leaving its counter, and reports whether this call did.
+func (s *MemoryCredentialStore) RecordUse(
+	_ context.Context, cid id.ID, backupState bool, at time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, ok := s.byID[cid]
+	if !ok || c.State != StateActive {
+		return false, nil
+	}
+
+	c.BackupState = backupState
+	c.LastUsedAt = at
+
+	return true, nil
+}
+
 // Suspend moves an active credential to suspended, and reports whether this
 // call did.
 func (s *MemoryCredentialStore) Suspend(_ context.Context, cid id.ID) (bool, error) {

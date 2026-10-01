@@ -123,7 +123,7 @@ func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *Asse
 
 	switch action {
 	case CloneAllow:
-		return nil
+		return m.recordAllowedClone(ctx, c, res)
 	case CloneRefuse:
 		return ErrCloneSuspected
 	default:
@@ -138,6 +138,29 @@ func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *Asse
 
 		return ErrCloneSuspected
 	}
+}
+
+// recordAllowedClone records the backup state and last use of an assertion
+// allowed despite its counter, leaving the stored counter as it is. A
+// credential that is no longer active, such as one suspended meanwhile, is
+// refused as it now stands.
+func (m *Manager) recordAllowedClone(ctx context.Context, c *Credential, res *AssertionResult) error {
+	recorded, err := m.credentials.RecordUse(ctx, c.ID, res.BackupState, m.clock.Now())
+	if err != nil {
+		return diag.Wrap(err, "passkey: could not record the assertion")
+	}
+
+	if recorded {
+		return nil
+	}
+
+	now, err := m.credentials.Find(ctx, c.User, c.ID)
+	if err == nil && now != nil && now.State == StateSuspended {
+		_ = m.refused(ctx, "suspended", c.ID)
+		return ErrSuspended
+	}
+
+	return m.refused(ctx, "counter", c.ID)
 }
 
 // cloneAction is the decision about signal: the consumer's policy when set,

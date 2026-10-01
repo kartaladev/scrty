@@ -44,6 +44,14 @@ type CredentialStore interface {
 	// recorded it, so of concurrent recordings of one counter exactly one
 	// reports true.
 	RecordAssertion(ctx context.Context, cid id.ID, signCount uint32, backupState bool, at time.Time) (bool, error)
+	// RecordUse sets the backup-state flag and the last-use time of
+	// credential cid without touching its counter, only where it is active
+	// (SQL: UPDATE ... SET backup_state, last_used_at WHERE id = cid AND
+	// state = active). It reports whether this call changed a credential; a
+	// credential that is missing, pending or suspended is false and nil. The
+	// library calls it for an accepted assertion whose counter write was
+	// refused and then allowed as a clone.
+	RecordUse(ctx context.Context, cid id.ID, backupState bool, at time.Time) (bool, error)
 	// Suspend moves credential cid from active to suspended, and reports
 	// whether this call did. Suspension is terminal.
 	Suspend(ctx context.Context, cid id.ID) (bool, error)

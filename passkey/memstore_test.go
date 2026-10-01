@@ -447,6 +447,69 @@ func TestMemoryCredentialStore_RecordAssertion(t *testing.T) {
 	})
 }
 
+func TestMemoryCredentialStore_RecordUse(t *testing.T) {
+	t.Parallel()
+
+	at := storeTime.Add(time.Hour)
+
+	type testCase struct {
+		name   string
+		seed   *passkey.Credential
+		assert func(t *testing.T, changed bool, after *passkey.Credential)
+	}
+
+	unchanged := func(want *passkey.Credential) func(*testing.T, bool, *passkey.Credential) {
+		return func(t *testing.T, changed bool, after *passkey.Credential) {
+			t.Helper()
+			assert.False(t, changed)
+			assert.Equal(t, want, after)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "active credential records backup state and last use, keeping the counter",
+			seed: credential("u-1", 1, "C"),
+			assert: func(t *testing.T, changed bool, after *passkey.Credential) {
+				assert.True(t, changed)
+				assert.Equal(t, uint32(42), after.SignCount)
+				assert.True(t, after.BackupState)
+				assert.Equal(t, at, after.LastUsedAt)
+			},
+		},
+		{
+			name:   "pending credential is not recorded",
+			seed:   pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
+			assert: unchanged(pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes)),
+		},
+		{
+			name:   "suspended credential is not recorded",
+			seed:   suspended(credential("u-1", 1, "C")),
+			assert: unchanged(suspended(credential("u-1", 1, "C"))),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := seededStore(t, tc.seed)
+			changed, err := s.RecordUse(t.Context(), tc.seed.ID, true, at)
+			require.NoError(t, err)
+
+			tc.assert(t, changed, stored(t, s, "C"))
+		})
+	}
+
+	t.Run("unknown credential is not recorded", func(t *testing.T) {
+		t.Parallel()
+
+		ok, err := passkey.NewMemoryCredentialStore().RecordUse(t.Context(), id.ID{1}, false, at)
+		require.NoError(t, err)
+		assert.False(t, ok)
+	})
+}
+
 func TestMemoryCredentialStore_Suspend(t *testing.T) {
 	t.Parallel()
 

@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // countRecords counts the log records whose message is msg.
@@ -39,6 +40,7 @@ func TestClone(t *testing.T) {
 		seed    func(c *passkey.Credential)
 		count   uint32 // the presented counter, over a stored 42 unless seeded
 		adjust  func(b *assertionBody)
+		spy     func(e *loginEnv) // adjusts the credential spy; nil leaves it
 		sendErr error
 		assert  func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error)
 	}
@@ -67,6 +69,16 @@ func TestClone(t *testing.T) {
 		require.NotNil(t, res)
 		assert.Equal(t, passkey.StateActive, e.stored(t).State)
 		assert.Empty(t, e.f.messages())
+	}
+
+	recordedUse := func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+		t.Helper()
+		allowed(t, e, res, err)
+
+		c := e.stored(t)
+		assert.Equal(t, uint32(42), c.SignCount)
+		assert.True(t, c.BackupState, "backup state recorded on an accepted assertion")
+		assert.Equal(t, regStart, c.LastUsedAt)
 	}
 
 	var (
@@ -141,6 +153,54 @@ func TestClone(t *testing.T) {
 			},
 		},
 		{
+			name:   "signal only still records backup state and last use, keeping the counter",
+			opts:   []passkey.Option{passkey.WithCloneResponse(passkey.CloneSignalOnly)},
+			count:  41,
+			adjust: func(b *assertionBody) { b.BS = true },
+			assert: recordedUse,
+		},
+		{
+			name: "an allowing policy still records backup state and last use, keeping the counter",
+			opts: []passkey.Option{passkey.WithClonePolicy(func(context.Context, passkey.CloneSignal) passkey.CloneAction {
+				return passkey.CloneAllow
+			})},
+			count:  41,
+			adjust: func(b *assertionBody) { b.BS = true },
+			assert: recordedUse,
+		},
+		{
+			name:  "an allowed clone whose credential was suspended meanwhile is refused as suspended",
+			opts:  []passkey.Option{passkey.WithCloneResponse(passkey.CloneSignalOnly)},
+			count: 41,
+			spy: func(e *loginEnv) {
+				e.creds.useHook = func(ctx context.Context, cid id.ID) (bool, error) {
+					_, err := e.creds.Suspend(ctx, cid)
+					return false, err
+				}
+			},
+			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, passkey.ErrSuspended)
+				assert.Nil(t, res)
+			},
+		},
+		{
+			name:  "an allowed clone whose use cannot be recorded returns the store error",
+			opts:  []passkey.Option{passkey.WithCloneResponse(passkey.CloneSignalOnly)},
+			count: 41,
+			spy: func(e *loginEnv) {
+				e.creds.useHook = func(context.Context, id.ID) (bool, error) {
+					return false, errors.New("store down")
+				}
+			},
+			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
+				t.Helper()
+				require.Error(t, err)
+				assert.ErrorContains(t, err, "could not record the assertion")
+				assert.Nil(t, res)
+			},
+		},
+		{
 			name: "a consumer policy refusing without suspending refuses only",
 			opts: []passkey.Option{passkey.WithClonePolicy(func(context.Context, passkey.CloneSignal) passkey.CloneAction {
 				return passkey.CloneRefuse
@@ -199,6 +259,9 @@ func TestClone(t *testing.T) {
 
 			e := newLoginEnv(t, tc.seed)
 			e.f.sendErr = tc.sendErr
+			if tc.spy != nil {
+				tc.spy(e)
+			}
 			e.manager(t, tc.opts...)
 
 			challenge := e.begin(t)

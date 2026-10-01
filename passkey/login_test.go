@@ -47,6 +47,16 @@ type spyCredentials struct {
 	*passkey.MemoryCredentialStore
 	finds   atomic.Int32
 	records atomic.Int32
+	// useHook, when set, runs in place of RecordUse's write.
+	useHook func(ctx context.Context, cid id.ID) (bool, error)
+}
+
+func (s *spyCredentials) RecordUse(ctx context.Context, cid id.ID, bs bool, at time.Time) (bool, error) {
+	if s.useHook != nil {
+		return s.useHook(ctx, cid)
+	}
+
+	return s.MemoryCredentialStore.RecordUse(ctx, cid, bs, at)
 }
 
 func (s *spyCredentials) FindByCredentialID(ctx context.Context, credID []byte) (*passkey.Credential, error) {
