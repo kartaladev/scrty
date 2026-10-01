@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -125,3 +126,8 @@ func WithRecoveryClockForTest(now func() time.Time) RecoveryOption {
 		return nil
 	}
 }
+
+// MintProofForTest mints the library's second-factor proof, which only library
+// code can do, so a test can hand the login tail a login whose second factor
+// was met at its first.
+var MintProofForTest = assurance.New

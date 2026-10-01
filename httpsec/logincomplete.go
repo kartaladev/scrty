@@ -242,6 +242,13 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // The first factor recorded is always in.FirstFactor, the tail's own: it is
 // applied last, so a caller's own session.WithFirstFactor in opts cannot
 // replace the factor the policy phase was just evaluated on.
+//
+// When in.SecondFactorAtLogin holds — the library's proof, which only its
+// passkey login mints — the phase sees it and the session is created with
+// session.WithSecondFactorAtLogin, satisfied in the creating write. A
+// challenge the phase still raises is marked on that session as for any
+// login. A zero proof, which every other first factor passes, changes
+// nothing.
 func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...session.CreateOption) (string, error) {
 	ctx := ex.Context()
 
@@ -300,8 +307,18 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	// factor is applied last so it always wins, even if opts happens to carry
 	// its own session.WithFirstFactor — the factor the policy phase was just
 	// evaluated on is the one that gets recorded.
-	create := make([]session.CreateOption, 0, len(opts)+1)
+	//
+	// A login carrying the library's proof that its second factor was met at
+	// the first is created satisfied, in that same write, so the session never
+	// exists unsatisfied. It is applied after the caller's options, so none of
+	// them can undo it, and before any challenge mark: a challenge the phase
+	// still raises, such as a password change, is marked on the satisfied
+	// session and refused as for any login.
+	create := make([]session.CreateOption, 0, len(opts)+2)
 	create = append(create, opts...)
+	if in.SecondFactorAtLogin.Holds() {
+		create = append(create, session.WithSecondFactorAtLogin())
+	}
 	create = append(create, session.WithFirstFactor(in.FirstFactor))
 
 	s, err := deps.sessions.Create(ctx, in.User, create...)
