@@ -5,6 +5,7 @@ use (
 	./fibersec
 	./ginsec
 	./gorm
+	./passkey/webauthn
 	./pgx
 	./test
 )
