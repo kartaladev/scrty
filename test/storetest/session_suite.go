@@ -86,6 +86,21 @@ func enrolmentSession(sessionID string, user identity.UserID, gen id.ID) *sessio
 	return s
 }
 
+// recoveryPendingSession returns a recovery-pending session for user: an
+// account recovery's kind and confinement, its absolute deadline lowered, and
+// marked with the deadline it held before, 21:00 on the suite's day, and the
+// time the recovery completed, 09:00.
+func recoveryPendingSession(sessionID string, user identity.UserID) *session.Session {
+	s := sessionRecord(sessionID, user)
+	s.FirstFactor = factor.Recovery
+	s.AbsoluteExpiresAt = suiteStart.Add(15 * time.Minute)
+	s.MFA = session.MFARecoveryPending
+	s.MFASatisfiedAt = time.Time{}
+	s.EnrolmentOriginDeadline = suiteStart.Add(11 * time.Hour)
+	s.RecoveredAt = suiteStart.Add(-time.Hour)
+	return s
+}
+
 // idleExpiredSession returns a session whose idle deadline has passed by the
 // time the suite's clock reaches suiteStart plus sessionIdle.
 func idleExpiredSession(sessionID string, user identity.UserID) *session.Session {
@@ -113,6 +128,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assert.Equal(t, want.PasswordChangePending, got.PasswordChangePending)
 	assertTimeEqual(t, want.EnrolmentOriginDeadline, got.EnrolmentOriginDeadline, "EnrolmentOriginDeadline")
 	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
+	assertTimeEqual(t, want.RecoveredAt, got.RecoveredAt, "RecoveredAt")
 	assert.Equal(t, want.ExternalProvider, got.ExternalProvider)
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
@@ -416,6 +432,30 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				require.NoError(t, s.Save(ctx, upgraded))
 
 				assertSessionsLoad(ctx, t, s, upgraded)
+			},
+		},
+		{
+			// Created recovery-pending, with its confinement marker and
+			// recovery time set, mirroring the enrolment path's own round
+			// trip: both are stored in columns of their own, and both must
+			// come back unchanged.
+			name: "Recovery-pending session round trip",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := recoveryPendingSession("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, want))
+
+				assertSessionsLoad(ctx, t, s, want)
+			},
+		},
+		{
+			name: "never recovered reads with zero RecoveredAt",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				never := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, never))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.True(t, got.RecoveredAt.IsZero(), "a session never recovered loads with a zero RecoveredAt")
 			},
 		},
 		{

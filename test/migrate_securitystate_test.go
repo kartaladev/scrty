@@ -66,10 +66,11 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// securityStateTables lists the nine tables the security-state set creates.
+// securityStateTables lists the eleven tables the security-state set creates.
 var securityStateTables = []string{
 	"sessions", "signing_keys", "login_attempts", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
+	"recovery_codes", "account_recoveries",
 }
 
 // column is one column of the security-state set as the catalogue reports
@@ -132,7 +133,9 @@ func optional(name, typ string) column { return column{name: name, typ: typ, nul
 // sessions.enrolment_origin_deadline and sessions.enrolment_generation, and
 // mfa_enrolments.generation, device_proven_at, email_code, email_code_until
 // and email_code_attempts. sessions.mfa_state stays a smallint: the row below
-// pins its type unchanged even though it gains a new ordinal value.
+// pins its type unchanged even though it gains a new ordinal value. It also
+// pins the account-recovery columns: sessions.recovered_at, and the two new
+// tables recovery_codes and account_recoveries.
 var securityStateColumns = map[string][]column{
 	"sessions": {
 		required("id", colUUID),
@@ -153,6 +156,7 @@ var securityStateColumns = map[string][]column{
 		defaulted("data", colJSONB, defEmptyObject),
 		optional("enrolment_origin_deadline", colTimestamptz),
 		optional("enrolment_generation", colUUID),
+		optional("recovered_at", colTimestamptz),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -236,6 +240,24 @@ var securityStateColumns = map[string][]column{
 		required("created_at", colTimestamptz),
 		optional("consumed_at", colTimestamptz),
 	},
+	"recovery_codes": {
+		required("id", colUUID),
+		required("user_id", colText),
+		required("code_hash", colBytea),
+		required("created_at", colTimestamptz),
+		optional("spent_at", colTimestamptz),
+	},
+	"account_recoveries": {
+		required("id", colUUID),
+		required("user_id", colText),
+		required("started_at", colTimestamptz),
+		required("not_before", colTimestamptz),
+		optional("completed_at", colTimestamptz),
+		optional("cancelled_at", colTimestamptz),
+		required("proven", colText),
+		required("reported", colText),
+		defaulted("saved_spent", colBoolean, "false"),
+	},
 }
 
 // securityStateIndexes pins every index of every security-state table, keyed
@@ -292,6 +314,14 @@ var securityStateIndexes = map[string][]string{
 		"CREATE UNIQUE INDEX oidc_handoffs_token_id_key ON oidc_handoffs USING btree (token_id)",
 		"CREATE INDEX oidc_handoffs_expiry ON oidc_handoffs USING btree (expires_at)",
 	},
+	"recovery_codes": {
+		"CREATE UNIQUE INDEX recovery_codes_pkey ON recovery_codes USING btree (id)",
+		"CREATE UNIQUE INDEX recovery_codes_user_id_code_hash_key ON recovery_codes USING btree (user_id, code_hash)",
+	},
+	"account_recoveries": {
+		"CREATE UNIQUE INDEX account_recoveries_pkey ON account_recoveries USING btree (id)",
+		"CREATE INDEX account_recoveries_user ON account_recoveries USING btree (user_id)",
+	},
 }
 
 // groupByTable splits rows of "table|value" into a map from table to its
@@ -345,7 +375,7 @@ type schemaCheck struct {
 func securityStateSchemaChecks(versionTable string) []schemaCheck {
 	return []schemaCheck{
 		{
-			name:  "fresh database has the nine tables and the version table",
+			name:  "fresh database has the eleven tables and the version table",
 			query: `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1`,
 			assert: func(t *testing.T, rows []string) {
 				want := append(slices.Clone(securityStateTables), versionTable)
@@ -384,8 +414,9 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			query: `SELECT table_name || ':' || data_type FROM information_schema.columns
 			         WHERE column_name = 'user_id' AND table_schema = current_schema()`,
 			assert: func(t *testing.T, rows []string) {
-				// sessions, mfa_enrolments, api_keys, oidc_links, oidc_handoffs
-				require.Len(t, rows, 5)
+				// sessions, mfa_enrolments, api_keys, oidc_links, oidc_handoffs,
+				// recovery_codes, account_recoveries
+				require.Len(t, rows, 7)
 				for _, r := range rows {
 					assert.True(t, strings.HasSuffix(r, ":text"), r)
 				}
@@ -403,7 +434,8 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			query: `SELECT table_name||'.'||column_name||':'||is_nullable||':'||coalesce(column_default,'')
 			           FROM information_schema.columns
 			          WHERE table_schema = current_schema()
-			            AND column_name IN ('consumed_at','completed_at','confirmed_at','revoked_at')`,
+			            AND column_name IN ('consumed_at','completed_at','confirmed_at','revoked_at',
+			                                'spent_at','cancelled_at')`,
 			assert: func(t *testing.T, rows []string) {
 				assert.ElementsMatch(t, []string{
 					"one_time_tokens.consumed_at:YES:",
@@ -411,6 +443,9 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 					"oidc_flows.completed_at:YES:",
 					"mfa_enrolments.confirmed_at:YES:",
 					"api_keys.revoked_at:YES:",
+					"recovery_codes.spent_at:YES:",
+					"account_recoveries.completed_at:YES:",
+					"account_recoveries.cancelled_at:YES:",
 				}, rows)
 			},
 		},

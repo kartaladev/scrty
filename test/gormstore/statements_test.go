@@ -176,22 +176,22 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	cases := []testCase{
 		{name: "session create", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Create(ctx, storefix.DurableSession("stmt-sid-create", now))
-		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session create of a stored identifier", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now)))
 			started()
 			err := counted.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now))
 			require.Error(t, err)
 			return nil
-		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session save", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-save", now)))
 			started()
 			return counted.sessions.Save(ctx, storefix.DurableSession("stmt-sid-save", now))
-		}, assert: one(`UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14,"enrolment_origin_deadline"=$15,"enrolment_generation"=$16 WHERE id_digest = $17`)},
+		}, assert: one(`UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14,"enrolment_origin_deadline"=$15,"enrolment_generation"=$16,"recovered_at"=$17 WHERE id_digest = $18`)},
 		{name: "session save of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Save(ctx, storefix.DurableSession("stmt-sid-gone", now))
-		}), assert: refused(session.ErrSessionNotFound, `UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14,"enrolment_origin_deadline"=$15,"enrolment_generation"=$16 WHERE id_digest = $17`)},
+		}), assert: refused(session.ErrSessionNotFound, `UPDATE "sessions" SET "user_id"=$1,"created_at"=$2,"last_accessed_at"=$3,"idle_expires_at"=$4,"absolute_expires_at"=$5,"first_factor"=$6,"mfa_state"=$7,"mfa_satisfied_at"=$8,"password_change_pending"=$9,"external_provider"=$10,"external_issuer"=$11,"external_session_id"=$12,"external_id_token"=$13,"data"=$14,"enrolment_origin_deadline"=$15,"enrolment_generation"=$16,"recovered_at"=$17 WHERE id_digest = $18`)},
 		{name: "session load", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-load", now)))
 			started()

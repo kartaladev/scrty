@@ -31,6 +31,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
@@ -207,6 +208,54 @@ func (b backends) clockedSessionStore(t *testing.T, name string, clk clock.Clock
 		return s
 	case "gorm":
 		s, err := gormstore.NewSessionStore(b.gdb, b.cipher, gormstore.WithClock(clk))
+		require.NoError(t, err)
+		return s
+	default:
+		t.Fatalf("unknown backend %q", name)
+		return nil
+	}
+}
+
+// recoveryCodeStore builds the saved recovery code store of the named
+// backend.
+func (b backends) recoveryCodeStore(t *testing.T, name string) recovery.CodeStore {
+	t.Helper()
+
+	switch name {
+	case "sqlstore":
+		s, err := sqlstore.NewRecoveryCodeStore(b.conn.DB)
+		require.NoError(t, err)
+		return s
+	case "pgx":
+		s, err := pgxstore.NewRecoveryCodeStore(b.pool)
+		require.NoError(t, err)
+		return s
+	case "gorm":
+		s, err := gormstore.NewRecoveryCodeStore(b.gdb)
+		require.NoError(t, err)
+		return s
+	default:
+		t.Fatalf("unknown backend %q", name)
+		return nil
+	}
+}
+
+// recoveryRecordStore builds the account recovery record store of the named
+// backend.
+func (b backends) recoveryRecordStore(t *testing.T, name string) recovery.RecordStore {
+	t.Helper()
+
+	switch name {
+	case "sqlstore":
+		s, err := sqlstore.NewRecoveryRecordStore(b.conn.DB)
+		require.NoError(t, err)
+		return s
+	case "pgx":
+		s, err := pgxstore.NewRecoveryRecordStore(b.pool)
+		require.NoError(t, err)
+		return s
+	case "gorm":
+		s, err := gormstore.NewRecoveryRecordStore(b.gdb)
 		require.NoError(t, err)
 		return s
 	default:
@@ -506,6 +555,9 @@ func TestCrossBackend(t *testing.T) {
 		{name: "another replica sees a consumption", run: testAnotherReplicaSeesConsumption},
 		{name: "enrolment fields shared across backends", run: testEnrolmentFieldsShared},
 		{name: "enrolment flow through session.Manager and mfa.TOTP", run: testEnrolmentDurableFlow},
+		{name: "recovery-pending session shared across backends", run: testRecoveryPendingSessionShared},
+		{name: "a recovery code spent on one backend is refused on the others", run: testRecoveryCodeSpentShared},
+		{name: "a recovery completed on one backend is seen by the others", run: testRecoveryCompletionShared},
 	}
 
 	for _, tc := range cases {
@@ -710,6 +762,132 @@ func testEnrolmentFieldsShared(t *testing.T, b backends) {
 				require.NoError(t, err)
 				assert.True(t, charged, "a code proven through %s must be charged through %s", writer, reader)
 				assert.Equal(t, 1, count)
+			})
+		}
+	}
+}
+
+// testRecoveryPendingSessionShared proves a recovery-pending session, with its
+// confinement marker and recovery time, saved through sqlstore loads through
+// both pgx and gorm with all three fields equal ("Recovery-pending session
+// round trip").
+func testRecoveryPendingSessionShared(t *testing.T, b backends) {
+	t.Helper()
+
+	const seed = "recovery-pending"
+
+	sess := crossBackendSession(seed)
+	sess.FirstFactor = factor.Recovery
+	sess.MFA = session.MFARecoveryPending
+	marker := time.Now().UTC().Add(11 * time.Hour).Truncate(time.Microsecond)
+	recoveredAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	sess.EnrolmentOriginDeadline = marker
+	sess.RecoveredAt = recoveredAt
+	require.NoError(t, b.sessionStore(t, "sqlstore").Create(t.Context(), sess))
+
+	for _, reader := range []string{"pgx", "gorm"} {
+		t.Run(reader, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := b.sessionStore(t, reader).Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.Equal(t, session.MFARecoveryPending, got.MFA)
+			assertInstant(t, "EnrolmentOriginDeadline", marker, got.EnrolmentOriginDeadline)
+			assertInstant(t, "RecoveredAt", recoveredAt, got.RecoveredAt)
+		})
+	}
+}
+
+// testRecoveryCodeSpentShared proves a saved recovery code spent through
+// sqlstore is refused through pgx and through gorm, and no longer matches
+// there, while the rest of the set does.
+func testRecoveryCodeSpentShared(t *testing.T, b backends) {
+	t.Helper()
+
+	const user identity.UserID = "cross-backend-recovery-user"
+	hashes := make([][]byte, 3)
+	for i := range hashes {
+		h := sha256.Sum256([]byte{byte(i)})
+		hashes[i] = h[:]
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+
+	writer := b.recoveryCodeStore(t, "sqlstore")
+	require.NoError(t, writer.ReplaceSet(t.Context(), user, hashes, at))
+	spent, err := writer.Spend(t.Context(), user, hashes[0], at)
+	require.NoError(t, err)
+	require.True(t, spent)
+
+	for _, reader := range []string{"pgx", "gorm"} {
+		t.Run(reader, func(t *testing.T) {
+			t.Parallel()
+
+			s := b.recoveryCodeStore(t, reader)
+			ok, err := s.Spend(t.Context(), user, hashes[0], at.Add(time.Minute))
+			require.NoError(t, err)
+			assert.False(t, ok, "a code spent through sqlstore must be refused through %s", reader)
+			matched, err := s.Match(t.Context(), user, hashes[0])
+			require.NoError(t, err)
+			assert.False(t, matched)
+			matched, err = s.Match(t.Context(), user, hashes[1])
+			require.NoError(t, err)
+			assert.True(t, matched, "the unspent codes must still match through %s", reader)
+		})
+	}
+}
+
+// testRecoveryCompletionShared proves every ordered pair of backends agrees on
+// a recovery record: one completed through the writer is found with every
+// field through the reader, which refuses to complete or cancel it again and
+// reports its completion as the user's latest.
+func testRecoveryCompletionShared(t *testing.T, b backends) {
+	t.Helper()
+
+	for _, writer := range backendNames {
+		for _, reader := range backendNames {
+			if writer == reader {
+				continue
+			}
+
+			t.Run(writer+"_writes_"+reader+"_reads", func(t *testing.T) {
+				t.Parallel()
+
+				ctx := t.Context()
+				seed := "recovery-" + writer + "-" + reader
+				started := time.Now().UTC().Truncate(time.Microsecond)
+				r := recovery.Record{
+					ID:        crossBackendID(seed),
+					User:      identity.UserID("u-" + seed),
+					StartedAt: started,
+					NotBefore: started.Add(time.Hour),
+					Proven:    []recovery.AuthenticatorRef{{Kind: "saved", ID: "code"}, {Kind: "password", ID: "p"}},
+					Reported:  []recovery.AuthenticatorRef{{Kind: recovery.MFAKind, ID: "totp"}},
+				}
+				w := b.recoveryRecordStore(t, writer)
+				require.NoError(t, w.Insert(ctx, r))
+				completedAt := r.NotBefore.Add(time.Minute)
+				ok, err := w.Complete(ctx, r.ID, completedAt)
+				require.NoError(t, err)
+				require.True(t, ok)
+
+				rd := b.recoveryRecordStore(t, reader)
+				got, err := rd.Find(ctx, r.ID)
+				require.NoError(t, err)
+				want := r
+				want.CompletedAt = completedAt
+				assert.Equal(t, want, *got)
+
+				ok, err = rd.Complete(ctx, r.ID, completedAt.Add(time.Minute))
+				require.NoError(t, err)
+				assert.False(t, ok, "a record completed through %s must not complete again through %s", writer, reader)
+				n, err := rd.Cancel(ctx, r.ID, completedAt.Add(time.Minute))
+				require.NoError(t, err)
+				assert.Zero(t, n)
+
+				latest, found, err := rd.LatestCompletion(ctx, r.User)
+				require.NoError(t, err)
+				require.True(t, found)
+				assertInstant(t, "LatestCompletion", completedAt, latest)
 			})
 		}
 	}

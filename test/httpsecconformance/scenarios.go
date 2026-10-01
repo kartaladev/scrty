@@ -43,6 +43,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -133,6 +134,11 @@ type Effects struct {
 	// nil for every other scenario.
 	Enrolment *EnrolmentFixture
 
+	// Recovery is the account-recovery path's wiring of a recovery scenario,
+	// over its own durable PostgreSQL-backed stores, and nil for every other
+	// scenario.
+	Recovery *RecoveryFixture
+
 	// SessionID is the session Build pre-created, for the scenarios that need a
 	// request to arrive already authenticated. It is empty where none was.
 	SessionID string
@@ -140,6 +146,25 @@ type Effects struct {
 	// authCalls counts the times the authenticator was asked anything, so a
 	// scenario can pin that a password was never checked.
 	authCalls atomic.Int64
+
+	// recoveryStandalone and recoveryCompletion are a held-recovery scenario's
+	// own Recoverer, sharing the run's durable stores with the chain the
+	// adapter serves, and the completion token its hold returned. They let a
+	// scenario check a held recovery's disposition directly, without a second
+	// request through the adapter under test.
+	recoveryStandalone *recovery.Recoverer
+	recoveryCompletion string
+
+	// recoverySavedCode and recoveryIssuedCode are the two proofs a recovery
+	// scenario's Build minted for the one HTTP request it sends, and that its
+	// Assert reuses against the standalone Recoverer to check what the
+	// request's own outcome left spendable.
+	recoverySavedCode  string
+	recoveryIssuedCode string
+
+	// recoveryCancelToken is the cancel token a held-recovery scenario read
+	// back from the Held notice's link, for the one cancel request it sends.
+	recoveryCancelToken string
 
 	mu sync.Mutex
 	// clientAddr is the address the chain was given, as the adapter reported
@@ -442,7 +467,7 @@ func Scenarios() []Scenario {
 		contextPropagation(),
 		unattributableClientAddress(),
 		storeFailureTextStaysOutOfTheRefusal(),
-	}, slices.Concat(oidcScenarios(), enrolmentScenarios(), requestScenarios())...)
+	}, slices.Concat(oidcScenarios(), enrolmentScenarios(), requestScenarios(), recoveryScenarios())...)
 }
 
 // formLoginOptions is the wiring every login scenario shares.
