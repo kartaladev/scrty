@@ -357,7 +357,7 @@ type SecondFactorProof = assurance.Proof
 
   `WayBackCheck` uses it when a kind implements it, and `Held` otherwise. The passkey kind lists only active credentials there. `MFAEnrolments` needs no change, since enrolled already means usable.
 - **The reported-loss mode** names passkeys by library ID. The consumer's interface gets those IDs from the listing endpoint.
-- **Wiring.** `Deps.Recovery` takes `{Codes *recovery.Codes; WayBack *recovery.WayBackCheck}`. The consumer builds the way-back check with `Kinds` including `RecoveryKind()`, and the godoc's example shows it.
+- **Wiring.** `Deps.Recovery` takes `{Codes *recovery.Codes; WayBack *recovery.WayBackCheck}`. The way-back check needs the passkey kind before the manager exists, so the kind is also built from the credential store alone: `passkey.NewRecoveryKind(credentials)`, which `(*Manager).RecoveryKind()` returns for the manager's own store. The consumer builds the way-back check with `Kinds` including it, and the godoc's example shows it (decided during implementation, to remove a circular construction).
 
 ### D16. Notices
 
