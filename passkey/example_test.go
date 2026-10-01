@@ -155,10 +155,9 @@ func ExampleNew_durableStores() {
 }
 
 // Example_recovery wires saved recovery codes. The way-back check counts
-// passkeys through the kind a manager reports, and a manager's recovery
-// dependencies need the check, so the kind is taken from a first manager over
-// the same stores and the check is then given to the manager the application
-// serves. Without WithOptionalRecoveryCodes a passkey waits pending until its
+// passkeys through the passkey kind, and a manager's recovery dependencies need
+// the check, so the kind is built first with NewRecoveryKind over the same
+// credential store the manager will use. Without WithOptionalRecoveryCodes a passkey waits pending until its
 // user has confirmed a set of saved codes when they have no other way back in.
 func Example_recovery() {
 	verifier := exampleVerifier{rp: passkey.RelyingParty{
@@ -175,11 +174,6 @@ func Example_recovery() {
 		Users: users, Sender: exampleSender{},
 	}
 
-	first, err := passkey.New(deps, contact) // only its RecoveryKind is used
-	if err != nil {
-		panic(err)
-	}
-
 	codes, err := recovery.NewCodes()
 	if err != nil {
 		panic(err)
@@ -188,7 +182,7 @@ func Example_recovery() {
 	wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
 		Users:       users,
 		Codes:       codes,
-		Kinds:       []recovery.AuthenticatorKind{first.RecoveryKind()},
+		Kinds:       []recovery.AuthenticatorKind{passkey.NewRecoveryKind(credentials)},
 		IssuedCodes: true, // recovery.ProofIssued is enabled
 	})
 	if err != nil {
@@ -251,20 +245,18 @@ func Example_chain() {
 
 	contact := passkey.WithRepudiationContact("Contact support@example.com if you did not do this.")
 
-	deps := passkey.Deps{
-		Verifier:   verifier,
-		Users:      users,
-		Sender:     exampleSender{},
-		MFAMethods: lookups, // the other second factors a session may have met
-	}
+	credentials := passkey.NewMemoryCredentialStore() // the one store, shared with the way-back check
 
-	first, err := passkey.New(deps, contact)
-	if err != nil {
-		panic(err)
+	deps := passkey.Deps{
+		Verifier:    verifier,
+		Credentials: credentials,
+		Users:       users,
+		Sender:      exampleSender{},
+		MFAMethods:  lookups, // the other second factors a session may have met
 	}
 
 	wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
-		Users: users, Codes: codes, Kinds: []recovery.AuthenticatorKind{first.RecoveryKind()},
+		Users: users, Codes: codes, Kinds: []recovery.AuthenticatorKind{passkey.NewRecoveryKind(credentials)},
 	})
 	if err != nil {
 		panic(err)

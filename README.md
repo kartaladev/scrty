@@ -432,23 +432,24 @@ manager, err := passkey.New(passkey.Deps{
 A user who signs in with passkeys alone has no password to fall back on. So, by default, a first
 passkey registered by a user with no other way back in stays **pending** until they have generated
 a set of saved recovery codes and confirmed they kept it, and passwordless login refuses a manager
-with no recovery wired. The manager reports the passkey recovery kind, `RecoveryKind()`, which the
-way-back check needs, and the check is part of the manager's own dependencies, so take the kind
-from a first manager over the same stores:
+with no recovery wired. The way-back check needs the passkey recovery kind and is part of the
+manager's own dependencies, so build the kind first with `passkey.NewRecoveryKind`, over the same
+credential store the manager will use (create the in-memory store yourself, with
+`passkey.NewMemoryCredentialStore`, so both share it):
 
 ```go
 contact := passkey.WithRepudiationContact("Contact support@example.com if you did not do this.")
 
-deps := passkey.Deps{Verifier: verifier, Users: users, Sender: queuedSender} // and your stores
+credentials := passkey.NewMemoryCredentialStore() // or your own store; the manager must get this one
 
-first, err := passkey.New(deps, contact) // only its RecoveryKind is used
+deps := passkey.Deps{Verifier: verifier, Credentials: credentials, Users: users, Sender: queuedSender} // and your other stores
 
 codes, err := recovery.NewCodes()
 
 wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
 	Users:       users,
 	Codes:       codes,
-	Kinds:       []recovery.AuthenticatorKind{first.RecoveryKind()},
+	Kinds:       []recovery.AuthenticatorKind{passkey.NewRecoveryKind(credentials)},
 	IssuedCodes: true, // recovery.ProofIssued is enabled
 })
 

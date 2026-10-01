@@ -3,6 +3,7 @@ package passkey_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,6 +55,27 @@ func (e *kindEnv) remaining(t *testing.T, user identity.UserID) []id.ID {
 	}
 
 	return out
+}
+
+// kindSource builds the passkey kind over e's credential store, the way a
+// Manager reports it or the way a consumer builds it before any Manager.
+type kindSource struct {
+	name string
+	kind func(t *testing.T, e *kindEnv) recovery.AuthenticatorKind
+}
+
+// kindSources lists both ways to get the kind; each must behave identically.
+func kindSources() []kindSource {
+	return []kindSource{
+		{"Manager.RecoveryKind", func(t *testing.T, e *kindEnv) recovery.AuthenticatorKind {
+			t.Helper()
+
+			return e.manager(t).RecoveryKind()
+		}},
+		{"NewRecoveryKind", func(_ *testing.T, e *kindEnv) recovery.AuthenticatorKind {
+			return passkey.NewRecoveryKind(e.f.deps.Credentials)
+		}},
+	}
 }
 
 func TestRecoveryKindListing(t *testing.T) {
@@ -136,21 +158,23 @@ func TestRecoveryKindListing(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	for _, src := range kindSources() {
+		for _, tc := range cases {
+			t.Run(src.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 
-			e := newKindEnv(t)
-			if tc.broken {
-				e.f.deps.Credentials = brokenCredentials{e.f.creds}
-			}
+				e := newKindEnv(t)
+				if tc.broken {
+					e.f.deps.Credentials = brokenCredentials{e.f.creds}
+				}
 
-			kind := e.manager(t).RecoveryKind()
-			assert.Equal(t, "passkey", kind.Kind())
+				kind := src.kind(t, e)
+				assert.Equal(t, "passkey", kind.Kind())
 
-			refs, err := tc.list(kind)(t.Context(), tc.user)
-			tc.assert(t, e, refs, err)
-		})
+				refs, err := tc.list(kind)(t.Context(), tc.user)
+				tc.assert(t, e, refs, err)
+			})
+		}
 	}
 }
 
@@ -224,18 +248,20 @@ func TestRecoveryKindRemove(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	for _, src := range kindSources() {
+		for _, tc := range cases {
+			t.Run(src.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 
-			e := newKindEnv(t)
-			if tc.broken {
-				e.f.deps.Credentials = brokenCredentials{e.f.creds}
-			}
+				e := newKindEnv(t)
+				if tc.broken {
+					e.f.deps.Credentials = brokenCredentials{e.f.creds}
+				}
 
-			err := e.manager(t).RecoveryKind().Remove(t.Context(), tc.user, tc.refs(e))
-			tc.assert(t, e, err)
-		})
+				err := src.kind(t, e).Remove(t.Context(), tc.user, tc.refs(e))
+				tc.assert(t, e, err)
+			})
+		}
 	}
 }
 
@@ -462,6 +488,132 @@ func TestRecoveryKindWayBack(t *testing.T) {
 
 			has, err := check.HasWayBack(t.Context(), "u-1")
 			tc.assert(t, has, err)
+		})
+	}
+}
+
+func TestNewRecoveryKindWiring(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		seed   func(t *testing.T, f *fixture) // before the registration
+		assert func(t *testing.T, f *fixture, res *passkey.RegistrationResult, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a first passkey for a user with no way back waits pending on saved codes",
+			assert: func(t *testing.T, f *fixture, res *passkey.RegistrationResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, res)
+				assert.False(t, res.Activated)
+				assert.Len(t, res.RecoveryCodes, 10)
+
+				c := onlyCredential(t, f, "u-1")
+				assert.Equal(t, passkey.StatePending, c.State)
+				assert.Equal(t, passkey.AwaitingSavedCodes, c.Pending)
+			},
+		},
+		{
+			name: "a passkey already held in the shared store is a way back, so a second activates at once",
+			seed: func(t *testing.T, f *fixture) {
+				t.Helper()
+
+				cid, err := id.NewV7Generator().NewID()
+				require.NoError(t, err)
+				require.NoError(t, f.creds.Insert(t.Context(), &passkey.Credential{
+					ID: cid, User: "u-1", CredentialID: []byte("held"), PublicKey: []byte("cose-held"),
+					Name: "held", CreatedAt: regStart, State: passkey.StateActive,
+				}))
+			},
+			assert: func(t *testing.T, f *fixture, res *passkey.RegistrationResult, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				require.NotNil(t, res)
+				assert.True(t, res.Activated)
+
+				n, err := f.creds.Count(t.Context(), "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 2, n)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t)
+
+			codes, err := recovery.NewCodes(recovery.WithCodesClock(f.clock))
+			require.NoError(t, err)
+
+			// The check comes first, over the store the manager will share.
+			check, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
+				Users:       f.users,
+				Codes:       codes,
+				Kinds:       []recovery.AuthenticatorKind{passkey.NewRecoveryKind(f.creds)},
+				IssuedCodes: true,
+			})
+			require.NoError(t, err)
+
+			f.deps.Credentials = f.creds
+			f.deps.Recovery = &passkey.RecoveryDeps{Codes: codes, WayBack: check}
+
+			if tc.seed != nil {
+				tc.seed(t, f)
+			}
+
+			m := f.manager(t)
+			s := fullSession("sess-a", "u-1")
+
+			f.clock.Advance(time.Minute)
+
+			res, err := m.FinishRegistration(t.Context(), s, regBody(f.begin(t, m, s), "cred-a", ""),
+				passkey.RegistrationContext{})
+			tc.assert(t, f, res, err)
+		})
+	}
+}
+
+func TestNewRecoveryKindNilStore(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T, k recovery.AuthenticatorKind)
+	}
+
+	cases := []testCase{
+		{
+			name: "a nil store is a configuration error on every call, never an empty list",
+			assert: func(t *testing.T, k recovery.AuthenticatorKind) {
+				t.Helper()
+
+				refs, err := k.Held(t.Context(), "u-1")
+				require.ErrorIs(t, err, passkey.ErrConfig)
+				assert.Nil(t, refs)
+
+				ul, ok := k.(recovery.UsableLister)
+				require.True(t, ok)
+
+				refs, err = ul.Usable(t.Context(), "u-1")
+				require.ErrorIs(t, err, passkey.ErrConfig)
+				assert.Nil(t, refs)
+
+				ref := recovery.AuthenticatorRef{Kind: "passkey", ID: "x"}
+				require.ErrorIs(t, k.Remove(t.Context(), "u-1", []recovery.AuthenticatorRef{ref}), passkey.ErrConfig)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, passkey.NewRecoveryKind(nil))
 		})
 	}
 }
