@@ -394,5 +394,5 @@ func (m *Manager) clearReason(
 // confined session on is the caller's: the manager does not hold the session
 // store.
 func (m *Manager) activated(ctx context.Context, c *Credential, rc RegistrationContext) {
-	m.notify(ctx, noticeRegistered, c, rc.ContactResolver)
+	m.notify(ctx, noticeRegistered, c, rc.ContactResolver, false)
 }

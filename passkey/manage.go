@@ -141,7 +141,7 @@ func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID, rc 
 		return ErrNotFound
 	}
 
-	m.notify(ctx, noticeRemoved, c, nil)
+	m.notify(ctx, noticeRemoved, c, nil, false)
 
 	return nil
 }

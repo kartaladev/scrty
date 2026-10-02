@@ -17,6 +17,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -127,7 +128,52 @@ func TestNotices(t *testing.T) {
 		return res, challenge
 	}
 
+	ended := func(t *testing.T, e *env, notify func(*passkey.Manager, *passkey.Credential, bool), v bool) string {
+		t.Helper()
+
+		notify(e.m, &passkey.Credential{ID: id.ID{15: 1}, User: "u-1", Name: "Old key"}, v)
+
+		msgs := e.f.messages()
+		require.Len(t, msgs, 1)
+
+		return msgs[0].TextBody
+	}
+	removed := func(m *passkey.Manager, c *passkey.Credential, v bool) { m.NotifyRemoved(t.Context(), c, v) }
+	suspended := func(m *passkey.Manager, c *passkey.Credential, v bool) { m.NotifySuspended(t.Context(), c, v) }
+
 	cases := []testCase{
+		{
+			name: "a removal notice says the other sessions were signed out when they were",
+			assert: func(t *testing.T, e *env) {
+				assert.Contains(t, ended(t, e, removed, true), "Your other sessions were signed out.")
+			},
+		},
+		{
+			name: "a removal notice says nothing of sessions when none were ended",
+			assert: func(t *testing.T, e *env) {
+				assert.NotContains(t, ended(t, e, removed, false), "signed out")
+			},
+		},
+		{
+			name: "a suspension notice says all sessions were signed out when they were",
+			assert: func(t *testing.T, e *env) {
+				assert.Contains(t, ended(t, e, suspended, true), "All your sessions were signed out.")
+			},
+		},
+		{
+			name: "a suspension notice says nothing of sessions when none were ended",
+			assert: func(t *testing.T, e *env) {
+				assert.NotContains(t, ended(t, e, suspended, false), "signed out")
+			},
+		},
+		{
+			name: "custom messages receive SessionsEnded and replace the default text",
+			opts: []passkey.Option{passkey.WithMessages(customMessages{})},
+			assert: func(t *testing.T, e *env) {
+				body := ended(t, e, removed, true)
+				assert.Equal(t, "custom body for Old key", body)
+			},
+		},
 		{
 			name: "a binding notice names the passkey, the time and the repudiation contact",
 			assert: func(t *testing.T, e *env) {

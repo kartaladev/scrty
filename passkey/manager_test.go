@@ -46,6 +46,7 @@ type fixture struct {
 	sender   *MockSender
 	users    *MockUserLoader
 	creds    *passkey.MemoryCredentialStore
+	sessions *session.Manager
 	deps     passkey.Deps
 
 	mu        sync.Mutex
@@ -108,11 +109,18 @@ func newFixture(t *testing.T) *fixture {
 			return &identity.Details{ID: u, Username: name, Active: true}, nil
 		}).AnyTimes()
 
+	sessions, err := session.NewManager(session.WithClock(f.clock),
+		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clock))))
+	require.NoError(t, err)
+
+	f.sessions = sessions
+
 	f.deps = passkey.Deps{
 		Verifier:    f.verifier,
 		Credentials: f.creds,
 		Users:       f.users,
 		Sender:      nonBlocking{f.sender},
+		Sessions:    f.sessions,
 	}
 
 	return f
@@ -355,6 +363,36 @@ func TestNew(t *testing.T) {
 		{name: "nil messages", opts: []passkey.Option{passkey.WithMessages(nil)}, assert: refused},
 		{name: "nil contact resolver", opts: []passkey.Option{passkey.WithContactResolver(nil)}, assert: refused},
 		{name: "zero log interval writes every record", opts: []passkey.Option{passkey.WithLogInterval(0)}, assert: accepted},
+		{
+			name:   "no session revoker while revocation is on",
+			deps:   func(_ *testing.T, f *fixture) { f.deps.Sessions = nil },
+			assert: refused,
+		},
+		{
+			name:   "typed-nil session revoker",
+			deps:   func(_ *testing.T, f *fixture) { f.deps.Sessions = (*session.Manager)(nil) },
+			assert: refused,
+		},
+		{
+			name:   "no session revoker with only removal revocation off",
+			deps:   func(_ *testing.T, f *fixture) { f.deps.Sessions = nil },
+			opts:   []passkey.Option{passkey.WithoutSessionRevocationOnRemoval()},
+			assert: refused,
+		},
+		{
+			name:   "no session revoker with only clone revocation off",
+			deps:   func(_ *testing.T, f *fixture) { f.deps.Sessions = nil },
+			opts:   []passkey.Option{passkey.WithoutSessionRevocationOnClone()},
+			assert: refused,
+		},
+		{
+			name: "no session revoker with both revocations off",
+			deps: func(_ *testing.T, f *fixture) { f.deps.Sessions = nil },
+			opts: []passkey.Option{
+				passkey.WithoutSessionRevocationOnRemoval(), passkey.WithoutSessionRevocationOnClone(),
+			},
+			assert: accepted,
+		},
 		{
 			name:   "nil MFA method entry",
 			deps:   func(_ *testing.T, f *fixture) { f.deps.MFAMethods = []policy.MFAMethodLookup{nil} },

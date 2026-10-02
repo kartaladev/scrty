@@ -70,6 +70,12 @@ type Deps struct {
 	// Recovery wires saved recovery codes to registration. Optional: with
 	// none, a registration never waits for saved codes.
 	Recovery *RecoveryDeps
+	// Sessions ends sessions when a passkey is removed or suspended as a
+	// suspected clone. *session.Manager satisfies it; wire the same manager
+	// the chain uses, the one given to httpsec.PasskeyDeps.Sessions. Required
+	// unless both WithoutSessionRevocationOnRemoval and
+	// WithoutSessionRevocationOnClone are given.
+	Sessions SessionRevoker
 }
 
 // Manager runs the passkey ceremonies. It is safe for concurrent use.
@@ -81,6 +87,10 @@ type Manager struct {
 	methods     []policy.MFAMethodLookup
 	sender      notify.Sender
 	recovery    *RecoveryDeps
+	sessions    SessionRevoker
+
+	keepOnRemoval bool
+	keepOnClone   bool
 
 	registration   *onetime.Manager
 	login          *onetime.Manager
@@ -146,7 +156,9 @@ const (
 // its way-back check; a challenge lifetime, freshness window, issuance limit
 // or passkey limit of zero or less; an unknown user-verification or
 // resident-key value; and a nil name resolver, registration check, clock,
-// random source or identifier generator.
+// random source or identifier generator; and no session revoker (typed nil
+// included) while either WithoutSessionRevocationOnRemoval or
+// WithoutSessionRevocationOnClone is left off.
 func New(deps Deps, opts ...Option) (*Manager, error) {
 	m := &Manager{
 		verifier:    deps.Verifier,
@@ -156,6 +168,7 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 		methods:     deps.MFAMethods,
 		sender:      deps.Sender,
 		recovery:    deps.Recovery,
+		sessions:    deps.Sessions,
 
 		contact:       mfa.UsernameAsAddress,
 		ttl:           defaultChallengeTTL,
@@ -289,6 +302,8 @@ func (m *Manager) validate() error {
 		missing = "the messages must not be nil"
 	case m.contactSet && m.contact == nil:
 		missing = "the contact resolver must not be nil"
+	case (!m.keepOnRemoval || !m.keepOnClone) && nilcheck.IsNil(m.sessions):
+		missing = "a session revoker is required while session revocation is on"
 	case m.recovery != nil && (m.recovery.Codes == nil || m.recovery.WayBack == nil):
 		missing = "recovery needs both saved codes and a way-back check"
 	}

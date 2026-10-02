@@ -308,7 +308,7 @@ func TestPasskeyEnrolmentAssembly(t *testing.T) {
 			h := newEnrolHarness(t)
 			pk := newPasskeyHarness(t)
 
-			m, err := passkey.New(passkey.Deps{Verifier: pk.verifier.mock, Users: h.users, Sender: pk.notices},
+			m, err := passkey.New(passkey.Deps{Verifier: pk.verifier.mock, Users: h.users, Sender: pk.notices, Sessions: h.sessions},
 				passkey.WithRepudiationContact("help@example.com"))
 			require.NoError(t, err)
 
@@ -503,7 +503,7 @@ func TestPasskeyRecoveryBinding(t *testing.T) {
 			h.noBinding = true
 
 			v := newPasskeyVerifierStub(t)
-			m, err := passkey.New(passkey.Deps{Verifier: v.mock, Users: h.users, Sender: h.sender},
+			m, err := passkey.New(passkey.Deps{Verifier: v.mock, Users: h.users, Sender: h.sender, Sessions: h.sessions},
 				passkey.WithRepudiationContact("help@example.com"))
 			require.NoError(t, err)
 
@@ -540,7 +540,7 @@ func TestPasskeyEnrolmentEndToEnd(t *testing.T) {
 	d := newE2EDeployment(t)
 	v := newPasskeyVerifierStub(t)
 
-	pm, err := passkey.New(passkey.Deps{Verifier: v.mock, Users: d.users, Sender: d.sender},
+	pm, err := passkey.New(passkey.Deps{Verifier: v.mock, Users: d.users, Sender: d.sender, Sessions: d.sessions},
 		passkey.WithRepudiationContact("help@example.com"))
 	require.NoError(t, err)
 

@@ -51,7 +51,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 
 	v := newPasskeyVerifierStub(t)
 
-	pm, err := passkey.New(passkey.Deps{Verifier: v.mock, Users: d.users, Sender: d.sender},
+	pm, err := passkey.New(passkey.Deps{Verifier: v.mock, Users: d.users, Sender: d.sender, Sessions: d.sessions},
 		passkey.WithRepudiationContact("help@example.com"))
 	require.NoError(t, err)
 

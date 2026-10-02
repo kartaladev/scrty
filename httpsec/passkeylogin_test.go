@@ -220,6 +220,7 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 		Handles:     d.handles,
 		Users:       d.users,
 		Sender:      d.notices,
+		Sessions:    d.sessions,
 		Recovery:    d.recovery,
 		Challenges:  d.challenges,
 	}, append(pkOpts, d.pkOpts...)...)
@@ -1188,7 +1189,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 				opts := d.options(t)
 
 				m, err := passkey.New(passkey.Deps{
-					Verifier: d.verifier.mock, Users: d.users, Sender: d.notices,
+					Verifier: d.verifier.mock, Users: d.users, Sender: d.notices, Sessions: d.sessions,
 				}, passkey.WithRepudiationContact("help@example.com"))
 				require.NoError(t, err)
 
@@ -1386,6 +1387,7 @@ func TestPasswordless_CancelsHeldRecovery(t *testing.T) {
 
 	pm, err := passkey.New(passkey.Deps{
 		Verifier: verifier.mock, Credentials: creds, Handles: handles, Users: h.users, Sender: h.sender,
+		Sessions: h.sessions,
 	}, passkey.WithRepudiationContact("help@example.com"), passkey.WithOptionalRecoveryCodes())
 	require.NoError(t, err)
 

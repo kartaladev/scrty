@@ -94,6 +94,17 @@ func ExampleRelyingParty() {
 	// true
 }
 
+// exampleSessions returns the session manager an example wires as the
+// revoker; a real application passes the one its chain uses.
+func exampleSessions() *session.Manager {
+	sessions, err := session.NewManager()
+	if err != nil {
+		panic(err)
+	}
+
+	return sessions
+}
+
 // ExampleNew builds the manager over the verifier, the user loader and a
 // non-blocking sender. The credential, handle and challenge stores are left
 // at their defaults, which are in memory and hold one process's records only.
@@ -105,7 +116,8 @@ func ExampleNew() {
 	manager, err := passkey.New(passkey.Deps{
 		Verifier: verifier, // webauthn.New(rp) in the adapter module
 		Users:    exampleUser(),
-		Sender:   exampleSender{}, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
+		Sender:   exampleSender{},   // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
+		Sessions: exampleSessions(), // the session manager the chain uses
 	},
 		passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
 	)
@@ -144,6 +156,7 @@ func ExampleNew_durableStores() {
 		Handles:     handles,
 		Users:       exampleUser(),
 		Sender:      exampleSender{},
+		Sessions:    exampleSessions(),
 	},
 		passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
 	)
@@ -163,8 +176,9 @@ func ExampleWithCloneResponse() {
 		Verifier: exampleVerifier{rp: passkey.RelyingParty{
 			ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},
 		}},
-		Users:  exampleUser(),
-		Sender: exampleSender{},
+		Users:    exampleUser(),
+		Sender:   exampleSender{},
+		Sessions: exampleSessions(),
 	}
 	contact := passkey.WithRepudiationContact("Contact support@example.com if you did not do this.")
 
@@ -200,8 +214,9 @@ func ExampleWithoutSecondFactorAtLogin() {
 		Verifier: exampleVerifier{rp: passkey.RelyingParty{
 			ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},
 		}},
-		Users:  exampleUser(),
-		Sender: exampleSender{},
+		Users:    exampleUser(),
+		Sender:   exampleSender{},
+		Sessions: exampleSessions(),
 	},
 		passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
 		passkey.WithoutSecondFactorAtLogin(),
@@ -233,7 +248,7 @@ func Example_recovery() {
 
 	deps := passkey.Deps{
 		Verifier: verifier, Credentials: credentials, Handles: handles,
-		Users: users, Sender: exampleSender{},
+		Users: users, Sender: exampleSender{}, Sessions: exampleSessions(),
 	}
 
 	codes, err := recovery.NewCodes()
@@ -314,7 +329,8 @@ func Example_chain() {
 		Credentials: credentials,
 		Users:       users,
 		Sender:      exampleSender{},
-		MFAMethods:  lookups, // for direct calls; inside a chain the MFA slot's methods decide
+		Sessions:    sessions, // the manager given to httpsec.PasskeyDeps.Sessions
+		MFAMethods:  lookups,  // for direct calls; inside a chain the MFA slot's methods decide
 	}
 
 	wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{

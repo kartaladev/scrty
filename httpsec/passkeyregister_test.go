@@ -677,7 +677,7 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 		{
 			name: "passkeys enabled twice",
 			setup: func(t *testing.T, h *passkeyHarness) {
-				m, err := passkey.New(passkey.Deps{Verifier: h.verifier.mock, Users: h.users, Sender: h.notices},
+				m, err := passkey.New(passkey.Deps{Verifier: h.verifier.mock, Users: h.users, Sender: h.notices, Sessions: h.sessions},
 					passkey.WithRepudiationContact("help@example.com"))
 				require.NoError(t, err)
 
@@ -743,7 +743,7 @@ func TestEnablePasskeysDeps(t *testing.T) {
 			t.Parallel()
 
 			h := newPasskeyHarness(t)
-			m, err := passkey.New(passkey.Deps{Verifier: h.verifier.mock, Users: h.users, Sender: h.notices},
+			m, err := passkey.New(passkey.Deps{Verifier: h.verifier.mock, Users: h.users, Sender: h.notices, Sessions: h.sessions},
 				passkey.WithRepudiationContact("help@example.com"))
 			require.NoError(t, err)
 

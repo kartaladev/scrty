@@ -133,7 +133,7 @@ func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *Asse
 		}
 
 		if suspended {
-			m.notify(ctx, noticeSuspended, now, nil)
+			m.notify(ctx, noticeSuspended, now, nil, false)
 		}
 
 		return ErrCloneSuspected

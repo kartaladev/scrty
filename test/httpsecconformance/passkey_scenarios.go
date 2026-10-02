@@ -105,6 +105,7 @@ func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.
 		Challenges:  base.OneTime,
 		Users:       fixtureUsers{},
 		Sender:      base.Outbox,
+		Sessions:    sessions,
 	}
 	opts := []passkey.Option{
 		passkey.WithRepudiationContact("security@example.com"),

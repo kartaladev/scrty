@@ -271,6 +271,7 @@ func (h *passkeyHarness) chainOptions(t *testing.T, s *session.Session) []httpse
 		Credentials: h.creds,
 		Users:       h.users,
 		Sender:      h.notices,
+		Sessions:    h.sessions,
 		Recovery:    h.recovery,
 	}, append([]passkey.Option{passkey.WithRepudiationContact("help@example.com")}, h.pkOpts...)...)
 	require.NoError(t, err)

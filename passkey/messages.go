@@ -20,6 +20,9 @@ type Notice struct {
 	// Repudiation is where a user who did not make the change should turn:
 	// what WithRepudiationContact configured.
 	Repudiation string
+	// SessionsEnded reports whether the change ended sessions: the user's
+	// other sessions for a removal, all of them for a suspension.
+	SessionsEnded bool
 }
 
 // Messages renders the subject and plain-text body of every message the
@@ -78,17 +81,27 @@ func (defaultMessages) Registered(n Notice) (string, string) {
 }
 
 func (defaultMessages) Removed(n Notice) (string, string) {
+	ended := ""
+	if n.SessionsEnded {
+		ended = "Your other sessions were signed out.\n\n"
+	}
+
 	return "A passkey was removed from your account",
 		"The passkey named \"" + n.Name + "\" was removed from your account on " +
-			n.At.UTC().Format(emailTimeLayout) + ". It can no longer be used to sign in.\n\n" +
+			n.At.UTC().Format(emailTimeLayout) + ". It can no longer be used to sign in.\n\n" + ended +
 			"If you did not remove it, contact " + n.Repudiation + " at once.\n"
 }
 
 func (defaultMessages) Suspended(n Notice) (string, string) {
+	ended := ""
+	if n.SessionsEnded {
+		ended = "All your sessions were signed out.\n\n"
+	}
+
 	return "A passkey on your account was suspended",
 		"The passkey named \"" + n.Name + "\" was suspended on " + n.At.UTC().Format(emailTimeLayout) +
 			" because it may have been copied. It can no longer be used to sign in.\n\n" +
-			"Remove it from your account and register a new passkey.\n\n" +
+			"Remove it from your account and register a new passkey.\n\n" + ended +
 			"If you need help, contact " + n.Repudiation + ".\n"
 }
 
@@ -125,30 +138,33 @@ func (k noticeKind) String() string {
 
 // notify queues the notice kind about c to c's user, at the address resolve
 // gives, or the manager's resolver when resolve is nil. The library sets the
-// recipient; the Messages only render the texts.
+// recipient; the Messages only render the texts. sessionsEnded tells the
+// notice whether the change ended sessions (Notice.SessionsEnded).
 //
 // A notice is owed whatever the request does next, so it is sent under a
 // context the caller cannot cancel. Its failure — loading the user, resolving
 // the address or queueing — is written through the sampler at error level,
 // naming the credential by its library identifier only, and does not undo
 // the change it reports.
-func (m *Manager) notify(ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver) {
+func (m *Manager) notify(
+	ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool,
+) {
 	ctx = context.WithoutCancel(ctx)
 
-	if err := m.sendNotice(ctx, kind, c, resolve); err != nil {
+	if err := m.sendNotice(ctx, kind, c, resolve, sessionsEnded); err != nil {
 		m.sampled(ctx, slog.LevelError, "notice|"+kind.String(), msgNoticeNotQueued,
 			append(diag.Failure(kind.String(), err), credentialAttr(c.ID))...)
 	}
 }
 
 // sendNotice renders and queues one notice, and returns why it could not.
-func (m *Manager) sendNotice(ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver) error {
+func (m *Manager) sendNotice(ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool) error {
 	to, err := m.contactOf(ctx, c.User, resolve)
 	if err != nil {
 		return err
 	}
 
-	n := Notice{Name: c.Name, At: m.clock.Now(), Repudiation: m.repudiation}
+	n := Notice{Name: c.Name, At: m.clock.Now(), Repudiation: m.repudiation, SessionsEnded: sessionsEnded}
 
 	var subject, body string
 

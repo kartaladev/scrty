@@ -390,12 +390,15 @@ manager, err := passkey.New(passkey.Deps{
 	Verifier: verifier,
 	Users:    users,       // identity.UserLoader
 	Sender:   queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
+	Sessions: sessions,     // the *session.Manager the chain uses (httpsec.PasskeyDeps.Sessions)
 },
 	passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
 )
 ```
 
-`Verifier`, `Users`, `Sender` and the repudiation contact have no default; everything else does:
+`Verifier`, `Users`, `Sender`, `Sessions` and the repudiation contact have no default (`Sessions` may be
+left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
+`passkey.WithoutSessionRevocationOnClone` given); everything else does:
 
 | What | Default | Replaced by |
 |---|---|---|
@@ -452,6 +455,7 @@ manager, err := passkey.New(passkey.Deps{
 	Handles:     handles,
 	Users:       users,
 	Sender:      queuedSender,
+	Sessions:    sessions,
 },
 	passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
 )
@@ -472,7 +476,7 @@ contact := passkey.WithRepudiationContact("Contact support@example.com if you di
 
 credentials := passkey.NewMemoryCredentialStore() // or your own store; the manager must get this one
 
-deps := passkey.Deps{Verifier: verifier, Credentials: credentials, Users: users, Sender: queuedSender} // and your other stores
+deps := passkey.Deps{Verifier: verifier, Credentials: credentials, Users: users, Sender: queuedSender, Sessions: sessions} // and your other stores
 
 codes, err := recovery.NewCodes()
 
