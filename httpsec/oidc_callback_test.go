@@ -126,6 +126,30 @@ func TestOIDCCallback(t *testing.T) {
 			},
 		},
 		{
+			name: "the stored handoff record carries the asserted assurance, in order and without duplicates",
+			setup: func(h *oidcHarness) {
+				h.provider.assert([]string{"pwd", "mfa", "mfa"}, "urn:corp:loa:2")
+			},
+			assert: func(t *testing.T, h *oidcHarness, _ *httpsec.Chain, _ oidcLogin, out served, _ *conveyanceCall) {
+				require.NoError(t, out.err)
+				require.Equal(t, http.StatusFound, out.rec.Code)
+
+				_, code := handoffIn(t, out)
+				tokenID, _, found := strings.Cut(code, ".")
+				require.True(t, found, "a handoff code names its record")
+
+				rec, err := h.store.FindByTokenID(t.Context(), tokenID)
+				require.NoError(t, err)
+				assert.Equal(t, []string{"pwd", "mfa"}, rec.AMR)
+				assert.Equal(t, "urn:corp:loa:2", rec.ACR)
+
+				logs := h.logs.String()
+				for _, value := range []string{"pwd", "urn:corp:loa:2"} {
+					assert.NotContains(t, logs, value, "no asserted value is logged")
+				}
+			},
+		},
+		{
 			name: "an allowlisted destination is used",
 			opts: []httpsec.OIDCOption{httpsec.WithOIDCAllowedRedirects("/welcome")},
 			next: "/welcome",
@@ -388,10 +412,40 @@ func TestOIDCCallback(t *testing.T) {
 				assert.Equal(t, h.provider.srv.URL, rec.res.Issuer)
 				assert.Equal(t, oidcTestSessionID, rec.res.SessionID)
 				assert.Equal(t, "/", rec.next, "the allowlist-resolved destination, never the requested one")
+				assert.Empty(t, rec.res.AMR, "the token asserted no amr")
+				assert.Empty(t, rec.res.ACR, "nor an acr")
 
 				clearsCookie(t, out)
 				assert.Zero(t, h.storedHandoffs(t))
 				assert.Zero(t, h.activeSessions(t))
+			},
+		},
+		{
+			name: "the consumer conveyance receives the asserted assurance",
+			conveyance: func(rec *conveyanceCall) httpsec.CallbackSuccess {
+				return func(ex *httpsec.Exchange, res oidc.CallbackResult, next string) error {
+					rec.mu.Lock()
+					defer rec.mu.Unlock()
+
+					rec.called, rec.res, rec.next = true, res, next
+					ex.Writer.WriteHeader(http.StatusNoContent)
+
+					return nil
+				}
+			},
+			setup: func(h *oidcHarness) {
+				h.provider.assert([]string{"mfa"}, "urn:corp:loa:2")
+			},
+			assert: func(t *testing.T, h *oidcHarness, _ *httpsec.Chain, _ oidcLogin, out served, rec *conveyanceCall) {
+				require.NoError(t, out.err)
+
+				rec.mu.Lock()
+				defer rec.mu.Unlock()
+
+				require.True(t, rec.called)
+				assert.Equal(t, []string{"mfa"}, rec.res.AMR)
+				assert.Equal(t, "urn:corp:loa:2", rec.res.ACR)
+				assert.Zero(t, h.storedHandoffs(t))
 			},
 		},
 		{

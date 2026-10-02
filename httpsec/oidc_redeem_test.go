@@ -177,13 +177,11 @@ func TestOIDCRedeem(t *testing.T) {
 
 					if runChecks {
 						for _, check := range checks {
-							_ = check(ctx, p, time.Time{})
+							_ = check(ctx, oidc.RedeemCandidate{Principal: p})
 						}
 					}
 
-					return oidc.HandoffResult{
-						Principal: p, Provider: testOIDCProvider, Issuer: h.provider.srv.URL,
-					}, nil
+					return oidc.HandoffResult{Principal: p}, nil
 				})
 
 			return r

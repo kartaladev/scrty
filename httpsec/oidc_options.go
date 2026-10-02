@@ -158,6 +158,21 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 		return err
 	}
 
+	// A policy that decides federated logins on provider assurance with no
+	// source would decide every one of them as unmet: required users whose
+	// provider asserted exactly what the deployment accepts would be
+	// challenged or refused. That holds under either conveyance, since a
+	// session a consumer's handler creates is judged on every request too.
+	if c.engine != nil {
+		if unwired := c.engine.UnwiredFederatedAssurance(); len(unwired) > 0 {
+			return newConfigError("%s cannot admit federated logins while %s decides them on "+
+				"provider assurance with no source to match it against: give it "+
+				"policy.WithFederatedAssuranceSource (the OIDC manager is one), choose "+
+				"policy.FederatedAssuranceExempt, or exempt factor.OIDC with "+
+				"policy.WithMFAExemption", option, strings.Join(unwired, ", "))
+		}
+	}
+
 	// A handoff reloads the user by reference and rebuilds the principal from
 	// the stored roles, so the roles a sync derived at the callback would be
 	// gone by the time the session exists.

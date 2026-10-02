@@ -79,8 +79,9 @@ func spiedSessions(t *testing.T) (*session.Manager, *sessionWrites) {
 
 // oidcMFAEngine holds both library MFA policies over a method the linked user
 // is enrolled on whenever enrolled reports so, requiring a second factor of
-// everyone. With exempt it keeps the default classification; without it, an
-// OIDC login is classified like any other.
+// everyone. With exempt, a consumer exemption rule marks an OIDC login exempt,
+// which is a total exemption; without it, the library's default classification
+// applies, under which an OIDC login is not exempt.
 func oidcMFAEngine(t *testing.T, exempt bool, enrolled func() bool) *policy.Engine {
 	t.Helper()
 
@@ -91,13 +92,18 @@ func oidcMFAEngine(t *testing.T, exempt bool, enrolled func() bool) *policy.Engi
 		DoAndReturn(func(context.Context, identity.UserID) (bool, error) { return enrolled(), nil })
 
 	var (
-		challengeOpts   []policy.MFAOption
-		requirementOpts = []policy.MFARequirementOption{policy.WithMFARequiredForAll()}
+		challengeOpts []policy.MFAOption
+		// The source answers the handoffs' unasserted assurance as unmet;
+		// OIDC login refuses to assemble a requirement policy without one.
+		requirementOpts = []policy.MFARequirementOption{
+			policy.WithMFARequiredForAll(),
+			policy.WithFederatedAssuranceSource(newTestOIDCManager(t)),
+		}
 	)
 
-	if !exempt {
+	if exempt {
 		classification := policy.WithMFAExemption(func(k factor.Kind) bool {
-			return k != factor.OIDC && k.MFAExempt()
+			return k == factor.OIDC || k.MFAExempt()
 		})
 		challengeOpts = append(challengeOpts, classification)
 		requirementOpts = append(requirementOpts, classification)
@@ -242,7 +248,7 @@ func TestOIDCRedeemSession(t *testing.T) {
 			},
 		},
 		{
-			name:      "the default exemption creates a session without a challenge",
+			name:      "a consumer exemption of oidc creates a session without a challenge",
 			chainOpts: mfaWired(true),
 			assert: func(t *testing.T, h *oidcHarness, w *sessionWrites, _ string, out served) {
 				require.NoError(t, out.err)

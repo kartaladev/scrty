@@ -14,11 +14,11 @@ import (
 	"github.com/kartaladev/scrty/policy"
 )
 
-// TestOIDCRedeemMFAExemptionRemoved pins the consumer's override of the
-// default OIDC exemption: once their classification makes a federated login
-// non-exempt, the MFA policies judge it like any other login, and the chain
-// insists that the challenge they can now raise is enforced.
-func TestOIDCRedeemMFAExemptionRemoved(t *testing.T) {
+// TestOIDCRedeemMFADefaultClassification pins the default classification of a
+// federated login: OIDC is not exempt by default, so the MFA policies judge it
+// like any other login, and the chain insists that the challenge they can now
+// raise is enforced.
+func TestOIDCRedeemMFADefaultClassification(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {

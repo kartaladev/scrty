@@ -8,8 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
@@ -88,6 +90,24 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 				httpsec.WithOIDCSessions(f.sessions), conveyed,
 			}, opts...)...)
 		}
+	}
+
+	// requirementEngine is an engine holding the MFA requirement policy,
+	// required for all, under opts; mfaWired is it with the MFA endpoints that
+	// enforce the challenge it declares.
+	requirementEngine := func(opts ...policy.MFARequirementOption) *policy.Engine {
+		method := NewMockMFAMethodLookup(gomock.NewController(t))
+		method.EXPECT().Name().Return("totp").AnyTimes()
+		method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+
+		requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{method},
+			append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, opts...)...)
+		require.NoError(t, err)
+
+		return engineOf(t, requirement)
+	}
+	mfaWired := func(opts ...policy.MFARequirementOption) []httpsec.Option {
+		return []httpsec.Option{httpsec.WithPolicyEngine(requirementEngine(opts...)), enableMFAFor(t)}
 	}
 
 	syncingRoles := func(t *testing.T) *oidc.Manager {
@@ -270,6 +290,55 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			name:   "a flow cookie name that is not a cookie token",
 			enable: with(httpsec.WithOIDCFlowCookieName("oidc flow")),
 			assert: refused("WithOIDCFlowCookieName", `"oidc flow"`),
+		},
+
+		// Federated assurance wiring.
+		{
+			// Spec oidc-login, "Requirement policy without an assurance source".
+			name:   "an MFA requirement policy in the default mode without an assurance source",
+			enable: with(),
+			chain:  mfaWired(),
+			assert: refused("EnableOIDCLogin", "mfa-requirement", "WithFederatedAssuranceSource"),
+		},
+		{
+			name:   "an MFA requirement policy in refuse mode without an assurance source",
+			enable: with(),
+			chain:  mfaWired(policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)),
+			assert: refused("EnableOIDCLogin", "mfa-requirement", "WithFederatedAssuranceSource"),
+		},
+		{
+			name:   "an MFA requirement policy without an assurance source under a consumer conveyance",
+			enable: convey(),
+			chain:  mfaWired(),
+			assert: refused("EnableOIDCLogin", "mfa-requirement", "WithFederatedAssuranceSource"),
+		},
+		{
+			name:   "an MFA requirement policy with an assurance source",
+			enable: with(),
+			chain:  mfaWired(policy.WithFederatedAssuranceSource(newTestOIDCManager(t))),
+			assert: built,
+		},
+		{
+			name:   "an MFA requirement policy in exempt mode needs no assurance source",
+			enable: with(),
+			chain:  mfaWired(policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)),
+			assert: built,
+		},
+		{
+			name:   "an MFA requirement policy whose exemption rule exempts oidc needs no assurance source",
+			enable: with(),
+			chain: mfaWired(policy.WithMFAExemption(func(k factor.Kind) bool {
+				return k == factor.OIDC
+			})),
+			assert: built,
+		},
+		{
+			name: "an MFA requirement policy without an assurance source on a chain without OIDC login",
+			enable: func(f oidcFixture) httpsec.Option {
+				return httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions})
+			},
+			chain:  mfaWired(),
+			assert: built,
 		},
 
 		// Redirect allowlist.

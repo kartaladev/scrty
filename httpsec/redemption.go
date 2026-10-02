@@ -3,16 +3,21 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/policy"
 )
 
-// redemptionCheck is the shape every single-use credential redemption runs its
-// refusal checks in: magiclink.Check and oidc.RedeemCheck both have it, so one
-// policy check and one set of guards serve every endpoint that spends one.
+// redemptionCheck is the shape the magic-link endpoint's own policy check is
+// built in, which magiclink.Check has. The OIDC redemption builds its check in
+// oidc.RedeemCheck's shape instead (oidcRedemptionCheck), because its
+// candidate also carries the federated assurance the policies decide on. Both
+// share one decision (redemptionDecision) and one set of guards, so every
+// endpoint that spends a single-use credential is decided the same way.
 type redemptionCheck = func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error
 
 // policyOutcome is what a redemption's own refusal check decided, escaping the
@@ -26,6 +31,11 @@ type policyOutcome struct {
 	// guardRedemption).
 	principal         identity.Principal
 	passwordChangedAt time.Time
+
+	// federated is the assurance evidence decision was made on: the zero
+	// value for a login with no federated assurance, such as a magic link
+	// (see guardFederatedAssurance).
+	federated policy.FederatedAssurance
 
 	denyErr  error
 	checkErr error
@@ -80,6 +90,10 @@ func (out *policyOutcome) challengeMethods(lookup challengeMethodsFunc) challeng
 // found are kept on the outcome for the login tail (policyOutcome.
 // challengeMethods), so the tail does not look them up a second time. A nil
 // methods looks nothing up.
+//
+// The check carries no federated assurance. A federated redemption builds its
+// check with oidcRedemptionCheck instead, which shares this one's decision and
+// record.
 func redemptionPolicyCheck(
 	engine *policy.Engine,
 	enforced map[policy.ChallengeKind]bool,
@@ -87,15 +101,59 @@ func redemptionPolicyCheck(
 	first factor.Kind,
 	now func() time.Time,
 ) (redemptionCheck, *policyOutcome) {
-	out := &policyOutcome{}
+	decide, out := redemptionDecision(engine, enforced, methods)
 
 	check := func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error {
-		d := evaluatePhase(ctx, engine, policy.PostAuthentication, postAuthenticationInput(
-			&p, first, "", passwordChangedAt, now()))
+		return decide(ctx, postAuthenticationInput(&p, first, "", passwordChangedAt, now()))
+	}
+
+	return check, out
+}
+
+// oidcRedemptionCheck builds the refusal check an OIDC handoff redemption
+// runs, and the record of what it decided: redemptionPolicyCheck's decision
+// for the oidc first factor, with the federated assurance the candidate's
+// record carries minted as the evidence the policies decide on.
+//
+// The evidence is minted from the candidate alone, which the redeemer filled
+// from the record the library wrote at the callback, from the verified ID
+// token. Nothing the redemption request carries reaches it.
+func oidcRedemptionCheck(
+	engine *policy.Engine,
+	enforced map[policy.ChallengeKind]bool,
+	methods challengeMethodsFunc,
+	now func() time.Time,
+) (oidc.RedeemCheck, *policyOutcome) {
+	decide, out := redemptionDecision(engine, enforced, methods)
+
+	check := func(ctx context.Context, c oidc.RedeemCandidate) error {
+		in := postAuthenticationInput(&c.Principal, factor.OIDC, "", c.PasswordChangedAt, now())
+		in.FederatedAssurance = mintFederated(c.Provider, c.Issuer, c.AMR, c.ACR)
+
+		return decide(ctx, in)
+	}
+
+	return check, out
+}
+
+// redemptionDecision is the decision every redemption check shares: it
+// evaluates the post-authentication phase on the input the check built,
+// records what it decided and on what, and refuses a deny, an unenforced
+// challenge and a failed methods lookup (see redemptionPolicyCheck).
+func redemptionDecision(
+	engine *policy.Engine,
+	enforced map[policy.ChallengeKind]bool,
+	methods challengeMethodsFunc,
+) (func(ctx context.Context, in *policy.Input) error, *policyOutcome) {
+	out := &policyOutcome{}
+
+	decide := func(ctx context.Context, in *policy.Input) error {
+		d := evaluatePhase(ctx, engine, policy.PostAuthentication, in)
 
 		out.evaluated = true
 		out.decision = d
-		out.principal, out.passwordChangedAt = p, passwordChangedAt
+		out.principal, out.passwordChangedAt = *in.Principal, in.PasswordChangedAt
+		out.federated = in.FederatedAssurance
 
 		if d.Outcome == policy.Deny {
 			// Never nil for a refusal. A nil return reads as "no refusal" to
@@ -123,7 +181,7 @@ func redemptionPolicyCheck(
 			}
 
 			if methods != nil {
-				offered, err := methods(ctx, d.Challenge, p.ID, first)
+				offered, err := methods(ctx, d.Challenge, in.User, in.FirstFactor)
 				if err != nil {
 					return err
 				}
@@ -138,7 +196,7 @@ func redemptionPolicyCheck(
 		return nil
 	}
 
-	return check, out
+	return decide, out
 }
 
 // wrapChecks returns the consumer's own checks, each recording the error it
@@ -214,6 +272,28 @@ func guardRedemption(out *policyOutcome, p identity.Principal, passwordChangedAt
 	}
 
 	return policy.ErrPolicyDenied
+}
+
+// guardFederatedAssurance refuses a federated redemption whose redeemer
+// returned assurance other than the evidence its policy check decided on: a
+// different provider, a different issuer, a different amr (in content or
+// order), or a different acr.
+//
+// It runs after guardRedemption, which has already refused a check that never
+// ran. The login tail acts on the check's decision and records the returned
+// assurance on the session, where every later request matches it again, so a
+// redeemer that reported assurance its check never saw would have the session
+// carry evidence no policy decided on at login. That is refused with
+// policy.ErrPolicyDenied, as a redeemer returning another user is. The
+// built-in redeemer returns exactly what it handed its checks.
+func guardFederatedAssurance(out *policyOutcome, provider, issuer string, amr []string, acr string) error {
+	ev := out.federated
+	if ev.Provider() != provider || ev.Issuer() != issuer ||
+		!slices.Equal(ev.AMR(), amr) || ev.ACR() != acr {
+		return policy.ErrPolicyDenied
+	}
+
+	return nil
 }
 
 // countsAgainstSource decides whether a redemption failure counts against the
