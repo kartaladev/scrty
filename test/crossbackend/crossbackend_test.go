@@ -557,6 +557,8 @@ func TestCrossBackend(t *testing.T) {
 		{name: "enrolment flow through session.Manager and mfa.TOTP", run: testEnrolmentDurableFlow},
 		{name: "recovery-pending session shared across backends", run: testRecoveryPendingSessionShared},
 		{name: "second factor at login shared across backends", run: testSecondFactorAtLoginShared},
+		{name: "federated assurance on a session shared across backends", run: testSessionAssuranceShared},
+		{name: "federated assurance on a handoff shared across backends", run: testHandoffAssuranceShared},
 		{name: "a recovery code spent on one backend is refused on the others", run: testRecoveryCodeSpentShared},
 		{name: "a recovery completed on one backend is seen by the others", run: testRecoveryCompletionShared},
 	}
@@ -833,6 +835,95 @@ func testSecondFactorAtLoginShared(t *testing.T, b backends) {
 			require.NoError(t, err)
 			assert.True(t, again.MFAAtFirstFactor, "a save through %s must keep the marker", reader)
 		})
+	}
+}
+
+// testSessionAssuranceShared proves a federated session recording amr and acr,
+// saved through each backend, loads through every other with both unchanged
+// and in order, and that a password session loads with none.
+func testSessionAssuranceShared(t *testing.T, b backends) {
+	t.Helper()
+
+	for _, writer := range backendNames {
+		for _, reader := range backendNames {
+			if writer == reader {
+				continue
+			}
+
+			t.Run(writer+"_writes_"+reader+"_reads", func(t *testing.T) {
+				t.Parallel()
+
+				seed := "assurance-" + writer + "-" + reader
+				sess := crossBackendSession(seed)
+				sess.FederatedAMR = []string{"pwd", "mfa"}
+				sess.FederatedACR = "urn:corp:loa:2"
+				plain := crossBackendSession(seed + "-plain")
+				require.NoError(t, b.sessionStore(t, writer).Create(t.Context(), sess))
+				require.NoError(t, b.sessionStore(t, writer).Create(t.Context(), plain))
+
+				got, err := b.sessionStore(t, reader).Load(t.Context(), seed)
+				require.NoError(t, err)
+				assert.Equal(t, []string{"pwd", "mfa"}, got.FederatedAMR)
+				assert.Equal(t, "urn:corp:loa:2", got.FederatedACR)
+
+				none, err := b.sessionStore(t, reader).Load(t.Context(), seed+"-plain")
+				require.NoError(t, err)
+				assert.Empty(t, none.FederatedAMR)
+				assert.Empty(t, none.FederatedACR)
+			})
+		}
+	}
+}
+
+// testHandoffAssuranceShared proves a handoff record carrying amr and acr,
+// stored through each backend, is found through every other with both
+// unchanged and in order, and that a record without them reads back with none.
+func testHandoffAssuranceShared(t *testing.T, b backends) {
+	t.Helper()
+
+	for _, writer := range backendNames {
+		for _, reader := range backendNames {
+			if writer == reader {
+				continue
+			}
+
+			t.Run(writer+"_writes_"+reader+"_reads", func(t *testing.T) {
+				t.Parallel()
+
+				seed := "handoff-assurance-" + writer + "-" + reader
+				issued := time.Now().UTC().Truncate(time.Microsecond)
+				record := func(token string) oidc.HandoffRecord {
+					return oidc.HandoffRecord{
+						ID:         crossBackendID(token),
+						TokenID:    token,
+						SecretHash: []byte("hash-" + token),
+						UserID:     identity.UserID("u-" + seed),
+						Provider:   "corp",
+						Issuer:     "https://idp.example",
+						CreatedAt:  issued,
+						ExpiresAt:  issued.Add(time.Minute),
+					}
+				}
+				with := record(seed)
+				with.AMR = []string{"pwd", "mfa"}
+				with.ACR = "urn:corp:loa:2"
+				without := record(seed + "-plain")
+				require.NoError(t, b.handoffStore(t, writer).Insert(t.Context(), with))
+				require.NoError(t, b.handoffStore(t, writer).Insert(t.Context(), without))
+
+				got, err := b.handoffStore(t, reader).FindByTokenID(t.Context(), seed)
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, []string{"pwd", "mfa"}, got.AMR)
+				assert.Equal(t, "urn:corp:loa:2", got.ACR)
+
+				none, err := b.handoffStore(t, reader).FindByTokenID(t.Context(), seed+"-plain")
+				require.NoError(t, err)
+				require.NotNil(t, none)
+				assert.Empty(t, none.AMR)
+				assert.Empty(t, none.ACR)
+			})
+		}
 	}
 }
 

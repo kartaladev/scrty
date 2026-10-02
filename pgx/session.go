@@ -44,6 +44,10 @@ import (
 // same way: NULL when the session was never recovered, and read back as the
 // zero time.
 //
+// The federated assurance a login asserted, the amr values in the order given
+// and the acr, is kept in columns of its own, unsealed: none is stored as an
+// empty list and the empty string, and reads back as a nil list and "".
+//
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
 //
@@ -52,9 +56,10 @@ import (
 //
 // Limits, stated:
 //   - PostgreSQL text and jsonb cannot hold a NUL byte or invalid UTF-8. A
-//     session whose user reference, first factor, provider fields or data
-//     hold either is refused with an error that names the field, never the
-//     value, and nothing is written; the value is never altered.
+//     session whose user reference, first factor, provider fields, data, amr
+//     values or acr hold either is refused with an error that names the
+//     field, never the value, and nothing is written; the value is never
+//     altered.
 func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session.Store, error) {
 	cfg, err := newConfig(pool, opts, optIDGenerator, optClock)
 	if err != nil {
@@ -77,7 +82,7 @@ func NewSessionStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (session
 type sessionStore struct{ c *config }
 
 // sessionColumns returns the values of sess's columns from user_id to
-// recovered_at, in the order SessionUpdate takes them, or the refusal
+// federated_acr, in the order SessionUpdate takes them, or the refusal
 // of a session this store cannot hold without altering it.
 func sessionColumns(op string, sess *session.Session) ([]any, error) {
 	if err := storekit.CheckSession(sess); err != nil {
@@ -95,6 +100,11 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		return nil, failed(op, err)
 	}
 
+	amr, err := storekit.EncodeAMR(sess.FederatedAMR)
+	if err != nil {
+		return nil, failed(op, err)
+	}
+
 	return []any{
 		string(sess.UserID), storekit.Time(sess.CreatedAt), storekit.Time(sess.LastAccessedAt),
 		storekit.Time(sess.IdleExpiresAt), storekit.Time(sess.AbsoluteExpiresAt), string(sess.FirstFactor),
@@ -102,7 +112,7 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		sess.PasswordChangePending, sess.ExternalProvider, sess.ExternalIssuer, sess.ExternalSessionID,
 		sess.ExternalIDToken, string(encoded),
 		nullTs(sess.EnrolmentOriginDeadline), nullID(sess.EnrolmentGeneration),
-		nullTs(sess.RecoveredAt),
+		nullTs(sess.RecoveredAt), amr, sess.FederatedACR,
 	}, nil
 }
 
@@ -163,7 +173,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		firstFactor   string
 		mfaState      int64
 		mfaSatisfied  pgtype.Timestamptz
-		encoded       []byte
+		encoded, amr  []byte
 		origin        pgtype.Timestamptz
 		generation    pgtype.UUID
 		recovered     pgtype.Timestamptz
@@ -173,7 +183,8 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
-		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor)
+		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
+		&amr, &sess.FederatedACR)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -191,6 +202,9 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	}
 	if sess.Data == nil {
 		sess.Data = map[string]string{}
+	}
+	if sess.FederatedAMR, err = storekit.DecodeAMR(amr); err != nil {
+		return nil, failed(op, err)
 	}
 	sess.UserID = identity.UserID(user)
 	sess.FirstFactor = factor.Kind(firstFactor)

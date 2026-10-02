@@ -39,15 +39,16 @@ RETURNING provider, state, nonce, verifier, next, expires_at`
 	// HandoffInsert stores a handoff record: $1 id, $2 token_id,
 	// $3 secret_hash, $4 user_id, $5 provider, $6 issuer, $7 session_id,
 	// $8 id_token, $9 next, $10 expires_at, $11 created_at, $12 consumed_at
-	// (NULL while unconsumed).
+	// (NULL while unconsumed), $13 amr (a JSON array of strings, '[]' for
+	// none), $14 acr ('' for none).
 	HandoffInsert = `INSERT INTO oidc_handoffs (id, token_id, secret_hash, user_id, provider, issuer, session_id,
-  id_token, next, expires_at, created_at, consumed_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+  id_token, next, expires_at, created_at, consumed_at, amr, acr)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
 
 	// HandoffSelect reads the record of token id $1; an empty token id
 	// matches nothing.
 	HandoffSelect = `SELECT id, secret_hash, user_id, provider, issuer, session_id, id_token, next,
-  expires_at, created_at, consumed_at
+  expires_at, created_at, consumed_at, amr, acr
 FROM oidc_handoffs WHERE token_id = $1 AND $1 <> ''`
 
 	// HandoffConsume marks the record of token id $1 consumed at $2 only

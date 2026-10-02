@@ -54,6 +54,11 @@ type sessionRow struct {
 	RecoveredAt *time.Time `gorm:"column:recovered_at;type:timestamptz"`
 	// MFAAtFirstFactor is written by the insert only; the update omits it.
 	MFAAtFirstFactor bool `gorm:"column:mfa_at_first_factor;type:boolean"`
+	// FederatedAMR is the identity provider's asserted amr values as a JSON
+	// array of strings, '[]' for none; FederatedACR is the asserted acr, ''
+	// for none. Neither is sealed, and both are replaced by an update.
+	FederatedAMR string `gorm:"column:federated_amr;type:jsonb"`
+	FederatedACR string `gorm:"column:federated_acr;type:text"`
 }
 
 // TableName is the table the migration creates for sessions.
@@ -191,6 +196,10 @@ type handoffRow struct {
 	ExpiresAt  time.Time  `gorm:"column:expires_at;type:timestamptz"`
 	CreatedAt  time.Time  `gorm:"column:created_at;type:timestamptz;autoCreateTime:false"`
 	ConsumedAt *time.Time `gorm:"column:consumed_at;type:timestamptz"`
+	// AMR is the provider's asserted amr values as a JSON array of strings,
+	// '[]' for none; ACR is the asserted acr, '' for none. Neither is sealed.
+	AMR string `gorm:"column:amr;type:jsonb"`
+	ACR string `gorm:"column:acr;type:text"`
 }
 
 // TableName is the table the migration creates for OIDC handoffs.

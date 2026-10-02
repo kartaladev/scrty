@@ -32,11 +32,11 @@ type HandoffStore struct{ c *config }
 //
 // Limits, stated: PostgreSQL text cannot hold a NUL byte or invalid UTF-8. A
 // record whose token id, user reference, provider, issuer, session id, ID
-// token or next location holds either is refused with an error that names
-// the field, never the value, and nothing is written; a lookup or
-// consumption by such a token id is oidc.ErrHandoffNotFound. The ID token is
-// single-use and short-lived, and is not sealed. Stored times are UTC,
-// truncated to the microsecond.
+// token, next location, amr value or acr holds either is refused with an
+// error that names the field, never the value, and nothing is written; a
+// lookup or consumption by such a token id is oidc.ErrHandoffNotFound. The ID
+// token is single-use and short-lived, and is not sealed. Stored times are
+// UTC, truncated to the microsecond.
 func NewHandoffStore(db *sql.DB, opts ...Option) (*HandoffStore, error) {
 	c, err := newConfig(db, opts)
 	if err != nil {
@@ -63,10 +63,18 @@ func (s *HandoffStore) Insert(ctx context.Context, rec oidc.HandoffRecord) error
 	); err != nil {
 		return failed(op, err)
 	}
+	if err := storekit.CheckAssurance("", rec.AMR, rec.ACR); err != nil {
+		return failed(op, err)
+	}
+	amr, err := storekit.EncodeAMR(rec.AMR)
+	if err != nil {
+		return failed(op, err)
+	}
 
-	_, err := s.c.exec(ctx, op, pgschema.HandoffInsert, rec.ID, rec.TokenID, storekit.OrEmpty(rec.SecretHash),
+	_, err = s.c.exec(ctx, op, pgschema.HandoffInsert, rec.ID, rec.TokenID, storekit.OrEmpty(rec.SecretHash),
 		string(rec.UserID), rec.Provider, rec.Issuer, rec.SessionID, rec.IDToken, rec.Next,
-		storekit.Time(rec.ExpiresAt), storekit.Time(rec.CreatedAt), nullTsPtr(rec.ConsumedAt))
+		storekit.Time(rec.ExpiresAt), storekit.Time(rec.CreatedAt), nullTsPtr(rec.ConsumedAt),
+		amr, rec.ACR)
 
 	return err
 }
@@ -83,15 +91,19 @@ func (s *HandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc
 		user             string
 		expires, created time.Time
 		consumed         sql.NullTime
+		amr              []byte
 	)
 	err := s.c.queryRow(ctx, "find handoff", pgschema.HandoffSelect, []any{tokenID},
 		&rec.ID, &rec.SecretHash, &user, &rec.Provider, &rec.Issuer, &rec.SessionID, &rec.IDToken, &rec.Next,
-		&expires, &created, &consumed)
+		&expires, &created, &consumed, &amr, &rec.ACR)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, oidc.ErrHandoffNotFound
 	}
 	if err != nil {
 		return nil, err
+	}
+	if rec.AMR, err = storekit.DecodeAMR(amr); err != nil {
+		return nil, failed("find handoff", err)
 	}
 	rec.UserID, rec.ExpiresAt, rec.CreatedAt, rec.ConsumedAt = identity.UserID(user), expires.UTC(), created.UTC(),
 		timePtr(consumed)
