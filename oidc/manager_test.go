@@ -85,6 +85,7 @@ func TestNewManagerOptions(t *testing.T) {
 		typedNilBroker *MockIdentityBroker
 		typedNilFlows  *MockFlowStore
 		typedNilRandom *bytes.Reader
+		typedNilEval   *MockAssuranceEvaluator
 	)
 
 	type testCase struct {
@@ -243,6 +244,86 @@ func TestNewManagerOptions(t *testing.T) {
 				assert.Equal(t, epoch, w.Clock.Now())
 				// That each is the one actually used is proven where it is
 				// first consumed: discovery, Authorize, expiry.
+			}},
+		{name: "assurance for an unregistered provider is refused, naming it", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corpp", oidc.Assurance{AcceptedAMR: []string{"mfa"}}),
+			},
+			assert: refusedConfig("corpp")},
+		{name: "an empty accepted amr value is refused without repeating the others", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa-value-x", ""}}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				refusedConfig("corp", "AcceptedAMR")(t, m, err)
+				assert.NotContains(t, err.Error(), "mfa-value-x", "no configured value reaches error text")
+			}},
+		{name: "an empty accepted acr value is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedACR: []string{""}}),
+			},
+			assert: refusedConfig("corp", "AcceptedACR")},
+		{name: "an empty requested acr value is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"gold", ""}}),
+			},
+			assert: refusedConfig("corp", "RequestACR")},
+		{name: "a requested acr value containing a space is refused without repeating it", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"urn:corp:loa 2"}}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				refusedConfig("corp", "RequestACR")(t, m, err)
+				assert.NotContains(t, err.Error(), "urn:corp:loa 2", "no configured value reaches error text")
+			}},
+		{name: "a requested acr value containing a tab is refused without repeating it", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"a\tb"}}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				refusedConfig("corp", "RequestACR")(t, m, err)
+				assert.NotContains(t, err.Error(), "a\tb", "no configured value reaches error text")
+			}},
+		{name: "a requested acr value containing a newline is refused without repeating it", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"a\nb"}}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				refusedConfig("corp", "RequestACR")(t, m, err)
+				assert.NotContains(t, err.Error(), "a\nb", "no configured value reaches error text")
+			}},
+		{name: "an undefined match mode is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: 7}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				refusedConfig("corp", "Match")(t, m, err)
+				assert.NotContains(t, err.Error(), "7", "no configured value reaches error text")
+			}},
+		{name: "a negative match mode is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: -1}),
+			},
+			assert: refusedConfig("corp", "Match")},
+		{name: "requesting an acr while accepting none is valid", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"gold"}}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, m)
+			}},
+		{name: "a nil assurance evaluator is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithAssuranceEvaluator(nil)}, assert: refusedConfig("WithAssuranceEvaluator")},
+		{name: "a typed-nil assurance evaluator is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithAssuranceEvaluator(typedNilEval)}, assert: refusedConfig("WithAssuranceEvaluator")},
+		{name: "configured with nothing accepted is valid", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{
+				oidc.WithProviderAssurance("corp", oidc.Assurance{}),
+			},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, m)
 			}},
 	}
 

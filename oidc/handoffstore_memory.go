@@ -43,6 +43,7 @@ func NewMemoryHandoffStore() *MemoryHandoffStore {
 // read back can change what the store holds.
 func copyHandoffRecord(rec HandoffRecord) HandoffRecord {
 	rec.SecretHash = slices.Clone(rec.SecretHash)
+	rec.AMR = slices.Clone(rec.AMR)
 	if rec.ConsumedAt != nil {
 		at := *rec.ConsumedAt
 		rec.ConsumedAt = &at

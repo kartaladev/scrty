@@ -43,6 +43,14 @@ type Manager struct {
 
 	logoutMaxAge       time.Duration // see WithLogoutTokenMaxAge
 	postLogoutRedirect string        // see WithPostLogoutRedirect; empty for none
+
+	// assurance holds each provider's WithProviderAssurance configuration.
+	// A provider with no entry uses the default; see assuranceFor.
+	assurance map[string]Assurance
+
+	// evaluator replaces the per-provider matching when set; see
+	// WithAssuranceEvaluator.
+	evaluator AssuranceEvaluator
 }
 
 // providerScoped is implemented by a broker whose options name providers,
@@ -68,7 +76,9 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // DefaultFlowTTL in a NewMemoryFlowStore sharing its clock and random source,
 // judges provider token times within DefaultClockSkew (WithClockSkew), and
 // accepts logout tokens issued up to DefaultLogoutTokenMaxAge ago
-// (WithLogoutTokenMaxAge).
+// (WithLogoutTokenMaxAge), and gives every provider the default Assurance,
+// accepting amr "mfa" only (WithProviderAssurance), matched per provider
+// unless WithAssuranceEvaluator replaces the matching.
 //
 // It sends no request. Provider metadata and key sets are fetched on first
 // use, or by Prefetch, and cached for DefaultDiscoveryTTL, with a failure
@@ -81,9 +91,12 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // Every error it returns wraps ErrConfig: an option given nil, a default
 // outbound client that cannot be built, a provider URL (issuer, redirect URL,
 // end-session or pinned endpoint) or post-logout redirect whose scheme the
-// outbound client does not allow, or a broker whose own configuration names a provider the registry
-// does not hold. With the default client only https is allowed; a consumer
-// who needs http for a development provider supplies a client built with
+// outbound client does not allow, a broker whose own configuration names a
+// provider the registry does not hold, or an assurance configuration that
+// names an unregistered provider, holds an empty value, holds a RequestACR
+// value containing whitespace or names an undefined match mode. With the
+// default client only https is allowed; a consumer who needs http for a
+// development provider supplies a client built with
 // outbound.WithAllowedSchemes("http") through WithOutboundClient.
 //
 // A record of a failed flow store carries a fixed reason and the error's Go
@@ -158,6 +171,9 @@ func NewManager(registry *Registry, broker IdentityBroker, opts ...ManagerOption
 		return nil, err
 	}
 	if err := m.checkBrokerProviders(); err != nil {
+		return nil, err
+	}
+	if err := m.checkAssuranceProviders(); err != nil {
 		return nil, err
 	}
 	return m, nil

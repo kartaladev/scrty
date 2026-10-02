@@ -101,6 +101,68 @@ func TestManagerAuthorize(t *testing.T) {
 			},
 		},
 		{
+			name: "requested acr values are sent space-separated in the configured order", provider: "corp",
+			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
+				return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", oidc.Assurance{
+					AcceptedAMR: []string{"mfa"},
+					RequestACR:  []string{"urn:corp:loa:3", "urn:corp:loa:2"},
+				})}
+			},
+			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+				require.NoError(t, err)
+				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
+				assert.Equal(t, []string{"urn:corp:loa:3 urn:corp:loa:2"}, q["acr_values"])
+			},
+		},
+		{
+			name: "nothing is requested by default", provider: "corp",
+			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+				require.NoError(t, err)
+				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
+				assert.False(t, q.Has("acr_values"))
+			},
+		},
+		{
+			name: "a configuration requesting nothing sends no acr_values", provider: "corp",
+			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
+				return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", oidc.Assurance{
+					AcceptedACR: []string{"urn:corp:loa:2"},
+				})}
+			},
+			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+				require.NoError(t, err)
+				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
+				assert.False(t, q.Has("acr_values"), "accepting an acr is not requesting one")
+			},
+		},
+		{
+			name: "another provider's requested acr values are not sent", provider: "corp",
+			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
+				return []oidc.ManagerOption{oidc.WithProviderAssurance("groups", oidc.Assurance{
+					RequestACR: []string{"urn:groups:loa:2"},
+				})}
+			},
+			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+				require.NoError(t, err)
+				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
+				assert.False(t, q.Has("acr_values"))
+			},
+		},
+		{
+			name: "requested acr values join a pinned endpoint's own parameters", provider: "pinned",
+			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
+				return []oidc.ManagerOption{oidc.WithProviderAssurance("pinned", oidc.Assurance{
+					RequestACR: []string{"gold"},
+				})}
+			},
+			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+				require.NoError(t, err)
+				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/pinned/authorize")
+				assert.Equal(t, "gold", q.Get("acr_values"))
+				assert.Equal(t, "login", q.Get("prompt"))
+			},
+		},
+		{
 			name: "two attempts carry different values", provider: "corp",
 			assert: func(t *testing.T, m *oidc.Manager, p *testProvider, first oidc.Authorization, err error) {
 				require.NoError(t, err)

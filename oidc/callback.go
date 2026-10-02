@@ -20,8 +20,14 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 // exchanges the code with the flow's PKCE verifier, verifies the ID token
 // against the flow's nonce and resolves the identity through the broker. It
 // returns the principal, the provider, its issuer, the provider session (the
-// token's sid, empty when there is none), the raw ID token and the flow's
-// untrusted Next. It creates no session.
+// token's sid, empty when there is none), the raw ID token, the flow's
+// untrusted Next, and the amr and acr the token asserted (see
+// CallbackResult.AMR). It creates no session.
+//
+// The token's amr and acr claims are the only source of provider assurance.
+// One present in a form that asserts nothing, such as an amr that is not an
+// array of strings, is treated as absent: it never fails the login, and it
+// writes a sampled warning naming the provider and the claim, never its value.
 //
 // Every failure at or before completing the flow leaves the flow live and is
 // joined with ErrFlowUnspent, so the caller keeps the flow cookie: an
@@ -70,6 +76,12 @@ func (m *Manager) Callback(ctx context.Context, provider, code, state, handle st
 		}
 		return CallbackResult{}, err
 	}
+	if claims.MalformedAMR {
+		m.logMalformedAssurance(ctx, p.Name, "amr")
+	}
+	if claims.MalformedACR {
+		m.logMalformedAssurance(ctx, p.Name, "acr")
+	}
 
 	principal, err := m.broker.Broker(ctx, ExternalIdentity{
 		Provider:      p.Name,
@@ -93,6 +105,8 @@ func (m *Manager) Callback(ctx context.Context, provider, code, state, handle st
 		SessionID: claims.SessionID,
 		IDToken:   raw,
 		Next:      f.Next,
+		AMR:       claims.AMR,
+		ACR:       claims.ACR,
 	}, nil
 }
 
@@ -180,4 +194,27 @@ func (m *Manager) logCallbackFailure(ctx context.Context, provider, reason strin
 		slog.Int("suppressed", suppressed),
 	}, diag.Failure(reason, err)...)
 	m.log.LogAttrs(ctx, slog.LevelError, "oidc callback failed", attrs...)
+}
+
+// malformedAssuranceReason is the reason, and the sampler key's middle part,
+// of the warning about an amr or acr claim the ID token carried in a form that
+// asserts nothing.
+const malformedAssuranceReason = "malformed-assurance-claim"
+
+// logMalformedAssurance writes one sampled warning that the verified ID token
+// of provider carried claim ("amr" or "acr") in a form that asserts nothing.
+// The login goes on with that claim not asserted. The record names the
+// provider and the claim, never the claim's value. Warnings share the key
+// "oidc.callback:malformed-assurance-claim:<provider>", so a provider whose
+// every token is malformed writes one record per sampling window.
+func (m *Manager) logMalformedAssurance(ctx context.Context, provider, claim string) {
+	write, suppressed := m.sampler.Allow("oidc.callback:"+malformedAssuranceReason+":"+provider, m.clock.Now())
+	if !write {
+		return
+	}
+	m.log.LogAttrs(ctx, slog.LevelWarn, "oidc assurance claim ignored",
+		slog.String("reason", malformedAssuranceReason),
+		slog.String("provider", provider),
+		slog.String("claim", claim),
+		slog.Int("suppressed", suppressed))
 }

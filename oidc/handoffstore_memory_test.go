@@ -31,6 +31,8 @@ func handoffStoreRecord(tokenID string) oidc.HandoffRecord {
 		SessionID:  "sid-1",
 		IDToken:    "id-token",
 		Next:       "/home",
+		AMR:        []string{"pwd", "mfa"},
+		ACR:        "urn:corp:loa:2",
 		CreatedAt:  handoffStoreT0,
 		ExpiresAt:  handoffStoreT0.Add(time.Minute),
 	}
@@ -63,6 +65,7 @@ func TestMemoryHandoffStore(t *testing.T) {
 				first, err := s.FindByTokenID(ctx, "tok-a")
 				require.NoError(t, err)
 				clear(first.SecretHash)
+				first.AMR[1] = "x"
 				first.UserID = "u-2"
 				spent := handoffStoreT0
 				first.ConsumedAt = &spent
@@ -78,11 +81,14 @@ func TestMemoryHandoffStore(t *testing.T) {
 				rec := handoffStoreRecord("tok-a")
 				require.NoError(t, s.Insert(ctx, rec))
 				clear(rec.SecretHash)
+				rec.AMR[1] = "x"
 
 				got, err := s.FindByTokenID(ctx, "tok-a")
 				require.NoError(t, err)
 				assert.Equal(t, handoffStoreRecord("tok-a").SecretHash, got.SecretHash,
 					"the store aliased the caller's buffer on write")
+				assert.Equal(t, handoffStoreRecord("tok-a").AMR, got.AMR,
+					"the store aliased the caller's amr on write")
 			},
 		},
 		{

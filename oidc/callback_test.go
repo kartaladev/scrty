@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +31,7 @@ type callbackEnv struct {
 	flow   oidc.Flow
 	idTok  string
 	logs   *bytes.Buffer
+	now    time.Time
 }
 
 // genuine is the callback the provider's real redirect produces.
@@ -253,6 +256,93 @@ func TestManagerCallback(t *testing.T) {
 			},
 		},
 		{
+			name: "a malformed amr is warned about by provider and claim, never its value, and the login proceeds",
+			setup: func(t *testing.T, e *callbackEnv) {
+				e.reissue(t, map[string]any{"amr": "mfa"})
+			},
+			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
+				e.expectBroker(1)
+				return e.genuine(t)
+			},
+			assert: func(t *testing.T, e *callbackEnv, got oidc.CallbackResult, err error) {
+				require.NoError(t, err, "a malformed claim never fails the login")
+				assert.Equal(t, alice(), got.Principal)
+				assert.Empty(t, got.AMR, "a malformed amr asserts nothing")
+				out := e.logs.String()
+				assert.Contains(t, out, "level=WARN")
+				assert.Contains(t, out, "reason=malformed-assurance-claim")
+				assert.Contains(t, out, "provider=corp")
+				assert.Contains(t, out, "claim=amr")
+				assert.NotContains(t, out, "mfa", "the claim's value never reaches a log")
+			},
+		},
+		{
+			name: "a malformed acr is warned about without its value",
+			setup: func(t *testing.T, e *callbackEnv) {
+				e.reissue(t, map[string]any{"acr": map[string]any{"level": "gold-marker"}})
+			},
+			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
+				e.expectBroker(1)
+				return e.genuine(t)
+			},
+			assert: func(t *testing.T, e *callbackEnv, got oidc.CallbackResult, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, alice(), got.Principal)
+				out := e.logs.String()
+				assert.Contains(t, out, "provider=corp")
+				assert.Contains(t, out, "claim=acr")
+				assert.NotContains(t, out, "gold-marker")
+			},
+		},
+		{
+			name: "malformed assurance warnings are sampled under the provider's callback key",
+			setup: func(t *testing.T, e *callbackEnv) {
+				e.reissue(t, map[string]any{"amr": []any{"mfa", 1}, "acr": 2})
+			},
+			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
+				e.expectBroker(1)
+				return e.genuine(t)
+			},
+			assert: func(t *testing.T, e *callbackEnv, _ oidc.CallbackResult, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 1, strings.Count(e.logs.String(), "reason=malformed-assurance-claim"),
+					"the second warning in the window is held back")
+				require.NoError(t, e.m.FlushRefusalLogs())
+				out := e.logs.String()
+				assert.Contains(t, out, "reason=oidc.callback:malformed-assurance-claim:corp suppressed=1")
+				assert.NotContains(t, out, "mfa")
+			},
+		},
+		{
+			name: "well-formed assurance claims write no warning",
+			setup: func(t *testing.T, e *callbackEnv) {
+				e.reissue(t, map[string]any{"amr": []any{"pwd", "mfa"}, "acr": "urn:corp:loa:2"})
+			},
+			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
+				e.expectBroker(1)
+				return e.genuine(t)
+			},
+			assert: func(t *testing.T, e *callbackEnv, _ oidc.CallbackResult, err error) {
+				require.NoError(t, err)
+				assert.NotContains(t, e.logs.String(), "malformed-assurance-claim")
+			},
+		},
+		{
+			name: "the asserted amr and acr travel in the result, amr in order without duplicates",
+			setup: func(t *testing.T, e *callbackEnv) {
+				e.reissue(t, map[string]any{"amr": []any{"pwd", "mfa", "mfa"}, "acr": "urn:corp:loa:2"})
+			},
+			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
+				e.expectBroker(1)
+				return e.genuine(t)
+			},
+			assert: func(t *testing.T, _ *callbackEnv, got oidc.CallbackResult, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"pwd", "mfa"}, got.AMR)
+				assert.Equal(t, "urn:corp:loa:2", got.ACR)
+			},
+		},
+		{
 			name: "a broker returning no principal and no error is a failure",
 			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
 				e.broker.EXPECT().Broker(gomock.Any(), gomock.Any()).Return(nil, nil)
@@ -403,7 +493,7 @@ func newCallbackEnv(t *testing.T, now time.Time, flows func(t *testing.T) oidc.F
 	reg, err := oidc.NewRegistry(p.Provider("corp"), p.Provider("partner"))
 	require.NoError(t, err)
 
-	e := &callbackEnv{p: p, broker: NewMockIdentityBroker(gomock.NewController(t)), logs: &bytes.Buffer{}}
+	e := &callbackEnv{p: p, broker: NewMockIdentityBroker(gomock.NewController(t)), logs: &bytes.Buffer{}, now: now}
 	opts := []oidc.ManagerOption{
 		oidc.WithOutboundClient(p.Outbound(t)),
 		oidc.WithClock(clockwork.NewFakeClockAt(now)),
@@ -421,21 +511,32 @@ func newCallbackEnv(t *testing.T, now time.Time, flows func(t *testing.T) oidc.F
 	e.auth, err = e.m.Authorize(t.Context(), "corp", "/after")
 	require.NoError(t, err)
 	e.flow = authorizeFlow(t, e.m, e.auth.Handle)
-	e.idTok = p.Sign(t, map[string]any{
-		"iss": p.Issuer(), "aud": "client-corp", "sub": "subject-1",
-		"exp": now.Add(5 * time.Minute).Unix(), "iat": now.Unix(),
+	e.reissue(t, nil)
+
+	return e
+}
+
+// reissue makes corp's token endpoint answer the flow's code with a valid ID
+// token carrying extra claims beside the usual ones.
+func (e *callbackEnv) reissue(t *testing.T, extra map[string]any) {
+	t.Helper()
+
+	claims := map[string]any{
+		"iss": e.p.Issuer(), "aud": "client-corp", "sub": "subject-1",
+		"exp": e.now.Add(5 * time.Minute).Unix(), "iat": e.now.Unix(),
 		"nonce": e.flow.Nonce, "sid": "provider-session",
 		"email": "alice@corp.example", "email_verified": true,
-	})
+	}
+	maps.Copy(claims, extra)
+	idTok := e.p.Sign(t, claims)
+	e.idTok = idTok
 	verifier := e.flow.Verifier
-	p.SetTokenResponse(func(r *http.Request) (int, string) {
+	e.p.SetTokenResponse(func(r *http.Request) (int, string) {
 		if r.ParseForm() != nil || r.PostForm.Get("code") != "the-code" || r.PostForm.Get("code_verifier") != verifier {
 			return http.StatusBadRequest, `{"error":"invalid_grant"}`
 		}
-		return http.StatusOK, `{"access_token":"at","id_token":"` + e.idTok + `"}`
+		return http.StatusOK, `{"access_token":"at","id_token":"` + idTok + `"}`
 	})
-
-	return e
 }
 
 // assertNoFlowSecretsLogged fails when a flow secret or token reached a log.

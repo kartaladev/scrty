@@ -31,9 +31,10 @@ type Authorization struct {
 // manager's random source, stores them in a flow that expires after the flow
 // TTL (DefaultFlowTTL unless WithFlowTTL), and returns the provider's
 // authorization endpoint carrying the client id, the redirect URL, the
-// provider's scopes, the state, the nonce and an S256 code challenge. The
-// verifier never leaves the flow store. Next is stored verbatim and untrusted;
-// allowlisting it is the caller's job.
+// provider's scopes, the state, the nonce and an S256 code challenge, plus
+// acr_values when the provider's Assurance lists RequestACR (none by default;
+// see WithProviderAssurance). The verifier never leaves the flow store. Next
+// is stored verbatim and untrusted; allowlisting it is the caller's job.
 //
 // A name the registry does not hold is ErrUnknownProvider, and an unusable
 // provider is ErrDiscoveryFailed; neither stores a flow. A flow store
@@ -79,6 +80,9 @@ func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authori
 	q.Set("nonce", nonce)
 	q.Set("code_challenge", s256Challenge(verifier))
 	q.Set("code_challenge_method", "S256")
+	if a, _ := m.assuranceFor(p.Name); len(a.RequestACR) > 0 {
+		q.Set("acr_values", strings.Join(a.RequestACR, " "))
+	}
 	endpoint.RawQuery = q.Encode()
 
 	return Authorization{RedirectURL: endpoint.String(), Handle: handle, ExpiresAt: expires}, nil

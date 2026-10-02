@@ -80,3 +80,11 @@ func VerifyIDTokenForTest(ctx context.Context, m *Manager, provider, raw, nonce 
 	}
 	return m.verifyIDToken(ctx, p, raw, nonce)
 }
+
+// AssuranceForTest exposes the manager's resolved assurance configuration for
+// a provider: the configured one, or the default.
+var AssuranceForTest = (*Manager).assuranceFor
+
+// MatchAssuranceForTest exposes the pure matcher of asserted values against
+// an assurance configuration.
+var MatchAssuranceForTest = matchAssurance
