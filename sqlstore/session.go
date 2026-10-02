@@ -219,6 +219,17 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 	return err
 }
 
+// errDeleteByUserExceptPending is what DeleteByUserExcept reports until the
+// store implements it: an error, so that an unfinished store can never be
+// taken for a successful revocation.
+var errDeleteByUserExceptPending = errors.New("session: DeleteByUserExcept not implemented")
+
+// DeleteByUserExcept is not implemented by this store yet, and reports
+// errDeleteByUserExceptPending rather than a count.
+func (s *sessionStore) DeleteByUserExcept(context.Context, identity.UserID, string) (int, error) {
+	return 0, errDeleteByUserExceptPending
+}
+
 // CountActiveByUser counts user's sessions unexpired by the store's clock.
 func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	if !storekit.Storable(string(user)) {

@@ -279,6 +279,22 @@ func (m *Manager) DeleteByUser(ctx context.Context, user identity.UserID) error 
 	return storeFailed(m.store.DeleteByUser(ctx, user), "session: the user's sessions could not be deleted")
 }
 
+// DeleteByUserExcept removes every session of this user except the one with
+// identifier keep, expired ones included, in one atomic operation, and reports
+// how many went. It is what ending a user's other sessions, after a change to
+// how they sign in, is written against: the caller's own session survives.
+//
+// A keep naming another user's session, or none, is left untouched and every
+// session of this user goes; an empty keep ends them all.
+func (m *Manager) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
+	if err != nil {
+		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
+	}
+
+	return n, nil
+}
+
 // CountActiveByUser counts this user's unexpired sessions, which is what a
 // concurrent-session limit is written against.
 func (m *Manager) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {

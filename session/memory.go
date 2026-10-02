@@ -262,6 +262,18 @@ func (s *MemoryStore) DeleteByUser(_ context.Context, user identity.UserID) erro
 	return nil
 }
 
+// DeleteByUserExcept removes every session of this user except the one with
+// identifier keep, expired ones included, and reports how many went. It runs
+// under the store's lock, so a session created concurrently is either removed
+// or created after the call.
+//
+// A keep naming another user's session, or none, leaves it untouched and
+// removes every session of this user; an empty keep names none. The reference
+// is compared byte-for-byte, as DeleteByUser compares it.
+func (s *MemoryStore) DeleteByUserExcept(_ context.Context, user identity.UserID, keep string) (int, error) {
+	return s.removeWhere(func(rec *Session) bool { return rec.UserID == user && rec.ID != keep }), nil
+}
+
 // CountActiveByUser counts this user's unexpired sessions.
 //
 // Expired records are excluded whether or not housekeeping has reached them,

@@ -186,6 +186,12 @@ func (s *encryptedStore) DeleteByUser(ctx context.Context, user identity.UserID)
 	return storeFailed(s.inner.DeleteByUser(ctx, user), "session: the inner store could not delete the user's sessions")
 }
 
+func (s *encryptedStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	n, err := s.inner.DeleteByUserExcept(ctx, user, keep)
+
+	return n, storeFailed(err, "session: the inner store could not delete the user's other sessions")
+}
+
 func (s *encryptedStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := s.inner.CountActiveByUser(ctx, user)
 

@@ -164,6 +164,22 @@ func TestSessionReturnedErrors(t *testing.T) {
 			assert: hidesStoreText(),
 		},
 		{
+			name: "manager delete by user except one reports fixed text and the store's count",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().DeleteByUserExcept(gomock.Any(), testUser, returnedErrorsID).Return(1, errStoreQuotes)
+				n, err := manager(t, d).DeleteByUserExcept(ctx, testUser, returnedErrorsID)
+				assert.Equal(t, 1, n, "the count the store reported with its error")
+				return err
+			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				hidesStoreText()(t, err)
+				assert.EqualError(t, err, "session: the user's other sessions could not be deleted")
+				assert.NotContains(t, err.Error(), returnedErrorsID)
+			},
+		},
+		{
 			name: "manager count active by user passes the store's count along",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().CountActiveByUser(gomock.Any(), testUser).Return(3, errStoreQuotes)
@@ -332,6 +348,21 @@ func TestSessionReturnedErrors(t *testing.T) {
 				return encrypted(t, d).DeleteByUser(ctx, testUser)
 			},
 			assert: hidesStoreText(),
+		},
+		{
+			name: "encrypted delete by user except one",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().DeleteByUserExcept(gomock.Any(), testUser, returnedErrorsID).Return(0, errStoreQuotes)
+				_, err := encrypted(t, d).DeleteByUserExcept(ctx, testUser, returnedErrorsID)
+				return err
+			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				hidesStoreText()(t, err)
+				assert.EqualError(t, err, "session: the inner store could not delete the user's other sessions")
+				assert.NotContains(t, err.Error(), returnedErrorsID)
+			},
 		},
 		{
 			name: "encrypted count active by user",

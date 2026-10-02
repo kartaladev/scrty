@@ -85,6 +85,13 @@ type Store interface {
 	// The reference is matched exactly as the consumer supplied it.
 	DeleteByUser(ctx context.Context, user identity.UserID) error
 
+	// DeleteByUserExcept removes every session of this user except the one with
+	// identifier keep, expired ones included, in one atomic operation, and reports
+	// how many it removed. A keep that names another user's session, or none, is
+	// left untouched and does not stop the user's sessions from being removed; an
+	// empty keep removes them all.
+	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
+
 	// CountActiveByUser counts this user's unexpired sessions. Expired ones
 	// are excluded whether or not anything has swept them, because a session
 	// that will never be served again is not one the user is holding.

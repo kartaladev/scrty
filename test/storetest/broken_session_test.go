@@ -350,6 +350,10 @@ func (s *sessionStore) DeleteByUser(_ context.Context, user identity.UserID) err
 	return nil
 }
 
+func (s *sessionStore) DeleteByUserExcept(_ context.Context, user identity.UserID, keep string) (int, error) {
+	return s.removeWhere(func(sess *session.Session) bool { return sess.UserID == user && sess.ID != keep }), nil
+}
+
 func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
