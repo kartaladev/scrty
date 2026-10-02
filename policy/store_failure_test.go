@@ -41,6 +41,11 @@ func assertFixedReason(t *testing.T, d policy.Decision, kind error) {
 	}
 }
 
+const (
+	logAssuranceSourceFailed = "policy: the federated assurance source failed"
+	logAssuranceNotMet       = "policy: refusing a federated login whose provider assurance is not met"
+)
+
 func TestPolicyStoreFailureReasons(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +147,34 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 
 				for _, v := range leakedValues {
 					assert.NotContains(t, buf.String(), v, "a record quoted the store's error")
+				}
+			},
+		},
+		{
+			name: "mfa requirement: the federated assurance source failed, and its record keeps the user and provider",
+			build: func(t *testing.T, buf *bytes.Buffer) policy.Policy {
+				return mfaRequirementPolicyFor(t,
+					mfaRequirementLookup(t, true, true, nil),
+					mfaMethod(t, factor.AuthenticatorApp, true, nil),
+					policy.WithFederatedAssuranceSource(assuranceSource(t, true, false, errLeakyStore)),
+					policy.WithMFARequirementLogger(mfaLogger(buf)))
+			},
+			input: federatedInput(factor.OIDC, federatedEvidence("pwd")),
+			ctx: func(ctx context.Context) context.Context {
+				return policy.ContextWithPhase(ctx, policy.PostAuthentication)
+			},
+			assert: func(t *testing.T, d policy.Decision, buf *bytes.Buffer) {
+				assertFixedReason(t, d, nil)
+
+				records := mfaRecordsOf(t, buf, logAssuranceSourceFailed)
+				require.Len(t, records, 1, "the source failure was not recorded")
+				assert.Equal(t, string(mfaUser), records[0]["user"])
+				assert.Equal(t, "corp", records[0]["provider"])
+				assert.Equal(t, "assurance-source", records[0]["reason"])
+				assert.NotContains(t, records[0], "error", "the record still carries the error's text")
+
+				for _, v := range leakedValues {
+					assert.NotContains(t, buf.String(), v, "a record quoted the source's error")
 				}
 			},
 		},

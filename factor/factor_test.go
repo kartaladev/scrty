@@ -43,11 +43,12 @@ func TestKind(t *testing.T) {
 			},
 		},
 		{
-			name: "oidc is federated and exempt",
+			name: "oidc is federated and not exempt",
 			kind: factor.OIDC,
 			assert: func(t *testing.T, channel factor.Channel, exempt bool) {
 				assert.Equal(t, factor.Federated, channel)
-				assert.True(t, exempt)
+				assert.False(t, exempt,
+					"a federated login meets an MFA requirement by the provider's assurance, not by its kind")
 			},
 		},
 		{

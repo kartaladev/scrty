@@ -91,14 +91,18 @@ func (k Kind) Channel() Channel {
 // MFAExempt reports whether a login with this kind is exempt from a
 // second-factor requirement.
 //
-// Only OIDC and APIKey are exempt: the first has already authenticated at the
-// provider, and the second is a machine caller with no one to prompt. Every
-// other kind is enforced, including Recovery, the empty kind and kinds the
-// library does not name.
+// Only APIKey is exempt: a machine caller has no one to prompt. Every other
+// kind is enforced, including OIDC, Recovery, Passkey, the empty kind and kinds
+// the library does not name.
+//
+// OIDC is not exempt by its kind. A login on the Federated channel meets a
+// second-factor requirement only as the federated-assurance rules of the
+// security-policy capability decide: by the assurance its provider verifiably
+// asserted, or by a mode the consumer chooses (see policy.WithFederatedAssurance).
 //
 // The exemption is data, not a decision. Whether an exempt login is accepted
 // for a user who requires a second factor belongs to the security-policy
 // capability, with its own options.
 func (k Kind) MFAExempt() bool {
-	return k == OIDC || k == APIKey
+	return k == APIKey
 }

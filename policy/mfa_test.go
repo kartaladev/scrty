@@ -441,6 +441,15 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 		{
 			name:    "an exempt first factor allows",
 			methods: mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
+			in:      mfaInput(factor.APIKey),
+			assert:  allows,
+		},
+		{
+			// A federated login is not exempt by its kind, yet by default this
+			// policy lets it through without asking whether the user is
+			// enrolled: a user who is not required keeps the behaviour they had.
+			name:    "a federated first factor allows by default without consulting a lookup",
+			methods: mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))),
 			in:      mfaInput(factor.OIDC),
 			assert:  allows,
 		},
@@ -593,6 +602,7 @@ func TestMFAExemptionRule(t *testing.T) {
 	t.Parallel()
 
 	enforceEverything := func(factor.Kind) bool { return false }
+	exemptFederatedAndMachine := func(k factor.Kind) bool { return k == factor.OIDC || k == factor.APIKey }
 
 	type testCase struct {
 		name   string
@@ -604,12 +614,35 @@ func TestMFAExemptionRule(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "by default the identity model's own rule decides, and exempts a federated login",
-			kind: factor.OIDC,
+			name: "by default the identity model's own rule decides, and exempts a machine caller",
+			kind: factor.APIKey,
 			assert: func(t *testing.T, challenge, requirement policy.Decision) {
 				assert.Equal(t, policy.Allow, challenge.Outcome,
-					"the default exemption stopped exempting a federated login")
+					"the default exemption stopped exempting a machine caller")
 				assert.Equal(t, policy.Allow, requirement.Outcome)
+			},
+		},
+		{
+			// The default rule no longer exempts a federated login, so the
+			// requirement policy enforces it; the challenge policy still lets it
+			// through by its own federated rule, not by an exemption.
+			name: "by default a federated login is not exempt from the requirement",
+			kind: factor.OIDC,
+			assert: func(t *testing.T, challenge, requirement policy.Decision) {
+				assert.Equal(t, policy.Allow, challenge.Outcome)
+				assert.Equal(t, policy.Challenge, requirement.Outcome,
+					"the default exemption still exempts a federated login")
+			},
+		},
+		{
+			name:   "a consumer rule that exempts oidc restores the total exemption",
+			kind:   factor.OIDC,
+			opts:   []policy.MFAOption{policy.WithMFAExemption(exemptFederatedAndMachine)},
+			reqOpt: policy.WithMFAExemption(exemptFederatedAndMachine),
+			assert: func(t *testing.T, challenge, requirement policy.Decision) {
+				assert.Equal(t, policy.Allow, challenge.Outcome)
+				assert.Equal(t, policy.Allow, requirement.Outcome,
+					"a consumer's exemption of oidc did not reach the requirement policy")
 			},
 		},
 		{
@@ -622,7 +655,7 @@ func TestMFAExemptionRule(t *testing.T) {
 		},
 		{
 			name:   "a consumer rule that exempts nothing enforces a normally exempt kind",
-			kind:   factor.OIDC,
+			kind:   factor.APIKey,
 			opts:   []policy.MFAOption{policy.WithMFAExemption(enforceEverything)},
 			reqOpt: policy.WithMFAExemption(enforceEverything),
 			assert: func(t *testing.T, challenge, requirement policy.Decision) {

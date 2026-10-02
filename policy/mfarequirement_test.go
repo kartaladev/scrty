@@ -615,6 +615,34 @@ func TestMFARequirementLookupFailureKeyIsSharedByEveryUser(t *testing.T) {
 		"the failures held back were not reported in full")
 }
 
+func TestMFARequirementAssuranceSourceFailureKeyIsSharedByEveryUser(t *testing.T) {
+	t.Parallel()
+
+	buf := &bytes.Buffer{}
+	p := mfaRequirementPolicyFor(t,
+		mfaRequirementLookup(t, true, true, nil),
+		mfaMethod(t, factor.AuthenticatorApp, true, nil),
+		policy.WithFederatedAssuranceSource(assuranceSource(t, true, false, errAssuranceSource)),
+		policy.WithMFARequirementLogger(mfaLogger(buf)))
+
+	ctx := policy.ContextWithPhase(t.Context(), policy.PostAuthentication)
+	for _, user := range []identity.UserID{"u-1", "u-2"} {
+		in := federatedInput(factor.OIDC, federatedEvidence("pwd"))
+		in.User = user
+		p.Evaluate(ctx, in)
+	}
+
+	flusher, ok := p.(policy.RefusalLogFlusher)
+	require.True(t, ok, "the policy offers no way to report what it suppressed")
+	require.NoError(t, flusher.FlushRefusalLogs())
+
+	records := mfaRecordsOf(t, buf, logRequirementSuppressed)
+	require.Len(t, records, 1, "the suppressed failures were reported under more than one key")
+	assert.Equal(t, "assurance-source-failed", records[0]["key"],
+		"the outage was not sampled under the single key every user shares")
+	assert.Equal(t, float64(1), records[0]["suppressed"])
+}
+
 // TestMFARequirementPhaseSourceOverride covers the override point for how the
 // policy learns its phase. The default reads the context; a consumer whose call
 // path cannot reach it supplies a rule of their own.
