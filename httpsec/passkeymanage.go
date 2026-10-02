@@ -16,6 +16,10 @@ import (
 // an identifier and a name of at most a few hundred bytes.
 const passkeyManageBodyLimit int64 = 4 << 10
 
+// passkeyOtherSessionsField is the removal form's optional field choosing
+// whether the user's other sessions end: "keep" or "end".
+const passkeyOtherSessionsField = "other_sessions"
+
 // PasskeyListResponder writes the listing of the session user's passkeys:
 // list is every passkey the user holds, in every state, oldest first. A
 // summary carries no public key, credential ID, user handle or attestation
@@ -171,18 +175,45 @@ func (p *passkeyInterceptor) rename(ex *Exchange, s *session.Session) error {
 }
 
 // remove removes one of the session user's passkeys, under the manager's
-// assurance and freshness admission.
+// assurance and freshness admission. The optional "other_sessions" field
+// chooses whether the user's other sessions end with it.
 func (p *passkeyInterceptor) remove(ex *Exchange, s *session.Session) error {
-	cid, _, err := postedPasskeyID(ex.Request)
+	cid, values, err := postedPasskeyID(ex.Request)
 	if err != nil {
 		return err
 	}
 
-	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid, p.registrationContext(s)); err != nil {
+	opts, err := otherSessionsChoice(values)
+	if err != nil {
+		return err
+	}
+
+	if err := p.deps.Passkeys.Remove(ex.Context(), s, cid, p.registrationContext(s), opts...); err != nil {
 		return err
 	}
 
 	return p.respondRemove(ex, cid)
+}
+
+// otherSessionsChoice reads the optional "other_sessions" field: "keep" or
+// "end", or absent for the manager's default. Any other value, an empty one,
+// or the field given more than once is ErrMalformedRequest, never a silent
+// first-wins.
+func otherSessionsChoice(values url.Values) ([]passkey.RemoveOption, error) {
+	got, ok := values[passkeyOtherSessionsField]
+
+	switch {
+	case !ok:
+		return nil, nil
+	case len(got) != 1:
+		return nil, ErrMalformedRequest
+	case got[0] == "keep":
+		return []passkey.RemoveOption{passkey.KeepOtherSessions()}, nil
+	case got[0] == "end":
+		return []passkey.RemoveOption{passkey.EndOtherSessions()}, nil
+	default:
+		return nil, ErrMalformedRequest
+	}
 }
 
 // postedPasskeyID reads the "id" field of a URL-encoded body, and only of the

@@ -193,7 +193,14 @@ func (p *passkeyInterceptor) paths() []struct{ name, path string } {
 //     (WithPasskeyRemoveResponder). A stale or under-assured session is
 //     refused with passkey.ErrReauthenticationRequired (403). Removing a
 //     passwordless-only user's last active passkey leaves them only account
-//     recovery to sign in with.
+//     recovery to sign in with. The optional "other_sessions" field of the
+//     same body chooses whether the user's other sessions end with it: "end"
+//     or "keep". Absent, the manager's default applies, which is to end them
+//     (passkey.WithoutSessionRevocationOnRemoval makes it keep them). Any
+//     other value, an empty one, or the field given more than once is refused
+//     with ErrMalformedRequest (400) before anything changes. Asking to end
+//     sessions of a manager wired with no session revoker is a passkey.ErrConfig
+//     refusal.
 //
 // They serve full sessions only: a confined session, or one owing an MFA or
 // password-change challenge, is refused with the ChallengeError it owes. An

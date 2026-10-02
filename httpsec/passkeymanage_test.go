@@ -523,3 +523,196 @@ func TestPasskeyManageResponderOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestPasskeyRemoveOtherSessions drives the removal endpoint's other_sessions
+// field against the real session manager: the user holds the carried session
+// and two others.
+func TestPasskeyRemoveOtherSessions(t *testing.T) {
+	t.Parallel()
+
+	type fixture struct {
+		own    *passkey.Credential
+		carry  *session.Session
+		others []*session.Session
+	}
+
+	type testCase struct {
+		name string
+
+		// body is the raw form body after the identifier, and pkOpts are
+		// manager options.
+		body   string
+		pkOpts []passkey.Option
+		// noPort wires the manager with no session revoker, which is allowed
+		// only while both revocations are off.
+		noPort bool
+
+		assert func(t *testing.T, h *passkeyHarness, f fixture, out served)
+	}
+
+	loads := func(t *testing.T, h *passkeyHarness, s *session.Session) bool {
+		t.Helper()
+
+		_, err := h.sessions.Load(t.Context(), s.ID)
+		if err == nil {
+			return true
+		}
+
+		require.ErrorIs(t, err, session.ErrSessionNotFound)
+
+		return false
+	}
+
+	removedAndEnded := func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.Equal(t, http.StatusNoContent, out.rec.Code)
+		assert.False(t, stillHeld(t, h, testMFAUser, f.own.ID))
+		assert.True(t, loads(t, h, f.carry), "the removing session stays")
+
+		for _, o := range f.others {
+			assert.False(t, loads(t, h, o), "another session of the user ends")
+		}
+	}
+
+	removedAndKept := func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+		t.Helper()
+
+		require.NoError(t, out.err)
+		assert.Equal(t, http.StatusNoContent, out.rec.Code)
+		assert.False(t, stillHeld(t, h, testMFAUser, f.own.ID))
+		assert.True(t, loads(t, h, f.carry))
+
+		for _, o := range f.others {
+			assert.True(t, loads(t, h, o), "another session of the user stays")
+		}
+	}
+
+	malformed := func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, httpsec.ErrMalformedRequest)
+		assert.Equal(t, http.StatusBadRequest, httpsec.StatusForError(out.err))
+		assert.True(t, stillHeld(t, h, testMFAUser, f.own.ID), "the passkey is kept")
+		assert.True(t, loads(t, h, f.carry))
+
+		for _, o := range f.others {
+			assert.True(t, loads(t, h, o), "every session is kept")
+		}
+
+		assert.Zero(t, h.notices.count(), "no notice is queued")
+	}
+
+	cases := []testCase{
+		{name: "a removal ends the user's other sessions and keeps the removing one", assert: removedAndEnded},
+		{name: "other_sessions=keep keeps them", body: "&other_sessions=keep", assert: removedAndKept},
+		{name: "other_sessions=end ends them", body: "&other_sessions=end", assert: removedAndEnded},
+		{
+			name:   "a keep default keeps them",
+			pkOpts: []passkey.Option{passkey.WithoutSessionRevocationOnRemoval()},
+			assert: removedAndKept,
+		},
+		{
+			name:   "other_sessions=end overrides a keep default",
+			pkOpts: []passkey.Option{passkey.WithoutSessionRevocationOnRemoval()},
+			body:   "&other_sessions=end",
+			assert: removedAndEnded,
+		},
+		{
+			name:   "other_sessions=keep overrides the end default",
+			body:   "&other_sessions=keep",
+			assert: removedAndKept,
+		},
+		{name: "an unknown value is malformed and changes nothing", body: "&other_sessions=maybe", assert: malformed},
+		{name: "a value in another case is malformed", body: "&other_sessions=END", assert: malformed},
+		{name: "an empty value is malformed and changes nothing", body: "&other_sessions=", assert: malformed},
+		{
+			name:   "the field given twice with different values is malformed",
+			body:   "&other_sessions=keep&other_sessions=end",
+			assert: malformed,
+		},
+		{
+			name:   "the field given twice with equal values is malformed",
+			body:   "&other_sessions=keep&other_sessions=keep",
+			assert: malformed,
+		},
+		{
+			name:   "end without a session port is a configuration refusal that changes nothing",
+			body:   "&other_sessions=end",
+			noPort: true,
+			assert: func(t *testing.T, h *passkeyHarness, f fixture, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrConfig)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.True(t, stillHeld(t, h, testMFAUser, f.own.ID), "the passkey is kept")
+				assert.True(t, loads(t, h, f.carry))
+
+				for _, o := range f.others {
+					assert.True(t, loads(t, h, o))
+				}
+			},
+		},
+		{
+			name:   "keep without a session port removes the passkey",
+			body:   "&other_sessions=keep",
+			noPort: true,
+			assert: removedAndKept,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newPasskeyHarness(t)
+			h.pkOpts = append(h.pkOpts, tc.pkOpts...)
+
+			f := fixture{
+				own:   seedPasskey(t, h, testMFAUser, "cred-own", passkey.StateActive),
+				carry: h.sessionIn(t, factor.Password, session.MFANone),
+			}
+			f.others = []*session.Session{
+				h.sessionIn(t, factor.Password, session.MFANone),
+				h.sessionIn(t, factor.Password, session.MFANone),
+			}
+
+			var chain *httpsec.Chain
+			if tc.noPort {
+				chain = chainWithoutSessionPort(t, h, f.carry)
+			} else {
+				chain = h.build(t, f.carry)
+			}
+
+			req := post(t.Context(), passkeyRemovePath, "id="+f.own.ID.String()+tc.body)
+
+			tc.assert(t, h, f, serve(t, chain, req))
+		})
+	}
+}
+
+// chainWithoutSessionPort builds the harness's chain over a manager wired with
+// no session revoker and both revocations off, the one configuration that
+// has no port.
+func chainWithoutSessionPort(t *testing.T, h *passkeyHarness, s *session.Session) *httpsec.Chain {
+	t.Helper()
+
+	m, err := passkey.New(passkey.Deps{
+		Verifier:    h.verifier.mock,
+		Credentials: h.creds,
+		Users:       h.users,
+		Sender:      h.notices,
+	}, append([]passkey.Option{
+		passkey.WithRepudiationContact("help@example.com"),
+		passkey.WithoutSessionRevocationOnRemoval(),
+		passkey.WithoutSessionRevocationOnClone(),
+	}, h.pkOpts...)...)
+	require.NoError(t, err)
+
+	h.extra = append(h.extra,
+		httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...))
+
+	c, err := httpsec.New(h.options(t, s)...)
+	require.NoError(t, err)
+
+	return c
+}

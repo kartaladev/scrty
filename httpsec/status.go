@@ -45,6 +45,7 @@ var statusTable = []statusRow{
 	// rows above answer them 401, exactly as a failed login.
 
 	{ErrCredentialsMissing, http.StatusBadRequest},
+	{ErrMalformedRequest, http.StatusBadRequest},
 
 	// A passkey ceremony response the verifier could not read. The chain's
 	// endpoints answer it as ErrCredentialsMissing, wrapping it; this row

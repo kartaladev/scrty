@@ -407,6 +407,8 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Challenge store | in-memory, one process only | `passkey.Deps.Challenges` |
 | Attestation | off: none requested, every authenticator accepted, only its AAGUID kept | `webauthn.WithAttestationRecord`, `webauthn.WithTrustedAttestation` |
 | Response to a suspected clone | refuse, suspend the credential, notify | `passkey.WithCloneResponse`, `passkey.WithClonePolicy` |
+| Other sessions of the user when a passkey is removed | ended; the removing session stays | `passkey.WithoutSessionRevocationOnRemoval`, or per request the posted `other_sessions` field (`keep` or `end`; anything else, an empty value or a repeated field is a 400, `httpsec.ErrMalformedRequest`) |
+| Sessions of the user when a passkey is suspended as a clone | every session ended | `passkey.WithoutSessionRevocationOnClone` |
 | Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |
 | Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasswordlessPrefix` |
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
@@ -421,6 +423,11 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
 | Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
 | Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
+
+The removal endpoint (`POST <prefix>/remove`) reads the optional `other_sessions` field from the same
+form body as `id`: `keep` keeps the user's other sessions, `end` ends them, and absent applies the
+manager's default (end). Asking to end them on a manager wired with no `Sessions` is a
+`passkey.ErrConfig` refusal and changes nothing.
 
 Two overrides, compiled as `ExampleWithCloneResponse` and `ExampleWithoutSecondFactorAtLogin` in
 `passkey/example_test.go`:

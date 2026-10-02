@@ -338,6 +338,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrAuthenticationRequired": httpsec.ErrAuthenticationRequired,
 		"httpsec.ErrConfig":                 httpsec.ErrConfig,
 		"httpsec.ErrCredentialsMissing":     httpsec.ErrCredentialsMissing,
+		"httpsec.ErrMalformedRequest":       httpsec.ErrMalformedRequest,
 		"httpsec.ErrMFAMethodNotUsable":     httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":  httpsec.ErrNoMFAChallengePending,
 		"httpsec.ErrRequestTooLarge":        httpsec.ErrRequestTooLarge,
