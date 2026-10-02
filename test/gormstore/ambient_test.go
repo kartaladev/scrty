@@ -89,6 +89,28 @@ func TestAmbientTx_Scenarios(t *testing.T) {
 			},
 		},
 		{
+			name: "deleting a user's other sessions in a transaction the caller rolls back deletes none",
+			assert: func(t *testing.T, ctx context.Context, d database) {
+				db := d.db
+				sessions := newSessionStore(t, db, c)
+				keep, other := storefix.DurableSession("scenario-keep", time.Now()), storefix.DurableSession("scenario-other", time.Now())
+				other.UserID = keep.UserID
+				require.NoError(t, sessions.Create(ctx, keep))
+				require.NoError(t, sessions.Create(ctx, other))
+
+				txCtx, tx := begin(t, ctx, db)
+				n, err := sessions.DeleteByUserExcept(txCtx, keep.UserID, keep.ID)
+				require.NoError(t, err)
+				require.Equal(t, 1, n)
+				require.NoError(t, tx.Rollback().Error)
+
+				_, err = sessions.Load(ctx, other.ID)
+				require.NoError(t, err, "the rolled-back delete must leave the other session")
+				_, err = sessions.Load(ctx, keep.ID)
+				require.NoError(t, err)
+			},
+		},
+		{
 			name: "a login attempt and a consumption in a transaction the caller commits are both kept",
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				db := d.db

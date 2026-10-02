@@ -50,6 +50,10 @@ FROM sessions WHERE id_digest = $1`
 	// SessionDeleteByUser removes every session of user $1, expired or not.
 	SessionDeleteByUser = `DELETE FROM sessions WHERE user_id = $1`
 
+	// SessionDeleteByUserExcept removes every session of user $1 except the
+	// one with digest $2, expired or not.
+	SessionDeleteByUserExcept = `DELETE FROM sessions WHERE user_id = $1 AND id_digest <> $2`
+
 	// SessionCountActive counts user $1's sessions unexpired at $2: both
 	// deadlines strictly after it.
 	SessionCountActive = `SELECT count(*) FROM sessions

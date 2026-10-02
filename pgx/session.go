@@ -230,15 +230,20 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 	return err
 }
 
-// errDeleteByUserExceptPending is what DeleteByUserExcept reports until the
-// store implements it: an error, so that an unfinished store can never be
-// taken for a successful revocation.
-var errDeleteByUserExceptPending = errors.New("session: DeleteByUserExcept not implemented")
+// DeleteByUserExcept removes every session of user except the one named by
+// keep, expired ones included, and reports how many it removed. keep is
+// compared by its digest, as Delete's identifier is, so one no store could
+// hold names no session and every session of the user goes. A user reference
+// PostgreSQL text cannot hold matches nothing.
+func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	if !storekit.Storable(string(user)) {
+		return 0, nil
+	}
 
-// DeleteByUserExcept is not implemented by this store yet, and reports
-// errDeleteByUserExceptPending rather than a count.
-func (s *sessionStore) DeleteByUserExcept(context.Context, identity.UserID, string) (int, error) {
-	return 0, errDeleteByUserExceptPending
+	n, err := s.c.exec(ctx, "delete user's other sessions", pgschema.SessionDeleteByUserExcept,
+		string(user), storekit.SessionDigest(keep))
+
+	return int(n), err
 }
 
 // CountActiveByUser counts user's sessions unexpired by the store's clock.

@@ -24,6 +24,9 @@ const (
 	// The active count judges the idle deadline only, so a session past its
 	// absolute deadline still counts against the user.
 	sessionCountIdleOnly sessionDefect = "count-idle-only"
+	// DeleteByUserExcept ignores the identifier to keep and deletes every
+	// session of the user.
+	sessionExceptDeletesAll sessionDefect = "except-deletes-kept"
 	// Save writes a partial column list: the activity and second-factor
 	// fields and Data, keeping the stored user, creation time, first factor,
 	// absolute deadline and provider fields.
@@ -351,6 +354,9 @@ func (s *sessionStore) DeleteByUser(_ context.Context, user identity.UserID) err
 }
 
 func (s *sessionStore) DeleteByUserExcept(_ context.Context, user identity.UserID, keep string) (int, error) {
+	if s.defect == sessionExceptDeletesAll {
+		keep = ""
+	}
 	return s.removeWhere(func(sess *session.Session) bool { return sess.UserID == user && sess.ID != keep }), nil
 }
 
