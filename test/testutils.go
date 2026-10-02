@@ -719,7 +719,10 @@ const keycloakImage = "quay.io/keycloak/keycloak:26.7.2@sha256:831330513f5569557
 // keycloakStartupTimeout is how long RunTestKeycloak waits for the realm's
 // discovery document. Keycloak starts in about twenty seconds on an idle
 // host, but well over a minute when other test packages share the Docker host.
-const keycloakStartupTimeout = 3 * time.Minute
+// start-dev re-runs Quarkus augmentation on every boot, and on a four-CPU CI
+// runner shared with the store suites that step alone has taken 100 seconds;
+// three minutes then ran out while the realm was still being initialised.
+const keycloakStartupTimeout = 5 * time.Minute
 
 // The realm RunTestKeycloak imports, and the bootstrap administrator the
 // container starts with. The administrator only ever drives the admin API
