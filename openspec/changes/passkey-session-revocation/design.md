@@ -107,8 +107,9 @@ The steps of `Remove`, in order:
   - A pending session that presented the clone at MFA verify is among those deleted.
   - The verify endpoint returns `ErrCloneSuspected` as today. A later save of that session cannot re-create it (see Context).
 - **A failure** is logged at Error through the manager's sampler, under the key `clone|sessions-not-ended`, with `diag.Failure`. The refusal is still `ErrCloneSuspected`. A revocation failure must never become an acceptance, and the credential is already suspended.
-- **The suspension is detached from cancellation too.** `Suspend` runs on `context.WithoutCancel(ctx)`, as the revocation does. Before this change it ran on the request's context, so on a durable store a client that disconnected at the right moment got the refusal while its clone stayed active and no session ended.
+- **The suspension is detached from cancellation too.** Once the counter write is refused, every step of the clone path runs on `context.WithoutCancel(ctx)`: reading the credential back, `Suspend`, and the revocation. Before this change it ran on the request's context, so on a durable store a client that disconnected at the right moment got the refusal while its clone stayed active and no session ended.
   - Reproduced during review: a credential store whose `Suspend` honours a cancelled context left the credential active and the user's sessions loading, and the refusal was still `ErrCloneSuspected`. The test lands as the red step of this fix.
+  - Reproduced in the whole-branch review: a disconnect between the refused counter write and the read-back turned the refusal into a fixed-text read failure (500), with the clone active and no session ended. Its test lands as the red step of that fix.
   - Default and override: none. A suspension a client can cancel by disconnecting is a defect, not a policy.
 - **No suspension, no revocation.** Signal-only mode, and a clone policy returning `Allow` or `Refuse`, suspend nothing and so end nothing. Only `RefuseAndSuspend`, the default response, revokes.
 - **Default:** end every session. **Override:** `passkey.WithoutSessionRevocationOnClone()`.

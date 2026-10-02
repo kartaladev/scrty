@@ -95,7 +95,12 @@ func WithClonePolicy(fn func(ctx context.Context, s CloneSignal) CloneAction) Op
 // the user's sessions and queues the notice: of two racing clone assertions,
 // one does.
 func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *AssertionResult) error {
-	now, err := m.credentials.Find(ctx, c.User, c.ID)
+	// The read-back and the suspension are detached from the request: a client
+	// that disconnects once the write was refused must not leave a suspected
+	// clone active.
+	detached := context.WithoutCancel(ctx)
+
+	now, err := m.credentials.Find(detached, c.User, c.ID)
 
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -131,9 +136,7 @@ func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *Asse
 	case CloneRefuse:
 		return ErrCloneSuspected
 	default:
-		// The suspension is detached from the request: a client that
-		// disconnects must not leave a suspected clone active.
-		suspended, err := m.credentials.Suspend(context.WithoutCancel(ctx), c.ID)
+		suspended, err := m.credentials.Suspend(detached, c.ID)
 		if err != nil {
 			return diag.Wrap(err, "passkey: could not suspend the credential", ErrCloneSuspected)
 		}

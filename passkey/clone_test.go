@@ -54,8 +54,11 @@ func TestClone(t *testing.T) {
 		// decided, before any suspension, through a clone policy that
 		// suspends.
 		cancelOnClone bool
-		ctx           func(ctx context.Context) context.Context
-		assert        func(t *testing.T, e *loginEnv, sids map[string]string, res *passkey.LoginResult, err error)
+		// cancelOnRefusal cancels the request's context right after the
+		// counter write is refused, and makes the credential store honour it.
+		cancelOnRefusal bool
+		ctx             func(ctx context.Context) context.Context
+		assert          func(t *testing.T, e *loginEnv, sids map[string]string, res *passkey.LoginResult, err error)
 	}
 
 	suspendedWithNotice := func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
@@ -174,6 +177,19 @@ func TestClone(t *testing.T) {
 					return e.creds.MemoryCredentialStore.Suspend(ctx, cid)
 				}
 			},
+			assert: func(t *testing.T, e *loginEnv, sids map[string]string, res *passkey.LoginResult, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
+				assert.Nil(t, res)
+				assert.Equal(t, passkey.StateSuspended, e.stored(t).State, "credential should be suspended")
+				endedAll(t, e, sids)
+			},
+		},
+		{
+			name:            "a client disconnecting after the counter write is refused still suspends the credential and ends the sessions",
+			count:           41,
+			prepare:         seeded,
+			cancelOnRefusal: true,
 			assert: func(t *testing.T, e *loginEnv, sids map[string]string, res *passkey.LoginResult, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
@@ -467,12 +483,25 @@ func TestClone(t *testing.T) {
 				tc.spy(e)
 			}
 
+			ctx := t.Context()
+			if tc.cancelOnRefusal {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				t.Cleanup(cancel)
+
+				e.creds.ctxFind = true
+				e.creds.afterRecord = func(recorded bool) {
+					if !recorded {
+						cancel()
+					}
+				}
+			}
+
 			sids := map[string]string{}
 			if tc.prepare != nil {
 				tc.prepare(t, e, sids)
 			}
 
-			ctx := t.Context()
 			if tc.ctx != nil {
 				ctx = tc.ctx(ctx)
 			}

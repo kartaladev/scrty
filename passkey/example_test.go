@@ -209,7 +209,7 @@ func ExampleWithCloneResponse() {
 // ExampleWithoutSessionRevocationOnRemoval turns the two session revocations
 // off, each with its own option. By default a removal ends the user's other
 // sessions (the removing one stays) and a suspected clone ends every session
-// of the user; the first option keeps the removal default at "keep", the
+// of the user; the first option makes "keep" the removal default, the
 // second leaves sessions alone when a credential is suspended. With both off
 // Deps.Sessions may be left out.
 func ExampleWithoutSessionRevocationOnRemoval() {

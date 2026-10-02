@@ -406,7 +406,7 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | User-handle store | in-memory, one process only | `passkey.Deps.Handles` |
 | Challenge store | in-memory, one process only | `passkey.Deps.Challenges` |
 | Attestation | off: none requested, every authenticator accepted, only its AAGUID kept | `webauthn.WithAttestationRecord`, `webauthn.WithTrustedAttestation` |
-| Response to a suspected clone | refuse, suspend the credential, notify | `passkey.WithCloneResponse`, `passkey.WithClonePolicy` |
+| Response to a suspected clone | refuse, suspend the credential, end the user's sessions, notify | `passkey.WithCloneResponse`, `passkey.WithClonePolicy` |
 | Other sessions of the user when a passkey is removed | ended; the removing session stays | `passkey.WithoutSessionRevocationOnRemoval`, or per request the posted `other_sessions` field (`keep` or `end`; anything else, an empty value or a repeated field is a 400, `httpsec.ErrMalformedRequest`) |
 | Sessions of the user when a passkey is suspended as a clone | every session ended | `passkey.WithoutSessionRevocationOnClone` |
 | Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |

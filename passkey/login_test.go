@@ -52,6 +52,20 @@ type spyCredentials struct {
 	useHook func(ctx context.Context, cid id.ID) (bool, error)
 	// suspendHook, when set, runs in place of Suspend's write.
 	suspendHook func(ctx context.Context, cid id.ID) (bool, error)
+	// ctxFind makes Find fail on a cancelled context, as a durable store does.
+	ctxFind bool
+	// afterRecord, when set, runs with the outcome of every counter write.
+	afterRecord func(recorded bool)
+}
+
+func (s *spyCredentials) Find(ctx context.Context, user identity.UserID, cid id.ID) (*passkey.Credential, error) {
+	if s.ctxFind {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+
+	return s.MemoryCredentialStore.Find(ctx, user, cid)
 }
 
 func (s *spyCredentials) Suspend(ctx context.Context, cid id.ID) (bool, error) {
@@ -79,7 +93,13 @@ func (s *spyCredentials) RecordAssertion(
 	ctx context.Context, cid id.ID, n uint32, bs bool, at time.Time,
 ) (bool, error) {
 	s.records.Add(1)
-	return s.MemoryCredentialStore.RecordAssertion(ctx, cid, n, bs, at)
+
+	ok, err := s.MemoryCredentialStore.RecordAssertion(ctx, cid, n, bs, at)
+	if s.afterRecord != nil {
+		s.afterRecord(ok)
+	}
+
+	return ok, err
 }
 
 // spyChallenges counts the purges made on a memory challenge store, and fails
