@@ -156,3 +156,66 @@ func (c *MockAuthenticatorKindRemoveCall) DoAndReturn(f func(context.Context, id
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
+
+// MockUsableLister is a mock of UsableLister interface.
+type MockUsableLister struct {
+	ctrl     *gomock.Controller
+	recorder *MockUsableListerMockRecorder
+	isgomock struct{}
+}
+
+// MockUsableListerMockRecorder is the mock recorder for MockUsableLister.
+type MockUsableListerMockRecorder struct {
+	mock *MockUsableLister
+}
+
+// NewMockUsableLister creates a new mock instance.
+func NewMockUsableLister(ctrl *gomock.Controller) *MockUsableLister {
+	mock := &MockUsableLister{ctrl: ctrl}
+	mock.recorder = &MockUsableListerMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockUsableLister) EXPECT() *MockUsableListerMockRecorder {
+	return m.recorder
+}
+
+// Usable mocks base method.
+func (m *MockUsableLister) Usable(ctx context.Context, user identity.UserID) ([]recovery.AuthenticatorRef, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Usable", ctx, user)
+	ret0, _ := ret[0].([]recovery.AuthenticatorRef)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Usable indicates an expected call of Usable.
+func (mr *MockUsableListerMockRecorder) Usable(ctx, user any) *MockUsableListerUsableCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Usable", reflect.TypeOf((*MockUsableLister)(nil).Usable), ctx, user)
+	return &MockUsableListerUsableCall{Call: call}
+}
+
+// MockUsableListerUsableCall wrap *gomock.Call
+type MockUsableListerUsableCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockUsableListerUsableCall) Return(arg0 []recovery.AuthenticatorRef, arg1 error) *MockUsableListerUsableCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockUsableListerUsableCall) Do(f func(context.Context, identity.UserID) ([]recovery.AuthenticatorRef, error)) *MockUsableListerUsableCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockUsableListerUsableCall) DoAndReturn(f func(context.Context, identity.UserID) ([]recovery.AuthenticatorRef, error)) *MockUsableListerUsableCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

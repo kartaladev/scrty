@@ -146,3 +146,114 @@ func TestConsumerModuleGraph(t *testing.T) {
 		})
 	}
 }
+
+func TestCoreDependencies(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		reqs   []requirement
+		assert func(t *testing.T, vs []violation)
+	}
+
+	cases := []testCase{
+		{
+			name:   "the WebAuthn library is an integration module",
+			reqs:   []requirement{{Path: "github.com/go-webauthn/webauthn"}},
+			assert: hasViolation("go.mod", "github.com/go-webauthn/webauthn"),
+		},
+		{
+			name:   "the CBOR library is an integration module",
+			reqs:   []requirement{{Path: "github.com/fxamacker/cbor/v2"}},
+			assert: hasViolation("go.mod", "github.com/fxamacker/cbor/v2"),
+		},
+		{
+			name:   "the TPM library is an integration module",
+			reqs:   []requirement{{Path: "github.com/google/go-tpm"}},
+			assert: hasViolation("go.mod", "github.com/google/go-tpm"),
+		},
+		{
+			name: "an indirect requirement is left to the import walk",
+			reqs: []requirement{{Path: "github.com/go-webauthn/webauthn", Indirect: true}},
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, requireViolations(tc.reqs))
+		})
+	}
+}
+
+func TestWebAuthnTypesStayInsideTheAdapter(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		dir       string
+		fixture   string
+		forbidden string
+		assert    func(t *testing.T, vs []violation)
+	}
+
+	const fixturePkg = "example.com/fixture/adapter"
+
+	cases := []testCase{
+		{
+			name:      "the adapter module exposes no WebAuthn library type",
+			dir:       "passkey/webauthn",
+			forbidden: "github.com/go-webauthn/",
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:      "control: every exported route to a library type is caught",
+			fixture:   "testdata/layout/apileak",
+			forbidden: "example.com/forbidden",
+			assert: func(t *testing.T, vs []violation) {
+				for _, name := range []string{"Leak", "Options", "Verifier", "Embedded", "Alias", "Default", "Hidden", "Generic", "Box", "Outer"} {
+					hasViolation(fixturePkg, name+" exposes ")(t, vs)
+				}
+				for _, v := range vs {
+					for _, name := range []string{"Source", "Wrapped", "Clean"} {
+						assert.NotContains(t, v.What, name+" exposes ", "unexpected violation %v", v)
+					}
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := tc.dir
+			if tc.fixture != "" {
+				dir = copyFixture(t, tc.fixture)
+			}
+
+			tc.assert(t, exportedAPIViolations(t, dir, tc.forbidden))
+		})
+	}
+}
+
+func TestSoftwareAuthenticatorStaysOutOfProduction(t *testing.T) {
+	t.Parallel()
+
+	const helper = "github.com/kartaladev/scrty/passkey/webauthn/webauthntest"
+
+	for _, dir := range []string{".", "passkey/webauthn"} {
+		for _, p := range listDeps(t, dir) {
+			if p.ImportPath == helper {
+				continue
+			}
+			assert.NotContains(t, p.Imports, helper, "%s imports the software authenticator in its production build", p.ImportPath)
+		}
+	}
+}

@@ -176,14 +176,14 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	cases := []testCase{
 		{name: "session create", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Create(ctx, storefix.DurableSession("stmt-sid-create", now))
-		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session create of a stored identifier", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now)))
 			started()
 			err := counted.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now))
 			require.Error(t, err)
 			return nil
-		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session save", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-save", now)))
 			started()

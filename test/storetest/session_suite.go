@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -101,6 +102,19 @@ func recoveryPendingSession(sessionID string, user identity.UserID) *session.Ses
 	return s
 }
 
+// secondFactorAtLoginSession returns a satisfied session for user whose
+// second factor was met at the first factor: the marker set, the first factor a
+// passkey, and the satisfied time the creation time.
+func secondFactorAtLoginSession(sessionID string, user identity.UserID) *session.Session {
+	s := sessionRecord(sessionID, user)
+	s.FirstFactor = factor.Passkey
+	s.MFA = session.MFASatisfied
+	s.MFASatisfiedAt = s.CreatedAt
+	s.PasswordChangePending = false
+	s.MFAAtFirstFactor = true
+	return s
+}
+
 // idleExpiredSession returns a session whose idle deadline has passed by the
 // time the suite's clock reaches suiteStart plus sessionIdle.
 func idleExpiredSession(sessionID string, user identity.UserID) *session.Session {
@@ -129,6 +143,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assertTimeEqual(t, want.EnrolmentOriginDeadline, got.EnrolmentOriginDeadline, "EnrolmentOriginDeadline")
 	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
 	assertTimeEqual(t, want.RecoveredAt, got.RecoveredAt, "RecoveredAt")
+	assert.Equal(t, want.MFAAtFirstFactor, got.MFAAtFirstFactor, "MFAAtFirstFactor")
 	assert.Equal(t, want.ExternalProvider, got.ExternalProvider)
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
@@ -448,6 +463,67 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 			},
 		},
 		{
+			// The marker is stored in a column of its own, and comes back
+			// with the state and satisfied time it was created beside.
+			name: "marker round trip",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := secondFactorAtLoginSession("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, want))
+				require.NoError(t, s.Save(ctx, want))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assertSession(t, want, got)
+				assert.True(t, got.MFAAtFirstFactor)
+				assert.Equal(t, session.MFASatisfied, got.MFA)
+				assertTimeEqual(t, want.MFASatisfiedAt, got.MFASatisfiedAt, "MFASatisfiedAt")
+			},
+		},
+		{
+			name: "unmarked",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				totp := sessionRecord("sess-a", "u-1")
+				totp.FirstFactor = factor.Password
+				require.NoError(t, s.Create(ctx, totp))
+				require.NoError(t, s.Save(ctx, totp))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.Equal(t, session.MFASatisfied, got.MFA)
+				assert.False(t, got.MFAAtFirstFactor, "a session saved without the marker loads unmarked")
+			},
+		},
+		{
+			// Only Create writes the marker: a save keeps the stored value,
+			// so a later save can never set it.
+			name: "a save does not set the marker",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := sessionRecord("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.MFAAtFirstFactor = true
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.False(t, got.MFAAtFirstFactor, "a save must not set the marker")
+			},
+		},
+		{
+			name: "a save does not clear the marker",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := secondFactorAtLoginSession("sess-a", "u-1")
+				require.NoError(t, s.Create(ctx, sess))
+
+				sess.MFAAtFirstFactor = false
+				require.NoError(t, s.Save(ctx, sess))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.True(t, got.MFAAtFirstFactor, "a save keeps the stored marker")
+			},
+		},
+		{
 			name: "never recovered reads with zero RecoveredAt",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				never := sessionRecord("sess-a", "u-1")
@@ -623,6 +699,114 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				clock.Advance((suiteStart).Sub(clock.Now()))
 				assertSessionsGone(ctx, t, s, "sess-a", "sess-b", "sess-c")
 				assertSessionsLoad(ctx, t, s, keep...)
+			},
+		},
+		{
+			name: "deleting by user except one removes the user's other sessions, expired ones included, and keeps that one",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
+				kept := sessionRecord("sess-x1", "u-x")
+				others := []*session.Session{sessionRecord("sess-y", "u-y"), sessionRecord("sess-x9", "U-X")}
+				createSessions(ctx, t, s, kept, sessionRecord("sess-x2", "u-x"), idleExpiredSession("sess-x3", "u-x"))
+				createSessions(ctx, t, s, others...)
+				clock.Advance((suiteStart.Add(10 * time.Minute)).Sub(clock.Now()))
+
+				n, err := s.DeleteByUserExcept(ctx, "u-x", "sess-x1")
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n, "the count is of the sessions removed, expired ones included")
+				clock.Advance((suiteStart).Sub(clock.Now()))
+				assertSessionsGone(ctx, t, s, "sess-x2", "sess-x3")
+				assertSessionsLoad(ctx, t, s, append(others, kept)...)
+			},
+		},
+		{
+			name: "deleting by user except an expired session keeps it, still expired, and removes the user's other sessions",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
+				kept := idleExpiredSession("sess-k1", "u-k")
+				other := sessionRecord("sess-k2", "u-k")
+				absoluteExpired := sessionRecord("sess-k3", "u-k")
+				absoluteExpired.IdleExpiresAt = suiteStart.Add(2 * time.Hour)
+				absoluteExpired.AbsoluteExpiresAt = suiteStart.Add(10 * time.Minute)
+				createSessions(ctx, t, s, kept, other, absoluteExpired)
+				clock.Advance((suiteStart.Add(10 * time.Minute)).Sub(clock.Now()))
+
+				n, err := s.DeleteByUserExcept(ctx, "u-k", "sess-k1")
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n, "the kept session is not counted, expired or not")
+				_, err = s.Load(ctx, "sess-k1")
+				assert.ErrorIs(t, err, session.ErrSessionExpired, "the kept session stays stored and stays expired, not gone")
+				clock.Advance((suiteStart).Sub(clock.Now()))
+				assertSessionsGone(ctx, t, s, "sess-k2", "sess-k3")
+			},
+		},
+		{
+			name: "deleting by user except one for a user reference no store could hold removes nothing and touches no other user",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				other := sessionRecord("sess-n1", "u-n")
+				createSessions(ctx, t, s, other, sessionRecord("sess-n2", "u-n"))
+
+				n, err := s.DeleteByUserExcept(ctx, "u\x00n", "sess-n1")
+				require.NoError(t, err)
+
+				assert.Zero(t, n)
+				assertSessionsLoad(ctx, t, s, other, sessionRecord("sess-n2", "u-n"))
+			},
+		},
+		{
+			name: "deleting by user except another user's session removes every session of the user and touches no other",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				foreign := sessionRecord("sess-z9", "u-z2")
+				createSessions(ctx, t, s, sessionRecord("sess-z1", "u-z"), sessionRecord("sess-z2", "u-z"), foreign)
+
+				n, err := s.DeleteByUserExcept(ctx, "u-z", "sess-z9")
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n)
+				assertSessionsGone(ctx, t, s, "sess-z1", "sess-z2")
+				assertSessionsLoad(ctx, t, s, foreign)
+			},
+		},
+		{
+			name: "deleting by user except an identifier naming no session removes every session of the user",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				createSessions(ctx, t, s, sessionRecord("sess-w1", "u-w"), sessionRecord("sess-w2", "u-w"))
+
+				n, err := s.DeleteByUserExcept(ctx, "u-w", "sess-none")
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n)
+				assertSessionsGone(ctx, t, s, "sess-w1", "sess-w2")
+			},
+		},
+		{
+			name: "deleting by user except one matches the user reference exactly, case included",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				cased := sessionRecord("sess-c9", "U-C")
+				createSessions(ctx, t, s, sessionRecord("sess-c1", "u-c"), sessionRecord("sess-c2", "u-c"), cased)
+
+				n, err := s.DeleteByUserExcept(ctx, "u-c", "sess-c1")
+				require.NoError(t, err)
+
+				assert.Equal(t, 1, n)
+				assertSessionsGone(ctx, t, s, "sess-c2")
+				assertSessionsLoad(ctx, t, s, cased)
+			},
+		},
+		{
+			name: "a kept identifier no store could hold still deletes the user's other sessions",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				for i, keep := range []string{"bad\x00id", "bad\xffid"} {
+					user := identity.UserID(fmt.Sprintf("u-v%d", i))
+					first, second := fmt.Sprintf("sess-v%da", i), fmt.Sprintf("sess-v%db", i)
+					createSessions(ctx, t, s, sessionRecord(first, user), sessionRecord(second, user))
+
+					n, err := s.DeleteByUserExcept(ctx, user, keep)
+					require.NoError(t, err, "keep %q", keep)
+
+					assert.Equal(t, 2, n, "keep %q names no session, so both go", keep)
+					assertSessionsGone(ctx, t, s, first, second)
+				}
 			},
 		},
 		{

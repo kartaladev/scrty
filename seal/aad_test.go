@@ -57,6 +57,22 @@ func TestAADGolden(t *testing.T) {
 			},
 		},
 		{
+			// The credential's canonical text comes first, at a fixed length,
+			// then the user reference byte for byte.
+			name: "an emailed passkey code is bound to its credential and user reference",
+			got:  func() []byte { return seal.PasskeyEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, []byte("scrty/passkey:email-code:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:Alice "), got)
+			},
+		},
+		{
+			name: "an emailed passkey code is not bound like an emailed MFA code",
+			got:  func() []byte { return seal.PasskeyEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.NotEqual(t, seal.MFAEmailCodeAAD(gen, "Alice "), got)
+			},
+		},
+		{
 			name: "the signing-key prefix",
 			got:  func() []byte { return []byte(seal.AADSigningKeyPrefix) },
 			assert: func(t *testing.T, got []byte) {
@@ -68,6 +84,13 @@ func TestAADGolden(t *testing.T) {
 			got:  func() []byte { return []byte(seal.AADMFASecretPrefix) },
 			assert: func(t *testing.T, got []byte) {
 				assert.Equal(t, "scrty/mfa:secret:", string(got))
+			},
+		},
+		{
+			name: "the emailed passkey code prefix",
+			got:  func() []byte { return []byte(seal.AADPasskeyEmailCodePrefix) },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, "scrty/passkey:email-code:", string(got))
 			},
 		},
 		{

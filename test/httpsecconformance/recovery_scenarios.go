@@ -47,6 +47,10 @@ const recoveryRepudiationContact = "Write to security@example.com if this was no
 // field's usual in-memory Store: a recovery scenario reads sessions back
 // through SessionStore instead.
 type RecoveryFixture struct {
+	// Pool is the migrated database every store of the fixture runs on, so a
+	// scenario can put further stores of its own on the same one.
+	Pool *pgxpool.Pool
+
 	// SessionStore is the durable store behind the session manager every
 	// recovery scenario's chain is wired with.
 	SessionStore session.Store
@@ -180,6 +184,7 @@ func newRecoveryFixture(t *testing.T) (*RecoveryFixture, *session.Manager) {
 	require.NoError(t, err)
 
 	fx := &RecoveryFixture{
+		Pool:         pool,
 		SessionStore: sessionStore,
 		Codes:        codes,
 		Records:      records,

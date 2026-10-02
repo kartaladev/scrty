@@ -6,6 +6,7 @@ import (
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
@@ -94,5 +95,23 @@ func TestMemoryRecoveryRecordStore(t *testing.T) {
 	storetest.RunRecoveryRecordStoreSuite(t, func(t *testing.T, _ clock.Clock) recovery.RecordStore {
 		t.Helper()
 		return recovery.NewMemoryRecordStore()
+	})
+}
+
+func TestMemoryPasskeyCredentialStore(t *testing.T) {
+	t.Parallel()
+
+	storetest.RunPasskeyCredentialStoreSuite(t, func(t *testing.T) passkey.CredentialStore {
+		t.Helper()
+		return passkey.NewMemoryCredentialStore()
+	})
+}
+
+func TestMemoryPasskeyHandleStore(t *testing.T) {
+	t.Parallel()
+
+	storetest.RunPasskeyHandleStoreSuite(t, func(t *testing.T) passkey.HandleStore {
+		t.Helper()
+		return passkey.NewMemoryHandleStore()
 	})
 }

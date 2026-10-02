@@ -332,6 +332,13 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// The passkey endpoints are checked against every other path, and handed
+	// the enrolment path when it enrols the passkey method, which
+	// wireMFAEnrolment has just settled.
+	if err := c.wirePasskeys(); err != nil {
+		return nil, err
+	}
+
 	if err := c.wireMagicLink(); err != nil {
 		return nil, err
 	}

@@ -257,7 +257,7 @@ func TestRecoveryCodes(t *testing.T) {
 
 				return h.codesRequest(t, http.MethodGet, s)
 			},
-			assert: func(t *testing.T, _ *recoveryHarness, first string, out served) {
+			assert: func(t *testing.T, _ *recoveryHarness, _ string, out served) {
 				require.NoError(t, out.err)
 				assert.JSONEq(t, `{"remaining":0,"low":true}`, out.rec.Body.String())
 			},
@@ -346,7 +346,7 @@ func TestRecoveryCodes(t *testing.T) {
 			act: func(t *testing.T, h *recoveryHarness) served {
 				return h.codesRequest(t, http.MethodGet, nil)
 			},
-			assert: func(t *testing.T, _ *recoveryHarness, first string, out served) {
+			assert: func(t *testing.T, _ *recoveryHarness, _ string, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 				assert.False(t, out.handlerRan)
 			},
@@ -409,7 +409,7 @@ func TestRecoveryCodes(t *testing.T) {
 
 				return served{err: err}
 			},
-			assert: func(t *testing.T, _ *recoveryHarness, first string, out served) {
+			assert: func(t *testing.T, _ *recoveryHarness, _ string, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrConfig)
 				require.ErrorIs(t, out.err, recovery.ErrConfig)
 			},

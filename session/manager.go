@@ -195,7 +195,8 @@ func (m *Manager) newIdentifier() (string, error) {
 //
 // Every create option is applied before the one store write, so a crash cannot
 // leave a live session that has forgotten which factor established it or which
-// provider it came from.
+// provider it came from. Options run after the creation time and deadlines are
+// set, so an option may read them, as WithSecondFactorAtLogin does.
 func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
 	id, err := m.newIdentifier()
 	if err != nil {
@@ -278,6 +279,22 @@ func (m *Manager) DeleteByUser(ctx context.Context, user identity.UserID) error 
 	return storeFailed(m.store.DeleteByUser(ctx, user), "session: the user's sessions could not be deleted")
 }
 
+// DeleteByUserExcept removes every session of this user except the one with
+// identifier keep, expired ones included, in one atomic operation, and reports
+// how many went. It is what ending a user's other sessions, after a change to
+// how they sign in, is written against: the caller's own session survives.
+//
+// A keep naming another user's session, or none, is left untouched and every
+// session of this user goes; an empty keep ends them all.
+func (m *Manager) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
+	if err != nil {
+		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
+	}
+
+	return n, nil
+}
+
 // CountActiveByUser counts this user's unexpired sessions, which is what a
 // concurrent-session limit is written against.
 func (m *Manager) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
@@ -339,7 +356,7 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // accepted, a step-up completed — because a handle someone obtained before
 // that change must not still answer requests after it. Everything except the
 // identifier is carried over: the user, the first factor, both deadlines, the
-// challenge state and the consumer's own data.
+// challenge state (including MFAAtFirstFactor) and the consumer's own data.
 //
 // The new entry is written before the old one is deleted. A failure of the
 // write leaves the old handle working and returns the error, so a caller that

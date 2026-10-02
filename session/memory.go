@@ -194,7 +194,9 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 	return nil
 }
 
-// Save updates the stored session, whole, and never inserts.
+// Save updates the stored session, whole except for MFAAtFirstFactor, and
+// never inserts. The stored marker is kept as Create wrote it, whatever the
+// saved session says.
 //
 // A session that is no longer stored is ErrSessionNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
@@ -204,10 +206,13 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.records[sess.ID]; !exists {
+	stored, exists := s.records[sess.ID]
+	if !exists {
 		return ErrSessionNotFound
 	}
-	s.records[sess.ID] = sess.clone()
+	rec := sess.clone()
+	rec.MFAAtFirstFactor = stored.MFAAtFirstFactor
+	s.records[sess.ID] = rec
 
 	return nil
 }
@@ -255,6 +260,18 @@ func (s *MemoryStore) DeleteByUser(_ context.Context, user identity.UserID) erro
 	s.removeWhere(func(rec *Session) bool { return rec.UserID == user })
 
 	return nil
+}
+
+// DeleteByUserExcept removes every session of this user except the one with
+// identifier keep, expired ones included, and reports how many went. It runs
+// under the store's lock, so a session created concurrently is either removed
+// or created after the call.
+//
+// A keep naming another user's session, or none, leaves it untouched and
+// removes every session of this user; an empty keep names none. The reference
+// is compared byte-for-byte, as DeleteByUser compares it.
+func (s *MemoryStore) DeleteByUserExcept(_ context.Context, user identity.UserID, keep string) (int, error) {
+	return s.removeWhere(func(rec *Session) bool { return rec.UserID == user && rec.ID != keep }), nil
 }
 
 // CountActiveByUser counts this user's unexpired sessions.

@@ -23,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -60,6 +61,11 @@ func TestStatusForError(t *testing.T) {
 		{name: "throttled second-factor verification", err: mfa.ErrVerifyThrottled, want: 401},
 		{name: "second-factor method on the first factor's channel", err: mfa.ErrSameChannel, want: 403},
 		{name: "already enrolled", err: mfa.ErrAlreadyEnrolled, want: 403},
+		{
+			name: "authenticator itself refused",
+			err:  fmt.Errorf("%w: suspected clone", mfa.ErrAuthenticatorRefused),
+			want: 403,
+		},
 		{
 			name: "an invalid, expired or voided emailed code, answered by the invalid-code row",
 			err:  mfa.ErrEmailCodeInvalid,
@@ -123,6 +129,20 @@ func TestStatusForError(t *testing.T) {
 		{name: "recovery cool-down", err: recovery.ErrCooldown, want: 403},
 		{name: "reauthentication required", err: recovery.ErrReauthenticationRequired, want: 403},
 		{name: "throttled saved-code presentation", err: recovery.ErrCodeThrottled, want: 401},
+		{name: "suspected passkey clone", err: passkey.ErrCloneSuspected, want: 403},
+		{name: "suspended passkey", err: passkey.ErrSuspended, want: 403},
+		{name: "pending passkey", err: passkey.ErrPending, want: 403},
+		{name: "passkey attestation refused", err: passkey.ErrAttestationRefused, want: 403},
+		{name: "passkey limit reached", err: passkey.ErrLimitReached, want: 403},
+		{name: "passkey reauthentication required", err: passkey.ErrReauthenticationRequired, want: 403},
+		{name: "passkey not found", err: passkey.ErrNotFound, want: 404},
+		{name: "wrapped passkey not found", err: fmt.Errorf("removing: %w", passkey.ErrNotFound), want: 404},
+		{name: "throttled passkey registration begin", err: passkey.ErrRegistrationThrottled, want: 401},
+		{
+			// The chain answers an unreadable ceremony response as the
+			// missing-credentials refusal, keeping the core's reachable.
+			name: "unreadable passkey response", err: passkey.ErrMalformedResponse, want: 400,
+		},
 		{
 			name: "a consumer's own challenge kind",
 			err:  &httpsec.ChallengeError{Kind: policy.ChallengeKind(100)},
@@ -233,13 +253,14 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrUnsupportedAttributes":  authorize.ErrUnsupportedAttributes,
 	},
 	"github.com/kartaladev/scrty/mfa": {
-		"mfa.ErrAlreadyEnrolled":    mfa.ErrAlreadyEnrolled,
-		"mfa.ErrConfig":             mfa.ErrConfig,
-		"mfa.ErrEmailCodeInvalid":   mfa.ErrEmailCodeInvalid,
-		"mfa.ErrEnrolmentThrottled": mfa.ErrEnrolmentThrottled,
-		"mfa.ErrInvalidCode":        mfa.ErrInvalidCode,
-		"mfa.ErrSameChannel":        mfa.ErrSameChannel,
-		"mfa.ErrVerifyThrottled":    mfa.ErrVerifyThrottled,
+		"mfa.ErrAlreadyEnrolled":      mfa.ErrAlreadyEnrolled,
+		"mfa.ErrAuthenticatorRefused": mfa.ErrAuthenticatorRefused,
+		"mfa.ErrConfig":               mfa.ErrConfig,
+		"mfa.ErrEmailCodeInvalid":     mfa.ErrEmailCodeInvalid,
+		"mfa.ErrEnrolmentThrottled":   mfa.ErrEnrolmentThrottled,
+		"mfa.ErrInvalidCode":          mfa.ErrInvalidCode,
+		"mfa.ErrSameChannel":          mfa.ErrSameChannel,
+		"mfa.ErrVerifyThrottled":      mfa.ErrVerifyThrottled,
 	},
 	"github.com/kartaladev/scrty/oidc": {
 		"oidc.ErrConfig":              oidc.ErrConfig,
@@ -258,6 +279,19 @@ var sentinelRegistry = map[string]map[string]error{
 		"oidc.ErrProvisioningRefused": oidc.ErrProvisioningRefused,
 		"oidc.ErrRetainSinceRequired": oidc.ErrRetainSinceRequired,
 		"oidc.ErrUnknownProvider":     oidc.ErrUnknownProvider,
+	},
+	"github.com/kartaladev/scrty/passkey": {
+		"passkey.ErrAttestationRefused":       passkey.ErrAttestationRefused,
+		"passkey.ErrCloneSuspected":           passkey.ErrCloneSuspected,
+		"passkey.ErrConfig":                   passkey.ErrConfig,
+		"passkey.ErrDuplicateCredential":      passkey.ErrDuplicateCredential,
+		"passkey.ErrLimitReached":             passkey.ErrLimitReached,
+		"passkey.ErrMalformedResponse":        passkey.ErrMalformedResponse,
+		"passkey.ErrNotFound":                 passkey.ErrNotFound,
+		"passkey.ErrPending":                  passkey.ErrPending,
+		"passkey.ErrReauthenticationRequired": passkey.ErrReauthenticationRequired,
+		"passkey.ErrRegistrationThrottled":    passkey.ErrRegistrationThrottled,
+		"passkey.ErrSuspended":                passkey.ErrSuspended,
 	},
 	"github.com/kartaladev/scrty/password": {
 		"password.ErrConfig":             password.ErrConfig,
@@ -304,6 +338,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrAuthenticationRequired": httpsec.ErrAuthenticationRequired,
 		"httpsec.ErrConfig":                 httpsec.ErrConfig,
 		"httpsec.ErrCredentialsMissing":     httpsec.ErrCredentialsMissing,
+		"httpsec.ErrMalformedRequest":       httpsec.ErrMalformedRequest,
 		"httpsec.ErrMFAMethodNotUsable":     httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":  httpsec.ErrNoMFAChallengePending,
 		"httpsec.ErrRequestTooLarge":        httpsec.ErrRequestTooLarge,
@@ -365,6 +400,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"password.ErrPasswordTooLong":             "the encoder's error is returned as is, and the consumer decides",
 		"recovery.ErrConfig":                      "a wiring fault, refused at construction",
 		"recovery.ErrRecordNotFound":              "a store outcome the recovery core converts to ErrRefused before it leaves the core",
+		"passkey.ErrConfig":                       "a wiring fault, refused at construction",
+		"passkey.ErrDuplicateCredential":          "a store outcome the passkey core converts to authenticate.ErrAuthenticationFailed before it leaves the core",
 	}
 
 	for _, pkg := range []string{
@@ -373,6 +410,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"github.com/kartaladev/scrty/httpsec",
 		"github.com/kartaladev/scrty/mfa",
 		"github.com/kartaladev/scrty/oidc",
+		"github.com/kartaladev/scrty/passkey",
 		"github.com/kartaladev/scrty/password",
 		"github.com/kartaladev/scrty/policy",
 		"github.com/kartaladev/scrty/ratelimit",

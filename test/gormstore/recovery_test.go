@@ -247,12 +247,12 @@ func TestRecoveryCodeStore_Rows(t *testing.T) {
 			assert: func(t *testing.T, _ context.Context, user identity.UserID) {
 				old := recoveryHashes(string(user)+"-old", 2)
 				s := newRecoveryCodeStore(t, db.db)
-				require.NoError(t, s.ReplaceSet(t.Context(), user, old, recoveryAt))
+				require.NoError(t, s.ReplaceSet(t.Context(), user, old, recoveryAt)) //nolint:contextcheck // deliberately a cancelled or fresh test context
 
-				err := s.ReplaceSet(storefix.Cancelled(t.Context()), user, recoveryHashes(string(user)+"-new", 2), recoveryAt)
+				err := s.ReplaceSet(storefix.Cancelled(t.Context()), user, recoveryHashes(string(user)+"-new", 2), recoveryAt) //nolint:contextcheck // deliberately a cancelled or fresh test context
 				require.ErrorIs(t, err, context.Canceled)
 
-				assertSet(t.Context(), t, s, user, old)
+				assertSet(t.Context(), t, s, user, old) //nolint:contextcheck // deliberately a cancelled or fresh test context
 			},
 		},
 		{
@@ -601,7 +601,7 @@ func TestRecoveryStores_Statements(t *testing.T) {
 			name: "spend of a spent code",
 			run: func(ctx context.Context) error {
 				if err := flag(codes.Spend(ctx, user, hashes[0], recoveryAt)); !errors.Is(err, errRefused) {
-					return fmt.Errorf("want the refusal, got %v", err)
+					return fmt.Errorf("want the refusal, got %w", err)
 				}
 				return nil
 			},
@@ -616,7 +616,7 @@ func TestRecoveryStores_Statements(t *testing.T) {
 			name: "completion before the completable instant",
 			run: func(ctx context.Context) error {
 				if err := flag(records.Complete(ctx, pending.ID, pending.NotBefore.Add(-time.Second))); !errors.Is(err, errRefused) {
-					return fmt.Errorf("want the refusal, got %v", err)
+					return fmt.Errorf("want the refusal, got %w", err)
 				}
 				return nil
 			},

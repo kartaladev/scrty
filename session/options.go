@@ -119,6 +119,26 @@ func WithFirstFactor(kind factor.Kind) CreateOption {
 	return func(s *Session) { s.FirstFactor = kind }
 }
 
+// WithSecondFactorAtLogin records that the login creating the session met its
+// second factor at its first, as a user-verified passkey login does.
+//
+// The session is created with MFA set to MFASatisfied, MFASatisfiedAt set to
+// its creation time and MFAAtFirstFactor set, all in the one creating write,
+// so there is no moment at which the session exists unsatisfied. The default
+// is a session with no second factor recorded (MFANone).
+//
+// It is meant for the library's own login tail, which adds it only when the
+// login carried the library's proof (policy.Input.SecondFactorAtLogin). A
+// consumer that adds it to a session of their own creates a satisfied session
+// on their own word.
+func WithSecondFactorAtLogin() CreateOption {
+	return func(s *Session) {
+		s.MFA = MFASatisfied
+		s.MFASatisfiedAt = s.CreatedAt
+		s.MFAAtFirstFactor = true
+	}
+}
+
 // WithExternalSession records the identity provider a federated login came
 // from: the provider name as the consumer configured it, the issuer the token
 // was verified against, the provider's own session identifier (which may be

@@ -556,6 +556,7 @@ func TestCrossBackend(t *testing.T) {
 		{name: "enrolment fields shared across backends", run: testEnrolmentFieldsShared},
 		{name: "enrolment flow through session.Manager and mfa.TOTP", run: testEnrolmentDurableFlow},
 		{name: "recovery-pending session shared across backends", run: testRecoveryPendingSessionShared},
+		{name: "second factor at login shared across backends", run: testSecondFactorAtLoginShared},
 		{name: "a recovery code spent on one backend is refused on the others", run: testRecoveryCodeSpentShared},
 		{name: "a recovery completed on one backend is seen by the others", run: testRecoveryCompletionShared},
 	}
@@ -794,6 +795,43 @@ func testRecoveryPendingSessionShared(t *testing.T, b backends) {
 			assert.Equal(t, session.MFARecoveryPending, got.MFA)
 			assertInstant(t, "EnrolmentOriginDeadline", marker, got.EnrolmentOriginDeadline)
 			assertInstant(t, "RecoveredAt", recoveredAt, got.RecoveredAt)
+		})
+	}
+}
+
+// testSecondFactorAtLoginShared proves a session created with the second
+// factor met at login, saved through sqlstore, loads through pgx and gorm with
+// the marker, state and satisfied time equal, and that a save through either
+// leaves the marker as it was.
+func testSecondFactorAtLoginShared(t *testing.T, b backends) {
+	t.Helper()
+
+	const seed = "second-factor-at-login"
+
+	satisfiedAt := time.Now().UTC().Truncate(time.Microsecond)
+	sess := crossBackendSession(seed)
+	sess.FirstFactor = factor.Passkey
+	sess.MFA = session.MFASatisfied
+	sess.MFASatisfiedAt = satisfiedAt
+	sess.MFAAtFirstFactor = true
+	require.NoError(t, b.sessionStore(t, "sqlstore").Create(t.Context(), sess))
+
+	for _, reader := range []string{"pgx", "gorm"} {
+		t.Run(reader, func(t *testing.T) {
+			t.Parallel()
+
+			s := b.sessionStore(t, reader)
+			got, err := s.Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.True(t, got.MFAAtFirstFactor)
+			assert.Equal(t, session.MFASatisfied, got.MFA)
+			assertInstant(t, "MFASatisfiedAt", satisfiedAt, got.MFASatisfiedAt)
+
+			got.MFAAtFirstFactor = false
+			require.NoError(t, s.Save(t.Context(), got))
+			again, err := s.Load(t.Context(), seed)
+			require.NoError(t, err)
+			assert.True(t, again.MFAAtFirstFactor, "a save through %s must keep the marker", reader)
 		})
 	}
 }

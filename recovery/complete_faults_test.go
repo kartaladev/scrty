@@ -154,7 +154,7 @@ func (s faultyRecordStore) Complete(ctx context.Context, rid id.ID, at time.Time
 		return false, err
 	}
 	if s.f.err(faultRecordsNoComplete) != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // the fault reports "not completed", not an error
 	}
 
 	return s.RecordStore.Complete(ctx, rid, at)

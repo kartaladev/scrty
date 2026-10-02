@@ -246,12 +246,12 @@ func TestRecoveryCodeStore_Rows(t *testing.T) {
 			assert: func(t *testing.T, _ context.Context, user identity.UserID) {
 				old := recoveryHashes(string(user)+"-old", 2)
 				s := newRecoveryCodeStore(t, db.Pool)
-				require.NoError(t, s.ReplaceSet(t.Context(), user, old, recoveryAt))
+				require.NoError(t, s.ReplaceSet(t.Context(), user, old, recoveryAt)) //nolint:contextcheck // deliberately a cancelled or fresh test context
 
-				err := s.ReplaceSet(storefix.Cancelled(t.Context()), user, recoveryHashes(string(user)+"-new", 2), recoveryAt)
+				err := s.ReplaceSet(storefix.Cancelled(t.Context()), user, recoveryHashes(string(user)+"-new", 2), recoveryAt) //nolint:contextcheck // deliberately a cancelled or fresh test context
 				require.ErrorIs(t, err, context.Canceled)
 
-				assertSet(t.Context(), t, s, user, old)
+				assertSet(t.Context(), t, s, user, old) //nolint:contextcheck // deliberately a cancelled or fresh test context
 			},
 		},
 		{

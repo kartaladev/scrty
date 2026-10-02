@@ -3,9 +3,13 @@ package scrty_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -50,6 +54,9 @@ var integrationModules = []string{
 	"github.com/samber/do",
 	"github.com/pressly/goose",
 	"github.com/testcontainers/testcontainers-go/modules/postgres",
+	"github.com/go-webauthn/webauthn",
+	"github.com/fxamacker/cbor",
+	"github.com/google/go-tpm",
 }
 
 type requirement struct {
@@ -286,4 +293,152 @@ func realCoreConsumer(t *testing.T) (string, []string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o600))
 	// -mod=mod lets go list record go.sum entries for the core's own requirements, in the temp dir only.
 	return dir, []string{"GOFLAGS=-mod=mod"}
+}
+
+// exportedAPIViolations reports every exported identifier of the module rooted
+// at dir whose type reaches a type of a package under forbidden.
+//
+// It reads the packages' compiled export data, so what it walks is the API the
+// compiler sees: exported functions, methods, fields, variables, constants and
+// types, aliases resolved, and unexported types followed wherever an exported
+// identifier hands them out. Unexported fields and methods are not API and are
+// not walked.
+func exportedAPIViolations(t *testing.T, dir, forbidden string) []violation {
+	t.Helper()
+	out := goCmd(t, dir, nil, "list", "-export", "-deps", "-json=ImportPath,Export,DepOnly", "./...")
+	exports := map[string]string{}
+	var roots []string
+	dec := json.NewDecoder(strings.NewReader(out))
+	for dec.More() {
+		var p struct {
+			ImportPath string
+			Export     string
+			DepOnly    bool
+		}
+		require.NoError(t, dec.Decode(&p))
+		exports[p.ImportPath] = p.Export
+		if !p.DepOnly {
+			roots = append(roots, p.ImportPath)
+		}
+	}
+
+	imp := importer.ForCompiler(token.NewFileSet(), "gc", func(path string) (io.ReadCloser, error) {
+		file, ok := exports[path]
+		if !ok || file == "" {
+			return nil, fmt.Errorf("no export data for %s", path)
+		}
+		// The path comes from go list's own output for this module.
+		return os.Open(file) //nolint:gosec // G304: path reported by go list
+	})
+
+	var vs []violation
+	for _, path := range roots {
+		pkg, err := imp.Import(path)
+		require.NoError(t, err, "importing %s", path)
+		scope := pkg.Scope()
+		for _, name := range scope.Names() {
+			obj := scope.Lookup(name)
+			if !obj.Exported() {
+				continue
+			}
+			w := apiWalker{pkg: pkg, forbidden: forbidden, seen: map[types.Type]bool{}}
+			w.walk(obj.Type())
+			for _, hit := range w.hits {
+				vs = append(vs, violation{Where: path, What: name + " exposes " + hit})
+			}
+		}
+	}
+	return vs
+}
+
+// apiWalker follows a type through everything a caller outside its package
+// can reach, and records each named type found under a forbidden path.
+type apiWalker struct {
+	pkg       *types.Package
+	forbidden string
+	seen      map[types.Type]bool
+	hits      []string
+}
+
+func (w *apiWalker) walk(typ types.Type) {
+	if typ == nil || w.seen[typ] {
+		return
+	}
+	w.seen[typ] = true
+
+	switch t := typ.(type) {
+	case *types.Alias:
+		w.walk(types.Unalias(t))
+	case *types.Named:
+		w.named(t)
+	case *types.Pointer:
+		w.walk(t.Elem())
+	case *types.Slice:
+		w.walk(t.Elem())
+	case *types.Array:
+		w.walk(t.Elem())
+	case *types.Chan:
+		w.walk(t.Elem())
+	case *types.Map:
+		w.walk(t.Key())
+		w.walk(t.Elem())
+	case *types.Signature:
+		for tp := range t.TypeParams().TypeParams() {
+			w.walk(tp.Constraint())
+		}
+		w.walk(t.Params())
+		w.walk(t.Results())
+	case *types.Tuple:
+		for v := range t.Variables() {
+			w.walk(v.Type())
+		}
+	case *types.Struct:
+		for f := range t.Fields() {
+			// An embedded unexported struct still promotes its exported members.
+			if f.Exported() || f.Embedded() {
+				w.walk(f.Type())
+			}
+		}
+	case *types.Interface:
+		for m := range t.ExplicitMethods() {
+			if m.Exported() {
+				w.walk(m.Type())
+			}
+		}
+		for e := range t.EmbeddedTypes() {
+			w.walk(e)
+		}
+	case *types.TypeParam:
+		w.walk(t.Constraint())
+	}
+}
+
+// named records a forbidden named type, and follows a named type of the
+// package under check into its exported fields and methods. Named types of
+// other packages are their own module's API and are not followed.
+func (w *apiWalker) named(t *types.Named) {
+	for arg := range t.TypeArgs().Types() {
+		w.walk(arg)
+	}
+	for tp := range t.TypeParams().TypeParams() {
+		w.walk(tp.Constraint())
+	}
+	obj := t.Obj()
+	if obj.Pkg() == nil {
+		return
+	}
+	path := obj.Pkg().Path()
+	if path == w.forbidden || strings.HasPrefix(path, w.forbidden) {
+		w.hits = append(w.hits, path+"."+obj.Name())
+		return
+	}
+	if path != w.pkg.Path() {
+		return
+	}
+	w.walk(t.Underlying())
+	for m := range t.Methods() {
+		if m.Exported() {
+			w.walk(m.Type())
+		}
+	}
 }

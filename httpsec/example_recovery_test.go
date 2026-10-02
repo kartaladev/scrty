@@ -44,7 +44,7 @@ func ExampleEnableAccountRecovery() {
 
 	chain, err := httpsec.New(
 		httpsec.EnablePasswordChangeGate(sessions,
-			httpsec.WithChangePasswordEndpoint("/account/password", func(ex *httpsec.Exchange) error {
+			httpsec.WithChangePasswordEndpoint("/account/password", func(_ *httpsec.Exchange) error {
 				return nil // the consumer's own password-change logic
 			}),
 		),

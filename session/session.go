@@ -114,6 +114,17 @@ type Session struct {
 	// recorded and not something a consumer key can claim.
 	MFASatisfiedAt time.Time
 
+	// MFAAtFirstFactor marks that the second factor was met at the first
+	// factor of the login that created this session, as a user-verified
+	// passkey login does, rather than by answering a challenge afterwards.
+	// WithSecondFactorAtLogin sets it in the creating write, and Rotate
+	// carries it over into the new session's creating write. Write-once: the
+	// Store writes it in Create only, and Save keeps the stored value, so
+	// changing it here and saving changes nothing. Library-owned: a consumer
+	// cannot set it through Data, and a session satisfied by answering a
+	// challenge never carries it.
+	MFAAtFirstFactor bool
+
 	// PasswordChangePending marks that this session owes a password change.
 	// Library-owned.
 	PasswordChangePending bool
@@ -163,8 +174,8 @@ type Session struct {
 
 	// Data is the consumer's own map. The library stores and returns it
 	// byte-for-byte, and never reads, adds, renames or removes an entry. No
-	// library state is kept in it: the first factor, the second-factor state,
-	// the confinement marker, the enrolment generation, the recovery time and
+	// library state is kept in it: the first factor, the second-factor state
+	// and whether it was met at the first factor, the confinement marker, the enrolment generation, the recovery time and
 	// the password-change marker are fields above, so a consumer key can
 	// neither forge nor erase a challenge state.
 	//

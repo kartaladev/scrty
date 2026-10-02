@@ -153,6 +153,143 @@ func TestDeletingAndCounting(t *testing.T) {
 	})
 }
 
+func TestDeletingByUserExceptOne(t *testing.T) {
+	t.Parallel()
+
+	// Every case starts from three sessions of testUser and one of otherUser.
+	// keep picks the kept identifier from them; prepare runs before the call.
+	type testCase struct {
+		name    string
+		prepare func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs
+		keep    func(ids exceptIDs) string
+		assert  func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs)
+	}
+
+	cases := []testCase{
+		{
+			name: "the kept session stays and the user's others go",
+			keep: func(ids exceptIDs) string { return ids.mine[0] },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 2, removed)
+				assertLoads(t, m, ids.mine[0], ids.theirs)
+				assertGone(t, m, ids.mine[1:]...)
+			},
+		},
+		{
+			name: "a kept session of another user is untouched and every session of the user goes",
+			keep: func(ids exceptIDs) string { return ids.theirs },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 3, removed)
+				assertLoads(t, m, ids.theirs)
+				assertGone(t, m, ids.mine...)
+			},
+		},
+		{
+			name: "a kept identifier no session holds deletes every session of the user",
+			keep: func(exceptIDs) string { return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 3, removed)
+				assertLoads(t, m, ids.theirs)
+				assertGone(t, m, ids.mine...)
+			},
+		},
+		{
+			name: "an empty kept identifier deletes every session of the user",
+			keep: func(exceptIDs) string { return "" },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 3, removed, "an empty kept identifier was a no-op")
+				assertLoads(t, m, ids.theirs)
+				assertGone(t, m, ids.mine...)
+			},
+		},
+		{
+			name: "expired sessions of the user are deleted and counted",
+			prepare: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs {
+				t.Helper()
+
+				// The seeded sessions idle out; a fresh one is created to keep.
+				clk.Advance(createdAt.Add(time.Hour).Sub(clk.Now()))
+				fresh, err := m.Create(t.Context(), testUser)
+				require.NoError(t, err)
+				ids.fresh = fresh.ID
+
+				return ids
+			},
+			keep: func(ids exceptIDs) string { return ids.fresh },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 3, removed, "expired sessions were left behind or not counted")
+				assertLoads(t, m, ids.fresh)
+				assertGone(t, m, ids.mine...)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			m, _ := managerOnClock(t, clk)
+			ids := seedExcept(t, m)
+			if tc.prepare != nil {
+				ids = tc.prepare(t, m, clk, ids)
+			}
+
+			removed, err := m.DeleteByUserExcept(t.Context(), testUser, tc.keep(ids))
+			tc.assert(t, removed, err, m, ids)
+		})
+	}
+}
+
+// exceptIDs names the sessions seedExcept creates, and the one a case may add.
+type exceptIDs struct {
+	mine   []string
+	theirs string
+	fresh  string
+}
+
+// seedExcept creates three sessions of testUser and one of otherUser.
+func seedExcept(t *testing.T, m *session.Manager) exceptIDs {
+	t.Helper()
+
+	var ids exceptIDs
+	for range 3 {
+		s, err := m.Create(t.Context(), testUser)
+		require.NoError(t, err)
+		ids.mine = append(ids.mine, s.ID)
+	}
+	s, err := m.Create(t.Context(), otherUser)
+	require.NoError(t, err)
+	ids.theirs = s.ID
+
+	return ids
+}
+
+// assertLoads asserts every session in ids still loads.
+func assertLoads(t *testing.T, m *session.Manager, ids ...string) {
+	t.Helper()
+
+	for _, id := range ids {
+		_, err := m.Load(t.Context(), id)
+		assert.NoError(t, err, "a session that should have been kept does not load")
+	}
+}
+
+// assertGone asserts no session in ids is stored any longer, expired or not.
+func assertGone(t *testing.T, m *session.Manager, ids ...string) {
+	t.Helper()
+
+	for _, id := range ids {
+		_, err := m.Load(t.Context(), id)
+		assert.ErrorIs(t, err, session.ErrSessionNotFound, "a session that should have been deleted is still stored")
+	}
+}
+
 func TestEndingFederatedSessions(t *testing.T) {
 	t.Parallel()
 

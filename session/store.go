@@ -63,9 +63,13 @@ type Store interface {
 	// already holding it.
 	Create(ctx context.Context, s *Session) error
 
-	// Save updates the stored session with this identifier, whole, and
-	// reports ErrSessionNotFound when there is no longer one to update. It
-	// never inserts.
+	// Save updates the stored session with this identifier, whole except for
+	// MFAAtFirstFactor, and reports ErrSessionNotFound when there is no longer
+	// one to update. It never inserts.
+	//
+	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
+	// whatever the session handed to it says, so no later save can set or
+	// clear the marker. A SQL store leaves its column out of the UPDATE.
 	Save(ctx context.Context, s *Session) error
 
 	// Load returns the session with this identifier, ErrSessionNotFound when
@@ -80,6 +84,13 @@ type Store interface {
 	// DeleteByUser removes every session of this user, expired ones included.
 	// The reference is matched exactly as the consumer supplied it.
 	DeleteByUser(ctx context.Context, user identity.UserID) error
+
+	// DeleteByUserExcept removes every session of this user except the one with
+	// identifier keep, expired ones included, in one atomic operation, and reports
+	// how many it removed. A keep that names another user's session, or none, is
+	// left untouched and does not stop the user's sessions from being removed; an
+	// empty keep removes them all.
+	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
 
 	// CountActiveByUser counts this user's unexpired sessions. Expired ones
 	// are excluded whether or not anything has swept them, because a session

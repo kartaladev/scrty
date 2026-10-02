@@ -279,7 +279,7 @@ confinement pattern (above). `EnableAccountRecovery` fails construction without 
   `httpsec.WithChangePasswordEndpoint`), whose success clears the confinement without rotating the
   session — the recovery minted it for this caller already.
 
-`passkey-authentication` adds passkey registration as a third binding route.
+Passkey registration (see [Passkeys](#passkeys)) is a third binding route.
 
 ### The MFA reset kind
 
@@ -308,7 +308,7 @@ check, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
 ok, err := check.HasWayBack(ctx, userID)
 ```
 
-`passkey-authentication` calls it before letting a passwordless-only user register their first
+The passkey manager calls it before letting a passwordless-only user register their first
 passkey without saved codes: such a user's passkey stays pending until they have generated a set and
 proved they kept it.
 
@@ -350,6 +350,239 @@ than one replica supplies durable stores instead: `pgx.NewRecoveryRecordStore`,
 `gorm.NewRecoveryRecordStore` or `sqlstore.NewRecoveryRecordStore` for `RecoveryDeps.Records`, and
 `pgx.NewOneTimeStore`, `gorm.NewOneTimeStore` or `sqlstore.NewOneTimeStore` — the same `onetime.Store`
 implementation — for both `recovery.WithIssuedCodeStore` and `recovery.WithHoldTokenStore`.
+
+## Passkeys
+
+`passkey` adds WebAuthn passkeys: registration and management, passwordless login, the passkey as a
+second factor, and clone handling. The core package has no WebAuthn dependency; the verifier
+behind the `passkey.Verifier` port lives in the nested module
+`github.com/kartaladev/scrty/passkey/webauthn`, which you add to your own `go.mod` and pass in.
+Each snippet below is mirrored by an `Example` function in `passkey` or `passkey/webauthn` that
+compiles and runs in this repository's tests.
+
+### The relying party
+
+The relying party has no default. Its ID is a bare host (no scheme, port, path or trailing dot, and
+not an IP address), its origins are `https` origins on that host or a subdomain of it (`http` only
+on `localhost`), and a malformed one is an error wrapping `passkey.ErrConfig` at construction:
+
+```go
+rp := passkey.RelyingParty{
+	ID:      "example.com",
+	Name:    "Example Co",
+	Origins: []string{"https://example.com", "https://app.example.com"},
+}
+```
+
+**Changing the relying-party ID orphans every registered passkey**, because authenticators scope
+their credentials to it. Choose it once, and keep it.
+
+Advise your users to keep **two passkeys, one of them synced** (held by a platform or password
+manager that backs it up), so losing a device does not lock them out. Saved recovery codes and
+account recovery (above) are the way back when both are gone.
+
+### Wiring the adapter and the manager
+
+```go
+verifier, err := webauthn.New(rp) // github.com/kartaladev/scrty/passkey/webauthn
+
+manager, err := passkey.New(passkey.Deps{
+	Verifier: verifier,
+	Users:    users,       // identity.UserLoader
+	Sender:   queuedSender, // a non-blocking notify.Sender, e.g. notify.NewQueuedSender
+	Sessions: sessions,     // the *session.Manager the chain uses (httpsec.PasskeyDeps.Sessions)
+},
+	passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
+)
+```
+
+`Verifier`, `Users`, `Sender`, `Sessions` and the repudiation contact have no default (`Sessions` may be
+left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
+`passkey.WithoutSessionRevocationOnClone` given); everything else does:
+
+| What | Default | Replaced by |
+|---|---|---|
+| Credential store | in-memory, one process only | `passkey.Deps.Credentials` |
+| User-handle store | in-memory, one process only | `passkey.Deps.Handles` |
+| Challenge store | in-memory, one process only | `passkey.Deps.Challenges` |
+| Attestation | off: none requested, every authenticator accepted, only its AAGUID kept | `webauthn.WithAttestationRecord`, `webauthn.WithTrustedAttestation` |
+| Response to a suspected clone | refuse, suspend the credential, end the user's sessions, notify | `passkey.WithCloneResponse`, `passkey.WithClonePolicy` |
+| Other sessions of the user when a passkey is removed | ended; the removing session stays | `passkey.WithoutSessionRevocationOnRemoval`, or per request the posted `other_sessions` field (`keep` or `end`; anything else, an empty value or a repeated field is a 400, `httpsec.ErrMalformedRequest`) |
+| Sessions of the user when a passkey is suspended as a clone | every session ended | `passkey.WithoutSessionRevocationOnClone` |
+| Second factor at a passwordless login | a user-verified passkey meets it | `passkey.WithoutSecondFactorAtLogin` |
+| Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasswordlessPrefix` |
+| Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
+| Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
+| Passkeys per user | 25, every state counted | `passkey.WithPasskeyLimit` |
+| Freshness to register or remove a passkey | latest authentication within 15 minutes | `passkey.WithManagementFreshness` |
+| Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session steps up through the passkey method; a passkey-first session cannot (same channel) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
+| User verification | required | `passkey.WithUserVerification` |
+| Resident (discoverable) key | required; a non-resident passkey serves only as a second factor | `passkey.WithResidentKey` |
+| Emailed confirmation code | 6 digits, valid 10 minutes, 5 attempts | not configurable: the store contract fixes the attempts (`passkey.MaxEmailCodeAttempts`) |
+| Request body caps | 64 KiB registration (`passkey.RegistrationBodyLimit`), 16 KiB assertion (`passkey.AssertionBodyLimit`) | not configurable |
+| Passwordless begin throttle | 30 per 15 minutes per source, in this process's memory | `httpsec.PasswordlessLimiter` |
+| Passwordless ceremony cookie | `passkey_ceremony` (`httpsec.DefaultPasswordlessCookieName`) | `httpsec.PasswordlessCookieName` |
+| Log sampling | each refusal, clone or queue failure reason at most once a minute | `passkey.WithLogInterval` |
+
+The removal endpoint (`POST <prefix>/remove`) reads the optional `other_sessions` field from the same
+form body as `id`: `keep` keeps the user's other sessions, `end` ends them, and absent applies the
+manager's default (end). Asking to end them on a manager wired with no `Sessions` is a
+`passkey.ErrConfig` refusal and changes nothing.
+
+Three overrides, compiled as `ExampleWithCloneResponse`, `ExampleWithoutSessionRevocationOnRemoval`
+and `ExampleWithoutSecondFactorAtLogin` in `passkey/example_test.go` (`ExampleKeepOtherSessions` shows the
+per-call `Remove` options):
+
+```go
+// Allow a suspected clone and only warn; or decide each one yourself (the policy wins).
+passkey.WithCloneResponse(passkey.CloneSignalOnly)
+passkey.WithClonePolicy(func(_ context.Context, s passkey.CloneSignal) passkey.CloneAction {
+	if s.BackupState { // a synced passkey's counter is unreliable
+		return passkey.CloneAllow
+	}
+
+	return passkey.CloneRefuseSuspend
+})
+
+// Keep the user's other sessions on removal, and on a suspected clone (each has its own option).
+passkey.WithoutSessionRevocationOnRemoval()
+passkey.WithoutSessionRevocationOnClone()
+
+// A direct Remove call chooses per call: passkey.KeepOtherSessions() or passkey.EndOtherSessions().
+
+// A passwordless login no longer meets the second factor; MFA follows where policy requires it.
+passkey.WithoutSecondFactorAtLogin()
+```
+
+The in-memory stores hold one process's records and forget them on restart; behind several replicas
+a ceremony must also finish on the replica that began it. A deployment that runs more than one
+replica supplies durable stores. The credential store seals the emailed confirmation code at rest,
+so it takes a `seal.Cipher`; `sqlstore`, `pgx` and `gorm` each have the two constructors:
+
+```go
+credentials, err := sqlstore.NewPasskeyCredentialStore(db, cipher) // cipher: seal.NewAEADCipher over a seal.Keyring
+handles, err := sqlstore.NewPasskeyHandleStore(db)
+
+manager, err := passkey.New(passkey.Deps{
+	Verifier:    verifier,
+	Credentials: credentials,
+	Handles:     handles,
+	Users:       users,
+	Sender:      queuedSender,
+	Sessions:    sessions,
+},
+	passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
+)
+```
+
+### Recovery codes and the way-back check
+
+A user who signs in with passkeys alone has no password to fall back on. So, by default, a first
+passkey registered by a user with no other way back in stays **pending** until they have generated
+a set of saved recovery codes and confirmed they kept it, and passwordless login refuses a manager
+with no recovery wired. The way-back check needs the passkey recovery kind and is part of the
+manager's own dependencies, so build the kind first with `passkey.NewRecoveryKind`, over the same
+credential store the manager will use (create the in-memory store yourself, with
+`passkey.NewMemoryCredentialStore`, so both share it):
+
+```go
+contact := passkey.WithRepudiationContact("Contact support@example.com if you did not do this.")
+
+credentials := passkey.NewMemoryCredentialStore() // or your own store; the manager must get this one
+
+deps := passkey.Deps{Verifier: verifier, Credentials: credentials, Users: users, Sender: queuedSender, Sessions: sessions} // and your other stores
+
+codes, err := recovery.NewCodes()
+
+wayBack, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
+	Users:       users,
+	Codes:       codes,
+	Kinds:       []recovery.AuthenticatorKind{passkey.NewRecoveryKind(credentials)},
+	IssuedCodes: true, // recovery.ProofIssued is enabled
+})
+
+deps.Recovery = &passkey.RecoveryDeps{Codes: codes, WayBack: wayBack}
+
+manager, err := passkey.New(deps, contact)
+```
+
+Register `manager.RecoveryKind()` with `recovery.WithAuthenticatorKinds` too, so a recovery removes
+the passkeys a user lost; do not also pass the passkey MFA method to `recovery.MFAEnrolments`.
+
+`passkey.WithOptionalRecoveryCodes` is the alternative for accounts only the operator can recover:
+a passkey is active at once, and the registration result reports that recovery is not set up so
+your interface can prompt for it. It trades the safety net for convenience; the default is the safe
+one.
+
+```go
+optional, err := passkey.New(deps, contact, passkey.WithOptionalRecoveryCodes())
+```
+
+### Enabling registration, passwordless login and the MFA method
+
+```go
+chain, err := httpsec.New(
+	// ... your other chain options (sessions, login) ...
+	httpsec.EnableMFA([]mfa.Method{totp, manager.MFAMethod()}, // each verified at /mfa/verify/<name>
+		httpsec.WithMFATokens(tokens),
+	),
+	httpsec.EnablePasskeys(
+		httpsec.PasskeyDeps{Passkeys: manager, Sessions: sessions, Users: users},
+		httpsec.WithPasswordlessLogin(httpsec.PasswordlessTokens(tokens)),
+	),
+)
+```
+
+- `EnablePasskeys` alone serves registration and management for a signed-in session:
+  `POST /passkey/register/begin` and `/finish` (plus `/confirm` and `/confirm-email`
+  for a pending passkey), and `GET /passkey/credentials` with `POST .../rename` and `.../remove`.
+- `WithPasswordlessLogin` is off unless given. It adds `POST /passkey/login/begin` and `/finish`,
+  tied together by an `HttpOnly`, `Secure`, `SameSite=Strict` ceremony cookie, and signs a user in
+  with a discoverable passkey alone. `PasswordlessTokens` names the token generator, and may be
+  left out when the chain has form login to take one from.
+- The passkey is a second-factor method named `passkey`, beside TOTP: `EnableMFA` serves it at
+  `/mfa/begin/passkey` and `/mfa/verify/passkey`. A user-verified passkey login already meets the
+  second factor, so it is not asked again.
+- A passkey is also a binding route for a recovered or enrolment-only session, once the passkey
+  method is among the enrolling methods.
+
+### Attestation
+
+Attestation is **off by default**: no statement is requested and any authenticator is accepted,
+which is what lets synced passkeys register. Two options in the adapter change that:
+
+```go
+webauthn.New(rp, webauthn.WithAttestationRecord()) // record the format and statement, accept every authenticator
+```
+
+Recording collects data that can identify the user's authenticator model and batch, which the
+default does not. To **require** trusted attestation, give the verifier a FIDO metadata source. The
+metadata is fetched through scrty's confined outbound client, never the verification library's
+own, and that client's response cap must be raised, because the production BLOB is several
+megabytes and the default is 1 MiB:
+
+```go
+client, err := outbound.New(
+	outbound.WithAllowedOrigins("https://mds3.fidoalliance.org"),
+	outbound.WithMaxResponseBytes(32<<20),
+)
+
+verifier, err := webauthn.New(rp, webauthn.WithTrustedAttestation(webauthn.MetadataFromMDS(client)))
+```
+
+The source caches the BLOB until its `nextUpdate` and for at most 24 hours, and a failed refresh
+refuses every trusted registration rather than trusting stale data. Trusted mode excludes synced
+passkeys, which carry no attestation. `webauthn.MetadataBlob` takes a BLOB you fetch yourself.
+
+### Stated limits
+
+- **The relying-party ID cannot change** without orphaning every passkey (above).
+- **Only discoverable credentials sign a user in.** Passwordless login never asks for a username,
+  so it cannot be used to learn which usernames exist.
+- **A passkey is never a recovery proof.** It is an authenticator recovery can reset, and a way back
+  only while it is active.
+- **Counters are judged by the store's write.** Authenticators that always report zero, as synced
+  passkeys do, are never treated as clones.
 
 ## Development
 

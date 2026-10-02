@@ -37,6 +37,11 @@ const (
 	// cannot refuse a recovery before it is heard. See EnableAccountRecovery.
 	OrderAccountRecoveryEndpoints Order = 375
 
+	// OrderPasskeyLogin is passwordless passkey login, a first factor of its
+	// own: after the one-time link slot and the account-recovery endpoints,
+	// and before Basic authentication.
+	OrderPasskeyLogin Order = 380
+
 	// OrderBasicAuth is HTTP Basic authentication.
 	OrderBasicAuth Order = 400
 
@@ -56,6 +61,13 @@ const (
 	// OrderPasswordChange is the gate a session owing a password change is
 	// held at, and the endpoint that resolves it.
 	OrderPasswordChange Order = 650
+
+	// OrderPasskeys is the passkey endpoints that need a session: registration
+	// and its confirmations, and the listing, rename and remove endpoints. It
+	// is inside every gate, the password-change gate included, so each gate
+	// has already decided whether the session may reach them. See
+	// EnablePasskeys.
+	OrderPasskeys Order = 660
 
 	// OrderLogout ends the session.
 	OrderLogout Order = 700

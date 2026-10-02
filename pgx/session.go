@@ -119,8 +119,9 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 		return failed(op, err)
 	}
 
-	n, err := s.c.exec(ctx, op, pgschema.SessionInsert,
-		append([]any{uuidArg(rowID), storekit.SessionDigest(sess.ID)}, cols...)...)
+	// Only the insert writes the marker: SessionUpdate has no column for it.
+	args := append([]any{uuidArg(rowID), storekit.SessionDigest(sess.ID)}, cols...)
+	n, err := s.c.exec(ctx, op, pgschema.SessionInsert, append(args, sess.MFAAtFirstFactor)...)
 	if err != nil {
 		return err
 	}
@@ -131,7 +132,8 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 	return nil
 }
 
-// Save replaces the stored session whole, and never inserts.
+// Save replaces the stored session whole, except for MFAAtFirstFactor, and
+// never inserts.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	const op = "save session"
 
@@ -171,7 +173,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
-		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered)
+		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -226,6 +228,22 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 	_, err := s.c.exec(ctx, "delete user's sessions", pgschema.SessionDeleteByUser, string(user))
 
 	return err
+}
+
+// DeleteByUserExcept removes every session of user except the one named by
+// keep, expired ones included, and reports how many it removed. keep is
+// compared by its digest, as Delete's identifier is, so one no store could
+// hold names no session and every session of the user goes. A user reference
+// PostgreSQL text cannot hold matches nothing.
+func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	if !storekit.Storable(string(user)) {
+		return 0, nil
+	}
+
+	n, err := s.c.exec(ctx, "delete user's other sessions", pgschema.SessionDeleteByUserExcept,
+		string(user), storekit.SessionDigest(keep))
+
+	return int(n), err
 }
 
 // CountActiveByUser counts user's sessions unexpired by the store's clock.

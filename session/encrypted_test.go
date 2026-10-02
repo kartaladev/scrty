@@ -355,6 +355,7 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 		inner := NewMockStore(ctrl)
 		inner.EXPECT().Delete(gomock.Any(), "id").Return(nil).Times(1)
 		inner.EXPECT().DeleteByUser(gomock.Any(), testUser).Return(nil).Times(1)
+		inner.EXPECT().DeleteByUserExcept(gomock.Any(), testUser, "id").Return(4, nil).Times(1)
 		inner.EXPECT().CountActiveByUser(gomock.Any(), testUser).Return(3, nil).Times(1)
 		inner.EXPECT().DeleteExpired(gomock.Any()).Return(7, nil).Times(1)
 		inner.EXPECT().DeleteByExternalSession(gomock.Any(), "https://a", "s-1").Return(1, nil).Times(1)
@@ -367,7 +368,11 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 		require.NoError(t, sealing.Delete(ctx, "id"))
 		require.NoError(t, sealing.DeleteByUser(ctx, testUser))
 
-		n, err := sealing.CountActiveByUser(ctx, testUser)
+		n, err := sealing.DeleteByUserExcept(ctx, testUser, "id")
+		require.NoError(t, err)
+		assert.Equal(t, 4, n)
+
+		n, err = sealing.CountActiveByUser(ctx, testUser)
 		require.NoError(t, err)
 		assert.Equal(t, 3, n)
 

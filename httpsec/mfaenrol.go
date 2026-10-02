@@ -48,6 +48,14 @@ type enrolmentInterceptor struct {
 	// given.
 	names []string
 
+	// passkeys reports, from assembly on, that the passkey MFA method is
+	// among the enrolling methods, so passkey registration serves the path;
+	// passkeyPaths are then the registration endpoints' paths, which the gate
+	// exempts. Neither is configured here: EnablePasskeys hands the paths
+	// over.
+	passkeys     bool
+	passkeyPaths []string
+
 	lifetime time.Duration
 
 	// beginLimiter and confirmLimiter are nil until assembly when the
@@ -204,9 +212,16 @@ func (c *config) wireMFAEnrolment() error {
 				option, policy.ChallengeMFAEnrolment)
 		}
 
-		methods, err := c.enrollableMethods(option, i.names)
+		methods, passkeys, err := c.enrollableMethods(option, i.names)
 		if err != nil {
 			return err
+		}
+
+		if passkeys && c.passkeysOf() == nil {
+			return newConfigError("%s counts the passkey method among its enrolling methods, "+
+				"but passkey registration is not enabled, so the policy would send users to a "+
+				"path that cannot enrol it: enable EnablePasskeys, or name the path's methods "+
+				"without it (WithEnrolmentMethods)", option)
 		}
 
 		if err := i.checkClaims(option, c); err != nil {
@@ -237,6 +252,7 @@ func (c *config) wireMFAEnrolment() error {
 		}
 
 		i.methods = methods
+		i.passkeys = passkeys
 		i.sessions = c.sessions
 		i.logoutPath = c.logoutPath
 		i.beginLimiter, i.confirmLimiter = beginLimiter, confirmLimiter
@@ -288,19 +304,31 @@ func (i *enrolmentInterceptor) checkClaims(option string, c *config) error {
 // endpoint completes the upgrade by verifying one: a factor enrolled on a
 // method it does not verify could never be verified, and the session would
 // stay confined until it expired.
-func (c *config) enrollableMethods(option string, names []string) (map[string]mfa.Enroller, error) {
+//
+// The passkey method is not among them, since the path's own endpoints cannot
+// enrol it, but it is counted: passkeys reports that it is one of the path's
+// enrolling methods, served by passkey registration (see servedByPasskeys).
+// It is counted by default, and when named.
+func (c *config) enrollableMethods(option string, names []string) (map[string]mfa.Enroller, bool, error) {
 	m := c.mfaOf()
 	if m == nil {
-		return nil, newConfigError("%s needs EnableMFA: the factors it enrols are the ones the "+
+		return nil, false, newConfigError("%s needs EnableMFA: the factors it enrols are the ones the "+
 			"verify endpoint verifies", option)
 	}
 
 	out := make(map[string]mfa.Enroller, len(m.methods))
+	passkeys := false
 
 	if names == nil {
 		var reasons []string
 
 		for _, method := range m.methods {
+			if servedByPasskeys(method) {
+				passkeys = true
+
+				continue
+			}
+
 			e, reason := enrollable(method)
 			if e == nil {
 				reasons = append(reasons, reason)
@@ -311,36 +339,46 @@ func (c *config) enrollableMethods(option string, names []string) (map[string]mf
 			out[method.Name()] = e
 		}
 
-		if len(out) == 0 {
-			return nil, newConfigError("%s needs a method EnableMFA was given that implements "+
-				"mfa.Enroller over a store implementing mfa.DeviceProofStore, and none does: %s",
-				option, strings.Join(reasons, "; "))
+		if len(out) == 0 && !passkeys {
+			return nil, false, newConfigError("%s needs a method EnableMFA was given that implements "+
+				"mfa.Enroller over a store implementing mfa.DeviceProofStore, or the passkey method, "+
+				"and none does: %s", option, strings.Join(reasons, "; "))
 		}
 
-		return out, nil
+		return out, passkeys, nil
 	}
 
+	named := make(map[string]bool, len(names))
+
 	for _, name := range names {
-		if _, dup := out[name]; dup {
-			return nil, newConfigError("WithEnrolmentMethods names %q twice", name)
+		if named[name] {
+			return nil, false, newConfigError("WithEnrolmentMethods names %q twice", name)
 		}
+
+		named[name] = true
 
 		method, ok := m.byName[name]
 		if !ok {
-			return nil, newConfigError("WithEnrolmentMethods names %q, which is not among the "+
+			return nil, false, newConfigError("WithEnrolmentMethods names %q, which is not among the "+
 				"methods EnableMFA was given", name)
+		}
+
+		if servedByPasskeys(method) {
+			passkeys = true
+
+			continue
 		}
 
 		e, reason := enrollable(method)
 		if e == nil {
-			return nil, newConfigError("WithEnrolmentMethods names %q, which cannot enrol "+
+			return nil, false, newConfigError("WithEnrolmentMethods names %q, which cannot enrol "+
 				"through the path: %s", name, reason)
 		}
 
 		out[name] = e
 	}
 
-	return out, nil
+	return out, passkeys, nil
 }
 
 // enrollable is m as an mfa.Enroller that can serve the path, or nil and why
@@ -389,8 +427,9 @@ func (c *config) enrolmentLimiter(l ratelimit.Limiter, limit int, window time.Du
 // session passes too; whether it may go on is the authentication
 // interceptors' business.
 //
-// For an enrolment-only session, only POST under an enrolment prefix and the
-// chain's logout pass. Every other request, whatever its method or path, is
+// For an enrolment-only session, only POST under an enrolment prefix, the
+// chain's logout and, when passkey registration serves the path, POST to the
+// passkey registration endpoints pass. Every other request, whatever its method or path, is
 // refused before anything behind the gate runs. Logout is exempt because the
 // gate sits outside it, and a caller confined here must always be able to end
 // the session — on a device that is not theirs, it is the one thing they most
@@ -412,13 +451,22 @@ func (i *enrolmentInterceptor) Intercept(ex *Exchange, next Next) error {
 		return err
 	}
 
-	if s.MFA == session.MFARecoveryPending || isLogoutPost(i.logoutPath, ex.Request) {
+	if s.MFA == session.MFARecoveryPending || isLogoutPost(i.logoutPath, ex.Request) ||
+		i.passkeyRegistration(ex.Request) {
 		return next(ex)
 	}
 
 	// No token: the caller already holds the credential this session was
 	// reached with, and a gate issues nothing.
 	return &ChallengeError{Kind: policy.ChallengeMFAEnrolment, Session: s}
+}
+
+// passkeyRegistration reports whether r is a POST to one of the passkey
+// registration endpoints, which an enrolment-only session reaches when passkey
+// registration serves the path. The paths are handed over at assembly, and
+// only then (wirePasskeys).
+func (i *enrolmentInterceptor) passkeyRegistration(r Request) bool {
+	return r.Method() == http.MethodPost && slices.Contains(i.passkeyPaths, r.Path())
 }
 
 // endpoint serves ex when it is a request to one of the path's endpoints. It

@@ -82,6 +82,7 @@ func TestConsumerStoreServesEveryOperation(t *testing.T) {
 	store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 	store.EXPECT().Delete(gomock.Any(), "consumer-store").Return(nil).Times(1)
 	store.EXPECT().DeleteByUser(gomock.Any(), testUser).Return(nil).Times(1)
+	store.EXPECT().DeleteByUserExcept(gomock.Any(), testUser, "consumer-store").Return(6, nil).Times(1)
 	store.EXPECT().CountActiveByUser(gomock.Any(), testUser).Return(4, nil).Times(1)
 	store.EXPECT().DeleteExpired(gomock.Any()).Return(5, nil).Times(1)
 	store.EXPECT().DeleteByExternalSession(gomock.Any(), "https://a", "s-1").Return(1, nil).Times(1)
@@ -100,7 +101,11 @@ func TestConsumerStoreServesEveryOperation(t *testing.T) {
 	require.NoError(t, m.Delete(ctx, "consumer-store"))
 	require.NoError(t, m.DeleteByUser(ctx, testUser))
 
-	n, err := m.CountActiveByUser(ctx, testUser)
+	n, err := m.DeleteByUserExcept(ctx, testUser, "consumer-store")
+	require.NoError(t, err)
+	assert.Equal(t, 6, n)
+
+	n, err = m.CountActiveByUser(ctx, testUser)
 	require.NoError(t, err)
 	assert.Equal(t, 4, n)
 

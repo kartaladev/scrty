@@ -62,6 +62,8 @@ var portableVariants = []brokenVariant{
 	},
 	sessionVariant(sessionConforming, ""),
 	sessionVariant(sessionCountIdleOnly, "the active count is exactly the user's unexpired sessions"),
+	sessionVariant(sessionExceptDeletesAll,
+		"deleting by user except one removes the user's other sessions, expired ones included, and keeps that one"),
 	sessionVariant(sessionSavePartial, "a saved session loads with every field saved, its user and provider included"),
 	sessionVariant(sessionCreateSharesData, "a created, saved or loaded session is the caller's own copy"),
 	sessionVariant(sessionLoadSharesData, "a created, saved or loaded session is the caller's own copy"),

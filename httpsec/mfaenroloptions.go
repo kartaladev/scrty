@@ -95,7 +95,10 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 // store as a stale generation is, and proves nothing.
 //
 // A session in the enrolment-pending state reaches only POST under the three
-// enrolment prefixes and the chain's logout. Every other request — the MFA
+// enrolment prefixes, the chain's logout, and, when passkey registration
+// serves the path, POST to the passkey registration begin, finish,
+// saved-code confirm and emailed-code confirm endpoints. Every other request —
+// the passkey listing, rename and remove endpoints included — the MFA
 // verify, begin and method-listing endpoints, the password-change resolve
 // endpoint, the authorizer, every consumer interceptor after OrderMFAEnrolment
 // and the handler — is refused
@@ -106,7 +109,8 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //
 // Defaults, each replaced by the option named:
 //   - the methods enrolled are every method EnableMFA was given that
-//     implements mfa.Enroller and reports SupportsEnrolmentPath
+//     implements mfa.Enroller and reports SupportsEnrolmentPath, and the
+//     passkey method (passkey.MFAMethod), which passkey registration enrols
 //     (WithEnrolmentMethods);
 //   - the endpoints answer POST under DefaultEnrolmentBeginPrefix,
 //     DefaultEnrolmentConfirmPrefix and DefaultEnrolmentEmailConfirmPrefix
@@ -159,7 +163,18 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //
 // A method can enrol through the path when it implements mfa.Enroller over a
 // store that implements mfa.DeviceProofStore; a store that does not still
-// serves out-of-band enrolment. New refuses the chain when there is no
+// serves out-of-band enrolment.
+//
+// The passkey method is enrolled through the path by passkey registration
+// rather than by the path's own endpoints: when it is among the enrolling
+// methods, an enrolment-only session registers a passkey at EnablePasskeys'
+// registration endpoints, under this path's email confirmation, contact
+// resolver and confirmation limiter, and proves it at the MFA slot's verify
+// endpoint like any other enrolment. New refuses the chain when the passkey
+// method is among the enrolling methods and EnablePasskeys is not enabled,
+// since the policy would then send users to a path that cannot enrol it.
+//
+// New refuses the chain when there is no
 // EnableMFA, when none of its methods can enrol through the path, when
 // WithEnrolmentMethods names a method EnableMFA was not given or one that
 // cannot enrol, when an enrolment prefix overlaps another, the MFA verify or
@@ -286,8 +301,9 @@ func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
 // end with.
 //
 // Default: every method EnableMFA was given that implements mfa.Enroller and
-// reports SupportsEnrolmentPath. A name is one of those or New refuses the
-// chain: a name EnableMFA was not given, one whose method cannot enrol through
+// reports SupportsEnrolmentPath, and the passkey method when EnableMFA was
+// given it. Name "passkey" to keep the passkey method among them, which needs
+// EnablePasskeys. A name is one of those or New refuses the chain: a name EnableMFA was not given, one whose method cannot enrol through
 // the path, and a name given twice are each a configuration error. So is
 // giving the option no names at all, which would leave a path nobody could
 // enrol through; omit the option to keep the default.
@@ -411,6 +427,11 @@ func WithEnrolmentConfirmLimiter(l ratelimit.Limiter) EnrolmentOption {
 // minutes after the device is proven, 5 attempts — are fixed and have no
 // option, because each could only be loosened, and together they are the
 // guessing bound the step exists to give.
+//
+// It covers passkeys too. When passkey registration serves the path (see
+// EnablePasskeys), a passkey registered from an enrolment-only session waits
+// for a code emailed to the user by default, and with this option it is
+// active at once.
 func WithoutEmailConfirmation() EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
 		i.emailConfirmation = false

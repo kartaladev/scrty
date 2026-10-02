@@ -197,7 +197,10 @@ type mfaRequirementPolicy struct {
 //
 // # Evaluation order
 //
-//  1. an exempt first factor: allow, before anything is looked up;
+//  1. an exempt first factor: allow, before anything is looked up. Not for a
+//     post-authentication login carrying a holding Input.SecondFactorAtLogin:
+//     the exemption rule, default or replaced, is never called for it, and
+//     its phase is read here instead of at step 4;
 //  2. is a second factor required? With WithMFARequiredForAll, yes, without
 //     consulting the lookup. A lookup that fails denies, with a reason of fixed
 //     text that wraps the lookup's error without repeating it;
@@ -205,7 +208,11 @@ type mfaRequirementPolicy struct {
 //  4. the stateless-authentication phase, or no method configured: deny
 //     ErrMFARequired — there is no later point at which such a request could
 //     answer a challenge;
-//  5. the per-request phase with the second factor already satisfied: allow;
+//  5. the per-request phase with the second factor already satisfied: allow.
+//     The post-authentication phase with a holding Input.SecondFactorAtLogin,
+//     the library's proof that the second factor was met at the first: allow
+//     too, before the usability check, so the enrolment challenge never fires
+//     for such a login. No exemption rule is consulted for it (see step 1);
 //  6. no usable enrolment, as UsableMFAMethods decides — enrolled on no
 //     method, or only on methods on the first factor's own channel: with the
 //     enrolment path on (WithMFAEnrolmentPath) and admitting this login,
@@ -221,6 +228,10 @@ type mfaRequirementPolicy struct {
 // In the post-authentication phase Input.MFASatisfied is not honoured. It is a
 // claim the login makes about itself, and a policy that can be talked out of a
 // requirement does not enforce one.
+// Only the library's proof in Input.SecondFactorAtLogin is. A consumer who
+// wants a separate second factor even after a user-verified passkey login
+// sets passkey.WithoutSecondFactorAtLogin on the passkey login, so no proof is
+// minted and this policy never sees one.
 //
 // Construction fails, wrapping ErrConfig, with ErrMFARequirementLookupMissing
 // when there is no lookup and no requirement for all — the policy could answer
@@ -327,10 +338,27 @@ func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
 // Evaluate answers for one request, in the order NewMFARequirementPolicy
 // documents. It reads the Input and never writes to it.
 func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision {
+	// A login carrying the library's proof that its second factor was met at
+	// the first factor is not judged by the exemption rule: the proof is
+	// honoured in step 5 and the rule is never called for it. Its phase is
+	// therefore read up front, and only for it; every other request reads it
+	// at step 4 as before.
+	var (
+		phase      Phase
+		known      bool
+		phaseRead  bool
+		proofLogin bool
+	)
+	if in.SecondFactorAtLogin.Holds() {
+		phase, known = p.phaseOf(ctx, in)
+		phaseRead = true
+		proofLogin = known && phase == PostAuthentication
+	}
+
 	// 1. An exempt first factor is decided before anything is looked up: a
 	// machine caller has nobody to prompt, and a federated login already
 	// authenticated where it came from.
-	if p.exempt(in.FirstFactor) {
+	if !proofLogin && p.exempt(in.FirstFactor) {
 		return Decision{Outcome: Allow}
 	}
 
@@ -352,7 +380,9 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		return Decision{Outcome: Allow}
 	}
 
-	phase, known := p.phaseOf(ctx, in)
+	if !phaseRead {
+		phase, known = p.phaseOf(ctx, in)
+	}
 
 	// 4. A stateless request will never reach a phase in which it could answer
 	// a challenge, and a policy with no method has nothing to challenge
@@ -367,6 +397,15 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	// claim is honoured here and nowhere else: in the post-authentication phase
 	// it is the login's own word for itself.
 	if phase == PerRequest && in.MFASatisfied {
+		return Decision{Outcome: Allow}
+	}
+
+	// 5, at login. A login carrying the library's proof that its second factor was met
+	// at the first factor is done, before the usability check, so the
+	// enrolment challenge never fires for it. Unlike the claim in step 5 the
+	// proof cannot be made by the login itself, and it is not an exemption:
+	// step 1 skipped the exemption rule for it, which is never called.
+	if proofLogin {
 		return Decision{Outcome: Allow}
 	}
 

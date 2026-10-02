@@ -84,16 +84,17 @@ Every presented credential SHALL report its credential type and SHALL provide a 
 - **THEN** its password material is wiped and cleanup reports no error
 
 ### Requirement: First-factor kinds map to channels and exemptions
-The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, `basic`, `api-key` and `recovery`, and the channels `knowledge`, `email`, `authenticator-app`, `federated` and `machine`. It SHALL map kinds to channels as follows:
+The library SHALL name the first-factor kinds `password`, `magic-link`, `oidc`, `basic`, `api-key`, `recovery` and `passkey`, and the channels `knowledge`, `email`, `authenticator-app`, `federated`, `machine` and `public-key`. It SHALL map kinds to channels as follows:
 - `password` and `basic` report `knowledge`;
 - `magic-link` reports `email`;
 - `oidc` reports `federated`;
 - `api-key` reports `machine`;
+- `passkey` reports `public-key`, the channel of credentials an authenticator holds as a key pair and proves by signing a challenge;
 - `recovery`, the kind of a session an account recovery produces, reports no channel, because the recovery rested on two proofs of different kinds rather than on one channel.
 
-The `authenticator-app` channel SHALL be the channel of second factors that use an authenticator app, such as TOTP, and `email` SHALL also be the channel of email-delivered second factors. These kinds and channels SHALL be the complete vocabulary scrty uses. Other capabilities, including multi-factor authentication and security policy, SHALL reference these values and SHALL NOT define kinds or channels of their own.
+The `authenticator-app` channel SHALL be the channel of second factors that use an authenticator app, such as TOTP, and `email` SHALL also be the channel of email-delivered second factors. The `public-key` channel SHALL also be the channel of the passkey second factor, so a passkey second factor after a passkey login is on the first factor's own channel. These kinds and channels SHALL be the complete vocabulary scrty uses. Other capabilities, including multi-factor authentication and security policy, SHALL reference these values and SHALL NOT define kinds or channels of their own.
 
-Only `oidc` and `api-key` SHALL report themselves as exempt from an MFA requirement. `recovery` SHALL NOT be exempt. The empty kind and every kind the library does not name SHALL report no channel and SHALL NOT be exempt.
+Only `oidc` and `api-key` SHALL report themselves as exempt from an MFA requirement. `recovery` and `passkey` SHALL NOT be exempt. The empty kind and every kind the library does not name SHALL report no channel and SHALL NOT be exempt.
 
 #### Scenario: Authenticator-app channel
 - **WHEN** the channel vocabulary is listed
@@ -120,6 +121,10 @@ Only `oidc` and `api-key` SHALL report themselves as exempt from an MFA requirem
 #### Scenario: Recovery kind
 - **WHEN** the kind `recovery` is examined
 - **THEN** it reports no channel and is not exempt
+
+#### Scenario: Passkey kind
+- **WHEN** the kind `passkey` is examined
+- **THEN** it reports channel `public-key` and is not exempt
 
 ### Requirement: User loader contract
 A user loader SHALL load user details by username and by user reference. The library SHALL pass the username, and the user reference, exactly as presented. A flow that recorded a user reference SHALL load by that reference, never by a username, because a username is a reusable handle. When no user matches, the loader SHALL return a "user not found" error that callers can identify. Any other failure SHALL be returned as an error that is not identifiable as "user not found". Details loaded by user reference SHALL carry exactly the reference asked for.

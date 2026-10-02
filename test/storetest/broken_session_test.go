@@ -24,6 +24,9 @@ const (
 	// The active count judges the idle deadline only, so a session past its
 	// absolute deadline still counts against the user.
 	sessionCountIdleOnly sessionDefect = "count-idle-only"
+	// DeleteByUserExcept ignores the identifier to keep and deletes every
+	// session of the user.
+	sessionExceptDeletesAll sessionDefect = "except-deletes-kept"
 	// Save writes a partial column list: the activity and second-factor
 	// fields and Data, keeping the stored user, creation time, first factor,
 	// absolute deadline and provider fields.
@@ -83,6 +86,16 @@ const (
 	// Load hands back no enrolment generation, as a column the read leaves
 	// out would.
 	sessionLoadDropsEnrolmentGeneration sessionDefect = "load-drops-enrolment-generation"
+	// Create does not keep the second-factor-at-login marker.
+	sessionCreateDropsMarker sessionDefect = "create-drops-second-factor-marker"
+	// Save sets a stored marker that is unset when the incoming session
+	// carries it, and otherwise keeps the stored one: a save sets it, never
+	// clears it.
+	sessionSaveSetsMarker sessionDefect = "save-sets-second-factor-marker"
+	// Save clears a stored marker that is set when the incoming session does
+	// not carry it, and otherwise keeps the stored one: a save clears it,
+	// never sets it.
+	sessionSaveClearsMarker sessionDefect = "save-clears-second-factor-marker"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -172,6 +185,9 @@ func (s *sessionStore) Create(_ context.Context, sess *session.Session) error {
 		}
 	}
 	stored := cloneSession(sess)
+	if s.defect == sessionCreateDropsMarker {
+		stored.MFAAtFirstFactor = false
+	}
 	if s.defect == sessionCreateSharesData {
 		stored.Data = sess.Data
 	}
@@ -188,6 +204,19 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	if !exists {
 		return session.ErrSessionNotFound
 	}
+	// Only Create writes the marker: a conforming save keeps the stored one.
+	// Each marker defect lets one direction of change through, and only
+	// that one.
+	marker := stored.MFAAtFirstFactor
+	switch {
+	case s.defect == sessionSaveSetsMarker && !marker && sess.MFAAtFirstFactor:
+		marker = true
+	case s.defect == sessionSaveClearsMarker && marker && !sess.MFAAtFirstFactor:
+		marker = false
+	}
+	kept := cloneSession(sess)
+	kept.MFAAtFirstFactor = marker
+	sess = kept
 	if s.defect == sessionSaveRefusesTextAfterPartialWrite {
 		stored.LastAccessedAt = sess.LastAccessedAt
 		stored.IdleExpiresAt = sess.IdleExpiresAt
@@ -322,6 +351,13 @@ func (s *sessionStore) Delete(_ context.Context, sessionID string) error {
 func (s *sessionStore) DeleteByUser(_ context.Context, user identity.UserID) error {
 	s.removeWhere(func(sess *session.Session) bool { return sess.UserID == user })
 	return nil
+}
+
+func (s *sessionStore) DeleteByUserExcept(_ context.Context, user identity.UserID, keep string) (int, error) {
+	if s.defect == sessionExceptDeletesAll {
+		keep = ""
+	}
+	return s.removeWhere(func(sess *session.Session) bool { return sess.UserID == user && sess.ID != keep }), nil
 }
 
 func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID) (int, error) {

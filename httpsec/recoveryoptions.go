@@ -223,9 +223,10 @@ type RecoveryOption func(*recoveryInterceptor) error
 //     (WithRecoveryLogInterval).
 //
 // New fails when the chain has no way to bind the recovered session — neither
-// EnableMFAEnrolment nor a password-change resolve endpoint
-// (WithChangePasswordEndpoint) — since a recovery-pending session could then
-// never become a full one. It fails too when any recovery path is empty, lacks
+// EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA
+// (whose verify endpoint proves the new passkey), nor a password-change
+// resolve endpoint (WithChangePasswordEndpoint) — since a recovery-pending
+// session could then never become a full one. It fails too when any recovery path is empty, lacks
 // a leading "/", or equals another recovery path, the login path or the logout
 // path. One chain has one recovery; a second EnableAccountRecovery is refused.
 func EnableAccountRecovery(deps RecoveryDeps, opts ...RecoveryOption) Option {

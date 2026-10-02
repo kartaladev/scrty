@@ -223,7 +223,7 @@ func (c *slowSweepClock) Now() time.Time {
 	now := c.FakeClock.Now()
 	c.sweeps = append(c.sweeps, now)
 	if len(c.sweeps) == 1 {
-		c.FakeClock.Advance(c.took)
+		c.Advance(c.took)
 	}
 
 	return now

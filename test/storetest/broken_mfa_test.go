@@ -299,6 +299,9 @@ var enrolmentPathVariants = []brokenVariant{
 	sessionVariant(sessionSaveDropsEnrolmentDeadline, "Enrolment-only session round trip"),
 	sessionVariant(sessionSaveKeepsEnrolmentMarker, "Marker cleared on upgrade"),
 	sessionVariant(sessionLoadDropsEnrolmentGeneration, "Enrolment-only session round trip"),
+	sessionVariant(sessionCreateDropsMarker, "marker round trip"),
+	sessionVariant(sessionSaveSetsMarker, "a save does not set the marker"),
+	sessionVariant(sessionSaveClearsMarker, "a save does not clear the marker"),
 }
 
 func deviceProofVariant(d mfaDefect, failsCase, failsWith string) brokenVariant {

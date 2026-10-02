@@ -29,13 +29,20 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - a malformed recovery: the wrong number or kinds of proofs, a proof kind that is not enabled, or a reported loss the user does not hold;
 - a held recovery presented for completion before its hold ends;
 - a request refused during a recovery cool-down;
-- a saved-code regeneration from a session whose latest authentication is outside the freshness window.
+- a saved-code regeneration from a session whose latest authentication is outside the freshness window;
+- a passkey assertion refused as a suspected clone;
+- a passkey assertion from a suspended credential;
+- a passkey assertion from a credential that is still pending;
+- a passkey registration refused by the attestation policy;
+- a passkey registration beyond the user's passkey limit;
+- a passkey registration or removal from a session below the account's assurance or outside the freshness window;
+- a passkey identifier that names no passkey of the session's user.
 
-A refused recovery SHALL be identifiable as the authentication-failed refusal, so it reads to the client like a failed login.
+A refused recovery SHALL be identifiable as the authentication-failed refusal, so it reads to the client like a failed login. A refused passkey ceremony (an invalid, spent or mismatched challenge, a missing ceremony cookie, an unknown credential, a user-handle mismatch or a signature that does not verify) SHALL be identifiable as the authentication-failed refusal without a sentinel of its own. As a second factor it SHALL be the invalid second-factor code refusal.
 
 A refusal a core already names SHALL be reported as that core's own error rather than restated under a second name. In particular, a policy that denies without giving a reason SHALL be reported as the security-policy capability's reasonless-deny error, because the policy engine already substitutes it: a second sentinel for the same condition would be unreachable, and a consumer matching one identity would miss the other. Where this capability's own refusal and a core's name the same condition, the chain SHALL wrap the core's with its own so that either identity matches.
 
-It SHALL also expose one challenge error type, whose kinds include account recovery, and SHALL map the refusal errors that the authentication, authorization, session, security-policy and second-factor cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. A challenge error of the second-factor kind SHALL also carry the session user's usable MFA methods, each with its name, its channel and whether it has a begin step, computed by the one function the security policies use to decide usability; when that computation fails, the request SHALL be refused with the failure instead of the challenge, and SHALL NEVER carry an empty or partial list. No refusal error's text SHALL contain an access token, a session handle, a submitted credential or a method name. A refusal caused by a consumer-supplied dependency SHALL carry fixed library text, with the dependency's error reachable by identity and type, as the diagnostic-redaction capability requires; this SHALL NOT change the status it maps to.
+It SHALL also expose one challenge error type, whose kinds include account recovery, and SHALL map the refusal errors that the authentication, authorization, session, security-policy, second-factor and passkey cores define. A challenge error SHALL carry its challenge kind, the pending session when one exists, and the access token issued with it when one was issued. A challenge error of the second-factor kind SHALL also carry the session user's usable MFA methods, each with its name, its channel and whether it has a begin step, computed by the one function the security policies use to decide usability; when that computation fails, the request SHALL be refused with the failure instead of the challenge, and SHALL NEVER carry an empty or partial list. No refusal error's text SHALL contain an access token, a session handle, a submitted credential, a method name, a challenge, a credential ID or a user handle. A refusal caused by a consumer-supplied dependency SHALL carry fixed library text, with the dependency's error reachable by identity and type, as the diagnostic-redaction capability requires; this SHALL NOT change the status it maps to.
 
 #### Scenario: Challenge error contents
 - **WHEN** form login is challenged for a second factor
@@ -69,18 +76,22 @@ It SHALL also expose one challenge error type, whose kinds include account recov
 - **WHEN** one recovery is refused for an unknown username and another for a wrong saved code
 - **THEN** both errors are the same recovery-refused refusal, and neither's text contains a username or a code
 
+#### Scenario: Passkey refusal reveals no credential
+- **WHEN** one passwordless finish is refused for an unknown credential and another for a bad signature
+- **THEN** both errors are the authentication-failed refusal, and neither's text contains a credential ID or a challenge
+
 ### Requirement: One public table maps refusals to a status
 The library SHALL provide a public status-only mapping from an error to an HTTP status code. Every library default response and helper SHALL use it, and it SHALL recognise wrapped and joined errors:
 
 | Refusal | Status |
 |---|---|
-| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery), session idle, throttled source, throttled saved-code presentation | 401 |
+| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), session idle, throttled source, throttled saved-code presentation | 401 |
 | challenge of kind password change, challenge of kind second-factor enrolment, challenge of kind account recovery | 403 |
 | challenge of any other kind | 401 |
-| invalid second-factor code, throttled second-factor verification or enrolment | 401 |
-| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration | 403 |
+| invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
+| access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
 | malformed login, malformed recovery, invalid federated logout token | 400 |
-| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path | 404 |
+| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found | 404 |
 | request too large | 413 |
 | new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
 | account locked | 423 |
@@ -90,7 +101,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 
 A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.
 
-Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code, and an absent, unknown, expired, spent or mismatched pending MFA challenge, SHALL be identifiable as the invalid second-factor code refusal.
+Federated login refusals that are authentication failures (an invalid flow, an invalid ID token, an unlinked identity, a refused provisioning, an invalid handoff code) SHALL be identifiable as the authentication-failed refusal and SHALL therefore map to 401 without rows of their own. An invalid, expired or voided emailed enrolment code, an absent, unknown, expired, spent or mismatched pending MFA challenge, and an invalid, expired or voided emailed passkey confirmation code, SHALL be identifiable as the invalid second-factor code refusal.
 
 #### Scenario: Wrapped sentinel
 - **WHEN** an error wraps the access-denied refusal with extra context
@@ -199,6 +210,26 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Reauthentication required
 - **WHEN** the error is the reauthentication-required refusal of a saved-code regeneration
 - **THEN** the mapping returns 403
+
+#### Scenario: Suspected clone
+- **WHEN** the error is the clone-suspected refusal of a passkey assertion
+- **THEN** the mapping returns 403
+
+#### Scenario: Pending passkey
+- **WHEN** the error is the pending-passkey refusal
+- **THEN** the mapping returns 403
+
+#### Scenario: Attestation refused
+- **WHEN** the error is the attestation-refused refusal of a passkey registration
+- **THEN** the mapping returns 403
+
+#### Scenario: Passkey not found
+- **WHEN** the error is the passkey-not-found refusal of a removal
+- **THEN** the mapping returns 404
+
+#### Scenario: Refused passkey ceremony
+- **WHEN** the error is the refusal of a passwordless finish whose signature does not verify
+- **THEN** the mapping returns 401
 
 ### Requirement: A challenge takes precedence over a sentinel
 When an error is, or wraps, a challenge error, the mapping SHALL use the challenge's status even if the error also wraps a refusal sentinel.

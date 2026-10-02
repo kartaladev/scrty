@@ -29,6 +29,12 @@ var (
 	// maps to 400, and it says nothing about the account.
 	ErrCredentialsMissing = errors.New("httpsec: missing or unreadable login credentials")
 
+	// ErrMalformedRequest refuses a request whose fields are present but carry
+	// a value the endpoint does not accept: an optional field given an
+	// unknown value, an empty value, or more than once. Nothing has changed
+	// when it is returned. It is the client's mistake, so it maps to 400.
+	ErrMalformedRequest = errors.New("httpsec: malformed request")
+
 	// ErrRequestTooLarge refuses a body over the configured bound before it is
 	// parsed.
 	ErrRequestTooLarge = errors.New("httpsec: request too large")
