@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/kartaladev/scrty/factor"
@@ -153,6 +154,26 @@ func WithExternalSession(provider, issuer, sessionID, idToken string) CreateOpti
 		s.ExternalIssuer = issuer
 		s.ExternalSessionID = sessionID
 		s.ExternalIDToken = idToken
+	}
+}
+
+// WithFederatedAssurance records the authentication methods references (amr)
+// and the authentication context class reference (acr) the identity provider
+// asserted for the login creating the session. The default is none recorded.
+//
+// They are written in the creating write, with the first factor and the
+// provider, and Rotate carries them over. The slice is copied, so the caller
+// keeping or changing amr afterwards does not reach the session. They are
+// library-owned fields, never stored in or read from Data, and recording them
+// changes neither MFA nor MFAAtFirstFactor.
+//
+// It is meant for the library's own OIDC completion, which passes what the
+// validated ID token asserted. A consumer that adds it to a session of their
+// own records assurance on their own word.
+func WithFederatedAssurance(amr []string, acr string) CreateOption {
+	return func(s *Session) {
+		s.FederatedAMR = slices.Clone(amr)
+		s.FederatedACR = acr
 	}
 }
 

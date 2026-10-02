@@ -356,7 +356,8 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // accepted, a step-up completed — because a handle someone obtained before
 // that change must not still answer requests after it. Everything except the
 // identifier is carried over: the user, the first factor, both deadlines, the
-// challenge state (including MFAAtFirstFactor) and the consumer's own data.
+// challenge state (including MFAAtFirstFactor), the federated assurance and
+// the consumer's own data.
 //
 // The new entry is written before the old one is deleted. A failure of the
 // write leaves the old handle working and returns the error, so a caller that
