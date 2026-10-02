@@ -541,7 +541,10 @@ func TestPasskeyRemoveOtherSessions(t *testing.T) {
 
 		// body is the raw form body after the identifier, and pkOpts are
 		// manager options.
-		body   string
+		body string
+		// query is appended to the request path. The field is read from the
+		// body alone, so a value here is ignored.
+		query  string
 		pkOpts []passkey.Option
 		// noPort wires the manager with no session revoker, which is allowed
 		// only while both revocations are off.
@@ -624,6 +627,17 @@ func TestPasskeyRemoveOtherSessions(t *testing.T) {
 			body:   "&other_sessions=keep",
 			assert: removedAndKept,
 		},
+		{
+			name:   "other_sessions=keep in the URL query only is ignored and the default applies",
+			query:  "?other_sessions=keep",
+			assert: removedAndEnded,
+		},
+		{
+			name:   "a query value does not make a body value malformed or override it",
+			query:  "?other_sessions=end",
+			body:   "&other_sessions=keep",
+			assert: removedAndKept,
+		},
 		{name: "an unknown value is malformed and changes nothing", body: "&other_sessions=maybe", assert: malformed},
 		{name: "a value in another case is malformed", body: "&other_sessions=END", assert: malformed},
 		{name: "an empty value is malformed and changes nothing", body: "&other_sessions=", assert: malformed},
@@ -683,7 +697,7 @@ func TestPasskeyRemoveOtherSessions(t *testing.T) {
 				chain = h.build(t, f.carry)
 			}
 
-			req := post(t.Context(), passkeyRemovePath, "id="+f.own.ID.String()+tc.body)
+			req := post(t.Context(), passkeyRemovePath+tc.query, "id="+f.own.ID.String()+tc.body)
 
 			tc.assert(t, h, f, serve(t, chain, req))
 		})

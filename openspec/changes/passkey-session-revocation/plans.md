@@ -73,7 +73,7 @@
 - Modify: `session/encrypted.go` (after `DeleteByUser`, ~line 185)
 - Regenerate: `session/store_mock_test.go` (`go generate ./session/`)
 - Modify: every other `session.Store` implementation in the workspace (found with `gopls implementation` on `session.Store`), including `test/storetest/broken_session_test.go`
-- Test: `session/memory_test.go` and `session/manager_test.go` (existing tables)
+- Test: `session/delete_test.go` (`TestDeletingByUserExceptOne`, through the manager over the memory store, where the per-user delete tests live) and `session/returned_errors_test.go` (the manager's and the decorator's fixed-text failures)
 
 **Interfaces:**
 - Produces:
@@ -517,7 +517,7 @@ The default messages are reached through a manager built with default options. U
   - `passkey.KeepOtherSessions() RemoveOption`
   - `passkey.EndOtherSessions() RemoveOption`
 
-- [ ] **Step 1: Write the failing cases** in `TestManageRemove`, using a gomock `SessionRevoker` (generate it with `//go:generate mockgen -source=sessions.go -package=passkey_test -destination=sessions_mock_test.go -typed`) so order and arguments are asserted:
+- [ ] **Step 1: Write the failing cases** in `TestManageRemove`, using a gomock `SessionRevoker` (generate it with `mockgen -source=sessions.go -package=passkey_test -destination=sessions_mock_test.go -typed`, its `//go:generate` line placed in `manager.go` beside the package's others) so order and arguments are asserted:
 
 ```go
 {
@@ -738,7 +738,9 @@ Expected: FAIL with "missing call(s) to DeleteByUser" and a notice lacking the s
 
 ```go
 default:
-	suspended, err := m.credentials.Suspend(ctx, c.ID)
+	// Detached from cancellation too (design D4): a client that disconnects
+	// before the suspension must not leave the clone active.
+	suspended, err := m.credentials.Suspend(context.WithoutCancel(ctx), c.ID)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not suspend the credential", ErrCloneSuspected)
 	}

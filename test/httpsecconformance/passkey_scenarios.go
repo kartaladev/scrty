@@ -447,6 +447,18 @@ func (c *passkeyClient) reachesRoute(credential string) {
 	assert.True(c.t, res.RouteRan, "the credential reaches the route")
 }
 
+// isRefused asserts the credential no longer authenticates: the request is
+// refused as unauthenticated and the application route does not run.
+func (c *passkeyClient) isRefused(credential string) {
+	c.t.Helper()
+
+	res := c.send(get(RoutePath, bearerToken(credential)))
+
+	require.ErrorIs(c.t, res.Refusal, httpsec.ErrAuthenticationRequired)
+	assert.Equal(c.t, http.StatusUnauthorized, res.Status)
+	assert.False(c.t, res.RouteRan, "a refused credential never reaches the route")
+}
+
 // passwordLogin posts the fixture user's password, and returns the second-factor
 // challenge the chain answered with.
 func (c *passkeyClient) passwordLogin() *httpsec.ChallengeError {
@@ -506,6 +518,8 @@ func passkeyScenarios() []Scenario {
 		passkeyRegisterThenPasswordlessLogin(),
 		passkeyAsSecondFactorAfterPassword(),
 		passkeyCloneIsSuspendedThenRemoved(),
+		passkeyRemovalEndsTheOtherSessions(),
+		passkeyRemovalKeepsTheOtherSessionsOnRequest(),
 		passkeyFirstPasswordlessPasskeyWaitsForSavedCodes(),
 		passkeyRecoveryThenRegistrationReachesFullSession(),
 		passkeyEnrolmentOnlyUserRegistersWithEmailedCode(),
@@ -616,6 +630,10 @@ func passkeyCloneIsSuspendedThenRemoved() Scenario {
 
 			c.readRegistered(c.register(bearer(spec.Effects.SessionID)))
 
+			// A session the user holds before the clone is detected.
+			held := accessTokenOf(t, c.passwordlessLogin())
+			c.reachesRoute(held)
+
 			// The authenticator reports 5, and the chain stores it.
 			c.auth.Counter = 4
 			accessTokenOf(t, c.passwordlessLogin())
@@ -628,6 +646,14 @@ func passkeyCloneIsSuspendedThenRemoved() Scenario {
 			require.ErrorIs(t, cloned.Refusal, passkey.ErrCloneSuspected)
 			require.ErrorIs(t, cloned.Refusal, mfa.ErrAuthenticatorRefused)
 
+			// Suspension ends every session of the user, the one signed in
+			// before the clone and the one the pre-created session stands for.
+			c.isRefused(held)
+
+			stale := c.send(get(RoutePath, bearer(spec.Effects.SessionID)))
+			require.ErrorIs(t, stale.Refusal, httpsec.ErrAuthenticationRequired)
+			assert.Equal(t, http.StatusUnauthorized, stale.Status)
+
 			// The user comes back with their password and the app.
 			ch := c.passwordLogin()
 			assert.Equal(t, []string{"totp"}, methodNames(ch), "a suspended passkey is not a second factor")
@@ -638,18 +664,82 @@ func passkeyCloneIsSuspendedThenRemoved() Scenario {
 
 			header := bearerToken(credential)
 
-			held := c.list(header)
-			require.Len(t, held, 1)
-			assert.Equal(t, "suspended", held[0].State)
+			listing := c.list(header)
+			require.Len(t, listing, 1)
+			assert.Equal(t, "suspended", listing[0].State)
 
 			removed := c.send(post(passkeyRemove, withHeader(header, "Content-Type", formHeader["Content-Type"]),
-				url.Values{"id": {held[0].ID}}.Encode()))
+				url.Values{"id": {listing[0].ID}}.Encode()))
 			require.NoError(t, removed.Refusal)
 			assert.Equal(t, http.StatusNoContent, removed.Status)
 
 			assert.Empty(t, c.list(header), "the suspended passkey is gone")
 		},
 	}
+}
+
+// removalScenario signs the user in twice with a passkey, removes the passkey
+// as the first session posting form's extra fields, and hands both tokens to
+// check.
+func removalScenario(name string, extra url.Values, check func(c *passkeyClient, removing, other string)) Scenario {
+	return Scenario{
+		Name: name,
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			pf, sessions := newPasskeyFixture(t, passkeyBuild{enrolTOTP: true})
+			effects := passkeyEffects(pf, sessions)
+			effects.SessionID = pf.confirmedSession(t, sessions, true).ID
+
+			return ChainSpec{Options: pf.options(t, effects, sessions, true), Effects: effects, Routes: passkeyRoutes()}
+		},
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			c := newPasskeyClient(t, spec, send)
+
+			c.readRegistered(c.register(bearer(spec.Effects.SessionID)))
+
+			removing := accessTokenOf(t, c.passwordlessLogin())
+			other := accessTokenOf(t, c.passwordlessLogin())
+			require.NotEqual(t, removing, other, "two sign-ins are two sessions")
+
+			header := bearerToken(removing)
+
+			listing := c.list(header)
+			require.Len(t, listing, 1)
+
+			form := url.Values{"id": {listing[0].ID}}
+			for k, v := range extra {
+				form[k] = v
+			}
+
+			removed := c.send(post(passkeyRemove, withHeader(header, "Content-Type", formHeader["Content-Type"]), form.Encode()))
+			require.NoError(t, removed.Refusal)
+			require.Equal(t, http.StatusNoContent, removed.Status)
+
+			check(c, removing, other)
+		},
+	}
+}
+
+// passkeyRemovalEndsTheOtherSessions pins spec passkey-authentication: by
+// default a removal ends the user's other sessions and keeps the removing one.
+func passkeyRemovalEndsTheOtherSessions() Scenario {
+	return removalScenario("removing a passkey ends the user's other sessions and keeps the removing one", nil,
+		func(c *passkeyClient, removing, other string) {
+			c.reachesRoute(removing)
+			c.isRefused(other)
+		})
+}
+
+// passkeyRemovalKeepsTheOtherSessionsOnRequest pins the per-request override:
+// posting other_sessions=keep leaves every session standing.
+func passkeyRemovalKeepsTheOtherSessionsOnRequest() Scenario {
+	return removalScenario("removing a passkey with other_sessions=keep leaves the other sessions standing",
+		url.Values{"other_sessions": {"keep"}},
+		func(c *passkeyClient, removing, other string) {
+			c.reachesRoute(removing)
+			c.reachesRoute(other)
+		})
 }
 
 // methodNames lists the names of the methods a challenge offers.

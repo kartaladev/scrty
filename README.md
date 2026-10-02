@@ -429,8 +429,9 @@ form body as `id`: `keep` keeps the user's other sessions, `end` ends them, and 
 manager's default (end). Asking to end them on a manager wired with no `Sessions` is a
 `passkey.ErrConfig` refusal and changes nothing.
 
-Two overrides, compiled as `ExampleWithCloneResponse` and `ExampleWithoutSecondFactorAtLogin` in
-`passkey/example_test.go`:
+Three overrides, compiled as `ExampleWithCloneResponse`, `ExampleWithoutSessionRevocationOnRemoval`
+and `ExampleWithoutSecondFactorAtLogin` in `passkey/example_test.go` (`ExampleKeepOtherSessions` shows the
+per-call `Remove` options):
 
 ```go
 // Allow a suspected clone and only warn; or decide each one yourself (the policy wins).
@@ -442,6 +443,12 @@ passkey.WithClonePolicy(func(_ context.Context, s passkey.CloneSignal) passkey.C
 
 	return passkey.CloneRefuseSuspend
 })
+
+// Keep the user's other sessions on removal, and on a suspected clone (each has its own option).
+passkey.WithoutSessionRevocationOnRemoval()
+passkey.WithoutSessionRevocationOnClone()
+
+// A direct Remove call chooses per call: passkey.KeepOtherSessions() or passkey.EndOtherSessions().
 
 // A passwordless login no longer meets the second factor; MFA follows where policy requires it.
 passkey.WithoutSecondFactorAtLogin()

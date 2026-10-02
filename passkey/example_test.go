@@ -11,6 +11,7 @@ import (
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
@@ -203,6 +204,55 @@ func ExampleWithCloneResponse() {
 	fmt.Println(signalOnly != nil, decided != nil)
 
 	// Output: true true
+}
+
+// ExampleWithoutSessionRevocationOnRemoval turns the two session revocations
+// off, each with its own option. By default a removal ends the user's other
+// sessions (the removing one stays) and a suspected clone ends every session
+// of the user; the first option keeps the removal default at "keep", the
+// second leaves sessions alone when a credential is suspended. With both off
+// Deps.Sessions may be left out.
+func ExampleWithoutSessionRevocationOnRemoval() {
+	manager, err := passkey.New(passkey.Deps{
+		Verifier: exampleVerifier{rp: passkey.RelyingParty{
+			ID: "example.com", Name: "Example Co", Origins: []string{"https://example.com"},
+		}},
+		Users:  exampleUser(),
+		Sender: exampleSender{},
+	},
+		passkey.WithRepudiationContact("Contact support@example.com if you did not do this."),
+		passkey.WithoutSessionRevocationOnRemoval(),
+		passkey.WithoutSessionRevocationOnClone(),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(manager != nil)
+
+	// Output: true
+}
+
+// ExampleKeepOtherSessions chooses, for one removal, whether the user's other
+// sessions end with the passkey; the choice wins over the manager's default.
+// The HTTP endpoint offers the same choice as the posted "other_sessions"
+// field ("keep" or "end"). It is compiled, not run, as it needs a stored
+// passkey and the session that removes it.
+func ExampleKeepOtherSessions() {
+	var (
+		manager *passkey.Manager // built as in ExampleNew
+		current *session.Session // the session removing the passkey
+		cid     id.ID            // the passkey to remove
+		rc      passkey.RegistrationContext
+	)
+
+	ctx := context.Background()
+
+	// Keep the other sessions, though the manager ends them by default.
+	_ = manager.Remove(ctx, current, cid, rc, passkey.KeepOtherSessions())
+
+	// End them, though the manager was built with WithoutSessionRevocationOnRemoval.
+	_ = manager.Remove(ctx, current, cid, rc, passkey.EndOtherSessions())
 }
 
 // ExampleWithoutSecondFactorAtLogin stops a passwordless login from proving
