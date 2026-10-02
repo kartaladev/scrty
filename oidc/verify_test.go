@@ -509,6 +509,18 @@ func TestVerifyIDToken(t *testing.T) {
 			assert: asserts(nil, "", false, true),
 		},
 		{
+			// Every durable handoff store refuses a NUL, so a value holding one
+			// must read as malformed, not as asserted.
+			name:   "assurance: an amr element holding a NUL is malformed and asserts nothing",
+			token:  withClaims("amr", []any{"pwd", "mfa\x00x"}),
+			assert: asserts(nil, "", true, false),
+		},
+		{
+			name:   "assurance: an acr holding a NUL is malformed and asserts nothing",
+			token:  withClaims("acr", "gold\x00"),
+			assert: asserts(nil, "", false, true),
+		},
+		{
 			name:   "assurance: amr and acr are read together",
 			token:  withClaims("amr", []any{"pwd", "mfa"}, "acr", "urn:corp:loa:2"),
 			assert: asserts([]string{"pwd", "mfa"}, "urn:corp:loa:2", false, false),

@@ -28,6 +28,7 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 	type testCase struct {
 		name   string
 		mode   policy.FederatedAssuranceMode
+		opts   []policy.MFARequirementOption
 		lookup func(m *MockMFARequirementLookup)
 		assert func(t *testing.T, ok bool, err error)
 	}
@@ -37,6 +38,21 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 			// Exempt mode admits before the requirement is looked up.
 			name:   "linked provider under the exempt mode",
 			mode:   policy.FederatedAssuranceExempt,
+			lookup: func(*MockMFARequirementLookup) {},
+			assert: func(t *testing.T, ok bool, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.True(t, ok)
+			},
+		},
+		{
+			// An exemption rule that marks the oidc kind exempt is a total
+			// exemption, so the login is admitted before any lookup.
+			name: "linked provider under an exemption rule that exempts oidc",
+			mode: policy.FederatedAssuranceChallenge,
+			opts: []policy.MFARequirementOption{
+				policy.WithMFAExemption(func(k factor.Kind) bool { return k == factor.OIDC }),
+			},
 			lookup: func(*MockMFARequirementLookup) {},
 			assert: func(t *testing.T, ok bool, err error) {
 				t.Helper()
@@ -91,7 +107,8 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 			lookup := NewMockMFARequirementLookup(ctrl)
 			tc.lookup(lookup)
 
-			p, err := policy.NewMFARequirementPolicy(lookup, nil, policy.WithFederatedAssurance(tc.mode))
+			p, err := policy.NewMFARequirementPolicy(lookup, nil,
+				append([]policy.MFARequirementOption{policy.WithFederatedAssurance(tc.mode)}, tc.opts...)...)
 			require.NoError(t, err)
 			adm, ok := p.(policy.LoginAdmission)
 			require.True(t, ok, "the requirement policy must implement LoginAdmission")

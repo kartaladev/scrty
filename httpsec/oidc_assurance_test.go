@@ -594,6 +594,15 @@ func TestFederatedRematch(t *testing.T) {
 			assert:   reached,
 		},
 		{
+			name:  "a met session of a required, unenrolled user reaches the handler",
+			amr:   []string{"mfa"},
+			after: reachedOnce,
+			assert: func(t *testing.T, d *assuranceDeployment, credential string, out served) {
+				require.False(t, d.enrolled.Load(), "the user is not enrolled on the method")
+				reached(t, d, credential, out)
+			},
+		},
+		{
 			name:     "a tightened provider configuration challenges the live session",
 			amr:      []string{"mfa"},
 			enrolled: true,
@@ -661,6 +670,92 @@ func TestFederatedRematch(t *testing.T) {
 			credential := tc.after(t, d, login)
 
 			tc.assert(t, d, credential, d.invoices(t, credential))
+		})
+	}
+}
+
+// TestConsumerCreatedSessionAssurance pins the recipe a consumer follows when
+// its callback handler creates the session itself: per-request evidence is
+// minted only from a session that records the federated first factor, the
+// provider and issuer, and the asserted assurance. Any part left out is not a
+// partial credit: the session carries no evidence and is treated as though
+// the provider had asserted nothing.
+func TestConsumerCreatedSessionAssurance(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		amr      []string
+		enrolled bool
+		create   func(d *assuranceDeployment, amr []string) []session.CreateOption
+		assert   func(t *testing.T, out served)
+	}
+
+	recipe := func(d *assuranceDeployment, amr []string) []session.CreateOption {
+		return []session.CreateOption{
+			session.WithFirstFactor(factor.OIDC),
+			session.WithExternalSession(testOIDCProvider, d.h.provider.srv.URL, oidcTestSessionID, oidcTestIDToken),
+			session.WithFederatedAssurance(amr, ""),
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "first factor, external session and assurance: the evidence is asserted and met",
+			amr:    []string{"mfa"},
+			create: recipe,
+			assert: func(t *testing.T, out served) {
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan, "met evidence completes the request without a challenge")
+			},
+		},
+		{
+			name:     "the same recipe with an amr the provider does not accept is challenged",
+			amr:      []string{"pwd"},
+			enrolled: true,
+			create:   recipe,
+			assert: func(t *testing.T, out served) {
+				challengedFor(t, out, policy.ChallengeMFA)
+			},
+		},
+		{
+			name:     "the assurance alone, with no external session, yields no evidence",
+			amr:      []string{"mfa"},
+			enrolled: true,
+			create: func(_ *assuranceDeployment, amr []string) []session.CreateOption {
+				return []session.CreateOption{session.WithFederatedAssurance(amr, "")}
+			},
+			assert: func(t *testing.T, out served) {
+				challengedFor(t, out, policy.ChallengeMFA)
+			},
+		},
+		{
+			name:     "the first factor and assurance without the external session yield no evidence",
+			amr:      []string{"mfa"},
+			enrolled: true,
+			create: func(_ *assuranceDeployment, amr []string) []session.CreateOption {
+				return []session.CreateOption{
+					session.WithFirstFactor(factor.OIDC),
+					session.WithFederatedAssurance(amr, ""),
+				}
+			},
+			assert: func(t *testing.T, out served) {
+				challengedFor(t, out, policy.ChallengeMFA)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			d := newAssuranceDeployment(t, assuranceConfig{})
+			d.enrolled.Store(tc.enrolled)
+
+			s, err := d.h.sessions.Create(t.Context(), oidcTestUserID, tc.create(d, tc.amr)...)
+			require.NoError(t, err)
+
+			tc.assert(t, d.invoices(t, mfaTokenFor(s.ID)))
 		})
 	}
 }

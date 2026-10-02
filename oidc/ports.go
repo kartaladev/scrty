@@ -184,10 +184,15 @@ type CallbackResult struct {
 	//
 	// A handoff issued for this result carries them to the redemption, which
 	// records them on the session it creates. A consumer whose callback
-	// success handler creates the session itself must record them, with
-	// session.WithFederatedAssurance, or the session carries no assurance,
-	// and a user required to use a second factor is then challenged or
-	// refused as though the provider had asserted nothing.
+	// success handler creates the session itself must create it with all
+	// three of session.WithFirstFactor(factor.OIDC),
+	// session.WithExternalSession (the provider, issuer, session ID and ID
+	// token of this result) and session.WithFederatedAssurance (AMR and ACR).
+	// Per-request evidence is minted only from a session that records the
+	// federated first factor and its provider and issuer beside the assurance.
+	// With any of them missing the session carries no assurance, and a user
+	// required to use a second factor is then challenged or refused as though
+	// the provider had asserted nothing.
 	AMR []string
 	ACR string
 }

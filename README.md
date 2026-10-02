@@ -206,8 +206,10 @@ it does not store a verdict. Every request of a federated session matches them a
 provider's current configuration. Tightening a provider's accepted set therefore takes effect on
 existing sessions at their next request, and a provider removed from the registry never matches.
 A session whose local second factor was satisfied stays allowed. A consumer who creates sessions
-in `httpsec.WithCallbackSuccess` must pass `CallbackResult.AMR` and `ACR` on
-(`session.WithFederatedAssurance`), or the session carries no assurance.
+in `httpsec.WithCallbackSuccess` records all three of `session.WithFirstFactor(factor.OIDC)`,
+`session.WithExternalSession` (the result's provider, issuer, session ID and ID token) and
+`session.WithFederatedAssurance` (its `AMR` and `ACR`). Without any one of them the session carries
+no assurance, so a required user is challenged or refused on every request.
 
 **Limits to know.**
 

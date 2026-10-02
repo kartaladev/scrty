@@ -277,6 +277,25 @@ func TestManagerCallback(t *testing.T) {
 			},
 		},
 		{
+			name: "an amr holding a NUL is warned about as malformed, never its value, and the login proceeds",
+			setup: func(t *testing.T, e *callbackEnv) {
+				e.reissue(t, map[string]any{"amr": []any{"mfa-marker\x00"}})
+			},
+			act: func(t *testing.T, e *callbackEnv) (oidc.CallbackResult, error) {
+				e.expectBroker(1)
+				return e.genuine(t)
+			},
+			assert: func(t *testing.T, e *callbackEnv, got oidc.CallbackResult, err error) {
+				require.NoError(t, err, "an unstorable claim never fails the login")
+				assert.Equal(t, alice(), got.Principal)
+				assert.Empty(t, got.AMR, "an unstorable amr asserts nothing")
+				out := e.logs.String()
+				assert.Contains(t, out, "reason=malformed-assurance-claim")
+				assert.Contains(t, out, "claim=amr")
+				assert.NotContains(t, out, "mfa-marker", "the claim's value never reaches a log")
+			},
+		},
+		{
 			name: "a malformed acr is warned about without its value",
 			setup: func(t *testing.T, e *callbackEnv) {
 				e.reissue(t, map[string]any{"acr": map[string]any{"level": "gold-marker"}})

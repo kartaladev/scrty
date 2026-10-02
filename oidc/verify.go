@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jws"
@@ -99,9 +100,11 @@ func (m *Manager) checkIDToken(ctx context.Context, p Provider, raw, nonce strin
 // returned in order with later duplicates removed. acr must be a string, and
 // an empty one asserts nothing. An absent claim and an empty amr array assert
 // nothing and are not malformed. Any other form asserts nothing and is
-// reported as malformed: badAMR or badACR. A partly valid amr, such as
-// ["mfa", 1], is discarded whole rather than read as ["mfa"], so a value the
-// provider wrote in an unexpected shape never counts as evidence.
+// reported as malformed: badAMR or badACR. A string holding a NUL byte or
+// invalid UTF-8 is malformed too, because no durable store can keep it. A
+// partly valid amr, such as ["mfa", 1], is discarded whole rather than read
+// as ["mfa"], so a value the provider wrote in an unexpected shape never
+// counts as evidence.
 func readAssurance(tok jwt.Token) (amr []string, acr string, badAMR, badACR bool) {
 	if v, ok := tok.Field("amr"); ok {
 		amr, ok = stringSet(v)
@@ -109,9 +112,19 @@ func readAssurance(tok jwt.Token) (amr []string, acr string, badAMR, badACR bool
 	}
 	if v, ok := tok.Field("acr"); ok {
 		acr, ok = v.(string)
-		badACR = !ok
+		if !ok || !storable(acr) {
+			acr, badACR = "", true
+		}
 	}
 	return amr, acr, badAMR, badACR
+}
+
+// storable reports whether s is a value every durable store can hold: valid
+// UTF-8 without a NUL byte. A claim value that is not would make the handoff
+// store refuse the record, failing the login, so it reads as malformed
+// instead.
+func storable(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
 }
 
 // stringSet returns v's values in order without duplicates when v is an
@@ -123,7 +136,7 @@ func stringSet(v any) (set []string, ok bool) {
 	}
 	for _, e := range elems {
 		s, ok := e.(string)
-		if !ok {
+		if !ok || !storable(s) {
 			return nil, false
 		}
 		if !slices.Contains(set, s) {

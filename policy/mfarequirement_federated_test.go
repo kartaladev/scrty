@@ -364,6 +364,26 @@ func TestMFARequirementPolicy_FederatedPerRequest(t *testing.T) {
 			return m
 		}
 	}
+	// registeredOnly is a source that knows only the provider named, as a
+	// manager rebuilt without the others: evidence from any other provider
+	// is never met, whatever its amr, and that of the one it knows is.
+	registeredOnly := func(known string) func(t *testing.T) policy.FederatedAssuranceSource {
+		return func(t *testing.T) policy.FederatedAssuranceSource {
+			m := NewMockFederatedAssuranceSource(gomock.NewController(t))
+			m.EXPECT().MeetsAssurance(gomock.Any(), identity.UserID(mfaUser), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ identity.UserID, ev policy.FederatedAssurance) (bool, error) {
+					return ev.Provider() == known, nil
+				}).
+				Times(1)
+
+			return m
+		}
+	}
+	sessionOf := func(provider string) func() *policy.Input {
+		return func() *policy.Input {
+			return federatedInput(factor.OIDC, policy.MintFederatedForTest(provider, "https://idp.example", []string{"mfa"}, ""))
+		}
+	}
 	unasked := func(t *testing.T) policy.FederatedAssuranceSource { return assuranceSource(t, false, false, nil) }
 
 	// session is a federated session whose login asserted amr ["mfa"], which
@@ -406,11 +426,16 @@ func TestMFARequirementPolicy_FederatedPerRequest(t *testing.T) {
 			in: session, assert: challengedForMFA,
 		},
 		{
-			// To the policy a removed provider is one the source no longer
-			// meets: the source reports not met for a provider it does not know.
+			// The source no longer knows the session's provider, so the same
+			// amr that was met before is not met now.
 			name:     "provider removed: an enrolled user's session is challenged for mfa",
-			required: requiredUser, methods: enrolledTOTP, source: rematched(false, nil),
-			in: session, assert: challengedForMFA,
+			required: requiredUser, methods: enrolledTOTP, source: registeredOnly("corp"),
+			in: sessionOf("gone"), assert: challengedForMFA,
+		},
+		{
+			name:     "another provider's session is still met when one provider is removed",
+			required: requiredUser, methods: idleTOTP, source: registeredOnly("corp"),
+			in: sessionOf("corp"), assert: allowed,
 		},
 		{
 			name:     "assurance still met: the session is allowed",

@@ -163,6 +163,9 @@ func TestOIDCRedeemSession(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "the session carries the OIDC first factor and the federated fields from its first write",
+			handoff: func(_ *oidcHarness, res *oidc.CallbackResult) {
+				res.AMR, res.ACR = []string{"pwd", "mfa"}, assuranceACR
+			},
 			assert: func(t *testing.T, h *oidcHarness, w *sessionWrites, _ string, out served) {
 				require.NoError(t, out.err)
 
@@ -174,6 +177,8 @@ func TestOIDCRedeemSession(t *testing.T) {
 				assert.Equal(t, oidcTestSessionID, created[0].ExternalSessionID)
 				assert.Equal(t, oidcTestIDToken, created[0].ExternalIDToken)
 				assert.Equal(t, oidcTestUserID, created[0].UserID)
+				assert.Equal(t, []string{"pwd", "mfa"}, created[0].FederatedAMR, "the asserted amr is in the first write")
+				assert.Equal(t, assuranceACR, created[0].FederatedACR, "the asserted acr is in the first write")
 				assert.Empty(t, w.saves(), "nothing is added to the session after it was created")
 			},
 		},
