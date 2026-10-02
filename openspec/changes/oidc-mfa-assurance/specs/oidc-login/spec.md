@@ -144,7 +144,8 @@ An already-consumed record MAY be rejected before step 2, but that rejection SHA
 When the post-authentication policy evaluation denies a redemption, redemption SHALL refuse without consuming the code. It SHALL return the policy's reason, or a policy-denied error when the policy gave no reason. A deny SHALL never result in a session. When the evaluation challenges, the code SHALL be consumed and a session SHALL be created pending that challenge, as the `sessions` and `security-policy` capabilities define. When the redemption operation is replaced by a consumer implementation, the endpoint SHALL refuse with the policy-denied error, and create no session, whenever the implementation reports success but:
 - the policy evaluation never ran; or
 - the evaluation denied; or
-- the implementation returns a user other than the one the evaluation decided on: a different user reference, or a password-change time not equal to the one the evaluation saw.
+- the implementation returns a user other than the one the evaluation decided on: a different user reference, or a password-change time not equal to the one the evaluation saw; or
+- the implementation returns provider assurance other than the evaluation saw: a different provider, issuer, `amr` (in content or order) or `acr`.
 
 #### Scenario: Deny with no reason
 - **WHEN** a consumer policy denies a redemption without giving a reason
@@ -159,6 +160,10 @@ When the post-authentication policy evaluation denies a redemption, redemption S
 
 #### Scenario: Implementation skips the checks
 - **WHEN** a consumer redemption implementation returns success without running the refusal checks
+- **THEN** the endpoint refuses with the policy-denied error and creates no session
+
+#### Scenario: Implementation reports assurance the checks never saw
+- **WHEN** a consumer redemption implementation returns success with `amr` `["mfa"]` for a code whose record, as handed to the refusal checks, asserted no `amr`
 - **THEN** the endpoint refuses with the policy-denied error and creates no session
 
 #### Scenario: Implementation discards a deny
@@ -196,7 +201,7 @@ Constructing OIDC login SHALL fail with a configuration error when:
 - two of the authorize, callback, redemption and back-channel logout paths collide;
 - any duration option is zero or negative, except the clock-skew leeway, for which zero means no leeway and only a negative value fails;
 - just-in-time provisioning or role derivation is configured for a provider name that is not registered;
-- an assurance configuration is given for a provider name that is not registered, contains an empty value in any of its sets, or names a match mode the library does not define.
+- an assurance configuration is given for a provider name that is not registered, contains an empty value in any of its sets, requests an `acr` value that contains whitespace, or names a match mode the library does not define.
 
 Assembling a chain with OIDC login SHALL fail with a configuration error when an MFA policy that decides federated logins on provider assurance has no source of assurance wired to it.
 
@@ -215,6 +220,10 @@ Assembling a chain with OIDC login SHALL fail with a configuration error when an
 #### Scenario: Empty accepted value
 - **WHEN** provider `corp` is configured to accept the `amr` values `mfa` and the empty string
 - **THEN** construction fails with a configuration error
+
+#### Scenario: Requested acr value with whitespace
+- **WHEN** provider `corp` is configured to request the `acr` value `urn:corp:loa 2`
+- **THEN** construction fails with a configuration error, because `acr_values` separates values by spaces and the value would be sent as two
 
 #### Scenario: Requirement policy without an assurance source
 - **WHEN** a chain enables OIDC login and registers the MFA requirement policy in the default mode without wiring an assurance source to it

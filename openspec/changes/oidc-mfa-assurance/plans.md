@@ -394,10 +394,19 @@ func matchAssurance(a Assurance, amr []string, acr string) bool       // unexpor
   Add `TestNewManager_AssuranceConfig`:
   - an unknown provider: `ErrConfig` naming `corpp`;
   - `"mfa"` and `""` in a list: `ErrConfig`;
-  - `Match: 7`: `ErrConfig`;
+  - `Match: 7`: `ErrConfig`, whose text does not contain `7`;
+  - `RequestACR: []string{"urn:corp:loa 2"}`, and the tab and newline variants: `ErrConfig` naming `corp` and `RequestACR`, whose text does not contain the value. `acr_values` is space-separated, so such a value would be sent as two;
   - `RequestACR` with no `AcceptedACR`: valid.
 - [ ] **Step 2: Run** `go test -run 'TestMatchAssurance|TestNewManager_AssuranceConfig' -count=1 ./oidc/`. **Expected:** with `matchAssurance` returning false and no checks, the true rows and every error row fail.
-- [ ] **Step 3: Implement.** The godoc on `AcceptedAMR` explains RFC 8176 `mfa` versus single-method values. `WithProviderAssurance` names the default it replaces.
+- [ ] **Step 3: Implement.** The godoc on `AcceptedAMR` explains RFC 8176 `mfa` versus single-method values. `WithProviderAssurance` names the default it replaces. `Assurance.validate` refuses a `RequestACR` value containing whitespace:
+
+```go
+if slices.ContainsFunc(a.RequestACR, func(v string) bool { return strings.ContainsFunc(v, unicode.IsSpace) }) {
+	return fmt.Errorf("%w: WithProviderAssurance for provider %q: RequestACR contains a value with whitespace", ErrConfig, provider)
+}
+```
+
+  The refusal is named in the `RequestACR` field doc, in `WithProviderAssurance`'s godoc, and in `NewManager`'s list of construction errors. No error text carries a configured value.
 - [ ] **Step 4: Run** `go test -race ./oidc/...`. **Expected:** PASS.
 
 ### Task 4.2: Claim extraction
