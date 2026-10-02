@@ -93,6 +93,16 @@ func limiterCounting(t *testing.T, failures int) *MockLimiter {
 	return l
 }
 
+// suspended asserts the user's one passkey is suspended.
+func suspended(t *testing.T, d *pwlDeployment) {
+	t.Helper()
+
+	list, err := d.creds.List(t.Context(), e2eUser)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	assert.Equal(t, passkey.StateSuspended, list[0].State, "the credential is suspended")
+}
+
 // TestPasskeyMFA drives the passkey MFA method through the MFA slot, after a
 // password login, and after a passkey login.
 func TestPasskeyMFA(t *testing.T) {
@@ -173,18 +183,27 @@ func TestPasskeyMFA(t *testing.T) {
 			},
 		},
 		{
-			name: "a suspected clone at verify is refused, forbidden and not counted",
+			name: "a suspected clone at verify is refused, forbidden, not counted, and ends every session of the user",
 			setup: func(t *testing.T, d *pwlDeployment) {
 				d.mfaLimiter = limiterCounting(t, 0)
 			},
 			act: func(t *testing.T, d *pwlDeployment) served {
 				d.seedCounted(t, e2eUser, "cred-1", passkey.StateActive, 5)
+				other := d.otherSession(t)
 
 				ch := challenged(t, d.passwordLogin(t))
 				challenge := d.mfaBegun(t, ch.Token)
 
 				out := d.mfaVerify(t, ch.Token, assertionBody(challenge, "cred-1"))
-				stillPending(t, d, ch.Token)
+
+				d.sessionGone(t, sessionIDOf(t, ch.Token), "the pending session is ended, and the refusal did not save it back")
+				d.sessionGone(t, other, "the user's other session is ended")
+
+				// The same handle, presented again, names nothing: no path
+				// after the refusal re-created the session it carried.
+				again := d.mfaVerify(t, ch.Token, assertionBody(challenge, "cred-1"))
+				require.ErrorIs(t, again.err, httpsec.ErrAuthenticationRequired)
+				d.sessionGone(t, sessionIDOf(t, ch.Token), "a follow-up request does not re-create the session")
 
 				return out
 			},
@@ -193,11 +212,39 @@ func TestPasskeyMFA(t *testing.T) {
 				require.ErrorIs(t, out.err, mfa.ErrAuthenticatorRefused)
 				assert.NotErrorIs(t, out.err, mfa.ErrInvalidCode)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.Zero(t, d.sessionCount(t, out), "no session of the user is left")
 
-				list, err := d.creds.List(t.Context(), e2eUser)
-				require.NoError(t, err)
-				require.Len(t, list, 1)
-				assert.Equal(t, passkey.StateSuspended, list[0].State, "the credential is suspended")
+				suspended(t, d)
+			},
+		},
+		{
+			name: "a suspected clone at verify keeps the sessions when the consumer turned revocation off",
+			setup: func(t *testing.T, d *pwlDeployment) {
+				d.mfaLimiter = limiterCounting(t, 0)
+				d.pkOpts = append(d.pkOpts, passkey.WithoutSessionRevocationOnClone())
+			},
+			act: func(t *testing.T, d *pwlDeployment) served {
+				d.seedCounted(t, e2eUser, "cred-1", passkey.StateActive, 5)
+				other := d.otherSession(t)
+
+				ch := challenged(t, d.passwordLogin(t))
+				challenge := d.mfaBegun(t, ch.Token)
+
+				out := d.mfaVerify(t, ch.Token, assertionBody(challenge, "cred-1"))
+
+				stillPending(t, d, ch.Token)
+				assert.Equal(t, sessionIDOf(t, ch.Token), d.sessionOf(t, ch.Token).ID, "the handle is unchanged")
+
+				_, err := d.sessions.Load(t.Context(), other)
+				require.NoError(t, err, "the user's other session is kept")
+
+				return out
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrCloneSuspected)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+
+				suspended(t, d)
 			},
 		},
 		{

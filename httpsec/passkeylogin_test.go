@@ -431,13 +431,40 @@ func clearedCookie(t *testing.T, out served, name, path string) {
 func (d *pwlDeployment) sessionOf(t *testing.T, accessToken string) *session.Session {
 	t.Helper()
 
-	sid, ok := strings.CutPrefix(accessToken, mfaTokenPrefix)
-	require.True(t, ok)
-
-	s, err := d.sessions.Load(t.Context(), sid)
+	s, err := d.sessions.Load(t.Context(), sessionIDOf(t, accessToken))
 	require.NoError(t, err)
 
 	return s
+}
+
+// sessionIDOf is the session identifier an access token the deployment's
+// generator issued names.
+func sessionIDOf(t *testing.T, accessToken string) string {
+	t.Helper()
+
+	sid, ok := strings.CutPrefix(accessToken, mfaTokenPrefix)
+	require.True(t, ok)
+
+	return sid
+}
+
+// otherSession creates a session for the user, as a sign-in on another
+// device does, and returns its identifier.
+func (d *pwlDeployment) otherSession(t *testing.T) string {
+	t.Helper()
+
+	s, err := d.sessions.Create(t.Context(), e2eUser, session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	return s.ID
+}
+
+// sessionGone asserts the session with identifier sid no longer loads.
+func (d *pwlDeployment) sessionGone(t *testing.T, sid, msg string) {
+	t.Helper()
+
+	_, err := d.sessions.Load(t.Context(), sid)
+	assert.ErrorIs(t, err, session.ErrSessionNotFound, msg)
 }
 
 // TestPasswordless drives passwordless login through a chain.
@@ -879,6 +906,28 @@ func TestPasswordless(t *testing.T) {
 				require.ErrorIs(t, out.err, passkey.ErrSuspended)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 				assert.Zero(t, d.sessionCount(t, out))
+			},
+		},
+		{
+			name: "a suspected clone at finish is refused as a clone and ends every session of the user",
+			act: func(t *testing.T, d *pwlDeployment) served {
+				handle := d.seedCounted(t, e2eUser, "cred-1", passkey.StateActive, 5)
+				first, second := d.otherSession(t), d.otherSession(t)
+
+				out := d.login(t, "cred-1", handle)
+
+				d.sessionGone(t, first, "the user's first session is ended")
+				d.sessionGone(t, second, "the user's second session is ended")
+
+				return out
+			},
+			assert: func(t *testing.T, d *pwlDeployment, out served) {
+				require.ErrorIs(t, out.err, passkey.ErrCloneSuspected)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
+				assert.False(t, out.handlerRan)
+				assert.Zero(t, d.sessionCount(t, out), "no session is created, and none is left")
+
+				suspended(t, d)
 			},
 		},
 		{
