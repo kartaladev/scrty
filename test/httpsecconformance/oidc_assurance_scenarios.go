@@ -128,7 +128,9 @@ func assuranceRequest(
 			return ChainSpec{
 				Options: assuranceOptions(t, effects, mode),
 				Effects: effects,
-				Routes:  plainRoute(),
+				Routes: []Route{{
+					Method: http.MethodGet, Path: RoutePath, Status: http.StatusOK, Body: RouteBody,
+				}},
 			}
 		},
 		Request: authenticatedRequest(http.MethodGet, RoutePath),
@@ -145,11 +147,13 @@ func oidcAssuranceScenarios() []Scenario {
 				require.NoError(t, res.Refusal)
 				assert.Equal(t, http.StatusOK, res.Status)
 				assert.Equal(t, "application/json", res.Header.Get("Content-Type"))
+				assert.Equal(t, "no-store", res.Header.Get("Cache-Control"))
 				assert.Equal(t, 1, res.Effects.ActiveSessions(t))
 			}),
 		assuranceRedemption("OIDC redemption with unmet assurance is challenged for the local second factor",
 			policy.FederatedAssuranceChallenge, nil, func(t *testing.T, res Result) {
 				assert.Equal(t, http.StatusUnauthorized, res.Status)
+				assert.Empty(t, res.Body, "a challenge carries no error text")
 
 				var challenge *httpsec.ChallengeError
 				require.ErrorAs(t, res.Refusal, &challenge)
@@ -163,6 +167,7 @@ func oidcAssuranceScenarios() []Scenario {
 		assuranceRedemption("OIDC redemption with unmet assurance is refused in refuse mode",
 			policy.FederatedAssuranceRefuse, nil, func(t *testing.T, res Result) {
 				assert.Equal(t, http.StatusForbidden, res.Status)
+				assert.Empty(t, res.Body, "a refusal carries no error text")
 				require.ErrorIs(t, res.Refusal, policy.ErrFederatedAssuranceNotMet)
 				assert.Zero(t, res.Effects.ActiveSessions(t), "a refusal opens no session")
 			}),
@@ -170,10 +175,12 @@ func oidcAssuranceScenarios() []Scenario {
 			policy.FederatedAssuranceChallenge, []string{"mfa"}, func(t *testing.T, res Result) {
 				require.NoError(t, res.Refusal)
 				assert.True(t, res.RouteRan)
+				assert.Equal(t, RouteBody, res.Body)
 			}),
 		assuranceRequest("a federated session with unmet assurance is challenged on the request",
 			policy.FederatedAssuranceChallenge, nil, func(t *testing.T, res Result) {
 				assert.Equal(t, http.StatusUnauthorized, res.Status)
+				assert.Empty(t, res.Body, "a challenge carries no error text")
 
 				var challenge *httpsec.ChallengeError
 				require.ErrorAs(t, res.Refusal, &challenge)
@@ -183,6 +190,7 @@ func oidcAssuranceScenarios() []Scenario {
 		assuranceRequest("a federated session with unmet assurance is refused on the request in refuse mode",
 			policy.FederatedAssuranceRefuse, nil, func(t *testing.T, res Result) {
 				assert.Equal(t, http.StatusForbidden, res.Status)
+				assert.Empty(t, res.Body, "a refusal carries no error text")
 				require.ErrorIs(t, res.Refusal, policy.ErrFederatedAssuranceNotMet)
 				assert.False(t, res.RouteRan)
 			}),

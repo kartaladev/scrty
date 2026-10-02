@@ -111,8 +111,9 @@ func WithMFAEnrolmentPath(opts ...EnrolmentPathOption) MFARequirementOption {
 // usually includes its mailbox, so the emailed code the enrolment path sends
 // adds no assurance after a federated login, and the notification may reach
 // the attacker too. Adding it is a deliberate choice to accept that. By default
-// an OIDC login is exempt and never reaches the path; the list matters only to
-// a consumer whose exemption rule makes it non-exempt.
+// an OIDC login whose provider asserted no second factor reaches the path for
+// a required user with no usable enrolment only if the list admits factor.OIDC;
+// otherwise that user is refused with enrolment required.
 //
 // The same limit holds, less starkly, for factor.MagicLink, whose login already
 // proved control of the mailbox. A consumer who finds that unacceptable leaves

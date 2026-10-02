@@ -318,6 +318,9 @@ type Policy interface {
 // pointers, and must treat it as read-only. An Engine hands the same Input to
 // every policy in the phase, so a policy that wrote to it would be deciding for
 // the policies after it.
+//
+// Input is not comparable: the federated assurance it carries holds a slice,
+// so == does not compile. Compare the fields you need.
 type Input struct {
 	// User is the authenticated user this request belongs to, and is empty
 	// before authentication has resolved one. It is the consumer's own opaque
