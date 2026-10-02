@@ -79,6 +79,12 @@ func assertHandoffRecord(t *testing.T, want oidc.HandoffRecord, got *oidc.Handof
 	assert.Equal(t, want.SessionID, got.SessionID)
 	assert.Equal(t, want.IDToken, got.IDToken)
 	assert.Equal(t, want.Next, got.Next)
+	if len(want.AMR) == 0 {
+		assert.Empty(t, got.AMR, "a record stored without amr must read back with none")
+	} else {
+		assert.Equal(t, want.AMR, got.AMR, "the asserted amr must round-trip in order")
+	}
+	assert.Equal(t, want.ACR, got.ACR, "the asserted acr must round-trip unchanged")
 	assert.True(t, want.CreatedAt.Equal(got.CreatedAt), "created at %v, want %v", got.CreatedAt, want.CreatedAt)
 	assert.True(t, want.ExpiresAt.Equal(got.ExpiresAt), "expires at %v, want %v", got.ExpiresAt, want.ExpiresAt)
 	if want.ConsumedAt == nil {
@@ -117,6 +123,33 @@ func RunHandoffStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 		assert func(t *testing.T, ctx context.Context, s oidc.HandoffStore)
 	}
 
+	// textCase inserts the record handoffSuiteRecord returns, changed by with
+	// to carry text a PostgreSQL column cannot hold, marked by canary. The
+	// store either refuses it, with an error that does not echo it, and stores
+	// nothing; or stores it and finds it byte for byte. Anything else altered
+	// the consumer's value.
+	textCase := func(name, canary string, with func(*oidc.HandoffRecord)) testCase {
+		return testCase{
+			name: name,
+			assert: func(t *testing.T, ctx context.Context, s oidc.HandoffStore) {
+				want := handoffSuiteRecord("tok-a")
+				with(&want)
+
+				if err := s.Insert(ctx, want); err != nil {
+					assert.NotContains(t, err.Error(), canary, "the refusal must not echo the value")
+					_, err := s.FindByTokenID(ctx, "tok-a")
+					assert.ErrorIs(t, err, oidc.ErrHandoffNotFound, "a refused record must not be stored")
+
+					return
+				}
+
+				got, err := s.FindByTokenID(ctx, "tok-a")
+				require.NoError(t, err)
+				assertHandoffRecord(t, want, got)
+			},
+		}
+	}
+
 	cases := []testCase{
 		{
 			name: "an inserted record is found unchanged",
@@ -126,6 +159,56 @@ func RunHandoffStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				got, err := s.FindByTokenID(ctx, "tok-a")
 				require.NoError(t, err)
 				assertHandoffRecord(t, handoffSuiteRecord("tok-a"), got)
+			},
+		},
+		{
+			name: "asserted assurance is found unchanged, in order",
+			assert: func(t *testing.T, ctx context.Context, s oidc.HandoffStore) {
+				want := handoffSuiteRecord("tok-a")
+				want.AMR = []string{"pwd", "mfa"}
+				want.ACR = "urn:corp:loa:2"
+				require.NoError(t, s.Insert(ctx, want))
+
+				got, err := s.FindByTokenID(ctx, "tok-a")
+				require.NoError(t, err)
+				assertHandoffRecord(t, want, got)
+			},
+		},
+		{
+			name: "a record stored with an empty amr list reads back with none",
+			assert: func(t *testing.T, ctx context.Context, s oidc.HandoffStore) {
+				want := handoffSuiteRecord("tok-a")
+				want.AMR = []string{}
+				require.NoError(t, s.Insert(ctx, want))
+
+				got, err := s.FindByTokenID(ctx, "tok-a")
+				require.NoError(t, err)
+				assertHandoffRecord(t, want, got)
+			},
+		},
+		textCase("an amr holding a NUL byte is refused or round-trips, never altered",
+			"canary-a41b", func(rec *oidc.HandoffRecord) { rec.AMR = []string{"pwd", "x\x00canary-a41b"} }),
+		textCase("an amr holding invalid UTF-8 is refused or round-trips, never altered",
+			"canary-b52c", func(rec *oidc.HandoffRecord) { rec.AMR = []string{"caf\xe9 canary-b52c"} }),
+		textCase("an acr holding a NUL byte is refused or round-trips, never altered",
+			"canary-c63d", func(rec *oidc.HandoffRecord) { rec.ACR = "x\x00canary-c63d" }),
+		textCase("an acr holding invalid UTF-8 is refused or round-trips, never altered",
+			"canary-d74e", func(rec *oidc.HandoffRecord) { rec.ACR = "caf\xe9 canary-d74e" }),
+		{
+			name: "a found record's amr is the caller's own copy",
+			assert: func(t *testing.T, ctx context.Context, s oidc.HandoffStore) {
+				want := handoffSuiteRecord("tok-a")
+				want.AMR = []string{"pwd", "mfa"}
+				require.NoError(t, s.Insert(ctx, want))
+
+				first, err := s.FindByTokenID(ctx, "tok-a")
+				require.NoError(t, err)
+				require.NotNil(t, first)
+				first.AMR[0] = "tampered"
+
+				again, err := s.FindByTokenID(ctx, "tok-a")
+				require.NoError(t, err)
+				assertHandoffRecord(t, want, again)
 			},
 		},
 		{

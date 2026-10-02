@@ -203,6 +203,27 @@ func TestCheckSession(t *testing.T) {
 			},
 		},
 		{
+			name: "an amr value PostgreSQL cannot store is refused by field",
+			sess: session.Session{UserID: "alice", FederatedAMR: []string{"pwd", "m\x00fa"}},
+			assert: func(t *testing.T, err error) {
+				require.EqualError(t, err,
+					"the federated amr holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+			},
+		},
+		{
+			name: "an acr PostgreSQL cannot store is refused by field",
+			sess: session.Session{UserID: "alice", FederatedACR: "\xff"},
+			assert: func(t *testing.T, err error) {
+				require.EqualError(t, err,
+					"the federated acr holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+			},
+		},
+		{
+			name:   "storable assurance is accepted",
+			sess:   session.Session{UserID: "alice", FederatedAMR: []string{"pwd", "mfa"}, FederatedACR: "urn:corp:loa:2"},
+			assert: func(t *testing.T, err error) { require.NoError(t, err) },
+		},
+		{
 			name: "a bad column together with bad data names the column",
 			sess: session.Session{
 				UserID: "a\x00b",
@@ -383,4 +404,91 @@ func TestSessionDigest(t *testing.T) {
 	want := sha256.Sum256([]byte("session-id"))
 
 	assert.Equal(t, want[:], storekit.SessionDigest("session-id"))
+}
+
+func TestCheckAssurance(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		prefix string
+		amr    []string
+		acr    string
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "no assurance is storable",
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "an amr and an acr of plain text are storable",
+			amr:  []string{"pwd"},
+			acr:  "urn:x",
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "an amr holding a NUL byte is refused, naming the field",
+			amr:  []string{"a\x00"},
+			assert: func(t *testing.T, err error) {
+				require.EqualError(t, err,
+					"the amr holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+			},
+		},
+		{
+			name: "an acr holding a NUL byte is refused, naming the field",
+			acr:  "a\x00",
+			assert: func(t *testing.T, err error) {
+				require.EqualError(t, err,
+					"the acr holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+			},
+		},
+		{
+			name:   "the prefix leads the refused field's name",
+			prefix: "federated ",
+			acr:    "a\x00",
+			assert: func(t *testing.T, err error) {
+				require.EqualError(t, err,
+					"the federated acr holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, storekit.CheckAssurance(tc.prefix, tc.amr, tc.acr))
+		})
+	}
+}
+
+func TestAMRColumn(t *testing.T) {
+	t.Parallel()
+
+	for _, none := range [][]string{nil, {}} {
+		encoded, err := storekit.EncodeAMR(none)
+		require.NoError(t, err)
+		assert.Equal(t, "[]", encoded, "no values are the empty array, never null")
+	}
+
+	encoded, err := storekit.EncodeAMR([]string{"pwd", "mfa"})
+	require.NoError(t, err)
+	assert.Equal(t, `["pwd","mfa"]`, encoded)
+
+	got, err := storekit.DecodeAMR([]byte(encoded))
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pwd", "mfa"}, got, "order is kept")
+
+	got, err = storekit.DecodeAMR([]byte("[]"))
+	require.NoError(t, err)
+	assert.Nil(t, got, "an empty array reads back as none, nil")
+
+	_, err = storekit.DecodeAMR([]byte(`{"a":1}`))
+	require.EqualError(t, err, "the stored amr is not a JSON array of strings")
 }

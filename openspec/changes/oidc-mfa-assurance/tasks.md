@@ -37,8 +37,8 @@ every task group. Section names in parentheses are the spec requirements the tas
 
 ## 5. Durable stores and the migration (`security-state-stores`, `schema-migrations`)
 
-- [ ] 5.1 Add in place to the security-state migration: `amr` and `acr` on `oidc_handoffs`, `federated_amr` and `federated_acr` on `sessions`, non-null with empty defaults, using the list representation the set already uses (decision 4; MODIFIED schema-migrations "The security-state set creates only security-state tables", scenario "Federated assurance columns"). Verify with the migration shape tests in `test/migrate_securitystate_test.go` against PostgreSQL 15 and 18 (`go test -race ./...` in `test`)
-- [ ] 5.2 `internal/pgschema`, `sqlstore`, `pgx` and `gorm` handoff and session stores read and write the new columns, unsealed; the handoff and session conformance suites gain the round-trip cases, run on every backend and across backends (ADDED security-state-stores "Asserted federated assurance survives a durable store", every scenario). Verify with `go test -race ./...` in the `test`, `pgx` and `gorm` modules
+- [x] 5.1 Add in place to the security-state migration: `amr` and `acr` on `oidc_handoffs`, `federated_amr` and `federated_acr` on `sessions`, non-null with empty defaults, using the list representation the set already uses (decision 4; MODIFIED schema-migrations "The security-state set creates only security-state tables", scenario "Federated assurance columns"). Verify with the migration shape tests in `test/migrate_securitystate_test.go` against PostgreSQL 15 and 18 (`go test -race ./...` in `test`)
+- [x] 5.2 `internal/pgschema`, `sqlstore`, `pgx` and `gorm` handoff and session stores read and write the new columns, unsealed; the handoff and session conformance suites gain the round-trip cases, run on every backend and across backends (ADDED security-state-stores "Asserted federated assurance survives a durable store", every scenario). Verify with `go test -race ./...` in the `test`, `pgx` and `gorm` modules
 
 ## 6. The chain: redemption, completion, per request and wiring (`http-security-chain`, `oidc-login`)
 

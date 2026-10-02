@@ -144,6 +144,12 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assert.Equal(t, want.EnrolmentGeneration, got.EnrolmentGeneration, "EnrolmentGeneration")
 	assertTimeEqual(t, want.RecoveredAt, got.RecoveredAt, "RecoveredAt")
 	assert.Equal(t, want.MFAAtFirstFactor, got.MFAAtFirstFactor, "MFAAtFirstFactor")
+	if len(want.FederatedAMR) == 0 {
+		assert.Empty(t, got.FederatedAMR, "a session stored without amr must load with none")
+	} else {
+		assert.Equal(t, want.FederatedAMR, got.FederatedAMR, "the asserted amr must round-trip in order")
+	}
+	assert.Equal(t, want.FederatedACR, got.FederatedACR, "the asserted acr must round-trip unchanged")
 	assert.Equal(t, want.ExternalProvider, got.ExternalProvider)
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
@@ -331,6 +337,74 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 			},
 		},
 		{
+			name: "a federated session loads with its asserted assurance unchanged, in order",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)
+				want.FederatedAMR = []string{"pwd", "mfa"}
+				want.FederatedACR = "urn:corp:loa:2"
+				require.NoError(t, s.Create(ctx, want))
+
+				assertSessionsLoad(ctx, t, s, want)
+			},
+		},
+		{
+			name: "a session created with an empty amr list loads with none",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := sessionRecord("sess-a", "u-1")
+				want.FederatedAMR = []string{}
+				require.NoError(t, s.Create(ctx, want))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assertSession(t, want, got)
+				assert.Empty(t, got.FederatedACR)
+			},
+		},
+		{
+			name: "a save keeps the asserted assurance a loaded session carries",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				want := federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)
+				want.FederatedAMR = []string{"mfa"}
+				want.FederatedACR = "urn:corp:loa:2"
+				require.NoError(t, s.Create(ctx, want))
+
+				loaded, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				loaded.LastAccessedAt = loaded.LastAccessedAt.Add(time.Minute)
+				require.NoError(t, s.Save(ctx, loaded))
+
+				again, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.Equal(t, []string{"mfa"}, again.FederatedAMR)
+				assert.Equal(t, "urn:corp:loa:2", again.FederatedACR)
+			},
+		},
+		{
+			name: "a save replaces the asserted assurance, and a save with none clears it",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				first := federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)
+				first.FederatedAMR = []string{"pwd"}
+				first.FederatedACR = "a"
+				require.NoError(t, s.Create(ctx, first))
+
+				replaced := federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)
+				replaced.FederatedAMR = []string{"mfa"}
+				replaced.FederatedACR = "b"
+				require.NoError(t, s.Save(ctx, replaced))
+				assertSessionsLoad(ctx, t, s, replaced)
+
+				cleared := federatedSession("sess-a", "u-1", sessionIssuerA, sessionSID)
+				cleared.FederatedAMR = nil
+				cleared.FederatedACR = ""
+				require.NoError(t, s.Save(ctx, cleared))
+
+				got, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				assert.Empty(t, got.FederatedAMR, "a save with no amr must leave none")
+				assert.Empty(t, got.FederatedACR, "a save with no acr must leave none")
+			},
+		},
+		{
 			name: "a user reference round-trips byte for byte and is matched exactly",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				want := sessionRecord("sess-a", "Alice@Example.COM ")
@@ -358,6 +432,24 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 		textCase(sessionTextSave,
 			"a saved session's user reference holding a NUL byte is refused or round-trips, never altered",
 			"canary-8e93", func(sess *session.Session) { sess.UserID = "u\x00canary-8e93" }),
+		textCase(sessionTextCreate, "an asserted amr holding a NUL byte is refused or round-trips, never altered",
+			"canary-a41b", func(sess *session.Session) { sess.FederatedAMR = []string{"pwd", "x\x00canary-a41b"} }),
+		textCase(sessionTextCreate, "an asserted amr holding invalid UTF-8 is refused or round-trips, never altered",
+			"canary-b52c", func(sess *session.Session) { sess.FederatedAMR = []string{"caf\xe9 canary-b52c"} }),
+		textCase(sessionTextCreate, "an asserted acr holding a NUL byte is refused or round-trips, never altered",
+			"canary-c63d", func(sess *session.Session) { sess.FederatedACR = "x\x00canary-c63d" }),
+		textCase(sessionTextCreate, "an asserted acr holding invalid UTF-8 is refused or round-trips, never altered",
+			"canary-d74e", func(sess *session.Session) { sess.FederatedACR = "caf\xe9 canary-d74e" }),
+		textCase(sessionTextSave, "a saved session's amr holding a NUL byte is refused or round-trips, never altered",
+			"canary-e85f", func(sess *session.Session) { sess.FederatedAMR = []string{"pwd", "x\x00canary-e85f"} }),
+		textCase(sessionTextSave,
+			"a saved session's amr holding invalid UTF-8 is refused or round-trips, never altered",
+			"canary-f960", func(sess *session.Session) { sess.FederatedAMR = []string{"caf\xe9 canary-f960"} }),
+		textCase(sessionTextSave, "a saved session's acr holding a NUL byte is refused or round-trips, never altered",
+			"canary-0a71", func(sess *session.Session) { sess.FederatedACR = "x\x00canary-0a71" }),
+		textCase(sessionTextSave,
+			"a saved session's acr holding invalid UTF-8 is refused or round-trips, never altered",
+			"canary-1b82", func(sess *session.Session) { sess.FederatedACR = "caf\xe9 canary-1b82" }),
 		{
 			name: "a duplicate create errors and leaves the original unchanged",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
