@@ -18,6 +18,7 @@ import (
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/session"
 )
 
 var (
@@ -431,6 +432,7 @@ func TestMFAMethodVerify(t *testing.T) {
 		broken        bool
 		verifyErr     error
 		brokenHandles bool
+		seedSessions  bool // stores the fixture's sessions in e.sids
 		ctx           func(ctx context.Context) context.Context
 		assert        func(t *testing.T, e *loginEnv, err error)
 	}
@@ -558,6 +560,23 @@ func TestMFAMethodVerify(t *testing.T) {
 			},
 		},
 		{
+			name:         "a suspected clone at verification ends every session of the user, the verifying one included",
+			user:         "u-1",
+			body:         assertion(slotChallenge, func(b *assertionBody) { b.Count = 41 }),
+			seedSessions: true,
+			assert: func(t *testing.T, e *loginEnv, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, passkey.ErrCloneSuspected)
+				assert.Equal(t, passkey.StateSuspended, e.stored(t).State)
+
+				for _, device := range []string{"laptop", "phone", "tablet", "pending"} {
+					assert.False(t, e.f.loads(t, e.sids[device]), "the %s session must no longer load", device)
+				}
+
+				assert.True(t, e.f.loads(t, e.sids["theirs"]), "another user's session must survive")
+			},
+		},
+		{
 			name: "the consumer's login check error is returned unchanged and nothing is written",
 			user: "u-1",
 			opts: []passkey.Option{passkey.WithLoginCheck(func(context.Context, passkey.LoginFacts) error {
@@ -678,6 +697,20 @@ func TestMFAMethodVerify(t *testing.T) {
 			}
 
 			e.failVerifier(tc.verifyErr)
+
+			if tc.seedSessions {
+				e.sids = e.f.seedSessions(t)
+
+				// The session the verification is made from: it owes its second
+				// factor, so it is pending.
+				pending, err := e.f.sessions.Create(t.Context(), "u-1")
+				require.NoError(t, err)
+
+				pending.MFA = session.MFAPending
+				require.NoError(t, e.f.sessions.Save(t.Context(), pending))
+
+				e.sids["pending"] = pending.ID
+			}
 
 			ctx := t.Context()
 			if tc.ctx != nil {

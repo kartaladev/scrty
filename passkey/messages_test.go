@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -86,11 +87,11 @@ func (customMessages) Registered(n passkey.Notice) (string, string) {
 }
 
 func (customMessages) Removed(n passkey.Notice) (string, string) {
-	return "custom removed", "custom body for " + n.Name
+	return "custom removed", "custom body for " + n.Name + ", sessions ended: " + strconv.FormatBool(n.SessionsEnded)
 }
 
 func (customMessages) Suspended(n passkey.Notice) (string, string) {
-	return "custom suspended", "custom body for " + n.Name
+	return "custom suspended", "custom body for " + n.Name + ", sessions ended: " + strconv.FormatBool(n.SessionsEnded)
 }
 
 func (customMessages) EmailCode(code string, _ time.Time) (string, string) {
@@ -128,18 +129,24 @@ func TestNotices(t *testing.T) {
 		return res, challenge
 	}
 
-	ended := func(t *testing.T, e *env, notify func(*passkey.Manager, *passkey.Credential, bool), v bool) string {
+	ended := func(
+		t *testing.T, e *env, notify func(*testing.T, *passkey.Manager, *passkey.Credential, bool), v bool,
+	) string {
 		t.Helper()
 
-		notify(e.m, &passkey.Credential{ID: id.ID{15: 1}, User: "u-1", Name: "Old key"}, v)
+		notify(t, e.m, &passkey.Credential{ID: id.ID{15: 1}, User: "u-1", Name: "Old key"}, v)
 
 		msgs := e.f.messages()
 		require.Len(t, msgs, 1)
 
 		return msgs[0].TextBody
 	}
-	removed := func(m *passkey.Manager, c *passkey.Credential, v bool) { m.NotifyRemoved(t.Context(), c, v) }
-	suspended := func(m *passkey.Manager, c *passkey.Credential, v bool) { m.NotifySuspended(t.Context(), c, v) }
+	removed := func(t *testing.T, m *passkey.Manager, c *passkey.Credential, v bool) {
+		m.NotifyRemoved(t.Context(), c, v)
+	}
+	suspended := func(t *testing.T, m *passkey.Manager, c *passkey.Credential, v bool) {
+		m.NotifySuspended(t.Context(), c, v)
+	}
 
 	cases := []testCase{
 		{
@@ -170,8 +177,14 @@ func TestNotices(t *testing.T) {
 			name: "custom messages receive SessionsEnded and replace the default text",
 			opts: []passkey.Option{passkey.WithMessages(customMessages{})},
 			assert: func(t *testing.T, e *env) {
-				body := ended(t, e, removed, true)
-				assert.Equal(t, "custom body for Old key", body)
+				assert.Equal(t, "custom body for Old key, sessions ended: true", ended(t, e, removed, true))
+			},
+		},
+		{
+			name: "custom suspension messages receive SessionsEnded as false when nothing ended",
+			opts: []passkey.Option{passkey.WithMessages(customMessages{})},
+			assert: func(t *testing.T, e *env) {
+				assert.Equal(t, "custom body for Old key, sessions ended: false", ended(t, e, suspended, false))
 			},
 		},
 		{

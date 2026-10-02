@@ -51,7 +51,7 @@ By default, when a suspected clone suspends a credential, the library SHALL dele
 - **THEN** the clone-suspected refusal is returned, the credential is suspended, and `u-1`'s existing sessions still load
 
 ### Requirement: Clone revocation never weakens the refusal
-Sessions SHALL be ended only when a credential is suspended: signal-only mode, and a consumer function that allows or only refuses, SHALL end no session. Ending the sessions SHALL NOT depend on the requesting client staying connected. A failure to end them SHALL be logged and SHALL NOT turn the refusal into an acceptance.
+Sessions SHALL be ended only when a credential is suspended: signal-only mode, and a consumer function that allows or only refuses, SHALL end no session. Neither suspending the credential nor ending the sessions SHALL depend on the requesting client staying connected. A failure to end them SHALL be logged and SHALL NOT turn the refusal into an acceptance.
 
 #### Scenario: Signal only ends nothing
 - **WHEN** signal-only mode is chosen and an assertion arrives with a counter lower than the stored one
@@ -64,6 +64,10 @@ Sessions SHALL be ended only when a credential is suspended: signal-only mode, a
 #### Scenario: Client disconnects
 - **WHEN** a clone suspends a credential and the requesting client's context is cancelled before the sessions are deleted
 - **THEN** the user's sessions are still deleted
+
+#### Scenario: Client disconnects before the suspension
+- **WHEN** an assertion is a suspected clone and the requesting client's context is cancelled before the credential is suspended
+- **THEN** the clone-suspected refusal is returned, the credential is still suspended, and the user's sessions are still deleted
 
 ## MODIFIED Requirements
 

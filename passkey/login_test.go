@@ -50,6 +50,16 @@ type spyCredentials struct {
 	records atomic.Int32
 	// useHook, when set, runs in place of RecordUse's write.
 	useHook func(ctx context.Context, cid id.ID) (bool, error)
+	// suspendHook, when set, runs in place of Suspend's write.
+	suspendHook func(ctx context.Context, cid id.ID) (bool, error)
+}
+
+func (s *spyCredentials) Suspend(ctx context.Context, cid id.ID) (bool, error) {
+	if s.suspendHook != nil {
+		return s.suspendHook(ctx, cid)
+	}
+
+	return s.MemoryCredentialStore.Suspend(ctx, cid)
 }
 
 func (s *spyCredentials) RecordUse(ctx context.Context, cid id.ID, bs bool, at time.Time) (bool, error) {
@@ -121,6 +131,7 @@ type loginEnv struct {
 	cred       *passkey.Credential
 	logs       *logBuffer
 	binding    string
+	sids       map[string]string // sessions seeded by fixture.seedSessions, by device
 
 	mu        sync.Mutex
 	requested []passkey.RequestInput

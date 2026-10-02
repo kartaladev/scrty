@@ -95,6 +95,7 @@ The steps of `Remove`, in order:
   - `Remove(ctx, s, cid, rc, opts ...RemoveOption)` with `passkey.KeepOtherSessions()` and `passkey.EndOtherSessions()`. The last option given wins.
   - `httpsec` reads the optional form field `other_sessions` from the same body as `id`, within the existing 4 KiB limit. `keep` maps to `KeepOtherSessions`, `end` to `EndOtherSessions`, and absent to the manager's default.
   - Any other value is refused before any change with a new `httpsec.ErrMalformedRequest`, which maps to 400 and joins `TestStatusForErrorCoversEverySentinel`.
+  - **A request to end sessions on a manager with no session port** is refused with `ErrConfig` before any change. `New` allows no port only when both revocations are off, yet a direct caller or a posted `end` can still ask. Ignoring the request would fail open (`library-design` rule 4), and the choice is per call, so it cannot be caught at construction.
 - **Default:** end the other sessions. **Overrides:**
   - `passkey.WithoutSessionRevocationOnRemoval()` makes "keep" the default;
   - per request, the posted field, or the option for a direct caller.
@@ -106,6 +107,9 @@ The steps of `Remove`, in order:
   - A pending session that presented the clone at MFA verify is among those deleted.
   - The verify endpoint returns `ErrCloneSuspected` as today. A later save of that session cannot re-create it (see Context).
 - **A failure** is logged at Error through the manager's sampler, under the key `clone|sessions-not-ended`, with `diag.Failure`. The refusal is still `ErrCloneSuspected`. A revocation failure must never become an acceptance, and the credential is already suspended.
+- **The suspension is detached from cancellation too.** `Suspend` runs on `context.WithoutCancel(ctx)`, as the revocation does. Before this change it ran on the request's context, so on a durable store a client that disconnected at the right moment got the refusal while its clone stayed active and no session ended.
+  - Reproduced during review: a credential store whose `Suspend` honours a cancelled context left the credential active and the user's sessions loading, and the refusal was still `ErrCloneSuspected`. The test lands as the red step of this fix.
+  - Default and override: none. A suspension a client can cancel by disconnecting is a defect, not a policy.
 - **No suspension, no revocation.** Signal-only mode, and a clone policy returning `Allow` or `Refuse`, suspend nothing and so end nothing. Only `RefuseAndSuspend`, the default response, revokes.
 - **Default:** end every session. **Override:** `passkey.WithoutSessionRevocationOnClone()`.
   - There is one option per subsystem, as `config.yaml` requires: removal and clone handling are separate policies, so they get separate options.

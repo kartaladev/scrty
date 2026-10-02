@@ -1,6 +1,7 @@
 package passkey
 
 //go:generate mockgen -source=verifier.go -destination=verifier_mock_test.go -package=passkey_test -typed
+//go:generate mockgen -source=sessions.go -destination=sessions_mock_test.go -package=passkey_test -typed
 //go:generate mockgen -destination=sender_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/notify Sender
 //go:generate mockgen -destination=userloader_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/identity UserLoader
 //go:generate mockgen -destination=lookup_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/policy MFAMethodLookup

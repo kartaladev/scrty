@@ -3,10 +3,13 @@ package passkey
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
@@ -116,9 +119,25 @@ func (m *Manager) Rename(ctx context.Context, user identity.UserID, cid id.ID, n
 // ErrNotFound, and nothing changes. A notice that cannot be queued is logged
 // and does not undo the removal.
 //
+// By default, a removal also ends every other session of the user: every
+// session but s, which stays as it is, neither rotated nor marked.
+// WithoutSessionRevocationOnRemoval makes keeping them the default, and opts
+// decide for this removal: KeepOtherSessions keeps them and EndOtherSessions
+// ends them, whatever the default, the last one given winning. When they end,
+// they end before the passkey is deleted, so a failure to end them refuses the
+// removal with fixed text, leaves the passkey for a retry and queues no
+// notice. After the delete they are ended a second time, catching a login
+// that finished in between; that pass runs under a context the caller cannot
+// cancel, and its failure is logged and does not undo the removal. The Removed
+// notice says whether they were ended (Notice.SessionsEnded). Asking to end
+// them of a manager wired with no session revoker is ErrConfig, and changes
+// nothing.
+//
 // Removing a passwordless user's last active passkey leaves them only account
 // recovery to sign in with.
-func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID, rc RegistrationContext) error {
+func (m *Manager) Remove(
+	ctx context.Context, s *session.Session, cid id.ID, rc RegistrationContext, opts ...RemoveOption,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -132,6 +151,17 @@ func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID, rc 
 		return err
 	}
 
+	end := m.endsOtherSessions(opts)
+	if end && nilcheck.IsNil(m.sessions) {
+		return fmt.Errorf("%w: a session revoker is required to end the user's other sessions", ErrConfig)
+	}
+
+	if end {
+		if _, err := m.sessions.DeleteByUserExcept(ctx, s.UserID, s.ID); err != nil {
+			return diag.Wrap(err, "passkey: could not end the user's other sessions")
+		}
+	}
+
 	removed, err := m.credentials.Delete(ctx, s.UserID, cid)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not remove the passkey")
@@ -141,9 +171,28 @@ func (m *Manager) Remove(ctx context.Context, s *session.Session, cid id.ID, rc 
 		return ErrNotFound
 	}
 
-	m.notify(ctx, noticeRemoved, c, nil, false)
+	if end {
+		m.endOtherSessionsAgain(ctx, s, cid)
+	}
+
+	m.notify(ctx, noticeRemoved, c, nil, end)
 
 	return nil
+}
+
+// endOtherSessionsAgain ends s's user's other sessions a second time, after
+// the passkey is gone: a login that finished between the first pass and the
+// delete left a session the first pass could not see, while one that records
+// its assertion after the delete is refused. It runs under a context the
+// caller cannot cancel, and its failure is logged and does not undo the
+// removal.
+func (m *Manager) endOtherSessionsAgain(ctx context.Context, s *session.Session, cid id.ID) {
+	ctx = context.WithoutCancel(ctx)
+
+	if _, err := m.sessions.DeleteByUserExcept(ctx, s.UserID, s.ID); err != nil {
+		m.sampled(ctx, slog.LevelError, "remove|sessions-not-ended", msgSessionsNotEnded,
+			append(diag.Failure("remove", err), credentialAttr(cid))...)
+	}
 }
 
 // admitRemoval admits only a full session, by admit's rule for one: a

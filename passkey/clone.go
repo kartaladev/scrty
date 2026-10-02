@@ -23,8 +23,9 @@ type CloneResponse uint8
 
 const (
 	// CloneSuspend refuses the login or verification with ErrCloneSuspected,
-	// suspends the credential, queues the Suspended notice and writes a
-	// sampled warning. It is the default.
+	// suspends the credential, ends every session of its user (unless
+	// WithoutSessionRevocationOnClone), queues the Suspended notice and
+	// writes a sampled warning. It is the default.
 	CloneSuspend CloneResponse = iota + 1
 	// CloneSignalOnly allows the login or verification, leaves the stored
 	// counter as it is, and writes a sampled warning naming the credential's
@@ -44,7 +45,8 @@ const (
 	// active.
 	CloneRefuse
 	// CloneRefuseSuspend refuses with ErrCloneSuspected, suspends the
-	// credential and queues the Suspended notice, as CloneSuspend does.
+	// credential, ends its user's sessions and queues the Suspended notice,
+	// as CloneSuspend does.
 	CloneRefuseSuspend
 )
 
@@ -65,10 +67,10 @@ type CloneSignal struct {
 }
 
 // WithCloneResponse replaces what the library does about a suspected clone.
-// The default is CloneSuspend: refuse, suspend the credential and notify the
-// user. CloneSignalOnly allows the login and only writes a warning. A
-// consumer clone policy, when set, decides in its place. Any other value is
-// a configuration error.
+// The default is CloneSuspend: refuse, suspend the credential, end the
+// user's sessions and notify the user. CloneSignalOnly allows the login and
+// only writes a warning. A consumer clone policy, when set, decides in its
+// place. Any other value is a configuration error.
 func WithCloneResponse(r CloneResponse) Option {
 	return func(m *Manager) { m.cloneResponse = r }
 }
@@ -89,7 +91,9 @@ func WithClonePolicy(fn func(ctx context.Context, s CloneSignal) CloneAction) Op
 // onCounterRefused handles a counter write the store refused for c. A
 // credential no longer found or no longer active is refused as it now
 // stands; one still active is a suspected clone, decided by the consumer's
-// policy or the clone response.
+// policy or the clone response. Only the call whose Suspend suspended c ends
+// the user's sessions and queues the notice: of two racing clone assertions,
+// one does.
 func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *AssertionResult) error {
 	now, err := m.credentials.Find(ctx, c.User, c.ID)
 
@@ -127,17 +131,45 @@ func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *Asse
 	case CloneRefuse:
 		return ErrCloneSuspected
 	default:
-		suspended, err := m.credentials.Suspend(ctx, c.ID)
+		// The suspension is detached from the request: a client that
+		// disconnects must not leave a suspected clone active.
+		suspended, err := m.credentials.Suspend(context.WithoutCancel(ctx), c.ID)
 		if err != nil {
 			return diag.Wrap(err, "passkey: could not suspend the credential", ErrCloneSuspected)
 		}
 
 		if suspended {
-			m.notify(ctx, noticeSuspended, now, nil, false)
+			ended := m.endSessionsOnClone(ctx, c)
+			m.notify(ctx, noticeSuspended, now, nil, ended)
 		}
 
 		return ErrCloneSuspected
 	}
+}
+
+// endSessionsOnClone ends every session of c's user after c was suspended as
+// a suspected clone, unless WithoutSessionRevocationOnClone was given, and
+// reports whether it did. It runs under a context the caller cannot cancel,
+// so a client that disconnects does not leave the sessions alive. Its failure
+// is logged at error level; the refusal stands either way.
+//
+// The manager holds a revoker whenever clone revocation is on: New refuses
+// any other wiring.
+func (m *Manager) endSessionsOnClone(ctx context.Context, c *Credential) bool {
+	if m.keepOnClone {
+		return false
+	}
+
+	ctx = context.WithoutCancel(ctx)
+
+	if err := m.sessions.DeleteByUser(ctx, c.User); err != nil {
+		m.sampled(ctx, slog.LevelError, "clone|sessions-not-ended", msgSessionsNotEnded,
+			append(diag.Failure("clone", err), credentialAttr(c.ID))...)
+
+		return false
+	}
+
+	return true
 }
 
 // recordAllowedClone records the backup state and last use of an assertion

@@ -155,6 +155,10 @@ func (pm *MFAMethod) PresentedChallenge(response []byte) (string, error) {
 // carry must map to user (WebAuthn L3 section 7.2 step 6); an absent one is
 // accepted.
 //
+// A suspected clone that suspends the credential also ends every session of
+// user, the caller's pending one included, unless
+// WithoutSessionRevocationOnClone was given.
+//
 // The refusals:
 //   - a suspended passkey is ErrSuspended, and a suspected clone
 //     ErrCloneSuspected; both wrap mfa.ErrAuthenticatorRefused, so the slot

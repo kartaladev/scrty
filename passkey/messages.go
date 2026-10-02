@@ -158,7 +158,9 @@ func (m *Manager) notify(
 }
 
 // sendNotice renders and queues one notice, and returns why it could not.
-func (m *Manager) sendNotice(ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool) error {
+func (m *Manager) sendNotice(
+	ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool,
+) error {
 	to, err := m.contactOf(ctx, c.User, resolve)
 	if err != nil {
 		return err

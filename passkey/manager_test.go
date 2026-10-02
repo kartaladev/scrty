@@ -272,6 +272,45 @@ func (f *fixture) messages() []notify.Message {
 	return append([]notify.Message(nil), f.sent...)
 }
 
+// seedSessions stores u-1's laptop, phone and tablet sessions and u-2's
+// session in the fixture's session manager, and returns their identifiers by
+// device.
+func (f *fixture) seedSessions(t *testing.T) map[string]string {
+	t.Helper()
+
+	sids := map[string]string{}
+
+	for device, user := range map[string]identity.UserID{
+		"laptop": "u-1", "phone": "u-1", "tablet": "u-1", "theirs": "u-2",
+	} {
+		s, err := f.sessions.Create(t.Context(), user)
+		require.NoError(t, err)
+
+		sids[device] = s.ID
+	}
+
+	return sids
+}
+
+// loads reports whether the session sid still loads from the fixture's
+// session manager.
+func (f *fixture) loads(t *testing.T, sid string) bool {
+	t.Helper()
+
+	_, err := f.sessions.Load(t.Context(), sid)
+
+	return err == nil
+}
+
+// mockRevoker wires a gomock session revoker in place of the fixture's
+// session manager, and returns it.
+func (f *fixture) mockRevoker() *MockSessionRevoker {
+	r := NewMockSessionRevoker(f.ctrl)
+	f.deps.Sessions = r
+
+	return r
+}
+
 // fullSession is a full password session of user created at regStart.
 func fullSession(sid string, user identity.UserID) *session.Session {
 	return &session.Session{ID: sid, UserID: user, CreatedAt: regStart, FirstFactor: factor.Password}

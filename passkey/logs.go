@@ -16,12 +16,13 @@ import (
 // library identifier, and a dependency's failure only by a fixed reason and
 // its Go type.
 const (
-	msgNoticeNotQueued = "passkey: a notice was not queued"
-	msgSuppressed      = "passkey: records suppressed"
-	msgSyncedUnknown   = "passkey: could not tell whether the user has a synced passkey"
-	msgPurgeFailed     = "passkey: expired login challenges were not purged"
-	msgRefused         = "passkey: assertion refused"
-	msgClone           = "passkey: suspected clone"
+	msgNoticeNotQueued  = "passkey: a notice was not queued"
+	msgSuppressed       = "passkey: records suppressed"
+	msgSyncedUnknown    = "passkey: could not tell whether the user has a synced passkey"
+	msgPurgeFailed      = "passkey: expired login challenges were not purged"
+	msgRefused          = "passkey: assertion refused"
+	msgClone            = "passkey: suspected clone"
+	msgSessionsNotEnded = "passkey: the user's sessions could not all be ended"
 )
 
 // sampled writes the record msg at level under key when the manager's sampler
