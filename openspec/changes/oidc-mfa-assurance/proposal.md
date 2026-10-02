@@ -46,7 +46,8 @@ None.
   - `oidc`: provider assurance configuration, claim extraction during ID token verification, and assurance fields on the callback result and handoff record;
   - `policy`: an assurance-aware MFA requirement decision for federated logins;
   - `session`: library-owned federated assurance fields;
-  - `httpsec`: `acr_values` on the authorize redirect, and assurance passed into the post-authentication input at handoff redemption.
+  - `oidc`: `acr_values` on the authorize redirect.
+  - `httpsec`: assurance passed into the post-authentication input at handoff redemption.
 - **Persistence:** new columns on the handoff and session tables, stored unsealed because they are not credentials, owned by `security-state-stores` and `schema-migrations`. Conformance suites gain round-trip cases.
 - **Sequenced after:** `passkey-authentication`, which is applied and archived first. Its deltas change the same requirement blocks, and its library-only proof is narrowed here (design.md, decision 8).
 - **Depends on:** `oidc-login`, `identity-linking` (unchanged), `sessions`, `security-policy`, `identity-model` (first-factor kinds and channels), and `multi-factor-auth` for the challenge and verify path.

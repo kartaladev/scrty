@@ -30,7 +30,11 @@ Each registered provider SHALL have an assurance configuration made of a set of 
 - **THEN** assurance for that login is not met
 
 ### Requirement: Assurance is read only from the verified ID token
-Assurance SHALL be decided only from the `amr` and `acr` claims of an ID token that passed every verification check. No value from a UserInfo response, an access token, a request parameter, a consumer broker, or a redemption request SHALL be considered. An absent `amr`, an empty `amr`, an `amr` that is not an array of strings, and an `acr` that is not a non-empty string SHALL each mean nothing was asserted. A malformed claim SHALL NOT make the token invalid; it SHALL write a sampled warning naming the provider and the claim name, never its value.
+Assurance SHALL be decided only from the `amr` and `acr` claims of an ID token that passed every verification check. No value from a UserInfo response, an access token, a request parameter, a consumer broker, or a redemption request SHALL be considered. An absent `amr`, an empty `amr`, an `amr` that is not an array of strings, an `acr` that is not a non-empty string, and an `amr` element or `acr` that holds a NUL byte or invalid UTF-8 SHALL each mean nothing was asserted. A malformed claim SHALL NOT make the token invalid; it SHALL write a sampled warning naming the provider and the claim name, never its value.
+
+#### Scenario: Unstorable claim value
+- **WHEN** a verified ID token from provider `corp` carries `amr` `["mfa\u0000x"]`
+- **THEN** the login proceeds with assurance not asserted, and a sampled warning names `corp` and `amr`
 
 #### Scenario: No amr claim
 - **WHEN** a verified ID token from provider `corp` carries no `amr` claim

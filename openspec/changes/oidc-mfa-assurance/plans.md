@@ -196,7 +196,7 @@ func TestFederatedMet_ZeroEvidenceNeverAsksTheSource(t *testing.T) {
 
 **Files:**
 - Modify: `policy/mfarequirement.go` (option, fields, `Evaluate`, `Challenges`, godoc's evaluation order)
-- Modify: `policy/errors.go`, or wherever `ErrMFARequired` is declared (`ErrFederatedAssuranceNotMet`)
+- Modify: `policy/mfarequirement.go`, where `ErrMFARequired` is declared (`ErrFederatedAssuranceNotMet`)
 - Test: `policy/mfarequirement_federated_test.go`
 
 **Interfaces:**
@@ -414,7 +414,7 @@ if slices.ContainsFunc(a.RequestACR, func(v string) bool { return strings.Contai
 **Files:**
 - Modify: `oidc/verify.go` (`idClaims` gains `AMR []string`, `ACR string`, `malformedAMR`, `malformedACR bool`; read after the subject check)
 - Modify: `oidc/callback.go` (one sampled warning per malformed claim, through `logCallbackRefusal`'s sampler, with key `oidc.callback:malformed-assurance-claim:<provider>`, no error text and no value)
-- Test: `oidc/verify_assurance_test.go`
+- Test: `oidc/verify_test.go` (the `assurance:` rows of `TestVerifyIDToken`), `oidc/callback_test.go` (`TestManagerCallback` rows)
 
 **Interfaces:**
 - Produces: `func readAssurance(tok jwt.Token) (amr []string, acr string, badAMR, badACR bool)`, unexported.
@@ -427,11 +427,12 @@ if slices.ContainsFunc(a.RequestACR, func(v string) bool { return strings.Contai
   - **Review Focus 2:** `["mfa", 1]`: bad, nothing asserted;
   - `acr` `""`: not asserted and not bad;
   - `acr` `2`: bad;
-  - `acr` `"urn:corp:loa:2"`.
+  - `acr` `"urn:corp:loa:2"`;
+  - **Unstorable claim value** (design.md, decision 2): `["mfa\u0000x"]`, `["mfa", "\xff"]` (invalid UTF-8), `acr` `"loa\u00002"` and `acr` `"\xff"`: each bad, nothing asserted, because no durable store can hold it.
 
-  Add a callback test: a malformed `amr` leaves the login successful with empty `AMR`, and the captured log record has `provider=corp`, `claim=amr` and no `mfa` substring anywhere in the record.
+  Add a callback test: a malformed `amr` leaves the login successful with empty `AMR`, and the captured log record has `provider=corp`, `claim=amr` and no `mfa` substring anywhere in the record. Add the same callback row for an `amr` holding a NUL byte.
 - [ ] **Step 2: Run** `go test -run 'TestReadAssurance|TestCallback_MalformedAssurance' -count=1 ./oidc/`. **Expected:** with a stub returning zero values, the asserted rows and the warning test fail.
-- [ ] **Step 3: Implement.** Use `tok.Field("amr")`. The decoded type from jwx is `[]any` (confirm with a test print, then delete it). Every element must be a `string`, or the whole claim is bad.
+- [ ] **Step 3: Implement.** Use `tok.Field("amr")`. The decoded type from jwx is `[]any` (confirm with a test print, then delete it). Every element must be a `string` that holds no NUL byte and is valid UTF-8 (`utf8.ValidString`), or the whole claim is bad; the same rule makes an `acr` bad.
 - [ ] **Step 4: Run** `go test -race ./oidc/...`. **Expected:** PASS.
 
 ### Task 4.3: `acr_values` on the authorize URL
@@ -554,7 +555,7 @@ var _ policy.FederatedAssuranceSource = (*Manager)(nil)
 **Files:**
 - Modify: `httpsec/logincomplete.go` (`loginTailDeps` or `postAuthenticationInput` gains the evidence; `completeLogin` passes `session.WithFederatedAssurance`), `httpsec/bearer.go:142-151` (mint from the session when `s.FirstFactor.Channel() == factor.Federated`)
 - Create: `httpsec/federated.go` (`mintFederated(provider, issuer string, amr []string, acr string) policy.FederatedAssurance`, the only call to `assurance.NewFederated` in `httpsec`)
-- Test: `httpsec/federated_completion_test.go`
+- Test: `httpsec/oidc_assurance_test.go`
 
 - [ ] **Step 1: Write the failing tests:**
   - **at login:** a required user enrolled on nothing, evidence `["mfa"]`, and a source that accepts `mfa`. The token is returned without a challenge, and the session has `FederatedAMR ["mfa"]` and `MFA == MFANone`.
@@ -596,9 +597,10 @@ var _ policy.FederatedAssuranceSource = (*Manager)(nil)
 ### Task 6.4: Assembly refuses an unwired source
 
 **Files:**
-- Modify: `policy/federated.go` (`FederatedAssuranceUser` interface), `policy/mfarequirement.go` and `policy/mfa.go` (implement it), `policy/engine.go` (`UnwiredFederatedAssurance() []string`, mirroring `DeclaredChallenges`)
+- Create: `policy/federated_wiring.go` (`FederatedAssuranceUser` interface and the requirement policy's `NeedsFederatedAssuranceSource`). The challenge policy (`policy/mfa.go`) does not implement it: its opt-in already fails at its own construction without a source (design.md, decision 6).
+- Modify: `policy/engine.go` (`UnwiredFederatedAssurance() []string`, mirroring `DeclaredChallenges`)
 - Modify: `httpsec/oidc_options.go` (`oidcInterceptor.check` at :134 calls it when OIDC login is enabled)
-- Test: `httpsec/oidc_options_test.go`, `policy/engine_test.go`
+- Test: `httpsec/oidc_construction_test.go`, `policy/federated_wiring_test.go`
 
 **Interfaces:**
 - Produces:
