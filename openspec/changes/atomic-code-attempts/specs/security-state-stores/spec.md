@@ -52,3 +52,18 @@ When the database cannot answer a store operation, the store SHALL return an err
 - **WHEN** a store operation runs on a caller's transaction handle that already reports a failure, such as a transaction whose begin failed
 - **THEN** the operation returns an error that wraps that failure
 - **AND** it runs no statement, does not panic, and reports no refusal or absence
+
+### Requirement: Wiring mistakes fail at construction
+Constructing a durable store SHALL fail with a configuration error, before any database access, when the database handle is missing, when the database handle already reports a failure, or when an option is given a nil value.
+
+#### Scenario: Missing handle
+- **WHEN** a durable store is constructed with a nil database handle
+- **THEN** construction returns a configuration error and no store
+
+#### Scenario: Nil option value
+- **WHEN** a durable store is constructed with a nil transaction resolver
+- **THEN** construction returns a configuration error and no store
+
+#### Scenario: A handle that already reports a failure
+- **WHEN** a durable store is constructed with a database handle that already reports a failure
+- **THEN** construction returns a configuration error that wraps that failure, and no store

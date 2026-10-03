@@ -167,12 +167,18 @@ func WithResealOnRead(on bool) Option {
 
 // newConfig applies opts over the defaults for a store on base that honours
 // the options in honours, besides WithTxResolver, which every store honours.
-// It refuses a nil base, a nil option, a nil option value and an option the
+// It refuses a nil base, a base that already carries an error (a transaction
+// whose Begin failed), a nil option, a nil option value and an option the
 // store does not honour with an error wrapping ErrConfig that names the first
-// problem and never a value. It never touches the database.
+// problem and never a value; a base's own error is wrapped beside ErrConfig.
+// It never touches the database.
 func newConfig(base *gormdb.DB, opts []Option, honours ...optionKind) (*config, error) {
 	if base == nil {
 		return nil, fmt.Errorf("%w: the database handle is nil", ErrConfig)
+	}
+
+	if base.Error != nil {
+		return nil, fmt.Errorf("%w: the database handle already carries an error: %w", ErrConfig, base.Error)
 	}
 
 	c := &config{

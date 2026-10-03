@@ -77,7 +77,14 @@ Every task is test-first: write the failing test, run it and see it fail for the
   Each runs on a `WithTx` handle that carries an error, and asserts no panic and an error wrapping that failure. Remove the guard `ChargeVerifyAttempt` gained in group 1 first, so its case is red again. Run them and record each case's panic. A case that does not fail is reported and dropped from the claim, not weakened. Verify with `go test -race -run TestStores_FailedHandleIsAnError -count=1 ./...` in `gorm`.
 - [x] 4.2 `conn` in `gorm/tx.go` returns the resolved handle's error, before any statement, for a `WithTx` transaction, a resolver's transaction and the base handle. Its godoc says so. Add cases to `TestStores_FailedHandleIsAnError`: a resolver returning a handle that carries an error, and a builder-chain operation on such a handle still returning the error. Verify with `go test -race ./...` and `golangci-lint run` in `gorm`, and `go test -race -count=1 -p 1 ./gormstore/` in `test`.
 
+- [x] 4.3 Whole-branch review findings for group 4 (security-state-stores "Wiring mistakes fail at construction", scenario "A handle that already reports a failure"; decision 10, "At construction"):
+  - `newConfig` refuses a base handle that already carries an error with the configuration error it uses for a nil handle, wrapping the handle's error. Red first, in the constructor table.
+  - `TestConfigConn` gains a row for a configured resolver reporting false while the base handle carries an error set after construction. Red first, by reverting that branch of `conn`.
+  - The exported godoc of `WithTx` and `TxResolver` states that a handle carrying an error makes the operation return it and run no statement.
+
+  Verify with `go test -race ./...`, `golangci-lint run` in `gorm`, and `go test -race -count=1 -p 1 ./gormstore/` in `test`.
+
 ## 5. Integration
 
-- [ ] 5.1 Whole-branch review against every requirement in this change's three spec deltas, by a fresh reviewer agent that did not write the code. Its findings are labelled `REPRODUCED` with a failing test, or `UNREPRODUCED`. Verify by the review report, with every finding resolved or recorded in `design.md`.
+- [x] 5.1 Whole-branch review against every requirement in this change's three spec deltas, by a fresh reviewer agent that did not write the code. Its findings are labelled `REPRODUCED` with a failing test, or `UNREPRODUCED`. Verify by the review report, with every finding resolved or recorded in `design.md`.
 - [ ] 5.2 Final gate across every module in `go.work`: `go test -race ./...`, `go vet ./...`, `gofmt -l .` empty, `golangci-lint run`, and `openspec validate atomic-code-attempts --strict`. Verify by the clean output of each command.

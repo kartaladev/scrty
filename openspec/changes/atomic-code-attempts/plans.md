@@ -1132,6 +1132,76 @@ git add gorm
 git commit -m "fix(gorm): return the error a caller's handle carries instead of panicking"
 ```
 
+### Task 4.3: Whole-branch review findings for group 4
+
+Covers security-state-stores "Wiring mistakes fail at construction" (scenario "A handle that already reports a failure"), and design decision 10, "At construction".
+
+**Files:**
+- Modify: `gorm/options.go` (`newConfig`), `gorm/options_test.go` (`TestNewConfig`)
+- Modify: `gorm/tx_test.go` (`TestConfigConn`), `gorm/failedhandle_test.go` (the base-handle case, and `t.Helper()` in `wrapsFailure`)
+- Modify: `gorm/tx.go` (godoc of `WithTx` and `TxResolver` only)
+
+**Interfaces:**
+- Consumes: `newConfig(base, opts, honours...)`, `ErrConfig`, and `TestConfigConn`'s `errHandle`, `failed` and `refusesWith` from 4.2.
+- Produces: `newConfig` refuses a base handle whose `Error` is set, with an error matching both `ErrConfig` and that handle error.
+
+- [ ] **Step 1: Write the failing constructor case** in `TestNewConfig`, beside "a nil database handle is refused":
+
+```go
+		{
+			name: "a database handle that already carries an error is refused",
+			base: func() *gormdb.DB {
+				h := new(gormdb.DB)
+				_ = h.AddError(errOpenFailed) // the returned error is the one just added
+				return h
+			}(),
+			assert: func(t *testing.T, c *config, err error) {
+				require.ErrorIs(t, err, ErrConfig)
+				require.ErrorIs(t, err, errOpenFailed)
+				assert.Nil(t, c)
+			},
+		},
+```
+
+  Declare `var errOpenFailed = errors.New("open failed")` at the test file's top level.
+
+- [ ] **Step 2: Run it.** `go test -race -run 'TestNewConfig$' -count=1 ./` in `gorm`. Expected: FAIL, with `Target error should be in err chain`, because construction succeeds.
+
+- [ ] **Step 3: Implement**, right after the nil check in `newConfig`:
+
+```go
+	if base.Error != nil {
+		return nil, fmt.Errorf("%w: the database handle already carries an error: %w", ErrConfig, base.Error)
+	}
+```
+
+- [ ] **Step 4: Keep the base-handle case of `TestStores_FailedHandleIsAnError` on the `conn` guard.** It now fails at construction. Build its config on a healthy base, then call `base.AddError(errBeginFailed)` after `newConfig`, so it exercises an error set later. Add `t.Helper()` as the first line of `wrapsFailure`.
+
+- [ ] **Step 5: Add the resolver-reports-false row** to `TestConfigConn`:
+  - A resolver returns a healthy handle and `false`.
+  - The base handle gets `errHandle` after construction.
+  - Assert `refusesWith(errHandle)`.
+  
+  Red step: temporarily change the resolver-false branch of `conn` to `return opSession(ctx, c.base), false, nil`, run `go test -run TestConfigConn ./`, and see the row fail with `Expected error with "handle already failed" in chain but got nil`. Then restore the branch byte-exactly.
+
+- [ ] **Step 6: Godoc.** Add one sentence to `WithTx` and to `TxResolver`: "A handle that already carries an error, such as a transaction whose Begin failed, makes the operation return that error, wrapped with the operation name, and run no statement." Also update the godoc of every public `New*Store` constructor in `gorm` that states the nil-handle refusal, so it names this refusal too.
+
+- [ ] **Step 7: Run.**
+
+```bash
+cd gorm && go test -race -count=1 ./... && go vet ./... && golangci-lint run && gofmt -l .
+cd ../test && go test -race -count=1 -p 1 ./gormstore/
+```
+
+Expected: PASS. Real stores built on `gorm.Open` construct as before.
+
+- [ ] **Step 8: Commit (main session):**
+
+```bash
+git add gorm openspec/changes/atomic-code-attempts
+git commit -m "fix(gorm): refuse a database handle that already carries an error at construction"
+```
+
 ### Task 5.1: Whole-branch review
 
 - [ ] **Step 1:** Dispatch a fresh Opus reviewer. This covers security-critical refusal logic and a multi-package contract change. The reviewer:

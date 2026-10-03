@@ -14,15 +14,17 @@
 // # Construction
 //
 // Every constructor takes the *gorm.DB and options, and returns the store or
-// an error wrapping ErrConfig for a wiring mistake: a nil handle, a nil
-// option, a nil option value, or an option the store does not honour. Every
-// store honours WithTxResolver; WithIDGenerator, WithClock and
-// WithResealOnRead each name the stores that honour them, and any other store
-// refuses them rather than ignoring them. The error names the first mistake,
-// never a value. A store whose table holds sealed columns (sessions, whose
-// provider ID token is sealed; signing keys, whose private material is; and
-// MFA enrolments, whose secret is) also requires a seal.Cipher and refuses a
-// nil one; there is no unsealed mode. No constructor touches the database.
+// an error wrapping ErrConfig for a wiring mistake: a nil handle, a handle
+// that already carries an error, a nil option, a nil option value, or an
+// option the store does not honour. Every store honours WithTxResolver;
+// WithIDGenerator, WithClock and WithResealOnRead each name the stores that
+// honour them, and any other store refuses them rather than ignoring them. The
+// error names the first mistake, never a value; a handle's own error is the
+// exception, wrapped so a consumer can match it. A store whose table holds
+// sealed columns (sessions, whose provider ID token is sealed; signing keys,
+// whose private material is; and MFA enrolments, whose secret is) also
+// requires a seal.Cipher and refuses a nil one; there is no unsealed mode. No
+// constructor touches the database.
 //
 // # Transactions
 //

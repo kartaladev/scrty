@@ -136,15 +136,17 @@ A gorm handle can carry an error, as `Begin` does when it fails. gorm then skips
 - **Where:** `conn` in `gorm/tx.go` returns the handle's error, before any statement, whenever the resolved handle carries one. It does this for a transaction attached with `WithTx`, one returned by a resolver, and the base handle alike. Every gorm store operation already resolves its handle there and wraps the error with its operation name, as it does for `ErrNilTransaction`.
 - **Alternatives considered:** a guard at each `.Row()` site. It fixes today's six sites, but the next store that reads a row repeats the panic. The guard in `ChargeVerifyAttempt`, added in group 1, becomes redundant and is removed.
 - **Effect on other operations:** builder-chain operations already returned this error from their result. They now return it before running, wrapped the same way, so their observable outcome is unchanged.
-- **Proof:** `TestStores_FailedHandleIsAnError` (`go test -race -run TestStores_FailedHandleIsAnError ./` in `gorm`) panicked with `runtime error: invalid memory address or nil pointer dereference` in `database/sql.(*Row).Scan`, without the guard, for six cases:
+- **Proof:** `TestStores_FailedHandleIsAnError` (`go test -race -run TestStores_FailedHandleIsAnError ./` in `gorm`) panicked with `runtime error: invalid memory address or nil pointer dereference` in `database/sql.(*Row).Scan`, without the guard, for seven cases:
   - the enrolment charge;
   - the recovery record's latest completion;
   - the recovery-code match;
   - the passkey user for a handle;
   - the passkey credential charge, through `returning`;
-  - a resolver's handle.
+  - a resolver's handle;
+  - the base handle, with no transaction attached.
 
   The enrolment give-back, the passkey handle assignment and a builder-chain operation already returned the error. They stay as pins and are not claimed.
+- **At construction.** A base handle that already carries an error when a store is built is a wiring mistake, since `gorm.Open` returns a handle with no error when it succeeds. `newConfig` refuses it with the configuration error it already uses for a nil handle, wrapping the handle's error, so it fails before any traffic (library-design rule 6). The guard in `conn` stays for an error set on a handle later, and for every transaction handle, which arrives per operation.
 - **No override.** Returning an error for a failed handle is the settled contract, not a policy.
 
 ## Risks / Trade-offs

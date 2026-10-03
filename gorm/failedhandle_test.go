@@ -41,6 +41,7 @@ func TestStores_FailedHandleIsAnError(t *testing.T) {
 	}
 
 	wrapsFailure := func(t *testing.T, err error) {
+		t.Helper()
 		require.Error(t, err)
 		assert.ErrorIs(t, err, errBeginFailed)
 	}
@@ -145,10 +146,17 @@ func TestStores_FailedHandleIsAnError(t *testing.T) {
 			case viaResolver:
 				opts = []Option{WithTxResolver(func(context.Context) (*gormdb.DB, bool) { return tx, true })}
 			case viaBase:
-				base = tx // the failed handle is the base; nothing is attached
+				// Construction refuses an errored base, so the error is set after it:
+				// a base that fails later, with nothing attached.
+				_, err := newConfig(tx, nil)
+				require.ErrorIs(t, err, ErrConfig)
+				require.ErrorIs(t, err, errBeginFailed)
 			}
 			cfg, err := newConfig(base, opts, optIDGenerator, optClock, optResealOnRead)
 			require.NoError(t, err)
+			if tc.source == viaBase {
+				_ = base.AddError(errBeginFailed)
+			}
 
 			var got error
 			require.NotPanics(t, func() { got = tc.call(ctx, cfg) })

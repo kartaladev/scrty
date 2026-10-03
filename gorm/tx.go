@@ -20,6 +20,10 @@ import (
 // A consumer whose transaction manager already carries the current transaction
 // in the context supplies one with WithTxResolver, so the transaction needs no
 // second attachment through WithTx.
+//
+// A handle the resolver returns that already carries an error, such as a
+// transaction whose Begin failed, makes the store operation return that error,
+// wrapped with the operation name, and run no statement.
 type TxResolver func(ctx context.Context) (*gormdb.DB, bool)
 
 // txKey is the context key WithTx attaches under. It is unexported and belongs
@@ -42,6 +46,10 @@ type txKey struct{}
 //
 // A transaction attached for another backend (package sqlstore, or the pgx
 // adapter) is invisible to these stores, and this one is invisible to theirs.
+//
+// A tx that already carries an error, such as a transaction whose Begin
+// failed, makes the store operation return that error, wrapped with the
+// operation name, and run no statement.
 //
 // Limit: a refusal (an already-consumed token, a duplicate identifier, a stale
 // save) is reported without a failed statement, so it never aborts tx. Any

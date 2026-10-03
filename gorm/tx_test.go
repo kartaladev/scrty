@@ -61,11 +61,15 @@ func TestConfigConn(t *testing.T) {
 	_ = failed.AddError(errHandle)
 
 	type testCase struct {
-		name   string
-		base   *gormdb.DB // nil means the shared base handle
-		opts   []Option
-		ctx    func(ctx context.Context) context.Context // nil means identity
-		assert func(t *testing.T, ctx context.Context, q *gormdb.DB, ambient bool, err error)
+		name string
+		base *gormdb.DB // nil means the shared base handle
+		// failBase gives the case a base handle of its own and sets an error on
+		// it after construction, which newConfig refuses to accept at
+		// construction: the case the conn guard still covers.
+		failBase bool
+		opts     []Option
+		ctx      func(ctx context.Context) context.Context // nil means identity
+		assert   func(t *testing.T, ctx context.Context, q *gormdb.DB, ambient bool, err error)
 	}
 
 	runsOn := func(want *fakePool, wantAmbient bool) func(t *testing.T, ctx context.Context, q *gormdb.DB, ambient bool, err error) {
@@ -93,8 +97,16 @@ func TestConfigConn(t *testing.T) {
 			assert: refusesWith(errHandle),
 		},
 		{
-			name:   "a base handle that already carries an error is refused with it",
-			base:   failed,
+			name:     "a base handle that gains an error after construction is refused with it",
+			failBase: true,
+			assert:   refusesWith(errHandle),
+		},
+		{
+			name:     "a resolver reporting none, over a base handle that gains an error, is refused with it",
+			failBase: true,
+			opts: []Option{WithTxResolver(func(context.Context) (*gormdb.DB, bool) {
+				return managed, false
+			})},
 			assert: refusesWith(errHandle),
 		},
 		{
@@ -192,8 +204,14 @@ func TestConfigConn(t *testing.T) {
 			if tc.base != nil {
 				b = tc.base
 			}
+			if tc.failBase {
+				b, _ = fakeDB(t, "late")
+			}
 			c, err := newConfig(b, tc.opts)
 			require.NoError(t, err)
+			if tc.failBase {
+				_ = b.AddError(errHandle)
+			}
 			q, ambient, err := c.conn(ctx)
 			tc.assert(t, ctx, q, ambient, err)
 		})
