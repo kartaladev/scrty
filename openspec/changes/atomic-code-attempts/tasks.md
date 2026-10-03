@@ -87,4 +87,4 @@ Every task is test-first: write the failing test, run it and see it fail for the
 ## 5. Integration
 
 - [x] 5.1 Whole-branch review against every requirement in this change's three spec deltas, by a fresh reviewer agent that did not write the code. Its findings are labelled `REPRODUCED` with a failing test, or `UNREPRODUCED`. Verify by the review report, with every finding resolved or recorded in `design.md`.
-- [ ] 5.2 Final gate across every module in `go.work`: `go test -race ./...`, `go vet ./...`, `gofmt -l .` empty, `golangci-lint run`, and `openspec validate atomic-code-attempts --strict`. Verify by the clean output of each command.
+- [x] 5.2 Final gate across every module in `go.work`: `go test -race ./...`, `go vet ./...`, `gofmt -l .` empty, `golangci-lint run`, and `openspec validate atomic-code-attempts --strict`. Verify by the clean output of each command.
