@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tcexec "github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/kartaladev/scrty/migrate"
@@ -1669,4 +1671,105 @@ func TestPostgresChildReusesParentServer(t *testing.T) {
 	assert.Contains(t, string(out), "child-starts=0", "the child started a server of its own:\n%s", out)
 	assert.Contains(t, string(out), "child-db=", "the child reported no database:\n%s", out)
 	assert.NotContains(t, string(out), "child-db="+parentDB+"\n", "the child was handed the parent's database")
+}
+
+// postgresDataDirectory returns the data directory srv runs on, as the server
+// reports it, so the answer holds for every image whatever its PGDATA.
+func postgresDataDirectory(t *testing.T, srv *postgresServer) string {
+	t.Helper()
+
+	var dir string
+	require.NoError(t, srv.admin.QueryRowContext(t.Context(), `SHOW data_directory`).Scan(&dir))
+	return dir
+}
+
+func TestPostgresServerTuning(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		server func(t *testing.T) *postgresServer
+		assert func(t *testing.T, srv *postgresServer)
+	}
+
+	// assertTuned checks the settings every server gets, whichever kind a test asked for.
+	assertTuned := func(t *testing.T, srv *postgresServer) {
+		t.Helper()
+
+		for setting, want := range map[string]string{
+			"fsync":              "off",
+			"synchronous_commit": "off",
+			"full_page_writes":   "off",
+			"max_connections":    strconv.Itoa(postgresMaxConnections),
+		} {
+			var got string
+			require.NoError(t, srv.admin.QueryRowContext(t.Context(), "SHOW "+setting).Scan(&got))
+			assert.Equal(t, want, got, setting)
+		}
+
+		// A server another process started has no container to look into; its
+		// parent's own run checks the mount.
+		if srv.ctr == nil {
+			return
+		}
+		dir := postgresDataDirectory(t, srv)
+		code, out, err := srv.ctr.Exec(t.Context(), []string{"stat", "-f", "-c", "%T", dir}, tcexec.Multiplexed())
+		require.NoError(t, err)
+		b, err := io.ReadAll(out)
+		require.NoError(t, err)
+		require.Zero(t, code, string(b))
+		assert.Equal(t, "tmpfs", strings.TrimSpace(string(b)), "the data directory %s is not on a tmpfs", dir)
+	}
+
+	cases := []testCase{
+		{
+			name:   "the shared server",
+			server: sharedTestPostgresServer,
+			assert: assertTuned,
+		},
+		{
+			name:   "an own server",
+			server: newTestPostgresServer,
+			assert: assertTuned,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.server(t))
+		})
+	}
+}
+
+// Server tuning must not change what a test can observe: PostgreSQL still
+// refuses a write skew under SERIALIZABLE, whatever the WAL settings.
+func TestPostgresServerKeepsSerializableConflicts(t *testing.T) {
+	t.Parallel()
+
+	conn := RunTestPostgres(t)
+	ctx := t.Context()
+	_, err := conn.DB.ExecContext(ctx, `CREATE TABLE doctors (name text PRIMARY KEY, on_call bool NOT NULL);
+		INSERT INTO doctors VALUES ('a', true), ('b', true)`)
+	require.NoError(t, err)
+
+	opts := &sql.TxOptions{Isolation: sql.LevelSerializable}
+	t1, err := conn.DB.BeginTx(ctx, opts)
+	require.NoError(t, err)
+	t2, err := conn.DB.BeginTx(ctx, opts)
+	require.NoError(t, err)
+	var n int
+	require.NoError(t, t1.QueryRowContext(ctx, `SELECT count(*) FROM doctors WHERE on_call`).Scan(&n))
+	require.NoError(t, t2.QueryRowContext(ctx, `SELECT count(*) FROM doctors WHERE on_call`).Scan(&n))
+	_, err = t1.ExecContext(ctx, `UPDATE doctors SET on_call = false WHERE name = 'a'`)
+	require.NoError(t, err)
+	_, err = t2.ExecContext(ctx, `UPDATE doctors SET on_call = false WHERE name = 'b'`)
+	require.NoError(t, err)
+	require.NoError(t, t1.Commit())
+
+	err = t2.Commit()
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr, "write skew must be refused under SERIALIZABLE")
+	assert.Equal(t, "40001", pgErr.Code)
 }

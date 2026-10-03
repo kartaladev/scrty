@@ -320,13 +320,18 @@ func serverCertificate(t *testing.T) (certPEM, keyPEM []byte, pool *x509.CertPoo
 	return certPEM, keyPEM, pool
 }
 
-// PostgresConn is how a test reaches the database RunTestPostgres started.
+// PostgresConn is how a test reaches the database RunTestPostgres provisioned:
+// one database of the call's own, on a server the call may share with others.
 type PostgresConn struct {
-	// DB is a database/sql handle over the pgx driver, closed at cleanup.
+	// DB is a database/sql handle over the pgx driver, closed at cleanup. It
+	// opens at most 32 connections, enough for the race suites that release
+	// several racers per record at once.
 	DB *sql.DB
 
-	// DSN opens further handles on the same database, for pgxpool.New or
-	// gorm.Open.
+	// DSN names the call's own database, not the server's maintenance
+	// database. It opens further handles on that same database, for
+	// pgxpool.New or gorm.Open. The drop at cleanup ends any session still
+	// connected, so a handle left open does not block it.
 	DSN string
 }
 
@@ -336,9 +341,9 @@ type PostgresConn struct {
 const postgresImage = "postgres:18.6-alpine"
 
 // PostgresImageEnv names the environment variable that, when set and not
-// empty, replaces the default image RunTestPostgres starts. CI sets it to run
-// the whole suite once per supported PostgreSQL major. WithTestPostgresImage
-// still takes precedence over it.
+// empty, replaces the default image RunTestPostgres and EnsureTestPostgresServer
+// resolve. CI sets it to run the whole suite once per supported PostgreSQL
+// major. WithTestPostgresImage still takes precedence over it.
 const PostgresImageEnv = "SCRTY_TEST_POSTGRES_IMAGE"
 
 // Credentials of the servers RunTestPostgres starts, and the name of each
@@ -355,11 +360,12 @@ const (
 // the race suites, which release several racers per record at once.
 const postgresMaxOpenConns = 32
 
-// WithTestPostgresImage replaces the PostgreSQL image RunTestPostgres starts.
-// Use it to run against another major or minor. The default is the image
-// named by PostgresImageEnv when that is set, and the pinned PostgreSQL 18
-// image otherwise. An empty ref is a wiring mistake and fails the test rather
-// than falling back to the default.
+// WithTestPostgresImage replaces the PostgreSQL image RunTestPostgres and
+// EnsureTestPostgresServer resolve. Use it to run against another major or
+// minor; a call for another image gets, and shares, a server running that
+// image. The default is the image named by PostgresImageEnv when that is set,
+// and the pinned PostgreSQL 18 image otherwise. An empty ref is a wiring
+// mistake and fails the test rather than falling back to the default.
 func WithTestPostgresImage(ref string) TestOption {
 	return func(c *testConfig) { c.image = ref; c.imageSet = true }
 }
@@ -438,9 +444,14 @@ func postgresLeftoverTables(ctx context.Context, db *sql.DB, exempt []string) (s
 // the options are given. A nil fsys or an empty versionTable stops the test
 // at set-up, before that set is used.
 //
-// At cleanup every set is rolled back to version zero, the last one first,
-// and a rollback error fails the test. The default applies no migrations and
-// leaves the database empty.
+// The sets are applied once per server to a template database, keyed by the
+// ordered list of sets and the contents of their files; the call's database is
+// a clone of it. Calls with the same list share one template, and a changed
+// file or a different order gets another.
+//
+// At cleanup every set is rolled back to version zero on the call's database,
+// the last one first, and a rollback error fails the test. The default applies
+// no migrations and leaves the database empty.
 func WithTestPostgresMigrations(fsys fs.FS, dir, versionTable string) TestOption {
 	return func(c *testConfig) {
 		c.migrations = append(c.migrations, postgresMigrations{fsys: fsys, dir: dir, versionTable: versionTable})
@@ -451,16 +462,21 @@ func WithTestPostgresMigrations(fsys fs.FS, dir, versionTable string) TestOption
 // cleanup, after every migration set has been rolled back, in the order they
 // are given (across options too). A script that fails fails the test, naming
 // its position, and the next script still runs. Rollback, scripts and the
-// leftover-table check share one 30-second budget. The default runs no scripts; WithTestPostgresLeftoverTableCheck
-// is what most tests of a migration set want instead.
+// leftover-table check share one 30-second budget. The default runs no
+// scripts; WithTestPostgresLeftoverTableCheck is what most tests of a
+// migration set want instead.
 func WithTestPostgresFinalizeScripts(scripts ...string) TestOption {
 	return func(c *testConfig) { c.finalizers = append(c.finalizers, scripts...) }
 }
 
 // WithTestPostgresOwnServer gives this call a PostgreSQL container of its
-// own, terminated when its test ends. Use it for a test that changes server
-// settings or stops the server. The default shares one server per test
-// process and image with every other call.
+// own, terminated when its test ends, instead of a database on the server the
+// process shares. Use it for a test that changes server settings or stops the
+// server, which every other call on a shared server would see. The default is
+// a server shared by every call in the process that resolves to the same
+// image. The call still gets a database cloned as usual, and the own server is
+// tuned for tests like the shared one. EnsureTestPostgresServer rejects this
+// option.
 func WithTestPostgresOwnServer() TestOption {
 	return func(c *testConfig) { c.ownServer = true }
 }
@@ -480,25 +496,39 @@ func resolvePostgresImage(cfg *testConfig) string {
 
 // RunTestPostgres returns how to reach a PostgreSQL database for one test.
 //
-// By default every call in one test process that resolves to the same image
-// shares one server, started on the first such call and removed when the
-// process exits; a call that resolves to another image gets a server running
-// that image. WithTestPostgresOwnServer gives a call a container of its own
-// instead, terminated with its test. A server that failed to start fails
-// every later call for its image with the same reason, without another start.
+// Image. The server's image is the one WithTestPostgresImage names, else the
+// one PostgresImageEnv names, else the pinned PostgreSQL 18 image.
 //
-// Either way, each call gets a database of its own, created for it on the
-// server with a generated name and dropped when its test ends, after the
-// migration teardown; no other call can see or change it. A call that names
-// no migration set gets an empty database.
+// Server. By default every call in one test process that resolves to the same
+// image shares one server, started on the first such call and removed by the
+// testcontainers reaper (Ryuk) when the process exits; a call that resolves to
+// another image gets a server running that image. The server is tuned for
+// tests: settings that change only crash durability are off. A server that
+// failed to start fails every later call for its image in the process with the
+// same reason, without another start. WithTestPostgresOwnServer opts out: the
+// call gets a container of its own, terminated with its test. A child process
+// the test starts reuses its parent's servers, see EnsureTestPostgresServer.
 //
-// DB speaks database/sql through the pgx driver and is closed with the test;
-// DSN names the call's database and opens further handles on it for pgx or
-// gorm.
+// Database. Either way each call gets a database of its own, with a generated
+// name; no other call can see or change it. It is cloned from a template built
+// once per server for the call's ordered migration list (see
+// WithTestPostgresMigrations), or from the server's empty template1 when the
+// call names no migration set. At cleanup, in this order, every migration set
+// is rolled back, the finalize scripts run, the leftover-table check runs when
+// asked for, DB is closed, and the database is dropped. Each failure along the
+// way fails the test.
+//
+// DB speaks database/sql through the pgx driver, with at most 32 connections,
+// and is closed with the test; DSN names the call's database and opens further
+// handles on it for pgx or gorm.
 //
 // It skips the test when Docker is unavailable, and fails the test instead
 // when the CI environment variable is set (see requireHealthyProvider). Every
 // test that needs PostgreSQL calls this rather than starting its own.
+//
+// Ryuk is what removes the shared servers. When it is disabled
+// (TESTCONTAINERS_RYUK_DISABLED=true) they outlive the run, and must be removed
+// by hand, by the labels testcontainers puts on its containers.
 func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 	t.Helper()
 

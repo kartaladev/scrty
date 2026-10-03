@@ -36,7 +36,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
   - the per-call rollback, finalize scripts and leftover-table check running on the clone, followed by the drop.
 
   `TestPostgresTeardown` is adapted to the new set-up with every assertion kept. Covers "A call's migration sets give the schema of a fresh application" (both remaining scenarios), "Per-call teardown checks still run on the call's database", "A migration set that fails is never handed out half applied" and "Concurrent first calls apply a migration set once". Verify with `go test -race -count=1 -run 'TestRunTestPostgres|TestPostgresTeardown|TestPostgresTemplate' .` and then `go test -race -count=1 ./...` in `test` (Docker).
-- [ ] 2.4 Rewrite the godoc of `RunTestPostgres`, `PostgresConn` and the options for sharing, cloning, the own-server option and the Ryuk limit (D1, D9). Verify with `go doc -all github.com/kartaladev/scrty/test RunTestPostgres` reading as the design states, and `golangci-lint run ./...` in `test`.
+- [x] 2.4 Rewrite the godoc of `RunTestPostgres`, `PostgresConn` and the options for sharing, cloning, the own-server option and the Ryuk limit (D1, D9). Verify with `go doc -all github.com/kartaladev/scrty/test RunTestPostgres` reading as the design states, and `golangci-lint run ./...` in `test`.
 
 ## 3. Child processes and server tuning
 
@@ -46,7 +46,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
   - the PostgreSQL broken-variant parents (`sqlstore`, `pgxstore`, `gormstore`) and the cross-backend naming check call it before spawning children, and `storefix` is unchanged.
 
   A test shows that a child process of a broken-variant run starts no PostgreSQL container and still gets a database of its own ("Child test processes reuse their parent's servers"). Verify with `go test -race -count=1 ./sqlstore/ ./pgxstore/ ./gormstore/ ./crossbackend/` and the helper's tests in `test`.
-- [ ] 3.2 Tune the server (D6):
+- [x] 3.2 Tune the server (D6):
   - measure the peak connection count of a full local run and of a CI run, and record it in D6;
   - set `max_connections` with headroom over it;
   - add `fsync=off`, `synchronous_commit=off` and `full_page_writes=off`;

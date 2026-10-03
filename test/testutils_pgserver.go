@@ -257,8 +257,47 @@ const postgresTerminateTimeout = 60 * time.Second
 // postgresMaxConnections is the server's max_connections. One server carries
 // every call of a test process, each with a pool of up to 32 connections, so
 // PostgreSQL's default of 100 is exhausted by a store package's parallel
-// tests. This value is provisional until the peak is measured.
-const postgresMaxConnections = 1000
+// tests. The value is twice the larger of the peaks measured over a full local
+// run of this module (301 connections, pgxstore, children included),
+// rounded up to the next 100.
+const postgresMaxConnections = 700
+
+// postgresTuning returns the server arguments that make a test server fast.
+// The durability settings risk losing data only if the operating system
+// crashes, which the lifetime of a test container makes irrelevant, and none
+// of them changes isolation, locking or error behaviour: a serializable
+// conflict is still SQLSTATE 40001 (TestPostgresServerKeepsSerializableConflicts).
+// fsync is off already in the module's own command; it is repeated so the
+// tuning does not depend on that default.
+func postgresTuning() []string {
+	return []string{
+		"-c", "fsync=off",
+		"-c", "synchronous_commit=off",
+		"-c", "full_page_writes=off",
+		"-c", "max_connections=" + strconv.Itoa(postgresMaxConnections),
+	}
+}
+
+// postgresDataDir is where every test server keeps its data. The official
+// images disagree on the default (PostgreSQL 15 uses /var/lib/postgresql/data,
+// PostgreSQL 18 uses /var/lib/postgresql/18/docker), so PGDATA is set to one
+// path for all of them, and postgresTmpfs mounts memory over it.
+const postgresDataDir = "/var/lib/postgresql/data"
+
+// postgresTmpfs puts the data directory in memory. Docker backs the VOLUME an
+// image declares with a disk volume unless that exact path is mounted, and the
+// images declare different ones: /var/lib/postgresql/data up to 15,
+// /var/lib/postgresql from 18. Mounting both leaves no disk volume behind
+// whichever image runs. The size bounds a runaway test at a clear "no space
+// left" failure instead of exhausting the Docker VM's memory.
+var postgresTmpfs = map[string]string{
+	"/var/lib/postgresql": "rw,size=" + postgresTmpfsSize,
+	postgresDataDir:       "rw,size=" + postgresTmpfsSize,
+}
+
+// postgresTmpfsSize is the size limit of each tmpfs mount. A migrated clone is
+// a few megabytes and is dropped when its call ends.
+const postgresTmpfsSize = "2g"
 
 // startPostgresContainer starts a PostgreSQL container running image and
 // returns it only once the server accepts connections and its port is
@@ -277,7 +316,11 @@ func startPostgresContainer(ctx context.Context, image string) (*postgres.Postgr
 			postgres.WithDatabase(postgresDatabase),
 			postgres.WithUsername(postgresUsername),
 			postgres.WithPassword(postgresPassword),
-			testcontainers.WithCmdArgs("-c", "max_connections="+strconv.Itoa(postgresMaxConnections)),
+			// The module's own command is "postgres -c fsync=off", so these
+			// are appended to it, never a replacement for it.
+			testcontainers.WithCmdArgs(postgresTuning()...),
+			testcontainers.WithTmpfs(postgresTmpfs),
+			testcontainers.WithEnv(map[string]string{"PGDATA": postgresDataDir}),
 			// WithWaitStrategy would impose a 60-second deadline of its own
 			// on the two waits together, so the deadline is given here as
 			// their sum.
