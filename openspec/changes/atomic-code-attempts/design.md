@@ -65,7 +65,8 @@ UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1
 `$2` is the window end the charge returned. A give-back after the window has been replaced matches nothing, so it can never cancel a charge made in a later window.
 
 - **Only after success.** A failed compare or a spent step (replay) keeps its charge.
-- **Context:** the give-back runs under `context.WithoutCancel`. A failure is logged at WARN and does not refuse the verification, because the user proved the factor. The cost of a lost give-back is one attempt of the user's own budget, which fails safe.
+- **Precision of the match.** A durable store truncates the `until` it is given to the microsecond before comparing, because `timestamptz` holds microseconds. A give-back whose `until` falls in the same microsecond as the stored end therefore still matches, where the in-memory store compares exactly. This is accepted: `until` is always the value the charge returned, which every store already truncates, and the `RefundVerifyAttempt` godoc states it.
+- **Context:** the give-back runs under `context.WithoutCancel`. A failure is logged at WARN, with a fixed reason and the error's type but never its text (diagnostic-redaction), and does not refuse the verification, because the user proved the factor. The cost of a lost give-back is one attempt of the user's own budget, which fails safe.
 - **Alternatives considered:** resetting the count to zero on success. That hands an attacker racing a legitimate user a fresh budget in mid-window; giving back only one's own charge does not.
 - **No override.** Success spending nothing is the settled rule ("Failed verifications are throttled per user").
 

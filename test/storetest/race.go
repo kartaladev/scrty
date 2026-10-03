@@ -20,9 +20,10 @@ const (
 	defaultRaceRecords = 50
 	defaultRaceRacers  = 8
 
-	// defaultChargeRacers is RunChargeRace's default racer count: enough
-	// more than mfa.MaxEmailCodeFailures that a store charging past the cap
-	// under contention wins visibly more often than it may.
+	// defaultChargeRacers is the default racer count of RunChargeRace and
+	// RunVerifyChargeRace: enough more than the cap they allow
+	// (mfa.MaxEmailCodeFailures, mfa.DefaultVerifyAttemptLimit) that a store
+	// charging past it under contention wins visibly more often than it may.
 	defaultChargeRacers = 20
 
 	// defaultRaceTimeout bounds a race whose Race.Timeout is zero. A healthy
@@ -43,10 +44,11 @@ type Race[S any] struct {
 	// Racers is how many callers race for each record, and so how many
 	// connections the pool must be able to open at once
 	// (DurableHarness.PoolSize). Zero means the race's default: 8, or 20 for
-	// RunChargeRace. Fewer racers than one more than the wins the race allows
-	// per record are refused, naming that minimum, as they could never show a
-	// store letting too many win: two for the single-winner races, and
-	// mfa.MaxEmailCodeFailures+1 for RunChargeRace.
+	// RunChargeRace and RunVerifyChargeRace. Fewer racers than one more than
+	// the wins the race allows per record are refused, naming that minimum,
+	// as they could never show a store letting too many win: two for the
+	// single-winner races, mfa.MaxEmailCodeFailures+1 for RunChargeRace, and
+	// mfa.DefaultVerifyAttemptLimit+1 for RunVerifyChargeRace.
 	Racers int
 
 	// Timeout bounds the racing. Every racer's context carries a deadline
@@ -168,6 +170,25 @@ func RunChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 	runRace(t, h, r, chargeRule)
 }
 
+// RunVerifyChargeRace holds an MFA enrolment store to capping the TOTP
+// verification attempts charged in one window: Racers callers charge the same
+// confirmed enrolment at once for each of Records independent enrolments, and
+// exactly mfa.DefaultVerifyAttemptLimit charges of each must succeed, however
+// many race. Seed stores and confirms an enrolment and returns its user
+// reference; Attempt reports the bool mfa.EnrolmentStore.ChargeVerifyAttempt
+// returns with that limit. storefix.VerifyChargeRace is such a race.
+//
+// Racers defaults to 20 here, so a zero Racers needs a pool of 20
+// connections, and must otherwise be at least
+// mfa.DefaultVerifyAttemptLimit+1, so a store with no cap can win more
+// charges than allowed. Its inputs are otherwise checked as RunConsumeRace
+// checks them.
+func RunVerifyChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
+	t.Helper()
+
+	runRace(t, h, r, verifyChargeRule)
+}
+
 // raceRule is what one race suite requires of each record: the subtest name
 // it reports under, the noun its failures call the operation, how many
 // racers of a record must win (zero means one), and the racer count a zero
@@ -188,6 +209,12 @@ var (
 		name:   "exactly the allowed number of charges win per code",
 		noun:   "charge",
 		wins:   mfa.MaxEmailCodeFailures,
+		racers: defaultChargeRacers,
+	}
+	verifyChargeRule = raceRule{
+		name:   "exactly the limit of verification charges win per enrolment",
+		noun:   "verification charge",
+		wins:   mfa.DefaultVerifyAttemptLimit,
 		racers: defaultChargeRacers,
 	}
 )

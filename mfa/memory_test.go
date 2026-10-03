@@ -1159,3 +1159,94 @@ func TestChargeEmailCodeRace(t *testing.T) {
 	assert.Equal(t, int64(mfa.MaxEmailCodeFailures), charged.Load(), "one code, five comparisons at most")
 	assert.Equal(t, mfa.MaxEmailCodeFailures, stored(t, s, "u-1").EmailCodeAttempts)
 }
+
+// TestChargeVerifyAttempt pins what the memory store adds to the suite's
+// cases: the window end it returns and keeps is truncated to the microsecond,
+// as a durable store's is, and the limit and window are the caller's.
+func TestChargeVerifyAttempt(t *testing.T) {
+	t.Parallel()
+
+	precise := time.Date(2026, 9, 24, 10, 0, 0, 123456789, time.UTC)
+
+	type result struct {
+		until   time.Time
+		charged bool
+		after   mfa.Enrolment
+	}
+
+	type testCase struct {
+		name string
+		// setup prepares u-1's enrolment; the charge is then made for u-1 at
+		// at with limit and window.
+		setup  func(t *testing.T, s *mfa.MemoryEnrolmentStore)
+		at     time.Time
+		limit  int
+		window time.Duration
+		assert func(t *testing.T, s *mfa.MemoryEnrolmentStore, got result, err error)
+	}
+
+	chargeN := func(n int, at time.Time, limit int, window time.Duration) func(*testing.T, *mfa.MemoryEnrolmentStore) {
+		return func(t *testing.T, s *mfa.MemoryEnrolmentStore) {
+			t.Helper()
+			confirmed(t, s, "u-1", 1000, at)
+
+			for range n {
+				_, ok, err := s.ChargeVerifyAttempt(t.Context(), "u-1", at, limit, window)
+				require.NoError(t, err)
+				require.True(t, ok)
+			}
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "a new window ends at the charge plus the window, truncated to the microsecond",
+			setup:  chargeN(0, precise, mfa.DefaultVerifyAttemptLimit, mfa.DefaultVerifyAttemptWindow),
+			at:     precise,
+			limit:  mfa.DefaultVerifyAttemptLimit,
+			window: mfa.DefaultVerifyAttemptWindow,
+			assert: func(t *testing.T, s *mfa.MemoryEnrolmentStore, got result, err error) {
+				require.NoError(t, err)
+				require.True(t, got.charged)
+
+				want := time.Date(2026, 9, 24, 10, 15, 0, 123456000, time.UTC)
+				assert.True(t, want.Equal(got.until), "until is %v, want %v", got.until, want)
+				assert.True(t, want.Equal(got.after.VerifyWindowUntil), "stored window end is %v, want %v",
+					got.after.VerifyWindowUntil, want)
+				assert.Equal(t, 1, got.after.VerifyAttempts)
+
+				gaveBack, err := s.RefundVerifyAttempt(t.Context(), "u-1", got.until)
+				require.NoError(t, err)
+				assert.True(t, gaveBack, "the window end a charge returns is the one its give-back matches")
+			},
+		},
+		{
+			name:   "a consumer limit and window are the ones charged against",
+			setup:  chargeN(3, precise, 3, 10*time.Minute),
+			at:     precise.Add(9 * time.Minute),
+			limit:  3,
+			window: 10 * time.Minute,
+			assert: func(t *testing.T, _ *mfa.MemoryEnrolmentStore, got result, err error) {
+				require.NoError(t, err)
+				assert.False(t, got.charged, "a fourth charge within a limit of 3 is refused")
+				assert.Equal(t, 3, got.after.VerifyAttempts)
+				want := precise.Add(10 * time.Minute).Truncate(time.Microsecond)
+				assert.True(t, want.Equal(got.after.VerifyWindowUntil), "stored window end is %v, want %v",
+					got.after.VerifyWindowUntil, want)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := mfa.NewMemoryEnrolmentStore()
+			tc.setup(t, s)
+
+			until, ok, err := s.ChargeVerifyAttempt(t.Context(), "u-1", tc.at, tc.limit, tc.window)
+
+			tc.assert(t, s, result{until: until, charged: ok, after: stored(t, s, "u-1")}, err)
+		})
+	}
+}

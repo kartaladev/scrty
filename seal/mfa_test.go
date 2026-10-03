@@ -1104,3 +1104,125 @@ func TestEnrolmentStore_PassThroughFailure(t *testing.T) {
 		})
 	}
 }
+
+// TestEnrolmentStore_PassesVerifyAttemptsThrough pins that the sealing store
+// hands the TOTP verification charge and its give-back to the inner store
+// unchanged, and returns the inner store's answer unchanged.
+func TestEnrolmentStore_PassesVerifyAttemptsThrough(t *testing.T) {
+	t.Parallel()
+
+	c := newCiphers(t).current
+	at := time.Date(2030, 1, 1, 10, 0, 0, 123456789, time.UTC)
+	until := time.Date(2030, 1, 1, 10, 15, 0, 123456000, time.UTC)
+	innerDown := errors.New("connection reset by peer")
+
+	type result struct {
+		until time.Time
+		ok    bool
+	}
+
+	type testCase struct {
+		name   string
+		expect func(inner *MockEnrolmentStore)
+		run    func(ctx context.Context, store mfa.EnrolmentStore) (result, error)
+		assert func(t *testing.T, got result, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a charge reaches the inner store with its user, instant, limit and window",
+			expect: func(inner *MockEnrolmentStore) {
+				inner.EXPECT().ChargeVerifyAttempt(gomock.Any(), userRef, at, 5, 15*time.Minute).Return(until, true, nil)
+			},
+			run: func(ctx context.Context, store mfa.EnrolmentStore) (result, error) {
+				u, ok, err := store.ChargeVerifyAttempt(ctx, userRef, at, 5, 15*time.Minute)
+
+				return result{until: u, ok: ok}, err
+			},
+			assert: func(t *testing.T, got result, err error) {
+				require.NoError(t, err)
+				assert.True(t, got.ok)
+				assert.True(t, until.Equal(got.until), "until is %v, want %v", got.until, until)
+			},
+		},
+		{
+			name: "a give-back reaches the inner store with its user and window end",
+			expect: func(inner *MockEnrolmentStore) {
+				inner.EXPECT().RefundVerifyAttempt(gomock.Any(), userRef, until).Return(true, nil)
+			},
+			run: func(ctx context.Context, store mfa.EnrolmentStore) (result, error) {
+				ok, err := store.RefundVerifyAttempt(ctx, userRef, until)
+
+				return result{ok: ok}, err
+			},
+			assert: func(t *testing.T, got result, err error) {
+				require.NoError(t, err)
+				assert.True(t, got.ok)
+			},
+		},
+		{
+			name: "a refused charge is returned refused",
+			expect: func(inner *MockEnrolmentStore) {
+				inner.EXPECT().ChargeVerifyAttempt(gomock.Any(), userRef, at, 3, 10*time.Minute).Return(time.Time{}, false, nil)
+			},
+			run: func(ctx context.Context, store mfa.EnrolmentStore) (result, error) {
+				u, ok, err := store.ChargeVerifyAttempt(ctx, userRef, at, 3, 10*time.Minute)
+
+				return result{until: u, ok: ok}, err
+			},
+			assert: func(t *testing.T, got result, err error) {
+				require.NoError(t, err)
+				assert.False(t, got.ok)
+				assert.True(t, got.until.IsZero())
+			},
+		},
+		{
+			name: "an inner charge failure is returned behind the store's own text",
+			expect: func(inner *MockEnrolmentStore) {
+				inner.EXPECT().ChargeVerifyAttempt(gomock.Any(), userRef, at, 5, 15*time.Minute).
+					Return(time.Time{}, false, innerDown)
+			},
+			run: func(ctx context.Context, store mfa.EnrolmentStore) (result, error) {
+				u, ok, err := store.ChargeVerifyAttempt(ctx, userRef, at, 5, 15*time.Minute)
+
+				return result{until: u, ok: ok}, err
+			},
+			assert: func(t *testing.T, got result, err error) {
+				require.ErrorIs(t, err, innerDown)
+				assert.Contains(t, err.Error(), "seal:")
+				assert.False(t, got.ok)
+			},
+		},
+		{
+			name: "an inner give-back failure is returned behind the store's own text",
+			expect: func(inner *MockEnrolmentStore) {
+				inner.EXPECT().RefundVerifyAttempt(gomock.Any(), userRef, until).Return(false, innerDown)
+			},
+			run: func(ctx context.Context, store mfa.EnrolmentStore) (result, error) {
+				ok, err := store.RefundVerifyAttempt(ctx, userRef, until)
+
+				return result{ok: ok}, err
+			},
+			assert: func(t *testing.T, got result, err error) {
+				require.ErrorIs(t, err, innerDown)
+				assert.Contains(t, err.Error(), "seal:")
+				assert.False(t, got.ok)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := NewMockEnrolmentStore(gomock.NewController(t))
+			tc.expect(inner)
+
+			store, err := seal.NewEnrolmentStore(inner, nil, c, seal.WithResealOnRead(false))
+			require.NoError(t, err)
+
+			got, err := tc.run(t.Context(), store)
+			tc.assert(t, got, err)
+		})
+	}
+}

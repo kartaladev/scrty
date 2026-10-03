@@ -145,6 +145,8 @@ const (
 	stepCase     = "exactly one acceptance of a step wins per record"
 	completeCase = "exactly one completion wins per record"
 	chargeCase   = "exactly the allowed number of charges win per code"
+
+	verifyChargeCase = "exactly the limit of verification charges win per enrolment"
 )
 
 // sharedHarness is a fake harness whose New and NewReplica both return one
@@ -212,6 +214,29 @@ var enrolmentRaceVariants = []brokenVariant{
 	// after the race finds the code gone.
 	enrolmentRaceVariant("race-charge-clears-code-at-cap", chargeRace, mfaRaceStore(mfaChargeClearsCodeAtCap),
 		chargeCase, "EmailCode must still be stored after the race"),
+	{
+		name: "race-verify-charge-memory",
+		run: func(t *testing.T) {
+			storetest.RunVerifyChargeRace(t, sharedHarness(mfa.NewMemoryEnrolmentStore),
+				storefix.VerifyChargeRace[*mfa.MemoryEnrolmentStore]())
+		},
+	},
+	{
+		name: "race-verify-charge-conforming",
+		run: func(t *testing.T) {
+			storetest.RunVerifyChargeRace(t, sharedHarness(mfaRaceStore(mfaConforming)),
+				storefix.VerifyChargeRace[*mfaStore]())
+		},
+	},
+	{
+		name: "race-verify-charge-read-then-write",
+		run: func(t *testing.T) {
+			storetest.RunVerifyChargeRace(t, sharedHarness(mfaRaceStore(mfaVerifyChargeReadThenWrite)),
+				storefix.VerifyChargeRace[*mfaStore]())
+		},
+		failsCase: verifyChargeCase,
+		failsWith: "more than 5 successful verification charge",
+	},
 	{
 		// A single-use store lets one charge through where five are
 		// allowed: the race counts wins both ways.

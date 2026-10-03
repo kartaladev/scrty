@@ -135,7 +135,9 @@ func optional(name, typ string) column { return column{name: name, typ: typ, nul
 // and email_code_attempts. sessions.mfa_state stays a smallint: the row below
 // pins its type unchanged even though it gains a new ordinal value. It also
 // pins the account-recovery columns: sessions.recovered_at, and the two new
-// tables recovery_codes and account_recoveries.
+// tables recovery_codes and account_recoveries. It also pins the TOTP
+// verification charge: mfa_enrolments.verify_attempts and
+// verify_window_until.
 var securityStateColumns = map[string][]column{
 	"sessions": {
 		required("id", colUUID),
@@ -186,6 +188,8 @@ var securityStateColumns = map[string][]column{
 		optional("email_code", colText),
 		optional("email_code_until", colTimestamptz),
 		defaulted("email_code_attempts", colInteger, "0"),
+		defaulted("verify_attempts", colInteger, "0"),
+		optional("verify_window_until", colTimestamptz),
 	},
 	"api_keys": {
 		required("id", colUUID),

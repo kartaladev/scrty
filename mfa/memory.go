@@ -74,7 +74,8 @@ func (s *MemoryEnrolmentStore) PutPending(_ context.Context, e Enrolment) error 
 	}
 
 	// A begin keeps who, what and when, and starts everything else afresh:
-	// unconfirmed, no step spent, no device proof and no emailed code.
+	// unconfirmed, no step spent, no device proof, no emailed code and no
+	// verification attempts charged.
 	s.enrolments[e.User] = Enrolment{
 		User:       e.User,
 		Secret:     bytes.Clone(e.Secret),
@@ -154,6 +155,60 @@ func copyEnrolment(e Enrolment) Enrolment {
 	e.EmailCode = bytes.Clone(e.EmailCode)
 
 	return e
+}
+
+// ChargeVerifyAttempt charges one TOTP verification attempt at at against the
+// user's confirmed enrolment. A window that has ended (none open, or its end
+// at or before at) is replaced by one ending at at+window, truncated to the
+// microsecond as a durable store keeps it, counting one; otherwise one more is
+// counted while fewer than limit are.
+//
+// Deciding and writing happen under one lock, so of any number of concurrent
+// charges in one window, at most limit succeed.
+func (s *MemoryEnrolmentStore) ChargeVerifyAttempt(
+	_ context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
+) (time.Time, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.enrolments[user]
+	if !ok || e.ConfirmedAt.IsZero() {
+		return time.Time{}, false, nil
+	}
+
+	switch {
+	case e.VerifyWindowUntil.IsZero() || !at.Before(e.VerifyWindowUntil):
+		e.VerifyAttempts = 1
+		e.VerifyWindowUntil = at.Add(window).Truncate(time.Microsecond)
+	case e.VerifyAttempts < limit:
+		e.VerifyAttempts++
+	default:
+		return time.Time{}, false, nil
+	}
+	s.enrolments[user] = e
+
+	return e.VerifyWindowUntil, true, nil
+}
+
+// RefundVerifyAttempt gives back one attempt charged in the window ending at
+// until, under the same lock as the charge. A window a later charge replaced
+// does not end at until, so its count is never lowered by an earlier
+// window's give-back.
+func (s *MemoryEnrolmentStore) RefundVerifyAttempt(
+	_ context.Context, user identity.UserID, until time.Time,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.enrolments[user]
+	if !ok || e.VerifyAttempts <= 0 || !e.VerifyWindowUntil.Equal(until) {
+		return false, nil
+	}
+
+	e.VerifyAttempts--
+	s.enrolments[user] = e
+
+	return true, nil
 }
 
 var _ DeviceProofStore = (*MemoryEnrolmentStore)(nil)

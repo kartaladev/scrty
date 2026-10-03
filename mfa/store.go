@@ -69,11 +69,21 @@ type Enrolment struct {
 	// EmailCodeAttempts counts the attempts charged against EmailCode, each
 	// before its comparison. A begin and a device proof reset it.
 	EmailCodeAttempts int
+
+	// VerifyAttempts counts the TOTP verification attempts charged in the
+	// window ending at VerifyWindowUntil. ChargeVerifyAttempt raises it and
+	// RefundVerifyAttempt lowers it; PutPending clears it.
+	VerifyAttempts int
+
+	// VerifyWindowUntil is when the current charging window ends. Zero means
+	// no window is open. A durable store keeps it to the microsecond.
+	// PutPending clears it.
+	VerifyWindowUntil time.Time
 }
 
 // EnrolmentStore holds enrolments.
 //
-// Two of its operations decide an outcome by the write rather than by a
+// Four of its operations decide an outcome by the write rather than by a
 // preceding read, and an implementation that reads first and then writes is
 // wrong however careful the read is:
 //
@@ -86,6 +96,12 @@ type Enrolment struct {
 //     single UPDATE with the condition in its WHERE clause. It is what makes
 //     each time step usable once per user, so of concurrent verifications of one
 //     code, exactly one succeeds.
+//   - ChargeVerifyAttempt must be one conditional update that opens a new
+//     window or counts one more below the limit, and RefundVerifyAttempt one
+//     that lowers a positive count only in the window it names. On a SQL
+//     backend each is a single UPDATE with its condition in its WHERE
+//     clause. They are what bound the TOTP codes compared against one
+//     enrolment per window, however many verifications race.
 //
 // A store failure, or a secret that cannot be read, is returned as an error.
 // Never as an absent enrolment: a caller reads absence as "this user has no
@@ -131,6 +147,32 @@ type EnrolmentStore interface {
 	// Delete removes the user's enrolment. Deleting an absent enrolment is not
 	// an error: the caller wanted it gone and it is gone.
 	Delete(ctx context.Context, user identity.UserID) error
+
+	// ChargeVerifyAttempt charges one TOTP verification attempt at at against
+	// the user's confirmed enrolment, in one operation that decides and
+	// writes. When the window has ended (none is open, or its end is at or
+	// before at) it opens one ending at at+window, truncated to the
+	// microsecond, counting one; otherwise it counts one more while fewer
+	// than limit are charged. It returns the end of the window charged in,
+	// which is what RefundVerifyAttempt must be given back. ok is false, with
+	// nothing changed, for an absent or pending enrolment or a full window.
+	//
+	// Of any number of concurrent charges against one enrolment within one
+	// window, at most limit succeed. The limit must be at least 1; the caller
+	// validates it, the store does not.
+	ChargeVerifyAttempt(
+		ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
+	) (until time.Time, ok bool, err error)
+
+	// RefundVerifyAttempt gives back one attempt charged in the window ending
+	// at until, in one operation that decides and writes. It reports false,
+	// with nothing changed, when the enrolment is absent, its window end is
+	// not until, or no attempt is charged. A give-back naming a window that a
+	// later charge replaced therefore never lowers the later window's count.
+	// until is meant to be the value a charge returned; a durable store
+	// compares it at microsecond precision, so an until in the same
+	// microsecond as that value is treated as the same window end.
+	RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error)
 }
 
 // DeviceProofStore is what the enrolment path needs from a store beyond

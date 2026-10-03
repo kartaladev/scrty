@@ -76,6 +76,19 @@ func TestEnrolmentStore_StepAcceptRace(t *testing.T) {
 	})
 }
 
+func TestEnrolmentStore_VerifyChargeRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) mfa.EnrolmentStore {
+		return newEnrolmentStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) {
+		storetest.RunVerifyChargeRace(t, h, storefix.VerifyChargeRace[mfa.EnrolmentStore]())
+	})
+}
+
 func TestEnrolmentStore_CompleteRace(t *testing.T) {
 	t.Parallel()
 

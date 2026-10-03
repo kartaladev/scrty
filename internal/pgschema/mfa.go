@@ -2,8 +2,9 @@ package pgschema
 
 // MFA enrolment statements. Every refusal is a single conditional write: a
 // begin over a confirmed enrolment, a second confirmation, a step at or below
-// the recorded one, and a device proof, completion or charge whose conditions
-// do not hold each affect no row. The secret and email_code columns hold the
+// the recorded one, a device proof, completion or charge whose conditions do
+// not hold, and a TOTP verification charge or give-back that may not land each
+// affect no row. The secret and email_code columns hold the
 // sealed values, base64url-encoded. A generation is bound as NULL when it is
 // the nil identifier, so "generation = $n" never matches an enrolment stored
 // without one.
@@ -12,19 +13,22 @@ const (
 	// $3 secret, $4 created_at, $5 generation (NULL for none). It replaces
 	// the user's enrolment, keeping its id, only while that enrolment is
 	// pending, starting a new generation: it clears the accepted step, the
-	// device proof and the emailed code with its expiry and attempts. Zero
-	// rows affected means the user's enrolment is confirmed.
+	// device proof, the emailed code with its expiry and attempts, and the
+	// TOTP verification attempts with their window. Zero rows affected means
+	// the user's enrolment is confirmed.
 	EnrolmentPutPending = `INSERT INTO mfa_enrolments (id, user_id, secret, confirmed_at, last_step, created_at, generation)
 VALUES ($1, $2, $3, NULL, 0, $4, $5)
 ON CONFLICT (user_id) DO UPDATE
    SET secret = EXCLUDED.secret, last_step = 0, created_at = EXCLUDED.created_at,
        generation = EXCLUDED.generation, device_proven_at = NULL,
-       email_code = NULL, email_code_until = NULL, email_code_attempts = 0
+       email_code = NULL, email_code_until = NULL, email_code_attempts = 0,
+       verify_attempts = 0, verify_window_until = NULL
  WHERE mfa_enrolments.confirmed_at IS NULL`
 
-	// EnrolmentGet reads user $1's enrolment.
+	// EnrolmentGet reads user $1's enrolment. verify_attempts and
+	// verify_window_until are its last two columns, in that order.
 	EnrolmentGet = `SELECT secret, confirmed_at, last_step, created_at, generation, device_proven_at,
-  email_code, email_code_until, email_code_attempts
+  email_code, email_code_until, email_code_attempts, verify_attempts, verify_window_until
 FROM mfa_enrolments WHERE user_id = $1`
 
 	// EnrolmentConfirm confirms user $1's enrolment at $3 and records step $2,
@@ -64,6 +68,31 @@ RETURNING email_code_attempts`
 	// enrolment is confirmed and its recorded step is strictly lower.
 	EnrolmentAcceptStep = `UPDATE mfa_enrolments SET last_step = $2
 WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2`
+
+	// EnrolmentChargeVerifyAttempt charges one TOTP verification attempt
+	// against user $1's confirmed enrolment at $2. When the window has ended
+	// (none open, or its end at or before $2) it opens one ending at $3,
+	// counting one; otherwise it counts one more while fewer than $4 are
+	// charged. $3 is the caller's $2 plus the window, truncated to the
+	// microsecond, so the database's clock is never used. It returns the
+	// window's end. No row returned means no charge. Under read committed,
+	// concurrent charges of one row serialise on its row lock and re-check
+	// the WHERE clause against the committed row, so at most $4 succeed per
+	// window.
+	EnrolmentChargeVerifyAttempt = `UPDATE mfa_enrolments SET
+  verify_attempts     = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2
+                             THEN 1 ELSE verify_attempts + 1 END,
+  verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2
+                             THEN $3 ELSE verify_window_until END
+ WHERE user_id = $1 AND confirmed_at IS NOT NULL
+   AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4)
+RETURNING verify_window_until`
+
+	// EnrolmentRefundVerifyAttempt gives back one attempt charged against
+	// user $1's enrolment in the window ending at $2. Zero rows affected
+	// means the window was replaced or nothing is charged.
+	EnrolmentRefundVerifyAttempt = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1
+ WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 
 	// EnrolmentDelete removes user $1's enrolment.
 	EnrolmentDelete = `DELETE FROM mfa_enrolments WHERE user_id = $1`

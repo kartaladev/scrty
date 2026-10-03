@@ -84,7 +84,11 @@ CREATE TABLE mfa_enrolments (
     device_proven_at    timestamptz NULL,
     email_code          text NULL, -- base64url envelope, NULL = none
     email_code_until    timestamptz NULL,
-    email_code_attempts integer NOT NULL DEFAULT 0
+    email_code_attempts integer NOT NULL DEFAULT 0,
+    -- TOTP verification attempts charged in the window ending at
+    -- verify_window_until. NULL = no window open.
+    verify_attempts     integer NOT NULL DEFAULT 0,
+    verify_window_until timestamptz NULL
 );
 
 CREATE TABLE api_keys (

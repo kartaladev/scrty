@@ -96,6 +96,39 @@ func TestNewTOTP(t *testing.T) {
 			assert: configError,
 		},
 		{
+			name:   "zero verification attempts",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(0, time.Minute)},
+			assert: sourceConfigError,
+		},
+		{
+			name:   "negative verification attempts",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(-1, time.Minute)},
+			assert: sourceConfigError,
+		},
+		{
+			name:   "zero verification attempt window",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(5, 0)},
+			assert: sourceConfigError,
+		},
+		{
+			name:   "negative verification attempt window",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(5, -time.Minute)},
+			assert: sourceConfigError,
+		},
+		{
+			name:   "a consumer verification attempt limit",
+			issuer: "Example",
+			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(3, 10*time.Minute)},
+			assert: func(t *testing.T, m *mfa.TOTP, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, m)
+			},
+		},
+		{
 			name:   "a nil clock",
 			issuer: "Example",
 			opts:   []mfa.TOTPOption{mfa.WithClock(nil)},

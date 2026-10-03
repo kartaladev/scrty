@@ -789,7 +789,7 @@ Expected: FAIL with `"20" is not less than or equal to "5"`. Record it.
 - [ ] **Step 1: Write the failing table**, `TestTOTP_VerifyGivesBack`. Cases:
   - "successes spend nothing": seven valid codes at successive 30-second steps within 15 minutes all return nil, and `VerifyAttempts == 0` afterwards.
   - "replayed step keeps its charge": a valid code is accepted, then the same code at the same instant returns `ErrInvalidCode`, and `VerifyAttempts == 1`.
-  - "give-back failure is logged": a mock store's `RefundVerifyAttempt` returns `errBoom`. Verify returns nil, and the captured `slog` handler (`WithTOTPLogger`) holds one WARN record.
+  - "give-back failure is logged": a mock store's `RefundVerifyAttempt` returns `errBoom`. Verify returns nil, and the captured `slog` handler (`WithTOTPLogger`) holds one WARN record carrying the fixed `reason` and the error's `error_type`, never the error's text (diagnostic-redaction "Log records carry no dependency error text").
   - "cancelled context still gives back": wrap the memory store so `RefundVerifyAttempt` fails when `ctx.Err() != nil`. Call Verify with a context cancelled after the charge (cancel inside a `ChargeVerifyAttempt` wrapper), and expect nil and `VerifyAttempts == 0`.
 
   Run: `go test -race -run 'TestTOTP_VerifyGivesBack' -count=1 ./mfa/`
@@ -802,12 +802,12 @@ Expected: FAIL with `"20" is not less than or equal to "5"`. Record it.
 	// so a user who proves the factor spends nothing. The caller hanging up
 	// after the code was accepted must not cost them an attempt.
 	if _, err := t.store.RefundVerifyAttempt(context.WithoutCancel(ctx), user, until); err != nil {
-		t.record(ctx, slog.LevelWarn, "mfa: totp could not give back the verification attempt", user,
-			slog.Any("error", err))
+		t.record(ctx, slog.LevelWarn, msgGiveBackFailed, user,
+			diag.Failure("enrolment-store", err)...)
 	}
 ```
 
-  Check `t.record`'s signature in `totp.go`, and match it.
+  Check `t.record`'s signature in `totp.go`, and match it. The record carries the error's type through `diag.Failure`, never its text, as `throttle.go` already does: a store's error text can hold connection details the redaction spec keeps out of logs.
 
 - [ ] **Step 3:** Run `go test -race ./mfa/...`. Expected: PASS.
 

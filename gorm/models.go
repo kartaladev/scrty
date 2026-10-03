@@ -125,6 +125,8 @@ type enrolmentRow struct {
 	EmailCode         *string    `gorm:"column:email_code;type:text"`
 	EmailCodeUntil    *time.Time `gorm:"column:email_code_until;type:timestamptz"`
 	EmailCodeAttempts int64      `gorm:"column:email_code_attempts;type:integer"`
+	VerifyAttempts    int64      `gorm:"column:verify_attempts;type:integer"`
+	VerifyWindowUntil *time.Time `gorm:"column:verify_window_until;type:timestamptz"`
 }
 
 // TableName is the table the migration creates for MFA enrolments.

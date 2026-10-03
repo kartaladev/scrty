@@ -278,13 +278,13 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 
 		{name: "MFA begin", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-begin", "TOTP"))
-		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$12,"device_proven_at"=$13,"email_code"=$14,"email_code_until"=$15,"email_code_attempts"=$16 WHERE mfa_enrolments.confirmed_at IS NULL`)},
+		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA begin over a confirmed enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP")))
 			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", 1000, now)))
 			started()
 			return counted.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP-OTHER"))
-		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$12,"device_proven_at"=$13,"email_code"=$14,"email_code_until"=$15,"email_code_attempts"=$16 WHERE mfa_enrolments.confirmed_at IS NULL`)},
+		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA get", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-get", "TOTP")))
 			started()
@@ -334,6 +334,27 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			_, ok, err := proofs(t, counted).ChargeEmailCode(ctx, "stmt-mfa-charge-none", gen, now)
 			return flag(ok, err)
 		}, assert: refused(errNotStored, chargeStmt)},
+		{name: "MFA verification charge", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vcharge", "TOTP")))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vcharge", 1000, now)))
+			started()
+			_, ok, err := counted.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vcharge", now, 5, 15*time.Minute)
+			return flag(ok, err)
+		}, assert: one(verifyChargeStmt)},
+		{name: "MFA verification charge against a pending enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vcharge-pending", "TOTP")))
+			started()
+			_, ok, err := counted.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vcharge-pending", now, 5, 15*time.Minute)
+			return flag(ok, err)
+		}, assert: refused(errNotStored, verifyChargeStmt)},
+		{name: "MFA verification give-back", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vrefund", "TOTP")))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vrefund", 1000, now)))
+			until, _, err := seed.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vrefund", now, 5, 15*time.Minute)
+			require.NoError(t, err)
+			started()
+			return flag(counted.enrolments.RefundVerifyAttempt(ctx, "stmt-mfa-vrefund", until))
+		}, assert: one(verifyRefundStmt)},
 		{name: "MFA delete", run: with(func(ctx context.Context, s storeSet) error {
 			return s.enrolments.Delete(ctx, "stmt-mfa-delete")
 		}), assert: one(`DELETE FROM "mfa_enrolments" WHERE user_id = $1`)},
@@ -444,6 +465,11 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 const (
 	proveStmt  = `UPDATE "mfa_enrolments" SET "device_proven_at"=$1,"email_code"=$2,"email_code_attempts"=$3,"email_code_until"=$4,"last_step"=$5 WHERE user_id = $6 AND generation = $7 AND confirmed_at IS NULL AND device_proven_at IS NULL AND last_step < $8`
 	chargeStmt = `UPDATE "mfa_enrolments" SET "email_code_attempts"=email_code_attempts + 1 WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL AND device_proven_at IS NOT NULL AND email_code IS NOT NULL AND email_code_until > $3 AND email_code_attempts < $4 RETURNING "email_code_attempts"`
+
+	// The TOTP verification statements run verbatim from the shared schema
+	// statements, so they are pinned as written there.
+	verifyChargeStmt = `UPDATE mfa_enrolments SET verify_attempts = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN 1 ELSE verify_attempts + 1 END, verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN $3 ELSE verify_window_until END WHERE user_id = $1 AND confirmed_at IS NOT NULL AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4) RETURNING verify_window_until`
+	verifyRefundStmt = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 )
 
 // proofs is s's enrolment store as the enrolment path's port.

@@ -166,6 +166,40 @@ func ChargeRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 	}
 }
 
+// VerifyChargeRace is the race over TOTP verification charges: Seed stores and
+// confirms the enrolment of race-user-i, every racer charges it at
+// RaceAttemptAt with the default limit and window, and Check requires each
+// enrolment to hold exactly the limit, in the window the charges opened.
+func VerifyChargeRace[S mfa.EnrolmentStore]() storetest.Race[S] {
+	return storetest.Race[S]{
+		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
+			user := identity.UserID(fmt.Sprintf("race-user-%d", i))
+			require.NoError(t, s.PutPending(ctx, Pending(user, "secret")))
+			ok, err := s.Confirm(ctx, user, 1000, EnrolmentBegun.Add(time.Minute))
+			require.NoError(t, err)
+			require.True(t, ok, "the seeded enrolment of %q must confirm", user)
+			return string(user)
+		},
+		Attempt: func(ctx context.Context, s S, key string, _ int) (bool, error) {
+			_, charged, err := s.ChargeVerifyAttempt(ctx, identity.UserID(key), RaceAttemptAt,
+				mfa.DefaultVerifyAttemptLimit, mfa.DefaultVerifyAttemptWindow)
+			return charged, err
+		},
+		Check: func(ctx context.Context, t *testing.T, s S, key string) {
+			t.Helper()
+
+			e, ok, err := s.Get(ctx, identity.UserID(key))
+			require.NoError(t, err)
+			require.True(t, ok, "the enrolment of %q must be present after the race", key)
+			assert.Equal(t, mfa.DefaultVerifyAttemptLimit, e.VerifyAttempts,
+				"%q: VerifyAttempts after the race must be the limit", key)
+			want := RaceAttemptAt.Add(mfa.DefaultVerifyAttemptWindow)
+			assert.True(t, e.VerifyWindowUntil.Equal(want),
+				"%q: VerifyWindowUntil after the race is %v, want %v", key, e.VerifyWindowUntil, want)
+		},
+	}
+}
+
 // HandoffRace is the race over handoff consumption: Seed inserts the record
 // race-token-i, and every racer consumes it, the refusal mapped to
 // (false, nil).
