@@ -129,6 +129,16 @@ The store suites follow the existing pattern:
 
 They run against memory, `sqlstore`, `pgx` and `gorm`.
 
+### 10. A gorm handle that carries an error is refused where it is resolved
+
+A gorm handle can carry an error, as `Begin` does when it fails. gorm then skips every statement run on it. A builder chain reports that error in its result, but `Raw(...).Row()` returns a nil `*sql.Row`, and `Scan` on it panics. That breaks the settled rule that database failures are errors.
+
+- **Where:** `conn` in `gorm/tx.go` returns the handle's error, before any statement, whenever the resolved handle carries one. It does this for a transaction attached with `WithTx`, one returned by a resolver, and the base handle alike. Every gorm store operation already resolves its handle there and wraps the error with its operation name, as it does for `ErrNilTransaction`.
+- **Alternatives considered:** a guard at each `.Row()` site. It fixes today's six sites, but the next store that reads a row repeats the panic. The guard in `ChargeVerifyAttempt`, added in group 1, becomes redundant and is removed.
+- **Effect on other operations:** builder-chain operations already returned this error from their result. They now return it before running, wrapped the same way, so their observable outcome is unchanged.
+- **Proof:** the enrolment charge is reproduced (`TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError` panicked). The recovery-record, recovery-code, passkey-handle and passkey-credential sites are pending reproduction. Each gets a failing test before the guard. A site whose test does not fail is dropped from the claim, and the guard stays only if some site needs it.
+- **No override.** Returning an error for a failed handle is the settled contract, not a policy.
+
 ## Risks / Trade-offs
 
 - **[Risk] Burst at a window edge.** 5 charges just before a window ends and 5 just after can be compared within seconds, so the hard cap is 2× the limit over any 15-minute span. → This is still independent of concurrency. The sliding per-user limiter refuses the second five when they are not concurrent. The godoc of `WithVerifyAttempts` states the 2× bound.
@@ -153,6 +163,13 @@ Nothing is tagged. The columns are added to the existing security-state migratio
 **Primary documentation:**
 - [RFC 6238 §5.2](https://www.rfc-editor.org/rfc/rfc6238#section-5.2): the validation window of one step either side and one-time use, which give three valid codes per guess.
 - [PostgreSQL: Read Committed isolation](https://www.postgresql.org/docs/current/transaction-iso.html#XACT-READ-COMMITTED): a concurrent `UPDATE` waits for the row lock and re-evaluates its `WHERE` against the updated row (decision 2).
+
+### A gorm handle that carries an error (decision 10)
+
+**Researched (accessed 2026-10-04):**
+- [GORM: Error Handling](https://gorm.io/docs/error_handling.html): a `*gorm.DB` carries an `Error` field, set when an error occurs and checked after a chain. The page does not say whether later operations on that handle run. That gorm skips them, and that `Row()` then returns nil, is shown by the reproducing test, not by this page.
+
+Otherwise reasoned from scrty's own settled `security-state-stores` spec ("Database failures are errors, never refusals or absence").
 
 ### The charge model and the scope (decisions 5–8)
 

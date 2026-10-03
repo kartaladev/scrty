@@ -33,3 +33,22 @@ A window has ended from its end instant onward. A refused charge or give-back SH
 #### Scenario: A new begin clears the count
 - **WHEN** a confirmed enrolment holding three charged attempts is deleted, and a pending enrolment is then stored for the same user
 - **THEN** the pending enrolment reads with no charged attempts and no window
+
+## MODIFIED Requirements
+
+### Requirement: Database failures are errors, never refusals or absence
+When the database cannot answer a store operation, the store SHALL return an error that wraps the database error. It SHALL NOT report the failure as "not found", "not enrolled", "already consumed" or any other refusal or absence.
+
+#### Scenario: Lookup fails
+- **WHEN** reading an MFA enrolment fails because the database connection is lost
+- **THEN** the read returns an error
+- **AND** the read does not report that the user has no enrolment
+
+#### Scenario: Consumption fails
+- **WHEN** consuming a one-time token fails because the database is unavailable
+- **THEN** the consumption returns an error that is not the "unknown or consumed" refusal
+
+#### Scenario: The caller's transaction handle already carries a failure
+- **WHEN** a store operation runs on a caller's transaction handle that already reports a failure, such as a transaction whose begin failed
+- **THEN** the operation returns an error that wraps that failure
+- **AND** it runs no statement, does not panic, and reports no refusal or absence

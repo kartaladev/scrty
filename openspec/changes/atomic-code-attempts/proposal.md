@@ -13,6 +13,7 @@ The enrolment path's emailed code, and the passkey emailed code, already close t
 - **The per-user rate limit stays** as a second, sliding bound.
 - **The established check-then-record order is kept** for source-keyed flows, where the documented overshoot remains acceptable.
 - **Saved recovery codes are not changed.** Each carries 128 bits, so a concurrency overshoot gives an attacker no measurable advantage. See `design.md`.
+- **The gorm stores return an error for a caller's handle that already carries one.** Building the charge exposed that a gorm store reading one row panics, instead of returning an error, when the caller's transaction handle already carries a failure (for example a `Begin` that failed). The same pattern sits in the recovery-record, recovery-code and passkey stores. The handle is now checked once where every gorm operation resolves it.
 
 ## Capabilities
 
@@ -23,12 +24,13 @@ None.
 ### Modified Capabilities
 
 - `multi-factor-auth`: TOTP verification charges each attempt before comparing it.
-- `security-state-stores`: the atomic charge and refund operations on the MFA enrolment store.
+- `security-state-stores`: the atomic charge and refund operations on the MFA enrolment store, and a scenario for a caller's transaction handle that already carries a failure.
 - `store-conformance`: the suite and race scenarios that prove the charge.
 
 ## Impact
 
-- **Changed code:** `mfa` (the enrolment store contract, the in-memory store, TOTP verification and its options), `seal` (the sealing enrolment store passes the operations through), the `sqlstore`, `pgx` and `gorm` enrolment stores, the shared SQL in `internal/pgschema`, the security-state migration, and the enrolment suites in the `test` module. `httpsec` changes only so that a refused charge is not recorded as a failed verification.
+- **Changed code:** `mfa` (the enrolment store contract, the in-memory store, TOTP verification and its options), `seal` (the sealing enrolment store passes the operations through), the `sqlstore`, `pgx` and `gorm` enrolment stores, the shared SQL in `internal/pgschema`, the security-state migration, and the enrolment suites in the `test` module. `httpsec` changes only so that a refused charge is not recorded as a failed verification. The `gorm` module's handle resolution (`gorm/tx.go`) refuses a handle that carries an error, for every gorm store.
+- **Defect status of the gorm handle:** reproduced for the enrolment charge, where a failing test panicked. The other gorm sites are pending reproduction; each gets its failing test before the guard, and a site that cannot be made to fail is dropped from the claim.
 - **Breaking, before the first tag:** `mfa.EnrolmentStore` gains two methods, so a consumer's own enrolment store must implement them.
 - **Defect status:** the overshoot is a documented bound, not a defect. The first red step shows 20 concurrent wrong codes for one user being compared beyond the limit of 5.
 - **Depends on:** nothing unbuilt. Implementation starts after `shared-rate-limiting` has committed its edits to `mfa` and `httpsec`, which touch the same files.

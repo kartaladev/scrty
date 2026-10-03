@@ -1,11 +1,11 @@
 # Tasks
 
-An atomic attempt charge on the TOTP enrolment: the store contract and every store first, then TOTP verification, then the verify endpoint.
+An atomic attempt charge on the TOTP enrolment: the store contract and every store first, then TOTP verification, then the verify endpoint. Group 4 makes every gorm store return an error for a caller's handle that already carries one.
 
 Every task is test-first: write the failing test, run it and see it fail for the intended reason (a compile error is not a red step), make it pass, then refactor. Tables follow the project's `table-test` skill, and mocks the `use-mockgen` skill. The durable suites use the `test` module's PostgreSQL helper (`use-testcontainers`). Each task names how it is verified. Names in parentheses are the spec requirements and design decisions the task covers.
 
 - **Compilation:** changing `mfa.EnrolmentStore` owns every implementer across the workspace (the memory store, `seal`, `sqlstore`, `pgx`, `gorm`, the regenerated mocks and the `test` module's fakes). The workspace compiles and passes at the end of every group, not necessarily between the tasks of group 1.
-- **Order:** groups run in order: 2 needs 1, and 3 needs 2.
+- **Order:** groups run in order: 2 needs 1, and 3 needs 2. Group 4 depends only on group 1, and group 5 runs last.
 - **Start condition:** implementation starts only after `shared-rate-limiting` has committed its edits to `test/internal/storefix/broken.go` and `httpsec/mfaverify.go`, which tasks 1.1 and 3.1 touch.
 
 ## 1. The charge and give-back in every store (security-state-stores "TOTP verification attempts are charged and given back by the write"; store-conformance "The enrolment suites prove the TOTP attempt charge"; decisions 1, 2, 3, 8)
@@ -65,7 +65,19 @@ Every task is test-first: write the failing test, run it and see it fail for the
   
   Update the comment that lists what is not recorded. Verify with `go test -race ./httpsec/...`.
 
-## 4. Integration
+## 4. A gorm handle that carries an error (security-state-stores "Database failures are errors, never refusals or absence", scenario "The caller's transaction handle already carries a failure"; decision 10)
 
-- [x] 4.1 Whole-branch review against every requirement in this change's three spec deltas, by a fresh reviewer agent that did not write the code. Its findings are labelled `REPRODUCED` with a failing test, or `UNREPRODUCED`. Verify by the review report, with every finding resolved or recorded in `design.md`.
-- [x] 4.2 Final gate across every module in `go.work`: `go test -race ./...`, `go vet ./...`, `gofmt -l .` empty, `golangci-lint run`, and `openspec validate atomic-code-attempts --strict`. Verify by the clean output of each command.
+- [ ] 4.1 Red step for every gorm site that reads one row. In the `gorm` module, add `TestStores_FailedHandleIsAnError`, a table with one case per operation that ends in `Raw(...).Row().Scan`:
+  - the enrolment charge (already covered by `TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError`);
+  - the recovery record's latest completion (`recoveryrecord.go`);
+  - the recovery-code match (`recoverycode.go`);
+  - the passkey handle of a user and the user of a handle (`passkeyhandle.go`);
+  - the passkey credential read that goes through `returning` (`passkeycredential.go`).
+
+  Each runs on a `WithTx` handle that carries an error, and asserts no panic and an error wrapping that failure. Remove the guard `ChargeVerifyAttempt` gained in group 1 first, so its case is red again. Run them and record each case's panic. A case that does not fail is reported and dropped from the claim, not weakened. Verify with `go test -race -run TestStores_FailedHandleIsAnError -count=1 ./...` in `gorm`.
+- [ ] 4.2 `conn` in `gorm/tx.go` returns the resolved handle's error, before any statement, for a `WithTx` transaction, a resolver's transaction and the base handle. Its godoc says so. Add cases to `TestStores_FailedHandleIsAnError`: a resolver returning a handle that carries an error, and a builder-chain operation on such a handle still returning the error. Verify with `go test -race ./...` and `golangci-lint run` in `gorm`, and `go test -race -count=1 -p 1 ./gormstore/` in `test`.
+
+## 5. Integration
+
+- [ ] 5.1 Whole-branch review against every requirement in this change's three spec deltas, by a fresh reviewer agent that did not write the code. Its findings are labelled `REPRODUCED` with a failing test, or `UNREPRODUCED`. Verify by the review report, with every finding resolved or recorded in `design.md`.
+- [ ] 5.2 Final gate across every module in `go.work`: `go test -race ./...`, `go vet ./...`, `gofmt -l .` empty, `golangci-lint run`, and `openspec validate atomic-code-attempts --strict`. Verify by the clean output of each command.

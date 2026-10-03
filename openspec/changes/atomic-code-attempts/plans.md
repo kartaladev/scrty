@@ -8,6 +8,7 @@
 - `mfa.EnrolmentStore` gains `ChargeVerifyAttempt` and `RefundVerifyAttempt`, backed by two columns on `mfa_enrolments` and implemented in memory, `seal`, `sqlstore`, `pgx` and `gorm` over shared SQL in `internal/pgschema`.
 - `(*TOTP).Verify` charges after reading the enrolment and before matching, refuses a refused charge with `ErrVerifyAttemptsExhausted` (which matches `ErrVerifyThrottled`), and gives the charge back after `AcceptStep` accepts.
 - `httpsec`'s verify endpoint stops recording a throttled refusal on the limiter.
+- The `gorm` adapter's handle resolution (`conn` in `gorm/tx.go`) returns the error a caller's handle already carries, so no gorm store panics on a row read from a failed transaction (decision 10).
 
 **Tech Stack:**
 - Go 1.27 with a `go.work` workspace: the root module, `pgx`, `gorm` and `test`.
@@ -76,7 +77,7 @@
 
 **Other modules**
 - `pgx` module: `pgx/mfa.go`, for the implementation and the Get scan.
-- `gorm` module: `gorm/mfa.go`, for the implementation and the Get scan.
+- `gorm` module: `gorm/mfa.go`, for the implementation and the Get scan; `gorm/tx.go` and `gorm/failedhandle_test.go` (new), for a handle that carries an error (4.1, 4.2).
 - `test` module:
 
   | File | Change |
@@ -922,12 +923,226 @@ git add httpsec
 git commit -m "fix(httpsec): do not count a refused TOTP attempt charge as a failed verification"
 ```
 
-### Task 4.1: Whole-branch review
+### Task 4.1: Red step for every gorm site that reads one row
 
-- [ ] **Step 1:** Dispatch a fresh Opus reviewer: security-critical refusal logic and a multi-package contract change. It reads `openspec/changes/atomic-code-attempts/` and the branch diff, and checks every requirement and scenario of the three spec deltas and design decisions 1–8 against the code and tests. It edits nothing. Each finding is `REPRODUCED`, with a failing test name and output, or `UNREPRODUCED`, with the reason.
-- [ ] **Step 2:** Findings go back to a fresh dispatch of the owning group's lane. Unfixed findings are recorded in `design.md` by the main session.
+Covers security-state-stores, "Database failures are errors, never refusals or absence", scenario "The caller's transaction handle already carries a failure", and design decision 10.
 
-### Task 4.2: Final gate
+**Files:**
+- Create: `gorm/failedhandle_test.go`
+- Modify: `gorm/mfa.go` (remove the `q.Error` guard in `ChargeVerifyAttempt`, so its case is red again)
+- Modify: `gorm/mfa_test.go` (fold `TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError` into the new table, then delete it)
+
+**Interfaces:**
+- Consumes: `fakeDB(t, name) (*gormdb.DB, *fakePool)` and `newConfig(db, resolver, kinds...)` from the package's tests, `WithTx(ctx, *gormdb.DB) context.Context`, and `failed(op, err)`, which wraps as `gorm: <op>: <err>`.
+- Produces: `TestStores_FailedHandleIsAnError`. Task 4.2 extends its table.
+
+- [ ] **Step 1: Write the failing table.**
+  - Each case calls one operation on a `WithTx` handle whose `AddError` was applied. The `fakePool` behind it panics if a statement ever reaches it, so a case that passes also proves no statement ran.
+  - Stores are built with the package-internal `newConfig`, as the existing enrolment test does. `PasskeyCredentialStore` needs no cipher here, because no row is ever opened.
+
+```go
+package gorm
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/pkg/id"
+)
+
+// errBeginFailed is the failure a caller's handle carries, as a Begin that
+// failed leaves it.
+var errBeginFailed = errors.New("begin failed")
+
+// TestStores_FailedHandleIsAnError pins that every gorm store operation run on
+// a caller's handle that already carries an error returns an error wrapping
+// it, runs no statement, and does not panic.
+func TestStores_FailedHandleIsAnError(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		call   func(ctx context.Context, cfg *config) error
+		assert func(t *testing.T, err error)
+	}
+
+	wrapsFailure := func(t *testing.T, err error) {
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errBeginFailed)
+	}
+
+	cases := []testCase{
+		{
+			name: "enrolment charge",
+			call: func(ctx context.Context, cfg *config) error {
+				_, _, err := (&enrolmentStore{c: cfg}).ChargeVerifyAttempt(ctx, "u", time.Now(), 5, time.Minute)
+				return err
+			},
+			assert: wrapsFailure,
+		},
+		{
+			name: "enrolment give-back",
+			call: func(ctx context.Context, cfg *config) error {
+				_, err := (&enrolmentStore{c: cfg}).RefundVerifyAttempt(ctx, "u", time.Now())
+				return err
+			},
+			assert: wrapsFailure,
+		},
+		{
+			name: "recovery record latest completion",
+			call: func(ctx context.Context, cfg *config) error {
+				_, _, err := (&RecoveryRecordStore{c: cfg}).LatestCompletion(ctx, "u")
+				return err
+			},
+			assert: wrapsFailure,
+		},
+		{
+			name: "recovery code match",
+			call: func(ctx context.Context, cfg *config) error {
+				_, err := (&RecoveryCodeStore{c: cfg}).Match(ctx, "u", []byte("digest"))
+				return err
+			},
+			assert: wrapsFailure,
+		},
+		{
+			name: "passkey handle assign",
+			call: func(ctx context.Context, cfg *config) error {
+				_, err := (&PasskeyHandleStore{c: cfg}).Assign(ctx, "u", make([]byte, passkey.HandleSize))
+				return err
+			},
+			assert: wrapsFailure,
+		},
+		{
+			name: "passkey user for handle",
+			call: func(ctx context.Context, cfg *config) error {
+				_, _, err := (&PasskeyHandleStore{c: cfg}).UserFor(ctx, make([]byte, passkey.HandleSize))
+				return err
+			},
+			assert: wrapsFailure,
+		},
+		{
+			name: "passkey credential charge, through returning",
+			call: func(ctx context.Context, cfg *config) error {
+				_, _, err := (&PasskeyCredentialStore{c: cfg}).ChargeEmailAttempt(ctx, "u", id.ID{1}, time.Now())
+				return err
+			},
+			assert: wrapsFailure,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			base, _ := fakeDB(t, "base")
+			tx, _ := fakeDB(t, "tx")
+			_ = tx.AddError(errBeginFailed) // the returned error is the one just added
+			cfg, err := newConfig(base, nil, optIDGenerator, optClock, optResealOnRead)
+			require.NoError(t, err)
+
+			var got error
+			require.NotPanics(t, func() { got = tc.call(WithTx(t.Context(), tx), cfg) })
+			tc.assert(t, got)
+		})
+	}
+}
+```
+
+  Check each operation's real signature with gopls before writing its case, and adjust the call to it. The behaviour each case asserts does not change.
+
+- [ ] **Step 2: Remove the group-1 guard**, the `if q.Error != nil` block after `conn` in `(*enrolmentStore).ChargeVerifyAttempt` in `gorm/mfa.go`. Delete `TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError` from `gorm/mfa_test.go`. Its two cases are now the first two rows of the table.
+
+- [ ] **Step 3: Run it and record each case.**
+
+Run: `go test -race -run TestStores_FailedHandleIsAnError -count=1 ./...` (in `gorm`)
+
+Expected: FAIL. These cases panic with `invalid memory address or nil pointer dereference` from `database/sql.(*Row).Scan`:
+- enrolment charge;
+- recovery record latest completion;
+- recovery code match;
+- passkey user for handle;
+- passkey credential charge.
+
+The enrolment give-back runs through `Exec` and is expected to pass already. "passkey handle assign" is expected to pass too, because its `Exec` insert runs first and reports the error. Record which cases panicked and which passed:
+- A case that passes is not a reproduced defect. It stays in the table as a pin and is dropped from the defect claim.
+- If no case panics except the enrolment charge, report it. The guard in 4.2 is still placed in `conn` (decision 10), but the claim names only the sites that failed.
+
+Commit nothing yet. The tree is red until 4.2.
+
+### Task 4.2: The handle is checked where it is resolved
+
+Covers decision 10 and the same scenario as 4.1.
+
+**Files:**
+- Modify: `gorm/tx.go` (`conn` and its godoc)
+- Modify: `gorm/failedhandle_test.go` (two cases)
+
+**Interfaces:**
+- Consumes: `TestStores_FailedHandleIsAnError` from 4.1.
+- Produces: `conn` returns the resolved handle's `Error`, unwrapped, as its `err`. Every caller already wraps that error with `failed(op, err)`.
+
+- [ ] **Step 1: Add two failing cases to the table.**
+  - "a resolver's handle carrying an error": this case builds its own config with a resolver returning the errored handle. Give `testCase` an optional `resolver TxResolver` field, and when it is set use `newConfig(base, tc.resolver, …)` with a plain `t.Context()` instead of `WithTx`. It calls `RecoveryCodeStore.Match`.
+  - "a builder-chain operation": `RecoveryCodeStore.Remaining` on the `WithTx` errored handle. It is expected to pass before and after, and pins that the outcome of builder operations is unchanged.
+
+Run: `go test -race -run TestStores_FailedHandleIsAnError -count=1 ./...` (in `gorm`)
+Expected: the resolver case panics like the 4.1 cases. The builder case passes.
+
+- [ ] **Step 2: Implement.** In `conn`, check the resolved handle before opening a session on it, for all three branches:
+
+```go
+// usable returns a session for one operation on h, or h's error when h
+// already carries one: gorm would skip every statement on such a handle, and
+// a row read on it would return no row to scan.
+func usable(ctx context.Context, h *gormdb.DB) (*gormdb.DB, error) {
+	if h.Error != nil {
+		return nil, h.Error
+	}
+
+	return opSession(ctx, h), nil
+}
+```
+
+  Each branch of `conn` returns through `usable` with its own `ambient` value:
+  - the resolver's transaction: `true`;
+  - the `WithTx` transaction: `true`;
+  - the base handle: `false`.
+
+  The resolver's nil-handle check (`ErrNilTransaction`) stays first. Extend `conn`'s godoc: "A handle that already carries an error, such as a transaction whose Begin failed, yields that error and no handle; the calling store wraps it with its operation name and runs no statement."
+
+- [ ] **Step 3: Run.**
+
+```bash
+cd gorm && go test -race -count=1 ./... && go vet ./... && golangci-lint run
+cd ../test && go test -race -count=1 -p 1 ./gormstore/
+```
+
+Expected: PASS. Every 4.1 case and both 4.2 cases are green, the existing `conn` tests in `gorm/tx_test.go` still pass, lint is clean, and the PostgreSQL suites are unchanged.
+
+- [ ] **Step 4: Commit (main session):**
+
+```bash
+git add gorm
+git commit -m "fix(gorm): return the error a caller's handle carries instead of panicking"
+```
+
+### Task 5.1: Whole-branch review
+
+- [ ] **Step 1:** Dispatch a fresh Opus reviewer. This covers security-critical refusal logic and a multi-package contract change. The reviewer:
+  - reads `openspec/changes/atomic-code-attempts/` and the branch diff;
+  - checks every requirement and scenario of the three spec deltas, including the MODIFIED "Database failures are errors" requirement, and design decisions 1–10, against the code and tests;
+  - edits nothing.
+
+  Each finding is labelled `REPRODUCED`, with a failing test name and output, or `UNREPRODUCED`, with the reason.
+- [ ] **Step 2:** Findings go back to a fresh dispatch of the owning group's lane. The main session records any unfixed finding in `design.md`.
+
+### Task 5.2: Final gate
 
 - [ ] **Step 1:** In each module of `go.work` (root, `pgx`, `gorm`, `test` and the rest), run:
 
