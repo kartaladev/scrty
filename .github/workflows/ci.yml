@@ -41,3 +41,8 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: Run gates
         run: make check
+        # TEMPORARY (testcontainers-optimize task 4.2): verbose test output so
+        # Keycloak's container start and ready lines are visible. Reverted
+        # before the pull request leaves draft.
+        env:
+          GOFLAGS: -v
