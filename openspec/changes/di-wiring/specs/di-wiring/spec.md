@@ -102,7 +102,7 @@ Starting the container SHALL log a warning for in-memory security-state stores:
 - when a durable backend is registered, a warning for each store that is still in memory, naming it and what fails across replicas;
 - when no durable backend is registered, one warning listing the in-memory stores and stating that they are per process.
 
-The in-memory signing-key store SHALL always get its own warning, stating that tokens signed by one process are rejected by other processes and after a restart. The in-memory rate limiter SHALL get an informational record stating that the effective limit multiplies by the number of replicas. A consumer who declares a single-process deployment SHALL receive these records at debug level instead. Warnings SHALL be written through the logger the consumer configured, or the default logger otherwise.
+The in-memory signing-key store SHALL always get its own warning, stating that tokens signed by one process are rejected by other processes and after a restart. Unless a shared rate-limiter factory is registered, the in-memory rate limiter SHALL get an informational record stating that the effective limit multiplies by the number of replicas. A consumer who declares a single-process deployment SHALL receive these records at debug level instead. Warnings SHALL be written through the logger the consumer configured, or the default logger otherwise.
 
 #### Scenario: In-memory store next to a durable backend
 - **WHEN** the consumer registers a database handle and their own in-memory session store, and starts the container
@@ -159,3 +159,18 @@ The container SHALL provide an expiry runner with one task for each wired compon
 #### Scenario: Consumer adds a task
 - **WHEN** the consumer adds their own expiry task named `audit-log` and starts the container with a sweep interval
 - **THEN** the `audit-log` task is scheduled alongside the built-in tasks
+
+### Requirement: Shared rate limiting is selected only by registering a factory
+By default every throttled flow SHALL build its own in-memory limiter, including when a database backend is registered. When the consumer registers a rate-limiter factory, the container SHALL pass it to every flow that accepts one. Start SHALL verify a registered factory that supports verification and fail if verification fails. Declaring a single-process deployment together with a registered shared factory SHALL fail start with an error naming both.
+
+#### Scenario: Database alone does not share limits
+- **WHEN** the consumer registers a database handle and no rate-limiter factory, and starts the container
+- **THEN** every throttled flow uses an in-memory limiter and the per-replica informational record is written
+
+#### Scenario: Consumer registers a shared factory
+- **WHEN** the consumer registers a shared rate-limiter factory and starts the container
+- **THEN** every throttled flow builds its limiter from that factory and no per-replica informational record is written
+
+#### Scenario: Contradictory declaration
+- **WHEN** the consumer declares a single-process deployment and registers a shared rate-limiter factory
+- **THEN** start fails with an error naming the single-process declaration and the factory

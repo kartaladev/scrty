@@ -77,10 +77,13 @@ context: |
     outbound-http-confinement
   - auth-methods: multi-factor-auth, magic-link, api-keys, email-notification
   - oidc-brokering: oidc-login, identity-linking, oidc-logout
-  - operations: expiry-sweeping, di-wiring
+  - operation-hardening: expiry-sweeping
+  - di-wiring: di-wiring (designed, not scheduled)
   - follow-ups: mfa-enrolment-path (multi-factor-auth), oidc-mfa-assurance (oidc-login),
-    shared-rate-limiting (rate-limiting), bff-resource-server (bff-session, resource-server,
-    csrf-protection)
+    shared-rate-limiting (rate-limiting, http-security-chain; Redis/Valkey),
+    shared-rate-limiting-postgres (rate-limiting; after operation-hardening), login-source-throttling,
+    atomic-code-attempts, limiter-key-bounds, trusted-proxy-client-ip, bff-resource-server
+    (bff-session, resource-server, csrf-protection)
 
 rules:
   design:
