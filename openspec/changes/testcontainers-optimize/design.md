@@ -100,7 +100,7 @@ Both give each test a database cloned from a migrated template. They differ in w
 | **Connections** | pgx stdlib `DB` and a DSN, as `PostgresConn` exposes today. | `database/sql`; returns a `*sql.DB` and lets you build a DSN. Compatible. |
 | **Cross-process build** | An advisory lock and a `datistemplate` marker (D3): about 40 lines, tested. | Already solved (advisory lock, `once.Map`, half-built recovery). This is its strongest point. |
 | **Dependency** | None. | `github.com/peterldowns/pgtestdb`: MIT, 512 stars, last push 2026-08-07, no releases (tag v0.1.1, pre-1.0), no OSV advisories, as read on 2026-10-02 (figures drift). |
-| **Size** | About 150 lines plus tests in `test/testutils.go`. | About 30 lines of wiring, plus a custom `Migrator` and the teardown we must keep. |
+| **Size** | As planned, about 150 lines. As built, about 670 lines in `test/testutils_pgserver.go` and `test/testutils_pgtemplate.go`, plus tests. | About 30 lines of wiring, plus a custom `Migrator` and the teardown we must keep. |
 
 - **Why our own.** The parts pgtestdb solves are the template build and the cross-process lock: about 40 of our lines. The parts it does not solve are the server lifecycle, ordered multi-set fingerprints, and the per-call rollback and leftover checks. Those are most of the work, and they are what keeps the gate as strong as today. Adopting it would add a pre-1.0 dependency and still leave us writing the hard parts around it.
 - **Revisit** if a second database engine or a cross-package shared server is ever wanted. That is pgtestdb's home ground.
@@ -205,7 +205,7 @@ Both give each test a database cloned from a migrated template. They differ in w
 - **[Ryuk disabled (`TESTCONTAINERS_RYUK_DISABLED=true`) leaks shared servers until removed by hand.]** → This is documented in the helper's godoc and the skill. Containers carry testcontainers' labels, so `docker rm` by label clears them. scrty's CI does not disable Ryuk.
 - **[A template held by a stray connection makes every clone fail.]** → Templates disallow connections once built (D2).
 - **[Connection exhaustion under parallel tests and child processes.]** → `max_connections` is sized from a measurement (D6).
-- **[A parent whose server is not started before its children are spawned.]** → `storefix` starts it first (D5). The helper's tests check that children start no container.
+- **[A parent whose server is not started before its children are spawned.]** → The four parent tests call `EnsureTestPostgresServer` before spawning, and `storefix` is unchanged (D5). `TestPostgresChildReusesParentServer` checks that a child starts no container.
 - **[Memory on tmpfs.]** → Clones are dropped at the end of each call. A migrated clone is a few megabytes, and the runner has 16 GB.
 - **[A debugging session loses the failed test's database]**, because it is dropped as today's container is terminated. → No change from today.
 

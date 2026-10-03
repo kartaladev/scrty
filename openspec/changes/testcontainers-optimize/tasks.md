@@ -63,7 +63,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
   - the Keycloak ready time from three CI runs of each job. Restore `keycloakStartupTimeout` to three minutes if every run is ready within 90 seconds, otherwise keep five minutes, and record the reading in D7.
 
   Verify with green CI on both jobs, and with "Provisioned containers do not outlive the test run" checked by `docker ps --filter label=org.testcontainers` being empty shortly after a local run.
-- [ ] 4.3 Final gate across every module in `go.work`:
+- [x] 4.3 Final gate across every module in `go.work`:
   - `go build ./...`, `go vet ./...`, `gofmt -l .` empty, `golangci-lint run ./...` with 0 issues and `go test -race ./...` green;
   - `openspec validate testcontainers-optimize --strict`;
   - then one whole-branch review against every requirement in this change's spec.

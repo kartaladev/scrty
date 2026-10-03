@@ -43,7 +43,7 @@ None. `module-layout` and `store-conformance` keep their requirements. The helpe
 ## Impact
 
 - **Code:**
-  - `test/testutils.go`: `RunTestPostgres`, `postgresSetUp`, a server registry and template builder, and the Keycloak budget;
+  - `test/testutils.go`: `RunTestPostgres`, `postgresSetUp` and the Keycloak budget. The server registry is in the new `test/testutils_pgserver.go`, and the template builder in the new `test/testutils_pgtemplate.go`;
   - a new exported `test.EnsureTestPostgresServer`, called by the PostgreSQL broken-variant parents and the cross-backend naming check before they spawn child processes;
   - `test/testutils_postgres_test.go`: the helper's own tests.
 - **Tests:** no caller of `RunTestPostgres` changes. The four parent tests that spawn PostgreSQL child processes each gain one `EnsureTestPostgresServer` call. Every existing test must pass unchanged, and the number of tests run must not fall.
