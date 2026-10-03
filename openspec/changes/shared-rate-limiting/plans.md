@@ -76,7 +76,7 @@ Dispatch lanes (`subagent-delegation.md`):
 | D | 4.1–4.4 | Opus | concurrency and refusal logic |
 | E | 5.1–5.8 | Opus for 5.2–5.7, Sonnet for 5.1 and 5.8 | |
 
-Lane A runs first. Lanes B, C and D then run in parallel, because their files are disjoint. Lane E runs after C and D. Lanes longer than six tasks (E) are dispatched in two parts: 5.1–5.4, then 5.5–5.8.
+Lane A runs first. Lanes B, C and D then run in parallel, because their files are disjoint. Lane E runs after C and D. Lanes longer than six tasks (E) are dispatched in two parts: 5.1–5.4, then 5.5–5.8. Group 4's verification covers `./ratelimit/... ./internal/unavailable/...`.
 
 ---
 
@@ -101,7 +101,7 @@ Lane A runs first. Lanes B, C and D then run in parallel, because their files ar
 - [ ] **Step 1 (task 1.1): Write the F7 red test** in `mfa/throttle_test.go`
 
 ```go
-func TestVerifyThrottle_DefaultLimiterLogsThroughConfiguredLogger(t *testing.T) {
+func TestVerifyThrottle_DefaultLimiterWarnsThroughConfiguredLogger(t *testing.T) {
 	t.Parallel()
 
 	var buf bytes.Buffer
@@ -121,7 +121,7 @@ Use the throttle's actual constructor and logger option names (`go doc ./mfa Ver
 
 - [ ] **Step 2: Run it and see it fail**
 
-Run: `go test -run TestVerifyThrottle_DefaultLimiterLogsThroughConfiguredLogger -count=1 ./mfa/`
+Run: `go test -run TestVerifyThrottle_DefaultLimiterWarnsThroughConfiguredLogger -count=1 ./mfa/`
 Expected: FAIL. The message says the warning must reach the configured logger, and the buffer is empty. Record the output in the dispatch report.
 
 - [ ] **Step 3 (task 1.2): Write the factory table test** in `ratelimit/factory_test.go`
@@ -294,7 +294,7 @@ git commit -m "feat(ratelimit): add LimiterFactory and route default limiters th
 - [ ] **Step 1 (task 2.1): Write the F1 and F2 red tests** in `httpsec/chain_ratelimit_test.go`
 
 ```go
-func TestChain_SourceRateLimitSettings(t *testing.T) {
+func TestChain_IPv6SourcePrefixReachesSourceGuards(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
@@ -665,7 +665,7 @@ git commit -m "test(ratelimittest): add rate-limiter conformance suite, seen to 
   func Wrap(backend ratelimit.Limiter, namespace string, limit int, window time.Duration, cfg Config) (ratelimit.Limiter, error)
   ```
 
-- [ ] **Step 1 (task 4.1): Write the construction and pass-through table test** (`TestWrap_Construction`). Cases:
+- [ ] **Step 1 (task 4.1): Write the construction and pass-through table test** (`TestUnavailable_Construction`). Cases:
   - unknown mode `UnavailableMode(9)` gives `ErrConfig`;
   - a zero timeout gives `ErrConfig`;
   - a negative probe interval gives `ErrConfig`;
@@ -673,7 +673,7 @@ git commit -m "test(ratelimittest): add rate-limiter conformance suite, seen to 
   - an empty namespace gives `ErrConfig`;
   - defaults are accepted.
 
-  Then `TestWrap_PassThrough` with the typed mock:
+  Then `TestUnavailable_PassThrough` with the typed mock:
   - backend `Exceeded` returning `(true, nil)` passes through;
   - `RecordFailure` returning nil passes through;
   - an ended caller context returns `(true, err)` without calling the backend (`EXPECT().Exceeded(...).Times(0)`), in all three modes.
@@ -684,7 +684,7 @@ git commit -m "test(ratelimittest): add rate-limiter conformance suite, seen to 
 
 - [ ] **Step 2: Implement construction and the timeout.** Each backend call runs under `context.WithTimeout(ctx, cfg.timeout)`. For `RecordFailure`, the parent is `context.WithoutCancel(ctx)`, so the timeout is the only bound. Unavailable is any error while `ctx.Err() == nil`. A caller-ended context is never unavailable.
 
-- [ ] **Step 3 (task 4.2): Breaker tests** (`TestWrap_Breaker`), with the fake clock and a mock backend:
+- [ ] **Step 3 (task 4.2): Breaker tests** (`TestUnavailable_Breaker`), with the fake clock and a mock backend:
   - "opens on error": the first `Exceeded` gets a backend error and returns `(true, err)`; a second within 1s returns `(true, ErrBackendUnavailable)` with the backend not called.
   - "probes after the interval": advance 1s; exactly one backend call; on success the breaker closes.
   - "failed probe reopens".
@@ -731,7 +731,7 @@ func (b *breaker) failure() {
 
   Return whether a transition happened from `success` and `failure`, so the log in 4.4 is written once per transition.
 
-- [ ] **Step 5 (task 4.3): Record-error tests** (`TestWrap_RecordErrors`), against a mock whose `RecordFailure` errors and `Exceeded` returns `(false, nil)`:
+- [ ] **Step 5 (task 4.3): Record-error tests** (`TestUnavailable_RecordErrors`), against a mock whose `RecordFailure` errors and `Exceeded` returns `(false, nil)`:
   - refuse mode: after one failed record for `k`, and with the breaker closed again (advance 1s, probe succeeds), `Exceeded(k)` is still `(true, err)` until one window passes; `Exceeded(other)` is `(false, nil)`.
   - fall-back mode with limit 2: two failed records for `k` lead to `Exceeded(k)` true, from the local count.
   - allow mode: a failed record is dropped, and `Exceeded(k)` follows the backend.
@@ -762,17 +762,16 @@ git commit -m "feat(ratelimit): fail closed and fast on backend outages, with ex
 
 ### Task 5.1–5.8: Redis and Valkey module
 
+**State at this revision:** a first dispatch implemented 5.1–5.4, and its review found gaps. Steps 1–4 below are the deltas that dispatch still owes. Steps 5–9 plan 5.5–5.8 from scratch. Existing code: `redis/{go.mod,doc.go,options.go,scripts.go,limiter.go,export_test.go,limiter_test.go}`, `test/testutils.go` (`RunTestRedis`, returning `*redis.Client` today), `test/redis_{testutils,ratelimit,limiter}_test.go`. The record script no longer trims by time (design decision 2), and Lua numbers are formatted with `%.0f` (decision 3).
+
 **Files:**
-- Create:
-  - `redis/go.mod` (`module github.com/kartaladev/scrty/redis`, `go 1.27`, `require github.com/redis/go-redis/v9 v9.22.0` or the newest at dispatch time, never below v9.7.3);
-  - `redis/doc.go`, `redis/options.go`, `redis/scripts.go`, `redis/limiter.go`, `redis/factory.go`, `redis/verify.go`;
-  - `redis/limiter_test.go`, `redis/example_test.go`;
-  - `test/redis_ratelimit_test.go`.
-- Modify: `go.work` (add `./redis`), `layout_guard_test.go` (allow go-redis only in `redis` and `test`), the CI workflow matrix, and `test/testutils.go` and `test/go.mod` (testcontainers Redis module v0.44.0, and a `replace`/workspace entry for `redis`).
+- Modify: `redis/scripts.go`, `redis/options.go`, `redis/limiter.go`, `redis/limiter_test.go`, `test/testutils.go`, `test/redis_testutils_test.go`, `test/redis_ratelimit_test.go`, `test/redis_limiter_test.go`.
+- Create: `redis/factory.go`, `redis/verify.go`, `redis/example_test.go`, `test/redis_verify_test.go`, `test/redis_fault_test.go`.
 
 **Interfaces:**
 - Consumes:
-  - `ratelimit.Limiter`, `LimiterFactory`, `Verifier`, `UnavailableMode`, `ErrConfig`, and `internal/unavailable.Wrap`/`Config`;
+  - `ratelimit.Limiter`, `LimiterFactory`, `Verifier`, `UnavailableMode`, `ErrConfig`, `DefaultLogInterval`;
+  - `internal/unavailable.Wrap`, `Config` (`Mode`, `Timeout`, `ProbeInterval`, `Clock`, `Logger`, `LogInterval`) and `DefaultConfig()`;
   - `pkg/clock.Clock`;
   - `ratelimittest.Harness`/`Run`.
 - Produces:
@@ -782,64 +781,62 @@ git commit -m "feat(ratelimit): fail closed and fast on backend outages, with ex
   type Option func(*config)
   func WithKeyPrefix(p string) Option
   func WithLimiterClock(clk clock.Clock) Option
-  func WithEvictionPolicyCheck(enabled bool) Option // default true
+  func WithEvictionPolicyCheck(enabled bool) Option              // default true (5.6)
   func WithOnUnavailable(m ratelimit.UnavailableMode) Option       // default UnavailableRefuse
   func WithOperationTimeout(d time.Duration) Option                // default 250ms
   func WithUnavailableProbeInterval(d time.Duration) Option         // default 1s
+  func WithUnavailableLogInterval(d time.Duration) Option           // default ratelimit.DefaultLogInterval; <= 0 disables sampling (5.2)
   func WithLogger(l *slog.Logger) Option
   func NewLimiter(client redis.UniversalClient, namespace string, limit int, window time.Duration, opts ...Option) (*Limiter, error)
   func (l *Limiter) Exceeded(ctx context.Context, key string) (bool, error)
   func (l *Limiter) RecordFailure(ctx context.Context, key string) error
-  func (l *Limiter) Verify(ctx context.Context) error
-  func NewLimiterFactory(client redis.UniversalClient, opts ...Option) (*Factory, error)
+  func (l *Limiter) Verify(ctx context.Context) error               // 5.6
+  type Factory struct{ /* unexported */ }
+  func NewLimiterFactory(client redis.UniversalClient, opts ...Option) (*Factory, error) // 5.5
   func (f *Factory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error)
-  func (f *Factory) Verify(ctx context.Context) error
+  func (f *Factory) Verify(ctx context.Context) error                // 5.6
   // test module
-  func RunTestRedis(t *testing.T, opts ...TestOption) *redis.Client
+  type RedisConn struct {
+      Client *redis.Client // resolves the server's address on every dial
+  }
+  func (c RedisConn) Stop(t *testing.T)  // own container only; t.Fatal otherwise
+  func (c RedisConn) Start(t *testing.T) // own container only
+  func RunTestRedis(t *testing.T, opts ...TestOption) RedisConn
   func WithTestRedisImage(ref string) TestOption
   func WithTestRedisOwnContainer() TestOption
+  func WithTestRedisServerArgs(args ...string) TestOption // own container only; refused otherwise
   ```
 
-- [ ] **Step 1 (task 5.1): Scaffold.** Create the module with `doc.go` only. Add it to `go.work`, the layout guard and CI. Write `RunTestRedis` per `use-testcontainers`:
-  - default image `redis:8`;
-  - each call gets a fresh logical database (`SELECT n`) on a per-process shared container, unless `WithTestRedisOwnContainer()` is set;
-  - `t.Cleanup` flushes the database.
+- [ ] **Step 1 (task 5.1 delta): `RedisConn`.**
+  - Change `RunTestRedis` to return `RedisConn`. Its `Client` uses a `Dialer` that resolves the container's mapped endpoint on every dial, because Docker gives a restarted container a new host port. Update the three caller files.
+  - Add `Stop`/`Start` (own container only) and `WithTestRedisServerArgs` (own container only, `t.Fatal` on a shared one).
+  - Red first, in `test/redis_testutils_test.go`: a table case "stop and start keep the client usable" (`Ping` fails while stopped, then succeeds after `Start`), and a case "server args reach the server" (`--maxmemory-policy allkeys-lru`, read back with `CONFIG GET`).
+  - Fix `TestRunTestRedis/default_image_is_the_newest_Redis` so it compares `valkey_version` when `SCRTY_TEST_REDIS_IMAGE` names Valkey, and only asserts the Redis version for `redis:` references. Red: `SCRTY_TEST_REDIS_IMAGE=valkey/valkey:8.1.10-alpine go test -run 'TestRunTestRedis$/default_image' .` fails today.
+  - Add the minimum supported servers, `redis:7.0.15-alpine` and `valkey/valkey:7.2.11-alpine`, to the conformance image list.
+  - Run: `go test -race -count=1 -run 'TestRunTestRedis' .` in `test`, and the root layout tests `go test -run 'TestModuleLayout|TestCoreDependencies|TestConsumerModuleGraph|TestRedisClientStaysInItsModules' -count=1 .`.
+  - Expected: PASS after the red runs above were seen failing.
 
-  Smoke test `TestRunTestRedis_Ping`.
-  Run: `go build ./...` in each module; `go test -run TestLayout -count=1 .` at the root; `go test -run TestRunTestRedis -count=1 .` in `test`.
-  Expected: PASS. The layout guard is seen to fail first, before the allowance is added.
+- [ ] **Step 2 (task 5.2 delta): options and construction.**
+  - `WithUnavailableLogInterval(d)` maps onto `unavailable.Config.LogInterval`. Add rows to `TestNewLimiter_DecoratorConfig`: the default is `ratelimit.DefaultLogInterval`; an override is carried. Red against the missing option (stub it to do nothing).
+  - Replica reads: `NewLimiter` refuses a `*redis.ClusterClient` whose `Options()` has `ReadOnly`, `RouteByLatency` or `RouteRandomly` set, with `ErrConfig` naming the setting. Other client types do not expose it, and the godoc says the client must send reads to the primary. Red rows in `TestNewLimiter` for each of the three flags.
+  - Add a typed-nil `*redis.Ring` row to `TestNewLimiter`.
+  - Context deadlines (design decision 3): `NewLimiter` and `NewLimiterFactory` refuse a `*redis.Client`, `*redis.ClusterClient` or `*redis.Ring` whose `Options().ContextTimeoutEnabled` is false, with `ErrConfig` naming `ContextTimeoutEnabled`.
+    - Red rows in both constructors' tables.
+    - Every client built by `RunTestRedis` and by the example sets `ContextTimeoutEnabled: true`.
+    - A fault case in `TestRedisLimiter_Fault`, "a hung server is cut off at the operation timeout": a second connection sends `DEBUG SLEEP 5`; `Exceeded` returns within `timeout + 200ms` with an error, and the breaker opens. It is seen to fail with a client built without the option, through a test-only constructor seam in `export_test.go`.
+  - TTL rounding: add a row to the key or script tests asserting that a 1500µs window stores a 2ms TTL (rounded up), seen failing against a `math.floor` mutant.
+  - Godoc on `WithKeyPrefix`: no prefix may begin with another prefix, because `scrty:ratelimit:` with namespace `staging` and key `api-key:x` stores the same key as prefix `scrty:ratelimit:staging:` with namespace `api-key` and key `x`.
+  - Run: `go test -race -count=1 ./...` in `redis`.
 
-- [ ] **Step 2 (task 5.2): Construction and key-mapping table tests** in `redis/limiter_test.go` (no server). Cases:
-  - nil client;
-  - typed-nil `*redis.Client` in a `UniversalClient`;
-  - empty namespace;
-  - limit 0;
-  - window 0;
-  - empty prefix;
-  - nil clock;
-  - defaults accepted.
+- [ ] **Step 3 (task 5.4 delta): carry the longest window (design decision 4).** The red test comes first, in `TestRedisLimiter_TTL`:
+  - "a late shorter-window record keeps the key for the longer window": a long instance (window 3s, limit 1) records; a short instance (window 1s) records 2.5s later; 1.2s after that, the long instance still reports the key exceeded. It fails today because the key expired one second after the short record.
+  - It uses a real short window, because a fake clock cannot drive key expiry.
 
-  All refusals `errors.Is(err, ratelimit.ErrConfig)`. Plus `TestStorageKey`:
-  - 512-byte key stored raw under `scrty:ratelimit:ns:` + key;
-  - 513-byte key stored as `scrty:ratelimit:ns:sha256:<64 hex>`;
-  - two distinct 600-byte keys give distinct storage keys.
+  Then change `recordScript` so each member carries the longest window seen, and the TTL covers it:
 
-  Expected: FAIL first. Then implement `options.go`, the constructor and `storageKey`:
-
-```go
-func storageKey(prefix, namespace, key string) string {
-	if len(key) > maxRawKeyLen { // 512
-		sum := sha256.Sum256([]byte(key))
-		key = "sha256:" + hex.EncodeToString(sum[:])
-	}
-	return prefix + namespace + ":" + key
-}
-```
-
-- [ ] **Step 3: The scripts** (`scripts.go`). Times are microseconds. `ARGV[1]` is the app-clock "now" in microseconds, or empty to use the server clock.
-
-```go
-var recordScript = redis.NewScript(`
+```lua
+-- KEYS[1] the key; ARGV[1] app-clock now in µs or ''; ARGV[2] window in µs;
+-- ARGV[3] limit; ARGV[4] random suffix
 local now
 if ARGV[1] == '' then
   local t = redis.call('TIME')
@@ -847,76 +844,46 @@ if ARGV[1] == '' then
 else
   now = tonumber(ARGV[1])
 end
-local window_us = tonumber(ARGV[2])
+local window = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
-local member = tostring(now) .. ':' .. ARGV[4]
-redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', now - window_us)
-redis.call('ZADD', KEYS[1], now, member)
+local carried = window
+for _, m in ipairs(redis.call('ZRANGE', KEYS[1], 0, -1)) do
+  local w = tonumber(string.match(m, '^[^:]+:([^:]+):'))
+  if w and w > carried then carried = w end
+end
+redis.call('ZADD', KEYS[1], now,
+  string.format('%.0f', now) .. ':' .. string.format('%.0f', carried) .. ':' .. ARGV[4])
 redis.call('ZREMRANGEBYRANK', KEYS[1], 0, -(limit + 1))
-local ttl_ms = math.ceil(window_us / 1000)
-local current = redis.call('PTTL', KEYS[1])
-if current < ttl_ms then
+local ttl_ms = math.ceil(carried / 1000)
+if redis.call('PTTL', KEYS[1]) < ttl_ms then
   redis.call('PEXPIRE', KEYS[1], ttl_ms)
 end
 return 1
-`)
-
-var exceededScript = redis.NewScript(`
-local now
-if ARGV[1] == '' then
-  local t = redis.call('TIME')
-  now = tonumber(t[1]) * 1000000 + tonumber(t[2])
-else
-  now = tonumber(ARGV[1])
-end
-return redis.call('ZCOUNT', KEYS[1], '(' .. (now - tonumber(ARGV[2])), '+inf')
-`)
 ```
 
-  `PTTL` returns -1 for a key with no TTL, which is less than `ttl_ms`, so the no-TTL path sets one. This is decision 3's fix for `GT`. `ARGV[4]` is 8 random bytes in hex from `crypto/rand`.
-  - `ZREMRANGEBYSCORE … now - window_us` is inclusive, so stamps at or before the cutoff are dropped.
-  - `ZCOUNT` with `(` is exclusive, so only stamps strictly after the cutoff count.
+  Notes for the implementer:
+  - The scan covers at most `limit` members, so its cost is bounded by the limit.
+  - It reads every member rather than only the highest-scoring one, so a stamp recorded below the newest under app-clock skew cannot drop the carried window.
+  - A member that does not parse is ignored.
+  - Keep the broken twin (`recordScriptOwnWindowOnly`, today's script) in the test file as the control that fails the new case.
+  - Run: `go test -race -count=1 -run 'TestRedisLimiter_(ServerClock|TTL)|TestRateLimitConformance_Redis' .` in `test`.
+  - Expected: PASS on every image.
 
-- [ ] **Step 4: The limiter** (`limiter.go`). The backend type `backend` implements `ratelimit.Limiter`:
-  - `Exceeded` is `exceededScript.RunRO(ctx, client, []string{k}, nowArg, windowUS).Int()`, then `count >= limit`;
-  - `RecordFailure` is `recordScript.Run(...)`.
+- [ ] **Step 4: Commit 5.1–5.4.**
 
-  `NewLimiter` wraps the backend with `unavailable.Wrap(backend, namespace, limit, window, cfg.unavailable)`, where `cfg.unavailable` starts from `unavailable.DefaultConfig()` and is set by `WithOnUnavailable`, `WithOperationTimeout`, `WithUnavailableProbeInterval`, `WithLimiterClock` and `WithLogger`. Construction cases for an unknown mode and non-positive durations are added to Step 2's table. It keeps the backend for `Verify`.
-  Run: `go test -race ./...` in `redis`.
-  Expected: PASS.
-
-- [ ] **Step 5 (task 5.3): Conformance runs** in `test/redis_ratelimit_test.go`, as a table over images `redis:7.4`, `redis:8` and `valkey/valkey:8`:
-
-```go
-func TestRateLimitConformance_Redis(t *testing.T) {
-	for _, image := range []string{"redis:7.4", "redis:8", "valkey/valkey:8"} {
-		t.Run(image, func(t *testing.T) {
-			client := RunTestRedis(t, WithTestRedisImage(image))
-			clk := clockwork.NewFakeClockAt(time.Unix(1_700_000_000, 0))
-			build := func(t *testing.T, ns string, limit int, window time.Duration) ratelimit.Limiter {
-				l, err := scrtyredis.NewLimiter(client, ns, limit, window,
-					scrtyredis.WithLimiterClock(clk),
-					scrtyredis.WithLogger(slog.New(slog.DiscardHandler)))
-				require.NoError(t, err)
-				return l
-			}
-			ratelimittest.Run(t, ratelimittest.Harness{New: build, Advance: clk.Advance, SecondInstance: build})
-		})
-	}
-}
+```bash
+git add redis test go.work go.work.sum layout_guard_test.go layout_test.go .github/workflows/ci.yml
+git commit -m "feat(redis): add the Redis/Valkey shared limiter passing the conformance suite"
 ```
 
-  Each `New` must start from an empty namespace. Use `t.Name()`-derived namespaces inside the suite, or flush in `New`. Pick one and state it in the harness godoc.
-  Run: `go test -race -run TestRateLimitConformance_Redis -count=1 .` in `test`.
-  Expected: PASS for all three images.
+- [ ] **Step 5 (task 5.5): Factory** (`redis/factory.go`). Write the table test `TestNewLimiterFactory` first:
+  - nil client, typed-nil client and a replica-read cluster client are refused with `ErrConfig` at `NewLimiterFactory`;
+  - option errors (e.g. an empty prefix) surface at `NewLimiterFactory`, not at the first `NewLimiter`;
+  - the same namespace with the same policy returns a limiter with no error, twice;
+  - a conflicting policy (`api-key` with 20/1m, then 5/1m) gives `ErrConfig` naming the namespace and both policies;
+  - an empty namespace or a namespace containing `:` gives `ErrConfig`, as for `NewLimiter`.
 
-- [ ] **Step 6 (task 5.4): Server-clock and TTL tests** (`TestRedisLimiter_ServerClockAndTTL`, a table):
-  - "server clock window": limit 1, window 2s, no app clock; record; exceeded; after a real 2.1s wait, not exceeded.
-  - "skewed replica": in server-clock mode the host clock is never read. A unit test in `redis` builds the limiter without `WithLimiterClock` and asserts the scripts receive an empty `ARGV[1]`. A server test runs two server-clock instances: one records, the other sees it exceeded, and both see it expire after the real window.
-  - "no-TTL key gains a TTL": `ZADD` a stamp directly with no TTL, `RecordFailure`, and `PTTL > 0`. **Red:** first run it against a variant script using `PEXPIRE … GT` (kept as `recordScriptGTOnly` in the test file) and see `PTTL == -1`.
-  - "Exceeded leaves TTL unchanged": the `PTTL` before and after are equal within 5ms.
-
-- [ ] **Step 7 (task 5.5): Factory** (`factory.go`):
+  Then add a server case in `test/redis_limiter_test.go`: two limiters from one factory for one namespace see each other's failures (Review Focus 2).
 
 ```go
 type Factory struct {
@@ -925,59 +892,70 @@ type Factory struct {
 	mu     sync.Mutex
 	built  map[string]policy
 }
-type policy struct{ limit int; window time.Duration }
 
-func (f *Factory) NewLimiter(ns string, limit int, window time.Duration) (ratelimit.Limiter, error) {
+type policy struct {
+	limit  int
+	window time.Duration
+}
+
+func (f *Factory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if p, ok := f.built[ns]; ok && (p.limit != limit || p.window != window) {
-		return nil, fmt.Errorf("%w: namespace %q already built with %d per %s, asked for %d per %s",
-			ratelimit.ErrConfig, ns, p.limit, p.window, limit, window)
+	if p, ok := f.built[namespace]; ok && (p.limit != limit || p.window != window) {
+		return nil, fmt.Errorf("%w: namespace %q is already built with %d per %s, asked for %d per %s",
+			ratelimit.ErrConfig, namespace, p.limit, p.window, limit, window)
 	}
-	l, err := NewLimiter(f.client, ns, limit, window, f.opts...)
+	l, err := NewLimiter(f.client, namespace, limit, window, f.opts...)
 	if err != nil {
 		return nil, err
 	}
-	f.built[ns] = policy{limit, window}
+	f.built[namespace] = policy{limit: limit, window: window}
 	return l, nil
 }
 ```
 
-  Table test, written first, with cases:
-  - same namespace and policy, where both limiters see each other's failures (server test);
-  - conflicting policy gives `ErrConfig`;
-  - nil client refused;
-  - typed nil refused.
+  `NewLimiterFactory` validates the client and the options once, by building a throwaway config. It performs no I/O. A compile-time check is `var _ ratelimit.LimiterFactory = (*Factory)(nil)` and `var _ ratelimit.Verifier = (*Factory)(nil)`.
+  - Run: `go test -race -count=1 ./...` in `redis`; `go test -race -count=1 -run TestRedisLimiter .` in `test`.
 
-- [ ] **Step 8 (task 5.6): `Verify`** (`verify.go`). Server table test `TestRedisVerify`, written first:
-  - `redis:6.2` image gives an `ErrConfig` naming 7.0;
-  - `redis:8` with `--maxmemory-policy allkeys-lru` gives an `ErrConfig` naming `maxmemory-policy`;
+- [ ] **Step 6 (task 5.6): `Verify`** (`redis/verify.go`). Write the server table test `TestRedisVerify` in `test/redis_verify_test.go` first. Each case uses an own container with `WithTestRedisServerArgs`:
+  - `redis:6.2-alpine` gives an `ErrConfig` naming Redis 7.0;
+  - `--maxmemory-policy allkeys-lru` gives an `ErrConfig` naming `maxmemory-policy`;
+  - `--maxmemory-policy volatile-lru` gives an `ErrConfig` too;
   - `--maxmemory-policy noeviction` gives nil;
-  - `CONFIG` renamed away (`--rename-command CONFIG ""`) gives nil and one WARN;
+  - `--rename-command CONFIG ""` gives nil and exactly one WARN naming the `noeviction` requirement (recording `slog` handler);
   - the same with `WithEvictionPolicyCheck(false)` gives nil and no WARN;
-  - a cluster client with `ReadOnly: true` gives `ErrConfig` at construction.
+  - Valkey `valkey/valkey:7.2.11-alpine` passes, and the version is read from `valkey_version`.
 
   Implementation:
-  - parse `INFO server` for `redis_version`, or `valkey_version` when present;
-  - read `CONFIG GET maxmemory-policy`;
-  - run `ScriptLoad` for both scripts.
+  - read `INFO server`, and take `valkey_version` when present, else `redis_version`. The floor is Redis 7.0 and Valkey 7.2;
+  - read `CONFIG GET maxmemory-policy`. A command error means an unreadable policy: write one WARN, return nil;
+  - `ScriptLoad` both scripts. A load error is `ErrConfig`;
+  - run the record script, then the check script, once on the probe key `<prefix>:verify:<16 random hex>` with limit 1 and a 1ms window, so the key expires at once. An ACL refusal (`NOPERM`, or inside a script `ERR ACL failure in script` on Redis 7.2+ and Valkey, or `can't run this command` on Redis 7.0) is `ErrConfig` naming the refused command when it is one of the limiter's own, without the server's text. Red case in `TestRedisVerify`: an ACL user granted only `+eval +evalsha +eval_ro +evalsha_ro +script|load +info +config|get ~<prefix>*` fails `Verify`. The same user with the eight script commands added (`+time +zrange +zadd +zremrangebyrank +zrem +pttl +pexpire +zcount`) passes.
 
-- [ ] **Step 9 (task 5.7): Fault tests** (`TestRedisLimiter_Fault`, a table, each case with `WithTestRedisOwnContainer()`):
-  - "writes fail, reads succeed" (decision 4 red step): `CONFIG SET maxmemory 1mb`, `noeviction`, fill memory with filler keys until `OOM` errors, then fail one source 10 times through a `SourceGuard` with limit 3, and assert it is refused. **Red:** run it with the wrapper's record-error hold disabled (a test-only option through `export_test.go` in `ratelimit`, or a wrapper built with `UnavailableAllow` for the red run) and record that the source is never refused. If even that run refuses, the claim is false: remove it from design.md (main session) and drop the hold.
-  - "refuse while stopped": stop the container; `Exceeded` gives `(true, err)`; the second call returns in under 50ms (breaker).
-  - "fall back and recover": `UnavailableFallBackToLocal`; stop; three local failures exceed; start again; after the probe interval reads come from Redis.
-  - "allow while stopped": `(false, nil)`.
+  `Limiter.Verify` and `Factory.Verify` share one unexported function, and neither is called by a constructor.
+  - Run: `go test -race -count=1 -run TestRedisVerify .` in `test`.
 
-- [ ] **Step 10 (task 5.8): Godoc and example.** `doc.go` states:
-  - primary only (no replica reads);
+- [ ] **Step 7 (task 5.7): Fault tests** (`TestRedisLimiter_Fault` in `test/redis_fault_test.go`, a table; each case uses `WithTestRedisOwnContainer()`):
+  - **"writes fail, reads succeed"** (decision 4's red step). Start with `WithTestRedisServerArgs("--maxmemory", "2mb", "--maxmemory-policy", "noeviction")`. Fill memory with filler keys until writes answer `OOM`, then fail one source 10 times through a `ratelimit.SourceGuard` with limit 3 over the Redis limiter, and assert the source is refused after its first unrecorded failure.
+    - **Red:** run the same sequence over a limiter built with `WithOnUnavailable(ratelimit.UnavailableAllow)`, which drops failed records, and see the source never refused. That is the naive behaviour the hold prevents.
+    - If even the allow-mode run refuses, the claim is false: report it so the main session can remove it from design.md.
+  - **"refuse while stopped":** `Stop`, then `Exceeded` gives `(true, err)` and the second call returns in under 50ms (breaker).
+  - **"fall back and recover":** `UnavailableFallBackToLocal`, `Stop`, three local failures exceed, `Start`, then after the probe interval checks reach Redis again.
+  - **"allow while stopped":** `(false, nil)`, with one ERROR record.
+  - Run: `go test -race -count=1 -run TestRedisLimiter_Fault .` in `test`.
+
+- [ ] **Step 8 (task 5.8): Godoc and example.** `doc.go` states:
+  - primary only (no replica reads), and refused where the client exposes it;
   - `noeviction` required;
-  - the ACL commands;
+  - the ACL commands: `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO` and `SCRIPT LOAD` on keys under the prefix, plus the commands the scripts run (`TIME`, `ZRANGE`, `ZADD`, `ZREMRANGEBYRANK`, `ZREM`, `PTTL`, `PEXPIRE`, `ZCOUNT`); `INFO` and `CONFIG GET` for `Verify`;
+  - the client must set `ContextTimeoutEnabled`;
+  - on a cluster, `Verify` reads `INFO` and `CONFIG GET` from one node only, so every node must be configured alike;
   - microsecond precision;
   - one configuration per namespace;
   - fall-back recommended for second-factor flows;
   - call `Verify` before traffic.
 
-  `example_test.go`:
+  `redis/example_test.go`:
 
 ```go
 func Example_sharedLimiter() {
@@ -986,22 +964,23 @@ func Example_sharedLimiter() {
 	if err != nil {
 		panic(err)
 	}
-	// At startup, before traffic: factory.Verify(ctx)
-	_, err = httpsec.New( /* ... */ httpsec.WithRateLimiterFactory(factory))
-	fmt.Println(err == nil)
-	// Output: true
+	// At startup, before traffic: if err := factory.Verify(ctx); err != nil { ... }
+	limiter, err := factory.NewLimiter("api-key", 20, time.Minute)
+	fmt.Println(limiter != nil, err)
+	// Output: true <nil>
 }
 ```
 
-  If `httpsec.New` needs required options, use the minimal set the `httpsec` examples use. Verify that no I/O happens without `Verify`, because the example has no server.
-  Run: `go test -run Example -count=1 ./...` in `redis`; `go doc . NewLimiterFactory` in `redis`.
+  The example has no server, so it proves construction performs no I/O. Pass the factory to `httpsec.WithRateLimiterFactory` in a comment only, because the `redis` module does not import `httpsec`.
+  - Run: `go test -run Example -count=1 ./...` and `go doc . NewLimiterFactory` in `redis`.
 
-- [ ] **Step 11: Run and commit**
+- [ ] **Step 9: Run and commit 5.5–5.8.**
 
 Run: `go test -race ./...` in `redis` and in `test`.
 
 ```bash
-git commit -m "feat(redis): add Redis/Valkey shared rate limiter passing the conformance suite"
+git add redis test
+git commit -m "feat(redis): add the limiter factory, Verify, fault tests and the example"
 ```
 
 ---

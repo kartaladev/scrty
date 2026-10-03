@@ -34,7 +34,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
 
   The source-keyed sites go through `ratelimit.SourceGuard`. The user-keyed sites call the limiter directly, with `context.WithoutCancel` at the call site.
 - **Defects found in these sites** (proven by failing tests, kept as the first red steps of this change):
-  - **F1:** `httpsec.WithRateLimiter` and `httpsec.WithIPv6SourcePrefix` are copied onto the chain and read by no production code, contrary to the `http-security-chain` rule that every public option takes effect or is refused at construction. Tests: `TestChainIPv6SourcePrefixReachesSourceGuards`, `TestChainRateLimiterOptionIsConsulted` (names provisional).
+  - **F1:** `httpsec.WithRateLimiter` and `httpsec.WithIPv6SourcePrefix` are copied onto the chain and read by no production code, contrary to the `http-security-chain` rule that every public option takes effect or is refused at construction. Tests: `TestChain_IPv6SourcePrefixReachesSourceGuards` and `TestChain_RateLimiterFactoryReachesFlows`.
   - **F2:** `httpsec`'s throttle record is sampled per raw client address rather than per canonical source, and duplicates the guard's own sampled record. Fifty addresses inside one throttled IPv6 /64 write fifty records instead of one.
   - **F7:** the `mfa` verify throttle's default limiter writes its per-replica warning through `slog.Default()`, not the configured logger. `recovery.Codes` and `recovery.Recoverer` have the same construction (unreproduced there).
 - **Capabilities used by name and not restated:** `security-state-stores` (only to state what this change does not touch), `store-conformance` (the seen-to-fail pattern for suites in `github.com/kartaladev/scrty/test`), `module-layout` (nested modules and the dependency guard), `http-security-chain`, `api-keys`, `magic-link`, `oidc-login`, `multi-factor-auth`, `account-recovery` and `passkey-authentication` (the flows above).
@@ -93,10 +93,13 @@ The shared limiter stores the same data as the in-memory one: per key, at most `
 
 - **`Exceeded`:** count the stamps strictly after `now - window`, and report `count >= limit`. It performs no write.
 - **`RecordFailure`:**
-  1. drop the stamps at or before `now - window`;
-  2. append `now`;
-  3. keep the newest `limit`;
-  4. extend the key's lifetime to at least `now + window`.
+  1. append `now`;
+  2. keep the newest `limit`;
+  3. extend the key's lifetime to at least `now + window`.
+- **No trimming by time on record.** An earlier draft dropped stamps at or before `now - window` first. A record is made with the *recording* instance's window, so a replica with a 1-minute window would then delete failures that a 15-minute replica still counts.
+  - The conformance suite's shorter-window scenario fails on Redis 7.4, Redis 8.10 and Valkey 8.1 with that step, and passes without it.
+  - Nothing is lost by dropping it. The newest-`limit` cap bounds each key, `Exceeded` counts only stamps strictly after its own cutoff, and the key expires by TTL.
+  - **Memory, stated:** a key recorded at least once per window keeps its TTL extended and holds up to `limit` stamps, most of them outside the window, where a trimmed key would hold only the ones inside it. The worst case, `limit` stamps for every live key, is unchanged.
 - **Ended context, matching the in-memory limiter:**
   - `Exceeded` with an ended context returns `true` and the error, before any I/O;
   - `RecordFailure` ignores cancellation, as the port allows, and is bounded by the limiter's own operation timeout (decision 5).
@@ -115,10 +118,14 @@ One sorted set per key. Each score is a microsecond timestamp. Each member is th
 
 - **`RecordFailure` script**, run with go-redis `Script.Run` (`EVALSHA`, falling back to `EVAL` on `NOSCRIPT`):
   1. read `TIME`;
-  2. `ZREMRANGEBYSCORE key -inf cutoff`;
-  3. `ZADD key now member`;
+  2. read the window carried by every member, at most `limit` of them, and take the largest of those and this instance's window (decision 4). Every member is read, not only the highest-scoring one, so that a stamp recorded below the newest under app-clock skew cannot drop the carried window;
+  3. `ZADD key now member`, where the member is the stamp, that carried window and a random suffix;
   4. `ZREMRANGEBYRANK key 0 -(limit+1)`;
-  5. set the TTL to the larger of the current `PTTL` and `window`. `PEXPIRE … GT` alone is not enough: on a key with no TTL, `GT` treats the TTL as infinite and does nothing. A test pins the no-TTL path.
+  5. if the newest surviving member carries a shorter window than the carried one, rewrite it with the same score to carry it. Under app-clock skew the member just added can sort below the newest and be trimmed at once, taking its window with it. After this step the newest member always carries the longest window seen, and the newest member is the last one the rank cap removes;
+  6. set the TTL to the larger of the current `PTTL` and the carried window. `PEXPIRE … GT` alone is not enough: on a key with no TTL, `GT` treats the TTL as infinite and does nothing. A test pins the no-TTL path.
+
+  There is no `ZREMRANGEBYSCORE` step (decision 2, "No trimming by time on record").
+- **Number formatting in Lua.** A microsecond stamp is about 1.7e15. Lua turns a number into a string with 14 significant digits, so stamps, members and the `ZCOUNT` cutoff are formatted with `%.0f`. Without that, "one microsecond inside the window counts" fails on every server.
 - **`Exceeded` script**, read-only, run with `Script.RunRO` (`EVALSHA_RO`, falling back to `EVAL_RO`): `ZCOUNT key (cutoff +inf`.
 - **Single declared key.** Each script touches exactly the one key it declares in `KEYS`, so it is valid on Redis Cluster without hash tags, and on servers that enforce declared keys.
 - **Why scripts and not `MULTI`:** a transaction cannot branch on the time it reads.
@@ -126,9 +133,12 @@ One sorted set per key. Each score is a microsecond timestamp. Each member is th
 - **Server floor: Redis 7.0 or Valkey 7.2.** This is required by `PEXPIRE` options and `EVALSHA_RO`. (`TIME` before writes has been allowed since effects replication became the default in Redis 5.) `Verify` refuses an older server with a configuration error.
 - **Primary only.** Both scripts must run on the primary: a lagging replica undercounts. The godoc requires a client that does not route reads to replicas (`ReadOnly`, `RouteByLatency` and `RouteRandomly` off). A cluster client with replica reads enabled is refused at construction where go-redis exposes the setting, and documented where it does not.
 - **Client type:** the constructors take `redis.UniversalClient`, which covers a single node, Sentinel failover and Cluster.
+- **Context deadlines required.** go-redis ignores a context's deadline on socket reads unless the client's `ContextTimeoutEnabled` option is set. Without it, neither the operation timeout (decision 5) nor `Verify`'s deadline bounds a call to a hung server. A review reproduced a check waiting about 4.9s and answering "not exceeded" against the 250ms default.
+  - **Default:** `NewLimiter` and `NewLimiterFactory` refuse a `*redis.Client`, `*redis.ClusterClient` or `*redis.Ring` whose options leave it off, with a configuration error naming the option. A failover client is a `*redis.Client`.
+  - **Override:** none. The fail-fast guarantee rests on it (library-design rule 4). A consumer's own `UniversalClient` implementation cannot be inspected, so the godoc states the requirement.
   - **Why not the narrower `redis.Scripter`:** `Verify` also needs `INFO` and `CONFIG GET`.
   - **Override:** a consumer on another client implements `ratelimit.Limiter` and runs the conformance suite.
-- **Minimum go-redis:** v9.7.3, the first v9 line free of GO-2025-3540.
+- **Minimum go-redis:** v9.7.3, the first v9 line free of GO-2025-3540, is the floor. The `redis` module requires v9.22.0, the newest stable release when it was written, so that is what consumers get by default.
 
 **Why check-then-record stays non-atomic.** A combined "check and reserve" would close the overshoot, but it changes the port and every flow's ordering. It would also count attempts that later succeed. The port is unchanged. Per-code accounting for the user-keyed code flows, where the overshoot matters most, is `atomic-code-attempts`.
 
@@ -137,15 +147,20 @@ One sorted set per key. Each score is a microsecond timestamp. Each member is th
 The rule carries over unchanged: nothing may remove a key whose newest stamp is still inside the window.
 
 - **TTL:** at least `newest stamp + window`. It is set only by `RecordFailure` and only ever extended. `Exceeded` never touches it.
-- **Mixed windows during a rollout:** because the TTL is only extended, a replica configured with a shorter window cannot expire a failure that a longer-window replica still counts. Each replica still counts with its own window. The godoc requires one configuration per namespace.
+- **Mixed windows during a rollout:** each record carries, in its member, the longest window any instance has recorded the key with, and the TTL covers that window from the newest stamp. A replica configured with a shorter window therefore cannot expire a failure while a longer-window replica that recorded the key still counts it, even when it records late in the longer window.
+  - **Stated limit:** the carried window knows only the windows that have recorded the key. A key recorded only by shorter-window replicas lives for the shorter window, although a longer-window replica that merely checks it would have counted those failures longer. The spec's rule is the window any instance *recorded* the key with, and the godoc requires one configuration per namespace. Each replica still counts with its own window. The godoc requires one configuration per namespace.
+  - **Why the window is carried rather than inferred:** taking the larger of `PTTL` and the recording instance's own window fails when a 1-minute record lands 14.5 minutes into a 15-minute window. The key then expires a minute later, while the 15-minute replica still counts that record for nearly 15 more minutes. A review reproduced this against a real server.
+  - **Why not derive the window from `PTTL` and the previous stamp:** in app-clock mode that mixes the application's clock with the server's, so the result drifts.
+  - The carried window uses durations only, so it holds in both clock modes.
 - **Eviction:** an evicting `maxmemory-policy` (`allkeys-*`, or `volatile-*`, since every limiter key has a TTL) can drop a live key, which disarms that source's limit. Only `noeviction` is safe.
   - `Verify(ctx)` reads the policy with `CONFIG GET`.
   - **An evicting policy:** a configuration error.
   - **An unreadable policy** (managed services may block `CONFIG`): one WARN naming the requirement.
   - **Override:** `WithEvictionPolicyCheck(false)`, for a consumer who has verified the policy out of band. The godoc names what that gives up.
 - **Out of memory under `noeviction`:** writes fail while reads still succeed. A naive limiter would therefore stop counting while still answering "not exceeded". Decision 5's record-error rule closes this.
-  - **Status:** `UNREPRODUCED` (no code yet).
-  - **First red step:** a Redis container with a tiny `maxmemory` and `noeviction`, where a source keeps failing past its limit and is never refused.
+  - **Status:** `REPRODUCED` by `TestRedisLimiter_Fault`, case "writes fail while reads succeed", on a server with a 2 MB `maxmemory` and `noeviction` filled until writes answer `OOM`:
+    - **red:** a limiter in allow mode, which drops failed records, answers "not exceeded" on all ten attempts (`[true true … true]` against the expected `[true false … false]`);
+    - **green:** in the default mode the source is refused after its first unrecorded failure.
 
 ### 5. Backend unavailable: fail closed by default, and fast
 
@@ -156,9 +171,15 @@ type UnavailableMode int // UnavailableRefuse (default), UnavailableFallBackToLo
 func WithOnUnavailable(m UnavailableMode) Option
 func WithOperationTimeout(d time.Duration) Option      // default 250ms; bounds each call, records included
 func WithUnavailableProbeInterval(d time.Duration) Option // default 1s; every mode
+func WithUnavailableLogInterval(d time.Duration) Option   // default 1m (ratelimit.DefaultLogInterval); allow-mode ERROR sampling; zero or less disables sampling
 ```
 
 **What counts as unavailable:** any backend error, a timeout, or an exhausted pool while the caller's context is still live. A check whose caller context has ended always returns `true` and the error, whatever the mode, and the guard logs it at DEBUG.
+- **A caller deadline shorter than the operation timeout** is the caller ending, not the backend failing, so it never opens the breaker. Against a hung backend such a caller waits its own deadline on every call.
+  - **Why not count it as an outage:** a backend that is slow but up would then open the breaker for every caller. In allow mode that switches the limit off for everyone because of a few impatient callers.
+  - **Stated limit:** a deployment whose request deadlines are shorter than the operation timeout should lower the timeout below them (`WithOperationTimeout`).
+  - A test pins this behaviour.
+- **Only calls of the current breaker generation change its state.** A call that began before the breaker last closed cannot reopen it, just as a call that began before it opened cannot close it. A backend call that panics releases the probe slot, so a panic cannot leave the breaker open for good.
 
 **Circuit breaker, in every mode.** After an unavailable error, the limiter treats the backend as down for the probe interval and answers from its mode without calling the backend. After the interval, one call goes through as a probe. Success closes the breaker; failure reopens it.
 - **Why also in refuse mode:** without the breaker, every guarded request waits the full operation timeout during an outage and can exhaust the connection pool. Refusing should cost nothing.
@@ -217,8 +238,11 @@ Every stored key is scoped by a namespace: `<prefix><namespace>:<key>`.
 **Keys:**
 - Keys are stored exactly as given. The limiter does not parse them, and a user reference used as a key is consumer-owned.
 - Keys longer than 512 bytes are stored as `sha256:` followed by the hex digest. This is deterministic on every replica.
+  - A key that already begins with `sha256:` is hashed too. Otherwise a short key spelled like a digest would share the bucket of the long key it names.
+- **A namespace containing `:` is a configuration error.** Otherwise namespace `a:b` with key `c`, and namespace `a` with key `b:c`, would share a bucket. Every built-in namespace is free of colons.
+- **A window shorter than one microsecond is a configuration error**, because stamps are kept in whole microseconds. Windows are counted in whole microseconds.
 - **Override:** none needed. The mapping is invisible to callers.
-- **ACL, documented:** the limiter needs `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO` and `SCRIPT LOAD` on keys under its prefix. `Verify` additionally needs `INFO` and `CONFIG GET`.
+- **ACL, documented:** the limiter needs `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO` and `SCRIPT LOAD` on keys under its prefix, plus the commands its scripts run, because Redis checks a script's commands against the caller's ACL too: `TIME`, `ZRANGE`, `ZADD`, `ZREMRANGEBYRANK`, `ZREM`, `PTTL`, `PEXPIRE` and `ZCOUNT`. `Verify` additionally needs `INFO` and `CONFIG GET`.
 
 ### 8. The limiter factory
 
@@ -264,14 +288,30 @@ The `httpsec` throttle record keyed on `flow|clientAddr` is removed. The guard a
 
 - **Default:** one record per flow and canonical source per sampling window.
 - **Override:** the guard's existing log-interval option.
+- **The consumer's reporter still receives the summaries.** Before this change the chain's own throttle record reported its suppressed counts to `WithRefusalLogReporter`. The guard's record reported only to its own logger. Removing the chain's record would therefore silently drop the consumer's reporter.
+  - `ratelimit` gains `WithSourceGuardLogReporter(fn func(key string, suppressed int))`.
+  - **Default:** a guard writes its own summary record through its logger, as before.
+  - **Chain-built guards:** the chain passes its refusal-log reporter to every guard it builds: the consumer's if one was given, else the chain's default summary record. "Consumer reporter and flush" therefore holds on the real throttle path.
+  - **Default output changes** (untagged, so free under library-design rule 7, and recorded here):
+    - a chain-built guard's summary is now the chain's single `httpsec: refusal logs suppressed` record, with `key` and `suppressed`;
+    - it replaces the guard's own `ratelimit: refusal records suppressed` record and the chain's second summary keyed by the raw address;
+    - guard keys take the form `throttled:<flow>:<canonical source>` or `limiter:<flow>:`, alongside the chain's own `<flow>|<reason>` keys.
+  - **Why not keep the chain's record and silence the guard's instead:** the chain's record is keyed by the raw address, which is defect F2. A consumer-built guard also needs a replaceable reporter, under library-design rule 2.
 
 ### 11. Wiring
 
 - **Plain constructors only.** A consumer builds a factory from their client and passes it to the chain or to each component. Nothing is probed or selected implicitly.
-- **`Verify(ctx)`** checks the server version, the eviction policy and that both scripts load. It is never called by a constructor, because constructors do no I/O.
+- **`Verify(ctx)`** checks the server version, the eviction policy, and that both scripts load and run. It is never called by a constructor, because constructors do no I/O.
+  - **Scripts run, not only load:** Redis checks a script's commands against the caller's ACL only when the script runs, so a user missing one of them passes a load-only check and then fails every record.
+    - `Verify` runs the record script, then the check script, once on a probe key, with a 1ms window so the key expires at once.
+    - The probe key is `<prefix>:verify:<random>`, so with the default prefix it begins `scrty:ratelimit::verify:`. Its namespace slot is empty, and no namespace is empty, so no limiter key can take that slot.
+    - An ACL refusal is a configuration error. Inside a script, Redis 7.2 and later and Valkey answer `ERR ACL failure in script`, Redis 7.0 answers `can't run this command`, and outside a script the answer is `NOPERM`. The error names the refused command when it is one of the limiter's own, and never carries the server's text.
+    - **A full server fails `Verify`:** under `noeviction` with memory exhausted, the record probe is refused with `OOM`. That is returned as an error that is not a configuration error, because the server is reachable and configured correctly, only full.
   - The consumer calls it at startup, before traffic.
   - The godoc and the example show where.
   - `di-wiring` calls it at container start when that change is applied.
+  - **Stated limit, cluster:** on a cluster client, go-redis sends `INFO` and `CONFIG GET` to one node, so `Verify` checks that node's version and eviction policy only. The godoc requires every node to be configured alike.
+  - `Verify` also refuses a server that rejects `SCRIPT LOAD`. That is stricter than the runtime needs, since `Script.Run` falls back to `EVAL`, but it matches the documented ACL list.
 - **New module:** `github.com/kartaladev/scrty/redis`, package `scrtyredis`, on go-redis v9.7.3 or later. It is added to `go.work`, to the dependency guard and to CI. The core module gains no dependency.
 
 ### 12. Conformance suite
@@ -288,14 +328,19 @@ The scenarios mirror the `rate-limiting` requirements:
 - excess failures keep the newest stamps;
 - `Exceeded` with an ended context returns `true` and an error;
 - `RecordFailure` with an ended context still records;
-- separate namespaces do not share buckets;
 - concurrent checks and records produce no data race, and every key ends exceeded;
 - **shared only:** failures recorded through one instance are exceeded through the other;
-- **shared only:** a shorter-window instance never expires a failure that a longer-window instance counts.
+- **shared only:** a shorter-window instance never expires a failure that a longer-window instance counts;
+- **shared only:** separate namespaces do not share buckets. Within one subtest every namespace shares one backend scope, so a limiter that ignores its namespace is caught.
 
 Runs and fault tests:
 - **Who runs it:** all runs live in the `test` module, because no other module may import it (module-layout). That covers the in-memory limiter, and the Redis limiter through a new `RunTestRedis` helper.
-- **Server matrix:** Redis 7.x, Redis 8.x and Valkey 8.x. The helper defaults to the newest Redis.
+- **`RunTestRedis(t, opts...) RedisConn`:**
+  - shares one server per image per process, and gives each call its own database, flushed before use and at cleanup;
+  - `RedisConn` holds a client that resolves the server's address on every dial, so it reconnects after a restart moves the host port;
+  - on an own container (`WithTestRedisOwnContainer`), `Stop` and `Start` drive the outage tests, and `WithTestRedisServerArgs` sets server flags that cannot change at runtime, such as `--maxmemory` or a renamed `CONFIG`;
+  - **Shared-server cleanup:** no single test owns a shared server, so it is removed by the testcontainers reaper when the process exits. With the reaper disabled it leaks until removed by hand.
+- **Server matrix:** the supported floors (Redis 7.0 and Valkey 7.2), Redis 7.4, Redis 8.x and Valkey 8.x. The helper defaults to the newest Redis.
 - **Server-clock mode:** a separate short-window real-time test, because a fake clock cannot drive `TIME`.
 - **Unavailable modes and the breaker:** tested by stopping the helper's own container mid-test. The container is never one shared across tests, because `testcontainers-optimize` shares the PostgreSQL server per process and the same pattern is expected for Redis. There is one test per mode, plus one that the breaker refuses without waiting for the timeout.
 - **Out of memory:** the decision 4 red step.
@@ -330,13 +375,15 @@ None from established behaviour. Established behaviour is only the in-memory lim
 
 - **[Fail closed turns a Redis outage into refusals on every guarded flow, including second-factor completion]** → It is the documented default. The breaker makes refusal immediate. Fall-back is documented as the recommended second-factor override. `Verify` at startup catches misconfiguration.
 - **[An evicting Redis policy silently disarms limits]** → `Verify` refuses a known evicting policy and warns when it cannot read one.
-- **[Writes fail while reads succeed (OOM)]** → Record errors hold the key locally as refused (refuse mode) or count it locally (fall-back mode). This stays `UNREPRODUCED` until its red step.
+- **[Writes fail while reads succeed (OOM)]** → Record errors hold the key locally as refused (refuse mode) or count it locally (fall-back mode). Reproduced against a real server; see decision 4.
 - **[A replica-routed read undercounts]** → Primary-only is required, refused where detectable, and documented.
 - **[Replicas with different limits or windows for one namespace]** → The TTL only extends, the godoc requires one configuration, and in-process mismatches are refused.
 - **[Source keys (IP addresses and prefixes) and user references are stored at rest in a shared backend]** → They are stored as given, bounded by the TTL. Hashing would not pseudonymise an IPv4 key, since the space can be enumerated. A consumer who needs it wraps the limiter.
 - **[Clock precision differs from the in-memory limiter]** → Microseconds, documented, and the suite steps in microseconds.
 - **[Check-then-record overshoots, now summed across replicas]** → The bound is documented. Per-code accounting is `atomic-code-attempts`.
 - **[Removing `httpsec.WithRateLimiter` breaks any consumer using it]** → None exist and nothing is tagged. The option did nothing anyway.
+
+- **[Following the second-factor fall-back advice means restating defaults]** → The chain has no per-flow factory or per-flow unavailable mode. A consumer who wants fall-back for second-factor flows only must build those flows' limiters by hand, restating namespaces and defaults that are unexported (`mfa-verify`, 5 per 15 minutes). That is the drift decision 8's factory exists to prevent. **Follow-up,** outside this change's tasks: export the namespaces and defaults, or add a per-flow mode. Until then the godoc shows the hand-built form.
 
 ## Migration Plan
 
