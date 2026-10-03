@@ -169,7 +169,7 @@ func TestOIDCRedeem(t *testing.T) {
 	// after running the checks it is handed when runChecks, ignoring what
 	// they said.
 	reportsSuccess := func(runChecks bool) func(t *testing.T, h *oidcHarness) httpsec.HandoffRedeemer {
-		return func(t *testing.T, h *oidcHarness) httpsec.HandoffRedeemer {
+		return func(t *testing.T, _ *oidcHarness) httpsec.HandoffRedeemer {
 			r := NewMockHandoffRedeemer(gomock.NewController(t))
 			r.EXPECT().Redeem(gomock.Any(), gomock.Any(), gomock.Any()).
 				DoAndReturn(func(ctx context.Context, _ string, checks ...oidc.RedeemCheck) (oidc.HandoffResult, error) {

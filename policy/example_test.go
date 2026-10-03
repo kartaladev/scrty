@@ -26,7 +26,7 @@ func (exampleUsers) LoadByUserID(context.Context, identity.UserID) (*identity.De
 // exampleManager is the OIDC manager the examples use as the source of
 // provider assurance. It implements policy.FederatedAssuranceSource.
 func exampleManager() *oidc.Manager {
-	registry, err := oidc.NewRegistry(oidc.Provider{
+	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a placeholder secret in an example, not a credential
 		Name:         "corp",
 		Issuer:       "https://idp.example.com",
 		ClientID:     "scrty",

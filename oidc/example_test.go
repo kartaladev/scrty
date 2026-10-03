@@ -31,7 +31,7 @@ func (exampleUsers) LoadByUserID(context.Context, identity.UserID) (*identity.De
 func ExampleWithProviderAssurance() {
 	users := exampleUsers{}
 
-	registry, err := oidc.NewRegistry(oidc.Provider{
+	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a placeholder secret in an example, not a credential
 		Name:         "corp",
 		Issuer:       "https://idp.example.com",
 		ClientID:     "scrty",
@@ -93,7 +93,7 @@ func (e adminsNeedAHardwareKey) MeetsAssurance(_ context.Context, in oidc.Assura
 func ExampleWithAssuranceEvaluator() {
 	users := exampleUsers{}
 
-	registry, err := oidc.NewRegistry(oidc.Provider{
+	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a placeholder secret in an example, not a credential
 		Name:         "corp",
 		Issuer:       "https://idp.example.com",
 		ClientID:     "scrty",
