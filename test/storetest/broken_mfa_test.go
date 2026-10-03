@@ -83,6 +83,9 @@ const (
 	mfaVerifyChargesPending mfaDefect = "verify-charges-pending"
 	// RefundVerifyAttempt lowers the count past zero.
 	mfaVerifyRefundBelowZero mfaDefect = "verify-refund-below-zero"
+	// mfaVerifyRefundZeroesCount gives a charge back by resetting the count
+	// to zero instead of lowering it by one.
+	mfaVerifyRefundZeroesCount mfaDefect = "verify-refund-zeroes-count"
 	// ChargeVerifyAttempt returns and stores the window end as computed,
 	// without the truncation to the microsecond a durable store applies.
 	mfaVerifyWindowEndUntruncated mfaDefect = "verify-window-end-untruncated"
@@ -328,6 +331,9 @@ func (s *mfaStore) RefundVerifyAttempt(_ context.Context, user identity.UserID, 
 		return false, nil
 	}
 	e.VerifyAttempts--
+	if s.defect == mfaVerifyRefundZeroesCount {
+		e.VerifyAttempts = 0
+	}
 	s.enrolments[user] = e
 	return true, nil
 }
@@ -366,6 +372,7 @@ var enrolmentPathVariants = []brokenVariant{
 	mfaVariant(mfaVerifyRefundIgnoresWindow, "Give-back after the window was replaced"),
 	mfaVariant(mfaVerifyChargesPending, "Pending enrolment is not charged"),
 	mfaVariant(mfaVerifyRefundBelowZero, "Give-back at zero"),
+	mfaVariant(mfaVerifyRefundZeroesCount, "Give-back in the window it was charged in"),
 	mfaVariant(mfaVerifyWindowEndUntruncated, "The window end a charge returns is the one a give-back matches"),
 	mfaVariant(mfaPutPendingKeepsGivenVerifyAttempts, "A new begin clears the count"),
 	// The device-proof suite requires the port, so it runs the begin's

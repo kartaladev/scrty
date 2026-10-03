@@ -55,18 +55,18 @@ func TestMFAVerify_RefusedChargeIsNotRecorded(t *testing.T) {
 	type testCase struct {
 		name      string
 		verifyErr error
-		// failures is how many failed verifications the limiter must record.
-		failures int
-		assert   func(t *testing.T, s served)
+		// assert receives the response and how many failed verifications the
+		// limiter recorded.
+		assert func(t *testing.T, s served, recorded int)
 	}
 
 	cases := []testCase{
 		{
 			name:      "a refused attempt charge is returned unchanged and not recorded",
 			verifyErr: mfa.ErrVerifyAttemptsExhausted,
-			failures:  0,
-			assert: func(t *testing.T, s served) {
+			assert: func(t *testing.T, s served, recorded int) {
 				require.ErrorIs(t, s.err, mfa.ErrVerifyAttemptsExhausted)
+				assert.Zero(t, recorded, "a refused charge compared nothing")
 				require.ErrorIs(t, s.err, mfa.ErrVerifyThrottled)
 				assert.NotErrorIs(t, s.err, mfa.ErrInvalidCode)
 				assert.Equal(t, 401, httpsec.StatusForError(s.err))
@@ -75,9 +75,9 @@ func TestMFAVerify_RefusedChargeIsNotRecorded(t *testing.T) {
 		{
 			name:      "a compared wrong code is still recorded",
 			verifyErr: mfa.ErrInvalidCode,
-			failures:  1,
-			assert: func(t *testing.T, s served) {
+			assert: func(t *testing.T, s served, recorded int) {
 				require.ErrorIs(t, s.err, mfa.ErrInvalidCode)
+				assert.Equal(t, 1, recorded, "a compared wrong code is recorded")
 			},
 		},
 	}
@@ -91,24 +91,30 @@ func TestMFAVerify_RefusedChargeIsNotRecorded(t *testing.T) {
 			h.method.EXPECT().Verify(gomock.Any(), testMFAUser, gomock.Any()).Return(tc.verifyErr)
 			h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).
 				Return(false, nil)
+
+			var recorded atomic.Int32
+
 			h.limiter.EXPECT().RecordFailure(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).
-				Return(nil).Times(tc.failures)
+				DoAndReturn(func(context.Context, string) error {
+					recorded.Add(1)
+					return nil
+				}).AnyTimes()
 
 			s := h.pendingSession(t, factor.Password)
 			c := h.chain(t, s)
 
 			out := serve(t, c, postCode(t.Context(), testMFAVerifyPath))
-			tc.assert(t, out)
+			tc.assert(t, out, int(recorded.Load()))
 			assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
 		})
 	}
 }
 
-// TestMFAVerify_ConcurrentWrongCodesComparedAtMostTheLimit pins that however
+// TestMFAVerify_ConcurrentWrongCodesComparedExactlyTheLimit pins that however
 // many wrong codes race through the endpoint's throttle at once, a real TOTP
-// compares at most its attempt limit of them, and refuses the rest as
+// compares exactly its attempt limit of them, and refuses the rest as
 // throttled.
-func TestMFAVerify_ConcurrentWrongCodesComparedAtMostTheLimit(t *testing.T) {
+func TestMFAVerify_ConcurrentWrongCodesComparedExactlyTheLimit(t *testing.T) {
 	t.Parallel()
 
 	const racers = 20
@@ -165,7 +171,7 @@ func TestMFAVerify_ConcurrentWrongCodesComparedAtMostTheLimit(t *testing.T) {
 
 	wg.Wait()
 
-	assert.LessOrEqual(t, int(compared.Load()), mfa.DefaultVerifyAttemptLimit,
+	assert.Equal(t, mfa.DefaultVerifyAttemptLimit, int(compared.Load()),
 		"wrong codes compared against one enrolment")
 	assert.Equal(t, int32(racers), compared.Load()+throttled.Load(),
 		"every request is either compared or refused as throttled")

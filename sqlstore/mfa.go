@@ -34,7 +34,8 @@ import (
 //
 // The returned store implements mfa.DeviceProofStore, so the enrolment path
 // runs over it. PutPending starts the enrolment's generation, clearing any
-// device proof and emailed code; ProveDevice, Complete and ChargeEmailCode are
+// device proof, emailed code and TOTP verification attempts; ProveDevice,
+// Complete, ChargeEmailCode, ChargeVerifyAttempt and RefundVerifyAttempt are
 // each one conditional statement with every condition in its WHERE clause, so
 // of concurrent completions of one generation exactly one succeeds, and of
 // concurrent charges against one code no more than mfa.MaxEmailCodeFailures

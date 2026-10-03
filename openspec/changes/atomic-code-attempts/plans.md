@@ -891,7 +891,7 @@ git commit -m "feat(mfa): TOTP verification charges each attempt before comparin
 
 - [ ] **Step 1: Write the failing tests.** Use the `httpsec` MFA test harness `mfaverify_test.go` already has (find its constructor with gopls references to `mfaInterceptor`).
   - `TestMFAVerify_RefusedChargeIsNotRecorded`: a typed mock `ratelimit.Limiter` expects `Exceeded` to return `false` and expects **no** `RecordFailure`. The MFA method's `Verify` returns `mfa.ErrVerifyAttemptsExhausted`. Expect HTTP 401 and that the error matches `mfa.ErrVerifyThrottled`.
-  - `TestMFAVerify_ConcurrentWrongCodesComparedAtMostTheLimit`: 20 concurrent POSTs of a wrong code for one pending session, with a real TOTP over the memory store and the barrier limiter of 2.1, copied into the `httpsec` test file. Assert that at most 5 responses carry `mfa.ErrInvalidCode`, and the rest `mfa.ErrVerifyThrottled`.
+  - `TestMFAVerify_ConcurrentWrongCodesComparedExactlyTheLimit`: 20 concurrent POSTs of a wrong code for one pending session, with a real TOTP over the memory store and the barrier limiter of 2.1, copied into the `httpsec` test file. Assert that exactly 5 responses carry `mfa.ErrInvalidCode`, and the rest `mfa.ErrVerifyThrottled`.
 
   Run: `go test -race -run 'TestMFAVerify_RefusedCharge|TestMFAVerify_Concurrent' -count=1 ./httpsec/`
   Expected: FAIL on the first, with the mock reporting an unexpected `RecordFailure` call. The second passes already, because group 2 bounds it; record that it does.
