@@ -3,7 +3,6 @@ package httpsec
 import (
 	"time"
 
-	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -25,14 +24,6 @@ var SourceThrottledForTest = sourceThrottled
 // RecordSourceFailureForTest exposes the throttle seam's recording, so a test
 // can observe the context it hands the guard.
 var RecordSourceFailureForTest = recordSourceFailure
-
-// LogSampledForTest exposes the sampled writer, so a test can pin the window
-// without driving a refusal through a whole interceptor.
-var LogSampledForTest = logSampled
-
-// SamplerForTest exposes the chain's own sampler, so a test can put records
-// through exactly the one FlushRefusalLogs drains.
-func SamplerForTest(c *Chain) *logsample.Sampler { return c.sampler }
 
 // PostAuthenticationInputForTest exposes the input builder, so a test can pin
 // which parameter lands in which field before an interceptor calls it.

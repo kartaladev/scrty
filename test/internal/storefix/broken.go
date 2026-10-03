@@ -66,7 +66,7 @@ func CatchBrokenVariants(t *testing.T, envVar, child, backend string, variants [
 
 			// The child names its variant, so it skips only when
 			// RunTestPostgres does: Docker is unavailable outside CI.
-			if strings.Contains(output, "--- SKIP: "+child) {
+			if childSkipped(output, child) {
 				t.Skipf("the child skipped, so nothing was checked:\n%s", output)
 			}
 			require.Error(t, err, "the suite passed a store carrying the %s defect:\n%s", v.Name, output)
@@ -83,4 +83,12 @@ func CatchBrokenVariants(t *testing.T, envVar, child, backend string, variants [
 			}
 		})
 	}
+}
+
+// childSkipped reports whether the test named child itself skipped, as the
+// verbose output of its run shows. A skipped subtest of the child reports
+// "--- SKIP: child/sub" and does not count: only the child's own line does.
+func childSkipped(output, child string) bool {
+	return strings.Contains(output, "\n--- SKIP: "+child+" (") ||
+		strings.HasPrefix(output, "--- SKIP: "+child+" (")
 }

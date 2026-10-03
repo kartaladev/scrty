@@ -115,7 +115,17 @@ type mfaInterceptor struct {
 // not the other and leave the gate exempting a path nothing serves.
 func (c *config) wireMFA() error {
 	return eachInterceptor(c, func(i *mfaInterceptor) error {
-		opts := append([]mfa.ThrottleOption{mfa.WithVerifyLogger(c.logger)}, i.throttleOpts...)
+		// The chain's factory first, so a limiter the consumer gave the flow
+		// (WithMFAVerifyLimiter) wins and the factory is never asked. It is
+		// handed over only when the consumer configured one: without it the
+		// throttle builds its own in-memory default on its own logger and
+		// clock.
+		opts := []mfa.ThrottleOption{mfa.WithVerifyLogger(c.logger)}
+		if c.limiterFactory != nil {
+			opts = append(opts, mfa.WithVerifyLimiterFactory(c.limiterFactory))
+		}
+
+		opts = append(opts, i.throttleOpts...)
 
 		throttle, err := mfa.NewVerifyThrottle(opts...)
 		if err != nil {

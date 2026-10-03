@@ -396,7 +396,7 @@ func TestPasskeyFlushRefusalLogs(t *testing.T) {
 				}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "passkey-login"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "passkey-login"))
 			},
 		},
 	}

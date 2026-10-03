@@ -916,10 +916,48 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				h.chain.FlushRefusalLogs()
 
 				flushed := logs.records()[before:]
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "account-recovery"))
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "account-recovery-start"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery-start"))
 				assert.NotEmpty(t, summaries(t, flushed, "httpsec: recovery logs suppressed", "", ""),
 					"the recovery endpoints' own sampler was not flushed")
+			},
+		},
+		{
+			name: "the recovery guards follow the recovery interval, not the chain's refusal interval",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.chainOpts = append(h.chainOpts,
+					httpsec.WithLogger(slog.New(&capturingHandler{})),
+					httpsec.WithRefusalLogInterval(0))
+				h.recOpts = []httpsec.RecoveryOption{
+					httpsec.WithRecoveryLimiter(exceededLimiter(t)),
+					httpsec.WithRecoveryStartLimiter(exceededLimiter(t)),
+					httpsec.WithRecoveryLogInterval(time.Hour),
+				}
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				for range 3 {
+					out := serve(t, h.chain, postValues(t.Context(), httpsec.DefaultRecoveryCompletePath,
+						flushSource, recoveryForm(httpsec.RecoverySavedCodeParam, "x")))
+					require.Error(t, out.err)
+
+					started := serve(t, h.chain, postValues(t.Context(), httpsec.DefaultRecoveryStartPath,
+						flushSource, recoveryForm()))
+					require.NoError(t, started.err)
+				}
+
+				return served{rec: httptest.NewRecorder()}
+			},
+			assert: func(t *testing.T, h *recoveryHarness, _ served) {
+				// A chain interval of zero would write all three records of each
+				// guard; the recovery window of an hour writes one and holds two.
+				written := throttledRecords(recoveryLogs(t, h).records())
+				assert.Len(t, written, 2, "one record per recovery guard: the window is the recovery interval")
+
+				h.chain.FlushRefusalLogs()
+
+				flushed := recoveryLogs(t, h).records()
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "account-recovery-start"))
 			},
 		},
 	}

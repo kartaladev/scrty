@@ -72,7 +72,7 @@ A consumer SHALL be able to choose, per shared limiter, one of two overrides of 
 - fall back to an in-memory count with the same limit and window while the backend is unavailable, counting a failed record locally;
 - allow attempts and drop records while the backend is unavailable.
 
-Each transition into and out of degraded operation SHALL be logged. An unknown mode SHALL be a configuration error.
+Each transition into and out of degraded operation SHALL be logged. While attempts are allowed, the error-level record SHALL be sampled per namespace, once a minute by default, at an interval the consumer can change. An unknown mode SHALL be a configuration error.
 
 #### Scenario: Fall back to a local count
 - **WHEN** a shared limiter configured to fall back, with a limit of 3, loses its backend and the same source then fails 3 times on this instance
@@ -99,6 +99,10 @@ A shared limiter SHALL keep each key at least until its newest stamp leaves the 
 #### Scenario: Shorter-window instance
 - **WHEN** an instance with a 15-minute window records a failure for key `k`, and an instance with a 1-minute window records another for `k` 30 seconds later
 - **THEN** 10 minutes later the 15-minute instance still counts both failures
+
+#### Scenario: Late shorter-window record
+- **WHEN** an instance with a 15-minute window records a failure for key `k`, and an instance with a 1-minute window records another for `k` 14 minutes 30 seconds later
+- **THEN** 10 minutes after the second failure the 15-minute instance still counts it
 
 #### Scenario: Evicting backend
 - **WHEN** a shared limiter is verified against a backend configured to evict keys under memory pressure

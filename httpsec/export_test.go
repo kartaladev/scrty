@@ -6,7 +6,6 @@ import (
 
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // This file exposes what the package's tests need and consumers must not have.
@@ -80,8 +79,6 @@ func EnableTestBuiltIn(d TestBuiltInDeps) Option {
 type ChainSettings struct {
 	PolicyEngine       *policy.Engine
 	Logger             *slog.Logger
-	RateLimiter        ratelimit.Limiter
-	IPv6SourcePrefix   int
 	RefusalLogInterval time.Duration
 	RefusalLogReporter func(key string, suppressed int)
 }
@@ -92,8 +89,6 @@ func Settings(c *Chain) ChainSettings {
 	return ChainSettings{
 		PolicyEngine:       c.engine,
 		Logger:             c.logger,
-		RateLimiter:        c.limiter,
-		IPv6SourcePrefix:   c.ipv6Prefix,
 		RefusalLogInterval: c.refusalInterval,
 		RefusalLogReporter: c.refusalReporter,
 	}

@@ -1,6 +1,6 @@
 package recovery
 
-//go:generate mockgen -destination=limiter_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/ratelimit Limiter
+//go:generate mockgen -destination=limiter_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
 
 import (
 	"context"
@@ -78,6 +78,11 @@ type Codes struct {
 	// limiterSet records that WithCodeLimiter was given, so a limiter passed
 	// as nil is told apart from one never mentioned.
 	limiterSet bool
+
+	// factory builds the limiter when no limiter was given; factorySet
+	// records that WithCodeLimiterFactory was given, for the same reason.
+	factory    ratelimit.LimiterFactory
+	factorySet bool
 }
 
 // NewCodes returns a saved-code manager.
@@ -123,9 +128,16 @@ func NewCodes(opts ...CodesOption) (*Codes, error) {
 	return c, nil
 }
 
-// resolveLimiter supplies the in-memory limiter when no option replaced it,
-// and refuses one that was replaced with nothing.
+// resolveLimiter settles the limiter by precedence: the limiter
+// WithCodeLimiter gave, then one built by the factory WithCodeLimiterFactory
+// gave, then the in-memory default logging through the manager's logger and
+// clock. A limiter or factory replaced with nothing is refused, the factory
+// even beside an explicit limiter that would have won.
 func (c *Codes) resolveLimiter() error {
+	if c.factorySet && nilcheck.IsNil(c.factory) {
+		return fmt.Errorf("%w: code limiter factory must not be nil", ErrConfig)
+	}
+
 	if c.limiterSet {
 		if nilcheck.IsNil(c.limiter) {
 			return fmt.Errorf("%w: code limiter must not be nil", ErrConfig)
@@ -134,9 +146,17 @@ func (c *Codes) resolveLimiter() error {
 		return nil
 	}
 
-	l, err := ratelimit.NewMemoryLimiter(defaultCodeLimit, defaultCodeWindow)
+	factory := c.factory
+	if !c.factorySet {
+		factory = ratelimit.MemoryLimiterFactory(
+			ratelimit.WithMemoryLimiterLogger(c.logger),
+			ratelimit.WithMemoryLimiterClock(c.clock),
+		)
+	}
+
+	l, err := factory.NewLimiter(namespaceCodes, defaultCodeLimit, defaultCodeWindow)
 	if err != nil {
-		return fmt.Errorf("%w: default code limiter: %w", ErrConfig, err)
+		return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceCodes, err)
 	}
 
 	c.limiter = l

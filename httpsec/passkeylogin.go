@@ -204,9 +204,10 @@ func PasswordlessCookieName(name string) PasswordlessSetting {
 
 // PasswordlessLimiter counts passwordless begins per source in l instead.
 //
-// Default: an in-memory limiter of 30 begins per source per 15 minutes,
-// which holds this process's counts only; behind several replicas, supply a
-// shared limiter. The guard records every begin, so l's limit is a limit on
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "passkey-login", or else an in-memory limiter of 30 begins per
+// source per 15 minutes, which holds this process's counts only; behind several
+// replicas, supply a shared factory or limiter. The guard records every begin, so l's limit is a limit on
 // begins, not on failures. A nil limiter is refused; omit the setting to keep
 // the default.
 func PasswordlessLimiter(l ratelimit.Limiter) PasswordlessSetting {
@@ -338,8 +339,10 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 		i.respondBegin = writePasskeyBegin
 	}
 
+	// Sampled over the passkey manager's window, as the endpoints' own
+	// records are (newSampler).
 	guard, err := c.resolveSourceGuard(option, passwordlessFlow, i.limiter,
-		defaultPasswordlessBeginLimit, defaultPasswordlessBeginWindow)
+		defaultPasswordlessBeginLimit, defaultPasswordlessBeginWindow, i.manager.LogInterval())
 	if err != nil {
 		return err
 	}
@@ -366,12 +369,7 @@ func (i *passwordlessInterceptor) wire(c *Chain) {
 // WithRefusalLogInterval. Held-back counts go to the chain's reporter, the
 // consumer's when WithRefusalLogReporter gave one.
 func (i *passwordlessInterceptor) newSampler(c *Chain) *logsample.Sampler {
-	reporter := c.refusalReporter
-	if reporter == nil {
-		reporter = c.reportSuppressedRefusals
-	}
-
-	return logsample.New(i.manager.LogInterval(), logsample.WithReporter(reporter))
+	return logsample.New(i.manager.LogInterval(), logsample.WithReporter(c.reportRefusals))
 }
 
 // flushRefusalLogs reports what the begin's source guard and the endpoints'

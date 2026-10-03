@@ -303,7 +303,7 @@ func (i *oidcInterceptor) resolve(c *config) error {
 	i.redirects = allow
 
 	guard, err := c.resolveSourceGuard("EnableOIDCLogin", oidcHandoffFlow, i.limiter,
-		i.limit, i.window)
+		i.limit, i.window, c.refusalInterval)
 	if err != nil {
 		return err
 	}
@@ -580,10 +580,11 @@ func WithHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 
 // WithHandoffLimiter counts failed handoff redemptions through l.
 //
-// Default: an in-memory limiter of 10 failures per source per 5 minutes
-// (WithHandoffRateLimit), used by redemption alone. A deployment running more
-// than one replica supplies one its replicas share, or the limit is per
-// process. A shared limiter shares its store, not the allowance: every key
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "oidc.handoff", or else an in-memory limiter of 10 failures per
+// source per 5 minutes; either way at the limit WithHandoffRateLimit sets, and
+// used by redemption alone. A deployment running more than one replica supplies
+// a factory or a limiter its replicas share, or the limit is per process. A shared limiter shares its store, not the allowance: every key
 // carries the flow it belongs to. A nil limiter, including an interface
 // holding a nil pointer, is refused: it would read as "no limit". This
 // option is redemption-only: given beside WithCallbackSuccess, which issues

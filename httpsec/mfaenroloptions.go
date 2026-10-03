@@ -40,6 +40,11 @@ const (
 	// Failed confirmations, device codes and emailed codes alike.
 	defaultEnrolmentConfirmLimit  = 5
 	defaultEnrolmentConfirmWindow = 15 * time.Minute
+
+	// The namespaces the enrolment limiters are built under by a limiter
+	// factory (WithRateLimiterFactory).
+	namespaceEnrolmentBegin   = "mfa-enrol-begin"
+	namespaceEnrolmentConfirm = "mfa-enrol-confirm"
 )
 
 // defaultEnrolmentLogInterval is the window the enrolment path's own records
@@ -125,8 +130,9 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //     (WithEnrolmentSessionTTL);
 //   - begins are limited to 5 per hour per user, every call counted
 //     (WithEnrolmentBeginLimiter), and failed confirmations to 5 per 15
-//     minutes per user (WithEnrolmentConfirmLimiter), each by an in-memory
-//     limiter of this path's own;
+//     minutes per user (WithEnrolmentConfirmLimiter), each by a limiter of
+//     this path's own from the chain's rate-limiter factory under namespace
+//     "mfa-enrol-begin" or "mfa-enrol-confirm", or else in memory;
 //   - a proven device completes only once a 6-digit code emailed to the user
 //     is entered within 10 minutes (WithoutEmailConfirmation);
 //   - the user is notified when an enrolment completes
@@ -364,12 +370,18 @@ func WithEnrolmentSessionTTL(d time.Duration) EnrolmentOption {
 // WithEnrolmentBeginLimiter counts begins through l, keyed by
 // EnrolmentBeginThrottleKey.
 //
-// Default: an in-memory limiter of 5 per hour, per replica. Unlike every other
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "mfa-enrol-begin", or else an in-memory limiter of 5 per hour, per
+// replica. Unlike every other
 // limiter the library wires, it counts every call rather than only failures:
 // each begin generates a secret and can lead to an email, so a count of
 // failures would not bound either. The trade-off is stated: whoever holds a
 // user's password can spend that user's begin budget, locking them out of the
 // path for an hour. A limiter that cannot decide refuses the begin.
+//
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// mode is the recommended choice: during an outage of the shared store each
+// replica still bounds guessing on its own, and users are not locked out.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit" while the consumer believed they had replaced one.
@@ -388,12 +400,18 @@ func WithEnrolmentBeginLimiter(l ratelimit.Limiter) EnrolmentOption {
 // WithEnrolmentConfirmLimiter counts failed confirmations through l, keyed by
 // EnrolmentConfirmThrottleKey.
 //
-// Default: an in-memory limiter of 5 failures per 15 minutes, per replica. It
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "mfa-enrol-confirm", or else an in-memory limiter of 5 failures per
+// 15 minutes, per replica. It
 // counts wrong device codes and wrong emailed codes, and is separate from the
 // verification throttle of EnableMFA, so failing to enrol never locks a user
 // out of verifying an enrolment they already have. A failure is recorded even
 // when the caller has gone away, and a limiter that cannot decide refuses the
 // confirmation.
+//
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// mode is the recommended choice: during an outage of the shared store each
+// replica still bounds guessing on its own, and users are not locked out.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
 func WithEnrolmentConfirmLimiter(l ratelimit.Limiter) EnrolmentOption {

@@ -59,11 +59,11 @@ None.
   - namespaces keep flows separate;
   - expiry and eviction never disarm a limit;
   - a limiter factory reaches every built-in throttled flow;
-  - every limiter passes the conformance suite;
-  - throttle records are sampled per canonical source.
+  - every limiter passes the conformance suite.
 - `http-security-chain`:
   - the chain-level limiter option becomes a factory option;
   - the IPv6 source prefix takes effect on every source guard the chain builds.
+  - throttle records are sampled per flow and canonical source, and the consumer's refusal-log reporter still receives the guards' summaries.
 
 ## Impact
 

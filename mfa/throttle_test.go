@@ -411,3 +411,143 @@ func TestVerifyThrottleChargesAHangUp(t *testing.T) {
 		"a guess that was made is charged even when the caller has gone; the limiter "+
 			"must not be handed a context that is already cancelled")
 }
+
+func TestVerifyThrottle_DefaultLimiterWarnsThroughConfiguredLogger(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	th, err := mfa.NewVerifyThrottle(mfa.WithVerifyLogger(logger))
+	require.NoError(t, err)
+
+	require.NoError(t, th.Check(t.Context(), "user-1")) // first use writes the per-replica warning
+
+	assert.Contains(t, buf.String(), "counts only this replica",
+		"the default limiter's per-replica warning must reach the configured logger")
+}
+
+// TestNewVerifyThrottle_LimiterFactory pins where the verification limiter comes
+// from: the explicit limiter, then the factory, then the in-memory default.
+func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
+	t.Parallel()
+
+	errFactory := errors.New("factory: backend refused the namespace")
+
+	type testCase struct {
+		name   string
+		opts   func(t *testing.T) []mfa.ThrottleOption
+		assert func(t *testing.T, th *mfa.VerifyThrottle, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "default builds in-memory",
+			opts: func(*testing.T) []mfa.ThrottleOption { return nil },
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.NoError(t, err)
+
+				for range 5 {
+					th.RecordFailure(t.Context(), "u-1")
+				}
+
+				assert.ErrorIs(t, th.Check(t.Context(), "u-1"), mfa.ErrVerifyThrottled,
+					"the default counts 5 failures per 15 minutes")
+			},
+		},
+		{
+			name: "factory asked with namespace, limit, window",
+			opts: func(t *testing.T) []mfa.ThrottleOption {
+				ctrl := gomock.NewController(t)
+				built := NewMockLimiter(ctrl)
+				built.EXPECT().Exceeded(gomock.Any(), "mfa-verify|u-1").Return(true, nil)
+
+				f := NewMockLimiterFactory(ctrl)
+				f.EXPECT().NewLimiter("mfa-verify", 5, 15*time.Minute).Return(built, nil).Times(1)
+
+				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory(f)}
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.NoError(t, err)
+				assert.ErrorIs(t, th.Check(t.Context(), "u-1"), mfa.ErrVerifyThrottled,
+					"the throttle counts through the limiter the factory built")
+			},
+		},
+		{
+			name: "explicit limiter wins and factory not asked",
+			opts: func(t *testing.T) []mfa.ThrottleOption {
+				ctrl := gomock.NewController(t)
+				explicit := NewMockLimiter(ctrl)
+				explicit.EXPECT().Exceeded(gomock.Any(), "mfa-verify|u-1").Return(true, nil)
+
+				// No expectation: gomock fails the case if the factory is asked.
+				f := NewMockLimiterFactory(ctrl)
+
+				return []mfa.ThrottleOption{mfa.WithVerifyLimiter(explicit), mfa.WithVerifyLimiterFactory(f)}
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.NoError(t, err)
+				assert.ErrorIs(t, th.Check(t.Context(), "u-1"), mfa.ErrVerifyThrottled)
+			},
+		},
+		{
+			name: "nil factory refused",
+			opts: func(*testing.T) []mfa.ThrottleOption {
+				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory(nil)}
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.ErrorIs(t, err, mfa.ErrConfig)
+				assert.Nil(t, th)
+			},
+		},
+		{
+			name: "typed-nil factory refused",
+			opts: func(*testing.T) []mfa.ThrottleOption {
+				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory((*MockLimiterFactory)(nil))}
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.ErrorIs(t, err, mfa.ErrConfig)
+				assert.Nil(t, th)
+			},
+		},
+		{
+			// The explicit limiter wins, but a factory replaced with nothing is
+			// a wiring mistake whatever else was given.
+			name: "typed-nil factory refused beside an explicit limiter",
+			opts: func(t *testing.T) []mfa.ThrottleOption {
+				return []mfa.ThrottleOption{
+					mfa.WithVerifyLimiter(NewMockLimiter(gomock.NewController(t))),
+					mfa.WithVerifyLimiterFactory((*MockLimiterFactory)(nil)),
+				}
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.ErrorIs(t, err, mfa.ErrConfig)
+				assert.Nil(t, th)
+			},
+		},
+		{
+			name: "factory error fails construction",
+			opts: func(t *testing.T) []mfa.ThrottleOption {
+				f := NewMockLimiterFactory(gomock.NewController(t))
+				f.EXPECT().NewLimiter("mfa-verify", 5, 15*time.Minute).Return(nil, errFactory)
+
+				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory(f)}
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
+				require.ErrorIs(t, err, mfa.ErrConfig)
+				require.ErrorIs(t, err, errFactory)
+				assert.Contains(t, err.Error(), `"mfa-verify"`, "the error names the namespace")
+				assert.Nil(t, th)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			th, err := mfa.NewVerifyThrottle(tc.opts(t)...)
+			tc.assert(t, th, err)
+		})
+	}
+}

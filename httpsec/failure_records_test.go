@@ -15,6 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -374,13 +375,19 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 			// The throttled address is the one value a throttle record carries
 			// on purpose: an operator needs to know who was throttled.
 			name:    "throttle: a source over its limit stays visible",
-			message: "httpsec: source throttled",
+			message: guardThrottledMsg,
 			act: func(t *testing.T) []slog.Record {
 				t.Helper()
 
 				var log capturingHandler
 
-				_, err := httpsec.SourceThrottledForTest(t.Context(), guardOver(t, limiterThrottling(t)),
+				// The guard writes the one throttled-source record, through the
+				// chain's logger, which is what every chain-built guard has.
+				g, err := ratelimit.NewSourceGuard("login", limiterThrottling(t),
+					ratelimit.WithSourceGuardLogger(slog.New(&log)))
+				require.NoError(t, err)
+
+				_, err = httpsec.SourceThrottledForTest(t.Context(), g,
 					"198.51.100.7", "login", nil, slog.New(&log), time.Now())
 				require.Error(t, err)
 
