@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,9 +56,13 @@ func TestConfigConn(t *testing.T) {
 	attached, attachedPool := fakeDB(t, "attached")
 	inner, innerPool := fakeDB(t, "inner")
 	managed, managedPool := fakeDB(t, "managed")
+	failed, _ := fakeDB(t, "failed")
+	errHandle := errors.New("handle already failed")
+	_ = failed.AddError(errHandle)
 
 	type testCase struct {
 		name   string
+		base   *gormdb.DB // nil means the shared base handle
 		opts   []Option
 		ctx    func(ctx context.Context) context.Context // nil means identity
 		assert func(t *testing.T, ctx context.Context, q *gormdb.DB, ambient bool, err error)
@@ -72,7 +77,26 @@ func TestConfigConn(t *testing.T) {
 		}
 	}
 
+	refusesWith := func(want error) func(t *testing.T, ctx context.Context, q *gormdb.DB, ambient bool, err error) {
+		return func(t *testing.T, _ context.Context, q *gormdb.DB, ambient bool, err error) {
+			t.Helper()
+			require.ErrorIs(t, err, want)
+			assert.Nil(t, q, "no session is opened on a handle that already failed")
+			assert.False(t, ambient)
+		}
+	}
+
 	cases := []testCase{
+		{
+			name:   "a WithTx handle that already carries an error is refused with it",
+			ctx:    func(ctx context.Context) context.Context { return WithTx(ctx, failed) },
+			assert: refusesWith(errHandle),
+		},
+		{
+			name:   "a base handle that already carries an error is refused with it",
+			base:   failed,
+			assert: refusesWith(errHandle),
+		},
 		{
 			name:   "no resolver and nothing attached uses the base handle",
 			assert: runsOn(basePool, false),
@@ -164,7 +188,11 @@ func TestConfigConn(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			c, err := newConfig(base, tc.opts)
+			b := base
+			if tc.base != nil {
+				b = tc.base
+			}
+			c, err := newConfig(b, tc.opts)
 			require.NoError(t, err)
 			q, ambient, err := c.conn(ctx)
 			tc.assert(t, ctx, q, ambient, err)

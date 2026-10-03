@@ -375,10 +375,6 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 	if err != nil {
 		return time.Time{}, false, failed(op, err)
 	}
-	if q.Error != nil {
-		// A handle that carries an error runs nothing, and Row() would be nil.
-		return time.Time{}, false, failed(op, q.Error)
-	}
 	var until time.Time
 	err = q.Raw(pgschema.EnrolmentChargeVerifyAttempt,
 		string(user), storekit.Time(at), storekit.Time(at.Add(window).Truncate(time.Microsecond)), limit,

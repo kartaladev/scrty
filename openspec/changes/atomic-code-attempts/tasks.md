@@ -67,7 +67,7 @@ Every task is test-first: write the failing test, run it and see it fail for the
 
 ## 4. A gorm handle that carries an error (security-state-stores "Database failures are errors, never refusals or absence", scenario "The caller's transaction handle already carries a failure"; decision 10)
 
-- [ ] 4.1 Red step for every gorm site that reads one row. In the `gorm` module, add `TestStores_FailedHandleIsAnError`, a table with one case per operation that ends in `Raw(...).Row().Scan`:
+- [x] 4.1 Red step for every gorm site that reads one row. In the `gorm` module, add `TestStores_FailedHandleIsAnError`, a table with one case per operation that ends in `Raw(...).Row().Scan`:
   - the enrolment charge (already covered by `TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError`);
   - the recovery record's latest completion (`recoveryrecord.go`);
   - the recovery-code match (`recoverycode.go`);
@@ -75,7 +75,7 @@ Every task is test-first: write the failing test, run it and see it fail for the
   - the passkey credential read that goes through `returning` (`passkeycredential.go`).
 
   Each runs on a `WithTx` handle that carries an error, and asserts no panic and an error wrapping that failure. Remove the guard `ChargeVerifyAttempt` gained in group 1 first, so its case is red again. Run them and record each case's panic. A case that does not fail is reported and dropped from the claim, not weakened. Verify with `go test -race -run TestStores_FailedHandleIsAnError -count=1 ./...` in `gorm`.
-- [ ] 4.2 `conn` in `gorm/tx.go` returns the resolved handle's error, before any statement, for a `WithTx` transaction, a resolver's transaction and the base handle. Its godoc says so. Add cases to `TestStores_FailedHandleIsAnError`: a resolver returning a handle that carries an error, and a builder-chain operation on such a handle still returning the error. Verify with `go test -race ./...` and `golangci-lint run` in `gorm`, and `go test -race -count=1 -p 1 ./gormstore/` in `test`.
+- [x] 4.2 `conn` in `gorm/tx.go` returns the resolved handle's error, before any statement, for a `WithTx` transaction, a resolver's transaction and the base handle. Its godoc says so. Add cases to `TestStores_FailedHandleIsAnError`: a resolver returning a handle that carries an error, and a builder-chain operation on such a handle still returning the error. Verify with `go test -race ./...` and `golangci-lint run` in `gorm`, and `go test -race -count=1 -p 1 ./gormstore/` in `test`.
 
 ## 5. Integration
 

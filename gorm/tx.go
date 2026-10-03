@@ -68,26 +68,41 @@ func WithTx(ctx context.Context, tx *gormdb.DB) context.Context {
 // ErrNilTransaction and no handle; the calling store wraps it with its
 // operation name and runs no statement.
 //
+// A handle that already carries an error, such as a transaction whose Begin
+// failed, yields that error and no handle; the calling store wraps it with its
+// operation name and runs no statement.
+//
 // The handle returned is a fresh session on the resolved one's connection
 // (see opSession), never the resolved handle itself.
 func (c *config) conn(ctx context.Context) (q *gormdb.DB, ambient bool, err error) {
 	if c.resolver != nil {
 		h, ok := c.resolver(ctx)
 		if !ok {
-			return opSession(ctx, c.base), false, nil
+			return usable(ctx, c.base, false)
 		}
 		if h == nil {
 			return nil, false, ErrNilTransaction
 		}
 
-		return opSession(ctx, h), true, nil
+		return usable(ctx, h, true)
 	}
 
 	if t, ok := ctx.Value(txKey{}).(*gormdb.DB); ok {
-		return opSession(ctx, t), true, nil
+		return usable(ctx, t, true)
 	}
 
-	return opSession(ctx, c.base), false, nil
+	return usable(ctx, c.base, false)
+}
+
+// usable returns a session for one operation on h, tagged with ambient, or h's
+// error when h already carries one: gorm skips every statement on such a
+// handle, and a row read on it would return no row to scan.
+func usable(ctx context.Context, h *gormdb.DB, ambient bool) (*gormdb.DB, bool, error) {
+	if h.Error != nil {
+		return nil, false, h.Error
+	}
+
+	return opSession(ctx, h), ambient, nil
 }
 
 // opSession returns a new session on h's connection for one operation on ctx:

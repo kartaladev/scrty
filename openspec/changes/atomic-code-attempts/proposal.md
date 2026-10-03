@@ -30,7 +30,7 @@ None.
 ## Impact
 
 - **Changed code:** `mfa` (the enrolment store contract, the in-memory store, TOTP verification and its options), `seal` (the sealing enrolment store passes the operations through), the `sqlstore`, `pgx` and `gorm` enrolment stores, the shared SQL in `internal/pgschema`, the security-state migration, and the enrolment suites in the `test` module. `httpsec` changes only so that a refused charge is not recorded as a failed verification. The `gorm` module's handle resolution (`gorm/tx.go`) refuses a handle that carries an error, for every gorm store.
-- **Defect status of the gorm handle:** reproduced for the enrolment charge, where a failing test panicked. The other gorm sites are pending reproduction; each gets its failing test before the guard, and a site that cannot be made to fail is dropped from the claim.
+- **Defect status of the gorm handle:** reproduced by `TestStores_FailedHandleIsAnError`, which panicked in `(*sql.Row).Scan` without the guard for the enrolment charge, the recovery record's latest completion, the recovery-code match, the passkey user for a handle, the passkey credential charge, and a resolver's handle. The passkey handle assignment did not fail, because its insert reports the error first; it stays in the table as a pin and is not claimed.
 - **Breaking, before the first tag:** `mfa.EnrolmentStore` gains two methods, so a consumer's own enrolment store must implement them.
 - **Defect status:** the overshoot is a documented bound, not a defect. The first red step shows 20 concurrent wrong codes for one user being compared beyond the limit of 5.
 - **Depends on:** nothing unbuilt. Implementation starts after `shared-rate-limiting` has committed its edits to `mfa` and `httpsec`, which touch the same files.

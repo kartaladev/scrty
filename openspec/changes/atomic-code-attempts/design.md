@@ -136,7 +136,15 @@ A gorm handle can carry an error, as `Begin` does when it fails. gorm then skips
 - **Where:** `conn` in `gorm/tx.go` returns the handle's error, before any statement, whenever the resolved handle carries one. It does this for a transaction attached with `WithTx`, one returned by a resolver, and the base handle alike. Every gorm store operation already resolves its handle there and wraps the error with its operation name, as it does for `ErrNilTransaction`.
 - **Alternatives considered:** a guard at each `.Row()` site. It fixes today's six sites, but the next store that reads a row repeats the panic. The guard in `ChargeVerifyAttempt`, added in group 1, becomes redundant and is removed.
 - **Effect on other operations:** builder-chain operations already returned this error from their result. They now return it before running, wrapped the same way, so their observable outcome is unchanged.
-- **Proof:** the enrolment charge is reproduced (`TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError` panicked). The recovery-record, recovery-code, passkey-handle and passkey-credential sites are pending reproduction. Each gets a failing test before the guard. A site whose test does not fail is dropped from the claim, and the guard stays only if some site needs it.
+- **Proof:** `TestStores_FailedHandleIsAnError` (`go test -race -run TestStores_FailedHandleIsAnError ./` in `gorm`) panicked with `runtime error: invalid memory address or nil pointer dereference` in `database/sql.(*Row).Scan`, without the guard, for six cases:
+  - the enrolment charge;
+  - the recovery record's latest completion;
+  - the recovery-code match;
+  - the passkey user for a handle;
+  - the passkey credential charge, through `returning`;
+  - a resolver's handle.
+
+  The enrolment give-back, the passkey handle assignment and a builder-chain operation already returned the error. They stay as pins and are not claimed.
 - **No override.** Returning an error for a failed handle is the settled contract, not a policy.
 
 ## Risks / Trade-offs
