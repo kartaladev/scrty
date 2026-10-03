@@ -42,6 +42,10 @@ The security-state migration set SHALL create the tables for sessions, signing k
 - **WHEN** the set has been applied
 - **THEN** the sessions table has a non-null boolean column for the met-by-first-factor marker, defaulting to false
 
+#### Scenario: Federated assurance columns
+- **WHEN** the set has been applied
+- **THEN** the sessions table and the OIDC handoffs table each have a non-null column for the asserted `amr` values, defaulting to an empty list, and a non-null text column for the asserted `acr`, defaulting to the empty string
+
 ### Requirement: The set records its versions in its own version table
 Applying the security-state set SHALL record its applied migrations in a version table used by no other migration set. By default the table SHALL be named `goose_security_state`. A consumer SHALL be able to use another name. Applying or rolling back another migration set SHALL NOT read or change this table.
 
