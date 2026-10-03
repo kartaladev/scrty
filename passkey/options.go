@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // Option configures a Manager. Every option names the default it replaces.
@@ -37,6 +38,31 @@ type RegistrationFacts struct {
 	// AttestationTrusted reports whether the attestation verified as trusted
 	// under the verifier's attestation policy.
 	AttestationTrusted bool
+}
+
+// WithConfirmLimiterFactory builds the limiter that counts failed emailed-code
+// confirmations per user (ConfirmEmailCode) through f, under the namespace
+// "passkey-email-confirm" with this flow's own limit and window: 5 failures per
+// 15 minutes.
+//
+// Default: ratelimit.MemoryLimiterFactory, logging through the Manager's logger
+// and clock, so the limit holds in this process alone. Precedence: a limiter
+// given for one confirmation (RegistrationContext.ConfirmLimiter) wins for that
+// call; then the limiter f built; then the in-memory default. Because the
+// explicit limiter is given per call, f is asked once, when New runs.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
+//
+// A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
+// error from f, which names the namespace.
+func WithConfirmLimiterFactory(f ratelimit.LimiterFactory) Option {
+	return func(m *Manager) {
+		m.confirmFactory = f
+		m.factorySet = true
+	}
 }
 
 // WithChallengeTTL replaces how long a ceremony challenge is honoured after it

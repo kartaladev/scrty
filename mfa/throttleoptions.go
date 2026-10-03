@@ -19,13 +19,41 @@ type ThrottleOption func(*VerifyThrottle)
 // A deployment running more than one replica wants one here that its replicas
 // share, or the limit is per process and an attacker simply spreads their
 // guesses. The key is composed by this package — see VerifyThrottleKey — and is
-// opaque to the limiter.
+// opaque to the limiter. It takes precedence over WithVerifyLimiterFactory.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
 //
 // A nil limiter is a configuration error.
 func WithVerifyLimiter(l ratelimit.Limiter) ThrottleOption {
 	return func(t *VerifyThrottle) {
 		t.limiter = l
 		t.limiterSet = true
+	}
+}
+
+// WithVerifyLimiterFactory builds the verification limiter through f, under the
+// namespace "mfa-verify" with this flow's own limit and window: 5 failures per
+// 15 minutes.
+//
+// Default: ratelimit.MemoryLimiterFactory, logging through the throttle's
+// logger and clock, so the limit holds in this process alone. Precedence: a
+// limiter given with WithVerifyLimiter wins, and f is then never asked; then f;
+// then the in-memory default.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
+//
+// A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
+// error from f, which names the namespace.
+func WithVerifyLimiterFactory(f ratelimit.LimiterFactory) ThrottleOption {
+	return func(t *VerifyThrottle) {
+		t.factory = f
+		t.factorySet = true
 	}
 }
 

@@ -39,6 +39,9 @@ const (
 	// defaultUserLimit and defaultUserWindow bound failed recoveries per user.
 	defaultUserLimit  = 5
 	defaultUserWindow = 15 * time.Minute
+
+	// namespaceUser names the per-user recovery limit to a limiter factory.
+	namespaceUser = "recovery-user"
 )
 
 // ProofKind names one kind of proof a recovery may rest on.
@@ -156,6 +159,8 @@ type config struct {
 	checks           []Check
 	userLimiter      ratelimit.Limiter
 	userLimiterSet   bool
+	userFactory      ratelimit.LimiterFactory
+	userFactorySet   bool
 
 	kinds          []AuthenticatorKind
 	resetReported  bool
@@ -311,10 +316,36 @@ func WithChecks(checks ...Check) Option {
 
 // WithUserLimiter replaces the limiter that counts failed recoveries per user.
 // The default is a ratelimit.MemoryLimiter allowing 5 failures per 15 minutes,
-// per process, under UserThrottleKey(user). A nil limiter is a configuration
-// error. A limiter that cannot answer refuses the recovery.
+// per process, under UserThrottleKey(user). It takes precedence over
+// WithUserLimiterFactory. A nil limiter is a configuration error. A limiter that
+// cannot answer refuses the recovery.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
 func WithUserLimiter(l ratelimit.Limiter) Option {
 	return func(c *config) { c.userLimiter, c.userLimiterSet = l, true }
+}
+
+// WithUserLimiterFactory builds the limiter that counts failed recoveries per
+// user through f, under the namespace "recovery-user" with this flow's own
+// limit and window: 5 failures per 15 minutes.
+//
+// Default: ratelimit.MemoryLimiterFactory, logging through the Recoverer's
+// logger and clock, so the limit holds in this process alone. Precedence: a
+// limiter given with WithUserLimiter wins, and f is then never asked; then f;
+// then the in-memory default.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
+//
+// A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
+// error from f, which names the namespace.
+func WithUserLimiterFactory(f ratelimit.LimiterFactory) Option {
+	return func(c *config) { c.userFactory, c.userFactorySet = f, true }
 }
 
 // WithAuthenticatorKinds registers the kinds of authenticator a completed
@@ -597,15 +628,27 @@ func eligibleMethod(m mfa.Method) bool {
 
 // validateFlow checks the limiter, the reset and the hooks.
 func (r *Recoverer) validateFlow(c *config) error {
+	// A factory replaced with nothing is refused even beside an explicit
+	// limiter that would have won: it is a wiring mistake either way.
 	switch {
+	case c.userFactorySet && nilcheck.IsNil(c.userFactory):
+		return fmt.Errorf("%w: WithUserLimiterFactory was given no factory", ErrConfig)
 	case c.userLimiterSet && nilcheck.IsNil(c.userLimiter):
 		return fmt.Errorf("%w: WithUserLimiter was given no limiter", ErrConfig)
 	case c.userLimiterSet:
 		r.userLimiter = c.userLimiter
 	default:
-		l, err := ratelimit.NewMemoryLimiter(defaultUserLimit, defaultUserWindow, ratelimit.WithMemoryLimiterClock(c.clock))
+		factory := c.userFactory
+		if !c.userFactorySet {
+			factory = ratelimit.MemoryLimiterFactory(
+				ratelimit.WithMemoryLimiterLogger(c.logger),
+				ratelimit.WithMemoryLimiterClock(c.clock),
+			)
+		}
+
+		l, err := factory.NewLimiter(namespaceUser, defaultUserLimit, defaultUserWindow)
 		if err != nil {
-			return fmt.Errorf("%w: default user limiter: %w", ErrConfig, err)
+			return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceUser, err)
 		}
 
 		r.userLimiter = l

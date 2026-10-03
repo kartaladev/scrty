@@ -54,15 +54,6 @@ const maxIPv6SourcePrefix = 128
 // attacker chooses the size of.
 const defaultRefusalLogInterval = time.Minute
 
-// The limit the default in-memory limiter counts a source's failures against.
-// They match the account-lockout policy's own defaults, so a consumer who
-// configures neither gets one answer about how much guessing is too much
-// rather than two that disagree by an order of magnitude.
-const (
-	defaultFailureLimit  = 5
-	defaultFailureWindow = 15 * time.Minute
-)
-
 // defaultEnrolmentLifetime is how long a session marked for an enrolment
 // challenge lives when nothing configured otherwise: long enough to scan a
 // code and read an email, short enough that a first factor alone buys little.
@@ -94,9 +85,16 @@ type config struct {
 	// capture a setting a later option was about to replace.
 	wiring []func(*Chain)
 
-	engine  *policy.Engine
-	logger  *slog.Logger
-	limiter ratelimit.Limiter
+	engine *policy.Engine
+	logger *slog.Logger
+
+	// limiterFactory is the factory WithRateLimiterFactory gave, and nil when
+	// the consumer gave none (see rateLimiterFactory).
+	limiterFactory ratelimit.LimiterFactory
+
+	// keyer is what every source guard the chain builds keys a client address
+	// by, built at assembly from ipv6Prefix.
+	keyer *ratelimit.SourceKeyer
 
 	// enrolmentLifetime is how long a session marked for an enrolment
 	// challenge may live: its deadlines are lowered to at most this far from
@@ -309,10 +307,14 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
-	limiter, err := c.resolveLimiter()
+	// Before any source guard is built: every guard the chain builds keys its
+	// clients by this one keyer, so WithIPv6SourcePrefix reaches all of them.
+	keyer, err := ratelimit.NewSourceKeyer(ratelimit.WithIPv6SourcePrefix(c.ipv6Prefix))
 	if err != nil {
-		return nil, err
+		return nil, newConfigError("WithIPv6SourcePrefix could not build the source keyer: %s", err)
 	}
+
+	c.keyer = keyer
 
 	// The second factor is handed the rest of its wiring here, because both
 	// halves of it depend on options that may be applied after EnableMFA: the
@@ -390,24 +392,19 @@ func (c *config) build() (*Chain, error) {
 		registrations:     c.ordered(),
 		engine:            c.engine,
 		logger:            c.logger,
-		limiter:           limiter,
 		enrolmentLifetime: c.enrolmentLifetime,
 		enforced:          c.enforcedChallenges(),
 		mfa:               c.mfaOf(),
-		ipv6Prefix:        c.ipv6Prefix,
 		errorHandler:      c.errorHandler,
 		refusalInterval:   c.refusalInterval,
 		refusalReporter:   c.refusalReporter,
+		reportRefusals:    c.refusalLogReporter(),
 	}
 
 	// The sampler is built here rather than by the option, because the default
 	// reporter writes through the chain's logger and there is no chain until
 	// every option has been applied.
-	reporter := c.refusalReporter
-	if reporter == nil {
-		reporter = chain.reportSuppressedRefusals
-	}
-	chain.sampler = logsample.New(c.refusalInterval, logsample.WithReporter(reporter))
+	chain.sampler = logsample.New(c.refusalInterval, logsample.WithReporter(chain.reportRefusals))
 
 	// The built-ins are wired last, because each of them reads settings — the
 	// engine, the logger — that an option applied after its own Enable may
@@ -417,26 +414,6 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	return chain, nil
-}
-
-// resolveLimiter returns the limiter failures are counted through, building the
-// documented in-memory default when the consumer supplied none.
-//
-// It is built here rather than in New's initial configuration because the
-// default writes its one per-replica warning through the chain's logger, and
-// which logger that is is not settled until every option has been applied.
-func (c *config) resolveLimiter() (ratelimit.Limiter, error) {
-	if c.limiter != nil {
-		return c.limiter, nil
-	}
-
-	limiter, err := ratelimit.NewMemoryLimiter(defaultFailureLimit, defaultFailureWindow,
-		ratelimit.WithMemoryLimiterLogger(c.logger))
-	if err != nil {
-		return nil, newConfigError("the default in-memory limiter could not be built: %s", err)
-	}
-
-	return limiter, nil
 }
 
 // WithPolicyEngine evaluates every policy phase through e.
@@ -547,38 +524,58 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
-// WithRateLimiter counts failed attempts through l.
+// WithRateLimiterFactory builds every limiter the chain builds through f, each
+// under its flow's namespace with that flow's own limit and window, so a
+// consumer who moves the counts to shared storage keeps every flow's policy.
 //
-// Default: an in-memory limiter counting five failures per source in fifteen
-// minutes — the account-lockout policy's own thresholds, so a consumer who
-// configures neither gets one answer about how much guessing is too much. It
-// bounds one process: supply a limiter backed by storage the replicas share
-// when one limit has to hold across a fleet.
+// Default: an in-memory limiter per flow, counting in this process alone and
+// writing its one per-replica warning through the chain's logger. Behind N
+// replicas every limit is effectively N times higher; supply a factory over
+// storage the replicas share when one limit has to hold across a fleet.
 //
-// A source that spends its allowance is recorded with the throttled address
-// itself, kept on purpose: an operator reading the record needs to know who
-// was throttled. A limiter that fails to answer at all is a different thing,
-// and is recorded by a fixed reason and the error's Go type, never its own
-// text, since a consumer's limiter may quote the bucket key — and with it an
-// address or a user reference — back. A consumer who wants that text logs it
-// inside their own implementation of ratelimit.Limiter.
-func WithRateLimiter(l ratelimit.Limiter) Option {
+// Precedence, at every site: a limiter the flow was given (WithAPIKeyLimiter,
+// WithMagicLinkLimiter, WithHandoffLimiter, PasswordlessLimiter,
+// WithRecoveryLimiter, WithRecoveryStartLimiter, WithRecoveryUserLimiter,
+// WithMFAVerifyLimiter, WithEnrolmentBeginLimiter, WithEnrolmentConfirmLimiter)
+// wins, and f is never asked for that flow; then f; then the in-memory default.
+//
+// The namespaces are fixed: "api-key", "magic-link-redeem", "oidc.handoff",
+// "passkey-login", "account-recovery" and "account-recovery-start" for the
+// source guards, and "mfa-verify", "mfa-enrol-begin", "mfa-enrol-confirm" and
+// "recovery-user" for the user-keyed limits of the components the chain builds
+// (the package documentation's "Rate limits" lists each with its default). f
+// does not reach a component the consumer built and handed over, such as the
+// passkey.Manager or the recovery.Codes; those take their own factory option.
+//
+// For the user-keyed second-factor flows, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during
+// an outage of the shared store each replica still bounds guessing on its own,
+// and users are not locked out of sign-in.
+//
+// A nil factory, including an interface holding a nil pointer, is refused. An
+// error from f fails New, naming the option and the namespace.
+func WithRateLimiterFactory(f ratelimit.LimiterFactory) Option {
 	return func(c *config) error {
-		if err := requireDep("WithRateLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithRateLimiterFactory", "rate-limiter factory", f); err != nil {
 			return err
 		}
 
-		c.limiter = l
+		c.limiterFactory = f
 		return nil
 	}
 }
 
 // WithIPv6SourcePrefix counts IPv6 clients by a prefix of bits rather than by
-// their full address.
+// their full address, in every source guard the chain builds: the API-key,
+// magic-link, OIDC handoff, passwordless begin and account-recovery guards.
+// Addresses inside one prefix are one source, which shares one allowance and
+// one throttled-source record per sampling window.
 //
 // Default: 64, the narrowest prefix that still costs an attacker something to
-// move within. A prefix outside 1..128 is refused: 0 would pool every client
-// into one bucket, and more than 128 is not an address.
+// move within. A wider prefix, such as 48, groups a whole allocation into one
+// source. A prefix outside 1..128 is refused: 0 would pool every client into
+// one bucket, and more than 128 is not an address. IPv4 is always counted per
+// address.
 func WithIPv6SourcePrefix(bits int) Option {
 	return func(c *config) error {
 		if bits < 1 || bits > maxIPv6SourcePrefix {
@@ -598,6 +595,13 @@ func WithIPv6SourcePrefix(bits int) Option {
 // Default: one minute. An interval of zero or less disables sampling and writes
 // every record, which is the documented way to ask for the full stream — it is
 // accepted rather than refused, and it is a choice about volume, not a fault.
+//
+// It also sets the window of the throttled-source records written by the
+// source guards the chain builds for EnableAPIKey, EnableMagicLink and
+// EnableOIDCLogin's handoff redemption, one per flow and canonical source. The
+// account-recovery guards follow WithRecoveryLogInterval, and the passwordless
+// begin guard the passkey manager's window (passkey.WithLogInterval), as those
+// endpoints' own records do.
 func WithRefusalLogInterval(d time.Duration) Option {
 	return func(c *config) error {
 		c.refusalInterval = d
@@ -614,6 +618,21 @@ func WithRefusalLogInterval(d time.Duration) Option {
 // A nil reporter is refused: with no reporter at all the counts for a key that
 // goes quiet are simply dropped, and the suppressed totals stop adding up.
 // Omit the option to keep the default summary reporter.
+//
+// fn also receives the counts suppressed by every source guard the chain
+// builds — those of EnableAPIKey, EnableMagicLink, EnableOIDCLogin's handoff
+// redemption, the passwordless begin under EnablePasskeys and both account
+// recovery guards — so a throttled source is reported here like the chain's
+// own refusals. Each guard keeps its own sampler and window; only where its
+// held-back counts go is shared.
+//
+// The key takes one of two forms. The chain's own refusals use
+// "<flow>|<reason>", for example "api-key|no-client-address". A guard's use
+// "throttled:<flow>:<canonical source>" for a throttled source and
+// "limiter:<flow>:" for a limiter that failed, the latter with an empty
+// detail. A canonical IPv6 source contains colons itself, so a guard key splits
+// safely only on its first two separators; everything after the second is the
+// source.
 func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 	return func(c *config) error {
 		if fn == nil {
@@ -1063,7 +1082,8 @@ type MFAOption func(*mfaInterceptor) error
 //
 // Defaults: the verify prefix is DefaultMFAVerifyPrefix
 // (WithMFAVerifyPrefix); failed verifications are counted per user reference,
-// across every method, by an in-memory limiter of 5 failures per 15 minutes
+// across every method, by a limiter of 5 failures per 15 minutes from the
+// chain's rate-limiter factory under namespace "mfa-verify", or else in memory
 // (WithMFAVerifyLimiter); and the records those refusals write are sampled
 // over one minute (WithMFALogInterval). A consumer who wires nothing else gets
 // all three. For challenge methods: the begin prefix is DefaultMFABeginPrefix
@@ -1213,16 +1233,22 @@ func WithMFAVerifyPrefix(prefix string) MFAOption {
 
 // WithMFAVerifyLimiter counts failed code verifications through l.
 //
-// Default: an in-memory limiter of 5 failures per 15 minutes, keyed by the user
-// reference rather than by the request's source — by the time a second factor
-// is being checked the attacker already holds the first and can present codes
-// from as many addresses as they like. A deployment running more than one
-// replica supplies one its replicas share, or the limit is per process and the
-// guesses are simply spread.
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "mfa-verify", or else an in-memory limiter of 5 failures per 15
+// minutes; either way keyed by the user reference rather than by the request's
+// source — by the time a second factor is being checked the attacker already
+// holds the first and can present codes from as many addresses as they like. A
+// deployment running more than one replica supplies a factory or a limiter its
+// replicas share, or the limit is per process and the guesses are simply
+// spread.
 //
 // It governs failed code verifications alone. The key is composed by mfa, and
 // mfa.VerifyThrottleKey reports it, so a consumer sharing one limiter across
 // flows can read or clear that bucket.
+//
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// mode is the recommended choice: during an outage of the shared store each
+// replica still bounds guessing on its own, and users are not locked out.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit" while the consumer believed they had replaced one.
@@ -1370,10 +1396,11 @@ func WithAPIKeyScheme(scheme string) APIKeyOption {
 
 // WithAPIKeyLimiter counts failed key verifications through l.
 //
-// Default: an in-memory limiter of 20 failures per source per minute, used by
-// this flow alone. A deployment running more than one replica supplies one its
-// replicas share, or the limit is per process and a scanner simply spreads its
-// guesses.
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "api-key", or else an in-memory limiter of 20 failures per source
+// per minute, used by this flow alone. A deployment running more than one
+// replica supplies a factory or a limiter its replicas share, or the limit is
+// per process and a scanner simply spreads its guesses.
 //
 // One limiter may be handed to several flows. That shares the store and the
 // limit it was built with, not the allowance: every key carries the flow it
@@ -1583,10 +1610,11 @@ func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
 
 // WithMagicLinkLimiter counts failed redemptions through l.
 //
-// Default: an in-memory limiter of 10 failures per source per 15 minutes, used
-// by this flow alone. A deployment running more than one replica supplies one
-// its replicas share, or the limit is per process and an attacker simply
-// spreads their attempts.
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "magic-link-redeem", or else an in-memory limiter of 10 failures
+// per source per 15 minutes, used by this flow alone. A deployment running more
+// than one replica supplies a factory or a limiter its replicas share, or the
+// limit is per process and an attacker simply spreads their attempts.
 //
 // One limiter may be handed to several flows. That shares the store and the
 // limit it was built with, not the allowance: every key carries the flow it

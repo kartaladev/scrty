@@ -223,10 +223,18 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 		i.tokens = login.tokens
 	}
 
-	// The chain's logger first, so a recovery.WithLogger the consumer passed
-	// replaces it; the password check last, so the chain's own always wins.
-	opts := make([]recovery.Option, 0, len(i.coreOpts)+2)
+	// The chain's logger and limiter factory first, so a recovery.WithLogger
+	// or limiter option the consumer passed replaces them; the password check
+	// last, so the chain's own always wins. The factory is handed over only
+	// when the consumer configured one: without it the core builds its own
+	// in-memory default, on its own logger and clock.
+	opts := make([]recovery.Option, 0, len(i.coreOpts)+3)
 	opts = append(opts, recovery.WithLogger(c.logger))
+
+	if c.limiterFactory != nil {
+		opts = append(opts, recovery.WithUserLimiterFactory(c.limiterFactory))
+	}
+
 	opts = append(opts, i.coreOpts...)
 
 	if login != nil {
@@ -249,13 +257,13 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	}
 
 	i.guard, err = c.resolveSourceGuard(option, recoveryFlow, i.limiter,
-		defaultRecoveryFailureLimit, defaultRecoveryFailureWindow)
+		defaultRecoveryFailureLimit, defaultRecoveryFailureWindow, i.logInterval)
 	if err != nil {
 		return err
 	}
 
 	i.startGuard, err = c.resolveSourceGuard(option, recoveryStartFlow, i.startLimiter,
-		defaultRecoveryStartLimit, defaultRecoveryStartWindow)
+		defaultRecoveryStartLimit, defaultRecoveryStartWindow, i.logInterval)
 	if err != nil {
 		return err
 	}

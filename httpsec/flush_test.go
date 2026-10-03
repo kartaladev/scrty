@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,7 +26,6 @@ import (
 // only when the flush reached that component, not merely some sampler.
 const (
 	summaryChain     = "httpsec: refusal logs suppressed"
-	summaryGuard     = "ratelimit: refusal records suppressed"
 	summaryThrottle  = "mfa: verification refusals suppressed"
 	summaryAuthn     = "authentication refusals suppressed"
 	summaryOIDC      = "oidc refusals suppressed"
@@ -57,6 +57,29 @@ func summaries(t *testing.T, recs []slog.Record, msg, attr, value string) []int6
 		}
 
 		counts = append(counts, suppressedCount(t, r))
+	}
+
+	return counts
+}
+
+// guardSummaries returns the suppressed count of every summary in recs that a
+// source guard the chain built reported for flow. A chain-built guard reports
+// through the chain's reporter, so its summaries are the chain's summary
+// record, told apart by a key naming the flow between the separators the guard
+// joins its sampler keys with.
+func guardSummaries(t *testing.T, recs []slog.Record, flow string) []int64 {
+	t.Helper()
+
+	var counts []int64
+
+	for _, r := range recs {
+		if r.Message != summaryChain {
+			continue
+		}
+
+		if key, ok := attrValue(r, "key"); ok && strings.Contains(key.String(), ":"+flow+":") {
+			counts = append(counts, suppressedCount(t, r))
+		}
 	}
 
 	return counts
@@ -184,18 +207,24 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 			arrange: func(t *testing.T, log *slog.Logger) []*httpsec.Chain {
 				t.Helper()
 
-				c, err := httpsec.New(httpsec.WithLogger(log))
+				h := newAPIKeyHarness(t)
+
+				c, err := httpsec.New(httpsec.WithLogger(log), httpsec.EnableAPIKey(h.keys))
 				require.NoError(t, err)
 
+				// A request with no client address is refused by the chain
+				// itself, before any guard is asked, under the chain's own
+				// sampler key for the flow and the reason.
 				for range 3 {
-					httpsec.LogSampledForTest(t.Context(), httpsec.SamplerForTest(c), log,
-						slog.LevelWarn, time.Now(), "login|"+flushSource, "httpsec: source throttled")
+					out := h.withKey(t, c, "", h.valid)
+					require.Error(t, out.err)
 				}
 
 				return []*httpsec.Chain{c}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryChain, "", ""))
+				assert.Equal(t, []int64{2},
+					summaries(t, flushed, summaryChain, "key", "api-key|no-client-address"))
 			},
 		},
 		{
@@ -246,7 +275,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				return []*httpsec.Chain{c}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "oidc.handoff"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "oidc.handoff"))
 			},
 		},
 		{
@@ -261,7 +290,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				return []*httpsec.Chain{c}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "oidc.handoff"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "oidc.handoff"))
 			},
 		},
 		{
@@ -287,7 +316,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				return []*httpsec.Chain{c}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "api-key"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "api-key"))
 			},
 		},
 		{
@@ -308,7 +337,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				return []*httpsec.Chain{c}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "magic-link-redeem"))
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "magic-link-redeem"))
 			},
 		},
 		{
@@ -329,7 +358,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				return []*httpsec.Chain{a, b}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
-				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "oidc.handoff"),
+				assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "oidc.handoff"),
 					"the pending count was reported other than exactly once")
 			},
 		},
@@ -657,7 +686,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 		"the form login authenticator was not reached by the one flush")
 	assert.Equal(t, []int64{2}, summaries(t, flushed, summaryThrottle, "", ""),
 		"the verification throttle was not reached by the one flush")
-	assert.Equal(t, []int64{2}, summaries(t, flushed, summaryGuard, "flow", "magic-link-redeem"),
+	assert.Equal(t, []int64{2}, guardSummaries(t, flushed, "magic-link-redeem"),
 		"the magic-link source guard was not reached by the one flush")
 	assert.Equal(t, []int64{2}, summaries(t, flushed, summaryOIDC, "", ""),
 		"the OIDC manager was not reached by the one flush")

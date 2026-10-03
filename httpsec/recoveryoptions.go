@@ -360,9 +360,10 @@ func WithRecoveryCodesPath(path string) RecoveryOption {
 // WithRecoveryLimiter counts the complete endpoint's failures per source
 // through l.
 //
-// Default: an in-memory limiter of 10 failures per source per 15 minutes, used
-// by this flow alone, under the flow "account-recovery". A deployment running
-// more than one replica supplies one its replicas share. One limiter may be
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "account-recovery", or else an in-memory limiter of 10 failures per
+// source per 15 minutes, used by this flow alone. A deployment running more
+// than one replica supplies a factory or a limiter its replicas share. One limiter may be
 // shared with other flows: every key carries its flow, so the allowances stay
 // separate.
 //
@@ -381,8 +382,9 @@ func WithRecoveryLimiter(l ratelimit.Limiter) RecoveryOption {
 
 // WithRecoveryStartLimiter counts starts per source through l.
 //
-// Default: an in-memory limiter of 10 starts per source per hour, used by this
-// flow alone, under the flow "account-recovery-start". Every start is counted,
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "account-recovery-start", or else an in-memory limiter of 10 starts
+// per source per hour, used by this flow alone. Every start is counted,
 // whatever it did, and a source over its limit is still answered 202 and sends
 // nothing.
 //
@@ -403,8 +405,14 @@ func WithRecoveryStartLimiter(l ratelimit.Limiter) RecoveryOption {
 // recovery.WithUserLimiter, passed to the core; giving that through
 // WithRecoveryCore is the same.
 //
-// Default: the core's, an in-memory limiter of 5 failures per user per 15
-// minutes, per process, under recovery.UserThrottleKey.
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "recovery-user", or else an in-memory limiter of 5 failures per
+// user per 15 minutes, per process; either way keyed by
+// recovery.UserThrottleKey.
+//
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// mode is the recommended choice: during an outage of the shared store each
+// replica still bounds guessing on its own, and users are not locked out.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
 func WithRecoveryUserLimiter(l ratelimit.Limiter) RecoveryOption {

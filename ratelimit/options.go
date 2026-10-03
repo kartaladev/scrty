@@ -104,3 +104,27 @@ func WithSourceGuardClock(clk clock.Clock) GuardOption {
 func WithSourceGuardLogInterval(d time.Duration) GuardOption {
 	return func(g *SourceGuard) { g.logInterval = d }
 }
+
+// WithSourceGuardLogReporter sends the refusal counts the guard's sampling
+// suppressed to fn, in place of the default: one summary record at WARN through
+// the guard's logger (WithSourceGuardLogger) naming the flow, the sampler key
+// and the count.
+//
+// fn receives the sampler key and how many records it stood for. The key is
+// "throttled:<flow>:<canonical source>" for a throttled source, or
+// "limiter:<flow>:" for a limiter that failed, the latter with an empty detail.
+// A canonical IPv6 source contains colons itself, so the key splits safely only
+// on its first two separators. It is
+// called when a key's window lapses before the key recurs, and by
+// SourceGuard.Flush, on the goroutine that triggered either, so it must be fast
+// and must not panic. A consumer uses it to count suppressed refusals in a
+// metric, or to route them to the same reporter as the rest of its refusal
+// records.
+//
+// A nil fn, like a nil keyer, logger or clock, fails construction with
+// ErrConfig: with no reporter at all the counts of a key that goes quiet would
+// simply be dropped, and the suppressed totals would stop adding up. Omit the
+// option to keep the default summary record.
+func WithSourceGuardLogReporter(fn func(key string, suppressed int)) GuardOption {
+	return func(g *SourceGuard) { g.reporter = fn }
+}

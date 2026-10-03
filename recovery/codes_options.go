@@ -30,6 +30,9 @@ const (
 	// bits it gives a guesser nothing.
 	defaultCodeLimit  = 5
 	defaultCodeWindow = 15 * time.Minute
+
+	// namespaceCodes names the code-presentation limit to a limiter factory.
+	namespaceCodes = "recovery-codes"
 )
 
 // CodesOption configures a Codes manager. Every option names the default it
@@ -77,6 +80,13 @@ func WithLowThreshold(n int) CodesOption { return func(c *Codes) { c.lowThreshol
 // bound its own I/O with its own timeout, rather than rely on the caller's
 // deadline.
 //
+// It takes precedence over WithCodeLimiterFactory.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
+//
 // A nil limiter, typed nil included, is a configuration error rather than a
 // fallback to the default: a consumer who passed one meant to replace it.
 func WithCodeLimiter(l ratelimit.Limiter) CodesOption {
@@ -86,13 +96,36 @@ func WithCodeLimiter(l ratelimit.Limiter) CodesOption {
 	}
 }
 
+// WithCodeLimiterFactory builds the limiter that counts failed saved-code
+// presentations per user through f, under the namespace "recovery-codes" with
+// this flow's own limit and window: 5 failures per 15 minutes.
+//
+// Default: ratelimit.MemoryLimiterFactory, logging through the manager's logger
+// and clock, so the limit holds in this process alone. Precedence: a limiter
+// given with WithCodeLimiter wins, and f is then never asked; then f; then the
+// in-memory default.
+//
+// For this second-factor flow, a shared limiter in
+// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// outage of the shared store each replica still bounds guessing on its own, and
+// users are not locked out of sign-in.
+//
+// A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
+// error from f, which names the namespace.
+func WithCodeLimiterFactory(f ratelimit.LimiterFactory) CodesOption {
+	return func(c *Codes) {
+		c.factory = f
+		c.factorySet = true
+	}
+}
+
 // WithCodesClock replaces the time source that stamps stored and spent codes.
 // The default is clock.System().
 //
 // A nil clock, typed nil included, is a configuration error: falling back to
 // the wall clock would make a test whose clock never advances look like one
-// that does. The default limiter keeps its own clock; a test that needs to move
-// the presentation window supplies a limiter built on the same clock.
+// that does. The default limiter uses this clock too, so a test that moves it
+// moves the presentation window with it.
 func WithCodesClock(clk clock.Clock) CodesOption { return func(c *Codes) { c.clock = clk } }
 
 // WithCodesRandom replaces the source codes are drawn from. The default is

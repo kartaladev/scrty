@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
@@ -33,6 +35,10 @@ import (
 
 func TestStatusForError(t *testing.T) {
 	t.Parallel()
+
+	// A source guard's refusal of a check its shared limiter could not make
+	// because the backend is down, exactly as the guard builds it.
+	outage := guardRefusalOver(t, fmt.Errorf("dial: %w", ratelimit.ErrBackendUnavailable))
 
 	type testCase struct {
 		name string
@@ -51,6 +57,11 @@ func TestStatusForError(t *testing.T) {
 		{name: "authentication failed", err: authenticate.ErrAuthenticationFailed, want: 401},
 		{name: "session idle", err: policy.ErrSessionIdle, want: 401},
 		{name: "throttled source", err: ratelimit.ErrThrottled, want: 401},
+		{
+			name: "a source-guard refusal wrapping a backend outage reads as throttled",
+			err:  outage,
+			want: 401,
+		},
 		{name: "access denied", err: authorize.ErrAccessDenied, want: 403},
 		{name: "reasonless policy deny", err: policy.ErrPolicyDenied, want: 403},
 		{name: "second factor required", err: policy.ErrMFARequired, want: 403},
@@ -319,6 +330,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"policy.ErrTooManySessions":             policy.ErrTooManySessions,
 	},
 	"github.com/kartaladev/scrty/ratelimit": {
+		"ratelimit.ErrBackendUnavailable":   ratelimit.ErrBackendUnavailable,
 		"ratelimit.ErrConfig":               ratelimit.ErrConfig,
 		"ratelimit.ErrSourceEmpty":          ratelimit.ErrSourceEmpty,
 		"ratelimit.ErrSourceNotAnIP":        ratelimit.ErrSourceNotAnIP,
@@ -376,34 +388,36 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"session.ErrSessionExpired":               "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrSessionUnreadable":            "converted to ErrAuthenticationRequired before it leaves the chain",
 		"ratelimit.ErrConfig":                     "a wiring fault, refused at construction",
-		"ratelimit.ErrSourceUnattributable":       "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
-		"ratelimit.ErrSourceEmpty":                "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
-		"ratelimit.ErrSourceNotAnIP":              "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
-		"ratelimit.ErrSourceUnspecified":          "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
-		"policy.ErrConfig":                        "a wiring fault, refused at construction",
-		"policy.ErrReapUnsupported":               "a maintenance-path fault, not a request refusal",
-		"policy.ErrRetainSinceRequired":           "a maintenance-path fault, not a request refusal",
-		"policy.ErrMFARequirementLookupMissing":   "a wiring fault, refused at construction",
-		"mfa.ErrConfig":                           "a wiring fault, refused at construction",
-		"oidc.ErrConfig":                          "a wiring fault, refused at construction",
-		"oidc.ErrExchangeFailed":                  "a provider failure, deliberately 500",
-		"oidc.ErrDiscoveryFailed":                 "a provider failure, deliberately 500",
-		"oidc.ErrLinkNotFound":                    "a store outcome the library converts before it leaves oidc",
-		"oidc.ErrLinkExists":                      "a store outcome the library converts before it leaves oidc",
-		"oidc.ErrHandoffNotFound":                 "a store outcome the library converts before it leaves oidc",
-		"oidc.ErrRetainSinceRequired":             "a purge misuse, never a request outcome",
-		"oidc.ErrFlowStoreFull":                   "capacity exhaustion, deliberately 500",
-		"oidc.ErrFlowUnspent":                     "a marker joined onto another refusal, never returned alone",
-		"password.ErrConfig":                      "a wiring fault, refused at construction",
-		"password.ErrInvalidParameters":           "a wiring fault, refused at construction",
-		"password.ErrNoRandomSource":              "a wiring fault, refused at construction",
-		"password.ErrWeakParameters":              "a wiring fault, refused at construction",
-		"password.ErrHistoryUnavailable":          "a dependency failure, deliberately 500",
-		"password.ErrPasswordTooLong":             "the encoder's error is returned as is, and the consumer decides",
-		"recovery.ErrConfig":                      "a wiring fault, refused at construction",
-		"recovery.ErrRecordNotFound":              "a store outcome the recovery core converts to ErrRefused before it leaves the core",
-		"passkey.ErrConfig":                       "a wiring fault, refused at construction",
-		"passkey.ErrDuplicateCredential":          "a store outcome the passkey core converts to authenticate.ErrAuthenticationFailed before it leaves the core",
+		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
+			"or replaces it with a throttle sentinel before it leaves",
+		"ratelimit.ErrSourceUnattributable":     "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
+		"ratelimit.ErrSourceEmpty":              "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
+		"ratelimit.ErrSourceNotAnIP":            "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
+		"ratelimit.ErrSourceUnspecified":        "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
+		"policy.ErrConfig":                      "a wiring fault, refused at construction",
+		"policy.ErrReapUnsupported":             "a maintenance-path fault, not a request refusal",
+		"policy.ErrRetainSinceRequired":         "a maintenance-path fault, not a request refusal",
+		"policy.ErrMFARequirementLookupMissing": "a wiring fault, refused at construction",
+		"mfa.ErrConfig":                         "a wiring fault, refused at construction",
+		"oidc.ErrConfig":                        "a wiring fault, refused at construction",
+		"oidc.ErrExchangeFailed":                "a provider failure, deliberately 500",
+		"oidc.ErrDiscoveryFailed":               "a provider failure, deliberately 500",
+		"oidc.ErrLinkNotFound":                  "a store outcome the library converts before it leaves oidc",
+		"oidc.ErrLinkExists":                    "a store outcome the library converts before it leaves oidc",
+		"oidc.ErrHandoffNotFound":               "a store outcome the library converts before it leaves oidc",
+		"oidc.ErrRetainSinceRequired":           "a purge misuse, never a request outcome",
+		"oidc.ErrFlowStoreFull":                 "capacity exhaustion, deliberately 500",
+		"oidc.ErrFlowUnspent":                   "a marker joined onto another refusal, never returned alone",
+		"password.ErrConfig":                    "a wiring fault, refused at construction",
+		"password.ErrInvalidParameters":         "a wiring fault, refused at construction",
+		"password.ErrNoRandomSource":            "a wiring fault, refused at construction",
+		"password.ErrWeakParameters":            "a wiring fault, refused at construction",
+		"password.ErrHistoryUnavailable":        "a dependency failure, deliberately 500",
+		"password.ErrPasswordTooLong":           "the encoder's error is returned as is, and the consumer decides",
+		"recovery.ErrConfig":                    "a wiring fault, refused at construction",
+		"recovery.ErrRecordNotFound":            "a store outcome the recovery core converts to ErrRefused before it leaves the core",
+		"passkey.ErrConfig":                     "a wiring fault, refused at construction",
+		"passkey.ErrDuplicateCredential":        "a store outcome the passkey core converts to authenticate.ErrAuthenticationFailed before it leaves the core",
 	}
 
 	for _, pkg := range []string{
@@ -430,6 +444,24 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 			})
 		}
 	}
+}
+
+// guardRefusalOver returns the refusal a source guard answers a check with when
+// its limiter fails with err.
+func guardRefusalOver(t *testing.T, err error) error {
+	t.Helper()
+
+	l := NewMockLimiter(gomock.NewController(t))
+	l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, err)
+
+	g, gErr := ratelimit.NewSourceGuard("status", l,
+		ratelimit.WithSourceGuardLogger(slog.New(slog.DiscardHandler)))
+	require.NoError(t, gErr)
+
+	_, refusal := g.Check(t.Context(), "198.51.100.7")
+	require.ErrorIs(t, refusal, ratelimit.ErrBackendUnavailable, "the outage stays reachable")
+
+	return refusal
 }
 
 // exportedSentinels returns every exported Err* variable of pkg, keyed

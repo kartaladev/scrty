@@ -13,7 +13,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-//go:generate mockgen -destination=limiter_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/ratelimit Limiter
+//go:generate mockgen -destination=limiter_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
 
 // The reasons an address cannot key a bucket. Each is the tail of the sampler
 // key its refusal is recorded under, so an operator reading one record sees
@@ -47,38 +47,59 @@ type sourceGuard interface {
 // here rather than a surprise where an interceptor is wired.
 var _ sourceGuard = (*ratelimit.SourceGuard)(nil)
 
+// rateLimiterFactory is the factory every limiter the chain builds comes from:
+// the consumer's (WithRateLimiterFactory), or else the in-memory default,
+// writing its per-replica warning through the chain's logger.
+//
+// It is resolved after every option has been applied, because which logger
+// that is is not settled until then.
+func (c *config) rateLimiterFactory() ratelimit.LimiterFactory {
+	if c.limiterFactory != nil {
+		return c.limiterFactory
+	}
+
+	return ratelimit.MemoryLimiterFactory(ratelimit.WithMemoryLimiterLogger(c.logger))
+}
+
 // resolveSourceGuard builds the per-source guard an endpoint counts its
-// failures through, supplying the documented in-memory limiter when the
-// consumer gave none.
+// failures through.
 //
 // Every endpoint that guards by source wires it the same way, so they share
-// this: a limiter of that endpoint's own default limit and window, logging
-// through the chain's logger, wrapped in a guard named after the endpoint's
-// flow. option is the Enable... option the endpoint came from, so a wiring
-// failure names the setting the consumer has to change rather than the
-// internals it failed in.
+// this. The limiter is the consumer's own for that flow when one was given;
+// otherwise the chain's factory builds one under the flow's name, with the
+// endpoint's own default limit and window. The guard is named after the flow,
+// keys its clients by the chain's keyer (WithIPv6SourcePrefix), logs through
+// the chain's logger, samples its refusal records over logInterval, the window
+// the endpoint's own records are sampled over, and reports the counts it
+// suppressed to the chain's refusal-log reporter (WithRefusalLogReporter, or
+// the chain's default summary record). Its throttled-source record is the only
+// one a throttled attempt produces.
 //
-// It runs after every option has been applied, because the default limiter
-// writes its one per-replica warning through the chain's logger, and which
-// logger that is is not settled until then.
+// option is the Enable... option the endpoint came from, so a wiring failure
+// names the setting the consumer has to change rather than the internals it
+// failed in.
 func (c *config) resolveSourceGuard(
 	option, flow string,
 	limiter ratelimit.Limiter,
 	limit int,
 	window time.Duration,
+	logInterval time.Duration,
 ) (sourceGuard, error) {
 	if limiter == nil {
-		built, err := ratelimit.NewMemoryLimiter(limit, window,
-			ratelimit.WithMemoryLimiterLogger(c.logger))
+		built, err := c.rateLimiterFactory().NewLimiter(flow, limit, window)
 		if err != nil {
-			return nil, newConfigError("%s could not build its default limiter: %s", option, err)
+			return nil, newConfigError("%s could not build its limiter for namespace %q: %s",
+				option, flow, err)
 		}
 
 		limiter = built
 	}
 
 	guard, err := ratelimit.NewSourceGuard(flow, limiter,
-		ratelimit.WithSourceGuardLogger(c.logger))
+		ratelimit.WithSourceGuardLogger(c.logger),
+		ratelimit.WithSourceGuardKeyer(c.keyer),
+		ratelimit.WithSourceGuardLogInterval(logInterval),
+		ratelimit.WithSourceGuardLogReporter(c.refusalLogReporter()))
 	if err != nil {
 		return nil, newConfigError("%s could not build its source guard: %s", option, err)
 	}
@@ -128,16 +149,15 @@ func classifyAddress(addr string) (reason string, ok bool) {
 // A refused check returns the zero Source, which keys nothing, so no failure
 // can be charged to a check that did not pass.
 //
-// Two records this function writes name what failed, deliberately: a source
-// throttled within its limit carries the throttled address itself
-// (source), kept on purpose, since an operator reading a throttle record
-// needs to know who was throttled — the rate-limiting capability's own
-// contract. A limiter that could not answer at all is a different thing: it
-// carries only a fixed reason ("limiter") and the failing error's Go type,
-// never the error's own text, because a consumer's limiter may quote the
-// bucket key back, and that key can carry the address or the user reference
-// that built it. A consumer who wants that detail logs it inside their own
-// implementation of ratelimit.Limiter.
+// A throttled source is recorded once, by the guard, under the flow and the
+// canonical source, with the source's canonical address kept on purpose, since
+// an operator reading a throttle record needs to know who was throttled — the
+// rate-limiting capability's own contract. A limiter that could not answer at
+// all is a different thing: this function records it with only a fixed reason
+// ("limiter") and the failing error's Go type, never the error's own text,
+// because a consumer's limiter may quote the bucket key back, and that key can
+// carry the address or the user reference that built it. A consumer who wants
+// that detail logs it inside their own implementation of ratelimit.Limiter.
 func sourceThrottled(
 	ctx context.Context,
 	g sourceGuard,
@@ -160,12 +180,11 @@ func sourceThrottled(
 		return src, nil
 
 	case overLimit(err):
-		// Keyed on the address rather than on the source, because a refused
-		// check carries no source: the guard returns the zero value with it.
-		logSampled(ctx, s, log, slog.LevelWarn, now, flow+sampleKeySeparator+clientAddr,
-			"httpsec: source throttled",
-			slog.String("flow", flow), slog.String("source", clientAddr))
-
+		// The guard has already written the throttled-source record, sampled
+		// per flow and canonical source, so addresses grouped into one source
+		// share one record. Writing another here would double it, and key it
+		// on the raw address, which an attacker rotating within one IPv6
+		// allocation chooses.
 		return src, err
 
 	case endedBeforeTheAnswer(ctx, err):

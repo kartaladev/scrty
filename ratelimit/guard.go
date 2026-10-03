@@ -75,6 +75,7 @@ type SourceGuard struct {
 	logger      *slog.Logger
 	clock       clock.Clock
 	logInterval time.Duration
+	reporter    func(key string, suppressed int)
 	sampler     *logsample.Sampler
 }
 
@@ -93,8 +94,10 @@ type SourceGuard struct {
 // limits, so it is refused at wiring time rather than discovered under attack.
 //
 // Defaults: a SourceKeyer with its own defaults (WithSourceGuardKeyer),
-// slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock)
-// and DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval).
+// slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock),
+// DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval) and a
+// summary record through the logger for the counts sampling suppressed
+// (WithSourceGuardLogReporter).
 func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceGuard, error) {
 	keyer, err := NewSourceKeyer()
 	if err != nil {
@@ -109,6 +112,8 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		clock:       clock.System(),
 		logInterval: DefaultLogInterval,
 	}
+	g.reporter = g.reportSuppressed
+
 	for _, opt := range opts {
 		if opt != nil {
 			opt(g)
@@ -134,8 +139,12 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 	if nilcheck.IsNil(g.clock) {
 		return nil, fmt.Errorf("%w: the clock is nil, so refusal records could not be sampled", ErrConfig)
 	}
+	if g.reporter == nil {
+		return nil, fmt.Errorf(
+			"%w: the summary reporter is nil, so suppressed refusal counts would be dropped", ErrConfig)
+	}
 
-	g.sampler = logsample.New(g.logInterval, logsample.WithReporter(g.reportSuppressed))
+	g.sampler = logsample.New(g.logInterval, logsample.WithReporter(g.reporter))
 
 	return g, nil
 }
@@ -266,7 +275,8 @@ func (g *SourceGuard) sampled(ctx context.Context, level slog.Level, msg, key st
 		append(attrs, slog.String("flow", g.flow), slog.Int("suppressed", suppressed))...)
 }
 
-// reportSuppressed accounts for counts the sampler is about to discard, so a
+// reportSuppressed is the default summary reporter (WithSourceGuardLogReporter).
+// It accounts for counts the sampler is about to discard, so a
 // burst that stops before its window elapses is still reported in full. It runs
 // on the goroutine that triggered the eviction, so it only writes one record.
 func (g *SourceGuard) reportSuppressed(key string, suppressed int) {

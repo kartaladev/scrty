@@ -20,16 +20,6 @@ type stubSessionManager struct{}
 
 type stubUserLoader struct{}
 
-// testLimiter is a real limiter rather than a double, because the options only
-// check whether one is present and a real one needs no expectations.
-func testLimiter(t *testing.T) ratelimit.Limiter {
-	t.Helper()
-
-	l, err := ratelimit.NewMemoryLimiter(5, time.Minute)
-	require.NoError(t, err)
-	return l
-}
-
 func TestNewRefusesWiring(t *testing.T) {
 	t.Parallel()
 
@@ -73,15 +63,15 @@ func TestNewRefusesWiring(t *testing.T) {
 			},
 		},
 		{
-			name: "a nil rate limiter",
+			name: "an absent rate-limiter factory",
 			opts: func(_ *testing.T) []httpsec.Option {
-				return []httpsec.Option{httpsec.WithRateLimiter(nil)}
+				return []httpsec.Option{httpsec.WithRateLimiterFactory(nil)}
 			},
 			assert: func(t *testing.T, c *httpsec.Chain, err error) {
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.Nil(t, c)
-				assert.Contains(t, err.Error(), "WithRateLimiter")
-				assert.Contains(t, err.Error(), "limiter")
+				assert.Contains(t, err.Error(), "WithRateLimiterFactory")
+				assert.Contains(t, err.Error(), "rate-limiter factory")
 			},
 		},
 		{
@@ -177,13 +167,13 @@ func TestNewRefusesWiring(t *testing.T) {
 		},
 		{
 			name: "every dependency present builds",
-			opts: func(t *testing.T) []httpsec.Option {
+			opts: func(_ *testing.T) []httpsec.Option {
 				return []httpsec.Option{
 					httpsec.EnableTestBuiltIn(httpsec.TestBuiltInDeps{
 						Sessions: &stubSessionManager{},
 						Users:    &stubUserLoader{},
 					}),
-					httpsec.WithRateLimiter(testLimiter(t)),
+					httpsec.WithRateLimiterFactory(ratelimit.MemoryLimiterFactory()),
 					httpsec.WithLogger(slog.New(slog.DiscardHandler)),
 					httpsec.WithIPv6SourcePrefix(48),
 				}
@@ -246,14 +236,15 @@ func TestNewRejectsTypedNil(t *testing.T) {
 			},
 		},
 		{
-			name: "a rate limiter holding a typed nil",
+			name: "a rate-limiter factory holding a typed nil",
 			opts: []httpsec.Option{
-				httpsec.WithRateLimiter((*ratelimit.MemoryLimiter)(nil)),
+				httpsec.WithRateLimiterFactory((*MockLimiterFactory)(nil)),
 			},
 			assert: func(t *testing.T, c *httpsec.Chain, err error) {
 				require.ErrorIs(t, err, httpsec.ErrConfig)
 				assert.Nil(t, c)
-				assert.Contains(t, err.Error(), "WithRateLimiter")
+				assert.Contains(t, err.Error(), "WithRateLimiterFactory")
+				assert.Contains(t, err.Error(), "rate-limiter factory")
 			},
 		},
 	}
@@ -269,7 +260,8 @@ func TestNewRejectsTypedNil(t *testing.T) {
 }
 
 // TestNewDefaults pins what a consumer gets with no configuration at all, and
-// that each of those defaults is replaceable by the option that names it.
+// that each of those defaults is replaceable by the option that names it. The
+// rate-limit settings are pinned by what they do, in chain_ratelimit_test.go.
 func TestNewDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -277,10 +269,6 @@ func TestNewDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	consumerLogger := slog.New(slog.DiscardHandler)
-
-	// replacement is the limiter the replacement row supplies, captured so the
-	// assertion can pin that the chain holds that one and not a default.
-	var replacement ratelimit.Limiter
 
 	type testCase struct {
 		name   string
@@ -295,10 +283,6 @@ func TestNewDefaults(t *testing.T) {
 			assert: func(t *testing.T, s httpsec.ChainSettings) {
 				assert.Nil(t, s.PolicyEngine, "with no engine every phase allows")
 				assert.Same(t, slog.Default(), s.Logger)
-				assert.NotNil(t, s.RateLimiter,
-					"WithRateLimiter documents an in-memory default, so a consumer who wires "+
-						"nothing must get a limiter rather than a nil one")
-				assert.Equal(t, 64, s.IPv6SourcePrefix)
 				assert.Equal(t, time.Minute, s.RefusalLogInterval)
 				assert.Nil(t, s.RefusalLogReporter, "the default summary reporter is supplied where the sampler is built")
 			},
@@ -319,27 +303,6 @@ func TestNewDefaults(t *testing.T) {
 			},
 			assert: func(t *testing.T, s httpsec.ChainSettings) {
 				assert.Same(t, consumerLogger, s.Logger)
-			},
-		},
-		{
-			name: "the consumer replaces the limiter",
-			opts: func(t *testing.T) []httpsec.Option {
-				replacement = testLimiter(t)
-
-				return []httpsec.Option{httpsec.WithRateLimiter(replacement)}
-			},
-			assert: func(t *testing.T, s httpsec.ChainSettings) {
-				assert.Same(t, replacement, s.RateLimiter,
-					"the documented default must be replaceable, not merely present")
-			},
-		},
-		{
-			name: "the consumer narrows the IPv6 source prefix",
-			opts: func(_ *testing.T) []httpsec.Option {
-				return []httpsec.Option{httpsec.WithIPv6SourcePrefix(128)}
-			},
-			assert: func(t *testing.T, s httpsec.ChainSettings) {
-				assert.Equal(t, 128, s.IPv6SourcePrefix)
 			},
 		},
 		{

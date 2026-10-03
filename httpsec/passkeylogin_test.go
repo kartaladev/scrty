@@ -1608,7 +1608,7 @@ func TestPasswordless_RefusalLogsFollowPasskeyInterval(t *testing.T) {
 
 	const (
 		unknownMsg  = "a passwordless login's user no longer exists"
-		throttleMsg = "httpsec: source throttled"
+		throttleMsg = guardThrottledMsg
 	)
 
 	cases := []testCase{

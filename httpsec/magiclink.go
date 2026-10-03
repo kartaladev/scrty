@@ -227,7 +227,7 @@ func (i *magicLinkInterceptor) resolve(c *config) error {
 	i.redirects = allow
 
 	guard, err := c.resolveSourceGuard("EnableMagicLink", magicLinkFlow, i.limiter,
-		defaultMagicLinkFailureLimit, defaultMagicLinkFailureWindow)
+		defaultMagicLinkFailureLimit, defaultMagicLinkFailureWindow, c.refusalInterval)
 	if err != nil {
 		return err
 	}

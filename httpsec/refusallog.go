@@ -42,18 +42,35 @@ func logSampled(
 	log.LogAttrs(ctx, level, msg, attrs...)
 }
 
-// reportSuppressedRefusals is the reporter a chain installs when the consumer
-// supplies none: one record naming the key and how many records it stood for.
+// refusalLogReporter is the reporter the chain's samplers report to: the
+// consumer's (WithRefusalLogReporter), or else the default summary record
+// through the chain's logger.
 //
-// There is always a reporter. Without one, the counts for a key that stops
-// recurring before its window closes are simply discarded, and an operator
-// reading the sampled records would under-count the flood that produced them.
+// It is resolved after every option has been applied, because which reporter
+// and which logger that is is not settled until then. The source guards the
+// chain builds report through it too, so a consumer's reporter receives their
+// throttled-source counts like the chain's own.
+func (c *config) refusalLogReporter() func(key string, suppressed int) {
+	if c.refusalReporter != nil {
+		return c.refusalReporter
+	}
+
+	return c.reportSuppressedRefusals
+}
+
+// reportSuppressedRefusals is the default reporter before the chain exists:
+// the same summary record, through the logger the options settled on.
+func (c *config) reportSuppressedRefusals(key string, suppressed int) {
+	summariseRefusals(c.logger, key, suppressed)
+}
+
+// summariseRefusals writes the default summary record for key.
 //
 // It runs on whichever goroutine's refusal or flush evicted the key, and that
 // goroutine's request context has nothing to do with the counts being reported,
 // so the record is written without one.
-func (c *Chain) reportSuppressedRefusals(key string, suppressed int) {
-	c.logger.LogAttrs(context.Background(), slog.LevelWarn, msgRefusalsSuppressed,
+func summariseRefusals(log *slog.Logger, key string, suppressed int) {
+	log.LogAttrs(context.Background(), slog.LevelWarn, msgRefusalsSuppressed,
 		slog.String("key", key),
 		slog.Int("suppressed", suppressed))
 }

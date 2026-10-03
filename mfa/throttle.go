@@ -3,6 +3,7 @@ package mfa
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-//go:generate mockgen -destination=limiter_mock_test.go -package=mfa_test -typed github.com/kartaladev/scrty/ratelimit Limiter
+//go:generate mockgen -destination=limiter_mock_test.go -package=mfa_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
 
 // throttleFlow prefixes every bucket key, so this flow's failures never share a
 // bucket with another flow's when a consumer hands the same limiter to both.
@@ -42,6 +43,9 @@ const (
 const (
 	defaultVerifyLimit  = 5
 	defaultVerifyWindow = 15 * time.Minute
+
+	// namespaceVerify names this flow to a limiter factory.
+	namespaceVerify = "mfa-verify"
 )
 
 // VerifyThrottle limits how many failed code verifications one user may
@@ -69,6 +73,12 @@ type VerifyThrottle struct {
 	// as nil is told apart from one never mentioned. The first is a wiring
 	// mistake; the second asks for the default.
 	limiterSet bool
+
+	// factory builds the limiter when no limiter was given, and factorySet
+	// records that WithVerifyLimiterFactory was given, for the same reason as
+	// limiterSet.
+	factory    ratelimit.LimiterFactory
+	factorySet bool
 }
 
 // NewVerifyThrottle builds the throttle.
@@ -95,12 +105,12 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 		}
 	}
 
-	if err := t.resolveLimiter(); err != nil {
-		return nil, err
-	}
-
 	if t.logger == nil {
 		return nil, errors.New("mfa: verification throttle logger must not be nil")
+	}
+
+	if err := t.resolveLimiter(); err != nil {
+		return nil, err
 	}
 
 	t.sampler = logsample.New(t.logInterval, logsample.WithReporter(t.reportSuppressed))
@@ -108,23 +118,38 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 	return t, nil
 }
 
-// resolveLimiter supplies the in-memory limiter when no option replaced it,
-// and refuses one that was replaced with nothing.
+// resolveLimiter settles the limiter by precedence: the limiter
+// WithVerifyLimiter gave, then one built by the factory WithVerifyLimiterFactory
+// gave, then the in-memory default logging through the throttle's logger and
+// clock. A limiter or factory replaced with nothing is refused, the factory
+// even beside an explicit limiter that would have won.
 func (t *VerifyThrottle) resolveLimiter() error {
-	if !t.limiterSet {
-		l, err := ratelimit.NewMemoryLimiter(defaultVerifyLimit, defaultVerifyWindow)
-		if err != nil {
-			return err
-		}
+	if t.factorySet && nilcheck.IsNil(t.factory) {
+		return fmt.Errorf("%w: verification throttle limiter factory must not be nil", ErrConfig)
+	}
 
-		t.limiter = l
+	if t.limiterSet {
+		if nilcheck.IsNil(t.limiter) {
+			return fmt.Errorf("%w: verification throttle limiter must not be nil", ErrConfig)
+		}
 
 		return nil
 	}
 
-	if nilcheck.IsNil(t.limiter) {
-		return errors.New("mfa: verification throttle limiter must not be nil")
+	factory := t.factory
+	if !t.factorySet {
+		factory = ratelimit.MemoryLimiterFactory(
+			ratelimit.WithMemoryLimiterLogger(t.logger),
+			ratelimit.WithMemoryLimiterClock(t.clock),
+		)
 	}
+
+	l, err := factory.NewLimiter(namespaceVerify, defaultVerifyLimit, defaultVerifyWindow)
+	if err != nil {
+		return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceVerify, err)
+	}
+
+	t.limiter = l
 
 	return nil
 }

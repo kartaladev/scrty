@@ -270,7 +270,7 @@ func TestMagicLinkThrottleLogSampling(t *testing.T) {
 	var throttled int
 
 	for _, r := range logs.records() {
-		if r.Message == "httpsec: source throttled" {
+		if r.Message == guardThrottledMsg {
 			throttled++
 		}
 

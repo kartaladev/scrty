@@ -101,6 +101,13 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 			assert:  refused,
 		},
 		{
+			name:    "a nil summary reporter",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardLogReporter(nil)},
+			assert:  refused,
+		},
+		{
 			// *clockwork.FakeClock implements Now through a pointer receiver, so
 			// a nil one is an interface holding a nil pointer: `== nil` misses
 			// it, and only the reflect-based check the constructor now uses

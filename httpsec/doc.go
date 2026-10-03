@@ -78,6 +78,41 @@
 // ownership: on gin the refusal goes to gin's error channel, and on fiber to
 // fiber's error handler.
 //
+// # Rate limits
+//
+// Every limiter the chain builds comes from one factory: the in-memory default,
+// a limiter of its own per flow in this process, or the consumer's
+// (WithRateLimiterFactory), for example one backed by storage every replica
+// shares. Each flow asks for its own namespace, limit and window, so replacing
+// the storage keeps every flow's own policy. The sites, by namespace:
+//
+//   - "api-key": EnableAPIKey, failures per source, 20 per minute.
+//   - "magic-link-redeem": EnableMagicLink, failures per source, 10 per 15
+//     minutes.
+//   - "oidc.handoff": EnableOIDCLogin's handoff redemption, failures per
+//     source, 10 per 5 minutes unless WithHandoffRateLimit says otherwise.
+//   - "passkey-login": EnablePasskeys' passwordless begin, every begin per
+//     source, 30 per 15 minutes.
+//   - "account-recovery": EnableAccountRecovery's complete endpoint, failures
+//     per source, 10 per 15 minutes.
+//   - "account-recovery-start": EnableAccountRecovery's start endpoint, every
+//     start per source, 10 per hour.
+//   - "mfa-verify": EnableMFA's verification throttle, failures per user, 5
+//     per 15 minutes.
+//   - "mfa-enrol-begin": EnableMFAEnrolment, every begin per user, 5 per hour.
+//   - "mfa-enrol-confirm": EnableMFAEnrolment, failed confirmations per user,
+//     5 per 15 minutes.
+//   - "recovery-user": the recovery.Recoverer EnableAccountRecovery builds,
+//     failed recoveries per user, 5 per 15 minutes.
+//
+// A flow given a limiter of its own (WithAPIKeyLimiter, WithMFAVerifyLimiter
+// and the like) uses that one, and the factory is never asked for it. The
+// components a consumer builds and hands the chain — the recovery.Codes of
+// RecoveryDeps and the passkey.Manager of PasskeyDeps — build their limiters
+// themselves, through their own factory options (recovery.WithCodeLimiterFactory,
+// passkey.WithConfirmLimiterFactory). Every source guard the chain builds keys
+// IPv6 clients by the chain's prefix (WithIPv6SourcePrefix).
+//
 // # A dependency's failure never reaches a record or a returned error's text
 //
 // When a consumer-supplied dependency fails — a store, a user loader, a

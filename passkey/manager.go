@@ -5,7 +5,7 @@ package passkey
 //go:generate mockgen -destination=sender_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/notify Sender
 //go:generate mockgen -destination=userloader_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/identity UserLoader
 //go:generate mockgen -destination=lookup_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/policy MFAMethodLookup
-//go:generate mockgen -destination=limiter_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/ratelimit Limiter
+//go:generate mockgen -destination=limiter_mock_test.go -package=passkey_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
 
 import (
 	"context"
@@ -104,6 +104,8 @@ type Manager struct {
 	clonePolicy    func(ctx context.Context, s CloneSignal) CloneAction
 	clonePolicySet bool
 	confirmLimiter ratelimit.Limiter
+	confirmFactory ratelimit.LimiterFactory
+	factorySet     bool
 	contact        mfa.ContactResolver
 	contactSet     bool
 	messages       Messages
@@ -144,7 +146,9 @@ const (
 	registrationPurpose  = "passkey-registration"
 	defaultConfirmLimit  = 5
 	defaultConfirmWindow = 15 * time.Minute
-	defaultLogInterval   = time.Minute
+	// namespaceEmailConfirm names the emailed-code limit to a limiter factory.
+	namespaceEmailConfirm = "passkey-email-confirm"
+	defaultLogInterval    = time.Minute
 )
 
 // New returns a Manager over deps, with the defaults every Option names.
@@ -247,15 +251,36 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 
 	m.login = login
 
-	limiter, err := ratelimit.NewMemoryLimiter(defaultConfirmLimit, defaultConfirmWindow,
-		ratelimit.WithMemoryLimiterClock(m.clock), ratelimit.WithMemoryLimiterLogger(m.logger))
+	if err := m.resolveConfirmLimiter(); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+// resolveConfirmLimiter builds the emailed-code confirm limiter from the
+// factory WithConfirmLimiterFactory gave, or else the in-memory default logging
+// through the Manager's logger and clock. A factory replaced with nothing is
+// refused.
+func (m *Manager) resolveConfirmLimiter() error {
+	factory := m.confirmFactory
+
+	switch {
+	case m.factorySet && nilcheck.IsNil(factory):
+		return fmt.Errorf("%w: WithConfirmLimiterFactory was given no factory", ErrConfig)
+	case !m.factorySet:
+		factory = ratelimit.MemoryLimiterFactory(
+			ratelimit.WithMemoryLimiterClock(m.clock), ratelimit.WithMemoryLimiterLogger(m.logger))
+	}
+
+	limiter, err := factory.NewLimiter(namespaceEmailConfirm, defaultConfirmLimit, defaultConfirmWindow)
 	if err != nil {
-		return nil, fmt.Errorf("%w: emailed-code limiter: %w", ErrConfig, err)
+		return fmt.Errorf("%w: limiter for namespace %q: %w", ErrConfig, namespaceEmailConfirm, err)
 	}
 
 	m.confirmLimiter = limiter
 
-	return m, nil
+	return nil
 }
 
 // validate refuses every meaningless configuration with ErrConfig.

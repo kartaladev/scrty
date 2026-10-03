@@ -9,7 +9,6 @@ import (
 
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // registration is one interceptor and the slot it was registered at, with the
@@ -35,9 +34,8 @@ type Chain struct {
 	// The settings the options resolved, frozen at construction. They are read
 	// while serving and never written, which is what makes one chain safe to
 	// share across every request.
-	engine  *policy.Engine
-	logger  *slog.Logger
-	limiter ratelimit.Limiter
+	engine *policy.Engine
+	logger *slog.Logger
 
 	// enrolmentLifetime is how long a session marked for an enrolment
 	// challenge may live, handed to every built-in that marks one.
@@ -53,14 +51,16 @@ type Chain struct {
 	// looks up (challengeMethods).
 	mfa *mfaInterceptor
 
-	ipv6Prefix int
-
 	// errorHandler is what a refusal is answered with, and nil means the
 	// library's own default: the mapped status and no body.
 	errorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
 	refusalInterval time.Duration
 	refusalReporter func(key string, suppressed int)
+
+	// reportRefusals is the reporter every sampler of the chain reports to:
+	// refusalReporter, or else the default summary record. It is never nil.
+	reportRefusals func(key string, suppressed int)
 
 	// sampler bounds the chain's own refusal records. It is built once, at
 	// construction, so every request of every flow shares one set of windows.
@@ -83,9 +83,10 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //  2. The enrolment path of EnableMFAEnrolment.
 //  3. The verification throttle EnableMFA builds.
 //  4. The per-source guards of EnableAPIKey, EnableMagicLink, handoff
-//     redemption under EnableOIDCLogin and the passwordless begin under
-//     EnablePasskeys, whether built over the default limiter or over one the
-//     consumer supplied.
+//     redemption under EnableOIDCLogin, the passwordless begin under
+//     EnablePasskeys and EnableAccountRecovery, whether built over the default
+//     limiter or over one the consumer supplied. Each keeps its own sampler,
+//     but reports to the chain's reporter, as item 1 does.
 //  5. The authenticator given to EnableFormLogin or EnableBasicAuth, when it
 //     implements authenticate.RefusalLogFlusher.
 //  6. The oidc.Manager given to EnableOIDCLogin, which in turn flushes its

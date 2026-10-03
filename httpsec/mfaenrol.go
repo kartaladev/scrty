@@ -239,13 +239,13 @@ func (c *config) wireMFAEnrolment() error {
 				"the deadline it already has", i.lifetime, limit)
 		}
 
-		beginLimiter, err := c.enrolmentLimiter(i.beginLimiter,
+		beginLimiter, err := c.enrolmentLimiter(i.beginLimiter, namespaceEnrolmentBegin,
 			defaultEnrolmentBeginLimit, defaultEnrolmentBeginWindow)
 		if err != nil {
 			return err
 		}
 
-		confirmLimiter, err := c.enrolmentLimiter(i.confirmLimiter,
+		confirmLimiter, err := c.enrolmentLimiter(i.confirmLimiter, namespaceEnrolmentConfirm,
 			defaultEnrolmentConfirmLimit, defaultEnrolmentConfirmWindow)
 		if err != nil {
 			return err
@@ -397,20 +397,22 @@ func enrollable(m mfa.Method) (mfa.Enroller, string) {
 	return e, ""
 }
 
-// enrolmentLimiter is l, or the documented in-memory default of limit per
-// window when the consumer supplied none. The default is built here because it
-// writes its per-replica warning through the chain's logger.
-func (c *config) enrolmentLimiter(l ratelimit.Limiter, limit int, window time.Duration) (ratelimit.Limiter, error) {
+// enrolmentLimiter is l, or else one the chain's factory builds under
+// namespace with the documented limit and window (rateLimiterFactory).
+func (c *config) enrolmentLimiter(
+	l ratelimit.Limiter, namespace string, limit int, window time.Duration,
+) (ratelimit.Limiter, error) {
 	if l != nil {
 		return l, nil
 	}
 
-	m, err := ratelimit.NewMemoryLimiter(limit, window, ratelimit.WithMemoryLimiterLogger(c.logger))
+	built, err := c.rateLimiterFactory().NewLimiter(namespace, limit, window)
 	if err != nil {
-		return nil, newConfigError("the default enrolment limiter could not be built: %s", err)
+		return nil, newConfigError("EnableMFAEnrolment could not build its limiter for namespace %q: %s",
+			namespace, err)
 	}
 
-	return m, nil
+	return built, nil
 }
 
 // Intercept is the gate and the endpoints behind it.

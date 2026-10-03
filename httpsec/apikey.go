@@ -66,7 +66,7 @@ func (i *apiKeyInterceptor) wire(c *Chain) {
 func (c *config) wireAPIKey() error {
 	return eachInterceptor(c, func(i *apiKeyInterceptor) error {
 		guard, err := c.resolveSourceGuard("EnableAPIKey", apiKeyFlow, i.limiter,
-			defaultAPIKeyFailureLimit, defaultAPIKeyFailureWindow)
+			defaultAPIKeyFailureLimit, defaultAPIKeyFailureWindow, c.refusalInterval)
 		if err != nil {
 			return err
 		}
