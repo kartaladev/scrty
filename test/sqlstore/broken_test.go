@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -275,5 +276,7 @@ func TestBrokenSQLStore(t *testing.T) {
 func TestSuitesCatchBrokenSQLStores(t *testing.T) {
 	t.Parallel()
 
+	// The children each want PostgreSQL: start the one server they will share.
+	test.EnsureTestPostgresServer(t)
 	storefix.CatchBrokenVariants(t, brokenVar, "TestBrokenSQLStore", "sqlstore", brokenVariants)
 }

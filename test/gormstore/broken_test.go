@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -331,5 +332,7 @@ func TestBrokenGormStore(t *testing.T) {
 func TestSuitesCatchBrokenGormStores(t *testing.T) {
 	t.Parallel()
 
+	// The children each want PostgreSQL: start the one server they will share.
+	test.EnsureTestPostgresServer(t)
 	storefix.CatchBrokenVariants(t, brokenVar, "TestBrokenGormStore", "gorm", brokenVariants)
 }

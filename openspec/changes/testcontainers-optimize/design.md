@@ -62,14 +62,16 @@ See proposal.md for why. The current state that shapes the approach:
   - A call with no sets gets `CREATE DATABASE t_<random>` from `template1`, which is the database a fresh container gives today.
   - `PostgresConn.DSN` names the clone, and `DB` keeps its 32-connection limit.
 - **Teardown (unchanged checks).** The call's teardown runs on the clone:
-  1. close `DB`;
-  2. roll back each set to zero in reverse order (the clone carries the template's version-table rows, so goose rolls back exactly what was applied);
-  3. run the finalize scripts, then the leftover-table check;
-  4. `DROP DATABASE … WITH (FORCE)`.
+  1. roll back each set to zero in reverse order (the clone carries the template's version-table rows, so goose rolls back exactly what was applied);
+  2. run the finalize scripts, then the leftover-table check;
+  3. close `DB`, since steps 1 and 2 run through it;
+  4. `DROP DATABASE … WITH (FORCE)` on the server's admin pool;
+  5. for an own server only, close its admin pool and terminate the container.
 
-  Failures fail the test as today, and the 30-second budget covers the same steps.
+  Failures fail the test as today. Steps 1 and 2 share today's 30-second budget. The drop has a budget of its own, as today's container termination does, so a slow rollback cannot leave the database behind.
   - Rolling every clone back is kept on purpose. It is what proves every set's down migrations on every call, and dropping it would weaken the gate.
-- **Unverified, to be pinned first: concurrent clones of one template.** The PostgreSQL docs neither promise nor forbid concurrent clones of one template. The source takes a share lock on the source relations for a `WAL_LOG` copy, and pgtestdb and integresql both clone concurrently in practice.
+- **Concurrent clones of one template: verified in task 2.2 (2026-10-03).** Fifty parallel calls, run ten times on each of `postgres:15.19-alpine` and `postgres:18.6-alpine` (500 clones per run, up to 8 at once on the admin pool), gave no `55006` "being accessed by other users" error and no other failure. Those clones were of `template1`. Task 2.3 repeated the check on the migrated security-state template: fifty parallel calls, ten times on each image (500 clones per image), with the same result. Clones are not serialised. The reasoning that motivated the check follows.
+- **Originally unverified: concurrent clones of one template.** The PostgreSQL docs neither promise nor forbid concurrent clones of one template. The source takes a share lock on the source relations for a `WAL_LOG` copy, and pgtestdb and integresql both clone concurrently in practice.
   - Task 2.2's parallel-clone test is the red step.
   - If it shows conflicts, clones of one template are serialised in-process. They stay cheap, so this changes no requirement.
 - **Alternatives rejected:**
@@ -98,7 +100,7 @@ Both give each test a database cloned from a migrated template. They differ in w
 | **Connections** | pgx stdlib `DB` and a DSN, as `PostgresConn` exposes today. | `database/sql`; returns a `*sql.DB` and lets you build a DSN. Compatible. |
 | **Cross-process build** | An advisory lock and a `datistemplate` marker (D3): about 40 lines, tested. | Already solved (advisory lock, `once.Map`, half-built recovery). This is its strongest point. |
 | **Dependency** | None. | `github.com/peterldowns/pgtestdb`: MIT, 512 stars, last push 2026-08-07, no releases (tag v0.1.1, pre-1.0), no OSV advisories, as read on 2026-10-02 (figures drift). |
-| **Size** | About 150 lines plus tests in `test/testutils.go`. | About 30 lines of wiring, plus a custom `Migrator` and the teardown we must keep. |
+| **Size** | As planned, about 150 lines. As built, about 670 lines in `test/testutils_pgserver.go` and `test/testutils_pgtemplate.go`, plus tests. | About 30 lines of wiring, plus a custom `Migrator` and the teardown we must keep. |
 
 - **Why our own.** The parts pgtestdb solves are the template build and the cross-process lock: about 40 of our lines. The parts it does not solve are the server lifecycle, ordered multi-set fingerprints, and the per-call rollback and leftover checks. Those are most of the work, and they are what keeps the gate as strong as today. Adopting it would add a pre-1.0 dependency and still leave us writing the hard parts around it.
 - **Revisit** if a second database engine or a cross-package shared server is ever wanted. That is pgtestdb's home ground.
@@ -109,6 +111,8 @@ Both give each test a database cloned from a migrated template. They differ in w
 - **Inheriting.** A child started with `append(os.Environ(), …)` inherits the variable. Its registry reads the variable before starting anything, so a child never starts a server for an image its parent already runs.
 - **The parent starts first.** Children started before any server exists would each start one. So a parent that spawns PostgreSQL children calls `test.EnsureTestPostgresServer(t, opts...)` first: the PostgreSQL broken-variant parents (`sqlstore`, `pgxstore`, `gormstore`) and the cross-backend naming check.
   - The new exported function starts or reuses the shared server for the resolved image, publishes it, and fails or skips by the same `CI` rule as `RunTestPostgres`.
+  - It honours only the image option. `WithTestPostgresOwnServer()` or a migration, finalize or leftover-check option passed to it fails the test as a configuration error, because Ensure provisions no database for them to act on (`library-design.md` rules 4 and 6). Those options belong on `RunTestPostgres`.
+  - **Unreadable inheritance fails, never falls back.** A malformed `SCRTY_TEST_POSTGRES_SERVERS`, or an inherited server that does not answer within 30 seconds, fails the call with an error naming the variable, and starts nothing. Starting a server instead would hide a broken handover. An unset or empty variable means nothing is inherited.
   - `storefix.CatchBrokenVariants` is left unchanged, because its in-memory callers in `storetest` need no server and must keep running without Docker.
 - **Databases stay the child's own.** A child still clones a database of its own, and drops it in its own teardown. Template builds are safe across the two processes (D3).
 - **The variable is internal.** It is a contract between processes of one test binary, not consumer API, so it is unexported and documented in the helper's godoc.
@@ -121,7 +125,13 @@ Both give each test a database cloned from a migrated template. They differ in w
   - Unlogged tables are not used: they change behaviour.
 - **Connections.** `max_connections` is sized for parallel tests, because each call's `DB` may open 32 connections, or 8 for the conformance pool. The children of one package share the parent's server.
   - Task 3.2 measures the peak connection count of a full local and CI run first, then sets the value with headroom and records the measurement here.
+  - **Set provisionally in task 2.2 (2026-10-03).** From task 2.1 on, one server carries a whole package, and PostgreSQL's default of 100 connections failed the three store packages with SQLSTATE 53300 (`too many clients already`). `max_connections=1000` turned them green, so it is set as a provisional value. Task 3.2 replaces it with the measured value.
+  - **Measured in task 3.2 (2026-10-04).** Client backends were sampled every few hundred milliseconds in each server of one local `go test -race -count=1 ./...` (PostgreSQL 18.6, about 3,270 samples, broken-variant children included). Peaks: `pgxstore` 301, `gormstore` 157, `sqlstore` 153, `crossbackend` 35, root package 19 per server. `max_connections` is the largest peak doubled and rounded up to the next hundred: **700**, about 2.3 times the sampled peak. Task 4.2 checks it against CI.
 - **Data directory.** The tmpfs mount covers the image's data directory, which differs between the PostgreSQL 15 and 18 images (`PGDATA` moved in 18). Task 3.2 verifies the path on both.
+  - **Found in task 3.2.** The 15 image sets `PGDATA=/var/lib/postgresql/data` with that path as its volume. The 18 image sets `/var/lib/postgresql/18/docker` with `/var/lib/postgresql` as its volume, and refuses to start when `/var/lib/postgresql/data` is a mount ("there appears to be PostgreSQL data in … (unused mount/volume)").
+  - **So the helper pins `PGDATA=/var/lib/postgresql/data` on every image** and mounts a tmpfs on both `/var/lib/postgresql` and `/var/lib/postgresql/data`. Neither image then leaves an anonymous disk volume behind, and `SHOW data_directory` is the same on both.
+  - Each mount is capped at 2 GB, so a runaway test fails with "no space left" rather than exhausting the Docker VM's memory. The largest data directory sampled was 520 MB (`sqlstore`).
+  - `fsync=off` is already in the testcontainers module's default command. The helper sets it again, so the tuning does not depend on that default.
 - **Own servers** (`WithTestPostgresOwnServer`) are tuned the same way, so a test's observations never depend on which kind it got.
 
 ### D7. Keycloak and Mailpit stay per call; the Keycloak budget is re-measured
@@ -132,6 +142,7 @@ Both give each test a database cloned from a migrated template. They differ in w
 - **The Keycloak budget** went from three to five minutes in `1f76d35` because the PostgreSQL load starved its start-up build (augmentation). After this change, task 4.2 reads the Keycloak start time from three CI runs of each job.
   - If every run is ready within 90 seconds, the budget goes back to three minutes.
   - Otherwise it stays at five, and the measurement is recorded here.
+- **Measured (2026-10-04).** `make check` runs `go test` without `-v`, so a passing package prints no container timings. The reading came from one CI run with verbose tests, in a temporary commit reverted straight after. In run 37144370797, Keycloak was ready 102 s after creation in the PostgreSQL 15 job and 101 s after in the PostgreSQL 18 job. That is over 90 s, so **the budget stays at five minutes**; further runs could not change that outcome, so none were taken. With the PostgreSQL load gone, Keycloak still needs about 100 s on a four-CPU runner. Its own start-up build accounts for that, not starvation.
 - **Alternative rejected: a pre-built, optimized Keycloak image** (`kc.sh build`, then `start --optimized`), which Keycloak documents for the fastest start. The build step would run inside the test run, costing the same augmentation, unless we published our own image, which this change does not do. The stock image refused `start --optimized` when tried on 2026-10-02 because it had not been built.
 
 ### D8. Quality and speed are measured, not assumed
@@ -139,7 +150,41 @@ Both give each test a database cloned from a migrated template. They differ in w
 - **Before.** Task 1.1 records:
   - per-package wall times of the `test` module from one local run and from the CI jobs of `1f76d35`;
   - the test count: passed tests and subtests from `go test -json`.
-- **After.** The same measurements, recorded in this section.
+- **Before (recorded 2026-10-03).**
+  - Local: `go test -race -count=1 -json ./...` in `test` on 14 CPUs (Docker 29.8.0), 3 min 6 s wall time. CI: run 36997890510 of `1f76d35`, both jobs green.
+
+    | Package | Local (s) | CI PG 15 (s) | CI PG 18 (s) | PostgreSQL containers (local) |
+    |---|---|---|---|---|
+    | `test` | 183.6 | 316.7 | 409.4 | 98 |
+    | `test/sqlstore` | 148.0 | 247.8 | 326.8 | 59 |
+    | `test/pgxstore` | 149.7 | 264.5 | 338.5 | 60 |
+    | `test/gormstore` | 148.5 | 297.1 | 374.1 | 67 |
+    | `test/crossbackend` | 33.7 | 45.7 | 54.2 | 16 |
+    | `test/storetest` | 8.9 | 9.7 | 11.9 | 0 |
+    | `test/oidc` | 6.9 | 12.4 | 10.3 | 0 |
+    | `test/identity` | 4.6 | 5.3 | 4.9 | 0 |
+    | `test/ratelimittest` | 3.8 | — | — | 0 |
+    | `test/internal/storefix` | 3.3 | 1.1 | 1.1 | 0 |
+
+  - Test count (local `go test -json`): **4439 passed** tests and subtests, 0 failed, 18 skipped. `test/httpsecconformance` has no tests.
+  - Containers are counted from the "Creating container for image postgres" lines in each package's output, child processes included: **300** in all.
+  - `test/ratelimittest` is not in the `1f76d35` CI run; it was added after it.
+- **After (recorded 2026-10-04).**
+  - Local: the same command on the same machine with the Docker host otherwise idle took 56 s wall time, against 3 min 6 s before. CI: two runs of `2b094f0` on PR #5 (run 37143078079, attempts 1 and 2), both jobs green.
+
+    | Package | Local (s) | CI PG 15 (s), runs 1 / 2 | CI PG 18 (s), runs 1 / 2 | PostgreSQL containers (local) |
+    |---|---|---|---|---|
+    | `test` | 53.0 | 179.8 / 130.0 | 109.6 / 177.5 | 11 |
+    | `test/sqlstore` | 32.8 | 97.4 / 56.4 | 51.5 / 102.4 | 1 |
+    | `test/pgxstore` | 24.9 | 101.5 / 53.3 | 50.2 / 105.8 | 1 |
+    | `test/gormstore` | 33.7 | 114.3 / 67.1 | 65.9 / 116.8 | 1 |
+    | `test/crossbackend` | 9.1 | 16.9 / 14.1 | 18.3 / 16.9 | 1 |
+
+  - The two CI jobs swapped speeds between runs, so the spread comes from the runner, not the image. The slowest store-package reading, 116.8 s, is 3.2 times faster than its baseline of 374.1 s. The worst ratio of any store package against its own job's baseline is 2.6 (`gormstore` on PostgreSQL 15, 297.1 s to 114.3 s). **The "at least halved" target is met.**
+  - Containers: **15** PostgreSQL containers per local run, against 300. The root package keeps 11: the image, own-server, tuning and template tests start their own on purpose.
+  - Test count: **4623 passed**, 0 failed, 18 skipped, on both `postgres:18.6-alpine` and `postgres:15.19-alpine`. Every one of the baseline's 4439 passing tests passes, compared by package and name; the 184 extra are the helper's new tests.
+  - In one of about ten full local runs, an unrelated Redis fault test (`TestRedisLimiter_Fault`, the "control" case) failed its warm-up call under its deliberate 250 ms operation timeout. It passed 5 times in a row alone and in 3 runs of the root package. `UNREPRODUCED`, and outside this change.
+  - Containers do not outlive the run: `docker ps --filter label=org.testcontainers=true` was empty 25 s after the local run.
 - **Acceptance:**
   - the same test count;
   - every test passing under `-race`;
@@ -156,10 +201,11 @@ Both give each test a database cloned from a migrated template. They differ in w
 ## Risks / Trade-offs
 
 - **[One server failing takes down every PostgreSQL test in the process, not one.]** → The failure is remembered and reported once, with its reason, to every call (D1). A healthy Docker host is already a precondition today.
+- **[A transient start failure now fails a whole package, not the calls racing at that moment.]** Observed once, in task 4.3's local gate (2026-10-04), while another session's tests shared the Docker host: every PostgreSQL test in `test/pgxstore` failed with `start PostgreSQL postgres:18.6-alpine: … reaper: … wait for reaper …: unexpected container status "created"`. testcontainers found the reaper container another test process had just created, before it was running, and failed instead of waiting. It happened in about one of ten full local runs, and in no CI run. `UNREPRODUCED`: no test forces the race. → Kept as designed by the user's choice on 2026-10-04: remembering a failed start is what stops a broken Docker host from costing every call its own timeout. A retry of the first start was considered and not taken. Revisit if CI shows the race.
 - **[Ryuk disabled (`TESTCONTAINERS_RYUK_DISABLED=true`) leaks shared servers until removed by hand.]** → This is documented in the helper's godoc and the skill. Containers carry testcontainers' labels, so `docker rm` by label clears them. scrty's CI does not disable Ryuk.
 - **[A template held by a stray connection makes every clone fail.]** → Templates disallow connections once built (D2).
 - **[Connection exhaustion under parallel tests and child processes.]** → `max_connections` is sized from a measurement (D6).
-- **[A parent whose server is not started before its children are spawned.]** → `storefix` starts it first (D5). The helper's tests check that children start no container.
+- **[A parent whose server is not started before its children are spawned.]** → The four parent tests call `EnsureTestPostgresServer` before spawning, and `storefix` is unchanged (D5). `TestPostgresChildReusesParentServer` checks that a child starts no container.
 - **[Memory on tmpfs.]** → Clones are dropped at the end of each call. A migrated clone is a few megabytes, and the runner has 16 GB.
 - **[A debugging session loses the failed test's database]**, because it is dropped as today's container is terminated. → No change from today.
 
