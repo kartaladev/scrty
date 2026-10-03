@@ -58,7 +58,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
 ## 4. Convention, measurement and close out
 
 - [x] 4.1 Update `.claude/skills/use-testcontainers/SKILL.md` practice 6 and its examples to "one server per process, one database per call". Say when to use `WithTestPostgresOwnServer`, and why a testify suite is not the sharing mechanism (D9). Verify by reading the skill against D1, D2 and D9, with no remaining "one container per test, by default".
-- [ ] 4.2 Measure after the change (D7, D8):
+- [x] 4.2 Measure after the change (D7, D8):
   - per-package wall times, the test count and the container count, recorded in D8 under "After", with the test count equal to the baseline;
   - the Keycloak ready time from three CI runs of each job. Restore `keycloakStartupTimeout` to three minutes if every run is ready within 90 seconds, otherwise keep five minutes, and record the reading in D7.
 

@@ -142,6 +142,7 @@ Both give each test a database cloned from a migrated template. They differ in w
 - **The Keycloak budget** went from three to five minutes in `1f76d35` because the PostgreSQL load starved its start-up build (augmentation). After this change, task 4.2 reads the Keycloak start time from three CI runs of each job.
   - If every run is ready within 90 seconds, the budget goes back to three minutes.
   - Otherwise it stays at five, and the measurement is recorded here.
+- **Measured (2026-10-04).** `make check` runs `go test` without `-v`, so a passing package prints no container timings. The reading came from one CI run with verbose tests, in a temporary commit reverted straight after. In run 37144370797, Keycloak was ready 102 s after creation in the PostgreSQL 15 job and 101 s after in the PostgreSQL 18 job. That is over 90 s, so **the budget stays at five minutes**; further runs could not change that outcome, so none were taken. With the PostgreSQL load gone, Keycloak still needs about 100 s on a four-CPU runner. Its own start-up build accounts for that, not starvation.
 - **Alternative rejected: a pre-built, optimized Keycloak image** (`kc.sh build`, then `start --optimized`), which Keycloak documents for the fastest start. The build step would run inside the test run, costing the same augmentation, unless we published our own image, which this change does not do. The stock image refused `start --optimized` when tried on 2026-10-02 because it had not been built.
 
 ### D8. Quality and speed are measured, not assumed
@@ -168,7 +169,22 @@ Both give each test a database cloned from a migrated template. They differ in w
   - Test count (local `go test -json`): **4439 passed** tests and subtests, 0 failed, 18 skipped. `test/httpsecconformance` has no tests.
   - Containers are counted from the "Creating container for image postgres" lines in each package's output, child processes included: **300** in all.
   - `test/ratelimittest` is not in the `1f76d35` CI run; it was added after it.
-- **After.** The same measurements, recorded in this section.
+- **After (recorded 2026-10-04).**
+  - Local: the same command on the same machine with the Docker host otherwise idle took 56 s wall time, against 3 min 6 s before. CI: two runs of `2b094f0` on PR #5 (run 37143078079, attempts 1 and 2), both jobs green.
+
+    | Package | Local (s) | CI PG 15 (s), runs 1 / 2 | CI PG 18 (s), runs 1 / 2 | PostgreSQL containers (local) |
+    |---|---|---|---|---|
+    | `test` | 53.0 | 179.8 / 130.0 | 109.6 / 177.5 | 11 |
+    | `test/sqlstore` | 32.8 | 97.4 / 56.4 | 51.5 / 102.4 | 1 |
+    | `test/pgxstore` | 24.9 | 101.5 / 53.3 | 50.2 / 105.8 | 1 |
+    | `test/gormstore` | 33.7 | 114.3 / 67.1 | 65.9 / 116.8 | 1 |
+    | `test/crossbackend` | 9.1 | 16.9 / 14.1 | 18.3 / 16.9 | 1 |
+
+  - The two CI jobs swapped speeds between runs, so the spread comes from the runner, not the image. The slowest store-package reading, 116.8 s, is 3.2 times faster than its baseline of 374.1 s. The worst ratio of any store package against its own job's baseline is 2.6 (`gormstore` on PostgreSQL 15, 297.1 s to 114.3 s). **The "at least halved" target is met.**
+  - Containers: **15** PostgreSQL containers per local run, against 300. The root package keeps 11: the image, own-server, tuning and template tests start their own on purpose.
+  - Test count: **4623 passed**, 0 failed, 18 skipped, on both `postgres:18.6-alpine` and `postgres:15.19-alpine`. Every one of the baseline's 4439 passing tests passes, compared by package and name; the 184 extra are the helper's new tests.
+  - In one of about ten full local runs, an unrelated Redis fault test (`TestRedisLimiter_Fault`, the "control" case) failed its warm-up call under its deliberate 250 ms operation timeout. It passed 5 times in a row alone and in 3 runs of the root package. `UNREPRODUCED`, and outside this change.
+  - Containers do not outlive the run: `docker ps --filter label=org.testcontainers=true` was empty 25 s after the local run.
 - **Acceptance:**
   - the same test count;
   - every test passing under `-race`;
@@ -185,6 +201,7 @@ Both give each test a database cloned from a migrated template. They differ in w
 ## Risks / Trade-offs
 
 - **[One server failing takes down every PostgreSQL test in the process, not one.]** → The failure is remembered and reported once, with its reason, to every call (D1). A healthy Docker host is already a precondition today.
+- **[A transient start failure now fails a whole package, not the calls racing at that moment.]** Observed once, in task 4.3's local gate (2026-10-04), while another session's tests shared the Docker host: every PostgreSQL test in `test/pgxstore` failed with `start PostgreSQL postgres:18.6-alpine: … reaper: … wait for reaper …: unexpected container status "created"`. testcontainers found the reaper container another test process had just created, before it was running, and failed instead of waiting. It happened in about one of ten full local runs, and in no CI run. `UNREPRODUCED`: no test forces the race. → Kept as designed by the user's choice on 2026-10-04: remembering a failed start is what stops a broken Docker host from costing every call its own timeout. A retry of the first start was considered and not taken. Revisit if CI shows the race.
 - **[Ryuk disabled (`TESTCONTAINERS_RYUK_DISABLED=true`) leaks shared servers until removed by hand.]** → This is documented in the helper's godoc and the skill. Containers carry testcontainers' labels, so `docker rm` by label clears them. scrty's CI does not disable Ryuk.
 - **[A template held by a stray connection makes every clone fail.]** → Templates disallow connections once built (D2).
 - **[Connection exhaustion under parallel tests and child processes.]** → `max_connections` is sized from a measurement (D6).
