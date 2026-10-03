@@ -13,6 +13,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -29,15 +30,18 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // the "pgx" database/sql driver PostgresConn.DB uses
 	"github.com/pressly/goose/v3"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/mailpit"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/kartaladev/scrty/oidc"
@@ -67,6 +71,10 @@ type testConfig struct {
 	migrations         []postgresMigrations
 	finalizers         []string
 	leftoverTableCheck bool
+
+	// Read by RunTestRedis only.
+	ownContainer bool
+	serverArgs   []string
 
 	// Read by RunTestKeycloak only.
 	backchannelPort   int
@@ -1143,4 +1151,304 @@ func readAll(t *testing.T, resp *http.Response) []byte {
 	require.NoError(t, err)
 
 	return b
+}
+
+// Redis server images RunTestRedis can start, pinned to exact versions so a
+// remote tag move cannot change what the tests ran against.
+const (
+	// RedisImage is the newest Redis, and RunTestRedis's default.
+	RedisImage = "redis:8.10.2-alpine"
+	// Redis7Image is the newest Redis 7, the oldest major the shared limiter
+	// supports.
+	Redis7Image = "redis:7.4.11-alpine"
+	// RedisMinImage is Redis 7.0, the oldest Redis the shared limiter
+	// supports.
+	RedisMinImage = "redis:7.0.15-alpine"
+	// Valkey8Image is the newest Valkey 8.
+	Valkey8Image = "valkey/valkey:8.1.10-alpine"
+	// ValkeyMinImage is Valkey 7.2, the oldest Valkey the shared limiter
+	// supports.
+	ValkeyMinImage = "valkey/valkey:7.2.11-alpine"
+)
+
+// RedisImageEnv names the environment variable that, when set and not empty,
+// replaces the default image RunTestRedis starts. CI sets it per matrix entry.
+// WithTestRedisImage still takes precedence over it.
+const RedisImageEnv = "SCRTY_TEST_REDIS_IMAGE"
+
+// WithTestRedisImage replaces the image RunTestRedis starts: one of the
+// images above, or any image whose server speaks the Redis
+// protocol and accepts redis-server's command-line flags. The default is the
+// image named by RedisImageEnv when that is set, and RedisImage otherwise.
+func WithTestRedisImage(ref string) TestOption {
+	return func(c *testConfig) { c.image = ref }
+}
+
+// WithTestRedisOwnContainer gives the caller a server of its own, started for
+// this call and terminated with the test, instead of a database on the server
+// the process shares. Use it for a test that changes the server itself:
+// stopping it (RedisConn.Stop and Start), starting it with flags of its own
+// (WithTestRedisServerArgs), or filling its memory. The default shares one
+// server per image across the process.
+func WithTestRedisOwnContainer() TestOption {
+	return func(c *testConfig) { c.ownContainer = true }
+}
+
+// WithTestRedisServerArgs appends args to the server's command line, for a
+// setting that cannot change at runtime or that a test must see from the
+// first command: --maxmemory, --maxmemory-policy, --rename-command. It needs
+// WithTestRedisOwnContainer, because a shared server's flags would reach
+// every other caller; without it RunTestRedis fails the test. The default
+// passes no extra flags.
+func WithTestRedisServerArgs(args ...string) TestOption {
+	return func(c *testConfig) { c.serverArgs = append(c.serverArgs, args...) }
+}
+
+// RedisConn is how a test reaches the server RunTestRedis started or shared.
+type RedisConn struct {
+	// Client is a client on the test's database. On an own container it
+	// resolves the server's address on every dial, so it reconnects after
+	// Start even though Docker maps a restarted container to a new host port.
+	Client *redis.Client
+
+	ctr *tcredis.RedisContainer // nil on a shared server
+}
+
+// own returns the container behind an own-container connection, and an error
+// on a shared server.
+func (c RedisConn) own() (*tcredis.RedisContainer, error) {
+	if c.ctr == nil {
+		return nil, errors.New("Stop and Start need WithTestRedisOwnContainer: this is a shared server other tests are using")
+	}
+	return c.ctr, nil
+}
+
+// redisConfigError reports a combination of options RunTestRedis cannot honour.
+func (c *testConfig) redisConfigError() error {
+	if len(c.serverArgs) > 0 && !c.ownContainer {
+		return fmt.Errorf("WithTestRedisServerArgs%q needs WithTestRedisOwnContainer: a shared server's flags would reach every other caller", c.serverArgs)
+	}
+	return nil
+}
+
+// Stop stops an own container's server, so the next call fails as in an
+// outage. It fails the test on a shared server, which other tests are using.
+func (c RedisConn) Stop(t *testing.T) {
+	t.Helper()
+
+	ctr, err := c.own()
+	require.NoError(t, err)
+	timeout := 2 * time.Second
+	ctx, cancel := context.WithTimeout(t.Context(), redisStartTimeout)
+	defer cancel()
+	require.NoError(t, ctr.Stop(ctx, &timeout), "failed to stop the Redis container")
+}
+
+// Start starts an own container stopped by Stop, and returns once Client
+// reaches it again. It fails the test on a shared server.
+func (c RedisConn) Start(t *testing.T) {
+	t.Helper()
+
+	ctr, err := c.own()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), redisStartTimeout)
+	defer cancel()
+	require.NoError(t, ctr.Start(ctx), "failed to start the Redis container")
+	// The readiness log of the first start is still in the container's log,
+	// so the wait strategy may pass before the server listens again.
+	require.Eventually(t, func() bool { return c.Client.Ping(ctx).Err() == nil },
+		redisStartTimeout, 50*time.Millisecond, "the restarted server never answered")
+}
+
+// redisPort is the port the server listens on inside its container.
+const redisPort = "6379/tcp"
+
+// redisDatabases is how many logical databases a shared server is started
+// with, and so how many RunTestRedis callers one process can hold at once.
+const redisDatabases = 256
+
+// redisStartTimeout bounds starting one server, readiness included.
+const redisStartTimeout = 2 * time.Minute
+
+// redisDialTimeout bounds one dial of an own container's client, go-redis's
+// own default.
+const redisDialTimeout = 5 * time.Second
+
+// redisTeardownBudget bounds flushing a database, or terminating an own
+// container, at cleanup. It matches redisStartTimeout: under a full parallel
+// run Docker has been seen taking 24s to start an own container and over 30s
+// to stop one.
+const redisTeardownBudget = redisStartTimeout
+
+// redisShared is one server the process shares, and the logical databases
+// not currently handed out.
+type redisShared struct {
+	addr string
+	free chan int
+}
+
+// redisServers holds the server shared per image. A shared server lives as
+// long as the process: no single test owns it, so none terminates it, and the
+// testcontainers reaper removes it once the process exits.
+var redisServers = struct {
+	sync.Mutex
+	byImage map[string]*redisShared
+}{byImage: map[string]*redisShared{}}
+
+// RunTestRedis starts or reuses a Redis-protocol server and returns a
+// connection whose client is on a logical database no other caller holds.
+//
+// By default the process shares one server per image, started on first use,
+// and each call gets a database of its own on it (SELECT n), so tests are
+// isolated by database rather than by key naming and may run in parallel. The
+// database is flushed before it is handed out and again at cleanup, and is
+// then returned for another caller. At most redisDatabases callers can hold a
+// database of one server at once; one more fails its test. With
+// WithTestRedisOwnContainer the call gets a server of its own instead,
+// terminated with the test, which RedisConn.Stop and Start can stop and
+// restart and WithTestRedisServerArgs can start with extra flags; either on a
+// shared server fails the test.
+//
+// The default image is RedisImage, or the one RedisImageEnv names. It skips
+// the test when Docker is unavailable, and fails it instead when the CI
+// environment variable is set. Every test that needs Redis or Valkey calls
+// this rather than starting its own container.
+func RunTestRedis(t *testing.T, opts ...TestOption) RedisConn {
+	t.Helper()
+
+	requireHealthyProvider(t)
+
+	cfg := &testConfig{image: RedisImage}
+	if ref := os.Getenv(RedisImageEnv); ref != "" {
+		cfg.image = ref
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	if err := cfg.redisConfigError(); err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.ownContainer {
+		return runOwnTestRedis(t, cfg.image, cfg.serverArgs)
+	}
+
+	server := sharedTestRedis(t, cfg.image)
+	var db int
+	select {
+	case db = <-server.free:
+	default:
+		t.Fatalf("all %d databases of the shared %s server are in use", redisDatabases, cfg.image)
+	}
+
+	// ContextTimeoutEnabled, as the shared limiter requires: without it a
+	// context's deadline does not bound a read from a server that hangs.
+	client := redis.NewClient(&redis.Options{Addr: server.addr, DB: db, ContextTimeoutEnabled: true})
+	t.Cleanup(func() {
+		// Not t.Context(): it is already cancelled by the time cleanup runs.
+		ctx, cancel := context.WithTimeout(context.Background(), redisTeardownBudget)
+		defer cancel()
+		err := client.FlushDB(ctx).Err()
+		_ = client.Close()
+		if err != nil {
+			// A database that could not be flushed is not handed out again.
+			t.Errorf("failed to flush Redis database %d: %s", db, err)
+			return
+		}
+		server.free <- db
+	})
+	require.NoError(t, client.FlushDB(t.Context()).Err(), "failed to flush Redis database %d", db)
+
+	return RedisConn{Client: client}
+}
+
+// sharedTestRedis returns the process's server for image, starting it on
+// first use. A start that fails fails the test and is tried again by the
+// next caller.
+func sharedTestRedis(t *testing.T, image string) *redisShared {
+	t.Helper()
+
+	redisServers.Lock()
+	defer redisServers.Unlock()
+
+	if s, ok := redisServers.byImage[image]; ok {
+		return s
+	}
+
+	// Not t.Context(): the server outlives the test that happens to start it.
+	ctx, cancel := context.WithTimeout(context.Background(), redisStartTimeout)
+	defer cancel()
+
+	ctr, err := startTestRedis(ctx, image, "--databases", strconv.Itoa(redisDatabases))
+	require.NoError(t, err, "failed to start shared Redis test container %s", image)
+
+	addr, err := ctr.PortEndpoint(ctx, redisPort, "")
+	require.NoError(t, err, "failed to read the Redis endpoint")
+
+	s := &redisShared{addr: addr, free: make(chan int, redisDatabases)}
+	for db := range redisDatabases {
+		s.free <- db
+	}
+	redisServers.byImage[image] = s
+
+	return s
+}
+
+// runOwnTestRedis starts a server for t alone and terminates it with t.
+func runOwnTestRedis(t *testing.T, image string, args []string) RedisConn {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), redisStartTimeout)
+	defer cancel()
+
+	ctr, err := startTestRedis(ctx, image, args...)
+	// Registered as soon as a container exists, before the error is checked,
+	// so one that started but never became ready is removed too.
+	if ctr != nil {
+		t.Cleanup(func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), redisTeardownBudget)
+			defer cancel()
+			if err := ctr.Terminate(cleanupCtx, testcontainers.StopTimeout(2*time.Second)); err != nil {
+				t.Errorf("failed to terminate Redis container: %s", err)
+			}
+		})
+	}
+	require.NoError(t, err, "failed to start Redis test container %s", image)
+
+	addr, err := ctr.PortEndpoint(ctx, redisPort, "")
+	require.NoError(t, err, "failed to read the Redis endpoint")
+
+	// Addr is the first address, kept for diagnostics; the Dialer asks Docker
+	// for the current one each time, because Start maps a new host port.
+	// ContextTimeoutEnabled is set as on a shared server's client.
+	client := redis.NewClient(&redis.Options{
+		Addr:                  addr,
+		ContextTimeoutEnabled: true,
+		Dialer: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			current, err := ctr.PortEndpoint(ctx, redisPort, "")
+			if err != nil {
+				return nil, fmt.Errorf("resolve the Redis endpoint: %w", err)
+			}
+			d := net.Dialer{Timeout: redisDialTimeout}
+			return d.DialContext(ctx, network, current)
+		},
+	})
+	// Registered after Terminate, so it runs before it.
+	t.Cleanup(func() { _ = client.Close() })
+
+	return RedisConn{Client: client, ctr: ctr}
+}
+
+// startTestRedis starts image with args appended to its server command line,
+// and returns once the server accepts connections. The official Redis and
+// Valkey images both run their server with arguments that start with a dash.
+func startTestRedis(ctx context.Context, image string, args ...string) (*tcredis.RedisContainer, error) {
+	return tcredis.Run(ctx, image,
+		testcontainers.WithCmdArgs(args...),
+		testcontainers.WithWaitStrategyAndDeadline(redisStartTimeout,
+			wait.ForLog("Ready to accept connections"),
+			wait.ForMappedPort(redisPort),
+		),
+	)
 }

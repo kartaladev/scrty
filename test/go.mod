@@ -13,13 +13,16 @@ require (
 	github.com/kartaladev/scrty/gorm v0.0.0
 	github.com/kartaladev/scrty/passkey/webauthn v0.0.0
 	github.com/kartaladev/scrty/pgx v0.0.0
+	github.com/kartaladev/scrty/redis v0.0.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.28.0
+	github.com/redis/go-redis/v9 v9.22.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mailpit v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
+	github.com/testcontainers/testcontainers-go/modules/redis v0.44.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2
 )
@@ -80,6 +83,7 @@ require (
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
+	github.com/mdelapenya/tlscert v0.2.0 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.3.0 // indirect
@@ -118,6 +122,7 @@ require (
 	go.opentelemetry.io/otel v1.46.0 // indirect
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/trace v1.46.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.22.0 // indirect
@@ -154,3 +159,8 @@ replace github.com/kartaladev/scrty/gorm => ../gorm
 // reason it imports the framework adapters: the conformance suite runs real
 // ceremonies through it. It must not require this module.
 replace github.com/kartaladev/scrty/passkey/webauthn => ../passkey/webauthn
+
+// The Redis module is not tagged either. This module imports it to run the
+// rate-limit conformance suite and the server tests against real Redis and
+// Valkey servers. It must not require this module.
+replace github.com/kartaladev/scrty/redis => ../redis

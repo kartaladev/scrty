@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,6 +58,8 @@ var integrationModules = []string{
 	"github.com/go-webauthn/webauthn",
 	"github.com/fxamacker/cbor",
 	"github.com/google/go-tpm",
+	"github.com/redis/go-redis",
+	"github.com/testcontainers/testcontainers-go/modules/redis",
 }
 
 type requirement struct {
@@ -441,4 +444,52 @@ func (w *apiWalker) named(t *types.Named) {
 			w.walk(m.Type())
 		}
 	}
+}
+
+// redisClient is the module path prefix of the Redis client. Only the modules
+// in redisClientOwners may require it, directly or indirectly: an adapter
+// module requiring it would put a Redis client into the module graph of every
+// consumer of that adapter, whether or not they share a limiter.
+const redisClient = "github.com/redis/go-redis"
+
+// redisClientOwners lists the workspace modules, by directory relative to the
+// repository root, that may require redisClient: the Redis module itself, and
+// the test module that runs it against real servers.
+var redisClientOwners = []string{"redis", "test"}
+
+// redisClientViolations reports a requirement on redisClient in the go.mod of
+// the workspace module at dir, unless dir is one of redisClientOwners.
+func redisClientViolations(dir string, reqs []requirement) []violation {
+	if slices.Contains(redisClientOwners, filepath.ToSlash(dir)) {
+		return nil
+	}
+	var vs []violation
+	for _, r := range reqs {
+		if r.Path == redisClient || strings.HasPrefix(r.Path, redisClient+"/") {
+			vs = append(vs, violation{Where: filepath.ToSlash(filepath.Join(dir, "go.mod")), What: "requires " + r.Path})
+		}
+	}
+	return vs
+}
+
+// workspaceModules returns the directory of every module go.work uses,
+// relative to the repository root.
+func workspaceModules(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile("go.work")
+	require.NoError(t, err)
+	var dirs []string
+	inBlock := false
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case line == "use (":
+			inBlock = true
+		case inBlock && line == ")":
+			inBlock = false
+		case inBlock && line != "" && !strings.HasPrefix(line, "//"):
+			dirs = append(dirs, filepath.Clean(strings.Fields(line)[0]))
+		}
+	}
+	return dirs
 }

@@ -173,6 +173,16 @@ func TestCoreDependencies(t *testing.T) {
 			assert: hasViolation("go.mod", "github.com/google/go-tpm"),
 		},
 		{
+			name:   "the Redis client is an integration module",
+			reqs:   []requirement{{Path: "github.com/redis/go-redis/v9"}},
+			assert: hasViolation("go.mod", "github.com/redis/go-redis/v9"),
+		},
+		{
+			name:   "the Redis test container module is an integration module",
+			reqs:   []requirement{{Path: "github.com/testcontainers/testcontainers-go/modules/redis"}},
+			assert: hasViolation("go.mod", "github.com/testcontainers/testcontainers-go/modules/redis"),
+		},
+		{
 			name: "an indirect requirement is left to the import walk",
 			reqs: []requirement{{Path: "github.com/go-webauthn/webauthn", Indirect: true}},
 			assert: func(t *testing.T, vs []violation) {
@@ -255,5 +265,56 @@ func TestSoftwareAuthenticatorStaysOutOfProduction(t *testing.T) {
 			}
 			assert.NotContains(t, p.Imports, helper, "%s imports the software authenticator in its production build", p.ImportPath)
 		}
+	}
+}
+
+func TestRedisClientStaysInItsModules(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		check  func(t *testing.T) []violation
+		assert func(t *testing.T, vs []violation)
+	}
+
+	cases := []testCase{
+		{
+			name: "no workspace module outside redis and test requires the client",
+			check: func(t *testing.T) []violation {
+				var vs []violation
+				for _, dir := range workspaceModules(t) {
+					vs = append(vs, redisClientViolations(dir, readRequires(t, filepath.Join(dir, "go.mod")))...)
+				}
+				return vs
+			},
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name: "control: an adapter module requiring the client indirectly is caught",
+			check: func(*testing.T) []violation {
+				return redisClientViolations("ginsec", []requirement{{Path: "github.com/redis/go-redis/v9", Indirect: true}})
+			},
+			assert: hasViolation("ginsec/go.mod", "github.com/redis/go-redis/v9"),
+		},
+		{
+			name: "the redis and test modules may require the client",
+			check: func(*testing.T) []violation {
+				reqs := []requirement{{Path: "github.com/redis/go-redis/v9"}}
+				return append(redisClientViolations("redis", reqs), redisClientViolations("test", reqs)...)
+			},
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.check(t))
+		})
 	}
 }
