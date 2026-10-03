@@ -59,7 +59,7 @@ Every task is test-first: write the failing test, run it and see it fail for the
 
 ## 3. The verify endpoint (multi-factor-auth "A refused charge is not counted as a failed verification"; decision 6)
 
-- [ ] 3.1 `httpsec/mfaverify.go` skips `RecordFailure` for an error matching `mfa.ErrVerifyThrottled`, as it already does for `mfa.ErrAuthenticatorRefused`. Red first, in `httpsec`:
+- [x] 3.1 `httpsec/mfaverify.go` skips `RecordFailure` for an error matching `mfa.ErrVerifyThrottled`, as it already does for `mfa.ErrAuthenticatorRefused`. Red first, in `httpsec`:
   - a verification whose charge is refused returns 401 and records no failure (the limiter mock expects no `RecordFailure`);
   - 20 concurrent wrong codes through the interceptor compare at most 5.
   
