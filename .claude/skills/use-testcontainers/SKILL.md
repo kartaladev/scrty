@@ -13,7 +13,7 @@ When this skill conflicts with `cc-skills-golang:golang-testing` (which leans on
 
 - **Mocks / `sqlmock`** lie about query parsing, transaction isolation, and driver-level error shapes. A test passing against `sqlmock` while the real query fails on Postgres is the canonical case of this skill existing.
 - **In-memory fakes (`miniredis`, embedded MinIO clones)** diverge from real server behavior in subtle ways — eviction policies, ETag formats, multipart semantics. They're fine for narrow unit tests of business logic, never for integration tests of the adapter that talks to the real service.
-- **Shared dev databases / Docker Compose stacks** create cross-test pollution, force serialized CI runs, and break when two developers run tests in parallel. Testcontainers gives each test (or test suite) its own isolated container that is torn down on exit.
+- **Shared dev databases / Docker Compose stacks** create cross-test pollution, force serialized CI runs, and break when two developers run tests in parallel. Testcontainers gives each test process its own containers, and each test its own isolated state in them (for PostgreSQL, a database of its own on a server shared within the process). They are removed when the test or the process ends.
 - **Skipping the test entirely** until "we have a real environment" is technical debt that accrues silently. If the service is hard to fake, that is exactly the reason to use a container.
 
 ## Use existing helpers — do not reinvent
@@ -47,6 +47,8 @@ db := store.RunTestDatabase(t,
 ## Adding support for a new service
 
 The rest of this section applies **only when you are adding a service that does not yet have a helper** (Postgres, MinIO, SNS, Redis, Kafka, etc.). Once added, every downstream test must use the helper, not roll its own container.
+
+A new service's helper may start one container per call, as the shape below does, while it has a single caller. Once a second caller makes sharing worthwhile, it adopts the pattern `RunTestPostgres` uses (practice 6): one server per process, held in a registry keyed by image, with per-call isolation inside it.
 
 Every new service exposes **one helper** in the owning module's `testutils.go`, with this shape:
 
@@ -99,13 +101,20 @@ The return type is the **highest-level client a consumer would want**, not a raw
 
 2. **Always declare a wait strategy.** A container being *started* is not the same as a service being *ready*. Use `wait.ForLog`, `wait.ForListeningPort`, `wait.ForHTTP`, or a combination, sized for the slowest reasonable startup. For Postgres specifically, wait for `"database system is ready to accept connections"` with `WithOccurrence(2)` — the log appears once during init and once after restart, and only the second one means the database is truly ready.
 
-3. **Register `t.Cleanup` for `container.Terminate` immediately after a successful start.** Before any other setup that could fail. Otherwise a failed migration or init script will leak the container.
+3. **Register `t.Cleanup` for `container.Terminate` immediately after a successful start**, for every container a call owns (a per-call helper, or an own server). Before any other setup that could fail. Otherwise a failed migration or init script will leak the container.
 
 4. **Use `t.Context()` for the start/setup context, and `context.Background()` with a timeout for cleanup.** Document this in the helper if it isn't obvious — every new service helper rediscovers the "t.Context is dead during cleanup" trap.
 
 5. **Don't gate testcontainer tests behind build tags.** This repo keeps integration and unit tests in the same `go test ./...` run. The trade-off is accepted: slower local runs in exchange for never having "integration tests broken for two weeks because nobody ran them with the right tag."
 
-6. **One container per test, by default.** If a service is genuinely slow to start and shared state is acceptable (read-only fixtures, generated UUIDs preventing collisions), promote the helper to a `testify/suite` `SetupSuite` so the container is shared across the suite's tests. This is the same boundary referenced in the [`table-test`](../table-test/SKILL.md) skill.
+6. **One server per test process, one database per call.** This is how `RunTestPostgres` provisions PostgreSQL, and the default for any service whose start-up dominates its tests.
+   - **Sharing.** The first call in a test process for an image starts a server for it, and every later call in that process reuses it. A call that resolves to another image (`WithTestPostgresImage`, `SCRTY_TEST_POSTGRES_IMAGE`) gets a server for that image. A failed start is remembered and returned to every later call, rather than retried.
+   - **Isolation.** Every call gets a database of its own, cloned from a template built once per ordered list of migration sets. No call sees another's rows, tables, triggers or locks, so tests stay `t.Parallel()` and may truncate, alter and lock freely. The call's rollback, finalize scripts and leftover-table check still run on its database, which is then dropped.
+   - **Lifetime.** No test owns a shared server, so testcontainers' reaper (Ryuk) removes it when the process exits. With `TESTCONTAINERS_RYUK_DISABLED=true`, shared servers outlive the run until removed by hand (by testcontainers' labels).
+   - **`WithTestPostgresOwnServer()`** gives one call a container of its own, terminated when its test ends. Use it only for a test that must change server settings, restart or stop the server, or otherwise observe the server rather than its database.
+   - **Child test processes.** A test that re-executes the test binary, such as a broken-variant check, calls `test.EnsureTestPostgresServer(t)` before spawning, so the children inherit the parent's server instead of each starting one.
+   - **Not a testify suite.** A suite's `SetupSuite` shares state with no isolation between its tests, and it does not combine with the parallel table tests the [`table-test`](../table-test/SKILL.md) skill requires. Share the server through the helper, never through a suite.
+   - **Keycloak and Mailpit stay one container per call** (`RunTestKeycloak`, `RunTestSMTP`) while each has a single caller.
 
 ## Helper file layout
 
@@ -143,7 +152,7 @@ These cases are out of scope and a real unit-test mock or fake is appropriate:
 After adding or modifying a testcontainer-backed test, confirm each of the following before considering the work done:
 
 1. `go test -race ./...` from the module root passes. Race detector matters because container startup, cleanup, and the goroutines that drive them are all genuinely concurrent.
-2. A deliberately-failing test (e.g., add a `t.Fatal("force")` temporarily) still terminates its container — check `docker ps` after the run is empty. Proves `t.Cleanup` is wired correctly.
+2. A deliberately-failing test (e.g., add a `t.Fatal("force")` temporarily) still cleans up — `docker ps --filter label=org.testcontainers=true` is empty shortly after the run. Per-call containers go with `t.Cleanup`, shared servers with the reaper at process exit.
 3. Re-running the test back-to-back works without manual `docker rm`. Proves nothing leaks state between runs.
 4. The helper is reachable from a `_test.go` in a *sibling* package (not just the module's own internal tests). Proves the file naming is right.
-5. CI run time for the affected module hasn't regressed by more than the cost of one container start. If it has, the helper is being called per-case rather than per-suite — promote to `testify/suite`.
+5. CI run time for the affected module hasn't regressed by more than the cost of one container start. If it has, look for calls that start a container each (`WithTestPostgresOwnServer`, a per-call helper with several callers) and move them onto a shared server (practice 6).

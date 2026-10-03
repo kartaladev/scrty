@@ -3,10 +3,12 @@ package test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"slices"
 	"strconv"
@@ -808,6 +810,68 @@ func TestPostgresConfigError(t *testing.T) {
 	}
 }
 
+func TestEnsureConfigError(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []TestOption
+		assert func(t *testing.T, err error)
+	}
+
+	refused := func(option string) func(t *testing.T, err error) {
+		return func(t *testing.T, err error) {
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), option)
+			assert.Contains(t, err.Error(), "only selects the image")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "no options is valid",
+			assert: func(t *testing.T, err error) { assert.NoError(t, err) },
+		},
+		{
+			name:   "an image is valid",
+			opts:   []TestOption{WithTestPostgresImage(postgresImage)},
+			assert: func(t *testing.T, err error) { assert.NoError(t, err) },
+		},
+		{
+			name:   "an own server is refused",
+			opts:   []TestOption{WithTestPostgresOwnServer()},
+			assert: refused("WithTestPostgresOwnServer"),
+		},
+		{
+			name:   "a migration set is refused",
+			opts:   []TestOption{WithTestPostgresMigrations(probeSet("ensure_probe"), ".", "ensure_versions")},
+			assert: refused("WithTestPostgresMigrations"),
+		},
+		{
+			name:   "a finalize script is refused",
+			opts:   []TestOption{WithTestPostgresFinalizeScripts("SELECT 1")},
+			assert: refused("WithTestPostgresFinalizeScripts"),
+		},
+		{
+			name:   "a leftover table check is refused",
+			opts:   []TestOption{WithTestPostgresLeftoverTableCheck()},
+			assert: refused("WithTestPostgresLeftoverTableCheck"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &testConfig{}
+			for _, opt := range tc.opts {
+				opt(cfg)
+			}
+			tc.assert(t, cfg.ensureConfigError())
+		})
+	}
+}
+
 func TestRunTestPostgresIsolation(t *testing.T) {
 	t.Parallel()
 
@@ -1393,4 +1457,216 @@ func schemaOf(t *testing.T, db *sql.DB, versionTables ...string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// Not parallel: each case sets the process environment. Only the first case
+// needs a server that answers; it takes the one RunTestPostgres already shares,
+// so this test starts no container. The others only need a DSN string.
+func TestPostgresServerInherits(t *testing.T) {
+	// unreachableDSN names an address nothing listens on.
+	const unreachableDSN = "postgres://scrty:scrty@127.0.0.1:1/scrty?sslmode=disable" //nolint:gosec // G101: a placeholder DSN for a server that does not exist
+
+	type testCase struct {
+		name string
+		// live makes the parent a running server rather than unreachableDSN.
+		live   bool
+		env    func(parentDSN, image string) string
+		assert func(t *testing.T, parentDSN string, got *postgresServer, err error, starts int64)
+	}
+
+	errStart := errors.New("start refused")
+
+	cases := []testCase{
+		{
+			name: "an inherited server is used and nothing is started",
+			live: true,
+			env: func(parentDSN, image string) string {
+				return fmt.Sprintf(`{%q:%q}`, image, parentDSN)
+			},
+			assert: func(t *testing.T, parentDSN string, got *postgresServer, err error, starts int64) {
+				require.NoError(t, err)
+				t.Cleanup(func() {
+					if got.admin != nil {
+						_ = got.admin.Close()
+					}
+				})
+				assert.Equal(t, parentDSN, got.adminDSN)
+				assert.Nil(t, got.ctr, "an inherited server has no container handle, so it is never terminated")
+				assert.Zero(t, starts)
+				require.NoError(t, got.admin.PingContext(t.Context()))
+			},
+		},
+		{
+			name: "an image the variable does not name is started",
+			env: func(parentDSN, _ string) string {
+				return fmt.Sprintf(`{"postgres:other":%q}`, parentDSN)
+			},
+			assert: func(t *testing.T, _ string, _ *postgresServer, err error, starts int64) {
+				require.ErrorIs(t, err, errStart)
+				assert.EqualValues(t, 1, starts)
+			},
+		},
+		{
+			name: "an unset variable starts the server",
+			env:  func(string, string) string { return "" },
+			assert: func(t *testing.T, _ string, _ *postgresServer, err error, starts int64) {
+				require.ErrorIs(t, err, errStart)
+				assert.EqualValues(t, 1, starts)
+			},
+		},
+		{
+			name: "a malformed variable is an error that names it, and starts nothing",
+			env:  func(string, string) string { return `{"postgres` },
+			assert: func(t *testing.T, _ string, _ *postgresServer, err error, starts int64) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), postgresServersEnv)
+				assert.Zero(t, starts)
+			},
+		},
+		{
+			name: "an inherited server that cannot be reached is an error, and starts nothing",
+			env: func(_, image string) string {
+				return fmt.Sprintf(`{%q:%q}`, image, unreachableDSN)
+			},
+			assert: func(t *testing.T, _ string, _ *postgresServer, err error, starts int64) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), postgresServersEnv)
+				assert.Zero(t, starts)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parentDSN := unreachableDSN
+			if tc.live {
+				parentDSN = sharedTestPostgresServer(t).adminDSN
+			}
+			image := resolvePostgresImage(&testConfig{})
+			t.Setenv(postgresServersEnv, tc.env(parentDSN, image))
+
+			var starts atomic.Int64
+			r := &postgresRegistry{shareEnv: true, start: func(context.Context, string) (*postgres.PostgresContainer, error) {
+				starts.Add(1)
+				return nil, errStart
+			}}
+			got, err := r.server(image)
+			tc.assert(t, parentDSN, got, err, starts.Load())
+		})
+	}
+}
+
+// Not parallel: each case sets the process environment. Every case's start
+// returns the container RunTestPostgres already shares, so this test starts no
+// container of its own; the registry under test only wraps it and publishes
+// its DSN.
+func TestPostgresServerPublishes(t *testing.T) {
+	type testCase struct {
+		name   string
+		env    string // the variable before the start; "" means unset
+		shared bool
+		assert func(t *testing.T, srv *postgresServer, image string, published map[string]string)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a started server is published under its image",
+			shared: true,
+			assert: func(t *testing.T, srv *postgresServer, image string, published map[string]string) {
+				assert.Equal(t, map[string]string{image: srv.adminDSN}, published)
+			},
+		},
+		{
+			name:   "servers already published are kept",
+			env:    `{"postgres:other":"postgres://other"}`,
+			shared: true,
+			assert: func(t *testing.T, srv *postgresServer, image string, published map[string]string) {
+				assert.Equal(t, map[string]string{"postgres:other": "postgres://other", image: srv.adminDSN}, published)
+			},
+		},
+		{
+			name: "a registry that does not share leaves the environment alone",
+			env:  `{"postgres:other":"postgres://other"}`,
+			assert: func(t *testing.T, _ *postgresServer, _ string, published map[string]string) {
+				assert.Equal(t, map[string]string{"postgres:other": "postgres://other"}, published)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctr := sharedTestPostgresServer(t).ctr
+			if ctr == nil {
+				t.Skip("the shared server was inherited from a parent process: no container to wrap")
+			}
+			t.Setenv(postgresServersEnv, tc.env)
+
+			r := &postgresRegistry{shareEnv: tc.shared, start: func(context.Context, string) (*postgres.PostgresContainer, error) {
+				return ctr, nil
+			}}
+			image := resolvePostgresImage(&testConfig{})
+			srv, err := r.server(image)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = srv.admin.Close() })
+
+			published := map[string]string{}
+			if raw := os.Getenv(postgresServersEnv); raw != "" {
+				require.NoError(t, json.Unmarshal([]byte(raw), &published))
+			}
+			tc.assert(t, srv, image, published)
+		})
+	}
+}
+
+// Not parallel: it sets the process environment.
+func TestEnsureTestPostgresServer(t *testing.T) {
+	requireHealthyProvider(t)
+
+	image := resolvePostgresImage(&testConfig{})
+	srv, err := defaultPostgresRegistry.server(image)
+	require.NoError(t, err)
+
+	// Wiped after the server started: Ensure publishes it again.
+	t.Setenv(postgresServersEnv, "")
+	EnsureTestPostgresServer(t)
+
+	var published map[string]string
+	require.NoError(t, json.Unmarshal([]byte(os.Getenv(postgresServersEnv)), &published))
+	assert.Equal(t, srv.adminDSN, published[image])
+
+	again, err := defaultPostgresRegistry.server(image)
+	require.NoError(t, err)
+	assert.Same(t, srv, again, "Ensure shares the server RunTestPostgres uses")
+}
+
+const childProbeEnv = "SCRTY_TEST_CHILD_PROBE"
+
+// TestPostgresChildReusesParentServer re-executes this test binary: the child
+// half starts no container and reports the database it was given.
+func TestPostgresChildReusesParentServer(t *testing.T) {
+	if os.Getenv(childProbeEnv) != "" {
+		before := postgresContainerStarts.Load()
+		conn := RunTestPostgres(t)
+		var db string
+		require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&db))
+		fmt.Printf("child-starts=%d\nchild-db=%s\n", postgresContainerStarts.Load()-before, db)
+		return
+	}
+	t.Parallel()
+
+	EnsureTestPostgresServer(t)
+	parent := RunTestPostgres(t)
+	var parentDB string
+	require.NoError(t, parent.DB.QueryRowContext(t.Context(), `SELECT current_database()`).Scan(&parentDB))
+
+	//nolint:gosec // G204: this test binary re-executed with fixed arguments
+	cmd := exec.CommandContext(t.Context(), os.Args[0],
+		"-test.run=^TestPostgresChildReusesParentServer$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), childProbeEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	assert.Contains(t, string(out), "child-starts=0", "the child started a server of its own:\n%s", out)
+	assert.Contains(t, string(out), "child-db=", "the child reported no database:\n%s", out)
+	assert.NotContains(t, string(out), "child-db="+parentDB+"\n", "the child was handed the parent's database")
 }

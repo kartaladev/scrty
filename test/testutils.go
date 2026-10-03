@@ -373,6 +373,22 @@ func (c *testConfig) postgresConfigError() error {
 	return nil
 }
 
+// ensureConfigError reports an option EnsureTestPostgresServer cannot honour.
+func (c *testConfig) ensureConfigError() error {
+	const only = "EnsureTestPostgresServer only selects the image: pass %s to RunTestPostgres instead"
+	switch {
+	case c.ownServer:
+		return fmt.Errorf(only, "WithTestPostgresOwnServer")
+	case len(c.migrations) > 0:
+		return fmt.Errorf(only, "WithTestPostgresMigrations")
+	case len(c.finalizers) > 0:
+		return fmt.Errorf(only, "WithTestPostgresFinalizeScripts")
+	case c.leftoverTableCheck:
+		return fmt.Errorf(only, "WithTestPostgresLeftoverTableCheck")
+	}
+	return nil
+}
+
 // WithTestPostgresLeftoverTableCheck registers a check RunTestPostgres runs at
 // cleanup, after every migration set has rolled back and every finalize
 // script has run: it fails naming every table left in the current schema,
@@ -509,6 +525,58 @@ func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 	}
 
 	return postgresProvision(t, srv, cfg)
+}
+
+// EnsureTestPostgresServer starts, or reuses, the shared PostgreSQL server for
+// the image opts resolve to, and publishes it to the child processes this test
+// process starts.
+//
+// Call it once, before starting a child process that calls RunTestPostgres
+// (a re-executed test binary, for instance), and start the child with
+// append(os.Environ(), ...). Without it the children may each start a server
+// of their own, because none exists yet to inherit. A process publishes its
+// servers in the unexported environment variable SCRTY_TEST_POSTGRES_SERVERS,
+// a JSON object from image to the DSN of the server's maintenance database; a
+// child's RunTestPostgres reads it before starting anything, gets a database
+// of its own on the inherited server, and never terminates that server. The
+// image resolves as it does for RunTestPostgres: WithTestPostgresImage, then
+// PostgresImageEnv, then the default.
+//
+// Like RunTestPostgres, it skips the test when Docker is unavailable, and
+// fails it instead when the CI environment variable is set. It is safe to call
+// again, and a process that never starts children need not call it.
+//
+// It honours only WithTestPostgresImage. The server is shared and holds no
+// call's data, so WithTestPostgresOwnServer and the migration, finalize-script
+// and leftover-table options have nothing to act on here; passing one fails the
+// test before any server is started, rather than being ignored. They belong on
+// RunTestPostgres.
+func EnsureTestPostgresServer(t *testing.T, opts ...TestOption) {
+	t.Helper()
+
+	cfg := &testConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if err := cfg.postgresConfigError(); err != nil {
+		t.Fatalf("%v", err)
+	}
+	if err := cfg.ensureConfigError(); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	requireHealthyProvider(t)
+
+	image := resolvePostgresImage(cfg)
+	srv, err := defaultPostgresRegistry.server(image)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	// Idempotent: the server may have been started before the variable was
+	// last changed.
+	if err := publishPostgresServer(image, srv.adminDSN); err != nil {
+		t.Fatalf("%v", err)
+	}
 }
 
 // postgresProvision hands one call its database on srv: a clone of the

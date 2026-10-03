@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/test"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )
 
@@ -86,6 +87,9 @@ var failedNamingCase = regexp.MustCompile(`--- FAIL: (\S+)`)
 // its own *testing.T and would fail this test with it.
 func TestNamingGuardCatchesBackendDiverges(t *testing.T) {
 	t.Parallel()
+
+	// The child wants PostgreSQL: start the server it will inherit.
+	test.EnsureTestPostgresServer(t)
 
 	//nolint:gosec // G204: this test binary re-executed with fixed arguments
 	cmd := exec.CommandContext(t.Context(), os.Args[0],

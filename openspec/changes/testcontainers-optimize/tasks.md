@@ -40,7 +40,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
 
 ## 3. Child processes and server tuning
 
-- [ ] 3.1 Child processes reuse their parent's servers (D5):
+- [x] 3.1 Child processes reuse their parent's servers (D5):
   - the registry publishes its servers in an unexported environment variable and reads it first;
   - a new exported `test.EnsureTestPostgresServer(t, opts...)` starts or reuses the shared server for the resolved image;
   - the PostgreSQL broken-variant parents (`sqlstore`, `pgxstore`, `gormstore`) and the cross-backend naming check call it before spawning children, and `storefix` is unchanged.
@@ -57,7 +57,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
 
 ## 4. Convention, measurement and close out
 
-- [ ] 4.1 Update `.claude/skills/use-testcontainers/SKILL.md` practice 6 and its examples to "one server per process, one database per call". Say when to use `WithTestPostgresOwnServer`, and why a testify suite is not the sharing mechanism (D9). Verify by reading the skill against D1, D2 and D9, with no remaining "one container per test, by default".
+- [x] 4.1 Update `.claude/skills/use-testcontainers/SKILL.md` practice 6 and its examples to "one server per process, one database per call". Say when to use `WithTestPostgresOwnServer`, and why a testify suite is not the sharing mechanism (D9). Verify by reading the skill against D1, D2 and D9, with no remaining "one container per test, by default".
 - [ ] 4.2 Measure after the change (D7, D8):
   - per-package wall times, the test count and the container count, recorded in D8 under "After", with the test count equal to the baseline;
   - the Keycloak ready time from three CI runs of each job. Restore `keycloakStartupTimeout` to three minutes if every run is ready within 90 seconds, otherwise keep five minutes, and record the reading in D7.
