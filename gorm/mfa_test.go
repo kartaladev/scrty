@@ -54,7 +54,7 @@ func TestEnrolmentStore_ChargeVerifyAttemptOnFailedTxReturnsError(t *testing.T) 
 
 			base, _ := fakeDB(t, "base")
 			tx, _ := fakeDB(t, "tx")
-			tx.AddError(errors.New("begin failed"))
+			_ = tx.AddError(errors.New("begin failed")) // the returned error is the one just added
 			cfg, err := newConfig(base, nil, optIDGenerator, optClock, optResealOnRead)
 			require.NoError(t, err)
 			s := &enrolmentStore{c: cfg}
