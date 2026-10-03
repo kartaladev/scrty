@@ -4,7 +4,7 @@ Every code task is test-first: write the failing test, run it and see it fail fo
 
 ## 1. Baseline
 
-- [ ] 1.1 Record the baseline (D8):
+- [x] 1.1 Record the baseline (D8):
   - per-package wall time of the `test` module from one local `go test -race -count=1 ./...` and from both CI jobs of `1f76d35`;
   - the number of passed tests and subtests from `go test -json`;
   - the number of PostgreSQL containers started per package.
@@ -13,21 +13,21 @@ Every code task is test-first: write the failing test, run it and see it fail fo
 
 ## 2. A shared server and a database per call
 
-- [ ] 2.1 The per-process server registry keyed by resolved image (D1):
+- [x] 2.1 The per-process server registry keyed by resolved image (D1):
   - lazy start on a context no test owns;
   - a failed start remembered and returned to every later call;
   - the `CI` rule unchanged;
   - the new `WithTestPostgresOwnServer()` option giving a call its own container, terminated with its test.
 
   Tests in `test/testutils_postgres_test.go` cover "Calls in one test process share a server per image" (many calls, one server; another image) and "An unavailable container runtime fails PostgreSQL tests in CI and skips them elsewhere" (both scenarios), plus the own-server option. Verify with `go test -race -count=1 -run 'TestRunTestPostgres|TestPostgresServer' .` in `test`.
-- [ ] 2.2 A cloned database per call (D2):
+- [x] 2.2 A cloned database per call (D2):
   - an empty database from `template1` when no set is named;
   - `DSN` and `DB` pointing at the clone, with the 32-connection limit kept;
   - the clone dropped after teardown;
   - a parallel-clone test that first shows whether concurrent clones of one template conflict (the unverified claim in D2; if they do, clones of a template are serialised in-process).
 
   Covers "Every PostgreSQL call gets a database of its own" (both scenarios) and "A call's migration sets give the schema of a fresh application" scenario "No sets". Verify with `go test -race -count=1 -run 'TestRunTestPostgres' .` in `test`.
-- [ ] 2.3 Templates per migration list (D2, D3):
+- [x] 2.3 Templates per migration list (D2, D3):
   - a content fingerprint over the ordered sets;
   - a build once per server, under an in-process single flight and a server advisory lock;
   - the `datistemplate` marker, with `ALLOW_CONNECTIONS false`;

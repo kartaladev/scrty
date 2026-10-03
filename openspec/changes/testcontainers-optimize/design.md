@@ -62,14 +62,16 @@ See proposal.md for why. The current state that shapes the approach:
   - A call with no sets gets `CREATE DATABASE t_<random>` from `template1`, which is the database a fresh container gives today.
   - `PostgresConn.DSN` names the clone, and `DB` keeps its 32-connection limit.
 - **Teardown (unchanged checks).** The call's teardown runs on the clone:
-  1. close `DB`;
-  2. roll back each set to zero in reverse order (the clone carries the template's version-table rows, so goose rolls back exactly what was applied);
-  3. run the finalize scripts, then the leftover-table check;
-  4. `DROP DATABASE … WITH (FORCE)`.
+  1. roll back each set to zero in reverse order (the clone carries the template's version-table rows, so goose rolls back exactly what was applied);
+  2. run the finalize scripts, then the leftover-table check;
+  3. close `DB`, since steps 1 and 2 run through it;
+  4. `DROP DATABASE … WITH (FORCE)` on the server's admin pool;
+  5. for an own server only, close its admin pool and terminate the container.
 
-  Failures fail the test as today, and the 30-second budget covers the same steps.
+  Failures fail the test as today. Steps 1 and 2 share today's 30-second budget. The drop has a budget of its own, as today's container termination does, so a slow rollback cannot leave the database behind.
   - Rolling every clone back is kept on purpose. It is what proves every set's down migrations on every call, and dropping it would weaken the gate.
-- **Unverified, to be pinned first: concurrent clones of one template.** The PostgreSQL docs neither promise nor forbid concurrent clones of one template. The source takes a share lock on the source relations for a `WAL_LOG` copy, and pgtestdb and integresql both clone concurrently in practice.
+- **Concurrent clones of one template: verified in task 2.2 (2026-10-03).** Fifty parallel calls, run ten times on each of `postgres:15.19-alpine` and `postgres:18.6-alpine` (500 clones per run, up to 8 at once on the admin pool), gave no `55006` "being accessed by other users" error and no other failure. Those clones were of `template1`. Task 2.3 repeated the check on the migrated security-state template: fifty parallel calls, ten times on each image (500 clones per image), with the same result. Clones are not serialised. The reasoning that motivated the check follows.
+- **Originally unverified: concurrent clones of one template.** The PostgreSQL docs neither promise nor forbid concurrent clones of one template. The source takes a share lock on the source relations for a `WAL_LOG` copy, and pgtestdb and integresql both clone concurrently in practice.
   - Task 2.2's parallel-clone test is the red step.
   - If it shows conflicts, clones of one template are serialised in-process. They stay cheap, so this changes no requirement.
 - **Alternatives rejected:**
@@ -121,6 +123,7 @@ Both give each test a database cloned from a migrated template. They differ in w
   - Unlogged tables are not used: they change behaviour.
 - **Connections.** `max_connections` is sized for parallel tests, because each call's `DB` may open 32 connections, or 8 for the conformance pool. The children of one package share the parent's server.
   - Task 3.2 measures the peak connection count of a full local and CI run first, then sets the value with headroom and records the measurement here.
+  - **Set provisionally in task 2.2 (2026-10-03).** From task 2.1 on, one server carries a whole package, and PostgreSQL's default of 100 connections failed the three store packages with SQLSTATE 53300 (`too many clients already`). `max_connections=1000` turned them green, so it is set as a provisional value. Task 3.2 replaces it with the measured value.
 - **Data directory.** The tmpfs mount covers the image's data directory, which differs between the PostgreSQL 15 and 18 images (`PGDATA` moved in 18). Task 3.2 verifies the path on both.
 - **Own servers** (`WithTestPostgresOwnServer`) are tuned the same way, so a test's observations never depend on which kind it got.
 
@@ -139,6 +142,25 @@ Both give each test a database cloned from a migrated template. They differ in w
 - **Before.** Task 1.1 records:
   - per-package wall times of the `test` module from one local run and from the CI jobs of `1f76d35`;
   - the test count: passed tests and subtests from `go test -json`.
+- **Before (recorded 2026-10-03).**
+  - Local: `go test -race -count=1 -json ./...` in `test` on 14 CPUs (Docker 29.8.0), 3 min 6 s wall time. CI: run 36997890510 of `1f76d35`, both jobs green.
+
+    | Package | Local (s) | CI PG 15 (s) | CI PG 18 (s) | PostgreSQL containers (local) |
+    |---|---|---|---|---|
+    | `test` | 183.6 | 316.7 | 409.4 | 98 |
+    | `test/sqlstore` | 148.0 | 247.8 | 326.8 | 59 |
+    | `test/pgxstore` | 149.7 | 264.5 | 338.5 | 60 |
+    | `test/gormstore` | 148.5 | 297.1 | 374.1 | 67 |
+    | `test/crossbackend` | 33.7 | 45.7 | 54.2 | 16 |
+    | `test/storetest` | 8.9 | 9.7 | 11.9 | 0 |
+    | `test/oidc` | 6.9 | 12.4 | 10.3 | 0 |
+    | `test/identity` | 4.6 | 5.3 | 4.9 | 0 |
+    | `test/ratelimittest` | 3.8 | — | — | 0 |
+    | `test/internal/storefix` | 3.3 | 1.1 | 1.1 | 0 |
+
+  - Test count (local `go test -json`): **4439 passed** tests and subtests, 0 failed, 18 skipped. `test/httpsecconformance` has no tests.
+  - Containers are counted from the "Creating container for image postgres" lines in each package's output, child processes included: **300** in all.
+  - `test/ratelimittest` is not in the `1f76d35` CI run; it was added after it.
 - **After.** The same measurements, recorded in this section.
 - **Acceptance:**
   - the same test count;

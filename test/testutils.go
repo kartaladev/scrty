@@ -64,6 +64,7 @@ type TestOption func(*testConfig)
 
 type testConfig struct {
 	image    string
+	imageSet bool // WithTestPostgresImage was given, whatever its value
 	username string
 	password string
 
@@ -71,6 +72,7 @@ type testConfig struct {
 	migrations         []postgresMigrations
 	finalizers         []string
 	leftoverTableCheck bool
+	ownServer          bool
 
 	// Read by RunTestRedis only.
 	ownContainer bool
@@ -339,8 +341,10 @@ const postgresImage = "postgres:18.6-alpine"
 // still takes precedence over it.
 const PostgresImageEnv = "SCRTY_TEST_POSTGRES_IMAGE"
 
-// Credentials of the database RunTestPostgres creates. The server is reachable
-// only from this host, for the length of one test.
+// Credentials of the servers RunTestPostgres starts, and the name of each
+// server's own database, which holds no call's data: every call gets a
+// database cloned for it. A server is reachable only from this host, for the
+// length of one test process.
 const (
 	postgresDatabase = "scrty"
 	postgresUsername = "scrty"
@@ -354,9 +358,19 @@ const postgresMaxOpenConns = 32
 // WithTestPostgresImage replaces the PostgreSQL image RunTestPostgres starts.
 // Use it to run against another major or minor. The default is the image
 // named by PostgresImageEnv when that is set, and the pinned PostgreSQL 18
-// image otherwise.
+// image otherwise. An empty ref is a wiring mistake and fails the test rather
+// than falling back to the default.
 func WithTestPostgresImage(ref string) TestOption {
-	return func(c *testConfig) { c.image = ref }
+	return func(c *testConfig) { c.image = ref; c.imageSet = true }
+}
+
+// postgresConfigError reports a combination of options RunTestPostgres cannot
+// honour.
+func (c *testConfig) postgresConfigError() error {
+	if c.imageSet && c.image == "" {
+		return errors.New("WithTestPostgresImage was given an empty image reference: name an image, or drop the option to use the default")
+	}
+	return nil
 }
 
 // WithTestPostgresLeftoverTableCheck registers a check RunTestPostgres runs at
@@ -427,44 +441,122 @@ func WithTestPostgresFinalizeScripts(scripts ...string) TestOption {
 	return func(c *testConfig) { c.finalizers = append(c.finalizers, scripts...) }
 }
 
-// RunTestPostgres starts a PostgreSQL server for one test and returns how to
-// reach its database.
+// WithTestPostgresOwnServer gives this call a PostgreSQL container of its
+// own, terminated when its test ends. Use it for a test that changes server
+// settings or stops the server. The default shares one server per test
+// process and image with every other call.
+func WithTestPostgresOwnServer() TestOption {
+	return func(c *testConfig) { c.ownServer = true }
+}
+
+// resolvePostgresImage returns the image cfg asks for: the
+// WithTestPostgresImage option, else the image PostgresImageEnv names, else
+// postgresImage.
+func resolvePostgresImage(cfg *testConfig) string {
+	if cfg.image != "" {
+		return cfg.image
+	}
+	if ref := os.Getenv(PostgresImageEnv); ref != "" {
+		return ref
+	}
+	return postgresImage
+}
+
+// RunTestPostgres returns how to reach a PostgreSQL database for one test.
 //
-// Every call starts its own container, so two tests never see each other's
-// rows. DB speaks database/sql through the pgx driver; DSN opens further
-// handles on the same database for pgx or gorm.
+// By default every call in one test process that resolves to the same image
+// shares one server, started on the first such call and removed when the
+// process exits; a call that resolves to another image gets a server running
+// that image. WithTestPostgresOwnServer gives a call a container of its own
+// instead, terminated with its test. A server that failed to start fails
+// every later call for its image with the same reason, without another start.
 //
-// The container is torn down with the test. It skips the test when Docker is
-// unavailable, and fails the test instead when the CI environment variable is
-// set (see requireHealthyProvider). Every test that needs PostgreSQL calls
-// this rather than starting its own.
+// Either way, each call gets a database of its own, created for it on the
+// server with a generated name and dropped when its test ends, after the
+// migration teardown; no other call can see or change it. A call that names
+// no migration set gets an empty database.
+//
+// DB speaks database/sql through the pgx driver and is closed with the test;
+// DSN names the call's database and opens further handles on it for pgx or
+// gorm.
+//
+// It skips the test when Docker is unavailable, and fails the test instead
+// when the CI environment variable is set (see requireHealthyProvider). Every
+// test that needs PostgreSQL calls this rather than starting its own.
 func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 	t.Helper()
 
-	requireHealthyProvider(t)
-
-	cfg := &testConfig{image: postgresImage}
-	if ref := os.Getenv(PostgresImageEnv); ref != "" {
-		cfg.image = ref
-	}
+	cfg := &testConfig{}
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	if err := cfg.postgresConfigError(); err != nil {
+		t.Fatalf("%v", err)
+	}
 
-	ctr := startTestPostgres(t, cfg.image)
+	requireHealthyProvider(t)
 
-	ctx := t.Context()
+	image := resolvePostgresImage(cfg)
 
-	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
-	require.NoError(t, err, "failed to read the PostgreSQL connection string")
+	var srv *postgresServer
+	if cfg.ownServer {
+		srv = startTestPostgres(t, image)
+	} else {
+		var err error
+		if srv, err = defaultPostgresRegistry.server(image); err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
 
+	return postgresProvision(t, srv, cfg)
+}
+
+// postgresProvision hands one call its database on srv: a clone of the
+// template for cfg's migration sets (built on first use), or of
+// postgresCloneSource when cfg names none. It registers the call's cleanup:
+// the migration teardown on the clone, then closing DB, then dropping the
+// clone. A failure stops tb.
+func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) PostgresConn {
+	tb.Helper()
+
+	tpl, err := srv.template(tb.Context(), cfg.migrations)
+	if err != nil {
+		tb.Fatalf("%v", err)
+	}
+	name, err := srv.clone(tb.Context(), tpl)
+	if err != nil {
+		tb.Fatalf("%v", err)
+	}
+	// Registered before DB's close and the migration teardown, so it runs
+	// after both, on a database nothing in this call still uses; and after an
+	// own server's Terminate, so it runs before it.
+	tb.Cleanup(func() {
+		// Not tb.Context(): it is already cancelled by the time cleanup runs.
+		ctx, cancel := context.WithTimeout(context.Background(), postgresTeardownBudget)
+		defer cancel()
+		if err := srv.drop(ctx, name); err != nil {
+			tb.Errorf("%v", err)
+		}
+	})
+
+	dsn, err := srv.dsnFor(name)
+	if err != nil {
+		tb.Fatalf("%v", err)
+	}
 	db, err := sql.Open("pgx", dsn)
-	require.NoError(t, err, "failed to open the PostgreSQL database")
+	if err != nil {
+		tb.Fatalf("open the PostgreSQL database %s: %v", name, err)
+	}
 	db.SetMaxOpenConns(postgresMaxOpenConns)
-	// Registered after Terminate, so it runs before it.
-	t.Cleanup(func() { _ = db.Close() })
+	tb.Cleanup(func() { _ = db.Close() })
 
-	postgresSetUp(t, db, cfg)
+	// The clone carries the template's version-table rows, so these
+	// providers roll back exactly what the template applied.
+	sets, err := postgresProviders(db, cfg.migrations)
+	if err != nil {
+		tb.Fatalf("%v", err)
+	}
+	postgresRegisterTeardown(tb, db, cfg, sets)
 
 	return PostgresConn{DB: db, DSN: dsn}
 }
@@ -483,82 +575,38 @@ const (
 	postgresPortTimeout  = 10 * time.Second
 )
 
-// postgresStartAttempts bounds how many containers RunTestPostgres starts
-// for one test when Docker brings a container up without publishing its port.
+// postgresStartAttempts bounds how many containers startPostgresContainer
+// starts for one server when Docker brings a container up without publishing
+// its port.
 const postgresStartAttempts = 3
 
-// startTestPostgres starts a PostgreSQL container for t and returns it only
-// once the server accepts connections and its port is published on the host.
-//
-// Under load, Docker Desktop occasionally starts a container that runs and
-// logs normally but has no host binding for its port, and never gets one.
-// Such a container cannot be reached, so it is stopped and another started,
-// up to postgresStartAttempts in all. Any other failure stops the test at
-// once. Every container started is terminated with the test.
-func startTestPostgres(t *testing.T, image string) *postgres.PostgresContainer {
+// startTestPostgres starts a PostgreSQL server of t's own, the one
+// WithTestPostgresOwnServer asks for, and terminates it when t ends. A
+// failure to start stops the test.
+func startTestPostgres(t *testing.T, image string) *postgresServer {
 	t.Helper()
 
-	ctx := t.Context()
+	ctr, err := startPostgresContainer(t.Context(), image)
+	require.NoError(t, err, "failed to start PostgreSQL test container")
+	t.Cleanup(func() {
+		// Not t.Context(): it is already cancelled by the time cleanup runs,
+		// and Terminate would fail before it removed anything.
+		ctx, cancel := context.WithTimeout(context.Background(), postgresTerminateTimeout)
+		defer cancel()
+		if err := ctr.Terminate(ctx); err != nil {
+			t.Errorf("failed to terminate PostgreSQL container: %s", err)
+		}
+	})
 
-	for attempt := 1; ; attempt++ {
-		ctr, err := postgres.Run(ctx, image,
-			postgres.WithDatabase(postgresDatabase),
-			postgres.WithUsername(postgresUsername),
-			postgres.WithPassword(postgresPassword),
-			// WithWaitStrategy would impose a 60-second deadline of its own
-			// on the two waits together, so the deadline is given here as
-			// their sum.
-			testcontainers.WithWaitStrategyAndDeadline(postgresReadyTimeout+postgresPortTimeout,
-				// The line appears once for the init server and once for the
-				// real one; only the second means the database accepts
-				// connections.
-				wait.ForLog("database system is ready to accept connections").
-					WithOccurrence(2).
-					WithStartupTimeout(postgresReadyTimeout),
-				// The log says nothing about the host side: without this,
-				// the connection string is read from a container Docker may
-				// not have published.
-				wait.ForMappedPort(postgresPort).
-					WithStartupTimeout(postgresPortTimeout),
-			),
-		)
-		// Registered as soon as a container exists, before the error is
-		// checked, so one that started but never became ready is removed too.
-		if ctr != nil {
-			t.Cleanup(func() {
-				// Not t.Context(): it is already cancelled by the time cleanup
-				// runs, and Terminate would fail before it removed anything.
-				// The budget must exceed Docker's own stop grace period (10s),
-				// or a container that needs all of it under load fails the
-				// test here.
-				cleanupCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-				defer cancel()
-				if err := ctr.Terminate(cleanupCtx); err != nil {
-					t.Errorf("failed to terminate PostgreSQL container: %s", err)
-				}
-			})
-		}
-		if err == nil {
-			return ctr
-		}
-		if attempt == postgresStartAttempts || !postgresPortUnpublished(ctx, ctr) {
-			require.NoError(t, err, "failed to start PostgreSQL test container")
-		}
-
-		t.Logf("PostgreSQL container %s runs without a published port %s (attempt %d of %d: %v), starting another",
-			ctr.GetContainerID(), postgresPort, attempt, postgresStartAttempts, err)
-		// Stopped now so it does not load Docker for the rest of the test; the
-		// cleanup above still removes it.
-		stopTimeout := 2 * time.Second
-		if err := ctr.Stop(ctx, &stopTimeout); err != nil {
-			t.Logf("failed to stop the unreachable PostgreSQL container: %s", err)
-		}
-	}
+	srv, err := newPostgresServer(t.Context(), image, ctr)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.admin.Close() })
+	return srv
 }
 
 // postgresPortUnpublished reports whether ctr is running with no host binding
-// for postgresPort, the one failure startTestPostgres retries. A container that
-// cannot be inspected, or that is not running, reports false.
+// for postgresPort, the one failure startPostgresContainer retries. A
+// container that cannot be inspected, or that is not running, reports false.
 func postgresPortUnpublished(ctx context.Context, ctr *postgres.PostgresContainer) bool {
 	if ctr == nil {
 		return false
@@ -642,77 +690,124 @@ type cleanupTB interface {
 // rolling back every migration set and running every finalize script.
 const postgresTeardownBudget = 30 * time.Second
 
-// postgresSetUp applies cfg's migration sets to db, in the order they were
-// registered, and registers the teardown that rolls them back and then runs
-// cfg's finalize scripts.
-//
-// A set that fails to load or apply stops the test. At cleanup every set is
-// rolled back to version zero, last registered first, and a rollback error
-// fails the test: a Down that does not work is a defect of the set, and
+// postgresAppliedSet is one migration set applied to a database, with the
+// goose provider that rolls it back.
+type postgresAppliedSet struct {
+	dir      string
+	provider *goose.Provider
+}
+
+// wiringError reports a set that cannot be applied at all: a wiring mistake
+// of the caller, found before any database is touched.
+func (m postgresMigrations) wiringError() error {
+	if m.fsys == nil {
+		return fmt.Errorf("migrations %s: no file system", m.dir)
+	}
+	// goose would fall back to its own default table, which two sets would
+	// then share.
+	if m.versionTable == "" {
+		return fmt.Errorf("migrations %s: no version table", m.dir)
+	}
+	return nil
+}
+
+// provider returns the goose provider applying m to db, recording versions in
+// m's version table. It touches no database.
+func (m postgresMigrations) provider(db *sql.DB) (*goose.Provider, error) {
+	if err := m.wiringError(); err != nil {
+		return nil, err
+	}
+	sub, err := fs.Sub(m.fsys, m.dir)
+	if err != nil {
+		return nil, fmt.Errorf("open migrations %s: %w", m.dir, err)
+	}
+	p, err := goose.NewProvider(goose.DialectPostgres, db, sub, goose.WithTableName(m.versionTable))
+	if err != nil {
+		return nil, fmt.Errorf("load migrations %s: %w", m.dir, err)
+	}
+	return p, nil
+}
+
+// postgresProviders returns a provider over db for each of migrations, in
+// order, without applying any of them.
+func postgresProviders(db *sql.DB, migrations []postgresMigrations) ([]postgresAppliedSet, error) {
+	sets := make([]postgresAppliedSet, 0, len(migrations))
+	for _, m := range migrations {
+		p, err := m.provider(db)
+		if err != nil {
+			return nil, err
+		}
+		sets = append(sets, postgresAppliedSet{dir: m.dir, provider: p})
+	}
+	return sets, nil
+}
+
+// postgresRegisterTeardown registers the migration teardown of a call whose
+// database already carries sets: see postgresTeardown.
+func postgresRegisterTeardown(tb cleanupTB, db *sql.DB, cfg *testConfig, sets []postgresAppliedSet) {
+	tb.Helper()
+	tb.Cleanup(func() { postgresTeardown(tb, db, cfg, sets) })
+}
+
+// postgresTeardown rolls every one of sets back to version zero, last first,
+// then runs cfg's finalize scripts in declared order, then, when
+// WithTestPostgresLeftoverTableCheck was given, the leftover-table check,
+// exempting exactly the version tables cfg's migration sets registered. Each
+// failure fails tb: a Down that does not work is a defect of the set, and
 // skipping it quietly would leave the next migration author to find it. The
-// finalize scripts then run in declared order, each failure failing the test.
-// When WithTestPostgresLeftoverTableCheck was given, the leftover-table check
-// runs last, once every rollback and every finalize script has run, exempting
-// exactly the version tables cfg's migration sets registered. The whole
-// teardown shares one postgresTeardownBudget.
+// whole teardown shares one postgresTeardownBudget.
+func postgresTeardown(tb cleanupTB, db *sql.DB, cfg *testConfig, sets []postgresAppliedSet) {
+	// Not tb.Context(): it is already cancelled by the time cleanup runs.
+	ctx, cancel := context.WithTimeout(context.Background(), postgresTeardownBudget)
+	defer cancel()
+
+	for i := len(sets) - 1; i >= 0; i-- {
+		if _, err := sets[i].provider.DownTo(ctx, 0); err != nil {
+			tb.Errorf("roll back migrations %s: %v", sets[i].dir, err)
+		}
+	}
+	for i, script := range cfg.finalizers {
+		if _, err := db.ExecContext(ctx, script); err != nil {
+			tb.Errorf("finalize script %d: %v", i, err)
+		}
+	}
+	if cfg.leftoverTableCheck {
+		exempt := make([]string, 0, len(cfg.migrations))
+		for _, m := range cfg.migrations {
+			exempt = append(exempt, m.versionTable)
+		}
+		switch leftover, err := postgresLeftoverTables(ctx, db, exempt); {
+		case err != nil:
+			tb.Errorf("leftover table check: %v", err)
+		case leftover != "":
+			tb.Errorf("tables left behind: %s", leftover)
+		}
+	}
+}
+
+// postgresSetUp applies cfg's migration sets to db, in the order they were
+// registered, and registers postgresTeardown over them.
+//
+// RunTestPostgres no longer applies sets this way (it clones a template). It is
+// kept for the "applied" leg of TestPostgresTeardown, which compares teardown
+// on a directly migrated database with teardown on a template clone.
+//
+// A set that fails to load or apply stops the test. The teardown is
+// registered before any set is applied, and covers the sets reached so far,
+// so a set that fails partway through Up is still rolled back as far as it
+// got.
 func postgresSetUp(tb cleanupTB, db *sql.DB, cfg *testConfig) {
 	tb.Helper()
 
-	type applied struct {
-		dir      string
-		provider *goose.Provider
-	}
-
-	var sets []applied
-	// Registered before any set is applied, so a set that fails partway
-	// through Up is still rolled back as far as it got.
-	tb.Cleanup(func() {
-		// Not tb.Context(): it is already cancelled by the time cleanup runs.
-		ctx, cancel := context.WithTimeout(context.Background(), postgresTeardownBudget)
-		defer cancel()
-
-		for i := len(sets) - 1; i >= 0; i-- {
-			if _, err := sets[i].provider.DownTo(ctx, 0); err != nil {
-				tb.Errorf("roll back migrations %s: %v", sets[i].dir, err)
-			}
-		}
-		for i, script := range cfg.finalizers {
-			if _, err := db.ExecContext(ctx, script); err != nil {
-				tb.Errorf("finalize script %d: %v", i, err)
-			}
-		}
-		if cfg.leftoverTableCheck {
-			exempt := make([]string, 0, len(cfg.migrations))
-			for _, m := range cfg.migrations {
-				exempt = append(exempt, m.versionTable)
-			}
-			switch leftover, err := postgresLeftoverTables(ctx, db, exempt); {
-			case err != nil:
-				tb.Errorf("leftover table check: %v", err)
-			case leftover != "":
-				tb.Errorf("tables left behind: %s", leftover)
-			}
-		}
-	})
+	var sets []postgresAppliedSet
+	tb.Cleanup(func() { postgresTeardown(tb, db, cfg, sets) })
 
 	for _, m := range cfg.migrations {
-		if m.fsys == nil {
-			tb.Fatalf("migrations %s: no file system", m.dir)
-		}
-		// goose would fall back to its own default table, which two sets
-		// would then share.
-		if m.versionTable == "" {
-			tb.Fatalf("migrations %s: no version table", m.dir)
-		}
-		sub, err := fs.Sub(m.fsys, m.dir)
+		p, err := m.provider(db)
 		if err != nil {
-			tb.Fatalf("open migrations %s: %v", m.dir, err)
+			tb.Fatalf("%v", err)
 		}
-		p, err := goose.NewProvider(goose.DialectPostgres, db, sub, goose.WithTableName(m.versionTable))
-		if err != nil {
-			tb.Fatalf("load migrations %s: %v", m.dir, err)
-		}
-		sets = append(sets, applied{dir: m.dir, provider: p})
+		sets = append(sets, postgresAppliedSet{dir: m.dir, provider: p})
 		if _, err := p.Up(tb.Context()); err != nil {
 			tb.Fatalf("apply migrations %s: %v", m.dir, err)
 		}

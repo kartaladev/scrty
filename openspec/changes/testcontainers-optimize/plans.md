@@ -236,12 +236,12 @@ func (r *postgresRegistry) server(image string) (*postgresServer, error) {
   - **`RunTestPostgres`** keeps `requireHealthyProvider(t)` first.
     - With `cfg.ownServer`, it builds a one-off `postgresServer` from `startPostgresContainer`, and registers `terminateForTest`-style cleanup on `t` (today's 60-second terminate).
     - Otherwise it calls `defaultPostgresRegistry.server(resolvePostgresImage(cfg))`. An error goes to `t.Fatalf("%v", err)`.
-    - Until task 2.2 lands, the call returns the server's own database: `DB` opened on `adminDSN` with 32 connections, then `postgresSetUp` as today. The suite stays green, but calls share a database. Task 2.2 must land before the commit of group 2 is pushed.
+    - Until task 2.2 lands, the call returns the server's own database: `DB` opened on `adminDSN` with 32 connections, then `postgresSetUp` as today. Calls share a database until then, so the whole-module suite is red between tasks 2.1 and 2.2: `TestRunTestPostgres/isolated_databases` and the store packages fail on colliding migrations and rollbacks. Group 2 is verified as a whole only after task 2.2, and commits after task 2.3.
 
 - [ ] **Step 5: Run green**
 
 Run: `cd test && go test -race -count=1 -run 'TestPostgresServerSharing|TestPostgresServerStartFailureIsRemembered|TestRunTestPostgresOwnServer|TestRequireHealthyProvider' .`
-Expected: PASS.
+Expected: PASS for the new tests. `TestRunTestPostgres/isolated_databases` fails until task 2.2.
 
 - [ ] **Step 6: Do not commit yet.** The group commits after task 2.3, because shared databases between 2.1 and 2.2 break isolation. Dispatches 2.1 → 2.2 → 2.3 run in order in one lane.
 
@@ -376,6 +376,8 @@ Run: `cd test && go test -race -count=1 -run 'TestRunTestPostgres' .` then `go t
 Expected: PASS. The root package's migration tests still apply their own sets on empty clones.
 
 ---
+
+> **Note (2026-10-03).** Task 2.2 also sets a provisional `postgresMaxConnections = 1000` through `testcontainers.WithCmdArgs`. With one shared server per process, the default of 100 failed the store packages with SQLSTATE 53300. Task 3.2 still measures the peak and replaces the value, and its other settings are appended to the same `WithCmdArgs`.
 
 ### Task 2.3: Templates per migration list
 
