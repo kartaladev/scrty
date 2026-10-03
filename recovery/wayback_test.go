@@ -3,6 +3,7 @@ package recovery_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -104,7 +105,19 @@ func TestWayBackCheck(t *testing.T) {
 		errLoad   = errors.New("user store down")
 		errLinks  = errors.New("link store down")
 		errCodes  = errors.New("code store down")
+		errAdmits = errors.New("requirement store down: dial tcp 10.0.0.9:5432")
 	)
+
+	// admitsOnly admits a login of the given kinds for user, and nothing else.
+	admitsOnly := func(kinds ...factor.Kind) func(context.Context, identity.UserID, factor.Kind) (bool, error) {
+		return func(_ context.Context, u identity.UserID, k factor.Kind) (bool, error) {
+			if u != user {
+				return false, errors.New("unexpected user")
+			}
+
+			return slices.Contains(kinds, k), nil
+		}
+	}
 
 	withPassword := &identity.Details{ID: user, Username: "alice", Password: []byte("$2a$hash"), Active: true}
 	withoutPassword := &identity.Details{ID: user, Username: "alice", Active: true}
@@ -188,10 +201,13 @@ func TestWayBackCheck(t *testing.T) {
 			assert: no,
 		},
 		{
-			name: "a linked OIDC login under the default exemption",
+			// The default no longer counts an OIDC login, so the case states
+			// the consumer's admission of it explicitly.
+			name: "a linked OIDC login the consumer's admission admits",
 			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
 				deps.IssuedCodes = true
 				deps.LinkedLogins = linked(factor.OIDC)
+				deps.Admits = admitsOnly(factor.OIDC)
 				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
 				m.users.EXPECT().LoadByUserID(gomock.Any(), user).Return(withoutPassword, nil)
 				m.kind.EXPECT().Held(gomock.Any(), user).Return(nil, nil)
@@ -207,22 +223,77 @@ func TestWayBackCheck(t *testing.T) {
 			assert: no,
 		},
 		{
-			name: "a linked OIDC login the consumer's exemption refuses",
+			name: "a linked OIDC login the consumer's admission refuses",
 			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
 				deps.LinkedLogins = linked(factor.OIDC)
-				deps.Exempt = func(factor.Kind) bool { return false }
+				deps.Admits = admitsOnly()
 				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
 			},
 			assert: no,
 		},
 		{
-			name: "a consumer's exemption admits its own kind",
+			name: "a consumer's admission admits its own kind",
 			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
 				deps.LinkedLogins = linked(factor.Kind("corp-sso"))
-				deps.Exempt = func(k factor.Kind) bool { return k == "corp-sso" }
+				deps.Admits = admitsOnly(factor.Kind("corp-sso"))
 				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
 			},
 			assert: yes,
+		},
+		{
+			// With no admission wired, only factor.Kind.MFAExempt counts, and
+			// it no longer exempts an OIDC login: provider assurance is never
+			// assumed ahead of a login.
+			name: "a linked OIDC login is not a way back under the default",
+			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
+				deps.IssuedCodes = true
+				deps.LinkedLogins = linked(factor.OIDC)
+				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
+				m.users.EXPECT().LoadByUserID(gomock.Any(), user).Return(withoutPassword, nil)
+				m.kind.EXPECT().Held(gomock.Any(), user).Return(nil, nil)
+			},
+			assert: no,
+		},
+		{
+			name: "a linked api-key login is a way back under the default",
+			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
+				deps.LinkedLogins = linked(factor.APIKey)
+				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
+			},
+			assert: yes,
+		},
+		{
+			name: "an admission failure is an error, not a no",
+			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
+				deps.LinkedLogins = linked(factor.OIDC)
+				deps.Admits = func(context.Context, identity.UserID, factor.Kind) (bool, error) {
+					return false, errAdmits
+				}
+				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
+			},
+			assert: func(t *testing.T, ok bool, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, errAdmits)
+				assert.NotContains(t, err.Error(), "10.0.0.9")
+				assert.False(t, ok)
+			},
+		},
+		{
+			// An admitted later kind does not excuse a failed earlier one:
+			// the check fails closed rather than guess past an error.
+			name: "an admission failure is an error even when a later kind would be admitted",
+			deps: func(deps *recovery.WayBackDeps, m wayBackMocks) {
+				deps.LinkedLogins = linked(factor.OIDC, factor.Kind("corp-sso"))
+				deps.Admits = func(_ context.Context, _ identity.UserID, k factor.Kind) (bool, error) {
+					if k == factor.OIDC {
+						return false, errAdmits
+					}
+
+					return true, nil
+				}
+				m.codes.EXPECT().Remaining(gomock.Any(), user).Return(0, nil)
+			},
+			assert: fails(errAdmits),
 		},
 		{
 			name: "no linked-login lookup: a user with nothing else reports no",

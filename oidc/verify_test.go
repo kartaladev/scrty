@@ -87,6 +87,22 @@ func TestVerifyIDToken(t *testing.T) {
 		}
 	}
 
+	// withClaims signs a valid corp token with the given claims added.
+	withClaims := func(kv ...any) func(*testing.T, *testProvider) string {
+		return signed(func(_ *testProvider, c map[string]any) map[string]any { return with(c, kv...) })
+	}
+	// asserts requires a valid token whose assurance reads as given.
+	asserts := func(amr []string, acr string, badAMR, badACR bool) func(*testing.T, *testProvider, oidc.IDClaimsView, error) {
+		return func(t *testing.T, _ *testProvider, got oidc.IDClaimsView, err error) {
+			t.Helper()
+			require.NoError(t, err, "a malformed assurance claim never invalidates the token")
+			assert.Equal(t, amr, got.AMR, "amr")
+			assert.Equal(t, acr, got.ACR, "acr")
+			assert.Equal(t, badAMR, got.MalformedAMR, "amr malformed")
+			assert.Equal(t, badACR, got.MalformedACR, "acr malformed")
+		}
+	}
+
 	cases := []testCase{
 		{
 			name: "a valid token",
@@ -420,6 +436,94 @@ func TestVerifyIDToken(t *testing.T) {
 				require.ErrorIs(t, err, context.Canceled)
 				assert.NotErrorIs(t, err, oidc.ErrInvalidIDToken)
 			},
+		},
+		{
+			name:   "assurance: no amr and no acr assert nothing",
+			token:  signed(nil),
+			assert: asserts(nil, "", false, false),
+		},
+		{
+			name:   "assurance: an empty amr asserts nothing and is not malformed",
+			token:  withClaims("amr", []any{}),
+			assert: asserts(nil, "", false, false),
+		},
+		{
+			name:   "assurance: amr is kept in order with duplicates removed",
+			token:  withClaims("amr", []any{"pwd", "mfa", "mfa"}),
+			assert: asserts([]string{"pwd", "mfa"}, "", false, false),
+		},
+		{
+			name:   "assurance: amr keeps the first occurrence of each value",
+			token:  withClaims("amr", []any{"mfa", "pwd", "mfa", "otp", "pwd"}),
+			assert: asserts([]string{"mfa", "pwd", "otp"}, "", false, false),
+		},
+		{
+			// A JSON null is present but is neither a list nor a string, so it
+			// is malformed, not absent. The with helper would delete the key.
+			name: "assurance: null amr and acr are malformed and assert nothing",
+			token: signed(func(_ *testProvider, c map[string]any) map[string]any {
+				c["amr"], c["acr"] = nil, nil
+				return c
+			}),
+			assert: asserts(nil, "", true, true),
+		},
+		{
+			name:   "assurance: amr as a string is malformed and asserts nothing",
+			token:  withClaims("amr", "mfa"),
+			assert: asserts(nil, "", true, false),
+		},
+		{
+			// A partial read would assert mfa; the whole claim must be discarded.
+			name:   "assurance: amr with a non-string element is malformed and asserts nothing",
+			token:  withClaims("amr", []any{"mfa", 1}),
+			assert: asserts(nil, "", true, false),
+		},
+		{
+			name:   "assurance: amr with a null element is malformed",
+			token:  withClaims("amr", []any{"mfa", nil}),
+			assert: asserts(nil, "", true, false),
+		},
+		{
+			name:   "assurance: amr as an object is malformed",
+			token:  withClaims("amr", map[string]any{"mfa": true}),
+			assert: asserts(nil, "", true, false),
+		},
+		{
+			name:   "assurance: a string acr is asserted",
+			token:  withClaims("acr", "urn:corp:loa:2"),
+			assert: asserts(nil, "urn:corp:loa:2", false, false),
+		},
+		{
+			name:   "assurance: an empty acr asserts nothing and is not malformed",
+			token:  withClaims("acr", ""),
+			assert: asserts(nil, "", false, false),
+		},
+		{
+			name:   "assurance: a numeric acr is malformed",
+			token:  withClaims("acr", 2),
+			assert: asserts(nil, "", false, true),
+		},
+		{
+			name:   "assurance: an array acr is malformed",
+			token:  withClaims("acr", []any{"gold"}),
+			assert: asserts(nil, "", false, true),
+		},
+		{
+			// Every durable handoff store refuses a NUL, so a value holding one
+			// must read as malformed, not as asserted.
+			name:   "assurance: an amr element holding a NUL is malformed and asserts nothing",
+			token:  withClaims("amr", []any{"pwd", "mfa\x00x"}),
+			assert: asserts(nil, "", true, false),
+		},
+		{
+			name:   "assurance: an acr holding a NUL is malformed and asserts nothing",
+			token:  withClaims("acr", "gold\x00"),
+			assert: asserts(nil, "", false, true),
+		},
+		{
+			name:   "assurance: amr and acr are read together",
+			token:  withClaims("amr", []any{"pwd", "mfa"}, "acr", "urn:corp:loa:2"),
+			assert: asserts([]string{"pwd", "mfa"}, "urn:corp:loa:2", false, false),
 		},
 	}
 

@@ -124,10 +124,10 @@ For a user who is required to use MFA, the MFA requirement policy SHALL decide a
 - for a `federated` first factor in exempt mode, allow, before the requirement is looked up;
 - in the stateless-authentication phase, deny with an MFA-required reason, whatever the user's enrolment;
 - in the per-request phase, allow a session whose second factor is already satisfied;
-- for a `federated` first factor, deny when the assurance decision fails, and allow when the assurance is met;
+- for a `federated` first factor in the post-authentication or per-request phase, deny when the assurance decision fails, and allow when the assurance is met;
 - when no MFA method is configured, deny with an MFA-required reason;
 - in the post-authentication phase, allow a login that carries the library's proof that its second factor was met at the first factor;
-- for a `federated` first factor in refuse mode, deny with an assurance-not-met reason;
+- for a `federated` first factor in refuse mode, in the post-authentication or per-request phase, deny with an assurance-not-met reason;
 - when any configured method's enrolment lookup fails, deny;
 - when the user can use no configured method (enrolled on none, or only on methods on the first factor's channel), challenge for enrolment when all of the following hold, and otherwise deny with an enrolment-required reason:
   - the enrolment path is on and has not been closed;

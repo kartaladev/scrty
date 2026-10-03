@@ -41,6 +41,10 @@ import (
 // recovery produced the session, is kept the same way: NULL when the session
 // was never recovered.
 //
+// The federated assurance a login asserted, the amr values in the order given
+// and the acr, is kept in columns of its own, unsealed: none is stored as an
+// empty list and the empty string, and reads back as a nil list and "".
+//
 // Expiry is judged with the store's clock, on Load, on CountActiveByUser and
 // on DeleteExpired. Stored times are UTC, truncated to the microsecond.
 //
@@ -49,9 +53,10 @@ import (
 //
 // Limits, stated:
 //   - PostgreSQL text and jsonb cannot hold a NUL byte or invalid UTF-8. A
-//     session whose user reference, first factor, provider fields or data
-//     hold either is refused with an error that names the field, never the
-//     value, and nothing is written; the value is never altered.
+//     session whose user reference, first factor, provider fields, data, amr
+//     values or acr hold either is refused with an error that names the
+//     field, never the value, and nothing is written; the value is never
+//     altered.
 func NewSessionStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (session.Store, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optClock)
 	if err != nil {
@@ -88,6 +93,10 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 	if err != nil {
 		return sessionRow{}, failed(op, err)
 	}
+	amr, err := storekit.EncodeAMR(sess.FederatedAMR)
+	if err != nil {
+		return sessionRow{}, failed(op, err)
+	}
 
 	return sessionRow{
 		IDDigest:              storekit.SessionDigest(sess.ID),
@@ -109,7 +118,9 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		EnrolmentOriginDeadline: nullTs(sess.EnrolmentOriginDeadline),
 		EnrolmentGeneration:     nullID(sess.EnrolmentGeneration),
 		// NULL when the session was never recovered.
-		RecoveredAt: nullTs(sess.RecoveredAt),
+		RecoveredAt:  nullTs(sess.RecoveredAt),
+		FederatedAMR: amr,
+		FederatedACR: sess.FederatedACR,
 		// Written on Create only: Save omits the column.
 		MFAAtFirstFactor: sess.MFAAtFirstFactor,
 	}, nil
@@ -220,6 +231,10 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	if row.EnrolmentGeneration != nil {
 		sess.EnrolmentGeneration = *row.EnrolmentGeneration
 	}
+	if sess.FederatedAMR, err = storekit.DecodeAMR([]byte(row.FederatedAMR)); err != nil {
+		return nil, failed(op, err)
+	}
+	sess.FederatedACR = row.FederatedACR
 	if err := json.Unmarshal([]byte(row.Data), &sess.Data); err != nil {
 		return nil, failed(op, err)
 	}

@@ -21,3 +21,14 @@ var DefaultEnrolmentFirstFactors = defaultEnrolmentFirstFactors
 // and a test file of the package is the one place outside the passkey
 // verification that may.
 var MintProofForTest = assurance.New
+
+// MintFederatedForTest mints federated assurance evidence, which only library
+// code can do. The policy tests need evidence that asserts something to show
+// the MFA policies hand it to the assurance source, and a test file of the
+// package is the one place outside the OIDC redemption and the per-request
+// evaluation that may.
+var MintFederatedForTest = assurance.NewFederated
+
+// FederatedMetForTest exposes the one rule both MFA policies decide federated
+// assurance by, so its refusals to ask the source can be pinned directly.
+var FederatedMetForTest = federatedMet

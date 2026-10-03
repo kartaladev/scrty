@@ -57,6 +57,7 @@ func TestStatusForError(t *testing.T) {
 		{name: "second factor unsatisfiable", err: policy.ErrMFARequirementUnsatisfiable, want: 403},
 		{name: "second factor enrolment required", err: policy.ErrMFAEnrollmentRequired, want: 403},
 		{name: "second factor on the first factor's channel", err: policy.ErrSecondFactorSameChannel, want: 403},
+		{name: "provider assurance not met", err: policy.ErrFederatedAssuranceNotMet, want: 403},
 		{name: "invalid second-factor code", err: mfa.ErrInvalidCode, want: 401},
 		{name: "throttled second-factor verification", err: mfa.ErrVerifyThrottled, want: 401},
 		{name: "second-factor method on the first factor's channel", err: mfa.ErrSameChannel, want: 403},
@@ -305,6 +306,7 @@ var sentinelRegistry = map[string]map[string]error{
 	"github.com/kartaladev/scrty/policy": {
 		"policy.ErrAccountLocked":               policy.ErrAccountLocked,
 		"policy.ErrConfig":                      policy.ErrConfig,
+		"policy.ErrFederatedAssuranceNotMet":    policy.ErrFederatedAssuranceNotMet,
 		"policy.ErrMFAEnrollmentRequired":       policy.ErrMFAEnrollmentRequired,
 		"policy.ErrMFARequired":                 policy.ErrMFARequired,
 		"policy.ErrMFARequirementLookupMissing": policy.ErrMFARequirementLookupMissing,

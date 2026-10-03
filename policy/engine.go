@@ -150,6 +150,32 @@ func (e *Engine) DeclaredChallenges() []ChallengeKind {
 	return kinds
 }
 
+// UnwiredFederatedAssurance reports the name of every registered policy that
+// decides federated logins on provider assurance and was given no source to
+// decide with, in registration order, one entry per registration.
+//
+// It is how a component that admits federated logins, such as an HTTP security
+// chain with OIDC login, checks its wiring before it serves: such a policy
+// would decide every federated login as unmet, challenging or refusing users
+// whose provider did assert what the deployment accepts. The answer is drawn
+// from the optional FederatedAssuranceUser interface, and a policy that does
+// not implement it is taken to need no source. A policy registered for no
+// phase is never asked anything, so it is never reported.
+//
+// It returns a fresh slice, nil when there is nothing to report, and is meant
+// for wiring time, alongside Add, rather than for the request path.
+func (e *Engine) UnwiredFederatedAssurance() []string {
+	var names []string
+
+	for _, p := range e.asked {
+		if u, ok := p.(FederatedAssuranceUser); ok && u.NeedsFederatedAssuranceSource() {
+			names = append(names, p.Name())
+		}
+	}
+
+	return names
+}
+
 // FlushRefusalLogs asks every registered policy that keeps a refusal-log
 // sampler to report what it has suppressed. It walks e.asked, so a policy
 // registered for several phases is flushed once, not once per phase; a

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jws"
@@ -34,6 +35,14 @@ type idClaims struct {
 	// Claims holds every claim of the token, decoded from its payload and
 	// otherwise unchanged.
 	Claims map[string]any
+
+	// AMR and ACR are the assurance the token asserted; see readAssurance.
+	AMR []string
+	ACR string
+
+	// MalformedAMR and MalformedACR report a claim present in a form that
+	// asserts nothing, for the callback's warning.
+	MalformedAMR, MalformedACR bool
 }
 
 // verifyIDToken verifies raw as an ID token of p for the flow whose nonce is
@@ -79,8 +88,62 @@ func (m *Manager) checkIDToken(ctx context.Context, p Provider, raw, nonce strin
 	c.Email, _ = stringField(tok, "email")
 	verified, _ := tok.Field("email_verified")
 	c.EmailVerified = verified == true // a JSON true only; "true" is not verified
+	c.AMR, c.ACR, c.MalformedAMR, c.MalformedACR = readAssurance(tok)
 
 	return c, nil
+}
+
+// readAssurance reads the amr and acr claims of a verified token, the only
+// source of provider assurance.
+//
+// amr must be an array whose every element is a string; its values are
+// returned in order with later duplicates removed. acr must be a string, and
+// an empty one asserts nothing. An absent claim and an empty amr array assert
+// nothing and are not malformed. Any other form asserts nothing and is
+// reported as malformed: badAMR or badACR. A string holding a NUL byte or
+// invalid UTF-8 is malformed too, because no durable store can keep it. A
+// partly valid amr, such as ["mfa", 1], is discarded whole rather than read
+// as ["mfa"], so a value the provider wrote in an unexpected shape never
+// counts as evidence.
+func readAssurance(tok jwt.Token) (amr []string, acr string, badAMR, badACR bool) {
+	if v, ok := tok.Field("amr"); ok {
+		amr, ok = stringSet(v)
+		badAMR = !ok
+	}
+	if v, ok := tok.Field("acr"); ok {
+		acr, ok = v.(string)
+		if !ok || !storable(acr) {
+			acr, badACR = "", true
+		}
+	}
+	return amr, acr, badAMR, badACR
+}
+
+// storable reports whether s is a value every durable store can hold: valid
+// UTF-8 without a NUL byte. A claim value that is not would make the handoff
+// store refuse the record, failing the login, so it reads as malformed
+// instead.
+func storable(s string) bool {
+	return utf8.ValidString(s) && !strings.ContainsRune(s, 0)
+}
+
+// stringSet returns v's values in order without duplicates when v is an
+// array of strings, nil for an empty one, and reports false otherwise.
+func stringSet(v any) (set []string, ok bool) {
+	elems, ok := v.([]any)
+	if !ok {
+		return nil, false
+	}
+	for _, e := range elems {
+		s, ok := e.(string)
+		if !ok || !storable(s) {
+			return nil, false
+		}
+		if !slices.Contains(set, s) {
+			set = append(set, s)
+		}
+	}
+	return set, true
 }
 
 // parseProviderJWT verifies a token p signed and returns it for the caller's

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -47,6 +48,24 @@ type oidcTestProvider struct {
 
 	// tokenDown makes the token endpoint answer 503, a provider outage.
 	tokenDown atomic.Bool
+
+	// assurance, when set, is the amr and acr claims the ID tokens it issues
+	// assert; unset, they assert neither.
+	assurance atomic.Pointer[map[string]any]
+}
+
+// assert makes the ID tokens the provider issues from now on carry amr and
+// acr; a nil amr or empty acr leaves that claim out.
+func (p *oidcTestProvider) assert(amr []string, acr string) {
+	claims := map[string]any{}
+	if amr != nil {
+		claims["amr"] = amr
+	}
+	if acr != "" {
+		claims["acr"] = acr
+	}
+
+	p.assurance.Store(&claims)
 }
 
 // newOIDCTestProvider starts the provider; it is closed when the test ends.
@@ -94,7 +113,7 @@ func (p *oidcTestProvider) serveToken(w http.ResponseWriter, r *http.Request) {
 	reg := p.provider()
 	now := time.Now()
 
-	payload, err := json.Marshal(map[string]any{
+	claims := map[string]any{
 		"iss":   reg.Issuer,
 		"aud":   reg.ClientID,
 		"sub":   oidcTestSubject,
@@ -102,7 +121,12 @@ func (p *oidcTestProvider) serveToken(w http.ResponseWriter, r *http.Request) {
 		"iat":   now.Unix(),
 		"exp":   now.Add(5 * time.Minute).Unix(),
 		"nonce": r.PostForm.Get("code"),
-	})
+	}
+	if asserted := p.assurance.Load(); asserted != nil {
+		maps.Copy(claims, *asserted)
+	}
+
+	payload, err := json.Marshal(claims)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

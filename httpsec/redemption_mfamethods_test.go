@@ -149,8 +149,12 @@ func TestRedemptionMFAMethods(t *testing.T) {
 // check made, rather than evaluating the post-authentication policies again
 // once the credential is spent.
 //
-// The policy is the real second-factor policy, which looks up enrolment
-// itself, and the enrolment lookup fails on its third call. Within one
+// The policy is a real library MFA policy, which looks up enrolment itself,
+// and the enrolment lookup fails on its third call. For a magic link it is the
+// second-factor challenge policy; for an OIDC handoff it is the requirement
+// policy, because the challenge policy lets a federated login through without
+// a lookup by default, and a required user's unmet federated login is
+// challenged by the requirement policy instead. Within one
 // redemption the check makes two (the policy's, then the offered methods'),
 // so a third can only come from the tail, after the spend: were it made, the
 // lookup failure would cost the holder the credential.
@@ -160,10 +164,32 @@ func TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential(t *testing.T) {
 	type testCase struct {
 		name   string
 		flow   redeemTwice
+		policy func(t *testing.T, methods []policy.MFAMethodLookup) policy.Policy
 		assert func(t *testing.T, first, second served, lookups int32)
 	}
 
 	errLookup := errors.New("redemption_mfamethods_test: enrolment store unavailable")
+
+	challengePolicy := func(t *testing.T, methods []policy.MFAMethodLookup) policy.Policy {
+		t.Helper()
+
+		p, err := policy.NewMFAPolicy(methods,
+			policy.WithMFAExemption(func(factor.Kind) bool { return false }))
+		require.NoError(t, err)
+
+		return p
+	}
+	requirementPolicy := func(t *testing.T, methods []policy.MFAMethodLookup) policy.Policy {
+		t.Helper()
+
+		// The source answers the handoff's unasserted assurance as unmet;
+		// OIDC login refuses to assemble a requirement policy without one.
+		p, err := policy.NewMFARequirementPolicy(nil, methods, policy.WithMFARequiredForAll(),
+			policy.WithFederatedAssuranceSource(newTestOIDCManager(t)))
+		require.NoError(t, err)
+
+		return p
+	}
 
 	decidedOnce := func(t *testing.T, first, second served, lookups int32) {
 		t.Helper()
@@ -182,8 +208,8 @@ func TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "magic link", flow: redeemMagicLinkTwice, assert: decidedOnce},
-		{name: "OIDC handoff", flow: redeemHandoffTwice, assert: decidedOnce},
+		{name: "magic link", flow: redeemMagicLinkTwice, policy: challengePolicy, assert: decidedOnce},
+		{name: "OIDC handoff", flow: redeemHandoffTwice, policy: requirementPolicy, assert: decidedOnce},
 	}
 
 	for _, tc := range cases {
@@ -208,11 +234,7 @@ func TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential(t *testing.T) {
 			methods, err := mfa.LookupsFor(method)
 			require.NoError(t, err)
 
-			p, err := policy.NewMFAPolicy(methods,
-				policy.WithMFAExemption(func(factor.Kind) bool { return false }))
-			require.NoError(t, err)
-
-			first, second := tc.flow(t, engineOf(t, p), method)
+			first, second := tc.flow(t, engineOf(t, tc.policy(t, methods)), method)
 
 			tc.assert(t, first, second, lookups.Load())
 		})
@@ -306,7 +328,7 @@ func TestRedemption_DecisionBindsTheCheckedPrincipal(t *testing.T) {
 		r.EXPECT().Redeem(gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(ctx context.Context, _ string, checks ...oidc.RedeemCheck) (oidc.HandoffResult, error) {
 				for _, check := range checks {
-					if err := check(ctx, checked.principal, checked.changed); err != nil {
+					if err := check(ctx, oidc.RedeemCandidate{Principal: checked.principal, PasswordChangedAt: checked.changed}); err != nil {
 						return oidc.HandoffResult{}, err
 					}
 				}

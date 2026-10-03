@@ -1,6 +1,7 @@
 package recovery
 
 //go:generate mockgen -destination=userloader_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/identity UserLoader
+//go:generate mockgen -destination=requirementlookup_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/identity MFARequirementLookup
 
 import (
 	"context"
@@ -16,6 +17,7 @@ import (
 const (
 	errTextWayBackUser  = "recovery: user lookup failed"
 	errTextWayBackLinks = "recovery: linked-login lookup failed"
+	errTextWayBackAdmit = "recovery: linked-login admission lookup failed"
 )
 
 // WayBackDeps are what a WayBackCheck reads.
@@ -40,12 +42,32 @@ type WayBackDeps struct {
 	// Optional: with none, linked logins do not count.
 	LinkedLogins func(ctx context.Context, user identity.UserID) ([]factor.Kind, error)
 
-	// Exempt decides whether a linked login's kind admits the user without
-	// the second factor they might lose. The default is factor.Kind.MFAExempt,
-	// the security policies' own rule. A consumer who passes their own
-	// exemption to policy.WithMFAExemption passes the same one here, so the
-	// check and the login cannot disagree.
-	Exempt func(factor.Kind) bool
+	// Admits reports whether a login of a linked identity's kind would admit
+	// the user without a local second factor, whatever its provider asserts.
+	// A linked identity counts as a way back only when it says true. An error
+	// fails the check, which returns it under fixed text, never no or yes.
+	//
+	// The default, when nil, is factor.Kind.MFAExempt, which exempts api-key
+	// alone: under it a linked OIDC identity never counts. A consumer who links
+	// OIDC identities and wants them counted wires the MFA requirement policy's
+	// own answer, so the check and the login cannot disagree:
+	//
+	//	adm := requirementPolicy.(policy.LoginAdmission)
+	//	deps.Admits = adm.AdmitsWithoutLocalSecondFactor
+	//
+	// That answer is yes in FederatedAssuranceExempt mode, for a kind the
+	// policy's exemption rule marks, and for a user not required to use a
+	// second factor. Provider assurance is never assumed: it is known only at
+	// a login, so a required user's linked identity does not count on a
+	// provider's word it has not yet given.
+	//
+	// The answer is the requirement policy's alone. The second-factor
+	// challenge policy under policy.WithFederatedChallengeWhenUnmet(true)
+	// still challenges an enrolled user's federated login whose provider
+	// assurance is not met, required or not. A consumer who sets that option
+	// wires an Admits that answers false for such users, or the check may
+	// count a login the challenge policy would then challenge.
+	Admits func(ctx context.Context, user identity.UserID, kind factor.Kind) (bool, error)
 }
 
 // WayBackOption configures a WayBackCheck. None exists yet; the parameter is
@@ -62,14 +84,14 @@ type WayBackCheck struct {
 	kinds        []AuthenticatorKind
 	issuedCodes  bool
 	linkedLogins func(ctx context.Context, user identity.UserID) ([]factor.Kind, error)
-	exempt       func(factor.Kind) bool
+	admits       func(ctx context.Context, user identity.UserID, kind factor.Kind) (bool, error)
 }
 
 // NewWayBackCheck returns a way-back check over deps.
 //
 // A nil Users (typed nil included), a nil Codes or a nil kind is a
-// configuration error wrapping ErrConfig. A nil Exempt is
-// factor.Kind.MFAExempt. A nil option is ignored.
+// configuration error wrapping ErrConfig. A nil Admits counts a linked login
+// only when factor.Kind.MFAExempt exempts its kind. A nil option is ignored.
 func NewWayBackCheck(deps WayBackDeps, opts ...WayBackOption) (*WayBackCheck, error) {
 	if nilcheck.IsNil(deps.Users) {
 		return nil, fmt.Errorf("%w: way-back check: user loader must not be nil", ErrConfig)
@@ -89,10 +111,10 @@ func NewWayBackCheck(deps WayBackDeps, opts ...WayBackOption) (*WayBackCheck, er
 		kinds:        slices.Clone(deps.Kinds),
 		issuedCodes:  deps.IssuedCodes,
 		linkedLogins: deps.LinkedLogins,
-		exempt:       deps.Exempt,
+		admits:       deps.Admits,
 	}
-	if c.exempt == nil {
-		c.exempt = factor.Kind.MFAExempt
+	if c.admits == nil {
+		c.admits = admittedByKind
 	}
 
 	for _, opt := range opts {
@@ -112,7 +134,8 @@ func NewWayBackCheck(deps WayBackDeps, opts ...WayBackOption) (*WayBackCheck, er
 //     code. A kind implementing UsableLister is counted by what Usable lists,
 //     so a pending or suspended authenticator does not count; any other kind
 //     is counted by what Held lists;
-//   - a linked login's kind is exempt from the second factor.
+//   - a linked login would be admitted without a local second factor, as
+//     WayBackDeps.Admits answers. Provider assurance is never assumed.
 //
 // It checks in that order, cheapest first, and stops at the first yes. With
 // issued codes disabled it neither loads the user nor lists their
@@ -149,7 +172,23 @@ func (c *WayBackCheck) HasWayBack(ctx context.Context, user identity.UserID) (bo
 		return false, diag.Wrap(err, errTextWayBackLinks)
 	}
 
-	return slices.ContainsFunc(kinds, c.exempt), nil
+	for _, k := range kinds {
+		ok, err := c.admits(ctx, user, k)
+		if err != nil {
+			return false, diag.Wrap(err, errTextWayBackAdmit)
+		}
+		if ok {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// admittedByKind is WayBackDeps.Admits' default: a login is admitted without a
+// local second factor only when its kind is exempt by factor.Kind.MFAExempt.
+func admittedByKind(_ context.Context, _ identity.UserID, kind factor.Kind) (bool, error) {
+	return kind.MFAExempt(), nil
 }
 
 // pairsWithIssuedCode reports whether user has a password or holds a usable

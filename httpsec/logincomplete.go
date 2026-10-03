@@ -249,6 +249,15 @@ func (m challengeMarker) mark(s *session.Session, kind policy.ChallengeKind) {
 // challenge the phase still raises is marked on that session as for any
 // login. A zero proof, which every other first factor passes, changes
 // nothing.
+//
+// When in.FederatedAssurance asserts something — evidence only the library's
+// OIDC redemption mints, from the record the callback wrote — the phase sees
+// it, and its amr and acr are recorded on the session with
+// session.WithFederatedAssurance in the creating write, after the caller's
+// options so none of them can replace it. It is evidence, not a verdict: the
+// second factor is not marked satisfied and the met-at-first-factor marker is
+// not set, so every later request matches the stored values again. Zero
+// evidence, which every other first factor passes, records nothing.
 func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...session.CreateOption) (string, error) {
 	ctx := ex.Context()
 
@@ -314,8 +323,11 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	// them can undo it, and before any challenge mark: a challenge the phase
 	// still raises, such as a password change, is marked on the satisfied
 	// session and refused as for any login.
-	create := make([]session.CreateOption, 0, len(opts)+2)
+	create := make([]session.CreateOption, 0, len(opts)+3)
 	create = append(create, opts...)
+	if ev := in.FederatedAssurance; ev.Asserted() {
+		create = append(create, session.WithFederatedAssurance(ev.AMR(), ev.ACR()))
+	}
 	if in.SecondFactorAtLogin.Holds() {
 		create = append(create, session.WithSecondFactorAtLogin())
 	}

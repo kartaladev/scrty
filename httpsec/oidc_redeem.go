@@ -34,9 +34,12 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		return oidc.ErrInvalidHandoff
 	}
 
-	check, out := redemptionPolicyCheck(i.engine, i.enforced, i.challengeMethods, factor.OIDC, i.now)
+	// The check mints the assurance evidence from the candidate the redeemer
+	// hands it, which carries the record the callback wrote from the verified
+	// ID token. Nothing in this request reaches it.
+	check, out := oidcRedemptionCheck(i.engine, i.enforced, i.challengeMethods, i.now)
 
-	res, err := i.redeemer.Redeem(ctx, code, oidc.RedeemCheck(check))
+	res, err := i.redeemer.Redeem(ctx, code, check)
 	if err != nil {
 		if countsAgainstSource(i.countRefusals, err, out) {
 			recordSourceFailure(ctx, i.guard, src)
@@ -55,13 +58,24 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		return err
 	}
 
+	// The returned assurance is what the session records and every later
+	// request matches, so it must be the assurance the check decided on.
+	if err := guardFederatedAssurance(out, res.Provider, res.Issuer, res.AMR, res.ACR); err != nil {
+		return err
+	}
+
 	// Set before the tail runs, so a challenge response carries it too: the
 	// page the browser posted from held the code in its URL either way.
 	ex.Writer.SetHeader("Referrer-Policy", "no-referrer")
 
 	// The provider session travels in the write that creates the session, so
 	// no request ever sees a federated session without it, and back-channel
-	// logout can find it from its first moment.
+	// logout can find it from its first moment. The asserted assurance reaches
+	// the tail as evidence, which records it on the session in that same
+	// write; the guard above has just shown it is what the check decided on.
+	in := postAuthenticationInput(&res.Principal, factor.OIDC, "", res.PasswordChangedAt, i.now())
+	in.FederatedAssurance = out.federated
+
 	tok, err := completeLogin(ex, loginTailDeps{
 		engine:            i.engine,
 		sessions:          i.sessions,
@@ -71,8 +85,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		challengeMethods:  out.challengeMethods(i.challengeMethods),
 		decided:           &out.decision,
 		cancelHeld:        i.cancelHeld,
-	}, postAuthenticationInput(&res.Principal, factor.OIDC, "", res.PasswordChangedAt, i.now()),
-		session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken))
+	}, in, session.WithExternalSession(res.Provider, res.Issuer, res.SessionID, res.IDToken))
 	if err != nil {
 		return err
 	}

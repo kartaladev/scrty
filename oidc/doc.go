@@ -86,15 +86,28 @@
 // subject, each replay ends the sessions established since. Widening the
 // maximum age widens the replay window by exactly as much.
 //
-// A federated login is exempt from multi-factor authentication entirely,
-// whatever amr or acr a provider's token carries: nothing in this package or
-// in package policy evaluates them (per-provider assurance is a separate,
-// later capability). To require a second factor of federated logins anyway,
-// give policy.WithMFAExemption a function that reports false for
-// factor.OIDC to both policy.NewMFAPolicy and policy.NewMFARequirementPolicy,
-// and wire httpsec.EnableMFA on the same chain: a classification that can
-// raise a challenge with nothing there to enforce it is refused at
-// construction.
+// A federated login is not exempt from multi-factor authentication by its
+// kind. For a required user, the login needs evidence of a second factor: the
+// provider's amr or acr, read from the verified ID token alone and matched
+// exactly against the provider's Assurance (WithProviderAssurance; by default
+// amr "mfa"), or the library's own challenge. Policy matches nothing itself:
+// the Manager is the policy.FederatedAssuranceSource, and the policies are
+// given it through policy.WithFederatedAssuranceSource. The asserted values
+// are stored beside the session and matched again on every request, so a
+// tightened configuration reaches existing sessions.
+//
+// Freshness is not checked. auth_time and max_age are not read, so an amr of
+// "mfa" that a provider's long-lived SSO session asserted hours ago is
+// accepted. A provider that emits no amr never meets the default, and its
+// required users are challenged locally, or refused with enrolment required
+// when they have no usable enrolment. Assurance.RequestACR is sent as
+// acr_values, which a provider may ignore: it is never evidence.
+//
+// What happens when assurance is not met is the requirement policy's mode
+// (policy.WithFederatedAssurance): challenge (the default), refuse, or exempt.
+// Exempt is a bypass: a required user is let in on the provider's word alone,
+// whatever it asserted, as is marking factor.OIDC exempt with
+// policy.WithMFAExemption. Per-user rules go through WithAssuranceEvaluator.
 //
 // Role sync (WithRoleSync) re-derives a federated user's roles from a
 // provider claim on every login and never persists them, so a provider

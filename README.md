@@ -107,6 +107,130 @@ Connect back-channel logout can be configured with an end-session and back-chann
 points at `/logout/oauth2/backchannel/{provider}`; scrty verifies the logout token and ends the
 matching sessions without any browser involved.
 
+### Second factor and provider assurance
+
+A login through OIDC is not exempt from the second factor by its kind. For a user who is required
+to use one (`policy.WithMFARequiredForAll`, or your own rule), the login needs evidence of a second
+factor: either the provider asserted one in the ID token, or the user answers scrty's own
+challenge. Only `api-key` logins are exempt by kind.
+
+**What counts as the provider's assertion.** Only the `amr` and `acr` claims of the ID token that
+passed verification are read, and they are matched exactly (case-sensitive) as configured. By
+default a provider is trusted when its `amr` contains `mfa` (RFC 8176's value for "more than one
+authentication method"); single-method values such as `otp` or `hwk` are not accepted by default,
+because on their own they do not show that a second factor was used. Replace the default per
+provider, as a whole, with `oidc.WithProviderAssurance`:
+
+```go
+manager, err := oidc.NewManager(registry, broker,
+	oidc.WithProviderAssurance("corp", oidc.Assurance{
+		AcceptedAMR: []string{"mfa", "hwk"},
+		AcceptedACR: []string{"gold"},
+		RequestACR:  []string{"gold"},
+		Match:       oidc.MatchAny,
+	}),
+)
+```
+
+- `Match` is `MatchAny` by default (any configured criterion is enough) or `MatchAll`.
+- `acr` is matched as a set, never as a minimum: its values are the provider's and have no order
+  scrty knows. To accept "silver or above", list every value at or above silver.
+- `RequestACR` is sent to the provider as `acr_values`. It is a request the provider may ignore,
+  never evidence: the returned token is always checked against `AcceptedAMR` and `AcceptedACR`.
+- A provider configured with neither accepted set never meets assurance, which is valid and means
+  "always use the local second factor". A claim that is absent, empty or malformed counts as
+  nothing asserted, so providers that emit no `amr` fall back to the local second factor.
+- A configuration for a provider that is not registered, an empty value in a list, a `RequestACR`
+  value containing whitespace, or an unknown `Match` fails `oidc.NewManager` with `oidc.ErrConfig`.
+
+**Per-user rules.** `oidc.WithAssuranceEvaluator` replaces the matching step with your own rule,
+for example "administrators need `hwk`". It receives the user, the provider, the verified issuer
+and the asserted values, never the raw token, and cannot widen where the values come from. It
+runs on every request of a federated session, so it must be fast and free of side effects, and an
+error it returns denies:
+
+```go
+type adminsNeedAHardwareKey struct{ admins []identity.UserID }
+
+func (e adminsNeedAHardwareKey) MeetsAssurance(_ context.Context, in oidc.AssuranceInput) (bool, error) {
+	if slices.Contains(e.admins, in.User) {
+		return slices.Contains(in.AMR, "hwk"), nil
+	}
+
+	return slices.Contains(in.AMR, "mfa"), nil
+}
+
+evaluator := adminsNeedAHardwareKey{admins: []identity.UserID{"root"}}
+
+manager, err := oidc.NewManager(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
+```
+
+**What happens when assurance is not met.** The requirement policy has three modes for a required
+user's OIDC login, chosen with `policy.WithFederatedAssurance`:
+
+| Mode | Assurance met | Assurance not met |
+|---|---|---|
+| `FederatedAssuranceChallenge` (default) | allowed | challenged for the local second factor; a user with no usable enrolment goes to the enrolment path if it admits OIDC, otherwise is refused with enrolment required |
+| `FederatedAssuranceRefuse` | allowed | refused with `policy.ErrFederatedAssuranceNotMet` (403); the handoff code is not consumed |
+| `FederatedAssuranceExempt` | allowed | allowed |
+
+Choose Refuse when the provider must be the only authority for the second factor. Choose Exempt
+only when you accept the bypass it is: a required user is let in on the provider's word alone,
+whatever the provider asserted, with no look at the requirement, the assurance or any enrolment.
+A provider that does not enforce a second factor then lets required users in without one. Marking
+`factor.OIDC` exempt with `policy.WithMFAExemption` is the same bypass. The mode governs the
+requirement policy only; `policy.WithFederatedChallengeWhenUnmet(true)` on the second-factor
+challenge policy separately challenges an enrolled user's unmet OIDC login, required or not.
+
+**Wire the source into the requirement policy.** Policy matches nothing itself: the OIDC manager
+is the `policy.FederatedAssuranceSource`. Give it to the policies you build, then put them in the
+chain's engine:
+
+```go
+source := policy.WithFederatedAssuranceSource(manager)
+
+requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+	policy.WithMFARequiredForAll(),
+	policy.WithFederatedAssurance(mode),
+	source,
+)
+```
+
+`httpsec.New` refuses to assemble a chain with OIDC login enabled and a requirement policy in
+Challenge or Refuse mode that has no source. Fix it with `WithFederatedAssuranceSource(manager)`,
+with Exempt mode, or with a `WithMFAExemption` rule that exempts `oidc`. Wire `httpsec.EnableMFA`
+on the same chain, since the policies can raise a challenge.
+
+**Per-request re-matching.** The redemption stores the provider's asserted values on the session;
+it does not store a verdict. Every request of a federated session matches them again against the
+provider's current configuration. Tightening a provider's accepted set therefore takes effect on
+existing sessions at their next request, and a provider removed from the registry never matches.
+A session whose local second factor was satisfied stays allowed. A consumer who creates sessions
+in `httpsec.WithCallbackSuccess` records all three of `session.WithFirstFactor(factor.OIDC)`,
+`session.WithExternalSession` (the result's provider, issuer, session ID and ID token) and
+`session.WithFederatedAssurance` (its `AMR` and `ACR`). Without any one of them the session carries
+no assurance, so a required user is challenged or refused on every request.
+
+**Limits to know.**
+
+- **Freshness is not checked.** `auth_time` and `max_age` are not read, so an `mfa` that a
+  long-lived provider SSO session asserted hours ago is accepted.
+- **Providers that emit no `amr`** meet no assurance under the default. Their required users are
+  challenged locally, or refused with enrolment required if they have no usable enrolment.
+  Exempt mode restores the old behaviour explicitly.
+- **Account recovery.** `recovery.WayBackDeps.Admits` replaces the old exemption rule. A linked
+  OIDC identity counts as a way back only when its login would be admitted without a local second
+  factor; with no `Admits`, it never counts. Wire the requirement policy's own answer so the two
+  cannot disagree:
+
+  ```go
+  deps.Admits = requirement.(policy.LoginAdmission).AdmitsWithoutLocalSecondFactor
+  ```
+
+  That answer is the requirement policy's alone, so under `WithFederatedChallengeWhenUnmet(true)`
+  the check may count a login the challenge policy then challenges; wire an `Admits` that answers
+  false for such users.
+
 ### Security limits
 
 - Provider configuration is trusted operator input: whoever writes it directs the client secret,
@@ -118,8 +242,8 @@ matching sessions without any browser involved.
   the rest of that window.
 - Back-channel logout-token replay is bounded by the token's issued-at time, not a used-once store,
   so a captured token is replayable within `oidc.WithLogoutTokenMaxAge`.
-- Federated logins are exempt from MFA entirely by default; override the classification with
-  `policy.WithMFAExemption` and wire `httpsec.EnableMFA`.
+- A provider's `amr`/`acr` is accepted without a freshness check: see "Second factor and provider
+  assurance" above for what that lets through and how to opt out of trusting it.
 - Role sync and password-hash claim mirroring, both off by default, hand the provider ongoing
   influence over local roles and a standby credential; see their godoc before enabling them.
 
@@ -295,7 +419,8 @@ removes them through each method's `mfa.EnrolmentRemover`. Register it, and any 
 
 `recovery.NewWayBackCheck` reports whether a user could still recover their account without the
 saved codes they have not generated yet — a saved code already held, a password or enrolled
-authenticator paired with an issued code, or a linked login exempt from the second factor:
+authenticator paired with an issued code, or a linked login that `WayBackDeps.Admits` says would
+be admitted without a local second factor (see "Second factor and provider assurance"):
 
 ```go
 check, err := recovery.NewWayBackCheck(recovery.WayBackDeps{

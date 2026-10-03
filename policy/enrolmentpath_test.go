@@ -290,12 +290,12 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 		name string
 		// list replaces the default allowlist; nil keeps the default.
 		list []factor.Kind
-		// defaultExemption keeps the library's exemption rule, under which an
-		// OIDC login is exempt. Otherwise nothing is exempt, which is the
-		// classification that lets an OIDC login reach the path at all.
-		defaultExemption bool
-		first            factor.Kind
-		assert           func(t *testing.T, d policy.Decision, err error)
+		// exemption replaces the library's exemption rule; nil keeps it. The
+		// library's rule does not exempt an OIDC login, so the default lets one
+		// reach the path.
+		exemption func(factor.Kind) bool
+		first     factor.Kind
+		assert    func(t *testing.T, d policy.Decision, err error)
 	}
 
 	challenged := func(t *testing.T, d policy.Decision, err error) {
@@ -342,11 +342,12 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 			list: []factor.Kind{factor.Password}, first: factor.Password, assert: challenged,
 		},
 		{
-			// The list governs entry to the path, not the exemption rule.
-			name:             "listing oidc does not take away its exemption",
-			list:             []factor.Kind{factor.OIDC},
-			defaultExemption: true,
-			first:            factor.OIDC,
+			// The list governs entry to the path, not the exemption rule: a
+			// consumer rule that exempts an OIDC login still exempts it.
+			name:      "listing oidc does not take away a consumer's exemption of it",
+			list:      []factor.Kind{factor.OIDC},
+			exemption: func(k factor.Kind) bool { return k == factor.OIDC || k == factor.APIKey },
+			first:     factor.OIDC,
 			assert: func(t *testing.T, d policy.Decision, err error) {
 				t.Helper()
 
@@ -386,8 +387,8 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 				policy.WithMFARequiredForAll(),
 				policy.WithMFAEnrolmentPath(pathOpts...),
 			}
-			if !tc.defaultExemption {
-				opts = append(opts, policy.WithMFAExemption(func(factor.Kind) bool { return false }))
+			if tc.exemption != nil {
+				opts = append(opts, policy.WithMFAExemption(tc.exemption))
 			}
 
 			p, err := policy.NewMFARequirementPolicy(nil,

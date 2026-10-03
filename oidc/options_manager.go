@@ -251,3 +251,64 @@ func WithPostLogoutRedirect(u string) ManagerOption {
 		return nil
 	}
 }
+
+// WithProviderAssurance replaces the whole assurance configuration of the
+// named provider: which amr and acr values its verified ID token must assert
+// for the login to meet assurance, which acr values to request, and how the
+// criteria combine.
+//
+// It replaces the default Assurance{AcceptedAMR: []string{"mfa"}}: amr "mfa"
+// accepted, no acr accepted, none requested, MatchAny. Nothing of the default
+// survives a replacement, so a configuration with empty accepted sets never
+// meets assurance, which is valid and means "always use the local second
+// factor". The configuration is copied; changing the caller's slices later
+// changes nothing. When the option is given more than once for one provider,
+// the last one wins.
+//
+// Construction fails with ErrConfig when the provider is not registered, when
+// any set contains the empty string, when a RequestACR value contains
+// whitespace (acr_values is space-separated, so it would be sent as two
+// values), or when Match is not MatchAny or MatchAll.
+func WithProviderAssurance(provider string, a Assurance) ManagerOption {
+	return func(m *Manager) error {
+		if err := a.validate(provider); err != nil {
+			return err
+		}
+		if m.assurance == nil {
+			m.assurance = make(map[string]Assurance)
+		}
+		m.assurance[provider] = a.clone()
+		return nil
+	}
+}
+
+// WithAssuranceEvaluator replaces how the manager, as the MFA policies'
+// policy.FederatedAssuranceSource, decides whether a federated login's
+// asserted values meet assurance. It is the port for rules the per-provider
+// configuration cannot state, such as "administrators need hwk".
+//
+// It replaces the default, which matches the asserted amr and acr against the
+// provider's Assurance (WithProviderAssurance, or the default accepting amr
+// "mfa" only). The evaluator replaces only that matching step: the library
+// still reads the values from the verified ID token alone, and still decides,
+// without asking the evaluator, that evidence asserting nothing, naming an
+// unregistered provider, or naming an issuer other than the provider's
+// registered one is not met. An evaluator cannot widen where assurance comes
+// from.
+//
+// The evaluator is called on every policy evaluation of a federated login,
+// at redemption and on each request of a federated session, so it must be
+// fast and free of side effects. Its error is returned unchanged, and the MFA
+// policies deny with it as the reason.
+//
+// A nil evaluator, including a nil pointer inside a non-nil interface, fails
+// construction with ErrConfig.
+func WithAssuranceEvaluator(e AssuranceEvaluator) ManagerOption {
+	return func(m *Manager) error {
+		if nilcheck.IsNil(e) {
+			return fmt.Errorf("%w: WithAssuranceEvaluator was given nil", ErrConfig)
+		}
+		m.evaluator = e
+		return nil
+	}
+}

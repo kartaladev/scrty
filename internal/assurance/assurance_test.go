@@ -66,3 +66,96 @@ func TestProof(t *testing.T) {
 		})
 	}
 }
+
+func TestFederated(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		evidence func() assurance.Federated
+		assert   func(t *testing.T, f assurance.Federated)
+	}
+
+	cases := []testCase{
+		{
+			name:     "the zero value asserts nothing",
+			evidence: func() assurance.Federated { return assurance.Federated{} },
+			assert: func(t *testing.T, f assurance.Federated) {
+				assert.False(t, f.Asserted())
+				assert.Empty(t, f.Provider())
+				assert.Empty(t, f.Issuer())
+				assert.Empty(t, f.AMR())
+				assert.Empty(t, f.ACR())
+			},
+		},
+		{
+			name: "an empty provider asserts nothing",
+			evidence: func() assurance.Federated {
+				return assurance.NewFederated("", "https://idp.example", []string{"mfa"}, "gold")
+			},
+			assert: func(t *testing.T, f assurance.Federated) {
+				assert.False(t, f.Asserted())
+				assert.Equal(t, assurance.Federated{}, f, "evidence naming no provider is the zero evidence")
+			},
+		},
+		{
+			name: "a provider asserts its issuer, amr and acr",
+			evidence: func() assurance.Federated {
+				return assurance.NewFederated("corp", "https://idp.example", []string{"pwd", "otp"}, "gold")
+			},
+			assert: func(t *testing.T, f assurance.Federated) {
+				assert.True(t, f.Asserted())
+				assert.Equal(t, "corp", f.Provider())
+				assert.Equal(t, "https://idp.example", f.Issuer())
+				assert.Equal(t, []string{"pwd", "otp"}, f.AMR())
+				assert.Equal(t, "gold", f.ACR())
+			},
+		},
+		{
+			// A login whose provider asserted nothing is still evidence of which
+			// provider it came from, so it can be matched and found wanting.
+			name: "a provider that asserted no amr or acr is still evidence",
+			evidence: func() assurance.Federated {
+				return assurance.NewFederated("corp", "https://idp.example", nil, "")
+			},
+			assert: func(t *testing.T, f assurance.Federated) {
+				assert.True(t, f.Asserted())
+				assert.Empty(t, f.AMR())
+				assert.Empty(t, f.ACR())
+			},
+		},
+		{
+			name: "the caller's amr slice is copied in",
+			evidence: func() assurance.Federated {
+				amr := []string{"mfa"}
+				f := assurance.NewFederated("corp", "https://idp.example", amr, "")
+				amr[0] = "pwd"
+
+				return f
+			},
+			assert: func(t *testing.T, f assurance.Federated) {
+				assert.Equal(t, []string{"mfa"}, f.AMR(), "the minted evidence changed with the caller's slice")
+			},
+		},
+		{
+			name: "the returned amr slice is a copy",
+			evidence: func() assurance.Federated {
+				f := assurance.NewFederated("corp", "https://idp.example", []string{"mfa"}, "")
+				f.AMR()[0] = "pwd"
+
+				return f
+			},
+			assert: func(t *testing.T, f assurance.Federated) {
+				assert.Equal(t, []string{"mfa"}, f.AMR(), "a reader changed the minted evidence")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.evidence())
+		})
+	}
+}

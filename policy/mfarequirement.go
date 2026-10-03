@@ -31,6 +31,76 @@ var ErrMFARequired = errors.New("policy: this request must present a second fact
 // which is one factor wearing two names.
 var ErrMFAEnrollmentRequired = errors.New("policy: this user must enrol a second factor")
 
+// ErrFederatedAssuranceNotMet is the reason the requirement policy, in
+// FederatedAssuranceRefuse mode, refuses a required user's federated login
+// whose provider did not assert the assurance its configuration accepts.
+var ErrFederatedAssuranceNotMet = errors.New(
+	"policy: the provider did not assert the assurance this login requires")
+
+// FederatedAssuranceMode is what the requirement policy does with a required
+// user's login on the factor.Federated channel whose provider assurance is not
+// met. Met assurance allows in every mode.
+type FederatedAssuranceMode int
+
+const (
+	// FederatedAssuranceChallenge challenges an unmet login for the library's
+	// own second factor, and sends a user with no usable enrolment down the
+	// enrolment path when it admits the login, or refuses them with
+	// ErrMFAEnrollmentRequired. It is the default.
+	FederatedAssuranceChallenge FederatedAssuranceMode = iota
+
+	// FederatedAssuranceRefuse denies an unmet login with
+	// ErrFederatedAssuranceNotMet, for a deployment in which the provider
+	// must be the only authority on the second factor.
+	FederatedAssuranceRefuse
+
+	// FederatedAssuranceExempt allows every federated login, met or not,
+	// before the requirement is looked up and without consulting the
+	// assurance source or any enrolment. It is a total exemption: a required
+	// user who logs in through a provider that checked only a password gets
+	// in on that password. Choose it only when every provider is trusted to
+	// enforce the second factor itself. A consumer exemption rule that marks
+	// factor.OIDC exempt (WithMFAExemption) is equivalent. The second-factor
+	// challenge policy, under WithFederatedChallengeWhenUnmet(true), may still
+	// challenge such a login.
+	FederatedAssuranceExempt
+)
+
+// String names the mode, or prints an unnamed value as a number.
+func (m FederatedAssuranceMode) String() string {
+	switch m {
+	case FederatedAssuranceChallenge:
+		return "FederatedAssuranceChallenge"
+	case FederatedAssuranceRefuse:
+		return "FederatedAssuranceRefuse"
+	case FederatedAssuranceExempt:
+		return "FederatedAssuranceExempt"
+	default:
+		return unnamed("FederatedAssuranceMode", int(m))
+	}
+}
+
+// WithFederatedAssurance replaces what the policy does with a required user's
+// federated login whose provider assurance is not met. The default is
+// FederatedAssuranceChallenge, which challenges it for the library's own
+// second factor; FederatedAssuranceRefuse denies it with
+// ErrFederatedAssuranceNotMet instead.
+//
+// FederatedAssuranceExempt is a bypass, not a stricter check: it lets a
+// required user in on the provider's word alone, whatever the provider
+// asserted, without looking up the requirement, the source or any enrolment.
+// A consumer exemption rule that marks factor.OIDC exempt (WithMFAExemption)
+// is the same bypass.
+//
+// Whether assurance is met is decided only by the source given to
+// WithFederatedAssuranceSource; with none, it is never met. Met assurance
+// allows in every mode. The mode governs this policy alone: the second-factor
+// challenge policy has its own WithFederatedChallengeWhenUnmet. A value that
+// names no mode is a configuration error at construction.
+func WithFederatedAssurance(mode FederatedAssuranceMode) MFARequirementOption {
+	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.federatedMode = mode })
+}
+
 // ErrMFARequirementLookupMissing is the configuration error for a requirement
 // policy built with no lookup and no instruction to require a second factor of
 // everyone. Such a policy has no way to answer the only question it exists to
@@ -152,6 +222,8 @@ type mfaRequirementPolicy struct {
 	methods        []MFAMethodLookup
 	requiredForAll bool
 	exempt         func(factor.Kind) bool
+	federated      federatedSource
+	federatedMode  FederatedAssuranceMode
 	phaseOf        func(context.Context, *Input) (Phase, bool)
 	logger         *slog.Logger
 	clock          clock.Clock
@@ -197,38 +269,62 @@ type mfaRequirementPolicy struct {
 //
 // # Evaluation order
 //
-//  1. an exempt first factor: allow, before anything is looked up. Not for a
-//     post-authentication login carrying a holding Input.SecondFactorAtLogin:
-//     the exemption rule, default or replaced, is never called for it, and
-//     its phase is read here instead of at step 4;
+//  1. an exempt first factor, or a first factor on the factor.Federated
+//     channel in FederatedAssuranceExempt mode: allow, before anything is
+//     looked up. The exemption rule is not consulted for a post-authentication
+//     login carrying a holding Input.SecondFactorAtLogin: the rule, default or
+//     replaced, is never called for it, and its phase is read here instead of
+//     at step 4;
 //  2. is a second factor required? With WithMFARequiredForAll, yes, without
 //     consulting the lookup. A lookup that fails denies, with a reason of fixed
 //     text that wraps the lookup's error without repeating it;
 //  3. not required: allow;
-//  4. the stateless-authentication phase, or no method configured: deny
-//     ErrMFARequired — there is no later point at which such a request could
-//     answer a challenge;
-//  5. the per-request phase with the second factor already satisfied: allow.
-//     The post-authentication phase with a holding Input.SecondFactorAtLogin,
-//     the library's proof that the second factor was met at the first: allow
-//     too, before the usability check, so the enrolment challenge never fires
-//     for such a login. No exemption rule is consulted for it (see step 1);
-//  6. no usable enrolment, as UsableMFAMethods decides — enrolled on no
+//  4. the stateless-authentication phase, or a phase that cannot be
+//     identified: deny ErrMFARequired — there is no later point at which such
+//     a request could answer a challenge;
+//  5. the per-request phase with the second factor already satisfied: allow;
+//  6. a federated first factor, in the post-authentication or per-request
+//     phase: the source given to WithFederatedAssuranceSource matches
+//     Input.FederatedAssurance. Met: allow. A source error denies, with fixed
+//     text wrapping it. With no source, or evidence that asserts nothing,
+//     nothing is met. The evidence is matched again on every request, never
+//     trusted from the login;
+//  7. no method configured: deny ErrMFARequired;
+//  8. the post-authentication phase with a holding Input.SecondFactorAtLogin,
+//     the library's proof that the second factor was met at the first: allow,
+//     before the usability check, so the enrolment challenge never fires for
+//     such a login. No exemption rule is consulted for it (see step 1);
+//  9. a federated first factor in FederatedAssuranceRefuse mode: deny
+//     ErrFederatedAssuranceNotMet;
+//  10. no usable enrolment, as UsableMFAMethods decides — enrolled on no
 //     method, or only on methods on the first factor's own channel: with the
 //     enrolment path on (WithMFAEnrolmentPath) and admitting this login,
 //     challenge ChallengeMFAEnrolment; otherwise deny
 //     ErrMFAEnrollmentRequired. A failed enrolment lookup on any method denies
 //     either way, even when another method is usable, with fixed text
 //     wrapping its error;
-//  7. the per-request phase: challenge for MFA;
-//  8. the post-authentication phase: allow, leaving the login challenge to the
-//     challenge policy;
-//  9. any other phase: deny ErrMFARequired.
+//  11. the per-request phase: challenge for MFA;
+//  12. the post-authentication phase: challenge for MFA for a federated first
+//     factor, whose login the challenge policy lets through by default;
+//     otherwise allow, leaving the login challenge to the challenge policy;
+//  13. any other phase: deny ErrMFARequired.
+//
+// # Federated logins
+//
+// A login on the factor.Federated channel is not exempt by its kind. For a
+// required user it meets the requirement only when the provider's verified
+// assurance does (step 6), or under FederatedAssuranceExempt, or when a
+// consumer exemption rule marks factor.OIDC exempt, which is the same total
+// exemption. Otherwise WithFederatedAssurance decides: challenged (the
+// default) or refused. WithFederatedChallengeWhenUnmet, the second-factor
+// challenge policy's option, has no say here.
 //
 // In the post-authentication phase Input.MFASatisfied is not honoured. It is a
 // claim the login makes about itself, and a policy that can be talked out of a
 // requirement does not enforce one.
-// Only the library's proof in Input.SecondFactorAtLogin is. A consumer who
+// Only the library's proof in Input.SecondFactorAtLogin is, and the
+// library-minted Input.FederatedAssurance as matched by the source; the
+// evidence is not the proof. A consumer who
 // wants a separate second factor even after a user-verified passkey login
 // sets passkey.WithoutSecondFactorAtLogin on the passkey login, so no proof is
 // minted and this policy never sees one.
@@ -238,13 +334,17 @@ type mfaRequirementPolicy struct {
 // nothing — and with ErrMFARequirementUnsatisfiable when a second factor is
 // required of everyone and the set of methods is empty. It also fails,
 // wrapping ErrConfig, when the set holds an absent method or two methods of the
-// same Name, and when the enrolment path's allowlist is empty or names a kind
-// that can never enter it (WithEnrolmentFirstFactors). An absent argument here
+// same Name, when the enrolment path's allowlist is empty or names a kind
+// that can never enter it (WithEnrolmentFirstFactors), when the federated
+// assurance mode names no mode, and when WithFederatedAssuranceSource was
+// given an absent source. An absent argument here
 // means nil or a non-nil interface holding a nil pointer. The policy keeps its
 // own copy of the set.
 //
 // Defaults: the per-user lookup (WithMFARequiredForAll replaces it),
-// factor.Kind.MFAExempt (WithMFAExemption), the phase from the context
+// factor.Kind.MFAExempt (WithMFAExemption), no federated assurance source
+// (WithFederatedAssuranceSource), FederatedAssuranceChallenge
+// (WithFederatedAssurance), the phase from the context
 // (WithMFARequirementPhaseSource), slog.Default (WithMFARequirementLogger),
 // clock.System() (WithMFARequirementClock), DefaultLogInterval for its sampled
 // records (WithMFARequirementLogInterval) and no enrolment path
@@ -286,6 +386,16 @@ func NewMFARequirementPolicy(
 			"%w: the mfa requirement policy has no exemption rule, so it could not judge a "+
 				"single request", ErrConfig)
 	}
+	if err := p.federated.validate("mfa requirement policy"); err != nil {
+		return nil, err
+	}
+	switch p.federatedMode {
+	case FederatedAssuranceChallenge, FederatedAssuranceRefuse, FederatedAssuranceExempt:
+	default:
+		return nil, fmt.Errorf(
+			"%w: %s names no federated assurance mode, and guessing which was meant would "+
+				"decide whether a federated login is let through", ErrConfig, p.federatedMode)
+	}
 	if p.phaseOf == nil {
 		return nil, fmt.Errorf(
 			"%w: the mfa requirement policy has no source for the phase, so it would refuse "+
@@ -319,7 +429,9 @@ func (p *mfaRequirementPolicy) Phases() []Phase {
 // Challenges reports that this policy can ask for a second factor. It denies
 // more often than it challenges, but a required user who has a usable
 // enrolment is challenged rather than refused, and that challenge needs
-// enforcing like any other.
+// enforcing like any other. In FederatedAssuranceChallenge mode that includes
+// a required user's federated login whose provider assurance is not met,
+// which this policy challenges itself at login.
 //
 // With the enrolment path on (WithMFAEnrolmentPath) it also reports
 // ChallengeMFAEnrolment, so that a chain with no enrolment interceptor refuses
@@ -340,7 +452,7 @@ func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
 func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 	// A login carrying the library's proof that its second factor was met at
 	// the first factor is not judged by the exemption rule: the proof is
-	// honoured in step 5 and the rule is never called for it. Its phase is
+	// honoured in step 8 and the rule is never called for it. Its phase is
 	// therefore read up front, and only for it; every other request reads it
 	// at step 4 as before.
 	var (
@@ -355,9 +467,14 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		proofLogin = known && phase == PostAuthentication
 	}
 
+	federated := in.FirstFactor.Channel() == factor.Federated
+
 	// 1. An exempt first factor is decided before anything is looked up: a
-	// machine caller has nobody to prompt, and a federated login already
-	// authenticated where it came from.
+	// machine caller has nobody to prompt. A federated login in exempt mode is
+	// decided here too, the same total exemption under its own name.
+	if federated && p.federatedMode == FederatedAssuranceExempt {
+		return Decision{Outcome: Allow}
+	}
 	if !proofLogin && p.exempt(in.FirstFactor) {
 		return Decision{Outcome: Allow}
 	}
@@ -385,11 +502,10 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	}
 
 	// 4. A stateless request will never reach a phase in which it could answer
-	// a challenge, and a policy with no method has nothing to challenge
-	// against. Either way the requirement can only be met by refusing. An
+	// a challenge, so the requirement can only be met by refusing. An
 	// unidentifiable phase is refused here too: it might be a stateless
 	// request, and the alternative is guessing in a required user's favour.
-	if !known || phase == StatelessAuthentication || len(p.methods) == 0 {
+	if !known || phase == StatelessAuthentication {
 		return p.denyRequired(ctx, in, phaseName(phase, known))
 	}
 
@@ -400,7 +516,34 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		return Decision{Outcome: Allow}
 	}
 
-	// 5, at login. A login carrying the library's proof that its second factor was met
+	// 6. A federated login meets the requirement when the source matches its
+	// library-minted evidence, in either phase the policy decides it in; the
+	// evidence is re-matched every time, never trusted from an earlier answer.
+	// A decision that cannot be made denies.
+	decided := phase == PostAuthentication || phase == PerRequest
+	if federated && decided {
+		met, err := federatedMet(ctx, p.federated.src, in)
+		if err != nil {
+			p.reportSourceFailure(ctx, in, err)
+
+			return Decision{
+				Outcome: Deny,
+				Reason: diag.Wrap(err,
+					"policy: whether the provider's assurance meets this user's requirement "+
+						"could not be decided, and an assurance that cannot be decided is not met"),
+			}
+		}
+		if met {
+			return Decision{Outcome: Allow}
+		}
+	}
+
+	// 7. A policy with no method has nothing to challenge against.
+	if len(p.methods) == 0 {
+		return p.denyRequired(ctx, in, phaseName(phase, known))
+	}
+
+	// 8. A login carrying the library's proof that its second factor was met
 	// at the first factor is done, before the usability check, so the
 	// enrolment challenge never fires for it. Unlike the claim in step 5 the
 	// proof cannot be made by the login itself, and it is not an exemption:
@@ -409,7 +552,13 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		return Decision{Outcome: Allow}
 	}
 
-	// 6. A user with no usable enrolment cannot be challenged for a second
+	// 9. In refuse mode the provider is the only authority on a federated
+	// login's second factor, and it did not vouch for this one.
+	if federated && decided && p.federatedMode == FederatedAssuranceRefuse {
+		return p.denyAssurance(ctx, in, phaseName(phase, known))
+	}
+
+	// 10. A user with no usable enrolment cannot be challenged for a second
 	// factor. With the enrolment path on and the login admitted by it, they are
 	// challenged for enrolment instead; otherwise the refusal says what is
 	// missing rather than repeating that a second factor is due.
@@ -423,7 +572,7 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		}
 	}
 	if !usable {
-		// 6a. With the enrolment path on, a user it admits is sent to enrol
+		// 10a. With the enrolment path on, a user it admits is sent to enrol
 		// rather than refused.
 		if p.enrolment != nil && p.enrolment.admits(in, phase, p.methods) {
 			return Decision{Outcome: Challenge, Challenge: ChallengeMFAEnrolment}
@@ -433,16 +582,22 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	}
 
 	switch phase {
-	// 7. A session that has not satisfied its second factor is asked for one.
+	// 11. A session that has not satisfied its second factor is asked for one.
 	case PerRequest:
 		return Decision{Outcome: Challenge, Challenge: ChallengeMFA}
 
-	// 8. At login the challenge belongs to the policy NewMFAPolicy returns,
-	// which is why the two are registered together.
+	// 12. At login the challenge belongs to the policy NewMFAPolicy returns,
+	// which is why the two are registered together. A federated login is the
+	// exception: that policy lets it through by default, so a required user's
+	// unmet federated login is challenged here.
 	case PostAuthentication:
+		if federated {
+			return Decision{Outcome: Challenge, Challenge: ChallengeMFA}
+		}
+
 		return Decision{Outcome: Allow}
 
-	// 9. Any phase this policy never declared. Being asked in one is a wiring
+	// 13. Any phase this policy never declared. Being asked in one is a wiring
 	// mistake, and a requirement is not waived because the question arrived
 	// from the wrong place.
 	default:
@@ -460,7 +615,7 @@ func (p *mfaRequirementPolicy) isRequired(ctx context.Context, in *Input) (bool,
 	return p.required.Required(ctx, in.User)
 }
 
-// hasUsableEnrolment answers step 6 through UsableMFAMethods, the one
+// hasUsableEnrolment answers step 10 through UsableMFAMethods, the one
 // definition of "usable" the challenge policy and the chain share. An
 // enrolment on the first factor's own channel is not usable: whoever holds
 // that channel holds both factors, so challenging on it would prove nothing the
@@ -500,6 +655,39 @@ func (p *mfaRequirementPolicy) denyEnrolment(ctx context.Context, in *Input, pha
 		slog.String("phase", phase))
 
 	return Decision{Outcome: Deny, Reason: ErrMFAEnrollmentRequired}
+}
+
+// denyAssurance refuses, in refuse mode, a required user's federated login
+// whose provider assurance is not met, and records it. The record names the
+// provider and never the values it asserted.
+func (p *mfaRequirementPolicy) denyAssurance(ctx context.Context, in *Input, phase string) Decision {
+	provider := in.FederatedAssurance.Provider()
+	p.sampled(ctx, slog.LevelWarn, msgFederatedAssuranceNotMet,
+		strings.Join([]string{sampleAssuranceNotMet, string(in.User), provider, phase}, mfaKeySeparator),
+		slog.String("user", string(in.User)),
+		slog.String("first_factor", string(in.FirstFactor)),
+		slog.String("provider", provider),
+		slog.String("phase", phase))
+
+	return Decision{Outcome: Deny, Reason: ErrFederatedAssuranceNotMet}
+}
+
+// reportSourceFailure writes about an assurance decision that could not be
+// made, under the rules reportLookupFailure follows: a request that has ended
+// is written at debug level, and an outage under one key for every user.
+func (p *mfaRequirementPolicy) reportSourceFailure(ctx context.Context, in *Input, err error) {
+	attrs := append([]slog.Attr{
+		slog.String("user", string(in.User)),
+		slog.String("provider", in.FederatedAssurance.Provider()),
+	}, diag.Failure("assurance-source", err)...)
+
+	if ctx.Err() != nil {
+		p.logger.LogAttrs(ctx, slog.LevelDebug, msgAssuranceSourceEnded, attrs...)
+
+		return
+	}
+
+	p.sampled(ctx, slog.LevelError, msgAssuranceSourceFailed, sampleSourceFailed, attrs...)
 }
 
 // reportLookupFailure writes about a requirement that could not be read.
@@ -576,6 +764,10 @@ const (
 	msgRequirementLookupFailed = "policy: the mfa requirement lookup failed"
 	msgRequirementLookupEnded  = "policy: the mfa requirement lookup ended with its request"
 	msgRequirementSuppressed   = "policy: mfa requirement records suppressed"
+
+	msgFederatedAssuranceNotMet = "policy: refusing a federated login whose provider assurance is not met"
+	msgAssuranceSourceFailed    = "policy: the federated assurance source failed"
+	msgAssuranceSourceEnded     = "policy: the federated assurance source ended with its request"
 )
 
 // The sampler key families for this policy.
@@ -587,6 +779,12 @@ const (
 	// lookup is either reachable or it is not, and keying the record per user
 	// would turn one outage into one record per user in the window.
 	sampleLookupFailed = "lookup-failed"
+
+	sampleAssuranceNotMet = "assurance-not-met"
+
+	// sampleSourceFailed is one key for every user, for the reason
+	// sampleLookupFailed is.
+	sampleSourceFailed = "assurance-source-failed"
 )
 
 var (

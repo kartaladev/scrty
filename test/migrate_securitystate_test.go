@@ -158,6 +158,8 @@ var securityStateColumns = map[string][]column{
 		optional("enrolment_generation", colUUID),
 		optional("recovered_at", colTimestamptz),
 		defaulted("mfa_at_first_factor", colBoolean, "false"),
+		defaulted("federated_amr", colJSONB, defEmptyArray),
+		defaulted("federated_acr", colText, defEmptyText),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -237,6 +239,8 @@ var securityStateColumns = map[string][]column{
 		defaulted("session_id", colText, defEmptyText),
 		defaulted("id_token", colText, defEmptyText),
 		defaulted("next", colText, defEmptyText),
+		defaulted("amr", colJSONB, defEmptyArray),
+		defaulted("acr", colText, defEmptyText),
 		required("expires_at", colTimestamptz),
 		required("created_at", colTimestamptz),
 		optional("consumed_at", colTimestamptz),

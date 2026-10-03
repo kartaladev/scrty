@@ -318,6 +318,9 @@ type Policy interface {
 // pointers, and must treat it as read-only. An Engine hands the same Input to
 // every policy in the phase, so a policy that wrote to it would be deciding for
 // the policies after it.
+//
+// Input is not comparable: the federated assurance it carries holds a slice,
+// so == does not compile. Compare the fields you need.
 type Input struct {
 	// User is the authenticated user this request belongs to, and is empty
 	// before authentication has resolved one. It is the consumer's own opaque
@@ -357,11 +360,26 @@ type Input struct {
 	// the exemption rule for it. The zero value proves nothing, and a login
 	// without a holding proof is judged like any other login of its kind.
 	//
-	// Only library code can mint one that holds. A consumer that wants a
-	// separate second factor even after a user-verified passkey login turns
-	// the proof off at the passkey login, with
-	// passkey.WithoutSecondFactorAtLogin.
+	// Only library code can mint one that holds, and only the library's own
+	// passkey verification does. Federated evidence is never this proof,
+	// whatever the provider asserted: a federated login is decided by
+	// FederatedAssurance alone. A consumer that wants a separate second
+	// factor even after a user-verified passkey login turns the proof off at
+	// the passkey login, with passkey.WithoutSecondFactorAtLogin.
 	SecondFactorAtLogin SecondFactorProof
+
+	// FederatedAssurance is the evidence of the assurance a federated
+	// provider asserted for this login: its provider, issuer, amr and acr.
+	// The MFA policies decide it only for a first factor on the
+	// factor.Federated channel, and only through the FederatedAssuranceSource
+	// they were given (WithFederatedAssuranceSource); with none, it meets
+	// nothing. It is never the proof in SecondFactorAtLogin.
+	//
+	// The zero value asserts nothing. Only library code mints evidence that
+	// asserts anything: the OIDC handoff redemption and the per-request
+	// evaluation of a federated session. A plain field or claim cannot stand
+	// in for it.
+	FederatedAssurance FederatedAssurance
 
 	// Now is the instant the phase is being evaluated at, taken from the
 	// caller's clock. Every policy in the phase judges against the same

@@ -129,8 +129,16 @@ type HandoffRecord struct {
 	SecretHash                                 []byte
 	UserID                                     identity.UserID
 	Provider, Issuer, SessionID, IDToken, Next string
-	ExpiresAt, CreatedAt                       time.Time
-	ConsumedAt                                 *time.Time
+
+	// AMR and ACR are the assurance the verified ID token asserted: its amr
+	// values in order without duplicates, and its acr. Either may be empty,
+	// meaning nothing was asserted. They are not credentials and need no
+	// sealing. A store returns AMR as a slice the caller owns.
+	AMR []string
+	ACR string
+
+	ExpiresAt, CreatedAt time.Time
+	ConsumedAt           *time.Time
 }
 
 // HandoffStore holds issued handoff codes until they are redeemed or expire.
@@ -168,4 +176,23 @@ type CallbackResult struct {
 	Principal                            *identity.Principal
 	Provider, Issuer, SessionID, IDToken string
 	Next                                 string
+
+	// AMR and ACR are the assurance the verified ID token asserted: its amr
+	// values in order without duplicates, and its acr. Either may be empty,
+	// meaning nothing was asserted. They are read from the verified ID token
+	// alone.
+	//
+	// A handoff issued for this result carries them to the redemption, which
+	// records them on the session it creates. A consumer whose callback
+	// success handler creates the session itself must create it with all
+	// three of session.WithFirstFactor(factor.OIDC),
+	// session.WithExternalSession (the provider, issuer, session ID and ID
+	// token of this result) and session.WithFederatedAssurance (AMR and ACR).
+	// Per-request evidence is minted only from a session that records the
+	// federated first factor and its provider and issuer beside the assurance.
+	// With any of them missing the session carries no assurance, and a user
+	// required to use a second factor is then challenged or refused as though
+	// the provider had asserted nothing.
+	AMR []string
+	ACR string
 }

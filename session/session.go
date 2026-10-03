@@ -1,6 +1,7 @@
 package session
 
 import (
+	"slices"
 	"strconv"
 	"time"
 
@@ -125,6 +126,22 @@ type Session struct {
 	// challenge never carries it.
 	MFAAtFirstFactor bool
 
+	// FederatedAMR is the authentication methods references (RFC 8176 amr
+	// values) the identity provider asserted for the login that created this
+	// session. The default is nil: no assurance was recorded, which is what a
+	// password or passkey login leaves. Written only by the library's OIDC
+	// completion, through WithFederatedAssurance in the creating write, and
+	// carried over by Rotate. Library-owned: a consumer cannot set it through
+	// Data. It is evidence of what the provider said, not a second-factor
+	// state, so it never changes MFA or MFAAtFirstFactor.
+	FederatedAMR []string
+
+	// FederatedACR is the authentication context class reference the identity
+	// provider asserted for the login that created this session. The default
+	// is the empty string: none was recorded. Library-owned, written and
+	// carried over exactly like FederatedAMR.
+	FederatedACR string
+
 	// PasswordChangePending marks that this session owes a password change.
 	// Library-owned.
 	PasswordChangePending bool
@@ -175,8 +192,8 @@ type Session struct {
 	// Data is the consumer's own map. The library stores and returns it
 	// byte-for-byte, and never reads, adds, renames or removes an entry. No
 	// library state is kept in it: the first factor, the second-factor state
-	// and whether it was met at the first factor, the confinement marker, the enrolment generation, the recovery time and
-	// the password-change marker are fields above, so a consumer key can
+	// and whether it was met at the first factor, the federated assurance, the confinement marker, the enrolment generation,
+	// the recovery time and the password-change marker are fields above, so a consumer key can
 	// neither forge nor erase a challenge state.
 	//
 	// It is map[string]string rather than a map of arbitrary values because
@@ -185,7 +202,7 @@ type Session struct {
 	Data map[string]string
 }
 
-// clone returns a session sharing no map with s, so neither side can reach the
+// clone returns a session sharing no map or slice with s, so neither side can reach the
 // other's state by writing to what it handed over or read back.
 func (s *Session) clone() *Session {
 	if s == nil {
@@ -193,6 +210,7 @@ func (s *Session) clone() *Session {
 	}
 
 	out := *s
+	out.FederatedAMR = slices.Clone(s.FederatedAMR)
 	if s.Data != nil {
 		out.Data = make(map[string]string, len(s.Data))
 		for k, v := range s.Data {

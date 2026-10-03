@@ -369,9 +369,10 @@ func (d *e2eDeployment) reached(t *testing.T, credential string) {
 	assert.True(t, out.handlerRan, "the protected route is reached")
 }
 
-// oidcEnrolmentChain is the OIDC harness's chain with the exemption removed:
-// the real MFA policies over a real, unenrolled TOTP method, with the
-// enrolment path on under pathOpts.
+// oidcEnrolmentChain is the OIDC harness's chain under the default
+// classification, which does not exempt an OIDC login: the real MFA policies
+// over a real, unenrolled TOTP method, with the enrolment path on under
+// pathOpts.
 func oidcEnrolmentChain(t *testing.T, h *oidcHarness, pathOpts ...policy.EnrolmentPathOption) *httpsec.Chain {
 	t.Helper()
 
@@ -381,15 +382,12 @@ func oidcEnrolmentChain(t *testing.T, h *oidcHarness, pathOpts ...policy.Enrolme
 	lookups, err := mfa.LookupsFor(method)
 	require.NoError(t, err)
 
-	classification := policy.WithMFAExemption(func(k factor.Kind) bool {
-		return k != factor.OIDC && k.MFAExempt()
-	})
-
-	challenge, err := policy.NewMFAPolicy(lookups, classification)
+	challenge, err := policy.NewMFAPolicy(lookups)
 	require.NoError(t, err)
 
 	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
-		policy.WithMFARequiredForAll(), classification, policy.WithMFAEnrolmentPath(pathOpts...))
+		policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath(pathOpts...),
+		policy.WithFederatedAssuranceSource(h.manager))
 	require.NoError(t, err)
 
 	users := NewMockUserLoader(gomock.NewController(t))

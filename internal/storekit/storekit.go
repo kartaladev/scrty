@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -65,6 +66,47 @@ func CheckID(v id.ID, record string) error {
 	return nil
 }
 
+// CheckAssurance refuses the asserted amr values and acr of a record when one
+// holds text PostgreSQL cannot store. json.Marshal would silently replace
+// invalid UTF-8 with U+FFFD, and jsonb refuses an escaped NUL, so the values
+// are judged before they are marshalled. The refusal names the field, never
+// the value. prefix leads the field names, "federated " for a session and ""
+// for a handoff record.
+func CheckAssurance(prefix string, amr []string, acr string) error {
+	if !Storable(amr...) {
+		return unstorable(prefix + "amr")
+	}
+
+	return CheckStorable(Text(prefix+"acr", acr))
+}
+
+// EncodeAMR is values as the JSON array text a jsonb column holds, "[]" for
+// none, nil or empty; it never produces null. The values are stored as given,
+// unsealed, and in order.
+func EncodeAMR(values []string) (string, error) {
+	b, err := json.Marshal(OrNone(values))
+	if err != nil {
+		return "", err
+	}
+
+	return string(b), nil
+}
+
+// DecodeAMR is the values a jsonb column holds, in order. An empty array reads
+// back as nil, the "none" every store returns, so a record never reports an
+// empty non-nil list the in-memory stores would not.
+func DecodeAMR(raw []byte) ([]string, error) {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return nil, errors.New("the stored amr is not a JSON array of strings")
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	return values, nil
+}
+
 // CheckSession refuses a session the stores cannot hold without altering it:
 // one with text PostgreSQL cannot store in a column or in its data.
 func CheckSession(sess *session.Session) error {
@@ -76,6 +118,9 @@ func CheckSession(sess *session.Session) error {
 		Text("external session identifier", sess.ExternalSessionID),
 		Text("external ID token", sess.ExternalIDToken),
 	); err != nil {
+		return err
+	}
+	if err := CheckAssurance("federated ", sess.FederatedAMR, sess.FederatedACR); err != nil {
 		return err
 	}
 	// json.Marshal would replace invalid UTF-8 with U+FFFD, and jsonb refuses

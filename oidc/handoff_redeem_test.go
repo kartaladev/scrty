@@ -361,7 +361,7 @@ func TestHandoffRedeem(t *testing.T) {
 				f.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(handoffUser(), nil).Times(2)
 			},
 			checks: func(*testing.T, *handoffRedeemFixture) []oidc.RedeemCheck {
-				return []oidc.RedeemCheck{func(context.Context, identity.Principal, time.Time) error {
+				return []oidc.RedeemCheck{func(context.Context, oidc.RedeemCandidate) error {
 					return errRefusedByCheck
 				}}
 			},
@@ -370,7 +370,7 @@ func TestHandoffRedeem(t *testing.T) {
 				assert.Zero(t, res)
 				assert.False(t, f.consumed(t), "a check refusal leaves the code")
 
-				pass := func(context.Context, identity.Principal, time.Time) error { return nil }
+				pass := func(context.Context, oidc.RedeemCandidate) error { return nil }
 				_, err = f.m.Redeem(t.Context(), f.code, pass)
 				require.NoError(t, err, "a following redemption with a passing check succeeds")
 				assert.True(t, f.consumed(t))
@@ -385,10 +385,10 @@ func TestHandoffRedeem(t *testing.T) {
 				var calls []int
 				t.Cleanup(func() { assert.Equal(t, []int{1, 2}, calls, "the third check must not run") })
 				record := func(n int, err error) oidc.RedeemCheck {
-					return func(_ context.Context, p identity.Principal, changed time.Time) error {
+					return func(_ context.Context, c oidc.RedeemCandidate) error {
 						calls = append(calls, n)
-						assert.Equal(t, identity.UserID("u-1"), p.ID)
-						assert.Equal(t, handoffPasswordChangedAt, changed)
+						assert.Equal(t, identity.UserID("u-1"), c.Principal.ID)
+						assert.Equal(t, handoffPasswordChangedAt, c.PasswordChangedAt)
 						return err
 					}
 				}

@@ -37,6 +37,21 @@
 // reason and the error's Go type, never its text. A consumer who wants the
 // store's full error logs it inside their own implementation of the port.
 //
+// # Federated logins
+//
+// A login on the federated channel (OIDC) is not exempt from the second factor
+// by its kind; only api-key logins are. The provider's amr and acr are matched
+// by a FederatedAssuranceSource (the oidc Manager) that the second-factor
+// policies are given through WithFederatedAssuranceSource, and the evidence is
+// minted by the library, never read from a claim on the input. For a required
+// user, WithFederatedAssurance chooses what an unmet login gets: a challenge
+// for the library's own second factor (the default), a refusal, or none at all.
+// The last, FederatedAssuranceExempt, is a bypass of the requirement for OIDC
+// logins, as is a WithMFAExemption rule that exempts factor.OIDC. The
+// requirement policy also implements LoginAdmission, so a component that must
+// judge a login ahead of time, such as the account-recovery way-back check,
+// asks the policy and cannot disagree with it.
+//
 // The second-factor policies' records name the user, by the opaque reference
 // identity.UserID the consumer supplied, on purpose: an operator needs to know
 // whose login was refused or challenged, and the reference is the consumer's

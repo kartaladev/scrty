@@ -86,6 +86,7 @@ var statusTable = []statusRow{
 	{policy.ErrMFARequirementUnsatisfiable, http.StatusForbidden},
 	{policy.ErrMFAEnrollmentRequired, http.StatusForbidden},
 	{policy.ErrSecondFactorSameChannel, http.StatusForbidden},
+	{policy.ErrFederatedAssuranceNotMet, http.StatusForbidden},
 	{mfa.ErrSameChannel, http.StatusForbidden},
 	{ErrMFAMethodNotUsable, http.StatusForbidden},
 	{ErrNoMFAChallengePending, http.StatusForbidden},

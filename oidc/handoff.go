@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -126,12 +127,14 @@ func NewHandoffManager(store HandoffStore, users identity.UserLoader, opts ...Ha
 // expires HandoffTTL after now.
 //
 // The record carries the principal's user reference, the provider, the
-// verified issuer, the provider session id, the raw ID token and the requested
-// destination, all as res holds them. A result with no principal or no user
-// reference, a cancelled context, and a failure of the random source, the ID
-// generator or the store each return an error and no code; nothing is stored
-// then, except that a store write whose failure was reported may still have
-// landed, which leaves an unknown code that simply expires.
+// verified issuer, the provider session id, the raw ID token, the requested
+// destination and the asserted amr and acr, all as res holds them; the amr is
+// copied, so changing res afterwards changes nothing stored. A result with no
+// principal or no user reference, a cancelled context, and a failure of the
+// random source, the ID generator or the store each return an error and no
+// code; nothing is stored then, except that a store write whose failure was
+// reported may still have landed, which leaves an unknown code that simply
+// expires.
 //
 // The code is the caller's to hand to the browser and nowhere else: the
 // library never logs it.
@@ -166,6 +169,8 @@ func (h *HandoffManager) Issue(ctx context.Context, res CallbackResult) (string,
 		SessionID:  res.SessionID,
 		IDToken:    res.IDToken,
 		Next:       res.Next,
+		AMR:        slices.Clone(res.AMR),
+		ACR:        res.ACR,
 		CreatedAt:  now,
 		ExpiresAt:  now.Add(HandoffTTL),
 	}
@@ -190,9 +195,24 @@ func (h *HandoffManager) reportSuppressed(reason string, suppressed int) {
 		slog.Int("suppressed", suppressed))
 }
 
-// RedeemCheck is a refusal check run against the resolved principal before a
-// handoff code is spent. It has magiclink.Check's shape, so one policy check
-// builder serves both.
+// RedeemCandidate is what a redemption check decides on: the user a handoff
+// code was issued for, loaded afresh by the recorded reference, and the login
+// the record conveys.
+//
+// Provider, Issuer, AMR and ACR are the record's, as the library wrote them
+// at the callback from the verified ID token: never a value presented with
+// the redemption. AMR is a copy each check owns; writing to it changes nothing
+// another check, the result or the store sees.
+type RedeemCandidate struct {
+	Principal         identity.Principal
+	PasswordChangedAt time.Time
+	Provider, Issuer  string
+	AMR               []string
+	ACR               string
+}
+
+// RedeemCheck is a refusal check run against the redemption candidate before
+// a handoff code is spent.
 //
 // A check must have no side effects. Several racing redemptions of one code
 // can each run every check, and only one goes on to consume it. That includes
@@ -209,19 +229,23 @@ func (h *HandoffManager) reportSuppressed(reason string, suppressed int) {
 //
 // The first check that returns an error stops the redemption, later checks do
 // not run, the error is returned unchanged, and the code stays redeemable.
-type RedeemCheck func(ctx context.Context, p identity.Principal, passwordChangedAt time.Time) error
+type RedeemCheck func(ctx context.Context, c RedeemCandidate) error
 
 // HandoffResult is a redeemed handoff: the user it authenticates, loaded
 // afresh by the recorded reference, and the provider session it came from.
 //
 // IDToken is kept for RP-initiated logout and must never be logged. Next is
 // the destination recorded when the login started, still untrusted: the
-// caller resolves it through its allowlist before redirecting to it.
+// caller resolves it through its allowlist before redirecting to it. AMR and
+// ACR are the assurance the record carries, the same values the checks were
+// handed; AMR is the caller's own copy.
 type HandoffResult struct {
 	Principal                            identity.Principal
 	PasswordChangedAt                    time.Time
 	Provider, Issuer, SessionID, IDToken string
 	Next                                 string
+	AMR                                  []string
+	ACR                                  string
 }
 
 // Redeem spends a handoff code and reports whom it authenticates.
@@ -293,7 +317,15 @@ func (h *HandoffManager) Redeem(ctx context.Context, code string, checks ...Rede
 		if check == nil {
 			continue
 		}
-		if err := check(ctx, principal, details.PasswordChangedAt); err != nil {
+		candidate := RedeemCandidate{
+			Principal:         principal,
+			PasswordChangedAt: details.PasswordChangedAt,
+			Provider:          rec.Provider,
+			Issuer:            rec.Issuer,
+			AMR:               slices.Clone(rec.AMR),
+			ACR:               rec.ACR,
+		}
+		if err := check(ctx, candidate); err != nil {
 			return HandoffResult{}, err
 		}
 	}
@@ -318,6 +350,8 @@ func (h *HandoffManager) Redeem(ctx context.Context, code string, checks ...Rede
 		SessionID:         rec.SessionID,
 		IDToken:           rec.IDToken,
 		Next:              rec.Next,
+		AMR:               slices.Clone(rec.AMR),
+		ACR:               rec.ACR,
 	}, nil
 }
 

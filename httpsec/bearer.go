@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/policy"
@@ -140,14 +141,15 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	ex.SetContext(ctx)
 
 	d := evaluatePhase(ctx, b.engine, policy.PerRequest, &policy.Input{
-		User:              principal.ID,
-		Username:          principal.Username,
-		Principal:         principal,
-		Session:           s,
-		FirstFactor:       s.FirstFactor,
-		MFASatisfied:      s.MFA == session.MFASatisfied,
-		PasswordChangedAt: details.PasswordChangedAt,
-		Now:               now,
+		User:               principal.ID,
+		Username:           principal.Username,
+		Principal:          principal,
+		Session:            s,
+		FirstFactor:        s.FirstFactor,
+		MFASatisfied:       s.MFA == session.MFASatisfied,
+		PasswordChangedAt:  details.PasswordChangedAt,
+		FederatedAssurance: sessionFederatedAssurance(s),
+		Now:                now,
 	})
 
 	switch d.Outcome {
@@ -185,6 +187,24 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	}
 
 	return next(ex)
+}
+
+// sessionFederatedAssurance is the evidence a federated session's login
+// asserted, minted afresh on every request from the session's library-owned
+// fields: the provider and issuer it was created with and the amr and acr
+// recorded in the creating write. The policies match it against the
+// provider's configuration as it is now, so a tightened or removed provider
+// takes effect at the session's next request.
+//
+// A session whose first factor is not on the federated channel carries no
+// evidence, whatever its fields hold. Nothing is read from the request, a
+// header, a claim or the session's consumer data.
+func sessionFederatedAssurance(s *session.Session) policy.FederatedAssurance {
+	if s.FirstFactor.Channel() != factor.Federated {
+		return policy.FederatedAssurance{}
+	}
+
+	return mintFederated(s.ExternalProvider, s.ExternalIssuer, s.FederatedAMR, s.FederatedACR)
 }
 
 // markChallenge records a per-request challenge on s.

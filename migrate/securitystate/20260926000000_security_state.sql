@@ -33,7 +33,12 @@ CREATE TABLE sessions (
     recovered_at        timestamptz NULL,
     -- Set once, at creation, when a second factor was met at the first factor
     -- (a passkey with user verification). Never written by an update.
-    mfa_at_first_factor boolean NOT NULL DEFAULT false
+    mfa_at_first_factor boolean NOT NULL DEFAULT false,
+    -- What the identity provider asserted for the login that created a federated
+    -- session: amr is a JSON array of strings, in the order asserted ('[]' =
+    -- none); acr is '' when none. Stored unsealed.
+    federated_amr       jsonb NOT NULL DEFAULT '[]',
+    federated_acr       text NOT NULL DEFAULT ''
 );
 -- +goose StatementEnd
 -- Issuer leads: a provider session id is unique only within its issuer.
@@ -147,6 +152,10 @@ CREATE TABLE oidc_handoffs (
     session_id  text NOT NULL DEFAULT '',
     id_token    text NOT NULL DEFAULT '',
     next        text NOT NULL DEFAULT '', -- untrusted, re-resolved at redemption
+    -- The provider's asserted amr (JSON array of strings, '[]' = none) and acr
+    -- ('' = none), carried to the session redemption creates. Stored unsealed.
+    amr         jsonb NOT NULL DEFAULT '[]',
+    acr         text NOT NULL DEFAULT '',
     expires_at  timestamptz NOT NULL,
     created_at  timestamptz NOT NULL,
     consumed_at timestamptz NULL -- nullable guard with no default
