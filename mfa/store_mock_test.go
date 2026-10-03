@@ -83,6 +83,46 @@ func (c *MockEnrolmentStoreAcceptStepCall) DoAndReturn(f func(context.Context, i
 	return c
 }
 
+// ChargeVerifyAttempt mocks base method.
+func (m *MockEnrolmentStore) ChargeVerifyAttempt(ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration) (time.Time, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ChargeVerifyAttempt", ctx, user, at, limit, window)
+	ret0, _ := ret[0].(time.Time)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// ChargeVerifyAttempt indicates an expected call of ChargeVerifyAttempt.
+func (mr *MockEnrolmentStoreMockRecorder) ChargeVerifyAttempt(ctx, user, at, limit, window any) *MockEnrolmentStoreChargeVerifyAttemptCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ChargeVerifyAttempt", reflect.TypeOf((*MockEnrolmentStore)(nil).ChargeVerifyAttempt), ctx, user, at, limit, window)
+	return &MockEnrolmentStoreChargeVerifyAttemptCall{Call: call}
+}
+
+// MockEnrolmentStoreChargeVerifyAttemptCall wrap *gomock.Call
+type MockEnrolmentStoreChargeVerifyAttemptCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockEnrolmentStoreChargeVerifyAttemptCall) Return(until time.Time, ok bool, err error) *MockEnrolmentStoreChargeVerifyAttemptCall {
+	c.Call = c.Call.Return(until, ok, err)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockEnrolmentStoreChargeVerifyAttemptCall) Do(f func(context.Context, identity.UserID, time.Time, int, time.Duration) (time.Time, bool, error)) *MockEnrolmentStoreChargeVerifyAttemptCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockEnrolmentStoreChargeVerifyAttemptCall) DoAndReturn(f func(context.Context, identity.UserID, time.Time, int, time.Duration) (time.Time, bool, error)) *MockEnrolmentStoreChargeVerifyAttemptCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Confirm mocks base method.
 func (m *MockEnrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
 	m.ctrl.T.Helper()
@@ -234,6 +274,45 @@ func (c *MockEnrolmentStorePutPendingCall) Do(f func(context.Context, mfa.Enrolm
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockEnrolmentStorePutPendingCall) DoAndReturn(f func(context.Context, mfa.Enrolment) error) *MockEnrolmentStorePutPendingCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// RefundVerifyAttempt mocks base method.
+func (m *MockEnrolmentStore) RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RefundVerifyAttempt", ctx, user, until)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// RefundVerifyAttempt indicates an expected call of RefundVerifyAttempt.
+func (mr *MockEnrolmentStoreMockRecorder) RefundVerifyAttempt(ctx, user, until any) *MockEnrolmentStoreRefundVerifyAttemptCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RefundVerifyAttempt", reflect.TypeOf((*MockEnrolmentStore)(nil).RefundVerifyAttempt), ctx, user, until)
+	return &MockEnrolmentStoreRefundVerifyAttemptCall{Call: call}
+}
+
+// MockEnrolmentStoreRefundVerifyAttemptCall wrap *gomock.Call
+type MockEnrolmentStoreRefundVerifyAttemptCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockEnrolmentStoreRefundVerifyAttemptCall) Return(arg0 bool, arg1 error) *MockEnrolmentStoreRefundVerifyAttemptCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockEnrolmentStoreRefundVerifyAttemptCall) Do(f func(context.Context, identity.UserID, time.Time) (bool, error)) *MockEnrolmentStoreRefundVerifyAttemptCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockEnrolmentStoreRefundVerifyAttemptCall) DoAndReturn(f func(context.Context, identity.UserID, time.Time) (bool, error)) *MockEnrolmentStoreRefundVerifyAttemptCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

@@ -42,6 +42,18 @@ func (s failingEnrolmentStore) AcceptStep(
 
 func (s failingEnrolmentStore) Delete(context.Context, identity.UserID) error { return s.err }
 
+func (s failingEnrolmentStore) ChargeVerifyAttempt(
+	context.Context, identity.UserID, time.Time, int, time.Duration,
+) (time.Time, bool, error) {
+	return time.Time{}, false, s.err
+}
+
+func (s failingEnrolmentStore) RefundVerifyAttempt(
+	context.Context, identity.UserID, time.Time,
+) (bool, error) {
+	return false, s.err
+}
+
 func TestTOTPReplay(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

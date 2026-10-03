@@ -77,6 +77,19 @@ func TestEnrolmentStore_StepAcceptRace(t *testing.T) {
 	})
 }
 
+func TestEnrolmentStore_VerifyChargeRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) mfa.EnrolmentStore {
+		return newEnrolmentStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) {
+		storetest.RunVerifyChargeRace(t, h, storefix.VerifyChargeRace[mfa.EnrolmentStore]())
+	})
+}
+
 func TestEnrolmentStore_CompleteRace(t *testing.T) {
 	t.Parallel()
 

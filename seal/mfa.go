@@ -215,6 +215,24 @@ func (s *enrolmentStore) Delete(ctx context.Context, user identity.UserID) error
 	return enrolmentFailed(s.inner.Delete(ctx, user), "seal: the inner store could not delete the MFA enrolment")
 }
 
+// ChargeVerifyAttempt passes through to inner. The instant, limit and window
+// reach it as given, and the window end it returns comes back unchanged, so a
+// give-back naming it matches what inner stored.
+func (s *enrolmentStore) ChargeVerifyAttempt(
+	ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
+) (time.Time, bool, error) {
+	until, ok, err := s.inner.ChargeVerifyAttempt(ctx, user, at, limit, window)
+
+	return until, ok, enrolmentFailed(err, "seal: the inner store could not charge the TOTP verification attempt")
+}
+
+// RefundVerifyAttempt passes through to inner.
+func (s *enrolmentStore) RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error) {
+	ok, err := s.inner.RefundVerifyAttempt(ctx, user, until)
+
+	return ok, enrolmentFailed(err, "seal: the inner store could not give back the TOTP verification attempt")
+}
+
 // ProveDevice seals the emailed code, when there is one, against the
 // generation and the user, and passes the proof to the inner store's device
 // proofs. Nothing is stored when sealing fails.

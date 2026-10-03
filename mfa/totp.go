@@ -46,6 +46,11 @@ type TOTP struct {
 	ids    id.Generator
 	logger *slog.Logger
 
+	// verifyLimit and verifyWindow bound the verification attempts charged
+	// against one enrolment: at most verifyLimit per window of verifyWindow.
+	verifyLimit  int
+	verifyWindow time.Duration
+
 	// proofs is the store as a DeviceProofStore, or nil when it does not
 	// implement the port. It is decided once, at construction.
 	proofs DeviceProofStore
@@ -60,15 +65,17 @@ type TOTP struct {
 //
 // Defaults: 6 digits (WithDigits, which also accepts 8), a 30-second step
 // (WithPeriod), clock.System() (WithClock), crypto/rand.Reader (WithRandom) and
-// id.NewV7Generator for enrolment generations (WithTOTPIDGenerator). store
+// id.NewV7Generator for enrolment generations (WithTOTPIDGenerator), and 5
+// verification attempts per enrolment per 15 minutes (WithVerifyAttempts). store
 // has no default — an enrolment store is the one thing this method cannot
 // invent, and NewMemoryEnrolmentStore is the obvious argument for a test or a
 // single process.
 //
 // Construction fails on an absent store, an empty issuer, an issuer containing
 // ':' — the separator of the provisioning URI's label — a digit count that is
-// neither 6 nor 8, a period of zero or less, and a nil clock, random source or
-// identifier generator.
+// neither 6 nor 8, a period of zero or less, a verification attempt limit or
+// window of zero or less, and a nil clock, random source or identifier
+// generator.
 // Each of those is a wiring mistake whose symptom would otherwise appear at the
 // first verification, a long way from its cause.
 func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, error) {
@@ -81,6 +88,9 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 		random: rand.Reader,
 		ids:    id.NewV7Generator(),
 		logger: slog.Default(),
+
+		verifyLimit:  DefaultVerifyAttemptLimit,
+		verifyWindow: DefaultVerifyAttemptWindow,
 	}
 
 	for _, opt := range opts {
@@ -107,6 +117,14 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 
 	if t.period <= 0 {
 		return nil, fmt.Errorf("mfa: totp period must be positive, got %s", t.period)
+	}
+
+	if t.verifyLimit <= 0 {
+		return nil, fmt.Errorf("%w: totp verification attempt limit must be positive, got %d", ErrConfig, t.verifyLimit)
+	}
+
+	if t.verifyWindow <= 0 {
+		return nil, fmt.Errorf("%w: totp verification attempt window must be positive, got %s", ErrConfig, t.verifyWindow)
 	}
 
 	if nilcheck.IsNil(t.clock) {
@@ -159,18 +177,35 @@ func (t *TOTP) Period() time.Duration { return t.period }
 // Verify checks the code in response for user. The response is the value of
 // the "code" form field, as the verify endpoint read it.
 //
-// The order is: read the enrolment, match the code against the accepted steps,
-// then ask the store to accept the matched step. The store call is last and is
-// the only thing that decides acceptance, because it is the one operation that
-// is atomic: a code matched by two concurrent verifications reaches AcceptStep
-// twice, and exactly one of those calls changes anything. RFC 6238 requires
-// that a verifier not accept a code a second time after a successful
-// validation, and this is where that is decided.
+// The order is: read the enrolment, charge the attempt against it, match the
+// code against the accepted steps, then ask the store to accept the matched
+// step.
 //
-// Every refusal is ErrInvalidCode — an unknown user, an unconfirmed enrolment,
-// a wrong code, a code from outside the window, and a replay. They are
-// deliberately indistinguishable: telling them apart would say whether a user
-// exists and whether they have enrolled.
+// The charge comes before the compare, and every presented code is charged,
+// a malformed one included: it is one conditional write to the store, so of
+// any number of verifications arriving at once, on any number of replicas, at
+// most the limit of [WithVerifyAttempts] are compared per window. A refused
+// charge returns [ErrVerifyAttemptsExhausted], which matches [ErrVerifyThrottled],
+// and the code is not compared at all. An unknown user or an unconfirmed
+// enrolment is refused before the charge, and charges nothing.
+//
+// A code the store accepts gives its charge back, in the window it was charged
+// in, so a user who proves the factor spends nothing; a replayed step, which
+// the store does not accept, keeps its charge. The give-back runs whether or
+// not the caller is still waiting. If it fails it is logged at WARN and the
+// verification still succeeds: the user is out one attempt, nothing more.
+//
+// The accepting store call is last and is the only thing that decides
+// acceptance, because it is the one operation that is atomic: a code matched
+// by two concurrent verifications reaches AcceptStep twice, and exactly one of
+// those calls changes anything. RFC 6238 requires that a verifier not accept a
+// code a second time after a successful validation, and this is where that is
+// decided.
+//
+// Every other refusal is ErrInvalidCode — an unknown user, an unconfirmed
+// enrolment, a wrong code, a code from outside the window, and a replay. They
+// are deliberately indistinguishable: telling them apart would say whether a
+// user exists and whether they have enrolled.
 //
 // A store failure is returned as an error, never as ErrInvalidCode, so a caller
 // can tell a refusal from an outage. It is also never reported as "not
@@ -190,6 +225,17 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 		return ErrInvalidCode
 	}
 
+	until, charged, err := t.store.ChargeVerifyAttempt(ctx, user, t.clock.Now(), t.verifyLimit, t.verifyWindow)
+	if err != nil {
+		return enrolmentStoreFailed(err, "mfa: totp could not charge the verification attempt")
+	}
+
+	if !charged {
+		t.record(ctx, slog.LevelDebug, msgCodeRefused, user, slog.String("reason", "attempts-spent"))
+
+		return ErrVerifyAttemptsExhausted
+	}
+
 	step, matched := t.match(e.Secret, code, t.clock.Now())
 	if !matched {
 		t.record(ctx, slog.LevelDebug, msgCodeRefused, user, slog.String("reason", "no-match"))
@@ -206,6 +252,15 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 		t.record(ctx, slog.LevelDebug, msgCodeRefused, user, slog.String("reason", "step-spent"))
 
 		return ErrInvalidCode
+	}
+
+	// A success gives back its own charge, in the window it was charged in,
+	// so a user who proves the factor spends nothing. A caller hanging up
+	// after the code was accepted must not cost them an attempt, so the
+	// give-back does not inherit the request's cancellation. Failing to give
+	// it back costs the user one attempt and refuses nothing.
+	if _, err := t.store.RefundVerifyAttempt(context.WithoutCancel(ctx), user, until); err != nil {
+		t.record(ctx, slog.LevelWarn, msgGiveBackFailed, user, diag.Failure("enrolment-store", err)...)
 	}
 
 	t.record(ctx, slog.LevelDebug, msgCodeAccepted, user)
@@ -506,6 +561,7 @@ func (t *TOTP) RemoveEnrolment(ctx context.Context, user identity.UserID) error 
 const (
 	msgCodeRefused        = "mfa: totp code refused"
 	msgCodeAccepted       = "mfa: totp code accepted"
+	msgGiveBackFailed     = "mfa: totp could not give back the verification attempt"
 	msgEnrolmentBegun     = "mfa: totp enrolment begun"
 	msgEnrolmentConfirmed = "mfa: totp enrolment confirmed"
 	msgEnrolmentRemoved   = "mfa: totp enrolment removed"

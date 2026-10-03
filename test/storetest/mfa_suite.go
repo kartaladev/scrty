@@ -60,6 +60,182 @@ func assertEnrolment(ctx context.Context, t *testing.T, s mfa.EnrolmentStore, wa
 	}
 	assertTimeEqual(t, want.EmailCodeUntil, got.EmailCodeUntil, "EmailCodeUntil")
 	assert.Equal(t, want.EmailCodeAttempts, got.EmailCodeAttempts, "EmailCodeAttempts")
+	assert.Equal(t, want.VerifyAttempts, got.VerifyAttempts, "VerifyAttempts")
+	assertTimeEqual(t, want.VerifyWindowUntil, got.VerifyWindowUntil, "VerifyWindowUntil")
+}
+
+// The charging window the verification-attempt cases use: the default limit
+// and window, so a case reads as the TOTP method charges.
+const (
+	verifyLimit  = 5
+	verifyWindow = 15 * time.Minute
+)
+
+// chargeVerify charges one TOTP verification attempt for mfaUser at at with
+// the cases' limit and window, requires it to succeed, and returns the end of
+// the window it was charged in.
+func chargeVerify(ctx context.Context, t *testing.T, s mfa.EnrolmentStore, at time.Time) time.Time {
+	t.Helper()
+
+	until, ok, err := s.ChargeVerifyAttempt(ctx, mfaUser, at, verifyLimit, verifyWindow)
+	require.NoError(t, err)
+	require.True(t, ok, "a charge at %v must succeed", at)
+	return until
+}
+
+// verifyAttemptCases are the enrolment suite's cases for charging and giving
+// back TOTP verification attempts, each named after the scenario it proves.
+func verifyAttemptCases() []suiteCase[mfa.EnrolmentStore] {
+	return []suiteCase[mfa.EnrolmentStore]{
+		{
+			name: "The window ends at its end instant",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				for range verifyLimit {
+					until := chargeVerify(ctx, t, s, suiteStart)
+					assertTimeEqual(t, suiteStart.Add(verifyWindow), until, "window end")
+				}
+				_, ok, err := s.ChargeVerifyAttempt(ctx, mfaUser, suiteStart.Add(14*time.Minute), verifyLimit, verifyWindow)
+				require.NoError(t, err)
+				assert.False(t, ok, "a sixth charge inside the window must be refused")
+
+				until, ok, err := s.ChargeVerifyAttempt(ctx, mfaUser, suiteStart.Add(verifyWindow), verifyLimit, verifyWindow)
+				require.NoError(t, err)
+				require.True(t, ok, "a charge at the window's end instant opens a new window")
+				assertTimeEqual(t, suiteStart.Add(2*verifyWindow), until, "new window end")
+
+				got, _, err := s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, got.VerifyAttempts, "the new window counts one")
+				assertTimeEqual(t, suiteStart.Add(2*verifyWindow), got.VerifyWindowUntil, "VerifyWindowUntil")
+			},
+		},
+		{
+			name: "A charge after an idle gap opens a window from the charge",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				chargeVerify(ctx, t, s, suiteStart)
+
+				at := suiteStart.Add(verifyWindow + 7*time.Minute)
+				until := chargeVerify(ctx, t, s, at)
+				assertTimeEqual(t, at.Add(verifyWindow), until, "window end")
+
+				got, _, err := s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, got.VerifyAttempts, "the new window counts one")
+				assertTimeEqual(t, at.Add(verifyWindow), got.VerifyWindowUntil, "VerifyWindowUntil")
+			},
+		},
+		{
+			name: "Pending enrolment is not charged",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				e := pendingEnrolment(mfaUser, "secret", 0)
+				require.NoError(t, s.PutPending(ctx, e))
+
+				_, ok, err := s.ChargeVerifyAttempt(ctx, mfaUser, suiteStart, verifyLimit, verifyWindow)
+				require.NoError(t, err)
+				assert.False(t, ok, "a pending enrolment is not charged")
+				assertEnrolment(ctx, t, s, e)
+
+				_, ok, err = s.ChargeVerifyAttempt(ctx, "nobody", suiteStart, verifyLimit, verifyWindow)
+				require.NoError(t, err)
+				assert.False(t, ok, "an absent enrolment is not charged")
+				assertNotEnrolled(ctx, t, s, "nobody")
+			},
+		},
+		{
+			name: "The window end a charge returns is the one a give-back matches",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				until := chargeVerify(ctx, t, s, preciseStart)
+				assert.True(t, until.Equal(preciseStart.Add(verifyWindow).Truncate(time.Microsecond)),
+					"window end is %v, want the charge instant plus the window, truncated to the microsecond", until)
+
+				got, _, err := s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assertTimeEqual(t, until, got.VerifyWindowUntil, "VerifyWindowUntil is the end the charge returned")
+				assert.Equal(t, 1, got.VerifyAttempts)
+
+				ok, err := s.RefundVerifyAttempt(ctx, mfaUser, until)
+				require.NoError(t, err)
+				assert.True(t, ok, "a give-back naming the returned window end must match")
+
+				got, _, err = s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assert.Zero(t, got.VerifyAttempts, "the give-back restores the count")
+			},
+		},
+		{
+			name: "Give-back in the window it was charged in",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				until := chargeVerify(ctx, t, s, suiteStart)
+				chargeVerify(ctx, t, s, suiteStart.Add(time.Minute))
+
+				ok, err := s.RefundVerifyAttempt(ctx, mfaUser, until)
+				require.NoError(t, err)
+				assert.True(t, ok, "a give-back naming the current window must succeed")
+
+				got, _, err := s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, got.VerifyAttempts, "the give-back lowers the count by one")
+				assertTimeEqual(t, until, got.VerifyWindowUntil, "a give-back keeps the window")
+			},
+		},
+		{
+			name: "Give-back after the window was replaced",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				first := chargeVerify(ctx, t, s, suiteStart)
+				second := chargeVerify(ctx, t, s, suiteStart.Add(verifyWindow))
+
+				ok, err := s.RefundVerifyAttempt(ctx, mfaUser, first)
+				require.NoError(t, err)
+				assert.False(t, ok, "a give-back naming a replaced window must be refused")
+
+				got, _, err := s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assert.Equal(t, 1, got.VerifyAttempts, "a refused give-back leaves the count")
+				assertTimeEqual(t, second, got.VerifyWindowUntil, "a refused give-back leaves the window")
+			},
+		},
+		{
+			name: "Give-back at zero",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				until := chargeVerify(ctx, t, s, suiteStart)
+				ok, err := s.RefundVerifyAttempt(ctx, mfaUser, until)
+				require.NoError(t, err)
+				require.True(t, ok, "the charge must be given back once")
+
+				ok, err = s.RefundVerifyAttempt(ctx, mfaUser, until)
+				require.NoError(t, err)
+				assert.False(t, ok, "a give-back with nothing charged must be refused")
+
+				got, _, err := s.Get(ctx, mfaUser)
+				require.NoError(t, err)
+				assert.Zero(t, got.VerifyAttempts, "the count stays zero")
+			},
+		},
+		{
+			name: "A new begin clears the count",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				for range 3 {
+					chargeVerify(ctx, t, s, suiteStart)
+				}
+				require.NoError(t, s.Delete(ctx, mfaUser))
+
+				// The begin is handed a count and a window, as a caller
+				// replaying a read enrolment would, and keeps neither.
+				given := pendingEnrolment(mfaUser, "secret-2", 2)
+				given.VerifyAttempts = 3
+				given.VerifyWindowUntil = suiteStart.Add(verifyWindow)
+				require.NoError(t, s.PutPending(ctx, given))
+				assertEnrolment(ctx, t, s, pendingEnrolment(mfaUser, "secret-2", 2))
+			},
+		},
+	}
 }
 
 // assertNotEnrolled requires the store to hold no enrolment for user.
@@ -152,6 +328,13 @@ func assertConfirmKeepsStep(
 // and step; AcceptStep succeeds only on a confirmed enrolment and only for a
 // step strictly after the recorded one; users are matched byte for byte; and
 // deleting is not an error when there is nothing to delete.
+//
+// It also holds the store to charging TOTP verification attempts: only a
+// confirmed enrolment is charged; a window ends at its end instant, and a
+// charge then opens a new one counting one; a give-back lowers the count only
+// in the window it names and never below zero; and a begin starts with no
+// count and no window. That at most the limit of concurrent charges succeed
+// is RunVerifyChargeRace's to prove.
 //
 // For a store that also implements mfa.DeviceProofStore, two more cases hold
 // the begin and the confirmation to the enrolment path: a begin starts a new
@@ -328,6 +511,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		optionalCase(false, newGenerationCase, assertNewGeneration),
 		optionalCase(false, confirmKeepsStepCase, assertConfirmKeepsStep),
 	}
+	cases = append(cases, verifyAttemptCases()...)
 
 	runSuite(t, cases, withoutClock(newStore))
 }

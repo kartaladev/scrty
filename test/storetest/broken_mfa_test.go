@@ -64,6 +64,34 @@ const (
 	// so exactly the allowed charges win but the code is gone after them,
 	// where it must stay stored until completion or a new begin.
 	mfaChargeClearsCodeAtCap mfaDefect = "charge-clears-code-at-cap"
+
+	// ChargeVerifyAttempt counts every charge in the window, however many
+	// were charged before.
+	mfaVerifyChargeWithoutCap mfaDefect = "verify-charge-without-cap"
+	// ChargeVerifyAttempt reads the count, then writes it plus one, so
+	// concurrent charges all pass the limit.
+	mfaVerifyChargeReadThenWrite mfaDefect = "verify-charge-read-then-write"
+	// ChargeVerifyAttempt never opens a new window, so an ended one keeps
+	// counting.
+	mfaVerifyWindowNeverEnds mfaDefect = "verify-window-never-ends"
+	// ChargeVerifyAttempt opens the new window from the old window's end, not
+	// from the charge, so after an idle gap the window is already over.
+	mfaVerifyWindowAnchoredOnOldEnd mfaDefect = "verify-window-anchored-on-old-end"
+	// RefundVerifyAttempt lowers the count whatever window it names.
+	mfaVerifyRefundIgnoresWindow mfaDefect = "verify-refund-ignores-window"
+	// ChargeVerifyAttempt charges a pending enrolment as if confirmed.
+	mfaVerifyChargesPending mfaDefect = "verify-charges-pending"
+	// RefundVerifyAttempt lowers the count past zero.
+	mfaVerifyRefundBelowZero mfaDefect = "verify-refund-below-zero"
+	// mfaVerifyRefundZeroesCount gives a charge back by resetting the count
+	// to zero instead of lowering it by one.
+	mfaVerifyRefundZeroesCount mfaDefect = "verify-refund-zeroes-count"
+	// ChargeVerifyAttempt returns and stores the window end as computed,
+	// without the truncation to the microsecond a durable store applies.
+	mfaVerifyWindowEndUntruncated mfaDefect = "verify-window-end-untruncated"
+	// A begin stores the verification attempts and window it is given, where
+	// it must start with none.
+	mfaPutPendingKeepsGivenVerifyAttempts mfaDefect = "put-pending-keeps-given-verify-attempts"
 )
 
 // mfaStore is an enrolment store over process memory, written apart from the
@@ -113,6 +141,9 @@ func (s *mfaStore) PutPending(_ context.Context, e mfa.Enrolment) error {
 	}
 	if replacing && s.defect == mfaPutPendingKeepsAttempts {
 		stored.EmailCodeAttempts = existing.EmailCodeAttempts
+	}
+	if s.defect == mfaPutPendingKeepsGivenVerifyAttempts {
+		stored.VerifyAttempts, stored.VerifyWindowUntil = e.VerifyAttempts, e.VerifyWindowUntil
 	}
 	s.enrolments[e.User] = stored
 	return nil
@@ -247,6 +278,66 @@ func (s *mfaStore) ChargeEmailCode(
 	return e.EmailCodeAttempts, true, nil
 }
 
+func (s *mfaStore) ChargeVerifyAttempt(
+	_ context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
+) (time.Time, bool, error) {
+	s.mu.Lock()
+	e, ok := s.enrolments[user]
+	if !ok || (e.ConfirmedAt.IsZero() && s.defect != mfaVerifyChargesPending) {
+		s.mu.Unlock()
+		return time.Time{}, false, nil
+	}
+	old := e.VerifyWindowUntil
+	ended := e.VerifyWindowUntil.IsZero() || !at.Before(e.VerifyWindowUntil)
+	if s.defect == mfaVerifyWindowNeverEnds {
+		ended = e.VerifyWindowUntil.IsZero()
+	}
+	if !ended && e.VerifyAttempts >= limit && s.defect != mfaVerifyChargeWithoutCap {
+		s.mu.Unlock()
+		return time.Time{}, false, nil
+	}
+	if s.defect == mfaVerifyChargeReadThenWrite {
+		// The window between the read and the write that a real store's
+		// round trips open; the write then stores what was read plus one.
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		s.mu.Lock()
+	}
+	defer s.mu.Unlock()
+
+	if ended {
+		e.VerifyAttempts, e.VerifyWindowUntil = 1, at.Add(window).Truncate(time.Microsecond)
+		if s.defect == mfaVerifyWindowEndUntruncated {
+			e.VerifyWindowUntil = at.Add(window)
+		}
+		if s.defect == mfaVerifyWindowAnchoredOnOldEnd && !old.IsZero() {
+			e.VerifyWindowUntil = old.Add(window).Truncate(time.Microsecond)
+		}
+	} else {
+		e.VerifyAttempts++
+	}
+	s.enrolments[user] = e
+	return e.VerifyWindowUntil, true, nil
+}
+
+func (s *mfaStore) RefundVerifyAttempt(_ context.Context, user identity.UserID, until time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.enrolments[user]
+	if !ok ||
+		(e.VerifyAttempts <= 0 && s.defect != mfaVerifyRefundBelowZero) ||
+		(!e.VerifyWindowUntil.Equal(until) && s.defect != mfaVerifyRefundIgnoresWindow) {
+		return false, nil
+	}
+	e.VerifyAttempts--
+	if s.defect == mfaVerifyRefundZeroesCount {
+		e.VerifyAttempts = 0
+	}
+	s.enrolments[user] = e
+	return true, nil
+}
+
 // The suite cases the enrolment-path variants must fail at, as the suites
 // name them.
 const (
@@ -275,6 +366,15 @@ var enrolmentPathVariants = []brokenVariant{
 	mfaVariant(mfaStepOverwritingConfirm, confirmKeepsStepCase),
 	mfaVariant(mfaConfirmKeepsCode, confirmKeepsStepCase),
 	mfaVariant(mfaPutPendingKeepsProof, newGenerationCase),
+	mfaVariant(mfaVerifyChargeWithoutCap, "The window ends at its end instant"),
+	mfaVariant(mfaVerifyWindowNeverEnds, "The window ends at its end instant"),
+	mfaVariant(mfaVerifyWindowAnchoredOnOldEnd, "A charge after an idle gap opens a window from the charge"),
+	mfaVariant(mfaVerifyRefundIgnoresWindow, "Give-back after the window was replaced"),
+	mfaVariant(mfaVerifyChargesPending, "Pending enrolment is not charged"),
+	mfaVariant(mfaVerifyRefundBelowZero, "Give-back at zero"),
+	mfaVariant(mfaVerifyRefundZeroesCount, "Give-back in the window it was charged in"),
+	mfaVariant(mfaVerifyWindowEndUntruncated, "The window end a charge returns is the one a give-back matches"),
+	mfaVariant(mfaPutPendingKeepsGivenVerifyAttempts, "A new begin clears the count"),
 	// The device-proof suite requires the port, so it runs the begin's
 	// device-proof case where the enrolment suite may only log it as not
 	// run.

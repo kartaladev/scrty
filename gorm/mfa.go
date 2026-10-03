@@ -2,6 +2,8 @@ package gorm
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -34,7 +37,8 @@ import (
 //
 // The returned store implements mfa.DeviceProofStore, so the enrolment path
 // runs over it. PutPending starts the enrolment's generation, clearing any
-// device proof and emailed code; ProveDevice, Complete and ChargeEmailCode are
+// device proof, emailed code and TOTP verification attempts; ProveDevice,
+// Complete, ChargeEmailCode, ChargeVerifyAttempt and RefundVerifyAttempt are
 // each one conditional statement with every condition in its WHERE clause, so
 // of concurrent completions of one generation exactly one succeeds, and of
 // concurrent charges against one code no more than mfa.MaxEmailCodeFailures
@@ -130,6 +134,8 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		EmailCode:         code,
 		EmailCodeUntil:    fromNull(row.EmailCodeUntil),
 		EmailCodeAttempts: int(row.EmailCodeAttempts),
+		VerifyAttempts:    int(row.VerifyAttempts),
+		VerifyWindowUntil: fromNull(row.VerifyWindowUntil),
 	}, true, nil
 }
 
@@ -169,7 +175,9 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 			clause.Assignment{Column: clause.Column{Name: "device_proven_at"}, Value: nil},
 			clause.Assignment{Column: clause.Column{Name: "email_code"}, Value: nil},
 			clause.Assignment{Column: clause.Column{Name: "email_code_until"}, Value: nil},
-			clause.Assignment{Column: clause.Column{Name: "email_code_attempts"}, Value: 0}),
+			clause.Assignment{Column: clause.Column{Name: "email_code_attempts"}, Value: 0},
+			clause.Assignment{Column: clause.Column{Name: "verify_attempts"}, Value: 0},
+			clause.Assignment{Column: clause.Column{Name: "verify_window_until"}, Value: nil}),
 		Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "mfa_enrolments.confirmed_at IS NULL"}}},
 	}).Create(&row)
 	if res.Error != nil {
@@ -348,3 +356,56 @@ var (
 	_ mfa.DeviceProofStore   = (*enrolmentStore)(nil)
 	_ seal.EnrolmentResealer = (*enrolmentStore)(nil)
 )
+
+// ChargeVerifyAttempt charges one TOTP verification attempt against the user's
+// confirmed enrolment at at: one conditional UPDATE … RETURNING the window's
+// end, run as the shared statement. The end is computed here, truncated to the
+// microsecond the column keeps, so the value returned is the value a give-back
+// must match.
+func (s *enrolmentStore) ChargeVerifyAttempt(
+	ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
+) (time.Time, bool, error) {
+	const op = "charge TOTP verification attempt"
+
+	if !storekit.Storable(string(user)) {
+		return time.Time{}, false, nil
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return time.Time{}, false, failed(op, err)
+	}
+	var until time.Time
+	err = q.Raw(pgschema.EnrolmentChargeVerifyAttempt,
+		string(user), storekit.Time(at), storekit.Time(at.Add(window).Truncate(time.Microsecond)), limit,
+	).Row().Scan(&until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, failed(op, err)
+	}
+
+	return until.UTC(), true, nil
+}
+
+// RefundVerifyAttempt gives back one attempt charged in the window ending at
+// until: one conditional UPDATE, whose zero rows affected reports false.
+func (s *enrolmentStore) RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error) {
+	const op = "give back TOTP verification attempt"
+
+	if !storekit.Storable(string(user)) {
+		return false, nil
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	res := q.Exec(pgschema.EnrolmentRefundVerifyAttempt, string(user), storekit.Time(until))
+	if res.Error != nil {
+		return false, failed(op, res.Error)
+	}
+
+	return res.RowsAffected > 0, nil
+}

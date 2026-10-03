@@ -34,7 +34,8 @@ import (
 //
 // The returned store implements mfa.DeviceProofStore, so the enrolment path
 // runs over it. PutPending starts the enrolment's generation, clearing any
-// device proof and emailed code; ProveDevice, Complete and ChargeEmailCode are
+// device proof, emailed code and TOTP verification attempts; ProveDevice,
+// Complete, ChargeEmailCode, ChargeVerifyAttempt and RefundVerifyAttempt are
 // each one conditional statement with every condition in its WHERE clause, so
 // of concurrent completions of one generation exactly one succeeds, and of
 // concurrent charges against one code no more than mfa.MaxEmailCodeFailures
@@ -106,10 +107,12 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		code      sql.NullString
 		codeUntil sql.NullTime
 		attempts  int64
+		verifyN   int64
+		verifyEnd sql.NullTime
 		e         = mfa.Enrolment{User: user}
 	)
 	err := s.c.queryRow(ctx, op, pgschema.EnrolmentGet, []any{string(user)},
-		&secret, &confirmed, &e.LastStep, &created, &gen, &proven, &code, &codeUntil, &attempts)
+		&secret, &confirmed, &e.LastStep, &created, &gen, &proven, &code, &codeUntil, &attempts, &verifyN, &verifyEnd)
 	if errors.Is(err, sql.ErrNoRows) {
 		return mfa.Enrolment{}, false, nil
 	}
@@ -129,6 +132,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	e.Secret, e.ConfirmedAt, e.CreatedAt = sealed, fromNull(confirmed), created.UTC()
 	e.Generation, e.DeviceProvenAt = gen.V, fromNull(proven)
 	e.EmailCodeUntil, e.EmailCodeAttempts = fromNull(codeUntil), int(attempts)
+	e.VerifyAttempts, e.VerifyWindowUntil = int(verifyN), fromNull(verifyEnd)
 
 	return e, true, nil
 }
@@ -265,3 +269,41 @@ var (
 	_ mfa.DeviceProofStore   = (*enrolmentStore)(nil)
 	_ seal.EnrolmentResealer = (*enrolmentStore)(nil)
 )
+
+// ChargeVerifyAttempt charges one TOTP verification attempt against the user's
+// confirmed enrolment at at, in one conditional update that returns the
+// window's end. The end is computed here, truncated to the microsecond the
+// column keeps, so the value returned is the value a give-back must match.
+func (s *enrolmentStore) ChargeVerifyAttempt(
+	ctx context.Context, user identity.UserID, at time.Time, limit int, window time.Duration,
+) (time.Time, bool, error) {
+	if !storekit.Storable(string(user)) {
+		return time.Time{}, false, nil
+	}
+
+	var until time.Time
+	err := s.c.queryRow(ctx, "charge TOTP verification attempt", pgschema.EnrolmentChargeVerifyAttempt,
+		[]any{string(user), storekit.Time(at), storekit.Time(at.Add(window).Truncate(time.Microsecond)), limit},
+		&until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+
+	return until.UTC(), true, nil
+}
+
+// RefundVerifyAttempt gives back one attempt charged in the window ending at
+// until, in one conditional update.
+func (s *enrolmentStore) RefundVerifyAttempt(ctx context.Context, user identity.UserID, until time.Time) (bool, error) {
+	if !storekit.Storable(string(user)) {
+		return false, nil
+	}
+
+	n, err := s.c.exec(ctx, "give back TOTP verification attempt", pgschema.EnrolmentRefundVerifyAttempt,
+		string(user), storekit.Time(until))
+
+	return n > 0, err
+}

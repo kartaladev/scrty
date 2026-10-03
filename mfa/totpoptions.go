@@ -89,3 +89,31 @@ func WithTOTPLogger(l *slog.Logger) TOTPOption {
 func WithTOTPIDGenerator(g id.Generator) TOTPOption {
 	return func(t *TOTP) { t.ids = g }
 }
+
+// WithVerifyAttempts replaces how many verification attempts may be charged
+// against one enrolment within a window, and the window's length. The default
+// is DefaultVerifyAttemptLimit attempts per DefaultVerifyAttemptWindow: 5 per
+// 15 minutes. A limit or a window of zero or less fails NewTOTP with
+// ErrConfig.
+//
+// Every presented code is charged against the enrolment, in one conditional
+// store write, before it is compared, so at most limit codes are compared per
+// window however many requests arrive at once and however many replicas serve
+// them. A code the store accepts gives its charge back, so successes spend
+// nothing. A charge the window refuses fails the verification with
+// ErrVerifyAttemptsExhausted, without comparing the code.
+//
+// The window is fixed, not sliding: it opens at the first charge after the
+// previous one ended and lasts window. Around a window's end, up to twice
+// limit codes can therefore be compared within one window's length — limit at
+// the end of one window and limit at the start of the next.
+//
+// There is no way to turn the charge off. It is what bounds the codes compared
+// when concurrent requests all pass a VerifyThrottle check before any of their
+// failures is recorded; a consumer wanting a looser bound raises the limit.
+func WithVerifyAttempts(limit int, window time.Duration) TOTPOption {
+	return func(t *TOTP) {
+		t.verifyLimit = limit
+		t.verifyWindow = window
+	}
+}

@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -48,6 +49,8 @@ func TestNewConfig(t *testing.T) {
 	// A zero *gorm.DB is never used: construction must not touch the database,
 	// and would panic here if it tried.
 	base := new(gormdb.DB)
+	errBegin := errors.New("begin failed")
+	errored := &gormdb.DB{Error: errBegin}
 	gen := &fixedGenerator{}
 	fixed := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 
@@ -109,6 +112,16 @@ func TestNewConfig(t *testing.T) {
 			name:   "a nil database handle is refused",
 			base:   nil,
 			assert: refusedWith("the database handle is nil"),
+		},
+		{
+			name: "a database handle that already carries an error is refused, wrapping it",
+			base: errored,
+			assert: func(t *testing.T, c *config, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, ErrConfig)
+				assert.ErrorIs(t, err, errBegin)
+				assert.Nil(t, c)
+			},
 		},
 		{
 			name:   "a nil option is refused",

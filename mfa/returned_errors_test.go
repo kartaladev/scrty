@@ -161,9 +161,23 @@ func TestMFAReturnedErrors(t *testing.T) {
 			assert: assertRedacted,
 		},
 		{
+			name: "verify: the enrolment store cannot charge the attempt",
+			arrange: func(_ *testing.T, d *returnedErrorsDeps) {
+				d.store.EXPECT().Get(gomock.Any(), user).Return(confirmed(d), true, nil)
+				d.store.EXPECT().ChargeVerifyAttempt(gomock.Any(), user, gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(time.Time{}, false, errMFAFixture)
+			},
+			act: func(t *testing.T, ctx context.Context, d *returnedErrorsDeps) error {
+				return d.method.Verify(ctx, user, []byte(d.code(t)))
+			},
+			assert: assertRedacted,
+		},
+		{
 			name: "verify: the enrolment store cannot accept the step",
 			arrange: func(_ *testing.T, d *returnedErrorsDeps) {
 				d.store.EXPECT().Get(gomock.Any(), user).Return(confirmed(d), true, nil)
+				d.store.EXPECT().ChargeVerifyAttempt(gomock.Any(), user, gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(time.Now(), true, nil)
 				d.store.EXPECT().AcceptStep(gomock.Any(), user, gomock.Any()).Return(false, errMFAFixture)
 			},
 			act: func(t *testing.T, ctx context.Context, d *returnedErrorsDeps) error {

@@ -130,8 +130,9 @@ type IdentityStore struct {
 // NewIdentityStore returns a PostgreSQL identity store on db.
 //
 // It honours WithTxResolver, WithIDGenerator and WithClock, and refuses any
-// other option, a nil db, a nil option and a nil option value with an error
-// wrapping ErrConfig. It never touches the database.
+// other option, a nil db, a db that already carries an error, a nil option
+// and a nil option value with an error wrapping ErrConfig. It never touches
+// the database.
 func NewIdentityStore(db *gormdb.DB, opts ...Option) (*IdentityStore, error) {
 	c, err := newConfig(db, opts, optIDGenerator, optClock)
 	if err != nil {

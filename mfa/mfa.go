@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
@@ -47,6 +48,28 @@ var ErrSameChannel = errors.New("mfa: the second factor arrives on the first fac
 // limiter is an outage, and letting guesses through during one would turn a
 // dependency failure into an open door.
 var ErrVerifyThrottled = errors.New("mfa: too many failed verifications for this user")
+
+// ErrVerifyAttemptsExhausted refuses a TOTP verification whose attempt could
+// not be charged: the enrolment's charging window already holds its limit, so
+// the code is not compared. It matches ErrVerifyThrottled, so a caller that
+// branches on the throttled refusal treats both alike.
+var ErrVerifyAttemptsExhausted = fmt.Errorf(
+	"%w: the enrolment's verification attempts are spent for this window", ErrVerifyThrottled)
+
+// The defaults of the TOTP verification charge: every presented code is
+// charged against the enrolment before it is compared, and no more than
+// DefaultVerifyAttemptLimit are charged in one window of
+// DefaultVerifyAttemptWindow, however many requests arrive at once.
+const (
+	// DefaultVerifyAttemptLimit is how many TOTP verification attempts may be
+	// charged against one enrolment within a window, unless [WithVerifyAttempts]
+	// replaces it.
+	DefaultVerifyAttemptLimit = 5
+
+	// DefaultVerifyAttemptWindow is the length of a charging window, unless
+	// [WithVerifyAttempts] replaces it.
+	DefaultVerifyAttemptWindow = 15 * time.Minute
+)
 
 // ErrConfig reports a configuration this package refuses: a dependency an
 // operation needs and was not given, where an explicit option is the way to

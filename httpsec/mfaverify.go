@@ -247,7 +247,9 @@ func (i *mfaInterceptor) isVerifyRequest(r Request) bool {
 //     and the method's error is returned unchanged, so a consumer sees mfa's
 //     own sentinel. A refusal wrapping mfa.ErrAuthenticatorRefused, of the
 //     authenticator rather than its response, is returned unchanged too but
-//     not recorded: it is not a guess.
+//     not recorded: it is not a guess. So is a refusal matching
+//     mfa.ErrVerifyThrottled, such as a refused attempt charge: nothing was
+//     compared, so nothing is recorded.
 //  9. Success: resolve, rotate, publish, answer.
 func (i *mfaInterceptor) verify(ex *Exchange) error {
 	s, method, err := i.admit(ex, i.verifyPrefix, anyMethod)
@@ -277,8 +279,9 @@ func (i *mfaInterceptor) verify(ex *Exchange) error {
 
 	if err := method.Verify(ctx, user, response); err != nil {
 		// A refusal of the authenticator itself, such as a suspected clone,
-		// is not a wrong guess at the response, so it costs no attempt.
-		if !errors.Is(err, mfa.ErrAuthenticatorRefused) {
+		// is not a wrong guess at the response, and a refused attempt charge
+		// compared nothing: neither costs an attempt.
+		if !errors.Is(err, mfa.ErrAuthenticatorRefused) && !errors.Is(err, mfa.ErrVerifyThrottled) {
 			i.throttle.RecordFailure(ctx, user)
 		}
 
