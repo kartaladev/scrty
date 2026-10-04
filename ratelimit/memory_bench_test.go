@@ -2,6 +2,7 @@ package ratelimit_test
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"math/rand/v2"
 	"os"
@@ -48,11 +49,15 @@ func heapAlloc() uint64 {
 	return m.HeapAlloc
 }
 
-// newMeasuredLimiter returns a limiter at the test limit and window, driven by clk.
+// newMeasuredLimiter returns a limiter at the test limit and window, driven by
+// clk. It is uncapped, because the measurements hold more keys than the default
+// cap admits.
 func newMeasuredLimiter(t testing.TB, clk *clockwork.FakeClock) *ratelimit.MemoryLimiter {
 	t.Helper()
 
-	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow, ratelimit.WithMemoryLimiterClock(clk))
+	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
+		ratelimit.WithMemoryLimiterClock(clk),
+		ratelimit.WithMemoryLimiterMaxKeys(math.MaxInt))
 	require.NoError(t, err)
 
 	return l

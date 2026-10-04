@@ -17,6 +17,7 @@ package unavailable
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -308,29 +309,44 @@ func (l *limiter) recordBackend(ctx context.Context, key string, adm admission) 
 // healthyExceeded is the answer when the backend answered. In fall-back mode a
 // key is also exceeded on the failures this instance counted locally while it
 // could not record them.
+//
+// A local count that an outage filled refuses the keys it does not hold, but it
+// holds no failure for them either, so here such a key counts zero locally and
+// the backend's answer stands. Refusing it would let one past outage refuse
+// every new source for as long as the local count stayed full.
 func (l *limiter) healthyExceeded(ctx context.Context, key string, shared bool) (bool, error) {
 	if shared || l.local == nil {
 		return shared, nil
 	}
 
-	return l.localExceeded(ctx, key)
-}
-
-// localExceeded asks the fall-back limiter. Its error, which can only be the
-// caller's context ending, quotes the key, so it is returned behind fixed text.
-func (l *limiter) localExceeded(ctx context.Context, key string) (bool, error) {
-	exceeded, err := l.local.Exceeded(ctx, key)
-	if err != nil {
-		return true, diag.Wrap(err, "ratelimit: check abandoned: the caller's context ended")
+	exceeded, err := l.localExceeded(ctx, key)
+	if errors.Is(err, ratelimit.ErrLimiterFull) {
+		return false, nil
 	}
 
-	return exceeded, nil
+	return exceeded, err
+}
+
+// localExceeded asks the fall-back limiter. Its error is either a full local
+// count, which refuses a key it does not hold, or the caller's context ending.
+// Both quote the key, so each is returned behind fixed text.
+func (l *limiter) localExceeded(ctx context.Context, key string) (bool, error) {
+	exceeded, err := l.local.Exceeded(ctx, key)
+	switch {
+	case err == nil:
+		return exceeded, nil
+	case errors.Is(err, ratelimit.ErrLimiterFull):
+		return true, diag.Wrap(err, "ratelimit: the local count is holding its maximum number of keys")
+	default:
+		return true, diag.Wrap(err, "ratelimit: check abandoned: the caller's context ended")
+	}
 }
 
 // degradedExceeded answers a check the backend cannot: refuse mode with err,
 // which wraps ratelimit.ErrBackendUnavailable; fall-back mode from the local
-// count; allow mode with "not exceeded", writing its outage record only when
-// outage is set. A stale failure clears it: it reports an outage that has
+// count, which refuses a key it does not hold once it is full, so that an
+// outage long enough to fill it still fails closed; allow mode with "not
+// exceeded", writing its outage record only when outage is set. A stale failure clears it: it reports an outage that has
 // already ended, and logging it while the breaker is closed would take the
 // sampling slot recovery freed, so the next outage would go unlogged.
 func (l *limiter) degradedExceeded(ctx context.Context, key string, err error, outage bool) (bool, error) {

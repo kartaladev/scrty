@@ -43,8 +43,8 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 4. Key cap (decisions 1, 2; rate-limiting "The in-memory limiter caps the keys it holds", "A full in-memory limiter refuses new keys and keeps counting held ones", "A full in-memory limiter says so")
 
-- [ ] 4.1 `ratelimit.DefaultMemoryLimiterMaxKeys` (250,000) and `ratelimit.WithMemoryLimiterMaxKeys(n)`. `n <= 0` is `ErrConfig`. Godoc names the default, the cost per key, `math.MaxInt` for a consumer who accepts no bound, and that `MemoryLimiterFactory` applies it to every limiter it builds. Covers scenarios "Default cap", "Consumer cap" (held keys only, without the refusal yet) and "Zero cap". Verify with `go test -race -run 'TestNewMemoryLimiter|TestMemoryLimiter_MaxKeys' -count=1 ./ratelimit/`
-- [ ] 4.2 `ratelimit.ErrLimiterFull`, and refusal at the cap, through an `atomic.Int64` count reserved with `Add(1)` before a new key is inserted and given back on overflow or when pruning removes a key.
+- [x] 4.1 `ratelimit.DefaultMemoryLimiterMaxKeys` (250,000) and `ratelimit.WithMemoryLimiterMaxKeys(n)`. `n <= 0` is `ErrConfig`. Godoc names the default, the cost per key, `math.MaxInt` for a consumer who accepts no bound, and that `MemoryLimiterFactory` applies it to every limiter it builds. Covers scenarios "Default cap", "Consumer cap" (held keys only, without the refusal yet) and "Zero cap". Verify with `go test -race -run 'TestNewMemoryLimiter|TestMemoryLimiter_MaxKeys' -count=1 ./ratelimit/`
+- [x] 4.2 `ratelimit.ErrLimiterFull`, and refusal at the cap, through an `atomic.Int64` count reserved with `Add(1)` before a new key is inserted and given back on overflow or when pruning removes a key.
   - `Exceeded` of an unheld key returns `true` and an error wrapping `ErrLimiterFull`.
   - `RecordFailure` of an unheld key stores nothing and returns that error.
   - Held keys behave as below the cap.
@@ -52,7 +52,7 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
   - Add a `-race` test: 64 goroutines insert distinct keys into a limiter with a cap of 100, and the limiter never holds more than 100.
 
   Verify with `go test -race -run 'TestMemoryLimiter_(Full|Cap)' -count=1 ./ratelimit/`
-- [ ] 4.3 The full-limiter warning through the limiter's logger: written when the limiter first finds itself full, and at most once per window after that, naming the maximum. Checked with a recording `slog` handler and the fake clock. Covers scenario "Flood at the cap". Verify with `go test -race -run TestMemoryLimiter_FullWarning -count=1 ./ratelimit/`
+- [x] 4.3 The full-limiter warning through the limiter's logger: written when the limiter first finds itself full, and at most once per window after that, naming the maximum. Checked with a recording `slog` handler and the fake clock. Covers scenario "Flood at the cap". Verify with `go test -race -run TestMemoryLimiter_FullWarning -count=1 ./ratelimit/`
 
 ## 5. Aggregate prefix in the guard (decision 5; rate-limiting "IPv6 sources can also be counted by an aggregate prefix", "Aggregate refusals are logged per aggregate", "Guards report a full limiter as its own refusal")
 

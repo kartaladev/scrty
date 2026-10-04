@@ -38,6 +38,34 @@ func WithMemoryLimiterLogger(logger *slog.Logger) MemoryOption {
 	return func(l *MemoryLimiter) { l.logger = logger }
 }
 
+// DefaultMemoryLimiterMaxKeys is how many keys a MemoryLimiter holds at most
+// when WithMemoryLimiterMaxKeys is not given: about 37 MiB at the measured cost
+// of at most 157 bytes a key. 250,000 distinct sources failing inside one window
+// is far beyond what one replica sees in normal traffic; a deployment that
+// large belongs on a shared Limiter.
+const DefaultMemoryLimiterMaxKeys = 250_000
+
+// WithMemoryLimiterMaxKeys sets how many keys the limiter holds at most.
+// Default: DefaultMemoryLimiterMaxKeys (250,000), about 37 MiB at the measured
+// cost of at most 157 bytes a key.
+//
+// At the maximum, a key the limiter does not already hold is refused: Exceeded
+// reports it as exceeded with an error wrapping ErrLimiterFull, and
+// RecordFailure stores nothing and returns that error. Keys already held are
+// checked and recorded as before, and nothing is evicted to make room, because
+// evicting a key would reset a live count. A key frees its place only when a
+// sweep or Prune removes it, and the limiter writes a warning through its
+// logger while it is full.
+//
+// A value of zero or less fails construction with ErrConfig. There is no
+// unbounded mode, because unbounded memory is what the cap exists to prevent; a
+// consumer who accepts that cost passes math.MaxInt. MemoryLimiterFactory
+// applies the option to every limiter it builds, so one option sets the cap
+// for every flow the factory serves.
+func WithMemoryLimiterMaxKeys(n int) MemoryOption {
+	return func(l *MemoryLimiter) { l.maxKeys = n }
+}
+
 // KeyerOption configures a SourceKeyer.
 type KeyerOption func(*SourceKeyer)
 

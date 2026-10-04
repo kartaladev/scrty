@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"strings"
 	"sync"
@@ -201,6 +202,20 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 			limit:  testLimit,
 			window: testWindow,
 			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterClock(nilClock)},
+			assert: refused,
+		},
+		{
+			name:   "a maximum of zero keys holds no source at all",
+			limit:  testLimit,
+			window: testWindow,
+			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterMaxKeys(0)},
+			assert: refused,
+		},
+		{
+			name:   "a negative maximum of keys holds no source at all",
+			limit:  testLimit,
+			window: testWindow,
+			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterMaxKeys(-1)},
 			assert: refused,
 		},
 		{
@@ -512,7 +527,8 @@ func TestMemoryLimiter_ReturnsMemoryAfterFlood(t *testing.T) {
 	base := heapAlloc()
 	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
 		ratelimit.WithMemoryLimiterClock(clk),
-		ratelimit.WithMemoryLimiterLogger(discardLogger()))
+		ratelimit.WithMemoryLimiterLogger(discardLogger()),
+		ratelimit.WithMemoryLimiterMaxKeys(math.MaxInt)) // a flood past the default cap
 	require.NoError(t, err)
 	for _, k := range keys {
 		require.NoError(t, l.RecordFailure(t.Context(), k))

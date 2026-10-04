@@ -45,7 +45,7 @@ The memory limiter counts the keys it holds. When it holds the maximum:
 - Held keys are checked and recorded as normal, so a source that is already failing goes on being counted.
 - A key leaves the count only when pruning removes it. Nothing is evicted to make room.
 
-The count is one `atomic.Int64` across all shards. A new key reserves its place first with `Add(1)` and, if that goes past the maximum, gives it back with `Add(-1)`. The cap is therefore exact, with no check-then-insert race between shards, and the measured overhead was within noise (decision 3).
+The count is one `atomic.Int64` across all shards. A new key, decided under its shard's lock, reserves its place with a compare-and-swap loop that never takes the count past the maximum, and pruning gives places back under the same lock as it removes the keys. The cap is therefore exact, with no check-then-insert race between shards and no transient overshoot that could refuse a key while there is room. The measured overhead of a shared counter was within noise (decision 3).
 
 - **Default:** 250,000 keys, exported as `ratelimit.DefaultMemoryLimiterMaxKeys`.
   - A full limiter holds about 37 MiB at the measured cost per key (at most 157 B).
@@ -162,6 +162,10 @@ Measured in the exploratory harness, against the single-lock baseline:
   - This is the stated cost of failing closed.
   - Mitigations: it is bounded per flow, held sources keep working, the limiter warns, and the guard logs "limiter full" as its own record.
   - A deployment that cannot accept it raises the cap or uses the shared limiter.
+- **[A shared limiter's fall-back count is an in-memory limiter with the default cap, and no option sets it]**
+  - Only an outage fills it. While the backend is down, a full local count refuses new keys, as decision 1 intends. Once the backend is healthy again, a key the local count does not hold counts zero locally rather than being refused.
+  - Its full-limiter warning goes to the same discarding logger as its per-replica warning.
+  - A fall-back cap option belongs to the shared limiter's own options and is a follow-up, not part of this change.
 - **[A per-user memory limiter (recovery, second factor) can be filled by enumerating usernames]**
   - Recovery for unheld users is then refused for up to a window.
   - Same mitigations. Its godoc names the case.

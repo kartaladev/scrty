@@ -69,7 +69,7 @@ When the in-memory limiter holds its maximum number of keys, a check of a key it
 - **THEN** `a` is reported as exceeded without an error
 
 #### Scenario: Room after pruning
-- **WHEN** an in-memory limiter with a maximum of 2 keys and a 1-minute window holds `a` and `b`, both failed at 12:00:00, and key `c` records a failure at 12:02:30
+- **WHEN** an in-memory limiter with a maximum of 2 keys and a 1-minute window holds `a` and `b`, both failed at 12:00:00, the limiter prunes at 12:02:00, and key `c` records a failure at 12:02:30
 - **THEN** `c` is held and `a` and `b` are not
 
 #### Scenario: Live keys are never evicted
@@ -77,7 +77,7 @@ When the in-memory limiter holds its maximum number of keys, a check of a key it
 - **THEN** `a` and `b` are still held with their failures
 
 ### Requirement: A full in-memory limiter says so
-The in-memory limiter SHALL write a warning when it first finds itself holding its maximum number of keys, and at most one such warning per window after that. The warning SHALL name the maximum and state that new sources are being refused.
+The in-memory limiter SHALL write a warning when it first refuses a key because it holds its maximum number of keys, and at most one such warning per window after that. The warning SHALL name the maximum and state that new sources are being refused.
 
 #### Scenario: Flood at the cap
 - **WHEN** an in-memory limiter with a 1-minute window and a maximum of 10 keys is full and 500 new keys are checked within one minute

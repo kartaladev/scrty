@@ -30,7 +30,9 @@ type Verifier interface {
 //
 // Every call builds a new MemoryLimiter with separate buckets; the namespace is
 // not needed to keep them apart and is ignored. opts apply to every limiter
-// built. A non-positive limit or window, or an option NewMemoryLimiter refuses,
+// built, so WithMemoryLimiterMaxKeys caps each of them separately: every limiter
+// holds at most DefaultMemoryLimiterMaxKeys keys of its own unless that option
+// says otherwise. A non-positive limit or window, or an option NewMemoryLimiter refuses,
 // is an error wrapping ErrConfig.
 func MemoryLimiterFactory(opts ...MemoryOption) LimiterFactory {
 	return memoryFactory{opts: slices.Clone(opts)}
