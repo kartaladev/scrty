@@ -175,3 +175,131 @@ func TestNewSourceKeyerRefusesAPrefixItCannotMask(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceKeyer_IPv6Prefix pins the accessor a guard reads to check that an
+// aggregate is wider than the source, including against a keyer the consumer
+// built.
+func TestSourceKeyer_IPv6Prefix(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []ratelimit.KeyerOption
+		assert func(t *testing.T, bits int)
+	}
+
+	cases := []testCase{
+		{
+			name: "the default is a /64",
+			assert: func(t *testing.T, bits int) {
+				t.Helper()
+				assert.Equal(t, 64, bits)
+			},
+		},
+		{
+			name: "a custom prefix is reported",
+			opts: []ratelimit.KeyerOption{ratelimit.WithIPv6SourcePrefix(56)},
+			assert: func(t *testing.T, bits int) {
+				t.Helper()
+				assert.Equal(t, 56, bits)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keyer, err := ratelimit.NewSourceKeyer(tc.opts...)
+			require.NoError(t, err)
+
+			tc.assert(t, keyer.IPv6Prefix())
+		})
+	}
+}
+
+// TestSourceKeyer_Aggregate pins the enclosing prefix an IPv6 source is also
+// counted under. A mapped IPv4 address must not grow an aggregate just because
+// of how it was spelled, and a zone must not split one aggregate into one per
+// interface.
+func TestSourceKeyer_Aggregate(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		addr   string
+		bits   int
+		assert func(t *testing.T, source, aggregate string, err error)
+	}
+
+	keysAs := func(wantSource, wantAggregate string) func(t *testing.T, source, aggregate string, err error) {
+		return func(t *testing.T, source, aggregate string, err error) {
+			t.Helper()
+			require.NoError(t, err)
+			assert.Equal(t, wantSource, source, "source key")
+			assert.Equal(t, wantAggregate, aggregate, "aggregate key")
+		}
+	}
+
+	cases := []testCase{
+		{
+			name:   "an IPv6 source is aggregated by its enclosing /56",
+			addr:   "2001:db8:1:2::1",
+			bits:   56,
+			assert: keysAs("2001:db8:1:2::/64", "2001:db8:1::/56"),
+		},
+		{
+			name:   "a source in another /56 aggregates apart",
+			addr:   "2001:db8:1:100::1",
+			bits:   56,
+			assert: keysAs("2001:db8:1:100::/64", "2001:db8:1:100::/56"),
+		},
+		{
+			name:   "the zone is dropped from the aggregate",
+			addr:   "fe80::1%eth0",
+			bits:   56,
+			assert: keysAs("fe80::/64", "fe80::/56"),
+		},
+		{
+			name:   "an IPv4-mapped address has no aggregate",
+			addr:   "::ffff:203.0.113.7",
+			bits:   56,
+			assert: keysAs("203.0.113.7", ""),
+		},
+		{
+			name:   "IPv4 has no aggregate",
+			addr:   "203.0.113.7",
+			bits:   56,
+			assert: keysAs("203.0.113.7", ""),
+		},
+		{
+			name:   "no aggregate is keyed when none is asked for",
+			addr:   "2001:db8:1:2::1",
+			bits:   0,
+			assert: keysAs("2001:db8:1:2::/64", ""),
+		},
+		{
+			name: "an unattributable address keys neither",
+			addr: "",
+			bits: 56,
+			assert: func(t *testing.T, source, aggregate string, err error) {
+				t.Helper()
+				require.ErrorIs(t, err, ratelimit.ErrSourceEmpty)
+				assert.Empty(t, source)
+				assert.Empty(t, aggregate)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			keyer, err := ratelimit.NewSourceKeyer()
+			require.NoError(t, err)
+
+			source, aggregate, err := ratelimit.SourceKeys(keyer, tc.addr, tc.bits)
+			tc.assert(t, source, aggregate, err)
+		})
+	}
+}

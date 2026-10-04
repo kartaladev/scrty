@@ -14,7 +14,9 @@ import (
 )
 
 // ErrThrottled is returned by SourceGuard.Check for an attempt that must not run:
-// the source is over its limit, or the limiter could not say whether it is.
+// the source is over its limit, or the limiter could not say whether it is. The
+// source's IPv6 aggregate (WithSourceGuardIPv6Aggregate) being over its limit,
+// or its limiter being unable to answer, refuses the same way.
 //
 // The two are deliberately one error to the caller. A caller that told them
 // apart would be deciding, on the request path, whether an outage is a good
@@ -38,6 +40,7 @@ const (
 	sampleLimiterFailure  = "limiter"
 	sampleUnattributable  = "unattributable"
 	msgThrottled          = "ratelimit: refusing an attempt from a source over its limit"
+	msgThrottledAggregate = "ratelimit: refusing an attempt from an IPv6 aggregate over its limit"
 	msgLimiterUnavailable = "ratelimit: refusing an attempt because the limiter could not be consulted"
 	msgContextEnded       = "ratelimit: refusing an attempt whose context had already ended"
 	msgUnattributable     = "ratelimit: refusing an attempt from an unattributable client address"
@@ -77,6 +80,13 @@ type SourceGuard struct {
 	logInterval time.Duration
 	reporter    func(key string, suppressed int)
 	sampler     *logsample.Sampler
+
+	// The IPv6 aggregate (WithSourceGuardIPv6Aggregate). aggregateSet records
+	// that the option was given at all, so that a zero prefix or a nil limiter
+	// passed to it is refused rather than read as "no aggregate".
+	aggregateSet  bool
+	aggregateBits int
+	aggregate     Limiter
 }
 
 // NewSourceGuard returns a guard that counts flow's failures in limiter.
@@ -95,9 +105,10 @@ type SourceGuard struct {
 //
 // Defaults: a SourceKeyer with its own defaults (WithSourceGuardKeyer),
 // slog.Default (WithSourceGuardLogger), clock.System() (WithSourceGuardClock),
-// DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval) and a
+// DefaultLogInterval for refusal sampling (WithSourceGuardLogInterval), a
 // summary record through the logger for the counts sampling suppressed
-// (WithSourceGuardLogReporter).
+// (WithSourceGuardLogReporter), and no IPv6 aggregate
+// (WithSourceGuardIPv6Aggregate).
 func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceGuard, error) {
 	keyer, err := NewSourceKeyer()
 	if err != nil {
@@ -133,6 +144,9 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 	if g.keyer == nil {
 		return nil, fmt.Errorf("%w: the source keyer is nil, so no address could be keyed", ErrConfig)
 	}
+	if err := g.validateAggregate(); err != nil {
+		return nil, err
+	}
 	if g.logger == nil {
 		return nil, fmt.Errorf("%w: the logger is nil, so refusals would go unreported", ErrConfig)
 	}
@@ -149,21 +163,49 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 	return g, nil
 }
 
+// validateAggregate refuses an IPv6 aggregate that could not count anything the
+// source key does not. It runs after the options, against the keyer the guard
+// ends up with, so a consumer's own keyer is held to the same line as the
+// default.
+func (g *SourceGuard) validateAggregate() error {
+	if !g.aggregateSet {
+		return nil
+	}
+
+	if nilcheck.IsNil(g.aggregate) {
+		return fmt.Errorf(
+			"%w: the IPv6 aggregate for flow %q was given no limiter", ErrConfig, g.flow)
+	}
+	if g.aggregateBits < 1 || g.aggregateBits >= maxIPv6Prefix {
+		return fmt.Errorf(
+			"%w: an IPv6 aggregate of /%d is outside 1..%d, so it would either pool every "+
+				"IPv6 source under one key or name a single address",
+			ErrConfig, g.aggregateBits, maxIPv6Prefix-1)
+	}
+	if source := g.keyer.IPv6Prefix(); g.aggregateBits >= source {
+		return fmt.Errorf(
+			"%w: an IPv6 aggregate of /%d is no wider than the /%d source prefix, so it would "+
+				"count nothing the source does not", ErrConfig, g.aggregateBits, source)
+	}
+
+	return nil
+}
+
 // Check canonicalises clientAddr and asks the limiter about it, without
 // recording anything. The Source it returns is what RecordFailure takes if the
 // guarded attempt then fails.
 //
 // It returns an error wrapping ErrSourceUnattributable when the address names no
-// single source, and one wrapping ErrThrottled when the source is over its limit
-// or the limiter could not answer. In every one of those cases the guarded call
-// must not run: the returned Source is the zero value, so nothing can be
-// recorded against a check that did not pass.
+// single source, and one wrapping ErrThrottled when the source or its IPv6
+// aggregate is over its limit, or either limiter could not answer. In every one
+// of those cases the guarded call must not run: the returned Source is the zero
+// value, so nothing can be recorded against a check that did not pass.
 //
 // A limiter that could not answer has its own error returned behind fixed
 // library text, never its own; ErrThrottled and the limiter's error both stay
 // reachable through errors.Is, so a caller's status mapping is unchanged.
 func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, error) {
-	addr, err := g.keyer.Key(clientAddr)
+	addr, aggregate, err := g.keyer.keys(clientAddr, g.aggregateBits)
 	if err != nil {
 		reason := refusalReason(err)
 		g.sampled(ctx, slog.LevelWarn, msgUnattributable,
@@ -174,13 +216,14 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 	}
 
 	src := Source{key: g.flow + keySeparator + addr, addr: addr}
+	if aggregate != "" {
+		src.aggregateKey = g.flow + keySeparator + aggregate
+		src.aggregateAddr = aggregate
+	}
 
 	exceeded, err := g.limiter.Exceeded(ctx, src.key)
 	if err != nil {
-		g.reportUnconsultableLimiter(ctx, src, err)
-
-		return Source{}, diag.Wrap(err,
-			"ratelimit: too many failures from this source: the limiter could not be consulted", ErrThrottled)
+		return Source{}, g.refuseUnconsultable(ctx, src, err, false)
 	}
 
 	if exceeded {
@@ -191,7 +234,41 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 		return Source{}, ErrThrottled
 	}
 
+	// The aggregate is asked only once the source has passed: a source already
+	// over its own limit is refused either way, and asking a second limiter
+	// about it would only spend a round trip on an answer that cannot change.
+	if src.aggregateKey == "" {
+		return src, nil
+	}
+
+	exceeded, err = g.aggregate.Exceeded(ctx, src.aggregateKey)
+	if err != nil {
+		return Source{}, g.refuseUnconsultable(ctx, src, err, true)
+	}
+
+	if exceeded {
+		// Sampled by the aggregate, not the source: a client rotating through
+		// the /64s of one aggregate is one refusal story, and keying it per
+		// source would let every rotation buy a fresh record.
+		g.sampled(ctx, slog.LevelWarn, msgThrottledAggregate,
+			sampleKey(sampleThrottled, g.flow, src.aggregateAddr),
+			slog.String("source", src.addr), slog.String("aggregate", src.aggregateAddr))
+
+		return Source{}, ErrThrottled
+	}
+
 	return src, nil
+}
+
+// refuseUnconsultable reports a limiter that could not answer and returns the
+// refusal for it. The source and the aggregate limiter share it, so an outage of
+// either one fails closed in exactly the same way; fromAggregate says which one
+// it was, so the record can name the aggregate when that is the limiter down.
+func (g *SourceGuard) refuseUnconsultable(ctx context.Context, src Source, err error, fromAggregate bool) error {
+	g.reportUnconsultableLimiter(ctx, src, err, fromAggregate)
+
+	return diag.Wrap(err,
+		"ratelimit: too many failures from this source: the limiter could not be consulted", ErrThrottled)
 }
 
 // RecordFailure counts one failure against the source a Check returned. Which
@@ -221,14 +298,34 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
 		return
 	}
 
-	if err := g.limiter.RecordFailure(context.WithoutCancel(ctx), s.key); err != nil {
-		// This path has no cancellation to blame: the guard stripped it before
-		// calling, so an error here is the limiter's own, and a failure that
-		// went uncounted is worth a record whatever the caller's context did.
-		attrs := append([]slog.Attr{slog.String("source", s.addr)}, diag.Failure("limiter", err)...)
-		g.sampled(ctx, slog.LevelWarn, msgNotRecorded,
-			sampleKey(sampleLimiterFailure, g.flow, ""), attrs...)
+	// This path has no cancellation to blame: the guard strips it before
+	// calling, so an error here is the limiter's own, and a failure that went
+	// uncounted is worth a record whatever the caller's context did.
+	recordCtx := context.WithoutCancel(ctx)
+
+	if err := g.limiter.RecordFailure(recordCtx, s.key); err != nil {
+		g.reportNotRecorded(ctx, err, slog.String("source", s.addr))
 	}
+
+	// The aggregate is recorded whether or not the source was. The two are
+	// separate counts, often in separate stores, and letting one outage skip
+	// the other would hand a rotating client exactly the allowance the
+	// aggregate exists to deny. A Source is a plain value, so a caller can hand
+	// this guard another guard's: without an aggregate limiter of its own there
+	// is nothing here to count it in.
+	if s.aggregateKey != "" && g.aggregate != nil {
+		if err := g.aggregate.RecordFailure(recordCtx, s.aggregateKey); err != nil {
+			g.reportNotRecorded(ctx, err,
+				slog.String("source", s.addr), slog.String("aggregate", s.aggregateAddr))
+		}
+	}
+}
+
+// reportNotRecorded writes about a failure a limiter did not count, through the
+// same sampler as the limiter's other failures.
+func (g *SourceGuard) reportNotRecorded(ctx context.Context, err error, attrs ...slog.Attr) {
+	g.sampled(ctx, slog.LevelWarn, msgNotRecorded,
+		sampleKey(sampleLimiterFailure, g.flow, ""), append(attrs, diag.Failure("limiter", err)...)...)
 }
 
 // Flush reports every suppressed refusal count the guard is still holding, for
@@ -244,7 +341,7 @@ func (g *SourceGuard) Flush() { g.sampler.Flush() }
 // Everything else is an outage on a path that is now refusing live traffic, and
 // is written at warning level under one sampler key per flow — the limiter is
 // either up for that flow or it is not, and one record per window says so.
-func (g *SourceGuard) reportUnconsultableLimiter(ctx context.Context, s Source, err error) {
+func (g *SourceGuard) reportUnconsultableLimiter(ctx context.Context, s Source, err error, fromAggregate bool) {
 	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
 		attrs := append([]slog.Attr{
 			slog.String("flow", g.flow),
@@ -256,7 +353,11 @@ func (g *SourceGuard) reportUnconsultableLimiter(ctx context.Context, s Source, 
 		return
 	}
 
-	attrs := append([]slog.Attr{slog.String("source", s.addr)}, diag.Failure("limiter", err)...)
+	attrs := []slog.Attr{slog.String("source", s.addr)}
+	if fromAggregate {
+		attrs = append(attrs, slog.String("aggregate", s.aggregateAddr))
+	}
+	attrs = append(attrs, diag.Failure("limiter", err)...)
 	g.sampled(ctx, slog.LevelWarn, msgLimiterUnavailable,
 		sampleKey(sampleLimiterFailure, g.flow, ""), attrs...)
 }
