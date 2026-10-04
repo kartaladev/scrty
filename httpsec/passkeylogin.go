@@ -286,8 +286,9 @@ func PasswordlessBeginResponder(fn PasskeyBeginResponder) PasswordlessSetting {
 	}
 }
 
-// newPasswordless builds the passwordless endpoints p's settings describe.
-func (p *passkeyInterceptor) newPasswordless() *passwordlessInterceptor {
+// newPasswordless builds the passwordless endpoints p's settings describe,
+// reading the time from now.
+func (p *passkeyInterceptor) newPasswordless(now func() time.Time) *passwordlessInterceptor {
 	prefix := p.loginPrefix
 
 	return &passwordlessInterceptor{
@@ -297,7 +298,7 @@ func (p *passkeyInterceptor) newPasswordless() *passwordlessInterceptor {
 		sessions:           p.deps.Sessions,
 		beginPath:          prefix + passkeyBeginSegment,
 		finishPath:         prefix + passkeyFinishSegment,
-		now:                time.Now,
+		now:                now,
 	}
 }
 

@@ -235,7 +235,7 @@ func EnableAccountRecovery(deps RecoveryDeps, opts ...RecoveryOption) Option {
 	return func(c *config) error {
 		i := &recoveryInterceptor{
 			deps:          deps,
-			now:           time.Now,
+			now:           c.now,
 			completePath:  DefaultRecoveryCompletePath,
 			startPath:     DefaultRecoveryStartPath,
 			finishPath:    DefaultRecoveryFinishPath,

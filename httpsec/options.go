@@ -16,6 +16,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/magiclink"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -111,6 +112,10 @@ type config struct {
 	// the mark. It starts at defaultEnrolmentLifetime and is replaced by the
 	// enrolment interceptor's own configuration.
 	enrolmentLifetime time.Duration
+
+	// clock is the time source the chain and the components it builds read. It
+	// starts as clock.System() and is replaced by WithClock.
+	clock clock.Clock
 
 	// consumerEnforced holds the challenge kinds of the consumer's own that
 	// WithChallengeEnforcer declared this chain enforces.
@@ -312,6 +317,8 @@ func New(opts ...Option) (*Chain, error) {
 		refusalInterval:     defaultRefusalLogInterval,
 
 		enrolmentLifetime: defaultEnrolmentLifetime,
+
+		clock: clock.System(),
 	}
 
 	for _, opt := range opts {
@@ -950,7 +957,7 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 			sessions:      d.Sessions,
 			tokens:        d.Tokens,
 			attempts:      d.Attempts,
-			now:           time.Now,
+			now:           c.now,
 			path:          DefaultLoginPath,
 			usernameParam: DefaultLoginUsernameParam,
 			passwordParam: DefaultLoginPasswordParam,
@@ -1171,7 +1178,7 @@ func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
 		b := &basicAuth{
 			authn:    d.Authenticator,
 			attempts: d.Attempts,
-			now:      time.Now,
+			now:      c.now,
 			realm:    DefaultBasicAuthRealm,
 		}
 
@@ -1315,7 +1322,7 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 			verifier: d.Verifier,
 			sessions: d.Sessions,
 			users:    d.Users,
-			now:      time.Now,
+			now:      c.now,
 			scheme:   DefaultBearerScheme,
 		}
 
@@ -1512,7 +1519,7 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 			methods:      slices.Clone(methods),
 			byName:       byName,
 			lookups:      lookups,
-			now:          time.Now,
+			now:          c.now,
 			verifyPrefix: DefaultMFAVerifyPrefix,
 			respond:      writeMFAResult,
 			beginPrefix:  DefaultMFABeginPrefix,
@@ -1713,7 +1720,7 @@ func EnableAPIKey(m *apikey.Manager, opts ...APIKeyOption) Option {
 			return newConfigError("%s needs an API key manager", option)
 		}
 
-		i := &apiKeyInterceptor{keys: m, now: time.Now, scheme: DefaultAPIKeyScheme}
+		i := &apiKeyInterceptor{keys: m, now: c.now, scheme: DefaultAPIKeyScheme}
 
 		for _, opt := range opts {
 			if opt == nil {
@@ -1829,7 +1836,7 @@ func EnableMagicLink(m *magiclink.Manager, opts ...MagicLinkOption) Option {
 		i := &magicLinkInterceptor{
 			manager:       m,
 			respond:       writeMagicLinkResult,
-			now:           time.Now,
+			now:           c.now,
 			requestPath:   DefaultMagicLinkRequestPath,
 			consumePath:   DefaultMagicLinkConsumePath,
 			cookieName:    DefaultBindingCookieName,

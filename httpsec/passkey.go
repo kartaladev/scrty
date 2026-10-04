@@ -297,7 +297,7 @@ func EnablePasskeys(deps PasskeyDeps, opts ...PasskeyOption) Option {
 		c.register(p, OrderPasskeys)
 
 		if p.passwordless != nil {
-			p.login = p.newPasswordless()
+			p.login = p.newPasswordless(c.now)
 			c.register(p.login, OrderPasskeyLogin)
 			c.wire(p.login.wire)
 		}

@@ -71,7 +71,7 @@ func EnableRecoveryCooldown(records recovery.RecordStore, d time.Duration, route
 			marked[r] = struct{}{}
 		}
 
-		c.register(&recoveryCooldown{records: records, window: d, routes: marked, now: time.Now},
+		c.register(&recoveryCooldown{records: records, window: d, routes: marked, now: c.now},
 			After(OrderBearerToken))
 
 		return nil
