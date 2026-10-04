@@ -219,7 +219,7 @@ const msgNoDecoy = "httpsec: lock refusals may be told apart from wrong password
 	"because the login authenticator offers no decoy verification"
 
 // warnWithoutDecoy writes msgNoDecoy, once for the endpoint option names,
-// when locks are concealed and authn cannot spend a decoy.
+// when locks are concealed and authn cannot spend a decoy (offersDecoy).
 //
 // The response to a lock then reads as a wrong password in its status and
 // headers, but returns sooner than a password check would, which still tells
@@ -231,11 +231,27 @@ func (c *config) warnWithoutDecoy(option string, authn authenticate.Authenticato
 		return
 	}
 
-	if _, ok := authn.(authenticate.DecoyVerifier); ok {
+	if offersDecoy(authn) {
 		return
 	}
 
 	c.logger.Warn(msgNoDecoy, slog.String("option", option))
+}
+
+// offersDecoy reports whether authn may spend a decoy verification: it is an
+// authenticate.DecoyVerifier and, if it can also say whether any of its own
+// delegates offers one, as authenticate.Manager can, it says so. A Manager is
+// always a DecoyVerifier, so the type alone does not tell.
+func offersDecoy(authn authenticate.Authenticator) bool {
+	if _, ok := authn.(authenticate.DecoyVerifier); !ok {
+		return false
+	}
+
+	if o, ok := authn.(interface{ OffersDecoy() bool }); ok {
+		return o.OffersDecoy()
+	}
+
+	return true
 }
 
 // refuseLocked answers a pre-authentication lock.
@@ -339,7 +355,9 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // The pre-authentication phase runs before the credential is checked, so a
 // locked account is refused without its password ever being tested. Testing
 // it first would make the refusal an oracle: a locked account would answer
-// differently for a right guess than for a wrong one. A credential the
+// differently for a right guess than for a wrong one. A lock is refused as
+// login refuses it (refuseLocked): concealed behind a decoy by default, the
+// lock alone when the consumer discloses locks. A credential the
 // authenticator refuses is recorded as a failed attempt. Clearing the failures
 // a success supersedes is left to the caller, because only a login is a
 // success in that sense.
@@ -354,6 +372,11 @@ func (l *formLogin) authenticatePassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
+		if errors.Is(err, policy.ErrAccountLocked) {
+			return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
+				identity.NewUsernamePassword(username, password), err)
+		}
+
 		return nil, err
 	}
 
@@ -393,6 +416,10 @@ func (l *formLogin) verifyPassword(
 // this login's pre-authentication phase, authenticator and attempt recording,
 // in that order. A correct password clears no recorded failures, since a
 // recovery that passes its password proof may still be refused.
+//
+// A lock is refused as login refuses it (see authenticatePassword), and the
+// recovery turns the concealed refusal into its own, so a locked account reads
+// as an unknown user or a wrong code does.
 func (l *formLogin) checkPassword(ctx context.Context, username string, password []byte) error {
 	_, err := l.authenticatePassword(ctx, username, password, l.now())
 

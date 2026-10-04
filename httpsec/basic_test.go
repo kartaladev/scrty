@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // basicRequest builds a request carrying the credential as a client would, and
@@ -197,6 +198,59 @@ func TestBasicAuth(t *testing.T) {
 			assert: func(t *testing.T, s served) {
 				require.ErrorIs(t, s.err, policy.ErrMFARequired)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
+				assert.Empty(t, s.rec.Header().Get("WWW-Authenticate"), "a 403 carries no challenge")
+				assert.False(t, s.handlerRan)
+			},
+		},
+		{
+			name: "a pre-authentication deny answered 401 is challenged",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return denyingIn(t, policy.PreAuthentication, ratelimit.ErrThrottled)
+			},
+			// No expectation on the authenticator: the deny comes first.
+			wire:    func(*testing.T, *authHarness) {},
+			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
+			assert: func(t *testing.T, s served) {
+				require.ErrorIs(t, s.err, ratelimit.ErrThrottled)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
+				assert.Equal(t, `Basic realm="Restricted"`, s.rec.Header().Get("WWW-Authenticate"),
+					"every 401 names the realm")
+				assert.False(t, s.handlerRan)
+			},
+		},
+		{
+			name: "a pre-authentication deny answered 403 is not challenged",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return denyingIn(t, policy.PreAuthentication, policy.ErrPolicyDenied)
+			},
+			wire:    func(*testing.T, *authHarness) {},
+			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
+			assert: func(t *testing.T, s served) {
+				require.ErrorIs(t, s.err, policy.ErrPolicyDenied)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
+				assert.Empty(t, s.rec.Header().Get("WWW-Authenticate"), "a 403 carries no challenge")
+			},
+		},
+		{
+			name: "a stateless challenge answered 403 is not challenged",
+			engine: func(t *testing.T) *policy.Engine {
+				t.Helper()
+
+				return challengingIn(t, policy.StatelessAuthentication, policy.ChallengePasswordChange)
+			},
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectAuthenticated(testPrincipal())
+			},
+			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
+			assert: func(t *testing.T, s served) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, s.err, &ch)
+				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
+				assert.Empty(t, s.rec.Header().Get("WWW-Authenticate"), "a 403 carries no challenge")
 				assert.False(t, s.handlerRan)
 			},
 		},
@@ -219,6 +273,9 @@ func TestBasicAuth(t *testing.T) {
 				assert.Nil(t, ch.Session,
 					"there is no later request for this caller to answer the challenge on")
 				assert.Empty(t, ch.Token)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
+				assert.Equal(t, `Basic realm="Restricted"`, s.rec.Header().Get("WWW-Authenticate"),
+					"every 401 names the realm, a challenge's included")
 				assert.False(t, s.handlerRan)
 			},
 		},

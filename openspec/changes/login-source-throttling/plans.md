@@ -503,7 +503,7 @@ if errors.Is(err, authenticate.ErrAuthenticationFailed) {
 
 - [ ] **Step 1: Failing tests.**
   - `TestManager_OffersDecoy` (table): over a password provider → true; over only a mock `Authenticator` → false; over a nested `Manager` whose only delegate is a mock → false; nested manager over a password provider → true.
-  - In `TestChain_LockResponseWarning`, add "manager without a decoy delegate": form login over `authenticate.NewManager(NewMockAuthenticator(ctrl))` → exactly one WARN containing "timing".
+  - In `TestChain_LockResponseWarning`, add "manager without a decoy delegate": form login and Basic over `authenticate.NewManager(NewMockAuthenticator(ctrl))` → one WARN containing "timing" per enabled endpoint.
   - In `basic_test.go` (or the Basic table), add rows asserting `WWW-Authenticate: Basic realm="Restricted"` on: a stateless-phase MFA challenge (`*ChallengeError`, 401) and a pre-authentication deny whose reason maps to 401. Rows whose refusal maps to anything else (403, 429) assert the header is absent.
   - In `TestChain_PasswordLoginGuard`, add "Basic locked refusals count": 50 Basic requests for locked `ada` from one source, then a Basic request for `bob` from the same source → `ratelimit.ErrThrottled`. Confirm it fails with the Basic lock branch's `recordSourceFailure` commented out, then restore it.
 - [ ] **Step 2: Run.** `go test -race -run 'TestManager_OffersDecoy' -count=1 ./authenticate/` and `go test -race -run 'TestChain_LockResponseWarning|TestChain_PasswordLoginGuard|TestBasicAuth' -count=1 ./httpsec/`. Expected FAIL: `OffersDecoy` stubbed false fails the true rows; the manager warning row gets 0 WARNs; the stateless-challenge row has no header.

@@ -179,3 +179,87 @@ func TestManager_VerifyDecoy(t *testing.T) {
 		})
 	}
 }
+
+func TestManager_OffersDecoy(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		delegates func(t *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator
+		assert    func(t *testing.T, offers bool)
+	}
+
+	passwordProvider := func(t *testing.T, ctrl *gomock.Controller) authenticate.Authenticator {
+		t.Helper()
+
+		enc := NewMockEncoder(ctrl)
+		enc.EXPECT().Encode(gomock.Any()).Return([]byte("reference"), nil).Times(1)
+
+		a, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
+			authenticate.WithPasswordEncoder(enc))
+		require.NoError(t, err)
+
+		return a
+	}
+	manager := func(t *testing.T, delegates ...authenticate.Authenticator) authenticate.Authenticator {
+		t.Helper()
+
+		m, err := authenticate.NewManager(delegates...)
+		require.NoError(t, err)
+
+		return m
+	}
+
+	cases := []testCase{
+		{
+			name: "over the password provider",
+			delegates: func(t *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator {
+				return []authenticate.Authenticator{passwordProvider(t, ctrl)}
+			},
+			assert: func(t *testing.T, offers bool) { assert.True(t, offers) },
+		},
+		{
+			name: "over a delegate offering no decoy",
+			delegates: func(_ *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator {
+				return []authenticate.Authenticator{NewMockAuthenticator(ctrl)}
+			},
+			assert: func(t *testing.T, offers bool) { assert.False(t, offers) },
+		},
+		{
+			name: "a decoy delegate after one offering none",
+			delegates: func(_ *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator {
+				return []authenticate.Authenticator{NewMockAuthenticator(ctrl), &decoyDelegate{handlesPassword: true}}
+			},
+			assert: func(t *testing.T, offers bool) { assert.True(t, offers) },
+		},
+		{
+			name: "over a nested manager whose only delegate offers no decoy",
+			delegates: func(t *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator {
+				return []authenticate.Authenticator{manager(t, NewMockAuthenticator(ctrl))}
+			},
+			assert: func(t *testing.T, offers bool) {
+				assert.False(t, offers, "a nested manager is a DecoyVerifier, but answers for its delegates")
+			},
+		},
+		{
+			name: "over a nested manager over the password provider",
+			delegates: func(t *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator {
+				return []authenticate.Authenticator{manager(t, passwordProvider(t, ctrl))}
+			},
+			assert: func(t *testing.T, offers bool) { assert.True(t, offers) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			m, err := authenticate.NewManager(tc.delegates(t, ctrl)...)
+			require.NoError(t, err)
+
+			tc.assert(t, m.OffersDecoy())
+		})
+	}
+}

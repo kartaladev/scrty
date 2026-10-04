@@ -40,7 +40,7 @@ Ownership:
 
 ## 4. The login guard and lock response in the chain (decisions 1, 3; http-error-propagation MODIFIED "One public table maps refusals to a status"; http-security-chain MODIFIED "Form login authenticates, applies policy and opens a session", MODIFIED "HTTP Basic authentication is stateless", "Password login is throttled per source", "A locked account's login refusal looks like a wrong password by default")
 
-- [ ] 4.1 One `password-login` source guard, built through `resolveSourceGuard` at the default 50 per 15 minutes and shared by form login and Basic.
+- [x] 4.1 One `password-login` source guard, built through `resolveSourceGuard` at the default 50 per 15 minutes and shared by form login and Basic.
   - It is checked after the credentials are read and before pre-authentication.
   - Authentication failures and account-locked refusals are recorded against the source.
   - A throttled Basic refusal carries `WWW-Authenticate`.
@@ -49,7 +49,7 @@ Ownership:
   - Covers scenarios "Spraying one password across accounts", "Form and Basic share the allowance", "Successes spend nothing", "Locked refusals count", "Consumer limiter", "Factory namespace", "Unattributable source" and "Throttled source still challenged".
 
   Verify with `go test -race -run 'TestChain_PasswordLogin|TestBasicAuth|TestFormLogin' -count=1 ./httpsec/`
-- [ ] 4.2 The undisclosed lock response.
+- [x] 4.2 The undisclosed lock response.
   - On a pre-authentication deny matching `ErrAccountLocked`, both endpoints call the authenticator's `VerifyDecoy` when it implements `DecoyVerifier`, and refuse with `errors.Join(authenticate.ErrAuthenticationFailed, reason)`. Basic sets its challenge header.
   - The status table's account-locked row moves from 423 to 429 (`httpsec/status.go`), and every test asserting 423 for a lock follows it: `status_test.go`, `login_test.go`, `basic_test.go`, `recoverycomplete_test.go` and `test/httpsecconformance/scenarios.go`. Covers http-error-propagation scenarios "Disclosed account lock" and "Concealed account lock".
   - `WithLockDisclosure()` refuses with the reason alone, mapped to 429, runs no decoy, and for Basic sets no challenge header.
@@ -57,21 +57,21 @@ Ownership:
   - Covers scenarios "Locked account is not probed", "Default response", "Equal password work", "Disclosure chosen", "Disclosed Basic lock" and "Authenticator without a decoy".
 
   Verify with `go test -race -run 'TestChain_LockResponse|TestFormLogin|TestBasicAuth|TestStatusForError|TestRecoveryComplete' -count=1 ./httpsec/` and `go test -race -count=1 ./...` in `test`
-- [ ] 4.3 Godoc and package documentation:
+- [x] 4.3 Godoc and package documentation:
   - `WithLoginLimiter`, `WithBasicAuthLimiter` and `WithLockDisclosure` state their defaults, the `password-login` namespace and the sharing between endpoints;
   - `EnableFormLogin` and `EnableBasicAuth` describe the new order of steps;
   - the `httpsec` package documentation lists the login guard among the limiter sites.
 
   Verify with `go doc ./httpsec WithLockDisclosure` and `go vet ./...`
 
-- [ ] 4.4 Account recovery's password proof conceals a lock (decision 3; account-recovery MODIFIED "A recovery needs two proofs of different kinds").
+- [x] 4.4 Account recovery's password proof conceals a lock (decision 3; account-recovery MODIFIED "A recovery needs two proofs of different kinds").
   - `checkPassword` refuses a lock as login does: unless locks are disclosed, it spends the decoy and returns the joined error.
   - `recovery` keeps the check's error beneath `ErrRefused` when converting an authentication failure, so `errors.Is(err, policy.ErrAccountLocked)` still holds and the status is 401.
   - With `WithLockDisclosure()` the recovery is refused with the lock alone (429) and no decoy runs.
   - Covers scenarios "Locked account" and "Locked account with locks disclosed".
 
   Verify with `go test -race -run 'TestRecoveryComplete|TestRecover' -count=1 ./httpsec/ ./recovery/`
-- [ ] 4.5 Review fixes for group 4.
+- [x] 4.5 Review fixes for group 4.
   - `Manager.OffersDecoy() bool`, true when any delegate offers a decoy (nested managers asked in turn), and the build warning consults it. Covers authentication scenario "No provider offers it" and http-security-chain scenario "Authenticator without a decoy".
   - Basic sets `WWW-Authenticate` on every refusal the status table answers 401, including a stateless-phase challenge and a 401 pre-authentication refusal.
   - A Basic row for "Locked refusals count", seen to fail when the Basic lock branch does not record against the source.

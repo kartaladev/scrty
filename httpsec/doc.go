@@ -74,9 +74,9 @@
 // names only its kind in text.
 //
 // A locked account's login is the one refusal concealed by default: form
-// login and Basic answer it as a wrong password, joined to the lock so a
-// consumer's handler still sees it, and WithLockDisclosure answers it with
-// the lock itself, mapped to 429.
+// login, Basic and account recovery's password proof answer it as a wrong
+// password, joined to the lock so a consumer's handler still sees it, and
+// WithLockDisclosure answers it with the lock itself, mapped to 429.
 //
 // WithErrorHandler replaces what a refusal is answered with on the net/http
 // chain only. A framework that already owns how a request is refused keeps that
@@ -115,21 +115,22 @@
 //     failed recoveries per user, 5 per 15 minutes.
 //
 // A flow given a limiter of its own (WithLoginLimiter, WithBasicAuthLimiter,
-// WithAPIKeyLimiter, WithMFAVerifyLimiter and the like) uses that one, and the factory is never asked for it. The
-// components a consumer builds and hands the chain — the recovery.Codes of
-// RecoveryDeps and the passkey.Manager of PasskeyDeps — build their limiters
-// themselves, through their own factory options (recovery.WithCodeLimiterFactory,
-// passkey.WithConfirmLimiterFactory). Every source guard the chain builds keys
-// IPv6 clients by the chain's prefix (WithIPv6SourcePrefix), and also counts
-// them by an aggregate: by default a /56 at 4 times the flow's limit, over the
-// flow's window, built from the factory under "<flow>-ipv6-aggregate" even for
-// a flow that was given a limiter of its own, so a client rotating through the
-// /64s of its allocation cannot buy a fresh allowance with each. For a flow
-// given its own limiter, the limit and window are that limiter's, read through
-// ratelimit.PolicyReporter; one that reports none gets no default aggregate and
-// a warning at construction, and refuses an explicit one. Set it with
-// WithIPv6Aggregate, or turn it off with WithoutIPv6Aggregate; the default is
-// skipped when the source prefix is /56 or wider.
+// WithAPIKeyLimiter, WithMFAVerifyLimiter and the like) uses that one, and the
+// factory is never asked for it. The components a consumer builds and hands
+// the chain — the recovery.Codes of RecoveryDeps and the passkey.Manager of
+// PasskeyDeps — build their limiters themselves, through their own factory
+// options (recovery.WithCodeLimiterFactory, passkey.WithConfirmLimiterFactory).
+// Every source guard the chain builds keys IPv6 clients by the chain's prefix
+// (WithIPv6SourcePrefix), and also counts them by an aggregate: by default a
+// /56 at 4 times the flow's limit, over the flow's window, built from the
+// factory under "<flow>-ipv6-aggregate" even for a flow that was given a
+// limiter of its own, so a client rotating through the /64s of its allocation
+// cannot buy a fresh allowance with each. For a flow given its own limiter, the
+// limit and window are that limiter's, read through ratelimit.PolicyReporter;
+// one that reports none gets no default aggregate and a warning at
+// construction, and refuses an explicit one. Set it with WithIPv6Aggregate, or
+// turn it off with WithoutIPv6Aggregate; the default is skipped when the source
+// prefix is /56 or wider.
 //
 // # A dependency's failure never reaches a record or a returned error's text
 //

@@ -761,10 +761,10 @@ func WithoutIPv6Aggregate() Option {
 // It also sets the window of the throttled-source records written by the
 // source guards the chain builds for EnableFormLogin and EnableBasicAuth,
 // EnableAPIKey, EnableMagicLink and EnableOIDCLogin's handoff redemption, one
-// per flow and canonical source. The
-// account-recovery guards follow WithRecoveryLogInterval, and the passwordless
-// begin guard the passkey manager's window (passkey.WithLogInterval), as those
-// endpoints' own records do.
+// per flow and canonical source. The account-recovery guards follow
+// WithRecoveryLogInterval, and the passwordless begin guard the passkey
+// manager's window (passkey.WithLogInterval), as those endpoints' own records
+// do.
 func WithRefusalLogInterval(d time.Duration) Option {
 	return func(c *config) error {
 		c.refusalInterval = d
@@ -814,17 +814,20 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 // itself, instead of as a wrong password.
 //
 // Default: undisclosed. When the pre-authentication phase refuses with
-// policy.ErrAccountLocked, form login and Basic first spend a decoy password
-// verification, through the authenticator's authenticate.DecoyVerifier when it
-// implements one, and then refuse with
-// errors.Join(authenticate.ErrAuthenticationFailed, reason). StatusForError
-// answers that 401, and Basic sets its WWW-Authenticate challenge, so neither
-// the status, the headers nor the time taken tells a client that the account
-// exists and is locked. The lock is not lost: errors.Is(err,
-// policy.ErrAccountLocked) still holds, and errors.As still reaches the
-// *policy.LockoutError and its wait, so a consumer's own error handler can
-// render a lock however it chooses — at which point the disclosure is the
-// consumer's.
+// policy.ErrAccountLocked, form login, Basic and account recovery's password
+// proof first spend a decoy password verification, through the
+// authenticator's authenticate.DecoyVerifier when it implements one, and then
+// refuse with errors.Join(authenticate.ErrAuthenticationFailed, reason).
+// StatusForError answers that 401, and Basic sets its WWW-Authenticate
+// challenge, so neither the status, the headers nor the time taken tells a
+// client that the account exists and is locked. The lock is not lost:
+// errors.Is(err, policy.ErrAccountLocked) still holds, and errors.As still
+// reaches the *policy.LockoutError and its wait, so a consumer's own error
+// handler can render a lock however it chooses — at which point the
+// disclosure is the consumer's. Account recovery turns the joined refusal into its own
+// recovery.ErrRefused, keeping it beneath, so a locked account's recovery
+// reads as an unknown user's or a wrong code's, and is still identifiable as
+// a lock.
 //
 // With this option the refusal is the policy's reason alone, which
 // StatusForError answers 429 Too Many Requests, and no decoy runs. A 429 is not
@@ -839,8 +842,8 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 // whether that account exists and is locked, which the OWASP authentication
 // guidance lists among the responses a login must not give.
 //
-// It governs only the response to a lock, at form login and Basic, and
-// nothing else. A lock refusal still counts against the source's
+// It governs only the response to a lock, at form login, Basic and account
+// recovery's password proof, and nothing else. A lock refusal still counts against the source's
 // password-login allowance either way.
 func WithLockDisclosure() Option {
 	return func(c *config) error {
@@ -1131,9 +1134,11 @@ type BasicAuthOption func(*basicAuth) error
 //  5. Run the stateless-authentication phase, and continue with the caller
 //     published.
 //
-// Every refusal answered 401 carries the WWW-Authenticate challenge for the
-// realm, throttled and concealed-lock refusals included. A lock disclosed
-// with WithLockDisclosure is a 429, and carries none.
+// Every refusal StatusForError answers 401 carries the WWW-Authenticate
+// challenge for the realm, throttled, concealed-lock, pre-authentication and
+// stateless-challenge refusals included, and no refusal answered otherwise
+// does: a lock disclosed with WithLockDisclosure is a 429, and a deny answered
+// 403 carries none.
 func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
 	const option = "EnableBasicAuth"
 

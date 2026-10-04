@@ -394,6 +394,32 @@ func TestRecoverer_Verify(t *testing.T) {
 			},
 		},
 		{
+			name: "a lock concealed as a failed authentication is refused behind fixed text and stays identifiable",
+			setup: func(e *recoverEnv) {
+				e.passwordErr = fmt.Errorf("check for ana@example.com: %w",
+					errors.Join(authenticate.ErrAuthenticationFailed, policy.ErrAccountLocked))
+			},
+			req: savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				require.ErrorIs(t, err, policy.ErrAccountLocked, "the consumer's handler can still tell it is a lock")
+				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the check's own text stays beneath")
+				assert.True(t, recovery.RefusedAfterValidCode(err))
+				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]))
+				assert.Equal(t, int32(1), e.failures.Load())
+			},
+		},
+		{
+			name:  "a bare authentication failure is refused with ErrRefused and its text",
+			setup: func(e *recoverEnv) { e.passwordErr = authenticate.ErrAuthenticationFailed },
+			req:   savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				refused(t, err)
+				assert.Equal(t, recovery.ErrRefused.Error(), err.Error())
+				assert.Equal(t, int32(1), e.failures.Load())
+			},
+		},
+		{
 			name: "a wrong password keeps the codes, and a retry succeeds",
 			run: func(t *testing.T, ctx context.Context, e *recoverEnv, r *recovery.Recoverer) (*recovery.Verified, error) {
 				_, err := recoverOnce(ctx, r, savedAndPassword("wrong")(e))

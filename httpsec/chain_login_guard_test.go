@@ -326,6 +326,31 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 			},
 		},
 		{
+			name: "Basic locked refusals count against the source",
+			arrange: func(t *testing.T, h *loginGuardHarness) {
+				lockout, err := policy.NewAccountLockoutPolicy(
+					policy.WithAttemptStore(h.attempts), policy.WithFixedLockout(1, time.Hour))
+				require.NoError(t, err)
+
+				h.lockout = lockout
+				require.NoError(t, h.attempts.RecordFailure(t.Context(), "ada", time.Now()))
+			},
+			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
+				for i := range 50 {
+					out := basicFrom(t, c, loginGuardSource, "ada", loginGuardRightPassword)
+					require.ErrorIs(t, out.err, policy.ErrAccountLocked, "locked Basic refusal %d", i+1)
+					require.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "locked Basic refusal %d", i+1)
+				}
+
+				return snapshot(h), basicFrom(t, c, loginGuardSource, "bob", loginGuardRightPassword)
+			},
+			assert: func(t *testing.T, h *loginGuardHarness, before counts, out served) {
+				requireThrottled(t, out)
+				assert.Zero(t, h.authnCalls.Load(), "a locked account's password is never checked")
+				assert.Equal(t, before, snapshot(h))
+			},
+		},
+		{
 			name: "a consumer limiter for form login leaves Basic on the default",
 			loginOpts: func(t *testing.T) []httpsec.LoginOption {
 				return []httpsec.LoginOption{httpsec.WithLoginLimiter(memLimiter(t, 10, 15*time.Minute))}
@@ -780,29 +805,45 @@ func TestChain_LockResponseWarning(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		decoy  bool
+		name  string
+		decoy bool
+		// authn, when set, replaces the harness's authenticator.
+		authn  func(t *testing.T) authenticate.Authenticator
 		opts   []httpsec.Option
 		assert func(t *testing.T, warnings []slog.Record)
 	}
 
+	oncePerEndpoint := func(t *testing.T, warnings []slog.Record) {
+		t.Helper()
+
+		require.Len(t, warnings, 2, "one for form login, one for Basic")
+
+		var options []string
+
+		for _, w := range warnings {
+			v, ok := attrValue(w, "option")
+			require.True(t, ok)
+
+			options = append(options, v.String())
+		}
+
+		assert.ElementsMatch(t, []string{"EnableFormLogin", "EnableBasicAuth"}, options)
+	}
+
 	cases := []testCase{
 		{
-			name: "an authenticator without a decoy warns once per endpoint",
-			assert: func(t *testing.T, warnings []slog.Record) {
-				require.Len(t, warnings, 2, "one for form login, one for Basic")
+			name:   "an authenticator without a decoy warns once per endpoint",
+			assert: oncePerEndpoint,
+		},
+		{
+			name: "a manager without a decoy delegate warns once per endpoint",
+			authn: func(t *testing.T) authenticate.Authenticator {
+				m, err := authenticate.NewManager(NewMockAuthenticator(gomock.NewController(t)))
+				require.NoError(t, err)
 
-				var options []string
-
-				for _, w := range warnings {
-					v, ok := attrValue(w, "option")
-					require.True(t, ok)
-
-					options = append(options, v.String())
-				}
-
-				assert.ElementsMatch(t, []string{"EnableFormLogin", "EnableBasicAuth"}, options)
+				return m
 			},
+			assert: oncePerEndpoint,
 		},
 		{
 			name: "disclosed locks need no decoy, so nothing is warned",
@@ -825,6 +866,9 @@ func TestChain_LockResponseWarning(t *testing.T) {
 			t.Parallel()
 
 			h := newLockResponseHarness(t, tc.decoy)
+			if tc.authn != nil {
+				h.authn = tc.authn(t)
+			}
 
 			_, err := h.chain(t, nil, tc.opts...)
 			require.NoError(t, err)

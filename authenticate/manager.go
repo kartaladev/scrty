@@ -101,3 +101,35 @@ func (m *Manager) VerifyDecoy(ctx context.Context, c identity.Credentials) bool 
 }
 
 var _ DecoyVerifier = (*Manager)(nil)
+
+// OffersDecoy reports whether any delegate offers a decoy verification, so a
+// caller can tell whether VerifyDecoy will ever spend any work: a Manager
+// always implements DecoyVerifier, and that alone says nothing about its
+// delegates.
+//
+// A delegate offers one when it implements DecoyVerifier and, if it also
+// reports OffersDecoy, as a nested Manager does, that reports true. It is
+// answered from the delegates' types alone, and calls neither VerifyDecoy nor
+// Authenticate.
+func (m *Manager) OffersDecoy() bool {
+	return slices.ContainsFunc(m.delegates, offersDecoy)
+}
+
+// decoyOfferer is a DecoyVerifier that can report whether it will ever spend
+// a decoy, as a Manager can.
+type decoyOfferer interface {
+	OffersDecoy() bool
+}
+
+// offersDecoy reports whether a may spend a decoy verification.
+func offersDecoy(a Authenticator) bool {
+	if _, ok := a.(DecoyVerifier); !ok {
+		return false
+	}
+
+	if o, ok := a.(decoyOfferer); ok {
+		return o.OffersDecoy()
+	}
+
+	return true
+}

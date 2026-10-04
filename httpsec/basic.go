@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -85,36 +86,58 @@ func (b *basicAuth) flushRefusalLogs() {
 }
 
 // Intercept authenticates a Basic credential and establishes no session.
+//
+// Every refusal the status table answers 401 carries the challenge, set here,
+// on the one way out, so no refusal path can miss it (RFC 9110 §15.5.2): a
+// malformed header, a throttled source, a concealed lock, a wrong password, a
+// pre-authentication deny or a stateless challenge alike. A refusal answered
+// otherwise, such as a disclosed lock (429) or a deny answered 403, carries
+// none. What the protected handler returns is its own, and is never
+// challenged here.
 func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 	header := ex.Request.Header("Authorization")
 	if !strings.HasPrefix(header, basicPrefix) {
 		return next(ex)
 	}
 
+	auth, err := b.authenticate(ex, strings.TrimPrefix(header, basicPrefix))
+	if err != nil {
+		if StatusForError(err) == http.StatusUnauthorized {
+			b.challenge(ex)
+		}
+
+		return err
+	}
+
+	ex.Authentication = auth
+	ex.SetContext(WithCaller(ex.Context(), auth))
+
+	return next(ex)
+}
+
+// authenticate judges the credential after the Basic prefix: the source guard,
+// the pre-authentication phase, the authenticator and the stateless phase, in
+// that order. It sets no header; Intercept challenges what it refuses.
+func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate.Authentication, error) {
 	ctx := ex.Context()
 	now := b.now()
 
-	username, password, ok := decodeBasic(strings.TrimPrefix(header, basicPrefix))
+	username, password, ok := decodeBasic(credential)
 	if !ok {
 		// A malformed header is reported as a failed authentication, not as a
 		// malformed request: telling the two apart tells a prober which of its
 		// guesses was even parsed.
-		b.challenge(ex)
-
-		return authenticate.ErrAuthenticationFailed
+		return nil, authenticate.ErrAuthenticationFailed
 	}
 
 	// The source is checked only once the header has decoded, so a malformed
 	// header spends nothing, and before the pre-authentication phase, as at
-	// the login form. A throttled refusal is still a 401, and every 401 names
-	// the realm (RFC 9110 §15.5.2); one without it would also single the
-	// throttled response out.
+	// the login form. A throttled refusal is still a 401, and challenged like
+	// one; a throttled response without the challenge would be singled out.
 	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), passwordLoginFlow,
 		b.sampler, b.log, now)
 	if err != nil {
-		b.challenge(ex)
-
-		return err
+		return nil, err
 	}
 
 	// Before the credential is checked, for the same reason as at the login
@@ -125,19 +148,15 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 	})
 	if err := refusePreAuthentication(pre, b.enforced); err != nil {
 		if !errors.Is(err, policy.ErrAccountLocked) {
-			return err
+			return nil, err
 		}
 
 		// A source hammering a locked account spends its own allowance.
 		recordSourceFailure(ctx, b.guard, src)
 
-		// A concealed lock is a 401 and carries the challenge every 401
-		// carries; a disclosed one is a 429, which has none.
-		if !b.discloseLocks {
-			b.challenge(ex)
-		}
-
-		return refuseLocked(ctx, b.authn, b.discloseLocks,
+		// Concealed, the lock is a 401 and challenged; disclosed, a 429,
+		// which is not.
+		return nil, refuseLocked(ctx, b.authn, b.discloseLocks,
 			identity.NewUsernamePassword(username, password), err)
 	}
 
@@ -158,11 +177,9 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 
 		recordSourceFailure(ctx, b.guard, src)
 
-		b.challenge(ex)
-
 		// The authenticator's own refusal, not a restatement of it: it already
 		// carries no detail that would tell one refusal from another.
-		return err
+		return nil, err
 	}
 
 	// Stateless: there is no later request in which this caller could answer a
@@ -173,16 +190,13 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 
 	switch d.Outcome {
 	case policy.Deny:
-		return policyDenyReason(d)
+		return nil, policyDenyReason(d)
 	case policy.Challenge:
-		return &ChallengeError{Kind: d.Challenge}
+		return nil, &ChallengeError{Kind: d.Challenge}
 	case policy.Allow:
 	}
 
-	ex.Authentication = auth
-	ex.SetContext(WithCaller(ctx, auth))
-
-	return next(ex)
+	return auth, nil
 }
 
 // decodeBasic reads the user-id and password out of the credential.
