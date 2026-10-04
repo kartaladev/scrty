@@ -205,7 +205,8 @@ Before the first tag, so no compatibility policy applies yet. Each new default i
 What a consumer sees on upgrade:
 - the 250,000-key cap;
 - the /56 aggregate on every chain source guard;
-- one more factory call per source-guarded flow, under namespace `<flow>-ipv6-aggregate`.
+- one more factory call per source-guarded flow, under namespace `<flow>-ipv6-aggregate`, unless the aggregate is off or skipped for that flow;
+- for a flow given its own limiter: an aggregate sized from that limiter's reported limit and window. A limiter that does not implement `ratelimit.PolicyReporter` gets no default aggregate and one warning at construction. One that reports an unusable policy, or a limit too large to multiply, fails construction naming the flow.
 
 A consumer with a Redis factory gets those namespaces created on first use. Each replica must configure them the same way, as the Redis limiter already requires.
 
@@ -232,4 +233,4 @@ To roll back the behaviour, a consumer uses `WithoutIPv6Aggregate()` and `WithMe
 - [`hash/maphash`](https://pkg.go.dev/hash/maphash): the per-limiter seeded hash used for shard selection (decision 3).
 - [`sync/atomic.Int64`](https://pkg.go.dev/sync/atomic#Int64): the exact cap reservation (decision 1).
 
-Decisions 2 and 4 are reasoned from scrty's own settled specs and the established design.
+Decisions 2 and 4, and decision 6's sizing of the aggregate from a consumer limiter's reported policy (`PolicyReporter`), are reasoned from scrty's own settled specs and the established design, with `library-design.md` rules 4 and 6 deciding the refusals.

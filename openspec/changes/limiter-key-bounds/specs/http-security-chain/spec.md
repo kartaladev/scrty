@@ -45,7 +45,7 @@ Every source guard the chain builds SHALL also count IPv6 sources by an aggregat
 - **THEN** construction succeeds, the API-key guard counts no aggregate, and one warning names the flow
 
 ### Requirement: Contradictory aggregate settings fail at construction
-Building a chain SHALL fail with a configuration error naming the aggregate option when an explicitly set aggregate prefix is not wider than the chain's source prefix, is outside 1 to 127, or has a multiplier below 1, when the aggregate is both set and turned off, when an explicitly set aggregate applies to a flow whose own limiter reports no limit and window, when a flow's own limiter reports a limit below 1 or a window of zero or less, and when an aggregate's limit, the multiplier times the flow's limit, does not fit in an int.
+Building a chain SHALL fail with a configuration error, naming the aggregate option for a contradictory setting and the flow for a flow limiter's policy, when an explicitly set aggregate prefix is not wider than the chain's source prefix, is outside 1 to 127, or has a multiplier below 1, when the aggregate is both set and turned off, when an explicitly set aggregate applies to a flow whose own limiter reports no limit and window, when a flow's own limiter reports a limit below 1 or a window of zero or less, and when an aggregate's limit, the multiplier times the flow's limit, does not fit in an int.
 
 #### Scenario: Aggregate no wider than the source
 - **WHEN** a chain is configured with a 48-bit IPv6 source prefix and an explicit /56 aggregate
