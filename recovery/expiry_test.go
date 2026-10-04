@@ -47,6 +47,9 @@ func TestRecoverer_ExpiryTasks(t *testing.T) {
 		// opts are the options beyond the env's, which enable every proof
 		// kind and no hold.
 		opts func(e *completeEnv) []recovery.Option
+		// defaultStore builds the recoverer with no issued-code store, so
+		// the one it makes for itself is under test.
+		defaultStore bool
 		// assert runs against the recoverer built from opts.
 		assert func(t *testing.T, e *completeEnv, r *recovery.Recoverer)
 	}
@@ -97,26 +100,17 @@ func TestRecoverer_ExpiryTasks(t *testing.T) {
 			},
 		},
 		{
-			name: "an expired issued code goes and a live one stays",
-			opts: func(e *completeEnv) []recovery.Option {
-				return []recovery.Option{recovery.WithIssuedCodeStore(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(e.clock)))}
-			},
+			name:         "an expired issued code goes and a live one stays",
+			defaultStore: true,
+			assert:       assertExpiredIssuedCodeGoes,
+		},
+		{
+			name:         "the default issued-code store follows a clock ahead of the system clock",
+			defaultStore: true,
 			assert: func(t *testing.T, e *completeEnv, r *recovery.Recoverer) {
-				ctx := t.Context()
-				// Start is open to anyone who knows a username.
-				r.Start(ctx, anaUsername)
-				// Past the code's lifetime and the hour-long issuance window.
-				e.clock.Advance(2 * time.Hour)
-				r.Start(ctx, anaUsername)
-				require.Len(t, e.out.messages(), 2, "both starts must have issued a code")
+				e.clock.Advance(time.Until(time.Now().Add(365 * 24 * time.Hour)))
 
-				removed, err := namedTask(t, r.ExpiryTasks(), "recovery-issued-codes").Run(ctx)
-
-				require.NoError(t, err)
-				assert.Equal(t, 1, removed)
-				removed, err = namedTask(t, r.ExpiryTasks(), "recovery-issued-codes").Run(ctx)
-				require.NoError(t, err)
-				assert.Zero(t, removed, "the live code must stay")
+				assertExpiredIssuedCodeGoes(t, e, r)
 			},
 		},
 		{
@@ -169,8 +163,39 @@ func TestRecoverer_ExpiryTasks(t *testing.T) {
 			if tc.opts != nil {
 				opts = tc.opts(e)
 			}
+			if tc.defaultStore {
+				// The env's own options name a store, so build from the fixture's.
+				r, err := recovery.NewRecoverer(e.completeDeps(),
+					e.fixture.opts(append([]recovery.Option{recovery.WithMessages(e.capturingMessages())}, opts...)...)...)
+				require.NoError(t, err)
+				tc.assert(t, e, r)
+
+				return
+			}
 
 			tc.assert(t, e, e.recoverer(t, opts...))
 		})
 	}
+}
+
+// assertExpiredIssuedCodeGoes issues two codes an expiry apart and checks that
+// the issued-code task removes the expired one and leaves the live one.
+func assertExpiredIssuedCodeGoes(t *testing.T, e *completeEnv, r *recovery.Recoverer) {
+	t.Helper()
+
+	ctx := t.Context()
+	// Start is open to anyone who knows a username.
+	r.Start(ctx, anaUsername)
+	// Past the code's lifetime and the hour-long issuance window.
+	e.clock.Advance(2 * time.Hour)
+	r.Start(ctx, anaUsername)
+	require.Len(t, e.out.messages(), 2, "both starts must have issued a code")
+
+	removed, err := namedTask(t, r.ExpiryTasks(), "recovery-issued-codes").Run(ctx)
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	removed, err = namedTask(t, r.ExpiryTasks(), "recovery-issued-codes").Run(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, removed, "the live code must stay")
 }
