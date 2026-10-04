@@ -47,7 +47,7 @@ The chain builds one source guard for the flow `password-login`, using `resolveS
 **Default:** 50 failures per 15 minutes, built from the chain's factory under namespace `password-login`.
 - Fifty bounds one source to 50 accounts sprayed per window.
 - It leaves room for an office NAT or carrier-grade NAT, where many users share one address and some mistype.
-- When `limiter-key-bounds` lands, its IPv6 aggregate applies to this guard as to every guard `resolveSourceGuard` builds.
+- `limiter-key-bounds` (now on main) gives this guard its IPv6 aggregate like every guard `resolveSourceGuard` builds: by default `password-login-ipv6-aggregate`, a /56 at 4 × 50 = 200 per 15 minutes. An endpoint given its own limiter through `WithLoginLimiter` or `WithBasicAuthLimiter` gets an aggregate sized from that limiter's `ratelimit.PolicyReporter`; a limiter that reports no policy gets no default aggregate and a construction warning, and an explicit `WithIPv6Aggregate` refuses it.
 
 **Override:**
 - `httpsec.WithLoginLimiter(l)` (a `LoginOption`) gives form login its own limiter.

@@ -79,10 +79,12 @@ Ownership:
 
   Verify with `go test -race -count=1 ./authenticate/... ./httpsec/...`
 
+- [ ] 4.6 After rebasing onto `limiter-key-bounds`: the `password-login` guard's IPv6 aggregate. Tests: with the default factory the chain asks for `password-login-ipv6-aggregate` at 200 per 15 minutes; addresses rotating across /64s inside one /56 exhaust it; a consumer limiter given through `WithLoginLimiter` that reports a policy gets an aggregate sized from it; one that reports none gets no aggregate and one construction warning naming the option, and with an explicit `WithIPv6Aggregate` construction fails. Godoc of `WithLoginLimiter` and `WithBasicAuthLimiter` states this. Verify with `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/` and `go doc ./httpsec WithLoginLimiter`
+
 ## 5. Integration
 
-- [x] 5.1 Whole-workspace gate. Verify with:
+- [ ] 5.1 Whole-workspace gate. Verify with:
   - `go build ./...`, `go vet ./...` and `go test -race -count=1 ./...` in every module of `go.work` (with Docker for the store and Redis conformance runs), plus `go test -race ./...` in `ginsec` and `fibersec`;
   - `gofmt -l .` empty;
   - `golangci-lint run ./...` clean.
-- [x] 5.2 Whole-branch review against every requirement in this change's spec deltas and design decisions 1–4. Verify by the review reporting no open finding.
+- [ ] 5.2 Whole-branch review against every requirement in this change's spec deltas and design decisions 1–4. Verify by the review reporting no open finding.

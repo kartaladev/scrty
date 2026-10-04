@@ -57,6 +57,7 @@
 | A1 | 3.1, 3.2 | `authenticate/decoy.go` (new), `authenticate/password.go`, `authenticate/manager.go`, `authenticate/decoy_test.go` (new) | `httpsec/`, `policy/` | Sonnet | A small port with a stated contract and an existing reference-hash path |
 | H2 | 4.1–4.3 | `httpsec/login.go`, `httpsec/basic.go`, `httpsec/options.go`, `httpsec/throttle.go`, `httpsec/chain.go`, `httpsec/doc.go`, `httpsec/status.go`, `httpsec/status_test.go`, `httpsec/login_test.go`, `httpsec/basic_test.go`, `httpsec/chain_login_guard_test.go` (new), the lock-status assertion in `httpsec/recoverycomplete_test.go`, `test/httpsecconformance/scenarios.go` | `policy/`, `authenticate/`, and `httpsec/returned_errors_test.go` | Opus | Changes the order of refusals on the login path; a mistake would pass tests and still leak |
 | H3 | 4.4, 4.5 | `httpsec/login.go`, `httpsec/basic.go`, `httpsec/doc.go`, `httpsec/options.go` (godoc only), `httpsec/recoverycomplete_test.go`, `httpsec/chain_login_guard_test.go`, `httpsec/basic_test.go`, `recovery/recover.go` and its tests, `authenticate/manager.go`, `authenticate/decoy_test.go` | `policy/`, `httpsec/throttle.go`, `httpsec/chain_ratelimit_test.go` | Opus | Closes a disclosure oracle in recovery and touches three packages; a mistake would pass tests and still leak |
+| H4 | 4.6 | `httpsec/chain_login_guard_test.go`, `httpsec/options.go` (godoc of the two login limiter options) | `httpsec/throttle.go`, `ratelimit/`, everything else | Sonnet | Tests and godoc over behaviour the rebase brought in; after the rebase onto `limiter-key-bounds` |
 
 **Order:**
 - H1, P1 and A1 start together.
@@ -531,6 +532,24 @@ func (m *Manager) OffersDecoy() bool {
   - Basic: on the way out of `Intercept`, set the challenge when the returned error maps to 401 (`StatusForError(err) == http.StatusUnauthorized`), replacing the scattered `b.challenge(ex)` calls on refusal paths, so no 401 path can miss it.
   - Rewrap `httpsec/doc.go` near line 118 and the `WithRefusalLogInterval` godoc.
 - [ ] **Step 4: Verify.** Step 2 passes; `go test -race -count=1 ./authenticate/... ./httpsec/...`; ginsec and fibersec `go test -race ./...`; `gofmt -l authenticate httpsec`.
+
+### Task 4.6: The password-login IPv6 aggregate (after the rebase onto `limiter-key-bounds`)
+
+**Files:** Test in `httpsec/chain_login_guard_test.go`; modify `httpsec/options.go` (godoc of `WithLoginLimiter`, `WithBasicAuthLimiter` only). No production logic change is expected: the login guard is built through `resolveSourceGuard` (`httpsec/login.go`, `wirePasswordLogin`), which now also builds the aggregate. If a test shows otherwise, stop and report rather than editing `httpsec/throttle.go`.
+
+**Interfaces:** Consumes `ratelimit.PolicyReporter` (`Policy() (limit int, window time.Duration)`), `httpsec.WithIPv6Aggregate(bits, multiplier int)`, `httpsec.WithoutIPv6Aggregate()`, `ratelimit.NewMemoryLimiter` (which reports its policy).
+
+- [ ] **Step 1: Failing rows** (a table `TestChain_PasswordLoginAggregate`, find-the-call factory recorder from `recordingLimiterFactory(t)`):
+  - "default aggregate requested": form login and Basic enabled, consumer factory → a call for `password-login-ipv6-aggregate` with limit 200 and window 15m.
+  - "rotating /64s inside one /56": 200 failed form logins from `2001:db8:1:1::1`, `2001:db8:1:2::1`, … (distinct /64s, same /56) → the next attempt from another /64 of that /56 is refused with `ratelimit.ErrThrottled`; an attempt from another /56 is not.
+  - "consumer limiter with a policy": `WithLoginLimiter(ratelimit.NewMemoryLimiter(10, time.Minute))` → the aggregate for that endpoint is sized 40 per minute (assert through the recorder: `password-login-ipv6-aggregate`, 40, 1m).
+  - "consumer limiter without a policy": a typed mock `ratelimit.Limiter` (not a `PolicyReporter`) through `WithLoginLimiter` → no aggregate call for it and exactly one WARN naming `WithLoginLimiter`; with `WithIPv6Aggregate(56, 4)` added, `httpsec.New` fails with a configuration error naming `WithLoginLimiter`.
+  - The same two consumer-limiter rows for `WithBasicAuthLimiter`.
+- [ ] **Step 2: Run** `go test -race -run 'TestChain_PasswordLoginAggregate' -count=1 ./httpsec/`. These rows exercise behaviour that already exists after the rebase, so they may pass at once. Prove each one targets the behaviour: temporarily disable the aggregate for `password-login` (pass `WithoutIPv6Aggregate()` from the test helper, or skip the aggregate call in a scratch copy) and see the default and rotation rows fail; restore. Record the failing lines.
+- [ ] **Step 3: Godoc.** `WithLoginLimiter` and `WithBasicAuthLimiter` say that the endpoint's IPv6 aggregate is sized from the limiter's `ratelimit.PolicyReporter`, that a limiter reporting none gets no default aggregate and a construction warning, and that an explicit `WithIPv6Aggregate` refuses it.
+- [ ] **Step 4: Verify** `go test -race -count=1 ./httpsec/...`, `go doc ./httpsec WithLoginLimiter`, `gofmt -l httpsec`, `golangci-lint run ./httpsec/...`.
+
+After 4.6, tasks 5.1 (gate) and 5.2 (whole-branch review) are rerun on the rebased branch.
 
 ### Task 5.1: Whole-workspace gate (main session)
 
