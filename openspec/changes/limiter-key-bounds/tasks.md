@@ -13,7 +13,7 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 1. Baseline benchmark (design "Context"; rate-limiting "Inline pruning never stalls the whole limiter")
 
-- [ ] 1.1 Add `ratelimit/memory_bench_test.go`, with heavy cases skipped under `-short`. Run it on the unchanged limiter. It measures, over distinct /64 keys with limit 10, window 15 min and one failure per key:
+- [x] 1.1 Add `ratelimit/memory_bench_test.go`, with heavy cases skipped under `-short`. Run it on the unchanged limiter. It measures, over distinct /64 keys with limit 10, window 15 min and one failure per key:
   - the heap per key at 100,000 and 1,000,000 keys;
   - the worst check that triggers inline pruning with 1,000,000 expired keys, and the worst latency of eight concurrent readers of other keys during it;
   - a single-lock reference: one scan of a plain map holding the same keys under one mutex, which is the denominator of the spec's one-thirtieth ratio;
@@ -24,8 +24,8 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 2. A clock stepped backwards (decision 4; rate-limiting MODIFIED "The in-memory limiter bounds its own memory without disarming limits", scenario "Clock stepped backwards")
 
-- [ ] 2.1 Red step for the `UNREPRODUCED` claim: `TestMemoryLimiter_SweepResumesAfterClockSteppedBack`, on the unchanged limiter, driven by the `pkg/clock` fake. It follows the spec scenario. Record the failing output, or report that it passes. Verify with `go test -run TestMemoryLimiter_SweepResumesAfterClockSteppedBack -count=1 ./ratelimit/`
-- [ ] 2.2 Only if 2.1 failed: re-arm the sweep pacing when `sweptAt` is later than now, so sweeping resumes one window after the step back. If 2.1 passed, report it, and the main session removes decision 4 and this task. Verify with 2.1 passing and `go test -race ./ratelimit/...`
+- [x] 2.1 Red step for the `UNREPRODUCED` claim: `TestMemoryLimiter_SweepResumesAfterClockSteppedBack`, on the unchanged limiter, driven by the `pkg/clock` fake. It follows the spec scenario. Record the failing output, or report that it passes. Verify with `go test -run TestMemoryLimiter_SweepResumesAfterClockSteppedBack -count=1 ./ratelimit/`
+- [x] 2.2 Only if 2.1 failed: re-arm the sweep pacing when `sweptAt` is later than now, so sweeping resumes one window after the step back. If 2.1 passed, report it, and the main session removes decision 4 and this task. Verify with 2.1 passing and `go test -race ./ratelimit/...`
 
 ## 3. Sharding and compaction (decision 3; rate-limiting "Inline pruning never stalls the whole limiter", MODIFIED "The in-memory limiter bounds its own memory without disarming limits")
 

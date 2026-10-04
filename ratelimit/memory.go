@@ -215,6 +215,15 @@ func (l *MemoryLimiter) countLocked(key string, now time.Time) int {
 // leak. Pacing it by the window rather than by call count means an attacker
 // cannot make it run on every request by sending more of them.
 func (l *MemoryLimiter) sweepLocked(now time.Time) {
+	// A clock stepped backwards leaves sweptAt in the future, and pacing on a
+	// negative interval would stop sweeping until the clock caught up again.
+	// Re-arming from now resumes it one window later; sweeping sooner never
+	// removes a live key, because keys are judged by their newest stamp.
+	if now.Before(l.sweptAt) {
+		l.sweptAt = now
+
+		return
+	}
 	if now.Sub(l.sweptAt) < l.window {
 		return
 	}

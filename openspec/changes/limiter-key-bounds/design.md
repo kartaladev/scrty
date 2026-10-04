@@ -95,9 +95,9 @@ Measured in the exploratory harness, against the single-lock baseline:
   - *Two generations* (`cur` and `prev` maps, with `prev` dropped once a window). The drop is O(1) and frees memory. But it keeps the single lock, so 8-core throughput stays at today's 280 ns/op, and expired keys hold cap places for up to two windows instead of one.
   - *Shards with two generations each.* It combines both and keeps the two-window hold, for more complexity than the measured stall justifies.
 
-### 4. A clock stepped backwards must not stop sweeping (pending reproduction)
+### 4. A clock stepped backwards must not stop sweeping (reproduced)
 
-**Hypothesis, `UNREPRODUCED`, from a code reading:** pacing compares `now.Sub(sweptAt) < window`. If the clock steps back after a sweep, that difference is negative until the clock catches up again. Sweeping stops in the meantime. With a cap, a stalled sweep would keep refusing new sources for as long as the clock was set back.
+**`REPRODUCED`** by `TestMemoryLimiter_SweepResumesAfterClockSteppedBack` (`go test -run TestMemoryLimiter_SweepResumesAfterClockSteppedBack -count=1 ./ratelimit/`), which on the unchanged limiter failed with `Should be zero, but was 1 … still held after its window passed`, and passes with the fix. The defect: pacing compares `now.Sub(sweptAt) < window`. If the clock steps back after a sweep, that difference is negative until the clock catches up again. Sweeping stops in the meantime. With a cap, a stalled sweep would keep refusing new sources for as long as the clock was set back.
 
 - **Planned test:** the spec scenario "Clock stepped backwards". It is task 2.1's red step.
 - **If it fails:** a shard whose `sweptAt` is later than `now` sets `sweptAt = now`, so sweeping resumes one window later. Pruning judges keys by their newest stamp, so sweeping sooner never removes a live key.

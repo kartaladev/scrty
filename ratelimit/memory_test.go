@@ -431,3 +431,53 @@ func (r *logRecorder) String() string {
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(new(bytes.Buffer), nil))
 }
+
+// settableClock is a clock a test can set to any instant, backwards included,
+// which clockwork's fake clock cannot do.
+type settableClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *settableClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.now
+}
+
+func (c *settableClock) Set(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.now = at
+}
+
+// TestMemoryLimiter_SweepResumesAfterClockSteppedBack pins that a clock stepped
+// backwards after a sweep does not stop the inline sweep until the clock catches
+// up: keys recorded after the step must still be swept once they expire.
+func TestMemoryLimiter_SweepResumesAfterClockSteppedBack(t *testing.T) {
+	t.Parallel()
+
+	clk := &settableClock{now: epoch}
+	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow, ratelimit.WithMemoryLimiterClock(clk))
+	require.NoError(t, err)
+
+	l.Prune()
+	clk.Set(epoch.Add(-time.Hour))
+
+	keys := slash64Keys(1000)
+	for _, k := range keys {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+
+	clk.Set(epoch.Add(-time.Hour + 2*time.Minute))
+	for _, k := range keys {
+		_, err := l.Exceeded(t.Context(), k)
+		require.NoError(t, err)
+	}
+
+	for _, k := range keys {
+		require.Zero(t, l.StampsFor(k), "key %s was still held after its window passed", k)
+	}
+}
