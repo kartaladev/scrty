@@ -58,6 +58,12 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 	// fixed clock rather than the wall clock.
 	consumerClockRecorder, consumerClockLogger := newLogRecorder()
 
+	// aggregateLimiter is never consulted by a constructor case; it only has
+	// to be present, so the rows about the aggregate's bits are about the bits.
+	aggregateLimiter := memoryLimiter(t)
+	keyer56, err := ratelimit.NewSourceKeyer(ratelimit.WithIPv6SourcePrefix(56))
+	require.NoError(t, err)
+
 	refused := func(t *testing.T, g *ratelimit.SourceGuard, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, ratelimit.ErrConfig)
@@ -118,6 +124,66 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 			limiter: workingLimiter,
 			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardClock((*clockwork.FakeClock)(nil))},
 			assert:  refused,
+		},
+		{
+			name:    "an IPv6 aggregate with no limiter",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardIPv6Aggregate(56, nil)},
+			assert:  refused,
+		},
+		{
+			name:    "an IPv6 aggregate with an interface holding a nil limiter",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts: []ratelimit.GuardOption{
+				ratelimit.WithSourceGuardIPv6Aggregate(56, (*ratelimit.MemoryLimiter)(nil)),
+			},
+			assert: refused,
+		},
+		{
+			name:    "an IPv6 aggregate of /0 pools every IPv6 source",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardIPv6Aggregate(0, aggregateLimiter)},
+			assert:  refused,
+		},
+		{
+			name:    "an IPv6 aggregate of /128 is no prefix at all",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardIPv6Aggregate(128, aggregateLimiter)},
+			assert:  refused,
+		},
+		{
+			name:    "an IPv6 aggregate as narrow as the default /64 source",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardIPv6Aggregate(64, aggregateLimiter)},
+			assert:  refused,
+		},
+		{
+			// The scenario "Aggregate no wider than the source": the check is
+			// made against the keyer the guard ends up with, not the default.
+			name:    "an IPv6 aggregate as narrow as a consumer keyer's /56 source",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts: []ratelimit.GuardOption{
+				ratelimit.WithSourceGuardKeyer(keyer56),
+				ratelimit.WithSourceGuardIPv6Aggregate(56, aggregateLimiter),
+			},
+			assert: refused,
+		},
+		{
+			name:    "an IPv6 aggregate of /56 over the default /64 source",
+			flow:    testFlow,
+			limiter: workingLimiter,
+			opts:    []ratelimit.GuardOption{ratelimit.WithSourceGuardIPv6Aggregate(56, aggregateLimiter)},
+			assert: func(t *testing.T, g *ratelimit.SourceGuard, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.NotNil(t, g)
+			},
 		},
 		{
 			name:    "a flow name and a limiter are all a guard needs",

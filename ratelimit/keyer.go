@@ -57,8 +57,9 @@ const defaultIPv6Prefix = 64
 const maxIPv6Prefix = 128
 
 // Source is one client address that a guard has canonicalised and checked. It
-// carries the key the guard counts under, so the key a check read and the key a
-// recording writes cannot drift apart.
+// carries the key the guard counts under, and the key of its IPv6 aggregate when
+// the guard has one, so the keys a check read and the keys a recording writes
+// cannot drift apart.
 //
 // Its zero value names no source. A guard asked to record against it counts
 // nothing and says so, because the alternative — inventing a key — would charge
@@ -66,6 +67,9 @@ const maxIPv6Prefix = 128
 type Source struct {
 	key  string
 	addr string
+
+	aggregateKey  string
+	aggregateAddr string
 }
 
 // Key returns the limiter key this source is counted under, including the flow
@@ -125,8 +129,26 @@ func NewSourceKeyer(opts ...KeyerOption) (*SourceKeyer, error) {
 // the connection: a guess here becomes a limit an attacker can aim at someone
 // else by adding a header.
 func (k *SourceKeyer) Key(clientAddr string) (string, error) {
+	source, _, err := k.keys(clientAddr, 0)
+
+	return source, err
+}
+
+// IPv6Prefix returns the prefix length IPv6 sources are keyed by. A guard reads
+// it to refuse an aggregate that is no wider than the source, which would count
+// nothing the source key does not already count.
+func (k *SourceKeyer) IPv6Prefix() int { return k.ipv6Prefix }
+
+// keys returns the source key for clientAddr and, for an IPv6 source when
+// aggregateBits is positive, the enclosing /aggregateBits prefix it is also
+// counted under. The aggregate is empty for IPv4 and when no aggregate is asked
+// for.
+//
+// Both keys come from one parse so that they cannot disagree about which source
+// they name: the aggregate is always the prefix that encloses the source key.
+func (k *SourceKeyer) keys(clientAddr string, aggregateBits int) (source, aggregate string, err error) {
 	if clientAddr == "" {
-		return "", ErrSourceEmpty
+		return "", "", ErrSourceEmpty
 	}
 
 	addr, err := netip.ParseAddr(clientAddr)
@@ -134,31 +156,43 @@ func (k *SourceKeyer) Key(clientAddr string) (string, error) {
 		// The address itself is not repeated in the error. It is attacker-
 		// controlled text on a path that logs its own refusals, and the reason
 		// is what a caller acts on.
-		return "", ErrSourceNotAnIP
+		return "", "", ErrSourceNotAnIP
 	}
 
 	// Unmapping first is what stops one IPv4 client holding two allowances,
 	// one per spelling, depending on whether it reached a dual-stack listener
-	// as ::ffff:a.b.c.d or as a.b.c.d.
+	// as ::ffff:a.b.c.d or as a.b.c.d. It is also what keeps a mapped IPv4
+	// client out of an IPv6 aggregate it does not belong to.
 	addr = addr.Unmap()
 
 	if addr.IsUnspecified() {
-		return "", ErrSourceUnspecified
+		return "", "", ErrSourceUnspecified
 	}
 
 	if addr.Is4() {
-		return addr.String(), nil
+		return addr.String(), "", nil
 	}
 
 	// The zone is a local interface name, not part of the source's identity:
 	// the same host arriving over two interfaces is one source, and keeping the
 	// zone would sell it a second allowance.
-	prefix, err := addr.WithZone("").Prefix(k.ipv6Prefix)
+	addr = addr.WithZone("")
+
+	prefix, err := addr.Prefix(k.ipv6Prefix)
 	if err != nil {
-		return "", fmt.Errorf("%w: %w", ErrSourceNotAnIP, err)
+		return "", "", fmt.Errorf("%w: %w", ErrSourceNotAnIP, err)
 	}
 
-	return prefix.String(), nil
+	if aggregateBits <= 0 {
+		return prefix.String(), "", nil
+	}
+
+	wider, err := addr.Prefix(aggregateBits)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrSourceNotAnIP, err)
+	}
+
+	return prefix.String(), wider.String(), nil
 }
 
 // refusalReason names why an address was refused, for the log field and the

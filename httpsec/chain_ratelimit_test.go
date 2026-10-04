@@ -196,7 +196,9 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 		{
 			name: "api key flow",
 			factory: func(t *testing.T) *MockLimiterFactory {
-				return factoryExpecting(t, limiterAsked{"api-key", 20, time.Minute})
+				return factoryExpecting(t,
+					limiterAsked{"api-key", 20, time.Minute},
+					limiterAsked{"api-key-ipv6-aggregate", 80, time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				return []httpsec.Option{discard, factory, httpsec.EnableAPIKey(newAPIKeyHarness(t).keys)}
@@ -206,7 +208,9 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 		{
 			name: "magic link flow",
 			factory: func(t *testing.T) *MockLimiterFactory {
-				return factoryExpecting(t, limiterAsked{"magic-link-redeem", 10, 15 * time.Minute})
+				return factoryExpecting(t,
+					limiterAsked{"magic-link-redeem", 10, 15 * time.Minute},
+					limiterAsked{"magic-link-redeem-ipv6-aggregate", 40, 15 * time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				lh := newMagicLinkHarness(t)
@@ -218,7 +222,9 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 		{
 			name: "oidc handoff flow",
 			factory: func(t *testing.T) *MockLimiterFactory {
-				return factoryExpecting(t, limiterAsked{"oidc.handoff", 10, 5 * time.Minute})
+				return factoryExpecting(t,
+					limiterAsked{"oidc.handoff", 10, 5 * time.Minute},
+					limiterAsked{"oidc.handoff-ipv6-aggregate", 40, 5 * time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				h := newOIDCHarness(t)
@@ -236,7 +242,9 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 			factory: func(t *testing.T) *MockLimiterFactory {
 				return factoryExpecting(t,
 					limiterAsked{"account-recovery", 10, 15 * time.Minute},
+					limiterAsked{"account-recovery-ipv6-aggregate", 40, 15 * time.Minute},
 					limiterAsked{"account-recovery-start", 10, time.Hour},
+					limiterAsked{"account-recovery-start-ipv6-aggregate", 40, time.Hour},
 					limiterAsked{"recovery-user", 5, 15 * time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
@@ -248,13 +256,16 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 			assert: built,
 		},
 		{
+			// The second factor guards by user, not by source, so it has no
+			// aggregate; only the passwordless begin flow does.
 			name: "second factor, enrolment and passwordless flows",
 			factory: func(t *testing.T) *MockLimiterFactory {
 				return factoryExpecting(t,
 					limiterAsked{"mfa-verify", 5, 15 * time.Minute},
 					limiterAsked{"mfa-enrol-begin", 5, time.Hour},
 					limiterAsked{"mfa-enrol-confirm", 5, 15 * time.Minute},
-					limiterAsked{"passkey-login", 30, 15 * time.Minute})
+					limiterAsked{"passkey-login", 30, 15 * time.Minute},
+					limiterAsked{"passkey-login-ipv6-aggregate", 120, 15 * time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				ph := newPasskeyHarness(t)
@@ -267,8 +278,14 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 		},
 		{
 			name: "flow option wins over the factory",
-			// No expectation: no flow given its own limiter asks the factory.
-			factory: func(t *testing.T) *MockLimiterFactory { return factoryExpecting(t) },
+			// Only the aggregates are asked for: a flow given its own limiter
+			// never asks the factory for it, but its IPv6 aggregate has no
+			// option of its own, so the chain's factory still builds that.
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t,
+					limiterAsked{"api-key-ipv6-aggregate", 80, time.Minute},
+					limiterAsked{"passkey-login-ipv6-aggregate", 120, 15 * time.Minute})
+			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				ph := newPasskeyHarness(t)
 				ph.pkOpts = append(ph.pkOpts, passkey.WithOptionalRecoveryCodes())
@@ -282,6 +299,39 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 					httpsec.EnableAPIKey(newAPIKeyHarness(t).keys, httpsec.WithAPIKeyLimiter(oneFailurePerMinute(t))))
 
 				return ph.chainOptions(t, nil)
+			},
+			assert: built,
+		},
+		{
+			name: "a factory refusing the aggregate namespace fails construction",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				f := NewMockLimiterFactory(gomock.NewController(t))
+				memory := ratelimit.MemoryLimiterFactory(
+					ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+				f.EXPECT().NewLimiter("api-key", 20, time.Minute).DoAndReturn(memory.NewLimiter)
+				f.EXPECT().NewLimiter("api-key-ipv6-aggregate", 80, time.Minute).Return(nil, errFactoryRefused)
+
+				return f
+			},
+			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
+				return []httpsec.Option{discard, factory, httpsec.EnableAPIKey(newAPIKeyHarness(t).keys)}
+			},
+			assert: func(t *testing.T, c *httpsec.Chain, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "EnableAPIKey", "the error names the option to change")
+				assert.Contains(t, err.Error(), `"api-key-ipv6-aggregate"`, "the error names the namespace")
+				assert.Contains(t, err.Error(), errFactoryRefused.Error(), "the error carries the factory's reason")
+				assert.Nil(t, c)
+			},
+		},
+		{
+			name: "no aggregate is asked for when the chain turns it off",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t, limiterAsked{"api-key", 20, time.Minute})
+			},
+			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
+				return []httpsec.Option{discard, factory, httpsec.WithoutIPv6Aggregate(),
+					httpsec.EnableAPIKey(newAPIKeyHarness(t).keys)}
 			},
 			assert: built,
 		},
@@ -342,6 +392,13 @@ func TestChain_RateLimiterFactoryCountsFailures(t *testing.T) {
 
 				f := NewMockLimiterFactory(ctrl)
 				f.EXPECT().NewLimiter("api-key", 20, time.Minute).Return(l, nil).Times(1)
+
+				// The chain's IPv6 aggregate is built from the same factory;
+				// apiKeySource is not IPv6, so it is never consulted.
+				memory := ratelimit.MemoryLimiterFactory(
+					ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+				f.EXPECT().NewLimiter("api-key-ipv6-aggregate", 80, time.Minute).
+					DoAndReturn(memory.NewLimiter).Times(1)
 
 				return []httpsec.Option{httpsec.WithRateLimiterFactory(f)}
 			},
