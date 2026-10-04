@@ -153,6 +153,10 @@ Each of these would otherwise produce a runner that appears to run and reclaims 
 - Success is logged at DEBUG with the count, and failure at ERROR.
 - The observer runs synchronously, after the log line, and must not block; the godoc gives a non-blocking send example.
 - The observer lives on the runner, not the scheduler, so manual runs are reported too.
+- **Skips** (busy, or the context done before the task started) are logged at WARN, not ERROR: a cancellation at shutdown is not a failure worth paging on. They are still observed, and they still count in `RunOnce`'s joined error. A manual run that could not reclaim a task, for whatever reason, exits non-zero.
+- **Cancellation is checked before the busy mark.** A task whose context is already done is reported with the context's error even when another caller holds it, so a cancelled run never briefly marks the tasks it did not reach as busy.
+- **Error text stays out of log records.** The scrty-wide rule is that a dependency's error text never reaches a log, because a store's error can quote values the library never saw. So a failure record names the task, a fixed reason (`purge`, `panic`, `purge-unsupported`, `busy`, `cancelled`) and the error's Go type, while the full error stays in `Result.Err` for the observer and the manual caller. This is how the "Default logging" scenario's "names the error" is met.
+- **`WithClock` drives `Elapsed` only.** The `WithRunTimeout` deadline is an ordinary context deadline in real time.
 
 ### 5. Purge-unsupported is recognisable with one sentinel (departure (b))
 
