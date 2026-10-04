@@ -885,6 +885,10 @@ type LoginOption func(*formLogin) error
 
 // EnableFormLogin answers logins at the form login slot.
 //
+// A chain has one form login. A second EnableFormLogin is refused with a
+// configuration error naming the option, whatever path or limiter it carries:
+// two guards over one slot would leave it unclear which one a request met.
+//
 // Default: POST on DefaultLoginPath, reading DefaultLoginUsernameParam and
 // DefaultLoginPasswordParam from the form and then, when the form yields
 // neither and the request declares a JSON content type, from the JSON body;
@@ -961,6 +965,12 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 			if err := opt(l); err != nil {
 				return err
 			}
+		}
+
+		if err := eachInterceptor(c, func(*formLogin) error {
+			return newConfigError("%s was given twice; one chain has one form login", option)
+		}); err != nil {
+			return err
 		}
 
 		c.enable(option, func() error {
@@ -1120,6 +1130,10 @@ type BasicAuthOption func(*basicAuth) error
 
 // EnableBasicAuth authenticates Basic credentials at the Basic slot.
 //
+// A chain has one Basic authentication. A second EnableBasicAuth is refused
+// with a configuration error naming the option, whatever realm or limiter it
+// carries.
+//
 // Default: the realm DefaultBasicAuthRealm, named in the WWW-Authenticate
 // header a refusal carries. Requests whose Authorization header does not start
 // with the exact prefix "Basic " pass through untouched.
@@ -1168,6 +1182,12 @@ func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
 			if err := opt(b); err != nil {
 				return err
 			}
+		}
+
+		if err := eachInterceptor(c, func(*basicAuth) error {
+			return newConfigError("%s was given twice; one chain has one Basic authentication", option)
+		}); err != nil {
+			return err
 		}
 
 		c.enable(option, func() error {

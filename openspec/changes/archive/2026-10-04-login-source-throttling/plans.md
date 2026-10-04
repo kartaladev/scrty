@@ -597,7 +597,7 @@ if err := eachInterceptor(c, func(*formLogin) error {
 }
 ```
 
-- [ ] **Step 1: Failing table `TestChain_LoginEnabledTwice`:** "form login twice" (`EnableFormLogin` with default path and again with `WithLoginPath("/admin/login")`, each `WithLoginLimiter` of a different policy) → `httpsec.New` returns an error matching the chain's configuration-error sentinel whose text names `EnableFormLogin` and "given twice"; "Basic twice" → names `EnableBasicAuth`; "each once" → builds.
+- [ ] **Step 1: Failing table `TestChain_LoginEnabledTwice`:** "form login twice" (`EnableFormLogin` with default path and again with `WithLoginRequestPath("/admin/login")`, each `WithLoginLimiter` of a different policy) → `httpsec.New` returns an error matching the chain's configuration-error sentinel whose text names `EnableFormLogin` and "given twice"; "Basic twice" → names `EnableBasicAuth`; "each once" → builds.
 - [ ] **Step 2: Run** `go test -race -run 'TestChain_LoginEnabledTwice' -count=1 ./httpsec/`. Expected FAIL: "An error is expected but got nil" on both twice rows.
 - [ ] **Step 3: Implement** the guard in both options before registering, mirroring `EnableAccountRecovery`; godoc of both options states that a chain has one of each and a second call is refused.
 - [ ] **Step 4: Verify** `go test -race -count=1 ./httpsec/...`, `cd test && go test -race -count=1 ./...` (the conformance suites build chains), ginsec and fibersec `go test -race ./...`, `gofmt -l httpsec`, `golangci-lint run ./httpsec/...`.
