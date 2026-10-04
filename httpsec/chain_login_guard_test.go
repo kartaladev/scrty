@@ -132,7 +132,22 @@ func (h *loginGuardHarness) chain(
 ) *httpsec.Chain {
 	t.Helper()
 
-	c, err := httpsec.New(append([]httpsec.Option{
+	c, err := h.tryChain(t, loginOpts, basicOpts, opts...)
+	require.NoError(t, err)
+
+	return c
+}
+
+// tryChain is chain for a row that expects construction to fail.
+func (h *loginGuardHarness) tryChain(
+	t *testing.T,
+	loginOpts []httpsec.LoginOption,
+	basicOpts []httpsec.BasicAuthOption,
+	opts ...httpsec.Option,
+) (*httpsec.Chain, error) {
+	t.Helper()
+
+	return httpsec.New(append([]httpsec.Option{
 		httpsec.WithLogger(slog.New(h.logs)),
 		httpsec.WithRefusalLogReporter(h.report),
 		httpsec.WithPolicyEngine(h.engine(t)),
@@ -144,9 +159,6 @@ func (h *loginGuardHarness) chain(
 		}, loginOpts...),
 		httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: h.attempts}, basicOpts...),
 	}, opts...)...)
-	require.NoError(t, err)
-
-	return c
 }
 
 func (h *loginGuardHarness) report(key string, suppressed int) {
@@ -591,6 +603,198 @@ func recordingLimiterFactory(t *testing.T) (ratelimit.LimiterFactory, func(names
 		}
 
 		return out
+	}
+}
+
+// TestChain_PasswordLoginAggregate pins the IPv6 aggregate of the
+// password-login guard: it is requested at four times the shared limit by
+// default, it throttles a client rotating through the /64s of one /56, and
+// for an endpoint given its own limiter it is sized from that limiter's
+// policy, skipped with one warning when it reports none, and refused under an
+// explicit WithIPv6Aggregate.
+func TestChain_PasswordLoginAggregate(t *testing.T) {
+	t.Parallel()
+
+	const aggregateNamespace = "password-login-ipv6-aggregate"
+
+	type built struct {
+		chain      *httpsec.Chain
+		err        error
+		aggregates []limiterAsked
+		warnings   []slog.Record
+	}
+
+	type testCase struct {
+		name      string
+		loginOpts func(t *testing.T) []httpsec.LoginOption
+		basicOpts func(t *testing.T) []httpsec.BasicAuthOption
+		opts      []httpsec.Option
+		assert    func(t *testing.T, b built)
+	}
+
+	noPolicy := func(t *testing.T) ratelimit.Limiter { return NewMockLimiter(gomock.NewController(t)) }
+
+	warnedAbout := func(t *testing.T, b built, option string) {
+		t.Helper()
+
+		require.Len(t, b.warnings, 1, "exactly one warning, for the one limiter that reports no policy")
+
+		got, ok := attrValue(b.warnings[0], "option")
+		require.True(t, ok)
+		assert.Equal(t, option, got.String(), "the warning names the endpoint option the limiter was given to")
+	}
+
+	// shared is the aggregate the chain still builds for the endpoint that
+	// kept the shared default limiter.
+	shared := limiterAsked{aggregateNamespace, 200, 15 * time.Minute}
+
+	// rotate fails n form logins, each from its own /64 of 2001:db8:1::/56.
+	rotate := func(t *testing.T, c *httpsec.Chain, n int) {
+		t.Helper()
+
+		for i := 1; i <= n; i++ {
+			out := formLoginFrom(t, c, fmt.Sprintf("2001:db8:1:%x::1", i), "user", "wrong")
+			require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "failure %d", i)
+			require.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "failure %d is within the aggregate", i)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "default aggregate requested",
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				assert.Equal(t, []limiterAsked{shared}, b.aggregates,
+					"form login and Basic share one aggregate, four times 50 per 15 minutes")
+				assert.Empty(t, b.warnings)
+			},
+		},
+		{
+			name: "rotating /64s inside one /56",
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				rotate(t, b.chain, 200)
+
+				requireThrottled(t, formLoginFrom(t, b.chain, "2001:db8:1:ff::1", "user", "wrong"))
+				out := formLoginFrom(t, b.chain, "2001:db8:2:1::1", "user", "wrong")
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "another /56 has its own aggregate")
+				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled)
+			},
+		},
+		{
+			name: "aggregate turned off",
+			opts: []httpsec.Option{httpsec.WithoutIPv6Aggregate()},
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				assert.Empty(t, b.aggregates)
+				rotate(t, b.chain, 201)
+			},
+		},
+		{
+			name: "login limiter with a policy",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(memLimiter(t, 10, time.Minute))}
+			},
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				assert.ElementsMatch(t, []limiterAsked{{aggregateNamespace, 40, time.Minute}, shared}, b.aggregates,
+					"form login's aggregate is four times its own limiter; Basic keeps the shared one")
+			},
+		},
+		{
+			name: "Basic limiter with a policy",
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(memLimiter(t, 10, time.Minute))}
+			},
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				assert.ElementsMatch(t, []limiterAsked{{aggregateNamespace, 40, time.Minute}, shared}, b.aggregates,
+					"Basic's aggregate is four times its own limiter; form login keeps the shared one")
+			},
+		},
+		{
+			name: "login limiter without a policy",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(noPolicy(t))}
+			},
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				assert.Equal(t, []limiterAsked{shared}, b.aggregates, "only Basic's shared default has an aggregate")
+				warnedAbout(t, b, "EnableFormLogin")
+			},
+		},
+		{
+			name: "Basic limiter without a policy",
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(noPolicy(t))}
+			},
+			assert: func(t *testing.T, b built) {
+				require.NoError(t, b.err)
+				assert.Equal(t, []limiterAsked{shared}, b.aggregates, "only form login's shared default has an aggregate")
+				warnedAbout(t, b, "EnableBasicAuth")
+			},
+		},
+		{
+			name: "login limiter without a policy under an explicit aggregate",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(noPolicy(t))}
+			},
+			opts: []httpsec.Option{httpsec.WithIPv6Aggregate(56, 4)},
+			assert: func(t *testing.T, b built) {
+				require.ErrorIs(t, b.err, httpsec.ErrConfig)
+				assert.Contains(t, b.err.Error(), "WithIPv6Aggregate")
+				assert.Contains(t, b.err.Error(), "EnableFormLogin")
+				assert.Nil(t, b.chain)
+			},
+		},
+		{
+			name: "Basic limiter without a policy under an explicit aggregate",
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(noPolicy(t))}
+			},
+			opts: []httpsec.Option{httpsec.WithIPv6Aggregate(56, 4)},
+			assert: func(t *testing.T, b built) {
+				require.ErrorIs(t, b.err, httpsec.ErrConfig)
+				assert.Contains(t, b.err.Error(), "WithIPv6Aggregate")
+				assert.Contains(t, b.err.Error(), "EnableBasicAuth")
+				assert.Nil(t, b.chain)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f, askedFor := recordingLimiterFactory(t)
+			h := newLoginGuardHarness(t)
+
+			var (
+				loginOpts []httpsec.LoginOption
+				basicOpts []httpsec.BasicAuthOption
+			)
+
+			if tc.loginOpts != nil {
+				loginOpts = tc.loginOpts(t)
+			}
+
+			if tc.basicOpts != nil {
+				basicOpts = tc.basicOpts(t)
+			}
+
+			c, err := h.tryChain(t, loginOpts, basicOpts,
+				append([]httpsec.Option{httpsec.WithRateLimiterFactory(f)}, tc.opts...)...)
+
+			var warnings []slog.Record
+
+			for _, r := range h.logs.records() {
+				if r.Level == slog.LevelWarn && strings.Contains(r.Message, "IPv6 aggregate") {
+					warnings = append(warnings, r)
+				}
+			}
+
+			tc.assert(t, built{chain: c, err: err, aggregates: askedFor(aggregateNamespace), warnings: warnings})
+		})
 	}
 }
 

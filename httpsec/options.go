@@ -1074,6 +1074,13 @@ func WithLoginResponder(fn LoginResponder) LoginOption {
 // the same flow name, and Basic keeps the shared default unless it is given
 // its own (WithBasicAuthLimiter). The limit and window are l's own.
 //
+// The endpoint's IPv6 aggregate (WithIPv6Aggregate) is sized from l's own
+// policy, the multiplier times the limit and window l reports through
+// ratelimit.PolicyReporter, as the memory limiter does. A limiter that reports
+// none gets no default aggregate and one warning at construction naming
+// EnableFormLogin; an explicit WithIPv6Aggregate refuses it with a
+// configuration error, and WithoutIPv6Aggregate silences the warning.
+//
 // A nil limiter, or a typed nil, is refused: it would read as "no limit"
 // while the consumer believed one was set.
 func WithLoginLimiter(l ratelimit.Limiter) LoginOption {
@@ -1208,6 +1215,13 @@ func WithBasicAuthRealm(realm string) BasicAuthOption {
 // one allowance. With this option Basic counts against l alone, under the same
 // flow name, and form login keeps the shared default unless it is given its own
 // (WithLoginLimiter). The limit and window are l's own.
+//
+// The endpoint's IPv6 aggregate (WithIPv6Aggregate) is sized from l's own
+// policy, the multiplier times the limit and window l reports through
+// ratelimit.PolicyReporter, as the memory limiter does. A limiter that reports
+// none gets no default aggregate and one warning at construction naming
+// EnableBasicAuth; an explicit WithIPv6Aggregate refuses it with a
+// configuration error, and WithoutIPv6Aggregate silences the warning.
 //
 // A nil limiter, or a typed nil, is refused: it would read as "no limit"
 // while the consumer believed one was set.

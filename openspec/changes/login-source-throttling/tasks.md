@@ -79,7 +79,7 @@ Ownership:
 
   Verify with `go test -race -count=1 ./authenticate/... ./httpsec/...`
 
-- [ ] 4.6 After rebasing onto `limiter-key-bounds`: the `password-login` guard's IPv6 aggregate. Tests: with the default factory the chain asks for `password-login-ipv6-aggregate` at 200 per 15 minutes; addresses rotating across /64s inside one /56 exhaust it; a consumer limiter given through `WithLoginLimiter` that reports a policy gets an aggregate sized from it; one that reports none gets no aggregate and one construction warning naming the option, and with an explicit `WithIPv6Aggregate` construction fails. Godoc of `WithLoginLimiter` and `WithBasicAuthLimiter` states this. Verify with `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/` and `go doc ./httpsec WithLoginLimiter`
+- [x] 4.6 After rebasing onto `limiter-key-bounds`: the `password-login` guard's IPv6 aggregate. Tests: with the default factory the chain asks for `password-login-ipv6-aggregate` at 200 per 15 minutes; addresses rotating across /64s inside one /56 exhaust it; a consumer limiter given through `WithLoginLimiter` that reports a policy gets an aggregate sized from it; one that reports none gets no aggregate and one construction warning naming the option, and with an explicit `WithIPv6Aggregate` construction fails. Godoc of `WithLoginLimiter` and `WithBasicAuthLimiter` states this. Verify with `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/` and `go doc ./httpsec WithLoginLimiter`
 
 ## 5. Integration
 
