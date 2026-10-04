@@ -230,11 +230,13 @@ func isChallengeMethod(m mfa.Method) bool {
 
 // wireChallenges builds one pending-challenge manager per challenge method,
 // all over one store, told apart by their purposes. It runs at assembly,
-// because the managers log through the chain's logger.
+// because the managers log through the chain's logger and read the chain's
+// clock. The default store reads that clock too, so expiry means the same on
+// both sides; a store the consumer gave (WithMFAChallengeStore) keeps its own.
 func (i *mfaInterceptor) wireChallenges(c *config) error {
 	store := i.challengeStore
 	if store == nil {
-		store = onetime.NewMemoryStore()
+		store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
 	}
 
 	i.challenges = make(map[string]*onetime.Manager)
@@ -248,6 +250,7 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 		mgr, err := onetime.NewManager(mfaChallengePurpose(m.Name()),
 			onetime.WithTTL(i.challengeTTL),
 			onetime.WithStore(store),
+			onetime.WithClock(c.clock),
 			onetime.WithLogger(c.logger))
 		if err != nil {
 			return newConfigError("EnableMFA could not build the pending challenges of %q: %s", m.Name(), err)

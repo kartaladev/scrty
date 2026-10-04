@@ -83,6 +83,10 @@ type recoveryHarness struct {
 	// coreOpts are further core options, after the harness's own.
 	coreOpts []recovery.Option
 
+	// noCoreClock leaves the harness's clock out of the core options, so the
+	// core reads whatever time source the chain hands it.
+	noCoreClock bool
+
 	// recOpts are further recovery options.
 	recOpts []httpsec.RecoveryOption
 
@@ -193,7 +197,9 @@ func (h *recoveryHarness) options(t *testing.T) []httpsec.Option {
 		recovery.WithAuthenticatorKinds(kind),
 		recovery.WithMFAMethods(h.totp),
 		recovery.WithMessages(recoveryMessages{}),
-		recovery.WithClock(h.clock),
+	}
+	if !h.noCoreClock {
+		core = append(core, recovery.WithClock(h.clock))
 	}
 	core = append(core, h.coreOpts...)
 
