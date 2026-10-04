@@ -177,6 +177,7 @@ type harness struct {
 	rec     *recorder
 	logs    *logCapture
 	probes  map[string]*probe
+	results chan expiry.Result
 	sweeper *sweep.Sweeper
 }
 
@@ -190,6 +191,8 @@ func newHarness(t *testing.T, specs []taskSpec, opts func(t *testing.T, h *harne
 		rec:    &recorder{notify: make(chan string, 64)},
 		logs:   &logCapture{records: make(chan slog.Record, 64)},
 		probes: map[string]*probe{},
+		// Every Result the runner's observer receives, never blocking a run.
+		results: make(chan expiry.Result, 64),
 	}
 
 	tasks := make([]expiry.Task, 0, len(specs))
@@ -208,7 +211,15 @@ func newHarness(t *testing.T, specs []taskSpec, opts func(t *testing.T, h *harne
 		tasks = append(tasks, expiry.Task{Name: spec.name, Interval: spec.interval, Run: p.run})
 	}
 
-	runner, err := expiry.NewRunner(tasks, expiry.WithLogger(slog.New(slog.DiscardHandler)))
+	runner, err := expiry.NewRunner(tasks,
+		expiry.WithLogger(slog.New(slog.DiscardHandler)),
+		expiry.WithObserver(func(r expiry.Result) {
+			select {
+			case h.results <- r:
+			default:
+			}
+		}),
+	)
 	require.NoError(t, err)
 
 	mon := dropMonitor{probes: map[string]*probe{}}
@@ -527,6 +538,49 @@ func TestSweeper_Schedule(t *testing.T) {
 				require.NoError(t, h.runOnTick(t, p, 1, time.Minute))
 				h.block(t, 1)
 				assertNoRun(t, p)
+				assert.EqualValues(t, 2, p.runs.Load())
+			},
+		},
+		{
+			name:  "a scheduled run is reported through the runner's observer",
+			tasks: []taskSpec{{name: "sessions", interval: time.Minute}},
+			assert: func(t *testing.T, h *harness) {
+				h.start(t)
+				require.NoError(t, h.runOnTick(t, h.probes["sessions"], 1, time.Minute))
+
+				r := recv(t, h.results)
+				assert.Equal(t, "sessions", r.Task)
+				assert.Equal(t, 0, r.Removed)
+				assert.False(t, r.Skipped)
+				assert.NoError(t, r.Err)
+			},
+		},
+		{
+			// Only the runner recovers a panic and reports it: a job that
+			// called the task's Run directly would crash the process or go
+			// unobserved.
+			name: "a panicking scheduled run is observed and the schedule goes on",
+			tasks: []taskSpec{{name: "sessions", interval: time.Minute, body: func(_ context.Context, p *probe) error {
+				if p.runs.Load() == 1 {
+					panic("boom")
+				}
+				return nil
+			}}},
+			assert: func(t *testing.T, h *harness) {
+				p := h.probes["sessions"]
+				h.start(t)
+				h.block(t, 1)
+				h.advance(time.Minute)
+				recv(t, p.started) // the panicking run never reports done
+
+				r := recv(t, h.results)
+				assert.Equal(t, "sessions", r.Task)
+				require.ErrorIs(t, r.Err, expiry.ErrTaskPanicked)
+
+				require.NoError(t, h.runOnTick(t, p, 1, time.Minute))
+				r = recv(t, h.results)
+				assert.Equal(t, "sessions", r.Task)
+				assert.NoError(t, r.Err)
 				assert.EqualValues(t, 2, p.runs.Load())
 			},
 		},
