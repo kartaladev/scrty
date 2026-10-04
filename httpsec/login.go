@@ -313,7 +313,10 @@ func declaresJSON(contentType string) bool {
 // of the row the library never saw. A consumer who wants that detail logs it
 // inside their own policy.AttemptStore.
 func (l *formLogin) recordFailure(ctx context.Context, username string, now time.Time) {
-	if err := l.attempts.RecordFailure(ctx, username, now); err != nil {
+	// The client's cancellation is not passed on: a client that hangs up after
+	// sending its guess must still be charged for it, and an attempt store that
+	// honours cancellation would otherwise drop the failure.
+	if err := l.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); err != nil {
 		l.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 			diag.Failure("attempt-store", err)...)
 	}

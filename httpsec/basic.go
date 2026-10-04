@@ -2,6 +2,7 @@ package httpsec
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
@@ -97,7 +98,12 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 		// The record carries a fixed reason and the attempt store's error
 		// type, never its text: a consumer who wants that detail logs it
 		// inside their own policy.AttemptStore.
-		if recErr := b.attempts.RecordFailure(ctx, username, now); recErr != nil {
+		// The client's cancellation is not passed on: a client that hangs up after
+		// sending its guess must still be charged for it, and an attempt store
+		// that honours cancellation would otherwise drop the failure. Reset is
+		// different, and stays on the request's context: nobody is owed a
+		// clearing the client did not wait for.
+		if recErr := b.attempts.RecordFailure(context.WithoutCancel(ctx), username, now); recErr != nil {
 			b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 				diag.Failure("attempt-store", recErr)...)
 		}
