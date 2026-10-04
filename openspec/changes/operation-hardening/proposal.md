@@ -30,6 +30,9 @@ The obvious cleanup job is also dangerous: a delete keyed on expiry alone remove
   - a slow run skips ticks instead of queueing them;
   - an optional distributed lock;
   - a start and shutdown lifecycle that leaks no goroutine.
+- **Follow-ups folded in** (found during implementation):
+  - a one-time token manager given a time source but no store builds its default store on that same source, so its purge judges expiry by the consumer's clock instead of the system clock;
+  - a second `EnableMFA` on one chain is refused at construction, as form login, Basic and account recovery already are, because one chain offers one set of second-factor methods.
 - **Container wiring is not part of this change.** The optional `do` module, which composes the runner and the sweeper into a `samber/do` container, is the separate `di-wiring` change.
 
 ## Capabilities
@@ -46,13 +49,17 @@ The obvious cleanup job is also dangerous: a delete keyed on expiry alone remove
 
 ### Modified Capabilities
 
-None. The owners gain purge entry points where they lacked one (`magiclink.Manager`, `oidc.Manager`, `oidc.HandoffManager`), and the in-memory limiter's prune reports how many keys it removed; each of those is covered by the `expiry-sweeping` requirements rather than by a change to its owner's spec.
+- `time-source`: a default dependency that a component builds for itself, such as a manager's default store, reads the component's own time source.
+- `http-security-chain`: enabling MFA more than once on one chain is a construction error.
+
+The owners also gain purge entry points where they lacked one (`magiclink.Manager`, `oidc.Manager`, `oidc.HandoffManager`), and the in-memory limiter's prune reports how many keys it removed. Each of those is covered by the `expiry-sweeping` requirements rather than by a change to its owner's spec.
 
 ## Impact
 
 - **New code, core module:**
   - the `expiry` package (runner, task, result, report), with the standard library only;
   - an expiry task constructor in each owning package: `session`, `onetime`, `magiclink`, `policy`, `ratelimit`, `oidc`, `passkey`, and `httpsec` for the components the chain builds.
+- **Changed behaviour, core module:** `onetime.NewManager`'s default store, and so the recovery issued-code manager that relies on it, follows the manager's clock; `httpsec.New` refuses a second `EnableMFA`.
 - **New module:** `github.com/kartaladev/scrty/sweep`, which depends on gocron v2 and clockwork. It is added to `go.work`, to the dependency guard and to the CI matrix. The core module gains no dependency.
 - **Depends on:**
   - the existing purge operations of `sessions`, `one-time-tokens`, `security-policy` and `rate-limiting` (authn-authz-core), `magic-link` (auth-methods) and `oidc-login` (oidc-brokering). No new store operation is needed;

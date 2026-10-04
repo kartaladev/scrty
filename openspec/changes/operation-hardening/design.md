@@ -245,6 +245,23 @@ dependency.
 
 Each group ends with a `/simplify` pass and a re-run.
 
+### 8. Follow-ups folded in (added after implementation)
+
+The reviews of this change found two faults in code the change builds on. Both are fixed here, because the sweep depends on the first and the chain's expiry tasks touched the second.
+
+**(a) A one-time manager's default store follows the manager's clock (departure (b), fixing a defect).**
+- **The fault:** `onetime.NewManager` builds its default in-memory store on the system clock, even when it is given `WithClock`. The memory store judges expiry by its own clock, so with a consumer clock the purge removes nothing (a clock ahead of the system's) or treats live tokens as expired (a clock behind it). That breaks `time-source`'s rule that every time check a component makes comes from its one source. The recovery issued-code manager inherits the fault, because it passes its clock to the manager and leaves the store at its default. The passkey ceremonies and the recovery hold tokens already pass their clock to the store.
+- **Evidence:** reproduced by a failing test in a scratch copy during review; pending reproduction in the tree. The scenario "A manager's default store follows the manager's time source" becomes the first failing test.
+- **Default:** a manager given no store builds its default store on the manager's own time source.
+- **Override:** `WithStore` with the consumer's own store, which keeps its own clock.
+- **Scope:** the implementation also looks, with gopls, for other constructors that build a time-keeping default without passing their clock, and fixes each one on the same rule.
+
+**(b) A second `EnableMFA` on one chain is refused.**
+- **The fault:** the chain accepts `EnableMFA` twice, on two prefixes, but its MFA lookup keeps only the last interceptor. The challenge raised at login would therefore offer only the second configuration's methods, and the first's would never be offered. This is UNREPRODUCED; the first task writes that test.
+- **Default:** a second `EnableMFA` fails construction with an error naming MFA, as a second form login, Basic or account recovery already does.
+- **Override:** none needed. A consumer gives one `EnableMFA` every method, and each method keeps its own begin and verify paths under that prefix.
+- **`Chain.ExpiryTasks`** keeps collecting every MFA interceptor the chain registered. That stays correct with exactly one. Its test row and godoc sentence about two configurations sharing a method name become unreachable, and are replaced by the construction refusal.
+
 ## Risks / Trade-offs
 
 - [A single-statement purge on a long-unswept table is a large delete] → No boot-time sweep by default. The godoc recommends a first manual run in a maintenance window, and a consumer can supply a bounded `Run`.
@@ -270,3 +287,5 @@ Not applicable: this is a new library with no consumers and no tags. For deploye
 - [OSV](https://osv.dev) queries for both modules and `govulncheck` on a module importing them: no known vulnerabilities. Live figures (versions, stars: gocron 7168, clockwork 730) were read on 2026-10-04 and drift.
 
 Decisions 1–5 are reasoned from scrty's own settled specs and the established design.
+
+Decision 8 is reasoned from scrty's own settled specs: `time-source` (one source for every time check) and `http-security-chain` (a second form login, Basic or account recovery is already refused).
