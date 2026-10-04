@@ -175,6 +175,10 @@ type config struct {
 
 	refusalInterval time.Duration
 	refusalReporter func(key string, suppressed int)
+
+	// discloseLocks answers a locked account's login with the lock itself
+	// (WithLockDisclosure), rather than as a wrong password.
+	discloseLocks bool
 }
 
 // enabledBuiltIn is one built-in interceptor the consumer switched on, and the
@@ -377,6 +381,12 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	if err := c.wireAPIKey(); err != nil {
+		return nil, err
+	}
+
+	// Form login and Basic share one password-login guard, so it is settled
+	// once both have been registered and every limiter option applied.
+	if err := c.wirePasswordLogin(); err != nil {
 		return nil, err
 	}
 
@@ -593,8 +603,9 @@ func WithRateLimiterFactory(f ratelimit.LimiterFactory) Option {
 }
 
 // WithIPv6SourcePrefix counts IPv6 clients by a prefix of bits rather than by
-// their full address, in every source guard the chain builds: the API-key,
-// magic-link, OIDC handoff, passwordless begin and account-recovery guards.
+// their full address, in every source guard the chain builds: the
+// password-login, API-key, magic-link, OIDC handoff, passwordless begin and
+// account-recovery guards.
 // Addresses inside one prefix are one source, which shares one allowance and
 // one throttled-source record per sampling window.
 //
@@ -748,8 +759,9 @@ func WithoutIPv6Aggregate() Option {
 // accepted rather than refused, and it is a choice about volume, not a fault.
 //
 // It also sets the window of the throttled-source records written by the
-// source guards the chain builds for EnableAPIKey, EnableMagicLink and
-// EnableOIDCLogin's handoff redemption, one per flow and canonical source. The
+// source guards the chain builds for EnableFormLogin and EnableBasicAuth,
+// EnableAPIKey, EnableMagicLink and EnableOIDCLogin's handoff redemption, one
+// per flow and canonical source. The
 // account-recovery guards follow WithRecoveryLogInterval, and the passwordless
 // begin guard the passkey manager's window (passkey.WithLogInterval), as those
 // endpoints' own records do.
@@ -771,7 +783,8 @@ func WithRefusalLogInterval(d time.Duration) Option {
 // Omit the option to keep the default summary reporter.
 //
 // fn also receives the counts suppressed by every source guard the chain
-// builds — those of EnableAPIKey, EnableMagicLink, EnableOIDCLogin's handoff
+// builds — the password-login guard of EnableFormLogin and EnableBasicAuth,
+// and those of EnableAPIKey, EnableMagicLink, EnableOIDCLogin's handoff
 // redemption, the passwordless begin under EnablePasskeys and both account
 // recovery guards — so a throttled source is reported here like the chain's
 // own refusals. Each guard keeps its own sampler and window; only where its
@@ -793,6 +806,46 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 		}
 
 		c.refusalReporter = fn
+		return nil
+	}
+}
+
+// WithLockDisclosure answers a login for a locked account with the lock
+// itself, instead of as a wrong password.
+//
+// Default: undisclosed. When the pre-authentication phase refuses with
+// policy.ErrAccountLocked, form login and Basic first spend a decoy password
+// verification, through the authenticator's authenticate.DecoyVerifier when it
+// implements one, and then refuse with
+// errors.Join(authenticate.ErrAuthenticationFailed, reason). StatusForError
+// answers that 401, and Basic sets its WWW-Authenticate challenge, so neither
+// the status, the headers nor the time taken tells a client that the account
+// exists and is locked. The lock is not lost: errors.Is(err,
+// policy.ErrAccountLocked) still holds, and errors.As still reaches the
+// *policy.LockoutError and its wait, so a consumer's own error handler can
+// render a lock however it chooses — at which point the disclosure is the
+// consumer's.
+//
+// With this option the refusal is the policy's reason alone, which
+// StatusForError answers 429 Too Many Requests, and no decoy runs. A 429 is not
+// a 401, so a disclosed Basic lock carries no WWW-Authenticate header. The
+// library writes no Retry-After; a consumer who wants one reads the wait from
+// the *policy.LockoutError. A consumer who needs the 423 Locked status instead
+// maps policy.ErrAccountLocked to it in their own error handler
+// (WithErrorHandler on net/http, or the framework's own error handling on gin
+// and fiber).
+//
+// What it gives up: the response tells anyone who can guess a username
+// whether that account exists and is locked, which the OWASP authentication
+// guidance lists among the responses a login must not give.
+//
+// It governs only the response to a lock, at form login and Basic, and
+// nothing else. A lock refusal still counts against the source's
+// password-login allowance either way.
+func WithLockDisclosure() Option {
+	return func(c *config) error {
+		c.discloseLocks = true
+
 		return nil
 	}
 }
@@ -838,6 +891,28 @@ type LoginOption func(*formLogin) error
 //
 // Every other request passes through untouched, so enabling form login costs
 // the rest of the application nothing.
+//
+// # Order of steps
+//
+// A login is answered in this order, and each step refuses before the next
+// runs:
+//
+//  1. Read the username and password (see below).
+//  2. Check the source against the password-login guard. A throttled source
+//     is refused with ratelimit.ErrThrottled, and one with no attributable
+//     client address as a failed authentication, before any policy or
+//     password work. The guard is shared with EnableBasicAuth and counts
+//     failures per source, 50 per 15 minutes by default (WithLoginLimiter).
+//  3. Run the pre-authentication policy phase. A deny refuses with its
+//     reason, except a locked account, which by default is refused as a
+//     wrong password after a decoy password verification (WithLockDisclosure)
+//     and counts against the source.
+//  4. Authenticate. A failure is recorded against the account (the attempt
+//     store) and against the source; a success clears the account's failures
+//     and spends nothing of the source's allowance.
+//  5. Run the post-authentication phase, open the session, and issue the
+//     access token, refusing with a ChallengeError when a challenge is
+//     raised.
 //
 // # What the binding reads, and what it does not
 //
@@ -985,6 +1060,31 @@ func WithLoginResponder(fn LoginResponder) LoginOption {
 	}
 }
 
+// WithLoginLimiter counts form login's failures against l, by source, instead
+// of the password-login limiter form login shares with Basic.
+//
+// Default: one limiter shared by form login and Basic, built from the chain's
+// factory (WithRateLimiterFactory, or the in-memory default) under the
+// namespace "password-login", allowing 50 failures per source in 15 minutes.
+// Sharing it means a source spraying passwords across both endpoints spends
+// one allowance. With this option form login counts against l alone, under
+// the same flow name, and Basic keeps the shared default unless it is given
+// its own (WithBasicAuthLimiter). The limit and window are l's own.
+//
+// A nil limiter, or a typed nil, is refused: it would read as "no limit"
+// while the consumer believed one was set.
+func WithLoginLimiter(l ratelimit.Limiter) LoginOption {
+	return func(f *formLogin) error {
+		if err := requireDep("WithLoginLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		f.limiter = l
+
+		return nil
+	}
+}
+
 // BasicAuthDeps are the collaborators Basic authentication is wired to.
 //
 // Both are required. There is no session manager and no token generator here:
@@ -1013,6 +1113,27 @@ type BasicAuthOption func(*basicAuth) error
 // Basic authentication is stateless: it opens no session and issues no token,
 // so a caller presents its credential on every request and has nothing to come
 // back to. That is why a challenge raised here decides outright.
+//
+// A claimed header is answered in this order, and each step refuses before the
+// next runs:
+//
+//  1. Decode the credential. A header that is not valid base64, or has no
+//     colon, is refused as a failed authentication, and spends nothing.
+//  2. Check the source against the password-login guard, shared with
+//     EnableFormLogin: 50 failures per source in 15 minutes by default
+//     (WithBasicAuthLimiter). A throttled or unattributable source is
+//     refused before any policy or password work.
+//  3. Run the pre-authentication policy phase. A deny refuses with its
+//     reason, except a locked account, which by default is refused as a
+//     wrong password after a decoy password verification (WithLockDisclosure)
+//     and counts against the source.
+//  4. Authenticate. A failure is recorded against the account and the source.
+//  5. Run the stateless-authentication phase, and continue with the caller
+//     published.
+//
+// Every refusal answered 401 carries the WWW-Authenticate challenge for the
+// realm, throttled and concealed-lock refusals included. A lock disclosed
+// with WithLockDisclosure is a 429, and carries none.
 func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
 	const option = "EnableBasicAuth"
 
@@ -1068,6 +1189,31 @@ func WithBasicAuthRealm(realm string) BasicAuthOption {
 		}
 
 		b.realm = realm
+		return nil
+	}
+}
+
+// WithBasicAuthLimiter counts Basic authentication's failures against l, by
+// source, instead of the password-login limiter Basic shares with form login.
+//
+// Default: one limiter shared by Basic and form login, built from the chain's
+// factory (WithRateLimiterFactory, or the in-memory default) under the
+// namespace "password-login", allowing 50 failures per source in 15 minutes.
+// Sharing it means a source spraying passwords across both endpoints spends
+// one allowance. With this option Basic counts against l alone, under the same
+// flow name, and form login keeps the shared default unless it is given its own
+// (WithLoginLimiter). The limit and window are l's own.
+//
+// A nil limiter, or a typed nil, is refused: it would read as "no limit"
+// while the consumer believed one was set.
+func WithBasicAuthLimiter(l ratelimit.Limiter) BasicAuthOption {
+	return func(b *basicAuth) error {
+		if err := requireDep("WithBasicAuthLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		b.limiter = l
+
 		return nil
 	}
 }

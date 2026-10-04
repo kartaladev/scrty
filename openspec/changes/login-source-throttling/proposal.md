@@ -27,6 +27,7 @@ None.
 - `authentication`: a decoy password verification for refusals made before a password is checked.
 - `http-security-chain`: the per-source login guard, the undisclosed lock response, and failures recorded on an uncancellable context.
 - `http-error-propagation`: the account-locked refusal maps to 429 instead of 423.
+- `account-recovery`: a locked account at the password proof is refused like any other refused proof by default.
 
 `rate-limiting` is unchanged: the guard reuses the source guard as specified.
 

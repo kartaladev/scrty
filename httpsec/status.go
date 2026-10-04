@@ -62,7 +62,13 @@ var statusTable = []statusRow{
 	// to the unrecognised-error 500 below, like any other unrecognised error.
 	{password.ErrPasswordReused, http.StatusUnprocessableEntity},
 
-	{policy.ErrAccountLocked, http.StatusLocked},
+	// An account lock is a client that has sent too many failed attempts in a
+	// span (RFC 6585 §4), not a locked WebDAV resource (RFC 4918 §11.3), so it
+	// answers 429 beside too many sessions. This row answers only a lock the
+	// consumer chose to disclose: by default form login and Basic join the lock
+	// to authenticate.ErrAuthenticationFailed, which the row above answers 401
+	// first, so a lock reads as a wrong password.
+	{policy.ErrAccountLocked, http.StatusTooManyRequests},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
 
 	// A held recovery presented before its hold ends: well formed and

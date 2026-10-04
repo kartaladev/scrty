@@ -3,6 +3,7 @@ package httpsec
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -14,13 +15,16 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
 
 //go:generate mockgen -destination=authenticator_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate Authenticator
 //go:generate mockgen -destination=attemptstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/policy AttemptStore
+//go:generate mockgen -destination=encoder_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/password Encoder
 
 // The conventions form login follows when the consumer names none. They are
 // constants rather than bare literals so a consumer who wants to follow the
@@ -42,6 +46,20 @@ const (
 	// The endpoint is unauthenticated, so an unbounded read there is a
 	// memory-exhaustion path that costs an attacker no credential at all.
 	DefaultLoginBodyLimit int64 = 64 << 10
+)
+
+// passwordLoginFlow names the source guard form login and Basic share, its
+// rate-limit buckets and its sampler keys. One flow for both endpoints means a
+// source spraying passwords across the two spends one allowance, not two.
+const passwordLoginFlow = "password-login"
+
+// The allowance a source gets for failed password logins before its attempts
+// stop being evaluated. Fifty bounds one source to fifty accounts sprayed per
+// window, and still leaves room for an office or carrier-grade NAT, where many
+// users share one address and some of them mistype.
+const (
+	defaultPasswordLoginLimit  = 50
+	defaultPasswordLoginWindow = 15 * time.Minute
 )
 
 // LoginResult is what a successful login produced, handed to whatever writes
@@ -94,6 +112,18 @@ type formLogin struct {
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
 
+	// limiter is the consumer's own (WithLoginLimiter), and nil means the
+	// password-login limiter the chain shares with Basic.
+	limiter ratelimit.Limiter
+
+	// guard is the password-login source guard, settled at assembly
+	// (wirePasswordLogin), and sampler the chain's, handed over by wire.
+	guard   sourceGuard
+	sampler *logsample.Sampler
+
+	// discloseLocks is the chain's WithLockDisclosure, settled at assembly.
+	discloseLocks bool
+
 	now func() time.Time
 
 	path          string
@@ -112,14 +142,126 @@ func (l *formLogin) wire(c *Chain) {
 	l.enrolmentLifetime = c.enrolmentLifetime
 	l.enforced = c.enforced
 	l.challengeMethods = c.challengeMethods
+	l.sampler = c.sampler
 }
 
-// flushRefusalLogs reports what the authenticator is holding back, when it
-// keeps refusal logs of its own; one that does not has nothing to report.
+// flushRefusalLogs reports what the source guard and the authenticator are
+// holding back; an authenticator that keeps no refusal logs of its own has
+// nothing to report.
 func (l *formLogin) flushRefusalLogs() {
+	if l.guard != nil {
+		l.guard.Flush()
+	}
+
 	if f, ok := l.authn.(authenticate.RefusalLogFlusher); ok {
 		_ = f.FlushRefusalLogs() // documented never to fail: its reporter only logs
 	}
+}
+
+// wirePasswordLogin settles the password-login source guard of form login and
+// Basic against the assembled configuration, once every option has been
+// applied.
+//
+// The default guard is built once, from the chain's factory, and handed to
+// every endpoint that was not given a limiter of its own, so form login and
+// Basic spend one allowance between them. An endpoint given its own limiter
+// gets a guard over that limiter, under the same flow name, and shares
+// nothing with the other. No default is built when no endpoint needs it, so
+// the factory is not asked for a limiter nothing would use.
+func (c *config) wirePasswordLogin() error {
+	var shared sourceGuard
+
+	guardFor := func(option string, own ratelimit.Limiter) (sourceGuard, error) {
+		if own != nil {
+			return c.resolveSourceGuard(option, passwordLoginFlow, own,
+				defaultPasswordLoginLimit, defaultPasswordLoginWindow, c.refusalInterval)
+		}
+
+		if shared == nil {
+			g, err := c.resolveSourceGuard(option, passwordLoginFlow, nil,
+				defaultPasswordLoginLimit, defaultPasswordLoginWindow, c.refusalInterval)
+			if err != nil {
+				return nil, err
+			}
+
+			shared = g
+		}
+
+		return shared, nil
+	}
+
+	if err := eachInterceptor(c, func(l *formLogin) error {
+		l.discloseLocks = c.discloseLocks
+		c.warnWithoutDecoy("EnableFormLogin", l.authn)
+
+		g, err := guardFor("EnableFormLogin", l.limiter)
+		l.guard = g
+
+		return err
+	}); err != nil {
+		return err
+	}
+
+	return eachInterceptor(c, func(b *basicAuth) error {
+		b.discloseLocks = c.discloseLocks
+		c.warnWithoutDecoy("EnableBasicAuth", b.authn)
+
+		g, err := guardFor("EnableBasicAuth", b.limiter)
+		b.guard = g
+
+		return err
+	})
+}
+
+// msgNoDecoy is the warning an endpoint whose lock refusals cannot cost the
+// same password work as a wrong password is built with.
+const msgNoDecoy = "httpsec: lock refusals may be told apart from wrong passwords by their timing, " +
+	"because the login authenticator offers no decoy verification"
+
+// warnWithoutDecoy writes msgNoDecoy, once for the endpoint option names,
+// when locks are concealed and authn cannot spend a decoy.
+//
+// The response to a lock then reads as a wrong password in its status and
+// headers, but returns sooner than a password check would, which still tells
+// a patient prober the account exists. It is a warning and not a
+// configuration error: the authenticator is the consumer's, and one that
+// cannot be made to spend the work is still better concealed than disclosed.
+func (c *config) warnWithoutDecoy(option string, authn authenticate.Authenticator) {
+	if c.discloseLocks {
+		return
+	}
+
+	if _, ok := authn.(authenticate.DecoyVerifier); ok {
+		return
+	}
+
+	c.logger.Warn(msgNoDecoy, slog.String("option", option))
+}
+
+// refuseLocked answers a pre-authentication lock.
+//
+// Unless the consumer chose to disclose locks, it spends the same password
+// work a real check would and refuses as a failed authentication, so neither
+// the status nor the timing says the account exists and is locked. The lock
+// stays reachable through errors.Is for the consumer's own handler. The
+// decoy's verdict is never read: it verifies against a reference hash, not
+// the account's, and says nothing.
+func refuseLocked(
+	ctx context.Context,
+	authn authenticate.Authenticator,
+	disclose bool,
+	creds identity.Credentials,
+	reason error,
+) error {
+	if disclose {
+		return reason
+	}
+
+	if v, ok := authn.(authenticate.DecoyVerifier); ok {
+		_ = v.VerifyDecoy(ctx, creds)
+	}
+
+	return errors.Join(authenticate.ErrAuthenticationFailed, reason)
 }
 
 // Intercept answers a login on the configured path and passes everything else
@@ -137,8 +279,31 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	ctx := ex.Context()
 	now := l.now()
 
-	auth, err := l.authenticatePassword(ctx, username, password, now)
+	// The source is checked once the credentials are read, so a malformed
+	// login spends nothing, and before the pre-authentication phase, so a
+	// throttled source costs neither a policy evaluation nor a password check.
+	src, err := sourceThrottled(ctx, l.guard, ex.Request.ClientIP(), passwordLoginFlow,
+		l.sampler, l.log, now)
 	if err != nil {
+		return err
+	}
+
+	if err := l.preAuthenticate(ctx, username, now); err != nil {
+		if !errors.Is(err, policy.ErrAccountLocked) {
+			return err
+		}
+
+		// A source hammering a locked account spends its own allowance.
+		recordSourceFailure(ctx, l.guard, src)
+
+		return refuseLocked(ctx, l.authn, l.discloseLocks,
+			identity.NewUsernamePassword(username, password), err)
+	}
+
+	auth, err := l.verifyPassword(ctx, username, password, now)
+	if err != nil {
+		recordSourceFailure(ctx, l.guard, src)
+
 		return err
 	}
 
@@ -166,9 +331,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	return l.respond(ex, LoginResult{Token: tok, Session: ex.Session})
 }
 
-// authenticatePassword judges a password the way a login does, and is the one
-// place that sequence lives, so account recovery's password proof cannot drift
-// from it.
+// authenticatePassword judges a password the way a login does: the
+// pre-authentication phase (preAuthenticate), then the password check
+// (verifyPassword). Login runs the same two steps, and account recovery's
+// password proof runs them through here, so neither can drift from them.
 //
 // The pre-authentication phase runs before the credential is checked, so a
 // locked account is refused without its password ever being tested. Testing
@@ -177,20 +343,42 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // authenticator refuses is recorded as a failed attempt. Clearing the failures
 // a success supersedes is left to the caller, because only a login is a
 // success in that sense.
+//
+// There is no source check here. The login endpoint checks the
+// password-login guard before calling the two steps itself, and account
+// recovery guards its own endpoint by source.
 func (l *formLogin) authenticatePassword(
 	ctx context.Context,
 	username string,
 	password []byte,
 	now time.Time,
 ) (*authenticate.Authentication, error) {
+	if err := l.preAuthenticate(ctx, username, now); err != nil {
+		return nil, err
+	}
+
+	return l.verifyPassword(ctx, username, password, now)
+}
+
+// preAuthenticate is the pre-authentication phase's refusal of username, or
+// nil when the phase lets the password be checked.
+func (l *formLogin) preAuthenticate(ctx context.Context, username string, now time.Time) error {
 	pre := evaluatePhase(ctx, l.engine, policy.PreAuthentication, &policy.Input{
 		Username: username,
 		Now:      now,
 	})
-	if err := refusePreAuthentication(pre, l.enforced); err != nil {
-		return nil, err
-	}
 
+	return refusePreAuthentication(pre, l.enforced)
+}
+
+// verifyPassword checks the password, recording a refused one as a failed
+// attempt against the account.
+func (l *formLogin) verifyPassword(
+	ctx context.Context,
+	username string,
+	password []byte,
+	now time.Time,
+) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
 	if err != nil {
 		l.recordFailure(ctx, username, now)

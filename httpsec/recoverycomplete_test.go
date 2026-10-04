@@ -206,7 +206,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *recoveryHarness, out served) {
 				require.ErrorIs(t, out.err, policy.ErrAccountLocked)
-				assert.Equal(t, http.StatusLocked, httpsec.StatusForError(out.err))
+				assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(out.err))
 			},
 		},
 		{

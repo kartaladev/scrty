@@ -173,8 +173,13 @@ func TestBasicAuth(t *testing.T) {
 			wire:    func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
 			assert: func(t *testing.T, s served) {
+				// By default a lock is concealed as a wrong password, and stays
+				// identifiable as a lock to the consumer's own handler.
 				require.ErrorIs(t, s.err, policy.ErrAccountLocked)
-				assert.Equal(t, http.StatusLocked, httpsec.StatusForError(s.err))
+				require.ErrorIs(t, s.err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
+				assert.Equal(t, `Basic realm="Restricted"`, s.rec.Header().Get("WWW-Authenticate"),
+					"a concealed lock is a 401, challenged like any other")
 				assert.False(t, s.handlerRan)
 			},
 		},

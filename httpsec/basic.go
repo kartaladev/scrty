@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,7 +14,9 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // DefaultBasicAuthRealm is the realm named in the WWW-Authenticate header when
@@ -42,6 +45,18 @@ type basicAuth struct {
 	// handed over by wire; a raised kind outside it refuses the request.
 	enforced map[policy.ChallengeKind]bool
 
+	// limiter is the consumer's own (WithBasicAuthLimiter), and nil means the
+	// password-login limiter the chain shares with form login.
+	limiter ratelimit.Limiter
+
+	// guard is the password-login source guard, settled at assembly
+	// (wirePasswordLogin), and sampler the chain's, handed over by wire.
+	guard   sourceGuard
+	sampler *logsample.Sampler
+
+	// discloseLocks is the chain's WithLockDisclosure, settled at assembly.
+	discloseLocks bool
+
 	now func() time.Time
 
 	realm string
@@ -53,11 +68,17 @@ func (b *basicAuth) wire(c *Chain) {
 	b.engine = c.engine
 	b.log = c.logger
 	b.enforced = c.enforced
+	b.sampler = c.sampler
 }
 
-// flushRefusalLogs reports what the authenticator is holding back, when it
-// keeps refusal logs of its own; one that does not has nothing to report.
+// flushRefusalLogs reports what the source guard and the authenticator are
+// holding back; an authenticator that keeps no refusal logs of its own has
+// nothing to report.
 func (b *basicAuth) flushRefusalLogs() {
+	if b.guard != nil {
+		b.guard.Flush()
+	}
+
 	if f, ok := b.authn.(authenticate.RefusalLogFlusher); ok {
 		_ = f.FlushRefusalLogs() // documented never to fail: its reporter only logs
 	}
@@ -83,6 +104,19 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 		return authenticate.ErrAuthenticationFailed
 	}
 
+	// The source is checked only once the header has decoded, so a malformed
+	// header spends nothing, and before the pre-authentication phase, as at
+	// the login form. A throttled refusal is still a 401, and every 401 names
+	// the realm (RFC 9110 §15.5.2); one without it would also single the
+	// throttled response out.
+	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), passwordLoginFlow,
+		b.sampler, b.log, now)
+	if err != nil {
+		b.challenge(ex)
+
+		return err
+	}
+
 	// Before the credential is checked, for the same reason as at the login
 	// form: a locked account must not answer differently for a right guess.
 	pre := evaluatePhase(ctx, b.engine, policy.PreAuthentication, &policy.Input{
@@ -90,7 +124,21 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 		Now:      now,
 	})
 	if err := refusePreAuthentication(pre, b.enforced); err != nil {
-		return err
+		if !errors.Is(err, policy.ErrAccountLocked) {
+			return err
+		}
+
+		// A source hammering a locked account spends its own allowance.
+		recordSourceFailure(ctx, b.guard, src)
+
+		// A concealed lock is a 401 and carries the challenge every 401
+		// carries; a disclosed one is a 429, which has none.
+		if !b.discloseLocks {
+			b.challenge(ex)
+		}
+
+		return refuseLocked(ctx, b.authn, b.discloseLocks,
+			identity.NewUsernamePassword(username, password), err)
 	}
 
 	auth, err := b.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
@@ -107,6 +155,8 @@ func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 			b.log.LogAttrs(ctx, slog.LevelError, msgAttemptNotRecorded,
 				diag.Failure("attempt-store", recErr)...)
 		}
+
+		recordSourceFailure(ctx, b.guard, src)
 
 		b.challenge(ex)
 

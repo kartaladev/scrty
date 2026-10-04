@@ -120,7 +120,7 @@ When the pre-authentication phase denies with the account-locked refusal, form l
 - **THEN** the response is 429 and carries no `WWW-Authenticate` header
 
 #### Scenario: Authenticator without a decoy
-- **WHEN** a chain enables form login with an authenticator that offers no decoy verification and locks are not disclosed
+- **WHEN** a chain enables form login with an authenticator that offers no decoy verification, or with a manager none of whose providers offers one, and locks are not disclosed
 - **THEN** construction writes one warning that lock refusals may be told apart by their timing
 
 ### Requirement: Login failures are counted even when the client disconnects

@@ -423,8 +423,11 @@ func TestFormLoginSequence(t *testing.T) {
 			// the test, which is what "the password is never checked" means.
 			wire: func(*testing.T, *authHarness) {},
 			assert: func(t *testing.T, _ *authHarness, s served) {
+				// By default a lock is concealed as a wrong password, and stays
+				// identifiable as a lock to the consumer's own handler.
 				require.ErrorIs(t, s.err, policy.ErrAccountLocked)
-				assert.Equal(t, http.StatusLocked, httpsec.StatusForError(s.err))
+				require.ErrorIs(t, s.err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 				assert.False(t, s.handlerRan)
 			},
 		},

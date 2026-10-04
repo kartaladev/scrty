@@ -245,7 +245,11 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 					limiterAsked{"account-recovery-ipv6-aggregate", 40, 15 * time.Minute},
 					limiterAsked{"account-recovery-start", 10, time.Hour},
 					limiterAsked{"account-recovery-start-ipv6-aggregate", 40, time.Hour},
-					limiterAsked{"recovery-user", 5, 15 * time.Minute})
+					limiterAsked{"recovery-user", 5, 15 * time.Minute},
+					// The harness enables form login, whose password-login guard
+					// comes from the same factory.
+					limiterAsked{"password-login", 50, 15 * time.Minute},
+					limiterAsked{"password-login-ipv6-aggregate", 200, 15 * time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				rh := newRecoveryHarness(t)

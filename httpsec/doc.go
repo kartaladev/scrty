@@ -73,6 +73,11 @@
 // refused with a *ChallengeError, which carries the challenge as fields and
 // names only its kind in text.
 //
+// A locked account's login is the one refusal concealed by default: form
+// login and Basic answer it as a wrong password, joined to the lock so a
+// consumer's handler still sees it, and WithLockDisclosure answers it with
+// the lock itself, mapped to 429.
+//
 // WithErrorHandler replaces what a refusal is answered with on the net/http
 // chain only. A framework that already owns how a request is refused keeps that
 // ownership: on gin the refusal goes to gin's error channel, and on fiber to
@@ -86,6 +91,10 @@
 // shares. Each flow asks for its own namespace, limit and window, so replacing
 // the storage keeps every flow's own policy. The sites, by namespace:
 //
+//   - "password-login": EnableFormLogin and EnableBasicAuth, one limiter the
+//     two endpoints share, so a source spraying passwords across both spends
+//     one allowance: failed logins and locked-account refusals per source, 50
+//     per 15 minutes.
 //   - "api-key": EnableAPIKey, failures per source, 20 per minute.
 //   - "magic-link-redeem": EnableMagicLink, failures per source, 10 per 15
 //     minutes.
@@ -105,8 +114,8 @@
 //   - "recovery-user": the recovery.Recoverer EnableAccountRecovery builds,
 //     failed recoveries per user, 5 per 15 minutes.
 //
-// A flow given a limiter of its own (WithAPIKeyLimiter, WithMFAVerifyLimiter
-// and the like) uses that one, and the factory is never asked for it. The
+// A flow given a limiter of its own (WithLoginLimiter, WithBasicAuthLimiter,
+// WithAPIKeyLimiter, WithMFAVerifyLimiter and the like) uses that one, and the factory is never asked for it. The
 // components a consumer builds and hands the chain — the recovery.Codes of
 // RecoveryDeps and the passkey.Manager of PasskeyDeps — build their limiters
 // themselves, through their own factory options (recovery.WithCodeLimiterFactory,

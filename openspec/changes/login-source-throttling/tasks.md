@@ -13,6 +13,7 @@ Ownership:
 - Groups 1 and 4 change `httpsec` login and Basic, and run in that order.
 - Group 4 also changes `httpsec/status.go` and the tests that assert a lock's status, among them `recoverycomplete_test.go` (also group 2's) and `test/httpsecconformance/scenarios.go`.
 - Groups 1, 2 and 3 may run in parallel. Group 4 needs groups 2 and 3.
+- Task 4.4 also changes `recovery` (its error conversion), and task 4.5 also changes `authenticate` (`Manager.OffersDecoy`), both after groups 1–3 have landed.
 
 ## 1. Failures recorded on an uncancellable context (decision 4; http-security-chain "Login failures are counted even when the client disconnects")
 
@@ -62,6 +63,21 @@ Ownership:
   - the `httpsec` package documentation lists the login guard among the limiter sites.
 
   Verify with `go doc ./httpsec WithLockDisclosure` and `go vet ./...`
+
+- [ ] 4.4 Account recovery's password proof conceals a lock (decision 3; account-recovery MODIFIED "A recovery needs two proofs of different kinds").
+  - `checkPassword` refuses a lock as login does: unless locks are disclosed, it spends the decoy and returns the joined error.
+  - `recovery` keeps the check's error beneath `ErrRefused` when converting an authentication failure, so `errors.Is(err, policy.ErrAccountLocked)` still holds and the status is 401.
+  - With `WithLockDisclosure()` the recovery is refused with the lock alone (429) and no decoy runs.
+  - Covers scenarios "Locked account" and "Locked account with locks disclosed".
+
+  Verify with `go test -race -run 'TestRecoveryComplete|TestRecover' -count=1 ./httpsec/ ./recovery/`
+- [ ] 4.5 Review fixes for group 4.
+  - `Manager.OffersDecoy() bool`, true when any delegate offers a decoy (nested managers asked in turn), and the build warning consults it. Covers authentication scenario "No provider offers it" and http-security-chain scenario "Authenticator without a decoy".
+  - Basic sets `WWW-Authenticate` on every refusal the status table answers 401, including a stateless-phase challenge and a 401 pre-authentication refusal.
+  - A Basic row for "Locked refusals count", seen to fail when the Basic lock branch does not record against the source.
+  - Rewrap the over-long godoc lines in `httpsec/doc.go` and `WithRefusalLogInterval`.
+
+  Verify with `go test -race -count=1 ./authenticate/... ./httpsec/...`
 
 ## 5. Integration
 

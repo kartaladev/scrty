@@ -56,10 +56,12 @@
 | P1 | 2.1–2.4 | `policy/lockout.go`, `policy/lockout_error.go` (new), `policy/lockout_test.go`, `policy/lockout_config_test.go`, `policy/store_failure_test.go`, `httpsec/returned_errors_test.go`, `httpsec/recoverycomplete_test.go` | everything else in `httpsec` | Opus | Security-critical refusal logic written for the first time |
 | A1 | 3.1, 3.2 | `authenticate/decoy.go` (new), `authenticate/password.go`, `authenticate/manager.go`, `authenticate/decoy_test.go` (new) | `httpsec/`, `policy/` | Sonnet | A small port with a stated contract and an existing reference-hash path |
 | H2 | 4.1–4.3 | `httpsec/login.go`, `httpsec/basic.go`, `httpsec/options.go`, `httpsec/throttle.go`, `httpsec/chain.go`, `httpsec/doc.go`, `httpsec/status.go`, `httpsec/status_test.go`, `httpsec/login_test.go`, `httpsec/basic_test.go`, `httpsec/chain_login_guard_test.go` (new), the lock-status assertion in `httpsec/recoverycomplete_test.go`, `test/httpsecconformance/scenarios.go` | `policy/`, `authenticate/`, and `httpsec/returned_errors_test.go` | Opus | Changes the order of refusals on the login path; a mistake would pass tests and still leak |
+| H3 | 4.4, 4.5 | `httpsec/login.go`, `httpsec/basic.go`, `httpsec/doc.go`, `httpsec/options.go` (godoc only), `httpsec/recoverycomplete_test.go`, `httpsec/chain_login_guard_test.go`, `httpsec/basic_test.go`, `recovery/recover.go` and its tests, `authenticate/manager.go`, `authenticate/decoy_test.go` | `policy/`, `httpsec/throttle.go`, `httpsec/chain_ratelimit_test.go` | Opus | Closes a disclosure oracle in recovery and touches three packages; a mistake would pass tests and still leak |
 
 **Order:**
 - H1, P1 and A1 start together.
 - H2 starts after H1, P1 and A1 are verified and reviewed: it edits the lock-status assertion in `recoverycomplete_test.go`, which P1 also edits.
+- H3 starts after H2 is verified and reviewed; it folds H2's review findings and task 4.4.
 - H2 edits `httpsec/options.go` and `httpsec/throttle.go`, which the `limiter-key-bounds` change (another session, branch `feat/limiter-key-bounds`) also edits. Before H2 starts, the main session tells that session, and whichever change lands those files first is the base the other rebases on.
 - 5.1 and 5.2 belong to the main session.
 
@@ -371,7 +373,7 @@ var _ DecoyVerifier = (*Manager)(nil)
   - "locked refusals count": a lockout policy built with `WithFixedLockout(1, time.Hour)` and one prior failure for `ada`. Then 50 form logins for `ada` (each refused as locked), then a login as `bob`, which is throttled.
   - "consumer limiter": `WithLoginLimiter(memLimiter(10, 15*time.Minute))`. After 10 form failures the eleventh is throttled, and Basic from the same source is not.
   - "factory namespace": a recording factory. With both endpoints enabled it receives exactly one `NewLimiter("password-login", 50, 15*time.Minute)`.
-  - "unattributable": empty client address. Refused as `ErrSourceUnattributable`, and the authenticator is not called.
+  - "unattributable": empty client address. Refused as `authenticate.ErrAuthenticationFailed` (401), like every guarded flow (`sourceThrottled`), with a `flow=password-login` record, and neither the policy nor the authenticator is called.
   - "throttled Basic challenged": the response carries `WWW-Authenticate: Basic realm="Restricted"`.
   - "malformed header skips the guard": a throttled source sends `Authorization: Basic !!!`. The result is 401 with `WWW-Authenticate`, and the limiter mock sees no `Exceeded` call.
   - "nil limiter": `WithLoginLimiter(nil)` and `WithBasicAuthLimiter((*ratelimit.MemoryLimiter)(nil))` each fail `httpsec.New` with an error naming the option.
@@ -453,6 +455,82 @@ func refuseLocked(ctx context.Context, authn authenticate.Authenticator, disclos
 
   In `doc.go`, list `password-login` among the limiter sites.
 - [ ] **Step 2:** `go doc ./httpsec WithLockDisclosure`, `go doc ./httpsec WithLoginLimiter` and `go vet ./...` are all clean.
+
+### Task 4.4: Recovery's password proof conceals a lock
+
+**Files:** Modify `httpsec/login.go` (`checkPassword`, `formLogin.checkPassword` at ~396) and `recovery/recover.go` (the password-proof branch at ~199-206). Test in `httpsec/recoverycomplete_test.go` (the "locked account" row at ~200-215) and `recovery/recover_test.go` (or the package's existing completion test file).
+
+**Interfaces:**
+- Consumes: `refuseLocked(ctx, authn, disclose, creds, reason) error` and `formLogin`'s `discloseLocks` (Task 4.2); `authenticate.DecoyVerifier` (3.1).
+- Produces: no new API. `recovery.ErrRefused` keeps the check's error beneath it when the check's error is more than a bare authentication failure.
+
+- [ ] **Step 1: Failing rows.**
+  - In `httpsec/recoverycomplete_test.go`, change the locked-account row: with the default chain, `require.ErrorIs(t, out.err, recovery.ErrRefused)`, `require.ErrorIs(t, out.err, policy.ErrAccountLocked)`, `assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))`, and (password provider over a `MockEncoder`) one `Match(password, referenceHash)` and no `LoadByUsername` for the lock. Add a row "locked account, locks disclosed" with `WithLockDisclosure()`: `require.ErrorIs(t, out.err, policy.ErrAccountLocked)`, `assert.NotErrorIs(t, out.err, recovery.ErrRefused)`, status 429, no `Match`.
+  - In `recovery`, a table row: a `PasswordCheck` returning `errors.Join(authenticate.ErrAuthenticationFailed, errLockedForTest)` (a local sentinel; `recovery` does not import `policy`) is refused with an error matching both `ErrRefused` and `errLockedForTest`, whose text is exactly `ErrRefused.Error()`. Keep the existing wrong-password row: a bare `authenticate.ErrAuthenticationFailed` still yields an error matching `ErrRefused`.
+- [ ] **Step 2: Run.** `go test -race -run 'TestRecoveryComplete' -count=1 ./httpsec/` and `go test -race -count=1 ./recovery/`. Expected FAIL: the httpsec default row gets 429 and no `ErrRefused`; the recovery row loses `errLockedForTest`.
+- [ ] **Step 3: Implement.**
+
+```go
+// httpsec/login.go — recovery's password proof answers a lock as login does.
+func (l *formLogin) checkPassword(ctx context.Context, username string, password []byte) error {
+	_, err := l.authenticatePassword(ctx, username, password, l.now())
+	if err != nil && errors.Is(err, policy.ErrAccountLocked) {
+		return refuseLocked(ctx, l.authn, l.discloseLocks,
+			identity.NewUsernamePassword(username, password), err)
+	}
+
+	return err
+}
+```
+
+```go
+// recovery/recover.go — keep what the check said beneath the refusal, behind
+// ErrRefused's own text, so a consumer can still tell a concealed lock apart.
+if errors.Is(err, authenticate.ErrAuthenticationFailed) {
+	err = diag.Wrap(err, ErrRefused.Error(), ErrRefused)
+}
+```
+
+  Adjust to the real field names (`discloseLocks` is set by `wire`); if `authenticatePassword` already refuses the lock through `refuseLocked`, only the recovery change is needed — check first with gopls references on `refuseLocked`.
+- [ ] **Step 4: Verify.** Step 2 passes; `go test -race -count=1 ./httpsec/... ./recovery/...`; `go doc ./recovery PasswordCheck` mentions that a lock wrapped with the authentication failure stays identifiable.
+
+### Task 4.5: Group 4 review fixes
+
+**Files:** Modify `authenticate/manager.go` (`OffersDecoy`), `authenticate/decoy_test.go`; `httpsec/login.go` (`warnWithoutDecoy` at ~229), `httpsec/basic.go` (`Intercept`), `httpsec/chain_login_guard_test.go`, `httpsec/basic_test.go`, `httpsec/doc.go`, `httpsec/options.go` (`WithRefusalLogInterval` godoc).
+
+**Interfaces:**
+- Produces: `func (m *Manager) OffersDecoy() bool`.
+
+- [ ] **Step 1: Failing tests.**
+  - `TestManager_OffersDecoy` (table): over a password provider → true; over only a mock `Authenticator` → false; over a nested `Manager` whose only delegate is a mock → false; nested manager over a password provider → true.
+  - In `TestChain_LockResponseWarning`, add "manager without a decoy delegate": form login over `authenticate.NewManager(NewMockAuthenticator(ctrl))` → exactly one WARN containing "timing".
+  - In `basic_test.go` (or the Basic table), add rows asserting `WWW-Authenticate: Basic realm="Restricted"` on: a stateless-phase MFA challenge (`*ChallengeError`, 401) and a pre-authentication deny whose reason maps to 401. Rows whose refusal maps to anything else (403, 429) assert the header is absent.
+  - In `TestChain_PasswordLoginGuard`, add "Basic locked refusals count": 50 Basic requests for locked `ada` from one source, then a Basic request for `bob` from the same source → `ratelimit.ErrThrottled`. Confirm it fails with the Basic lock branch's `recordSourceFailure` commented out, then restore it.
+- [ ] **Step 2: Run.** `go test -race -run 'TestManager_OffersDecoy' -count=1 ./authenticate/` and `go test -race -run 'TestChain_LockResponseWarning|TestChain_PasswordLoginGuard|TestBasicAuth' -count=1 ./httpsec/`. Expected FAIL: `OffersDecoy` stubbed false fails the true rows; the manager warning row gets 0 WARNs; the stateless-challenge row has no header.
+- [ ] **Step 3: Implement.**
+
+```go
+// OffersDecoy reports whether any delegate offers a decoy verification, so a
+// caller can warn when VerifyDecoy will never spend any work. A delegate that
+// is itself a Manager answers for its own delegates.
+func (m *Manager) OffersDecoy() bool {
+	for _, d := range m.delegates {
+		if _, ok := d.(DecoyVerifier); !ok {
+			continue
+		}
+		if o, ok := d.(interface{ OffersDecoy() bool }); ok && !o.OffersDecoy() {
+			continue
+		}
+		return true
+	}
+	return false
+}
+```
+
+  - `warnWithoutDecoy`: treat the authenticator as offering a decoy only when it is a `DecoyVerifier` and, if it has `OffersDecoy() bool`, that returns true.
+  - Basic: on the way out of `Intercept`, set the challenge when the returned error maps to 401 (`StatusForError(err) == http.StatusUnauthorized`), replacing the scattered `b.challenge(ex)` calls on refusal paths, so no 401 path can miss it.
+  - Rewrap `httpsec/doc.go` near line 118 and the `WithRefusalLogInterval` godoc.
+- [ ] **Step 4: Verify.** Step 2 passes; `go test -race -count=1 ./authenticate/... ./httpsec/...`; ginsec and fibersec `go test -race ./...`; `gofmt -l authenticate httpsec`.
 
 ### Task 5.1: Whole-workspace gate (main session)
 

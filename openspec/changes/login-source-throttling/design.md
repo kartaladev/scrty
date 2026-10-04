@@ -113,10 +113,12 @@ Below the threshold this costs one store query, and two at or above it. The port
 
 ### 3. Locked-account refusals look like a wrong password by default (departure)
 
-When pre-authentication denies with `ErrAccountLocked`, both endpoints by default:
+When pre-authentication denies with `ErrAccountLocked`, form login, Basic and account recovery's password proof by default:
 1. spend a decoy verification on the presented password;
 2. return `errors.Join(authenticate.ErrAuthenticationFailed, reason)`;
 3. for Basic, set `WWW-Authenticate`.
+
+Account recovery's password proof goes through the same login code (`checkPassword`), so it gets the same concealed refusal. The recovery converts a check error wrapping the authentication failure into its own recovery-refused error. It keeps the check's error underneath, so a concealed lock answers recovery-refused (401), like an unknown user or a wrong code, and a consumer's handler can still identify the lock with `errors.Is`. Without this, recovery answered a locked account with the bare lock while an unknown username answered recovery-refused, which told a holder of a valid recovery code that the account exists and is locked.
 
 The status table maps the joined error to 401, and a consumer's handler can still tell it is a lock with `errors.Is`. This satisfies the error-propagation spec's "Consumer identifies the refusal".
 
@@ -135,9 +137,10 @@ type DecoyVerifier interface {
 - The password provider implements it against its reference hash, without loading the user. Loading the user would let a slow user store reveal whether the account exists.
 - `authenticate.Manager` implements it by offering the credentials to each delegate that implements `DecoyVerifier`, in order, and stopping at the first that reports `handled`. Support cannot be learned from `Authenticator` itself without authenticating, which is why the method reports it.
 - The chain type-asserts its authenticator. If the authenticator offers no decoy and locks are not disclosed, `build` writes one WARN: lock refusals may then be told apart by their timing.
+- `authenticate.Manager` always implements `DecoyVerifier`, so the assertion alone cannot tell whether a decoy will ever be spent. `Manager.OffersDecoy() bool` reports whether any delegate offers one: a delegate that implements `DecoyVerifier` and, if it also reports `OffersDecoy`, reports true. The chain warns when the authenticator is not a `DecoyVerifier`, or reports `OffersDecoy() == false`. Found in review: a manager over a non-decoy delegate was silent.
 - Calling the consumer's authenticator itself was rejected. A directory-backed authenticator could count the attempt against its own lockout, or record it as a guess.
 
-**Default:** undisclosed. **Override:** `httpsec.WithLockDisclosure()`, a chain `Option` that governs both endpoints' response to a lock and nothing else. With it, the refusal is the `LockoutError` alone, mapped to 429, and no decoy runs.
+**Default:** undisclosed. **Override:** `httpsec.WithLockDisclosure()`, a chain `Option` that governs the response to a lock at form login, Basic and recovery's password proof, and nothing else. With it, the refusal is the `LockoutError` alone, mapped to 429, and no decoy runs.
 
 **The disclosed status is 429, not 423 (departure).** The status table's account-locked row moves from 423 to 429, joining too-many-sessions.
 - RFC 4918 §11.3 defines 423 for a WebDAV resource that is locked. It says nothing about an account.
@@ -166,6 +169,7 @@ type DecoyVerifier interface {
 - **[A shared address's own users trip the guard]** → The 50 default leaves room. A consumer gives the endpoint its own limiter.
 - **[An attacker who guesses steadily can keep an account's owner waiting up to an hour at a time]** → This is NIST's accepted cost of escalating waits, far below the hard lock's indefinite lockout. A correct password after any wait clears it, and the ceiling is unreachable at about 24 guesses a day.
 - **[The in-memory attempt store now holds failures for 24 hours, not 15 minutes]** → Memory grows with failing usernames over a longer span. A deployment of more than one replica already needs a durable store, whose purge (`PurgeExpired`) uses the policy's own window.
+- **[A concealed lock still answers a little sooner than a wrong password]** → A wrong password costs a user load, a password check and an attempt-store write; a concealed lock costs only the decoy check. The password check dominates, so the gap is one user-store read and one attempt-store write. Recording a failure on a lock is rejected (decision 2: it would let an attacker keep the wait running), and loading the user would let a slow user store reveal existence. Accepted as a stated limit.
 - **[A decoy hash per locked refusal costs CPU]** → Bounded per source by decision 1. A consumer that discloses locks skips it.
 - **[A consumer's own handler can still render "locked" from the joined error]** → That is the consumer's choice, and the godoc of `WithLockDisclosure` says so.
 

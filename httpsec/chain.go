@@ -82,7 +82,8 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //  1. The chain's own sampler (WithRefusalLogInterval, WithRefusalLogReporter).
 //  2. The enrolment path of EnableMFAEnrolment.
 //  3. The verification throttle EnableMFA builds.
-//  4. The per-source guards of EnableAPIKey, EnableMagicLink, handoff
+//  4. The per-source guards of EnableFormLogin and EnableBasicAuth (the
+//     password-login guard they share), EnableAPIKey, EnableMagicLink, handoff
 //     redemption under EnableOIDCLogin, the passwordless begin under
 //     EnablePasskeys and EnableAccountRecovery, whether built over the default
 //     limiter or over one the consumer supplied. Each keeps its own sampler,
