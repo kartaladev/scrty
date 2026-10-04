@@ -83,3 +83,21 @@ func (m *Manager) Authenticate(ctx context.Context, c identity.Credentials) (*Au
 }
 
 var _ Authenticator = (*Manager)(nil)
+
+// VerifyDecoy offers c to each delegate that implements DecoyVerifier, in
+// order, and stops at the first that reports it handled c. It returns false
+// when no delegate does, including when none implements DecoyVerifier.
+//
+// Delegates that do not implement DecoyVerifier are skipped, and no delegate's
+// Authenticate is called.
+func (m *Manager) VerifyDecoy(ctx context.Context, c identity.Credentials) bool {
+	for _, d := range m.delegates {
+		if v, ok := d.(DecoyVerifier); ok && v.VerifyDecoy(ctx, c) {
+			return true
+		}
+	}
+
+	return false
+}
+
+var _ DecoyVerifier = (*Manager)(nil)
