@@ -584,11 +584,24 @@ func WithHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 // namespace "oidc.handoff", or else an in-memory limiter of 10 failures per
 // source per 5 minutes; either way at the limit WithHandoffRateLimit sets, and
 // used by redemption alone. A deployment running more than one replica supplies
-// a factory or a limiter its replicas share, or the limit is per process. A shared limiter shares its store, not the allowance: every key
-// carries the flow it belongs to. A nil limiter, including an interface
-// holding a nil pointer, is refused: it would read as "no limit". This
-// option is redemption-only: given beside WithCallbackSuccess, which issues
-// no code for anything to be limited on, it is refused.
+// a factory or a limiter its replicas share, or the limit is per process. A
+// shared limiter shares its store, not the allowance: every key carries the
+// flow it belongs to.
+// A limiter handed to several flows shares its key cap among them, so a flood
+// on one refuses new sources on all.
+//
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
+// aggregate's multiplier, 4 by default, times the limit l reports, over the
+// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// limiter and the shared limiters scrty ships implement. A limiter that does
+// not implement it gets no default aggregate for this flow, and one warning
+// when the chain is built; under an explicit WithIPv6Aggregate it is a
+// configuration error.
+//
+// A nil limiter, including an interface holding a nil pointer, is refused: it
+// would read as "no limit". This option is redemption-only: given beside
+// WithCallbackSuccess, which issues no code for anything to be limited on, it
+// is refused.
 func WithHandoffLimiter(l ratelimit.Limiter) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if err := requireDep("WithHandoffLimiter", "limiter", l); err != nil {

@@ -56,6 +56,7 @@ The main session sets each dispatch's model, as `subagent-delegation.md` require
 | B2 | 5.5 | `ratelimit/guard.go`, `ratelimit/guard_test.go`, `ratelimit/options.go` (godoc) | `memory*.go` | Sonnet | Known pattern: a new sampled record family |
 | C1 | 6.1–6.3 | `httpsec/options.go`, `httpsec/throttle.go`, `httpsec/doc.go`, `httpsec/chain_ratelimit_test.go`, `httpsec/chain_aggregate_test.go` (new) | `ratelimit/` | Sonnet | Option plumbing and validation over an API B1 fixed |
 | D1 | 6.4–6.6 | `ratelimit/policy.go` (new), `ratelimit/memory.go`, `ratelimit/memory_cap_test.go`, `ratelimit/guard_test.go`, `redis/limiter.go`, `redis/limiter_test.go` (or a new `redis/policy_test.go`), `httpsec/throttle.go`, `httpsec/options.go`, `httpsec/oidc_options.go`, `httpsec/recoveryoptions.go`, `httpsec/passkeylogin.go` (godoc only in the last four), `httpsec/chain_aggregate_test.go`, `internal/unavailable/wrap.go` (comment only) | `openspec/` | Opus | An interface other packages compile against, across ratelimit, redis and httpsec, and a sizing rule whose mistake passes tests (decision 6) |
+| D2 | 6.7 | `httpsec/throttle.go` (`aggregateLimiter`), `httpsec/options.go` (`WithIPv6Aggregate` godoc), `httpsec/chain_aggregate_test.go`, `redis/policy_test.go` | everything else | Sonnet | Review findings whose fix the finding states, and test rows that strengthen coverage |
 
 **Order:**
 - A1 and B1 start together.
@@ -735,6 +736,57 @@ Keep the existing overflow check, applied to `aggLimit`. Build the aggregate wit
   - If it passes at once, temporarily drop the `aggregate` attribute on that path and see it fail, then restore.
 - [ ] **Step 2:** Re-wrap the `degradedExceeded` doc comment in `internal/unavailable/wrap.go` so no line runs past the file's usual width, keeping its wording.
 - [ ] **Step 3: Verify.** `go test -race -run TestSourceGuard_Full -count=1 ./ratelimit/` passes, `gofmt -l ./internal ./ratelimit` is empty, and `go vet ./...` is clean.
+
+### Task 6.7: Refuse a reported policy that cannot size an aggregate
+
+**Files:** Modify `httpsec/throttle.go` (`(*config).aggregateLimiter`), `httpsec/options.go` (`WithIPv6Aggregate` godoc), `httpsec/chain_aggregate_test.go` (`TestChain_IPv6Aggregate_FlowLimiter`), and `redis/policy_test.go` (`TestLimiter_Policy`).
+
+**Interfaces:**
+- Consumes: `ratelimit.PolicyReporter` (6.4).
+- `aggregateLimiter(option, flow string, own ratelimit.Limiter, limit int, window time.Duration) (ratelimit.Limiter, error)` keeps its signature.
+
+- [ ] **Step 1: Failing rows** in `TestChain_IPv6Aggregate_FlowLimiter`. Each uses a test limiter type that implements `ratelimit.Limiter` and `Policy()` with fixed values, and a factory mock with no `NewLimiter` expectation for the aggregate unless stated:
+  - "consumer limiter reports an unusable policy": `Policy()` returns `(0, 0)`. `httpsec.New` fails with `ErrConfig`, the message names `api-key`, and the factory is not asked for `api-key-ipv6-aggregate`.
+  - "consumer limiter reports a negative window": `(10, -time.Second)`. Same assertions.
+  - "consumer limit too large for the default aggregate": `(math.MaxInt, time.Minute)` with no aggregate option. `httpsec.New` fails with `ErrConfig`, and the message names `api-key`, `WithoutIPv6Aggregate` and `WithIPv6Aggregate`.
+  - "explicit aggregate over a reporting limiter": `WithIPv6Aggregate(48, 2)` and `(30, time.Hour)`. The factory receives `("api-key-ipv6-aggregate", 60, time.Hour)`.
+  - "no warning when the aggregate is off": `WithoutIPv6Aggregate()` with a limiter lacking `Policy()`. Construction succeeds, with zero WARN records and no factory call for the aggregate.
+  - "no warning when the source prefix is wide": `WithIPv6SourcePrefix(48)` with the same limiter. Zero WARN records and no aggregate call.
+
+  In `redis/policy_test.go`, add a row: `NewLimiter(client, "ns", 10, 15*time.Minute+500*time.Nanosecond)` reports `(10, 15*time.Minute)`.
+- [ ] **Step 2: Run** `go test -race -run 'TestChain_IPv6Aggregate' -count=1 ./httpsec/`. Expected:
+  - FAIL on "unusable policy" and "negative window", because the factory is asked for `(…, 0, 0s)` or construction does not fail;
+  - FAIL on the "too large" message assertion, which currently names only `WithIPv6Aggregate`.
+
+  The three rows that already pass ("explicit aggregate over a reporting limiter" and both "no warning" rows) guard behaviour that is correct. For the Redis row, temporarily remove `Truncate(time.Microsecond)` in `redis/limiter.go`, see the row fail with `expected: 15m0s actual: 15m0.0000005s`, then put it back.
+- [ ] **Step 3: Implement** in `aggregateLimiter`, after `limit, window = r.Policy()`:
+
+```go
+		// A policy that cannot size an aggregate is refused here rather than
+		// left to the factory: a consumer's factory might accept it, and an
+		// aggregate built from it would quietly change the flow's limit.
+		if limit < 1 || window <= 0 {
+			return nil, newConfigError("%s: the %s limiter reports a limit of %d over %s, which cannot "+
+				"size its IPv6 aggregate", option, flow, limit, window)
+		}
+```
+
+Reword the overflow error by whether the aggregate is explicit:
+
+```go
+	if limit > math.MaxInt/c.aggregateMultiplier {
+		if c.aggregateExplicit {
+			return nil, newConfigError("%s: WithIPv6Aggregate multiplier %d times the %s limit of %d "+
+				"overflows an int", option, c.aggregateMultiplier, flow, limit)
+		}
+		return nil, newConfigError("%s: the default IPv6 aggregate, %d times the %s limit of %d, overflows "+
+			"an int: turn it off with WithoutIPv6Aggregate or size it with WithIPv6Aggregate",
+			option, c.aggregateMultiplier, flow, limit)
+	}
+```
+
+- [ ] **Step 4: Godoc.** `WithIPv6Aggregate` states both refusals: a reported limit below 1 or a non-positive window, and a product that overflows an int, which for the default aggregate points to `WithoutIPv6Aggregate` for an effectively unbounded consumer limiter. Re-wrap its over-long line (the "its own: the aggregate has no option of its own beyond this one. With the in-memory default factory…" line) to the file's usual width.
+- [ ] **Step 5: Verify.** Step 2's command passes. `go test -race -run TestLimiter_Policy -count=1 ./...` passes in `redis`. `go test -race -count=1 ./httpsec/...` passes. `gofmt -l ./httpsec` is empty, and `go vet ./...` is clean.
 
 ### Task 7.1: Whole-workspace gate (main session)
 

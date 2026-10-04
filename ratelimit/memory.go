@@ -397,3 +397,11 @@ func newest(stamps []time.Time) time.Time {
 }
 
 var _ Limiter = (*MemoryLimiter)(nil)
+
+// Policy reports the limit and window the limiter was built with
+// (NewMemoryLimiter's arguments). Both are fixed at construction.
+func (l *MemoryLimiter) Policy() (limit int, window time.Duration) {
+	return l.limit, l.window
+}
+
+var _ PolicyReporter = (*MemoryLimiter)(nil)

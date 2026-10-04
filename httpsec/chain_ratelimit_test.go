@@ -280,11 +280,13 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 			name: "flow option wins over the factory",
 			// Only the aggregates are asked for: a flow given its own limiter
 			// never asks the factory for it, but its IPv6 aggregate has no
-			// option of its own, so the chain's factory still builds that.
+			// option of its own, so the chain's factory still builds that,
+			// sized from the policy the flow's own limiter reports (one a
+			// minute, so four a minute) rather than from the flow's default.
 			factory: func(t *testing.T) *MockLimiterFactory {
 				return factoryExpecting(t,
-					limiterAsked{"api-key-ipv6-aggregate", 80, time.Minute},
-					limiterAsked{"passkey-login-ipv6-aggregate", 120, 15 * time.Minute})
+					limiterAsked{"api-key-ipv6-aggregate", 4, time.Minute},
+					limiterAsked{"passkey-login-ipv6-aggregate", 4, time.Minute})
 			},
 			opts: func(t *testing.T, factory httpsec.Option) []httpsec.Option {
 				ph := newPasskeyHarness(t)

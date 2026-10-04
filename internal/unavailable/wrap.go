@@ -346,9 +346,10 @@ func (l *limiter) localExceeded(ctx context.Context, key string) (bool, error) {
 // which wraps ratelimit.ErrBackendUnavailable; fall-back mode from the local
 // count, which refuses a key it does not hold once it is full, so that an
 // outage long enough to fill it still fails closed; allow mode with "not
-// exceeded", writing its outage record only when outage is set. A stale failure clears it: it reports an outage that has
-// already ended, and logging it while the breaker is closed would take the
-// sampling slot recovery freed, so the next outage would go unlogged.
+// exceeded", writing its outage record only when outage is set. A stale
+// failure clears it: it reports an outage that has already ended, and logging
+// it while the breaker is closed would take the sampling slot recovery freed,
+// so the next outage would go unlogged.
 func (l *limiter) degradedExceeded(ctx context.Context, key string, err error, outage bool) (bool, error) {
 	switch l.mode {
 	case ratelimit.UnavailableFallBackToLocal:

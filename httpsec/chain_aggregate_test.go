@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // TestChain_IPv6Aggregate_Construction pins that an aggregate that cannot take
@@ -195,6 +198,157 @@ func TestChain_IPv6Aggregate_Throttles(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, h, c)
+		})
+	}
+}
+
+// TestChain_IPv6Aggregate_FlowLimiter pins that a flow's aggregate is sized
+// from the flow's own limiter when it was given one: four times the limit that
+// limiter reports, over its window, so the default aggregate never tightens a
+// limit the consumer chose. A limiter that cannot report its policy gets no
+// default aggregate and one warning, and an explicit aggregate over it is a
+// configuration error.
+func TestChain_IPv6Aggregate_FlowLimiter(t *testing.T) {
+	t.Parallel()
+
+	const noPolicyWarning = "httpsec: no IPv6 aggregate for a flow whose limiter does not report its limit and window"
+
+	memLimiter := func(t *testing.T, limit int, window time.Duration) ratelimit.Limiter {
+		t.Helper()
+
+		l, err := ratelimit.NewMemoryLimiter(limit, window,
+			ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+		require.NoError(t, err)
+
+		return l
+	}
+
+	// noPolicy is a limiter that does not implement ratelimit.PolicyReporter.
+	// Construction must not consult it.
+	noPolicy := func(t *testing.T) ratelimit.Limiter {
+		t.Helper()
+
+		return NewMockLimiter(gomock.NewController(t))
+	}
+
+	type testCase struct {
+		name string
+		// factory is the chain's factory, holding the row's expectations.
+		factory func(t *testing.T) *MockLimiterFactory
+		// opts are the row's options beside the logger, the factory and
+		// EnableAPIKey; apiKey are EnableAPIKey's own.
+		opts   []httpsec.Option
+		apiKey func(t *testing.T) []httpsec.APIKeyOption
+		assert func(t *testing.T, h *apiKeyHarness, c *httpsec.Chain, err error, logs *capturingHandler)
+	}
+
+	// apiKeyWarnings returns the WARN records that name the API-key flow.
+	apiKeyWarnings := func(logs *capturingHandler) []slog.Record {
+		var out []slog.Record
+		for _, r := range logs.records() {
+			if r.Level != slog.LevelWarn {
+				continue
+			}
+			if v, ok := attrValue(r, "flow"); ok && v.String() == "api-key" {
+				out = append(out, r)
+			}
+		}
+
+		return out
+	}
+
+	cases := []testCase{
+		{
+			name: "aggregate follows a consumer limiter",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t, limiterAsked{"api-key-ipv6-aggregate", 800, time.Minute})
+			},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(memLimiter(t, 200, time.Minute))}
+			},
+			assert: func(t *testing.T, h *apiKeyHarness, c *httpsec.Chain, err error, _ *capturingHandler) {
+				require.NoError(t, err)
+
+				for i := 1; i <= 200; i++ {
+					require.True(t, presentUnknownKey(t, h, c, "2001:db8:1:1::1"),
+						"attempt %d is within the consumer's 200 a minute, and the aggregate allows 800", i)
+				}
+			},
+		},
+		{
+			name: "consumer limiter reports a longer window",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t, limiterAsked{"api-key-ipv6-aggregate", 120, time.Hour})
+			},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(memLimiter(t, 30, time.Hour))}
+			},
+			assert: func(t *testing.T, _ *apiKeyHarness, _ *httpsec.Chain, err error, _ *capturingHandler) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "consumer limiter that reports no policy",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(noPolicy(t))}
+			},
+			assert: func(t *testing.T, _ *apiKeyHarness, c *httpsec.Chain, err error, logs *capturingHandler) {
+				require.NoError(t, err)
+				require.NotNil(t, c)
+
+				warnings := apiKeyWarnings(logs)
+				require.Len(t, warnings, 1, "one warning at construction names the flow")
+				assert.Equal(t, noPolicyWarning, warnings[0].Message)
+			},
+		},
+		{
+			name: "explicit aggregate over a limiter that reports no policy",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			opts: []httpsec.Option{httpsec.WithIPv6Aggregate(48, 4)},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(noPolicy(t))}
+			},
+			assert: func(t *testing.T, _ *apiKeyHarness, c *httpsec.Chain, err error, _ *capturingHandler) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+				assert.Contains(t, err.Error(), "WithIPv6Aggregate", "the error names the aggregate option")
+				assert.Contains(t, err.Error(), "api-key", "the error names the flow")
+				assert.Nil(t, c)
+			},
+		},
+		{
+			name: "default flow unchanged",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t,
+					limiterAsked{"api-key", 20, time.Minute},
+					limiterAsked{"api-key-ipv6-aggregate", 80, time.Minute})
+			},
+			apiKey: func(*testing.T) []httpsec.APIKeyOption { return nil },
+			assert: func(t *testing.T, _ *apiKeyHarness, _ *httpsec.Chain, err error, logs *capturingHandler) {
+				require.NoError(t, err)
+				assert.Empty(t, apiKeyWarnings(logs), "a flow the chain builds the limiter for is not warned about")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAPIKeyHarness(t)
+			logs := &capturingHandler{}
+
+			c, err := httpsec.New(append([]httpsec.Option{
+				httpsec.WithLogger(slog.New(logs)),
+				httpsec.WithRateLimiterFactory(tc.factory(t)),
+				httpsec.EnableAPIKey(h.keys, tc.apiKey(t)...),
+			}, tc.opts...)...)
+
+			tc.assert(t, h, c, err, logs)
 		})
 	}
 }

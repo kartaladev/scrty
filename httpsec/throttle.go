@@ -78,8 +78,13 @@ func (c *config) rateLimiterFactory() ratelimit.LimiterFactory {
 //
 // Unless the chain turned it off (WithoutIPv6Aggregate), the guard also counts
 // IPv6 sources by the chain's aggregate prefix, in a limiter the chain's
-// factory builds under "<flow>-ipv6-aggregate" with limit times the chain's
-// multiplier over window, whether or not the flow brought its own limiter.
+// factory builds under "<flow>-ipv6-aggregate", whether or not the flow brought
+// its own limiter. It allows the chain's multiplier times the flow's limit
+// over the flow's window: limit and window when the chain builds the flow's
+// limiter, and what the flow's own limiter reports (ratelimit.PolicyReporter)
+// when it was given one. A flow's own limiter that reports nothing gets no
+// default aggregate, and one warning; under an explicit WithIPv6Aggregate it
+// is a configuration error.
 //
 // option is the Enable... option the endpoint came from, so a wiring failure
 // names the setting the consumer has to change rather than the internals it
@@ -91,6 +96,11 @@ func (c *config) resolveSourceGuard(
 	window time.Duration,
 	logInterval time.Duration,
 ) (sourceGuard, error) {
+	// own is the flow's limiter as the consumer gave it, nil when the chain
+	// builds it. It is kept apart from limiter, which the factory fills in,
+	// because only a limiter the consumer chose has a policy the chain cannot
+	// see.
+	own := limiter
 	if limiter == nil {
 		built, err := c.rateLimiterFactory().NewLimiter(flow, limit, window)
 		if err != nil {
@@ -108,26 +118,13 @@ func (c *config) resolveSourceGuard(
 		ratelimit.WithSourceGuardLogReporter(c.refusalLogReporter()),
 	}
 
-	// The aggregate is the chain's, not the flow's: it is built from the
-	// chain's factory even when the flow brought its own limiter, because a
-	// flow's limiter says nothing about the allocation its sources share.
-	if c.aggregateOn() {
-		namespace := flow + "-ipv6-aggregate"
+	aggregate, err := c.aggregateLimiter(option, flow, own, limit, window)
+	if err != nil {
+		return nil, err
+	}
 
-		// A wrapped product would quietly shrink the aggregate's limit, even
-		// below the flow's own, so a multiplier that overflows is refused.
-		if limit > math.MaxInt/c.aggregateMultiplier {
-			return nil, newConfigError("%s: WithIPv6Aggregate multiplier %d times the %s limit of %d "+
-				"overflows an int", option, c.aggregateMultiplier, flow, limit)
-		}
-
-		agg, err := c.rateLimiterFactory().NewLimiter(namespace, limit*c.aggregateMultiplier, window)
-		if err != nil {
-			return nil, newConfigError("%s could not build its IPv6 aggregate limiter for namespace %q: %s",
-				option, namespace, err)
-		}
-
-		opts = append(opts, ratelimit.WithSourceGuardIPv6Aggregate(c.aggregateBits, agg))
+	if aggregate != nil {
+		opts = append(opts, ratelimit.WithSourceGuardIPv6Aggregate(c.aggregateBits, aggregate))
 	}
 
 	guard, err := ratelimit.NewSourceGuard(flow, limiter, opts...)
@@ -136,6 +133,63 @@ func (c *config) resolveSourceGuard(
 	}
 
 	return guard, nil
+}
+
+// aggregateLimiter builds the IPv6 aggregate limiter for flow, or returns nil
+// when the flow counts no aggregate.
+//
+// The aggregate is the chain's, not the flow's: it is built from the chain's
+// factory even when the flow brought its own limiter, because a flow's limiter
+// says nothing about the allocation its sources share. Its size is the flow's,
+// though. When the flow was given its own limiter (own), that limiter's limit
+// and window are the consumer's and the flow's defaults are not, so they are
+// read from it. A limiter that cannot say its policy gets no default
+// aggregate: building one from the default would quietly tighten a limit the
+// consumer chose. An explicit WithIPv6Aggregate over such a limiter asked for
+// an aggregate the chain cannot size, which is a configuration error.
+func (c *config) aggregateLimiter(
+	option, flow string,
+	own ratelimit.Limiter,
+	limit int,
+	window time.Duration,
+) (ratelimit.Limiter, error) {
+	if !c.aggregateOn() {
+		return nil, nil //nolint:nilnil // no aggregate is not a failure
+	}
+
+	if own != nil {
+		r, ok := own.(ratelimit.PolicyReporter)
+		if !ok {
+			if c.aggregateExplicit {
+				return nil, newConfigError("%s: WithIPv6Aggregate cannot size the %s aggregate: its limiter "+
+					"does not report its limit and window (ratelimit.PolicyReporter)", option, flow)
+			}
+
+			c.logger.Warn("httpsec: no IPv6 aggregate for a flow whose limiter does not report its limit and window",
+				slog.String("flow", flow), slog.String("option", option))
+
+			return nil, nil //nolint:nilnil // the flow counts no aggregate, as warned
+		}
+
+		limit, window = r.Policy()
+	}
+
+	// A wrapped product would quietly shrink the aggregate's limit, even below
+	// the flow's own, so a multiplier that overflows is refused.
+	if limit > math.MaxInt/c.aggregateMultiplier {
+		return nil, newConfigError("%s: WithIPv6Aggregate multiplier %d times the %s limit of %d "+
+			"overflows an int", option, c.aggregateMultiplier, flow, limit)
+	}
+
+	namespace := flow + "-ipv6-aggregate"
+
+	agg, err := c.rateLimiterFactory().NewLimiter(namespace, limit*c.aggregateMultiplier, window)
+	if err != nil {
+		return nil, newConfigError("%s could not build its IPv6 aggregate limiter for namespace %q: %s",
+			option, namespace, err)
+	}
+
+	return agg, nil
 }
 
 // classifyAddress decides whether addr may key a rate-limit bucket, and names

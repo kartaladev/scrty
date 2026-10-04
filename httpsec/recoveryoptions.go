@@ -363,9 +363,19 @@ func WithRecoveryCodesPath(path string) RecoveryOption {
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "account-recovery", or else an in-memory limiter of 10 failures per
 // source per 15 minutes, used by this flow alone. A deployment running more
-// than one replica supplies a factory or a limiter its replicas share. One limiter may be
-// shared with other flows: every key carries its flow, so the allowances stay
-// separate.
+// than one replica supplies a factory or a limiter its replicas share. One
+// limiter may be shared with other flows: every key carries its flow, so the
+// allowances stay separate.
+// A limiter handed to several flows shares its key cap among them, so a flood
+// on one refuses new sources on all.
+//
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
+// aggregate's multiplier, 4 by default, times the limit l reports, over the
+// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// limiter and the shared limiters scrty ships implement. A limiter that does
+// not implement it gets no default aggregate for this flow, and one warning
+// when the chain is built; under an explicit WithIPv6Aggregate it is a
+// configuration error.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
 func WithRecoveryLimiter(l ratelimit.Limiter) RecoveryOption {
@@ -387,6 +397,17 @@ func WithRecoveryLimiter(l ratelimit.Limiter) RecoveryOption {
 // per source per hour, used by this flow alone. Every start is counted,
 // whatever it did, and a source over its limit is still answered 202 and sends
 // nothing.
+//
+// A limiter handed to several flows shares its key cap among them, so a flood
+// on one refuses new sources on all.
+//
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
+// aggregate's multiplier, 4 by default, times the limit l reports, over the
+// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// limiter and the shared limiters scrty ships implement. A limiter that does
+// not implement it gets no default aggregate for this flow, and one warning
+// when the chain is built; under an explicit WithIPv6Aggregate it is a
+// configuration error.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused.
 func WithRecoveryStartLimiter(l ratelimit.Limiter) RecoveryOption {

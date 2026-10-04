@@ -684,11 +684,18 @@ func (c *config) validateAggregate() error {
 // and so still 256 times 4 times a flow's allowance; WithIPv6Aggregate(48, n)
 // closes that, at the price of throttling every /56 inside the /48 together.
 //
+// When a flow was given a limiter of its own (WithAPIKeyLimiter and the like),
+// "the flow's limit" and "the flow's window" are that limiter's, read through
+// ratelimit.PolicyReporter, so the aggregate never tightens a limit the
+// consumer chose. A limiter that does not implement it gets no default
+// aggregate for that flow, and one warning when the chain is built; under an
+// explicit WithIPv6Aggregate it is a configuration error naming the flow, since
+// the chain cannot size the aggregate that was asked for.
+//
 // Each guard's aggregate limiter is built from the chain's limiter factory
 // (WithRateLimiterFactory) under the namespace "<flow>-ipv6-aggregate", for
 // example "api-key-ipv6-aggregate", even when the flow was given a limiter of
-// its own (WithAPIKeyLimiter and the like): the aggregate has no option of its
-// own beyond this one. With the in-memory default factory the aggregate counts
+// its own: the aggregate has no option of its own beyond this one. With the in-memory default factory the aggregate counts
 // per replica, even when the flow's own limiter is a shared one; a consumer who
 // wants a fleet-wide aggregate configures a shared factory with
 // WithRateLimiterFactory.
@@ -1545,6 +1552,16 @@ func WithAPIKeyScheme(scheme string) APIKeyOption {
 // limit it was built with, not the allowance: every key carries the flow it
 // belongs to, so a source that exhausts its key guesses still has its whole
 // allowance at every other endpoint.
+// A limiter handed to several flows shares its key cap among them, so a flood
+// on one refuses new sources on all.
+//
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
+// aggregate's multiplier, 4 by default, times the limit l reports, over the
+// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// limiter and the shared limiters scrty ships implement. A limiter that does
+// not implement it gets no default aggregate for this flow, and one warning
+// when the chain is built; under an explicit WithIPv6Aggregate it is a
+// configuration error.
 //
 // It counts wrong keys and nothing else: a policy refusal of a valid key is not
 // a failed guess, and a request carrying no key at all never reaches it.
@@ -1759,6 +1776,16 @@ func WithMagicLinkCountRefusals(count bool) MagicLinkOption {
 // limit it was built with, not the allowance: every key carries the flow it
 // belongs to, so a source that exhausts its redemptions still has its whole
 // allowance at every other endpoint.
+// A limiter handed to several flows shares its key cap among them, so a flood
+// on one refuses new sources on all.
+//
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
+// aggregate's multiplier, 4 by default, times the limit l reports, over the
+// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// limiter and the shared limiters scrty ships implement. A limiter that does
+// not implement it gets no default aggregate for this flow, and one warning
+// when the chain is built; under an explicit WithIPv6Aggregate it is a
+// configuration error.
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit" while the consumer believed they had replaced one.

@@ -888,6 +888,47 @@ func TestSourceGuard_Full(t *testing.T) {
 			},
 		},
 		{
+			name: "aggregate limiter full at record time",
+			addr: aggregatedSource,
+			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
+				t.Helper()
+				source := NewMockLimiter(gomock.NewController(t))
+				source.EXPECT().Exceeded(gomock.Any(), sourceKey).Return(false, nil).Times(2)
+				source.EXPECT().RecordFailure(gomock.Any(), sourceKey).Return(nil).Times(2)
+				aggregate := NewMockLimiter(gomock.NewController(t))
+				aggregate.EXPECT().Exceeded(gomock.Any(), aggregateKey).Return(false, nil).Times(2)
+				aggregate.EXPECT().RecordFailure(gomock.Any(), aggregateKey).Return(errFull).Times(2)
+				return source, aggregate
+			},
+			run: func(t *testing.T, g *ratelimit.SourceGuard, ctx context.Context, addr string) (ratelimit.Source, error) {
+				t.Helper()
+				var (
+					src ratelimit.Source
+					err error
+				)
+				for range 2 {
+					src, err = g.Check(ctx, addr)
+					require.NoError(t, err)
+					g.RecordFailure(ctx, src)
+				}
+				g.Flush()
+				return src, err
+			},
+			assert: func(t *testing.T, _ ratelimit.Source, err error, records []map[string]any, summaries []summaryCall) {
+				t.Helper()
+				require.NoError(t, err)
+				require.Len(t, records, 1, "the second uncounted failure was not sampled away")
+				assert.Equal(t, "WARN", records[0]["level"])
+				assert.Equal(t, notCounted, records[0]["msg"])
+				assert.Equal(t, "limiter-full", records[0]["reason"])
+				assert.Equal(t, "2001:db8:1:2::/64", records[0]["source"])
+				assert.Equal(t, aggregatedPrefix, records[0]["aggregate"],
+					"the record does not say it was the aggregate that was full")
+				assert.Equal(t, []summaryCall{{key: fullKey, suppressed: 1}}, summaries,
+					"the uncounted failure was not sampled under the full family")
+			},
+		},
+		{
 			name: "sampling",
 			addr: testSource,
 			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
