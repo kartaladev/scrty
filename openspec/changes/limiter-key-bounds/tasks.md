@@ -56,28 +56,28 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 5. Aggregate prefix in the guard (decision 5; rate-limiting "IPv6 sources can also be counted by an aggregate prefix", "Aggregate refusals are logged per aggregate", "Guards report a full limiter as its own refusal")
 
-- [ ] 5.1 `SourceKeyer.IPv6Prefix()`, and keying of an IPv6 source's enclosing aggregate prefix (zone dropped, mapped IPv4 unmapped first; IPv4 has no aggregate). Verify with `go test -race -run 'TestSourceKeyer' -count=1 ./ratelimit/`
-- [ ] 5.2 `ratelimit.WithSourceGuardIPv6Aggregate(bits int, limiter Limiter)`. Construction refuses with `ErrConfig`:
+- [x] 5.1 `SourceKeyer.IPv6Prefix()`, and keying of an IPv6 source's enclosing aggregate prefix (zone dropped, mapped IPv4 unmapped first; IPv4 has no aggregate). Verify with `go test -race -run 'TestSourceKeyer' -count=1 ./ratelimit/`
+- [x] 5.2 `ratelimit.WithSourceGuardIPv6Aggregate(bits int, limiter Limiter)`. Construction refuses with `ErrConfig`:
   - an absent limiter, typed nil included;
   - `bits` outside 1..127;
   - `bits` not strictly less than the keyer's prefix, including a consumer-supplied keyer.
 
   Godoc states the default is off at this level and why. Covers scenario "Aggregate no wider than the source". Verify with `go test -race -run 'TestNewSourceGuard' -count=1 ./ratelimit/`
-- [ ] 5.3 Check and record with an aggregate. `Source` carries both keys. Check consults the source and then the aggregate; either one exceeded, or either limiter's error, refuses with `ErrThrottled`. Record counts against both, and logs each recording error independently. Uses mockgen `Limiter` doubles and the in-memory limiter. Covers scenarios "Rotating /64s inside one aggregate", "Another aggregate is unaffected" and "IPv4 unaffected". Verify with `go test -race -run 'TestSourceGuard_Aggregate' -count=1 ./ratelimit/`
-- [ ] 5.4 Aggregate refusal records: an `aggregate` field, sampled under `throttled:<flow>:<aggregate prefix>`. Covers scenario "Rotation inside a throttled aggregate". Verify with `go test -race -run 'TestSourceGuard_AggregateLog' -count=1 ./ratelimit/`
+- [x] 5.3 Check and record with an aggregate. `Source` carries both keys. Check consults the source and then the aggregate; either one exceeded, or either limiter's error, refuses with `ErrThrottled`. Record counts against both, and logs each recording error independently. Uses mockgen `Limiter` doubles and the in-memory limiter. Covers scenarios "Rotating /64s inside one aggregate", "Another aggregate is unaffected" and "IPv4 unaffected". Verify with `go test -race -run 'TestSourceGuard_Aggregate' -count=1 ./ratelimit/`
+- [x] 5.4 Aggregate refusal records: an `aggregate` field, sampled under `throttled:<flow>:<aggregate prefix>`. Covers scenario "Rotation inside a throttled aggregate". Verify with `go test -race -run 'TestSourceGuard_AggregateLog' -count=1 ./ratelimit/`
 - [ ] 5.5 Full-limiter refusals in the guard: a check failing with `ErrLimiterFull` refuses with `ErrThrottled` and writes its own "limiter full" record, sampled under `full:<flow>:`, apart from the limiter-unavailable record. Update `WithSourceGuardLogReporter`'s godoc with the new key family. Covers scenario "Full limiter behind a guard". Verify with `go test -race -run 'TestSourceGuard_Full' -count=1 ./ratelimit/` and `go doc ./ratelimit WithSourceGuardLogReporter`
 
 ## 6. Chain default aggregate (decision 6; http-security-chain "Chain source guards count an IPv6 aggregate by default", "Contradictory aggregate settings fail at construction", MODIFIED "Chain-level rate-limit settings reach every guard the chain builds"; rate-limiting MODIFIED "A limiter factory builds every built-in flow's limiter")
 
-- [ ] 6.1 `httpsec.WithIPv6Aggregate(bits, multiplier int)` and `httpsec.WithoutIPv6Aggregate()`, validated at `build`, since options may come in any order. Refused with a configuration error naming the option:
+- [x] 6.1 `httpsec.WithIPv6Aggregate(bits, multiplier int)` and `httpsec.WithoutIPv6Aggregate()`, validated at `build`, since options may come in any order. Refused with a configuration error naming the option:
   - an explicit aggregate not wider than the source prefix;
   - `bits` outside 1..127;
   - a multiplier below 1;
   - both options given.
 
   The default aggregate is skipped when the source prefix is /56 or wider. Covers scenarios "Aggregate no wider than the source", "Zero multiplier" and "Wide source prefix skips the default aggregate". Verify with `go test -race -run 'TestChain_IPv6Aggregate' -count=1 ./httpsec/`
-- [ ] 6.2 `resolveSourceGuard` asks the chain's factory for `NewLimiter(flow+"-ipv6-aggregate", limit*multiplier, window)` and passes it with `WithSourceGuardIPv6Aggregate`, including for a flow given its own limiter. Update `TestChain_RateLimiterFactoryReachesFlows` for the extra calls. Covers scenarios "Default aggregate", "Consumer aggregate", "Aggregate turned off", "Default prefix", "Consumer factory reaches every flow" and "Flow option wins over the factory". Verify with `go test -race -count=1 ./httpsec/...`, and `go test -race ./...` in `ginsec` and `fibersec`
-- [ ] 6.3 Godoc: both options state the default (/56 at 4×), the aggregate namespace, the per-replica note for an in-memory aggregate behind a shared flow limiter, and the /48 remainder. `WithIPv6SourcePrefix` mentions the interaction. The `httpsec` package documentation lists the aggregate. Verify with `go doc ./httpsec WithIPv6Aggregate` and `go vet ./...`
+- [x] 6.2 `resolveSourceGuard` asks the chain's factory for `NewLimiter(flow+"-ipv6-aggregate", limit*multiplier, window)` and passes it with `WithSourceGuardIPv6Aggregate`, including for a flow given its own limiter. Update `TestChain_RateLimiterFactoryReachesFlows` for the extra calls. Covers scenarios "Default aggregate", "Consumer aggregate", "Aggregate turned off", "Default prefix", "Consumer factory reaches every flow" and "Flow option wins over the factory". Verify with `go test -race -count=1 ./httpsec/...`, and `go test -race ./...` in `ginsec` and `fibersec`
+- [x] 6.3 Godoc: both options state the default (/56 at 4×), the aggregate namespace, the per-replica note for an in-memory aggregate behind a shared flow limiter, and the /48 remainder. `WithIPv6SourcePrefix` mentions the interaction. The `httpsec` package documentation lists the aggregate. Verify with `go doc ./httpsec WithIPv6Aggregate` and `go vet ./...`
 
 ## 7. Integration
 
