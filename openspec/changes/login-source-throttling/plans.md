@@ -97,6 +97,8 @@ func TestFormLogin_RecordsFailureOnUncancellableContext(t *testing.T) {
 }
 ```
 
+The exchange must be built from the cancellable `ctx`: login and Basic read `ex.Context()`, so a helper that builds the exchange from `t.Context()` makes the test pass on unchanged code and is not a red step.
+
 Write the same test for Basic, with an `Authorization: Basic` header.
 
 - [ ] **Step 2: Run.** `go test -run 'Test(FormLogin|BasicAuth)_RecordsFailureOnUncancellableContext' -count=1 ./httpsec/`

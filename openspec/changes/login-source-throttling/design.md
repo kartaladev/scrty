@@ -81,7 +81,7 @@ Below the threshold this costs one store query, and two at or above it. The port
 | longest wait | 1 hour | NIST's example range ends at an hour |
 | ceiling | 100 | NIST SP 800-63B-4 §3.2.2's cap |
 
-- After the ramp, an attacker gets about one guess an hour per account, roughly 24 a day, which stays below the ceiling.
+- After the ramp, an attacker gets about one guess an hour per account, roughly 24 a day, which stays below the ceiling. That is per request in flight when a wait lapses: the policy checks and the flow records through the unchanged port, so a concurrent burst gets one guess per request (see Risks).
 - The account's owner is never locked out for longer than an hour unless the ceiling is reached, and a correct password after the wait clears everything.
 - Attempts refused during a wait are not recorded against the account. Recording them would let an attacker keep the wait running without making a guess. They are recorded against the source (decision 1).
 
@@ -90,7 +90,9 @@ Below the threshold this costs one store query, and two at or above it. The port
 - `WithLockoutWait(first, longest)` and `WithLockoutCeiling(n)` are new.
 - `WithFixedLockout(threshold int, window time.Duration)` restores the established hard lock, with its own parameters. Combining it with `WithLockoutWait`, `WithLockoutCeiling`, `WithLockoutThreshold` or `WithLockoutWindow` is a configuration error, because each of those would silently mean something different under a fixed lock.
 
-**Construction errors:** a non-positive threshold, window or first wait; a longest wait shorter than the first; a ceiling not above the threshold. A ceiling above 100 is allowed, and godoc names it as a departure from NIST.
+**Construction errors:** a non-positive threshold, window or first wait; a longest wait shorter than the first; a ceiling not above the threshold.
+
+**Compatibility:** `WithLockoutThreshold(n)` with `n` at or above 100, valid before, is now a configuration error unless `WithLockoutCeiling` raises the ceiling above it, or `WithFixedLockout` is used instead. Recorded as a default change before the first tag (library-design rule 7). A ceiling above 100 is allowed, and godoc names it as a departure from NIST.
 
 **Departure from the established design:**
 - The hard 5-per-15-minutes lock lets anyone who knows a username keep its owner out indefinitely.
@@ -160,6 +162,7 @@ type DecoyVerifier interface {
 ## Risks / Trade-offs
 
 - **[Distributed spraying from many addresses passes the per-source guard]** → Stated as a limit. The escalating wait bounds each account. The IPv6 aggregate (`limiter-key-bounds`) bounds an allocation.
+- **[A concurrent burst gets one guess per in-flight request each time a wait lapses]** → Check-then-record through an unchanged port is not atomic, so k simultaneous requests each pass pre-authentication before any records (reproduced at policy level in review). The hard lock had the same race once, at the threshold; the escalating wait reopens it at every lapse. Bounded per source by decision 1, not per account. Closing it needs an atomic count-and-record port, which this decision rejects; it is a stated limit, as for the rate limiter's own burst bound.
 - **[A shared address's own users trip the guard]** → The 50 default leaves room. A consumer gives the endpoint its own limiter.
 - **[An attacker who guesses steadily can keep an account's owner waiting up to an hour at a time]** → This is NIST's accepted cost of escalating waits, far below the hard lock's indefinite lockout. A correct password after any wait clears it, and the ceiling is unreachable at about 24 guesses a day.
 - **[The in-memory attempt store now holds failures for 24 hours, not 15 minutes]** → Memory grows with failing usernames over a longer span. A deployment of more than one replica already needs a durable store, whose purge (`PurgeExpired`) uses the policy's own window.
