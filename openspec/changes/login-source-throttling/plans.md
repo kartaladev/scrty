@@ -59,6 +59,7 @@
 | H3 | 4.4, 4.5 | `httpsec/login.go`, `httpsec/basic.go`, `httpsec/doc.go`, `httpsec/options.go` (godoc only), `httpsec/recoverycomplete_test.go`, `httpsec/chain_login_guard_test.go`, `httpsec/basic_test.go`, `recovery/recover.go` and its tests, `authenticate/manager.go`, `authenticate/decoy_test.go` | `policy/`, `httpsec/throttle.go`, `httpsec/chain_ratelimit_test.go` | Opus | Closes a disclosure oracle in recovery and touches three packages; a mistake would pass tests and still leak |
 | H4 | 4.6 | `httpsec/chain_login_guard_test.go`, `httpsec/options.go` (godoc of the two login limiter options) | `httpsec/throttle.go`, `ratelimit/`, everything else | Sonnet | Tests and godoc over behaviour the rebase brought in; after the rebase onto `limiter-key-bounds` |
 | H5 | 4.7 | `httpsec/login.go` (`wirePasswordLogin`), `httpsec/options.go` and `httpsec/doc.go` (godoc), `httpsec/chain_login_guard_test.go` | `httpsec/throttle.go`, `ratelimit/`, `redis/` | Sonnet | Flow naming with the design decided; red test given |
+| H6 | 4.8 | `httpsec/login.go` (constants), `httpsec/options.go` and `httpsec/doc.go` (godoc), `httpsec/chain_login_guard_test.go`, `test/httpsec_login_redis_test.go` (new) | `httpsec/throttle.go`, `ratelimit/`, `redis/` | Sonnet | A rename with a stated red test |
 
 **Order:**
 - H1, P1 and A1 start together.
@@ -554,21 +555,32 @@ After 4.6, tasks 5.1 (gate) and 5.2 (whole-branch review) are rerun on the rebas
 
 ### Task 4.7: An endpoint with its own limiter runs under its own flow
 
-**Files:** Modify `httpsec/login.go` (`wirePasswordLogin`, ~171-217; add constants `passwordLoginFormFlow = "password-login:form"`, `passwordLoginBasicFlow = "password-login:basic"`), `httpsec/options.go` (godoc of `WithLoginLimiter`, `WithBasicAuthLimiter`), `httpsec/doc.go` (the limiter-site list). Test in `httpsec/chain_login_guard_test.go`. Do not touch `httpsec/throttle.go`: `resolveSourceGuard(option, flow, limiter, ...)` already derives the aggregate namespace from the flow it is given.
+**Files:** Modify `httpsec/login.go` (`wirePasswordLogin`, ~171-217; add constants `passwordLoginFormFlow = "password-login-form"`, `passwordLoginBasicFlow = "password-login-basic"`), `httpsec/options.go` (godoc of `WithLoginLimiter`, `WithBasicAuthLimiter`), `httpsec/doc.go` (the limiter-site list). Test in `httpsec/chain_login_guard_test.go`. Do not touch `httpsec/throttle.go`: `resolveSourceGuard(option, flow, limiter, ...)` already derives the aggregate namespace from the flow it is given.
 
-**Interfaces:** Consumes `resolveSourceGuard`. Produces no new exported API; the namespaces `password-login:form-ipv6-aggregate` and `password-login:basic-ipv6-aggregate` become documented contract.
+**Interfaces:** Consumes `resolveSourceGuard`. Produces no new exported API; the namespaces `password-login-form-ipv6-aggregate` and `password-login-basic-ipv6-aggregate` become documented contract.
 
 - [ ] **Step 1: Failing tests.**
   - A test helper `conflictCheckingFactory(t)`: a `ratelimit.LimiterFactory` that records calls, returns `ratelimit.NewMemoryLimiter(limit, window)`, and returns a `ratelimit.ErrConfig`-wrapping error when a namespace already built is asked for again with a different limit or window, as `redis.Factory` does. When asked again with the same policy it returns the same limiter, so shared buckets are observable.
   - `TestChain_PasswordLoginOwnLimiterUnderSharedFactory` (table):
-    - "own form limiter, default Basic": `WithLoginLimiter(ratelimit.NewMemoryLimiter(10, time.Minute))`, Basic default, the conflict-checking factory → `httpsec.New` succeeds; the factory saw `password-login` (50, 15m), `password-login-ipv6-aggregate` (200, 15m) and `password-login:form-ipv6-aggregate` (40, 1m).
-    - "equal own limiters on both endpoints": both given `NewMemoryLimiter(10, time.Minute)` (separate instances) → aggregates `password-login:form-ipv6-aggregate` and `password-login:basic-ipv6-aggregate`, two distinct limiters; exhausting form login's aggregate from rotating /64s in one /56 leaves Basic's untouched.
+    - "own form limiter, default Basic": `WithLoginLimiter(ratelimit.NewMemoryLimiter(10, time.Minute))`, Basic default, the conflict-checking factory → `httpsec.New` succeeds; the factory saw `password-login` (50, 15m), `password-login-ipv6-aggregate` (200, 15m) and `password-login-form-ipv6-aggregate` (40, 1m).
+    - "equal own limiters on both endpoints": both given `NewMemoryLimiter(10, time.Minute)` (separate instances) → aggregates `password-login-form-ipv6-aggregate` and `password-login-basic-ipv6-aggregate`, two distinct limiters; exhausting form login's aggregate from rotating /64s in one /56 leaves Basic's untouched.
   - Update the 4.6 rows that assert an own-limiter endpoint's aggregate namespace and the WARN/refusal flow attribute to the new flow names.
 - [ ] **Step 2: Run** `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/`. Expected FAIL on the unchanged code: "own form limiter" fails construction with `namespace "password-login-ipv6-aggregate" is already built with 40 per 1m0s, and was asked for 200 per 15m0s`; the equal-limiter row finds one shared aggregate.
 - [ ] **Step 3: Implement.** In `wirePasswordLogin`, an endpoint with its own limiter calls `c.resolveSourceGuard(option, passwordLoginFormFlow /* or Basic */, own, ...)`; endpoints without one keep `passwordLoginFlow` and the shared guard. The guard's sampler keys and refusal records then name the endpoint's flow. Godoc of both options names the endpoint's flow and aggregate namespace.
 - [ ] **Step 4: Verify** `go test -race -count=1 ./httpsec/...`, ginsec and fibersec `go test -race ./...`, `gofmt -l httpsec`, `golangci-lint run ./httpsec/...`, `go doc ./httpsec WithLoginLimiter`.
 
 After 4.7, tasks 5.1 and 5.2 are rerun.
+
+### Task 4.8: Flow names without a colon
+
+**Files:** Modify `httpsec/login.go` (constants `passwordLoginFormFlow = "password-login-form"`, `passwordLoginBasicFlow = "password-login-basic"`), `httpsec/options.go` and `httpsec/doc.go` (names in godoc), `httpsec/chain_login_guard_test.go` (`conflictCheckingFactory` refuses a namespace containing `:`; expected names in existing rows). Create `test/httpsec_login_redis_test.go`.
+
+**Interfaces:** Consumes `redis.NewLimiterFactory(client redis.UniversalClient, opts ...Option) (*Factory, error)` from `github.com/kartaladev/scrty/redis`, which performs no I/O at construction, and `httpsec.WithRateLimiterFactory`.
+
+- [ ] **Step 1: Failing test** `TestLoginOwnLimiterUnderRedisFactory` (table, `test` module): a `goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0"})` client never dialled; a chain with `WithRateLimiterFactory(factory)`, form login and Basic, and rows "own login limiter" (`WithLoginLimiter(ratelimit.NewMemoryLimiter(10, time.Minute))`), "own Basic limiter", "both own limiters" → `httpsec.New` returns no error. Also extend `conflictCheckingFactory` to return a `ratelimit.ErrConfig`-wrapping error for a namespace containing `:`.
+- [ ] **Step 2: Run** `cd test && go test -race -run 'TestLoginOwnLimiterUnderRedisFactory' -count=1 .` and `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/`. Expected FAIL: `the namespace "password-login:basic-ipv6-aggregate" contains a colon, which separates it from the key`.
+- [ ] **Step 3: Implement** the hyphenated constants; update every expected name in `chain_login_guard_test.go`, the two options' godoc and `doc.go`.
+- [ ] **Step 4: Verify** both Step 2 commands pass; `go test -race -count=1 ./httpsec/...`; `gofmt -l httpsec test`; `golangci-lint run ./httpsec/...` and in `test`.
 
 ### Task 5.1: Whole-workspace gate (main session)
 
