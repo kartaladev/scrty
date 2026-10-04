@@ -55,6 +55,7 @@ The main session sets each dispatch's model, as `subagent-delegation.md` require
 | A3 | 4.1–4.3 | `ratelimit/memory*.go`, `ratelimit/memory_cap_test.go` (new), `ratelimit/options.go`, `ratelimit/factory.go` (godoc only) | `guard*.go`, `keyer*.go` | Opus | Exact cap under concurrent shards (reserve and rollback) |
 | B2 | 5.5 | `ratelimit/guard.go`, `ratelimit/guard_test.go`, `ratelimit/options.go` (godoc) | `memory*.go` | Sonnet | Known pattern: a new sampled record family |
 | C1 | 6.1–6.3 | `httpsec/options.go`, `httpsec/throttle.go`, `httpsec/doc.go`, `httpsec/chain_ratelimit_test.go`, `httpsec/chain_aggregate_test.go` (new) | `ratelimit/` | Sonnet | Option plumbing and validation over an API B1 fixed |
+| D1 | 6.4–6.6 | `ratelimit/policy.go` (new), `ratelimit/memory.go`, `ratelimit/memory_cap_test.go`, `ratelimit/guard_test.go`, `redis/limiter.go`, `redis/limiter_test.go` (or a new `redis/policy_test.go`), `httpsec/throttle.go`, `httpsec/options.go`, `httpsec/oidc_options.go`, `httpsec/recoveryoptions.go`, `httpsec/passkeylogin.go` (godoc only in the last four), `httpsec/chain_aggregate_test.go`, `internal/unavailable/wrap.go` (comment only) | `openspec/` | Opus | An interface other packages compile against, across ratelimit, redis and httpsec, and a sizing rule whose mistake passes tests (decision 6) |
 
 **Order:**
 - A1 and B1 start together.
@@ -62,6 +63,7 @@ The main session sets each dispatch's model, as `subagent-delegation.md` require
 - A3 starts after **both** A2 and B1, because both write `options.go`.
 - B2 starts after A3, because it needs `ErrLimiterFull`.
 - C1 starts after B1. It may run beside A3 and B2, since it touches only `httpsec/`.
+- D1 runs after the whole-branch review of the other lanes, which found that the default aggregate silently tightened a consumer's own limiter (design decision 6).
 - 7.1 and 7.2 belong to the main session, after every lane.
 
 A2, A3 and B1 get Opus reviewers. A1, B2 and C1 get Sonnet reviewers.
@@ -645,6 +647,94 @@ if c.aggregateOn() {
 
   `WithIPv6SourcePrefix` mentions the interaction. The `doc.go` rate-limit section lists the aggregate.
 - [ ] **Step 2:** `go doc ./httpsec WithIPv6Aggregate`, `go doc ./httpsec WithoutIPv6Aggregate`, and `go vet ./...`, all clean.
+
+### Task 6.4: `ratelimit.PolicyReporter`
+
+**Files:**
+- Create: `ratelimit/policy.go`.
+- Modify: `ratelimit/memory.go`, `redis/limiter.go`.
+- Test: `ratelimit/memory_cap_test.go` (or a new `ratelimit/policy_test.go`), and `redis/limiter_test.go` or a new `redis/policy_test.go`.
+
+**Interfaces — produces:**
+
+```go
+// PolicyReporter is implemented by a Limiter that can say the limit and window
+// it counts with. It is optional: a component that needs a limiter's policy,
+// such as the httpsec chain sizing an IPv6 aggregate, asks for it with a type
+// assertion and treats a limiter without it as one whose policy is unknown.
+type PolicyReporter interface {
+	Policy() (limit int, window time.Duration)
+}
+
+func (l *MemoryLimiter) Policy() (int, time.Duration) // the limit and window it was built with
+func (l *Limiter) Policy() (int, time.Duration)       // package scrtyredis
+var _ ratelimit.PolicyReporter = (*MemoryLimiter)(nil)
+```
+
+The Redis `Limiter` currently keeps only the wrapped limiter and the server check. Add `limit int` and `window time.Duration` fields, set in `NewLimiter` from its arguments.
+
+- [ ] **Step 1: Failing tests.**
+  - `TestMemoryLimiter_Policy`: `NewMemoryLimiter(20, time.Minute)`, then `var r ratelimit.PolicyReporter = l` and `r.Policy()` returns `(20, time.Minute)`.
+  - `TestLimiter_Policy` in `redis`: `NewLimiter(client, "ns", 10, 15*time.Minute)` with an unreachable client (construction does no I/O), and `Policy()` returns `(10, 15*time.Minute)`.
+  - Stub both methods to return zero values first, so the red step is the assertion and not a compile error.
+- [ ] **Step 2: Run.** `go test -race -run TestMemoryLimiter_Policy -count=1 ./ratelimit/`, and `go test -race -run TestLimiter_Policy -count=1 ./...` in `redis`. Expected: FAIL with `expected: 20 actual: 0`, and `expected: 10 actual: 0`.
+- [ ] **Step 3: Implement** the methods and fields. Godoc names what each reports, and that the policy is fixed at construction.
+- [ ] **Step 4: Verify.** Both commands pass, and `go test -race -count=1 ./ratelimit/...` and `go test -race -count=1 ./...` in `redis` pass.
+
+### Task 6.5: Size the aggregate from a consumer's limiter
+
+**Files:** Modify `httpsec/throttle.go` (`resolveSourceGuard`), `httpsec/options.go` (`WithIPv6Aggregate`, `WithAPIKeyLimiter` and `WithMagicLinkLimiter` godoc), `httpsec/oidc_options.go` (`WithHandoffLimiter` godoc), `httpsec/recoveryoptions.go` (`WithRecoveryLimiter` and `WithRecoveryStartLimiter` godoc), `httpsec/passkeylogin.go` (`PasswordlessLimiter` godoc), and `httpsec/chain_aggregate_test.go`.
+
+**Interfaces:**
+- Consumes: `ratelimit.PolicyReporter` (6.4).
+- `resolveSourceGuard(option, flow string, limiter ratelimit.Limiter, limit int, window time.Duration, logInterval time.Duration)` keeps its signature. `limiter` is non-nil exactly when the flow was given its own limiter.
+
+- [ ] **Step 1: Failing table cases** in `chain_aggregate_test.go`:
+  - "aggregate follows a consumer limiter": `WithAPIKeyLimiter(memLimiter(200, time.Minute))`. 200 failed API-key attempts from one /64 are all refused only by the wrong key, never throttled. The factory receives `NewLimiter("api-key-ipv6-aggregate", 800, time.Minute)`.
+  - "consumer limiter reports a longer window": `memLimiter(30, time.Hour)`. The factory receives `("api-key-ipv6-aggregate", 120, time.Hour)`.
+  - "consumer limiter that reports no policy": a typed `MockLimiter` (no `Policy` method), with a recording logger. `httpsec.New` succeeds, the factory receives no `api-key-ipv6-aggregate` call, and exactly one WARN names `api-key`.
+  - "explicit aggregate over a limiter that reports no policy": `WithIPv6Aggregate(48, 4)` plus that mock. `httpsec.New` fails with a configuration error naming `WithIPv6Aggregate` and `api-key`.
+  - "default flow unchanged": no flow limiter. The factory still receives `("api-key-ipv6-aggregate", 80, time.Minute)`.
+- [ ] **Step 2: Run** `go test -race -run 'TestChain_IPv6Aggregate' -count=1 ./httpsec/`. Expected: FAIL. The first case is throttled at attempt 81, and the factory receives `(…, 80, 1m0s)` instead of `(…, 800, 1m0s)`.
+- [ ] **Step 3: Implement**
+
+```go
+// The aggregate is sized from the flow's own limiter when it was given one,
+// because that limiter's limit is the consumer's and the flow's default is not.
+// A limiter that cannot say its policy gets no default aggregate: building one
+// from the default would quietly tighten a limit the consumer chose.
+aggLimit, aggWindow := limit, window
+if own != nil { // own is the limiter argument as passed in, before the factory fills a nil one
+	r, ok := own.(ratelimit.PolicyReporter)
+	if !ok {
+		if c.aggregateExplicit {
+			return nil, newConfigError("%s: WithIPv6Aggregate cannot size the %s aggregate: "+
+				"its limiter does not report its limit and window (ratelimit.PolicyReporter)", option, flow)
+		}
+		c.logger.Warn("httpsec: no IPv6 aggregate for a flow whose limiter does not report its limit and window",
+			slog.String("flow", flow), slog.String("option", option))
+		// fall through with the aggregate off for this flow
+	} else {
+		aggLimit, aggWindow = r.Policy()
+	}
+}
+```
+
+Keep the existing overflow check, applied to `aggLimit`. Build the aggregate with `NewLimiter(flow+"-ipv6-aggregate", aggLimit*c.aggregateMultiplier, aggWindow)`.
+
+- [ ] **Step 4: Godoc.**
+  - `WithIPv6Aggregate`: the aggregate is four times (the multiplier times) the flow's limit over the flow's window, read from the flow's own limiter when one was given. A limiter that does not implement `ratelimit.PolicyReporter` gets no default aggregate and one warning, and is a configuration error under an explicit `WithIPv6Aggregate`.
+  - Each per-flow limiter option listed above: the same sentence about the aggregate, plus "a limiter handed to several flows shares its key cap among them, so a flood on one refuses new sources on all".
+- [ ] **Step 5: Verify.** Step 2's command passes. `go test -race -count=1 ./httpsec/... ./ratelimit/...` passes, as does `go test -race ./...` in `ginsec`, `fibersec` and `redis`. `go vet ./...` is clean.
+
+### Task 6.6: Close the review's small gaps
+
+**Files:** Modify `ratelimit/guard_test.go` (`TestSourceGuard_Full`) and `internal/unavailable/wrap.go` (comment only).
+
+- [ ] **Step 1:** Add the row "aggregate limiter full at record time". Both mocks answer `Exceeded` with false and nil. The source's `RecordFailure` returns nil, and the aggregate's returns `fmt.Errorf("x: %w", ratelimit.ErrLimiterFull)`. Assert one record, "ratelimit: a failed attempt was not counted because the limiter is full", with `aggregate=2001:db8:1::/56` and `reason=limiter-full`, sampled under `full:<flow>:`.
+  - If it passes at once, temporarily drop the `aggregate` attribute on that path and see it fail, then restore.
+- [ ] **Step 2:** Re-wrap the `degradedExceeded` doc comment in `internal/unavailable/wrap.go` so no line runs past the file's usual width, keeping its wording.
+- [ ] **Step 3: Verify.** `go test -race -run TestSourceGuard_Full -count=1 ./ratelimit/` passes, `gofmt -l ./internal ./ratelimit` is empty, and `go vet ./...` is clean.
 
 ### Task 7.1: Whole-workspace gate (main session)
 

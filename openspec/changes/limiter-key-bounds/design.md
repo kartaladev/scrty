@@ -49,7 +49,7 @@ The count is one `atomic.Int64` across all shards. A new key, decided under its 
 
 - **Default:** 250,000 keys, exported as `ratelimit.DefaultMemoryLimiterMaxKeys`.
   - A full limiter holds about 37 MiB at the measured cost per key (at most 157 B).
-  - With roughly ten memory limiters in a fully enabled chain, the worst case if all of them are flooded is about 0.4 GiB, against an unbounded amount today.
+  - A fully enabled chain builds about eighteen memory limiters: sixteen through the factory (ten flows and six IPv6 aggregates) plus the recovery-code and passkey-confirmation limiters. The worst case if all of them are flooded is about 0.65 GiB, against an unbounded amount today.
   - 250,000 distinct sources failing inside one window is far beyond one replica's normal traffic. That includes passwordless begin, which records every begin, not only failures (250,000 in 15 minutes is about 280 new sources a second). A deployment that large belongs on the shared limiter.
 - **Override:** `ratelimit.WithMemoryLimiterMaxKeys(n)`, a `MemoryOption`. A `MemoryLimiterFactory` passes it to every limiter it builds, so the chain's factory sets the cap for every flow.
   - `n <= 0` is a configuration error wrapping `ErrConfig`.
@@ -137,7 +137,8 @@ Measured in the exploratory harness, against the single-lock baseline:
 ### 6. The chain builds every source guard with a /56 aggregate at 4× the flow's limit
 
 - **Building it:** `resolveSourceGuard` asks the chain's factory for a second limiter, `NewLimiter(flow+"-ipv6-aggregate", limit*multiplier, window)`, and passes it to the guard with `WithSourceGuardIPv6Aggregate`.
-  - The aggregate is built this way even when the flow was given its own limiter. The flow's `limit` and `window` are always known at that call.
+  - When the flow was given its own limiter, its limit and window are the consumer's, which the chain cannot otherwise see. The chain reads them through a new optional contract, `ratelimit.PolicyReporter` (`Policy() (limit int, window time.Duration)`), which `MemoryLimiter` and the Redis limiter implement. The aggregate is then built at that limit × multiplier over that window, so "four times the flow's limit" holds for a consumer's limiter as for the default.
+  - A consumer limiter that does not report its policy gets no default aggregate for that flow, with one WARN at construction naming the flow. Building one from the flow's *default* limit instead was rejected: it silently tightened a limit the consumer had chosen (a 200-per-minute API-key limiter was throttled by an 80-per-minute aggregate), which `library-design.md` rule 4 forbids. An *explicit* `WithIPv6Aggregate` over such a limiter is a configuration error, since the consumer asked for an aggregate the chain cannot size.
   - If the flow's own limiter is shared and the factory is the in-memory default, the aggregate counts per replica, which godoc states.
 - **Default:** a /56 prefix with a multiplier of 4.
   - A /56 is the usual residential end site (RFC 6177, RIPE-738), so it rarely groups unrelated users.
@@ -162,6 +163,8 @@ Measured in the exploratory harness, against the single-lock baseline:
   - This is the stated cost of failing closed.
   - Mitigations: it is bounded per flow, held sources keep working, the limiter warns, and the guard logs "limiter full" as its own record.
   - A deployment that cannot accept it raises the cap or uses the shared limiter.
+- **[A limiter handed to several flows shares its key cap among them]**
+  - A flood on one flow then refuses new sources on every flow sharing that limiter. Flows built from the factory each get their own limiter, so this only arises when a consumer passes one limiter to several flows; the per-flow limiter options' godoc says so.
 - **[A shared limiter's fall-back count is an in-memory limiter with the default cap, and no option sets it]**
   - Only an outage fills it. While the backend is down, a full local count refuses new keys, as decision 1 intends. Once the backend is healthy again, a key the local count does not hold counts zero locally rather than being refused.
   - Its full-limiter warning goes to the same discarding logger as its per-replica warning.

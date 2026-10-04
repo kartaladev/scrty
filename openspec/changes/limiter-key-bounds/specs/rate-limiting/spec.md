@@ -127,3 +127,14 @@ A refusal because an aggregate is exceeded SHALL be logged naming the aggregate 
 #### Scenario: Rotation inside a throttled aggregate
 - **WHEN** 50 attempts from 50 different /64s inside one exceeded /56 are refused within one minute
 - **THEN** one aggregate refusal record is written for that /56 in that minute
+
+### Requirement: Built-in limiters report their limit and window
+The in-memory limiter and every shared limiter scrty ships SHALL report the limit and window they were built with, through an optional contract a consumer's limiter MAY also implement, so that a component can derive a policy from a limiter it did not build.
+
+#### Scenario: In-memory limiter
+- **WHEN** an in-memory limiter built with a limit of 20 and a window of one minute is asked for its policy
+- **THEN** it reports 20 and one minute
+
+#### Scenario: Shared limiter
+- **WHEN** a shared limiter built with a limit of 10 and a window of 15 minutes is asked for its policy
+- **THEN** it reports 10 and 15 minutes
