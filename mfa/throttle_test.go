@@ -551,3 +551,68 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 		})
 	}
 }
+
+func TestWithVerifyClock(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   func(fc *clockwork.FakeClock) []mfa.ThrottleOption
+		assert func(t *testing.T, fc *clockwork.FakeClock, th *mfa.VerifyThrottle, err error)
+	}
+
+	refused := func(t *testing.T, _ *clockwork.FakeClock, th *mfa.VerifyThrottle, err error) {
+		require.ErrorIs(t, err, mfa.ErrConfig)
+		assert.Nil(t, th)
+	}
+
+	cases := []testCase{
+		{
+			name: "nil clock",
+			opts: func(*clockwork.FakeClock) []mfa.ThrottleOption {
+				return []mfa.ThrottleOption{mfa.WithVerifyClock(nil)}
+			},
+			assert: refused,
+		},
+		{
+			name: "typed nil clock",
+			opts: func(*clockwork.FakeClock) []mfa.ThrottleOption {
+				return []mfa.ThrottleOption{mfa.WithVerifyClock((*clockwork.FakeClock)(nil))}
+			},
+			assert: refused,
+		},
+		{
+			name: "a throttle window follows the given clock",
+			opts: func(fc *clockwork.FakeClock) []mfa.ThrottleOption {
+				return []mfa.ThrottleOption{mfa.WithVerifyClock(fc)}
+			},
+			assert: func(t *testing.T, fc *clockwork.FakeClock, th *mfa.VerifyThrottle, err error) {
+				require.NoError(t, err)
+
+				ctx := t.Context()
+
+				for range 5 {
+					require.NoError(t, th.Check(ctx, "ada"))
+					th.RecordFailure(ctx, "ada")
+				}
+
+				require.ErrorIs(t, th.Check(ctx, "ada"), mfa.ErrVerifyThrottled, "the allowance is spent")
+
+				fc.Advance(15*time.Minute + time.Second)
+
+				assert.NoError(t, th.Check(ctx, "ada"), "the window passed on the given clock")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fc := clockwork.NewFakeClock()
+			opts := append(tc.opts(fc), mfa.WithVerifyLogger(slog.New(slog.DiscardHandler)))
+			th, err := mfa.NewVerifyThrottle(opts...)
+			tc.assert(t, fc, th, err)
+		})
+	}
+}

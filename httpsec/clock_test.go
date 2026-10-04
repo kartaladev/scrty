@@ -1068,20 +1068,32 @@ func TestChain_ClockRecovery(t *testing.T) {
 
 	type testCase struct {
 		name string
+		// hold configures the recovery's hold, so a finish and a cancel token exist.
+		hold bool
 		// coreOpts are the consumer's further core options.
 		coreOpts func(other *clockwork.FakeClock) []recovery.Option
 		act      func(t *testing.T, h *recoveryHarness, other *clockwork.FakeClock) []int
 		assert   func(t *testing.T, removed []int)
 	}
 
-	purge := func(t *testing.T, h *recoveryHarness) int {
+	purgeTask := func(t *testing.T, h *recoveryHarness, task string) int {
 		t.Helper()
 
-		removed, err := runExpiryTask(t, h.chain.ExpiryTasks(), "recovery-issued-codes")
+		removed, err := runExpiryTask(t, h.chain.ExpiryTasks(), task)
 		require.NoError(t, err)
 
 		return removed
 	}
+
+	purge := func(t *testing.T, h *recoveryHarness) int {
+		t.Helper()
+
+		return purgeTask(t, h, "recovery-issued-codes")
+	}
+
+	// pastHold is past the hold, its 24-hour completion window and the
+	// issuance window.
+	const pastHold = recoveryHoldDelay + 26*time.Hour
 
 	cases := []testCase{
 		{
@@ -1116,6 +1128,42 @@ func TestChain_ClockRecovery(t *testing.T) {
 					"the code expires on the core's own clock, not the chain's")
 			},
 		},
+		{
+			name: "recovery hold tokens expire on the chain's clock",
+			hold: true,
+			act: func(t *testing.T, h *recoveryHarness, _ *clockwork.FakeClock) []int {
+				h.hold(t)
+				before := purgeTask(t, h, "recovery-finish-tokens")
+
+				h.clock.Advance(pastHold)
+
+				return []int{before, purgeTask(t, h, "recovery-finish-tokens")}
+			},
+			assert: func(t *testing.T, removed []int) {
+				assert.Equal(t, []int{0, 1}, removed,
+					"the finish token is kept while live and removed once its lifetime and window pass on the chain's clock")
+			},
+		},
+		{
+			name: "hold tokens keep a recovery core's own clock",
+			hold: true,
+			coreOpts: func(other *clockwork.FakeClock) []recovery.Option {
+				return []recovery.Option{recovery.WithClock(other)}
+			},
+			act: func(t *testing.T, h *recoveryHarness, other *clockwork.FakeClock) []int {
+				h.hold(t)
+				h.clock.Advance(pastHold)
+				before := purgeTask(t, h, "recovery-finish-tokens")
+
+				other.Advance(pastHold)
+
+				return []int{before, purgeTask(t, h, "recovery-finish-tokens")}
+			},
+			assert: func(t *testing.T, removed []int) {
+				assert.Equal(t, []int{0, 1}, removed,
+					"the token expires on the core's own clock, not the chain's")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1128,6 +1176,11 @@ func TestChain_ClockRecovery(t *testing.T) {
 
 			h.noCoreClock = true
 			h.coreOpts = []recovery.Option{recovery.WithIssuedCodeTTL(issuedTTL)}
+
+			if tc.hold {
+				h.withHold()
+			}
+
 			if tc.coreOpts != nil {
 				h.coreOpts = append(h.coreOpts, tc.coreOpts(other)...)
 			}
@@ -1135,6 +1188,122 @@ func TestChain_ClockRecovery(t *testing.T) {
 			h.build(t)
 
 			tc.assert(t, tc.act(t, h, other))
+		})
+	}
+}
+
+// TestChain_ClockMFAVerify pins that the verification throttle the chain
+// builds reads the chain's time source: the default limiter's window and the
+// sampling of the throttle's refusal records, the second over a limiter the
+// consumer gave, whose own sense of time the chain leaves alone.
+func TestChain_ClockMFAVerify(t *testing.T) {
+	t.Parallel()
+
+	const msgThrottled = "mfa: verification throttled"
+
+	// run is what a row hands its assertion: the chain's clock, the records the
+	// chain's logger took, and a function that answers one wrong code.
+	type run struct {
+		clk    *clockwork.FakeClock
+		logs   *capturingHandler
+		answer func(t *testing.T) error
+	}
+
+	type testCase struct {
+		name string
+		// limiter is the consumer's limiter; nil keeps the default.
+		limiter func(h *mfaHarness) ratelimit.Limiter
+		assert  func(t *testing.T, r run)
+	}
+
+	throttledRecords := func(logs *capturingHandler) int {
+		var n int
+
+		for _, rec := range logs.records() {
+			if rec.Message == msgThrottled {
+				n++
+			}
+		}
+
+		return n
+	}
+
+	cases := []testCase{
+		{
+			name: "the throttle window follows the chain's clock",
+			assert: func(t *testing.T, r run) {
+				for range 5 {
+					require.ErrorIs(t, r.answer(t), mfa.ErrInvalidCode)
+				}
+
+				require.ErrorIs(t, r.answer(t), mfa.ErrVerifyThrottled, "the allowance is spent")
+
+				r.clk.Advance(15*time.Minute + time.Second)
+
+				err := r.answer(t)
+				require.Error(t, err, "the wrong code is still refused")
+				assert.NotErrorIs(t, err, mfa.ErrVerifyThrottled, "the window passed on the chain's clock")
+			},
+		},
+		{
+			// The consumer's limiter always throttles, so only the sampler's
+			// clock decides how many records are written.
+			name: "the throttle's log is sampled on the chain's clock",
+			limiter: func(h *mfaHarness) ratelimit.Limiter {
+				h.limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+
+				return h.limiter
+			},
+			assert: func(t *testing.T, r run) {
+				require.ErrorIs(t, r.answer(t), mfa.ErrVerifyThrottled)
+				require.ErrorIs(t, r.answer(t), mfa.ErrVerifyThrottled)
+				require.Equal(t, 1, throttledRecords(r.logs), "one record per refusal window")
+
+				r.clk.Advance(61 * time.Second)
+
+				require.ErrorIs(t, r.answer(t), mfa.ErrVerifyThrottled)
+				assert.Equal(t, 2, throttledRecords(r.logs), "the refusal window passed on the chain's clock")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp)
+			h.method.EXPECT().Verify(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(mfa.ErrInvalidCode).AnyTimes()
+
+			mfaOpts := []httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}
+			if tc.limiter != nil {
+				mfaOpts = append(mfaOpts, httpsec.WithMFAVerifyLimiter(tc.limiter(h)))
+			}
+
+			clk := clockwork.NewFakeClockAt(clockInstant)
+			logs := &capturingHandler{}
+
+			c, err := httpsec.New(
+				httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+					Verifier: h.tokens,
+					Sessions: h.sessions,
+					Users:    h.users,
+				}),
+				httpsec.EnableMFA([]mfa.Method{h.method}, mfaOpts...),
+				httpsec.WithLogger(slog.New(logs)),
+				httpsec.WithClock(clk),
+			)
+			require.NoError(t, err)
+
+			s := h.pendingSession(t, factor.Password)
+
+			tc.assert(t, run{clk: clk, logs: logs, answer: func(t *testing.T) error {
+				t.Helper()
+
+				return serve(t, c, bearerRequestTo(t.Context(), http.MethodPost,
+					testMFAVerifyPath, mfaTokenFor(s.ID), "code="+testMFACode)).err
+			}})
 		})
 	}
 }

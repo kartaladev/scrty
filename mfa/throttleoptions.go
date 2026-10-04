@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -77,4 +78,13 @@ func WithVerifyLogInterval(d time.Duration) ThrottleOption {
 // limiter's own detail logs it inside their own implementation of Limiter.
 func WithVerifyLogger(l *slog.Logger) ThrottleOption {
 	return func(t *VerifyThrottle) { t.logger = l }
+}
+
+// WithVerifyClock sets the time source the throttle's default limiter and its
+// refusal-log sampling read. Default: clock.System(). A limiter or factory the
+// consumer gives keeps its own clock.
+//
+// A nil clock, typed nil included, is an error wrapping ErrConfig.
+func WithVerifyClock(c clock.Clock) ThrottleOption {
+	return func(t *VerifyThrottle) { t.clock = c }
 }

@@ -118,9 +118,10 @@ func (c *config) wireMFA() error {
 		// The chain's factory first, so a limiter the consumer gave the flow
 		// (WithMFAVerifyLimiter) wins and the factory is never asked. It is
 		// handed over only when the consumer configured one: without it the
-		// throttle builds its own in-memory default on its own logger and
-		// clock.
-		opts := []mfa.ThrottleOption{mfa.WithVerifyLogger(c.logger)}
+		// throttle builds its own in-memory default on the chain's logger and
+		// clock. The clock also times the sampling of the throttle's refusal
+		// records; a limiter the consumer gave keeps its own.
+		opts := []mfa.ThrottleOption{mfa.WithVerifyLogger(c.logger), mfa.WithVerifyClock(c.clock)}
 		if c.limiterFactory != nil {
 			opts = append(opts, mfa.WithVerifyLimiterFactory(c.limiterFactory))
 		}

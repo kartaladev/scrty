@@ -7,9 +7,20 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
-// WithClock sets the time source the chain and the components it builds read.
-// Default: clock.System(). Dependencies the consumer builds and hands to the
-// chain keep their own clocks.
+// WithClock sets the time source the chain reads. Default: clock.System().
+//
+// These follow the chain's clock: the interceptors and the sampling of their
+// logs; the MFA challenge managers and their default store; the MFA
+// verification throttle; the source guards; the default limiter factory's
+// limiters, including the IPv6 aggregate and enrolment limiters; and the
+// recovery core, unless it is given its own recovery.WithClock.
+//
+// These keep their own clock: the session manager, the token issuer and
+// verifier, a challenge store given with WithMFAChallengeStore, a factory given
+// with WithRateLimiterFactory and the limiters a consumer gives, and the
+// managers a consumer builds. Mismatched clocks are allowed and are not
+// checked: a consumer who gives one of these a clock other than the chain's
+// owns the difference.
 //
 // The option governs the chain as a whole, so it may be given with or without
 // any interceptor and in any position among the options: it applies to every
