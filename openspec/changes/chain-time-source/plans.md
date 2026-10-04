@@ -42,9 +42,10 @@
 |---|---|---|---|---|---|
 | H1 | 1.1–1.2 | `httpsec/options.go` (config, New, the interceptors' `now`), `httpsec/oidc_options.go`, `httpsec/mfaenroloptions.go`, `httpsec/passkeylogin.go`, `httpsec/recoveryoptions.go`, `httpsec/recoverycooldown.go`, new `httpsec/clock.go` and `httpsec/clock_test.go` | everything outside `httpsec/` | Sonnet | Option plumbing on a stated contract |
 | H2 | 2.1–2.3 | `httpsec/mfabegin.go`, `httpsec/throttle.go`, `httpsec/recoverycomplete.go`, `httpsec/clock_test.go` | everything outside `httpsec/` | Opus | Several components and a precedence rule that would pass naive tests and still be wrong |
+| H2b | 2.4–2.5 | `mfa/throttle.go`, `mfa/throttle*_test.go`, `httpsec/mfaverify.go` (`wireMFA`), `httpsec/clock.go` (godoc), `httpsec/clock_test.go` | everything else | Sonnet | One additive option on a stated contract, its plumbing, and godoc; the decision is made (design decision 7) |
 | H3 | 3.1–3.2 | `httpsec/export_test.go`, `httpsec/*_test.go` | non-test code | Sonnet | Test conversion with mutant checks |
 
-**Order:** H1, then H2, then H3: one package, one lane. Each dispatch is verified, then reviewed: Sonnet reviewers for H1 and H3, an Opus reviewer for H2. 4.1 and 4.2 are the main session's.
+**Order:** H1, then H2, then H2b, then H3: one lane. H2b was added after H2's review found the verification throttle unreachable (design decision 7). Each dispatch is verified, then reviewed: Sonnet reviewers for H1 and H3, an Opus reviewer for H2. 4.1 and 4.2 are the main session's.
 
 ---
 
@@ -173,6 +174,38 @@ opts = append(opts, recovery.WithLogger(c.logger), recovery.WithClock(c.clock))
 
   Update the comment above it to say the chain's clock goes first so the consumer's `recovery.WithClock` replaces it.
 - [ ] **Step 4: Run** Step 2's command, then `go test -race -count=1 ./httpsec/...` → PASS.
+
+### Task 2.4: The verification throttle on the chain's clock
+
+**Files:**
+- Modify: `mfa/throttle.go` (add `WithVerifyClock`; the throttle already keeps `clock clock.Clock`, default `clock.System()`, ~line 98, used by its default limiter ~143 and its sampler ~228/244), `httpsec/mfaverify.go` (`wireMFA` ~123: put `mfa.WithVerifyClock(c.clock)` in the first `opts` literal, before `i.throttleOpts`)
+- Test: `mfa/throttle_test.go` (or the existing throttle test file), `httpsec/clock_test.go`
+
+**Interfaces:**
+- Produces:
+
+```go
+// WithVerifyClock sets the time source the throttle's default limiter and its
+// refusal-log sampling read. Default: clock.System(). A limiter or factory the
+// consumer gives keeps its own clock.
+func WithVerifyClock(c clock.Clock) ThrottleOption
+```
+
+- [ ] **Step 1: Failing table `TestWithVerifyClock`** in `mfa`: "nil clock" and "typed nil clock" → `NewVerifyThrottle` returns the package's configuration error; "a throttle window follows the given clock": with `WithVerifyClock(fc)` and the default limiter, record 5 failures for `ada`, the 6th check is throttled, `fc.Advance(15*time.Minute + time.Second)`, the next check is not.
+- [ ] **Step 2: Run** `go test -race -run 'TestWithVerifyClock' -count=1 ./mfa/` against a no-op stub. Expected: FAIL on the refusal rows and the window row.
+- [ ] **Step 3: Implement** `WithVerifyClock`, refusing nil with `nilcheck.IsNil` the way the throttle refuses a nil limiter or logger.
+- [ ] **Step 4: Failing table `TestChain_ClockMFAVerify`** in `httpsec`: "the throttle window follows the chain's clock" (`WithClock(fc)`, `EnableMFA` with no `WithMFAVerifyLimiter`, a method that always refuses; 5 wrong codes, the 6th is `mfa.ErrVerifyThrottled`; advance 15m1s; the next answer is not throttled); "the throttle's log is sampled on the chain's clock" (a limiter that always throttles via `WithMFAVerifyLimiter`, two throttled answers give 1 record, advance 61s, the next gives a second). Run `go test -race -run 'TestChain_ClockMFAVerify' -count=1 ./httpsec/` → FAIL.
+- [ ] **Step 5: Implement** the `wireMFA` change; run Steps 2 and 4 → PASS.
+
+### Task 2.5: `WithClock` documents what follows it; recovery holds
+
+**Files:**
+- Modify: `httpsec/clock.go` (godoc)
+- Test: `httpsec/clock_test.go` (`TestChain_ClockRecovery`)
+
+- [ ] **Step 1: Failing rows** in `TestChain_ClockRecovery`: "recovery hold tokens expire on the chain's clock" (a recovery that holds, then the `recovery-finish-tokens` task from `chain.ExpiryTasks()` removes the finish token only after the chain's clock passes its lifetime and issuance window) and "hold tokens keep a recovery core's own clock". They pass already, because the core reads one clock for codes and holds: prove they bite by temporarily removing `recovery.WithClock(c.clock)` from `recoverycomplete.go`, then restore.
+- [ ] **Step 2: Godoc.** Replace "the components it builds read" with the two lists: what follows the chain's clock (interceptors and their log sampling; the MFA challenge managers and their default store; the MFA verification throttle; the source guards; the default factory's limiters, including the IPv6 aggregate and enrolment limiters; the recovery core unless its own `recovery.WithClock` is given) and what keeps its own (the session manager, the token issuer and verifier, a challenge store given with `WithMFAChallengeStore`, a factory given with `WithRateLimiterFactory` and the limiters a consumer gives, the managers a consumer builds). Say mismatched clocks are allowed and not checked.
+- [ ] **Step 3: Verify** `go doc ./httpsec WithClock`, `go test -race -run 'TestChain_ClockRecovery' -count=1 ./httpsec/`.
 
 ### Task 3.1: Retire the test workarounds
 

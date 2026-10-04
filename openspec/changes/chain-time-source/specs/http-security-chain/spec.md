@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: The chain reads time from one replaceable time source
-The chain SHALL offer a time-source option, and SHALL use the system clock when none is configured. Every time the chain's built-in interceptors record, and every time check they make, SHALL come from that source. Every time-keeping component the chain builds for itself SHALL read the same source: the second-factor challenge state and its default store, the source guards and the limiters the chain's default factory builds, and the account-recovery core. A dependency the consumer builds and hands to the chain SHALL keep its own time source, including a recovery core given its own time source. An absent time source, including a typed-nil one, SHALL fail construction.
+The chain SHALL offer a time-source option, and SHALL use the system clock when none is configured. Every time the chain's built-in interceptors record, and every time check they make, SHALL come from that source. Every time-keeping component the chain builds for itself SHALL read the same source: the second-factor challenge state and its default store, the second-factor verification throttle, the source guards and the limiters the chain's default factory builds, and the account-recovery core. A dependency the consumer builds and hands to the chain SHALL keep its own time source, including a recovery core given its own time source. An absent time source, including a typed-nil one, SHALL fail construction.
 
 #### Scenario: System clock by default
 - **WHEN** a chain is built with no time-source option and a second-factor challenge is begun
@@ -15,6 +15,10 @@ The chain SHALL offer a time-source option, and SHALL use the system clock when 
 #### Scenario: A throttle window follows the chain's source
 - **WHEN** a chain with a controlled time source and the default limiter factory refuses a source for exceeding its password-login failures, and the source advances past the window
 - **THEN** a login from that source is no longer refused for throttling, with no real waiting
+
+#### Scenario: The second-factor verification throttle follows the chain's source
+- **WHEN** a chain with a controlled time source and no limiter of the consumer's for second-factor verification throttles a user after too many wrong codes, and the source advances past the throttle's window
+- **THEN** the user may answer again, with no real waiting
 
 #### Scenario: A consumer's dependency keeps its own source
 - **WHEN** the chain has one controlled time source and the consumer's recovery core is given a different one

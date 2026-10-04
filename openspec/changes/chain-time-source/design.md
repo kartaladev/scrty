@@ -5,9 +5,10 @@ See proposal.md for why. The current state:
 - **The chain reads the wall clock directly.** Each built-in interceptor sets `now: time.Now` at construction: form login, Basic, bearer, MFA, API keys, magic link, OIDC login, MFA enrolment, passwordless login, account recovery and its cool-down. Sampled refusal logs take the same `now()` reading.
 - **The chain builds components on the system clock.**
   - The MFA interceptor builds one one-time manager per challenge method, all over one default store (`wireChallenges`). It passes no clock, so the managers and the store read the system clock.
+  - The MFA interceptor builds the second-factor verification throttle (`mfa.NewVerifyThrottle`). The throttle's default limiter and its refusal-log sampler read a clock the `mfa` package keeps internally and offers no option for, so the chain cannot reach it today (found in review, reproduced by a failing probe).
   - `EnableAccountRecovery` builds the `recovery.Recoverer` from the consumer's `WithRecoveryCore` options and adds no clock.
   - The source guards and, when the consumer gives no factory, the limiters behind them come from the chain's default rate-limit factory, which is built without a clock.
-- **Every one of those components already takes `clock.Clock`:** `onetime.WithClock`, `onetime.WithMemoryStoreClock`, `recovery.WithClock`, `ratelimit.WithSourceGuardClock`, `ratelimit.WithMemoryLimiterClock`. No signature outside `httpsec` changes.
+- **All but one of those components already take `clock.Clock`:** `onetime.WithClock`, `onetime.WithMemoryStoreClock`, `recovery.WithClock`, `ratelimit.WithSourceGuardClock`, `ratelimit.WithMemoryLimiterClock`. The verification throttle is the exception (decision 7).
 - **Workarounds in the tests:** a test-only `WithRecoveryClockForTest` seam (`httpsec/export_test.go`), and `testing/synctest` bubbles in the MFA begin, verify and expiry tests, whose comments say they exist because the chain has no clock option.
 - **`time-source` rules this change must meet:**
   - one source per component, defaulting to the system clock;
@@ -56,7 +57,8 @@ Where the chain builds a component from options the consumer can also supply, it
 
 - the recoverer: `recovery.WithClock(chainClock)` is placed before the `WithRecoveryCore` options, so a consumer's `recovery.WithClock` (applied later) overrides it;
 - the MFA challenge managers and their default store: built with the chain's clock. A store given with `WithMFAChallengeStore` keeps its own;
-- the default rate-limit factory and the source guards: the guards and the limiters that factory builds get the chain's clock. A factory given with the chain's rate-limiter factory option keeps its own.
+- the default rate-limit factory and the source guards: the guards and the limiters that factory builds get the chain's clock. A factory given with the chain's rate-limiter factory option keeps its own;
+- the MFA verification throttle: `mfa.WithVerifyClock(chainClock)` is placed before the consumer's throttle options (decision 7).
 
 - **Default:** every component the chain builds reads the chain's clock.
 - **Override:** the component's own clock option, or a consumer-built store or factory.
@@ -79,11 +81,26 @@ A second `EnableAccountRecovery` is already refused (`httpsec/recoveryoptions.go
   - MFA challenge expiry on a controlled clock;
   - the MFA expiry task purging after the source passes the issuance window;
   - a password-login throttle window resetting when the source passes it;
-  - recovery codes expiring on the chain's clock;
+  - the verification throttle's window and log sampling on a controlled clock;
+  - recovery codes and holds expiring on the chain's clock;
   - a recovery core with its own clock keeping it.
 - **Order independence:** `WithClock` given last still reaches interceptors enabled before it.
 - **Refusals:** nil and typed-nil.
 - **Removed workaround:** each converted `synctest` test is shown to fail with the clock wiring removed.
+
+### 7. The verification throttle gains `mfa.WithVerifyClock`
+
+```go
+// WithVerifyClock sets the time source the throttle's default limiter and its
+// refusal-log sampling read. Default: clock.System().
+func WithVerifyClock(c clock.Clock) ThrottleOption
+```
+
+- **Why an option outside `httpsec`:** the throttle keeps its clock internally. Handing it the chain's default limiter factory would move its window onto the chain's clock but leave its log sampling on the system clock, which the requirement's "every time-keeping component the chain builds" rules out.
+- **Default:** `clock.System()`, as today.
+- **Override:** `WithVerifyClock`; a consumer who builds the throttle themselves sets it directly.
+- **Refusal:** nil or typed-nil is a configuration error, as `time-source` requires of every time-source option.
+- **A limiter given with `WithVerifyLimiter` or a factory given with `WithVerifyLimiterFactory`** keeps its own clock; the option governs only what the throttle builds and reads itself.
 
 ## Risks / Trade-offs
 
