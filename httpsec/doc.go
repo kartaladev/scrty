@@ -116,7 +116,11 @@
 //
 // A flow given a limiter of its own (WithLoginLimiter, WithBasicAuthLimiter,
 // WithAPIKeyLimiter, WithMFAVerifyLimiter and the like) uses that one, and the
-// factory is never asked for it. The components a consumer builds and hands
+// factory is never asked for it. The two password endpoints then run under
+// flows of their own, "password-login:form" and "password-login:basic", so the
+// IPv6 aggregate each is given is built under "password-login:form-ipv6-aggregate"
+// or "password-login:basic-ipv6-aggregate" and shares nothing with the other
+// endpoint's. The components a consumer builds and hands
 // the chain — the recovery.Codes of RecoveryDeps and the passkey.Manager of
 // PasskeyDeps — build their limiters themselves, through their own factory
 // options (recovery.WithCodeLimiterFactory, passkey.WithConfirmLimiterFactory).

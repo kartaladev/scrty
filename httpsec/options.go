@@ -1071,10 +1071,14 @@ func WithLoginResponder(fn LoginResponder) LoginOption {
 // namespace "password-login", allowing 50 failures per source in 15 minutes.
 // Sharing it means a source spraying passwords across both endpoints spends
 // one allowance. With this option form login counts against l alone, under
-// the same flow name, and Basic keeps the shared default unless it is given
-// its own (WithBasicAuthLimiter). The limit and window are l's own.
+// the flow "password-login:form", and Basic keeps the shared default unless it
+// is given its own (WithBasicAuthLimiter). The limit and window are l's own.
 //
-// The endpoint's IPv6 aggregate (WithIPv6Aggregate) is sized from l's own
+// The flow is the endpoint's own so that nothing is shared with Basic: its
+// IPv6 aggregate (WithIPv6Aggregate) is built under the namespace
+// "password-login:form-ipv6-aggregate", and a factory that refuses one
+// namespace with two policies builds the chain all the same. That aggregate is
+// sized from l's own
 // policy, the multiplier times the limit and window l reports through
 // ratelimit.PolicyReporter, as the memory limiter does. A limiter that reports
 // none gets no default aggregate and one warning at construction naming
@@ -1212,11 +1216,15 @@ func WithBasicAuthRealm(realm string) BasicAuthOption {
 // factory (WithRateLimiterFactory, or the in-memory default) under the
 // namespace "password-login", allowing 50 failures per source in 15 minutes.
 // Sharing it means a source spraying passwords across both endpoints spends
-// one allowance. With this option Basic counts against l alone, under the same
-// flow name, and form login keeps the shared default unless it is given its own
-// (WithLoginLimiter). The limit and window are l's own.
+// one allowance. With this option Basic counts against l alone, under the flow
+// "password-login:basic", and form login keeps the shared default unless it is
+// given its own (WithLoginLimiter). The limit and window are l's own.
 //
-// The endpoint's IPv6 aggregate (WithIPv6Aggregate) is sized from l's own
+// The flow is the endpoint's own so that nothing is shared with form login: its
+// IPv6 aggregate (WithIPv6Aggregate) is built under the namespace
+// "password-login:basic-ipv6-aggregate", and a factory that refuses one
+// namespace with two policies builds the chain all the same. That aggregate is
+// sized from l's own
 // policy, the multiplier times the limit and window l reports through
 // ratelimit.PolicyReporter, as the memory limiter does. A limiter that reports
 // none gets no default aggregate and one warning at construction naming

@@ -55,6 +55,10 @@ type basicAuth struct {
 	guard   sourceGuard
 	sampler *logsample.Sampler
 
+	// flow is the flow guard was built under, so the records the seam writes
+	// name the limiter that is answering.
+	flow string
+
 	// discloseLocks is the chain's WithLockDisclosure, settled at assembly.
 	discloseLocks bool
 
@@ -134,7 +138,7 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	// header spends nothing, and before the pre-authentication phase, as at
 	// the login form. A throttled refusal is still a 401, and challenged like
 	// one; a throttled response without the challenge would be singled out.
-	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), passwordLoginFlow,
+	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), b.flow,
 		b.sampler, b.log, now)
 	if err != nil {
 		return nil, err

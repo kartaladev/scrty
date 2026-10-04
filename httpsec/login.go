@@ -53,6 +53,14 @@ const (
 // source spraying passwords across the two spends one allowance, not two.
 const passwordLoginFlow = "password-login"
 
+// The flows an endpoint given a limiter of its own runs under, so its guard,
+// log keys and IPv6 aggregate namespace ("<flow>-ipv6-aggregate") share
+// nothing with the other endpoint's, whatever factory the chain builds from.
+const (
+	passwordLoginFormFlow  = "password-login:form"
+	passwordLoginBasicFlow = "password-login:basic"
+)
+
 // The allowance a source gets for failed password logins before its attempts
 // stop being evaluated. Fifty bounds one source to fifty accounts sprayed per
 // window, and still leaves room for an office or carrier-grade NAT, where many
@@ -121,6 +129,11 @@ type formLogin struct {
 	guard   sourceGuard
 	sampler *logsample.Sampler
 
+	// flow is the flow guard was built under, so the records the seam writes
+	// name the limiter that is answering: the shared passwordLoginFlow, or
+	// the endpoint's own.
+	flow string
+
 	// discloseLocks is the chain's WithLockDisclosure, settled at assembly.
 	discloseLocks bool
 
@@ -165,37 +178,41 @@ func (l *formLogin) flushRefusalLogs() {
 // The default guard is built once, from the chain's factory, and handed to
 // every endpoint that was not given a limiter of its own, so form login and
 // Basic spend one allowance between them. An endpoint given its own limiter
-// gets a guard over that limiter, under the same flow name, and shares
-// nothing with the other. No default is built when no endpoint needs it, so
-// the factory is not asked for a limiter nothing would use.
+// gets a guard over that limiter under a flow of its own (passwordLoginFormFlow
+// or passwordLoginBasicFlow), so its guard and IPv6 aggregate share nothing
+// with the other endpoint's, and a factory that refuses one namespace with two
+// policies is never asked for both. No default is built when no endpoint needs
+// it, so the factory is not asked for a limiter nothing would use.
 func (c *config) wirePasswordLogin() error {
 	var shared sourceGuard
 
-	guardFor := func(option string, own ratelimit.Limiter) (sourceGuard, error) {
+	guardFor := func(option, ownFlow string, own ratelimit.Limiter) (sourceGuard, string, error) {
 		if own != nil {
-			return c.resolveSourceGuard(option, passwordLoginFlow, own,
+			g, err := c.resolveSourceGuard(option, ownFlow, own,
 				defaultPasswordLoginLimit, defaultPasswordLoginWindow, c.refusalInterval)
+
+			return g, ownFlow, err
 		}
 
 		if shared == nil {
 			g, err := c.resolveSourceGuard(option, passwordLoginFlow, nil,
 				defaultPasswordLoginLimit, defaultPasswordLoginWindow, c.refusalInterval)
 			if err != nil {
-				return nil, err
+				return nil, passwordLoginFlow, err
 			}
 
 			shared = g
 		}
 
-		return shared, nil
+		return shared, passwordLoginFlow, nil
 	}
 
 	if err := eachInterceptor(c, func(l *formLogin) error {
 		l.discloseLocks = c.discloseLocks
 		c.warnWithoutDecoy("EnableFormLogin", l.authn)
 
-		g, err := guardFor("EnableFormLogin", l.limiter)
-		l.guard = g
+		g, flow, err := guardFor("EnableFormLogin", passwordLoginFormFlow, l.limiter)
+		l.guard, l.flow = g, flow
 
 		return err
 	}); err != nil {
@@ -206,8 +223,8 @@ func (c *config) wirePasswordLogin() error {
 		b.discloseLocks = c.discloseLocks
 		c.warnWithoutDecoy("EnableBasicAuth", b.authn)
 
-		g, err := guardFor("EnableBasicAuth", b.limiter)
-		b.guard = g
+		g, flow, err := guardFor("EnableBasicAuth", passwordLoginBasicFlow, b.limiter)
+		b.guard, b.flow = g, flow
 
 		return err
 	})
@@ -298,7 +315,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	// The source is checked once the credentials are read, so a malformed
 	// login spends nothing, and before the pre-authentication phase, so a
 	// throttled source costs neither a policy evaluation nor a password check.
-	src, err := sourceThrottled(ctx, l.guard, ex.Request.ClientIP(), passwordLoginFlow,
+	src, err := sourceThrottled(ctx, l.guard, ex.Request.ClientIP(), l.flow,
 		l.sampler, l.log, now)
 	if err != nil {
 		return err

@@ -415,6 +415,74 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 			},
 		},
 		{
+			name: "an unattributable source under a consumer limiter for form login is recorded under the endpoint's flow",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(memLimiter(t, 1, time.Minute))}
+			},
+			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
+				return snapshot(h), formLoginFrom(t, c, "", "ada", loginGuardRightPassword)
+			},
+			assert: func(t *testing.T, h *loginGuardHarness, _ counts, _ served) {
+				rec, ok := recordAt(h.logs.records(), slog.LevelError,
+					"httpsec: refusing a request whose client address cannot be attributed")
+				require.True(t, ok, "the refusal is recorded")
+
+				flow, _ := attrValue(rec, "flow")
+				assert.Equal(t, "password-login:form", flow.String())
+			},
+		},
+		{
+			name: "a failing consumer limiter for form login is recorded under the endpoint's flow",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(limiterFailing(t))}
+			},
+			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
+				return snapshot(h), formLoginFrom(t, c, loginGuardSource, "ada", loginGuardRightPassword)
+			},
+			assert: func(t *testing.T, h *loginGuardHarness, _ counts, _ served) {
+				rec, ok := recordAt(h.logs.records(), slog.LevelError,
+					"httpsec: the rate limiter could not answer")
+				require.True(t, ok, "the refusal is recorded")
+
+				flow, _ := attrValue(rec, "flow")
+				assert.Equal(t, "password-login:form", flow.String())
+			},
+		},
+		{
+			name: "an unattributable source under a consumer limiter for Basic is recorded under the endpoint's flow",
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(memLimiter(t, 1, time.Minute))}
+			},
+			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
+				return snapshot(h), basicFrom(t, c, "", "ada", loginGuardRightPassword)
+			},
+			assert: func(t *testing.T, h *loginGuardHarness, _ counts, _ served) {
+				rec, ok := recordAt(h.logs.records(), slog.LevelError,
+					"httpsec: refusing a request whose client address cannot be attributed")
+				require.True(t, ok, "the refusal is recorded")
+
+				flow, _ := attrValue(rec, "flow")
+				assert.Equal(t, "password-login:basic", flow.String())
+			},
+		},
+		{
+			name: "a failing consumer limiter for Basic is recorded under the endpoint's flow",
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(limiterFailing(t))}
+			},
+			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
+				return snapshot(h), basicFrom(t, c, loginGuardSource, "ada", loginGuardRightPassword)
+			},
+			assert: func(t *testing.T, h *loginGuardHarness, _ counts, _ served) {
+				rec, ok := recordAt(h.logs.records(), slog.LevelError,
+					"httpsec: the rate limiter could not answer")
+				require.True(t, ok, "the refusal is recorded")
+
+				flow, _ := attrValue(rec, "flow")
+				assert.Equal(t, "password-login:basic", flow.String())
+			},
+		},
+		{
 			name: "a throttled Basic source is still challenged",
 			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
 				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(memLimiter(t, 1, time.Minute))}
@@ -466,7 +534,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 				return snapshot(h), last
 			},
 			assert: func(t *testing.T, h *loginGuardHarness, _ counts, _ served) {
-				assert.Equal(t, 2, h.reportedFor("throttled:"+passwordLoginNamespace+":"+loginGuardSource),
+				assert.Equal(t, 2, h.reportedFor("throttled:"+passwordLoginNamespace+":form:"+loginGuardSource),
 					"the first throttle is written, the other two are held back and reported by the flush")
 			},
 		},
@@ -606,11 +674,173 @@ func recordingLimiterFactory(t *testing.T) (ratelimit.LimiterFactory, func(names
 	}
 }
 
+// conflictCheckingFactory returns a factory that builds every limiter in
+// memory and refuses a namespace asked for again with a different limit or
+// window, wrapping ratelimit.ErrConfig, as a storage-backed factory does when
+// two policies would share one bucket. A namespace asked for again with the
+// same policy gets the limiter it built the first time, so a shared bucket is
+// observable. It also returns a lookup of the requests made for one namespace.
+func conflictCheckingFactory(t *testing.T) (ratelimit.LimiterFactory, func(namespace string) []limiterAsked) {
+	t.Helper()
+
+	type built struct {
+		asked   limiterAsked
+		limiter ratelimit.Limiter
+	}
+
+	var (
+		mu    sync.Mutex
+		calls []limiterAsked
+		known = map[string]built{}
+	)
+
+	memory := ratelimit.MemoryLimiterFactory(
+		ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+
+	f := NewMockLimiterFactory(gomock.NewController(t))
+	f.EXPECT().NewLimiter(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
+			mu.Lock()
+			defer mu.Unlock()
+
+			ask := limiterAsked{namespace, limit, window}
+			calls = append(calls, ask)
+
+			if prior, ok := known[namespace]; ok {
+				if prior.asked != ask {
+					return nil, fmt.Errorf("%w: namespace %q is already built with %d per %s, and was asked for %d per %s",
+						ratelimit.ErrConfig, namespace, prior.asked.limit, prior.asked.window, limit, window)
+				}
+
+				return prior.limiter, nil
+			}
+
+			l, err := memory.NewLimiter(namespace, limit, window)
+			if err != nil {
+				return nil, err
+			}
+
+			known[namespace] = built{ask, l}
+
+			return l, nil
+		}).AnyTimes()
+
+	return f, func(namespace string) []limiterAsked {
+		mu.Lock()
+		defer mu.Unlock()
+
+		var out []limiterAsked
+
+		for _, a := range calls {
+			if a.namespace == namespace {
+				out = append(out, a)
+			}
+		}
+
+		return out
+	}
+}
+
+// TestChain_PasswordLoginOwnLimiterUnderSharedFactory pins that an endpoint
+// given its own limiter runs under a flow of its own, so a factory that
+// refuses one namespace with two policies still builds the chain, and the
+// endpoint's guard and IPv6 aggregate share no bucket with the other's.
+func TestChain_PasswordLoginOwnLimiterUnderSharedFactory(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		loginOpts func(t *testing.T) []httpsec.LoginOption
+		basicOpts func(t *testing.T) []httpsec.BasicAuthOption
+		assert    func(t *testing.T, c *httpsec.Chain, err error, askedFor func(string) []limiterAsked)
+	}
+
+	// rotate fails n logins through send, each from its own /64 of
+	// 2001:db8:1::/56, requiring that none was throttled.
+	rotate := func(t *testing.T, n int, send func(addr string) served) {
+		t.Helper()
+
+		for i := 1; i <= n; i++ {
+			out := send(fmt.Sprintf("2001:db8:1:%x::1", i))
+			require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed, "failure %d", i)
+			require.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "failure %d is within the aggregate", i)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "own form limiter, default Basic",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(memLimiter(t, 10, time.Minute))}
+			},
+			assert: func(t *testing.T, c *httpsec.Chain, err error, askedFor func(string) []limiterAsked) {
+				require.NoError(t, err)
+				assert.NotNil(t, c)
+				assert.Equal(t, []limiterAsked{{"password-login", 50, 15 * time.Minute}},
+					askedFor("password-login"))
+				assert.Equal(t, []limiterAsked{{"password-login-ipv6-aggregate", 200, 15 * time.Minute}},
+					askedFor("password-login-ipv6-aggregate"))
+				assert.Equal(t, []limiterAsked{{"password-login:form-ipv6-aggregate", 40, time.Minute}},
+					askedFor("password-login:form-ipv6-aggregate"))
+			},
+		},
+		{
+			name: "equal own limiters on both endpoints",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(memLimiter(t, 10, time.Minute))}
+			},
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(memLimiter(t, 10, time.Minute))}
+			},
+			assert: func(t *testing.T, c *httpsec.Chain, err error, askedFor func(string) []limiterAsked) {
+				require.NoError(t, err)
+				assert.Equal(t, []limiterAsked{{"password-login:form-ipv6-aggregate", 40, time.Minute}},
+					askedFor("password-login:form-ipv6-aggregate"))
+				assert.Equal(t, []limiterAsked{{"password-login:basic-ipv6-aggregate", 40, time.Minute}},
+					askedFor("password-login:basic-ipv6-aggregate"))
+
+				rotate(t, 40, func(addr string) served { return formLoginFrom(t, c, addr, "user", "wrong") })
+				requireThrottled(t, formLoginFrom(t, c, "2001:db8:1:ff::1", "user", "wrong"))
+
+				out := basicFrom(t, c, "2001:db8:1:ff::1", "user", "wrong")
+				require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed,
+					"form login's exhausted aggregate leaves Basic's bucket untouched")
+				assert.NotErrorIs(t, out.err, ratelimit.ErrThrottled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f, askedFor := conflictCheckingFactory(t)
+			h := newLoginGuardHarness(t)
+
+			var (
+				loginOpts []httpsec.LoginOption
+				basicOpts []httpsec.BasicAuthOption
+			)
+
+			if tc.loginOpts != nil {
+				loginOpts = tc.loginOpts(t)
+			}
+
+			if tc.basicOpts != nil {
+				basicOpts = tc.basicOpts(t)
+			}
+
+			c, err := h.tryChain(t, loginOpts, basicOpts, httpsec.WithRateLimiterFactory(f))
+			tc.assert(t, c, err, askedFor)
+		})
+	}
+}
+
 // TestChain_PasswordLoginAggregate pins the IPv6 aggregate of the
 // password-login guard: it is requested at four times the shared limit by
 // default, it throttles a client rotating through the /64s of one /56, and
 // for an endpoint given its own limiter it is sized from that limiter's
-// policy, skipped with one warning when it reports none, and refused under an
+// policy under a namespace of its own, skipped with one warning when it reports none, and refused under an
 // explicit WithIPv6Aggregate.
 func TestChain_PasswordLoginAggregate(t *testing.T) {
 	t.Parallel()
@@ -697,7 +927,7 @@ func TestChain_PasswordLoginAggregate(t *testing.T) {
 			},
 			assert: func(t *testing.T, b built) {
 				require.NoError(t, b.err)
-				assert.ElementsMatch(t, []limiterAsked{{aggregateNamespace, 40, time.Minute}, shared}, b.aggregates,
+				assert.ElementsMatch(t, []limiterAsked{{"password-login:form-ipv6-aggregate", 40, time.Minute}, shared}, b.aggregates,
 					"form login's aggregate is four times its own limiter; Basic keeps the shared one")
 			},
 		},
@@ -708,7 +938,7 @@ func TestChain_PasswordLoginAggregate(t *testing.T) {
 			},
 			assert: func(t *testing.T, b built) {
 				require.NoError(t, b.err)
-				assert.ElementsMatch(t, []limiterAsked{{aggregateNamespace, 40, time.Minute}, shared}, b.aggregates,
+				assert.ElementsMatch(t, []limiterAsked{{"password-login:basic-ipv6-aggregate", 40, time.Minute}, shared}, b.aggregates,
 					"Basic's aggregate is four times its own limiter; form login keeps the shared one")
 			},
 		},
@@ -793,7 +1023,14 @@ func TestChain_PasswordLoginAggregate(t *testing.T) {
 				}
 			}
 
-			tc.assert(t, built{chain: c, err: err, aggregates: askedFor(aggregateNamespace), warnings: warnings})
+			var aggregates []limiterAsked
+			for _, ns := range []string{
+				aggregateNamespace, "password-login:form-ipv6-aggregate", "password-login:basic-ipv6-aggregate",
+			} {
+				aggregates = append(aggregates, askedFor(ns)...)
+			}
+
+			tc.assert(t, built{chain: c, err: err, aggregates: aggregates, warnings: warnings})
 		})
 	}
 }
