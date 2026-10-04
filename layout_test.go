@@ -183,6 +183,11 @@ func TestCoreDependencies(t *testing.T) {
 			assert: hasViolation("go.mod", "github.com/testcontainers/testcontainers-go/modules/redis"),
 		},
 		{
+			name:   "the gocron scheduler is an integration module",
+			reqs:   []requirement{{Path: "github.com/go-co-op/gocron/v2"}},
+			assert: hasViolation("go.mod", "github.com/go-co-op/gocron/v2"),
+		},
+		{
 			name: "an indirect requirement is left to the import walk",
 			reqs: []requirement{{Path: "github.com/go-webauthn/webauthn", Indirect: true}},
 			assert: func(t *testing.T, vs []violation) {
