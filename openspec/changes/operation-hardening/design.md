@@ -173,7 +173,8 @@ func (s *Sweeper) Start(ctx context.Context) error
 func (s *Sweeper) Shutdown(ctx context.Context) error
 
 // WithDefaultInterval(d), WithRunImmediately(), WithDistributedLocker(gocron.Locker),
-// WithClock(clockwork.Clock) (default real clock)
+// WithClock(clockwork.Clock) (default real clock), WithStopTimeout(d) (default 10s),
+// WithLogger(*slog.Logger) (default slog.Default()); const JobPrefix = "sweep:"
 var ErrNoInterval, ErrAlreadyStarted, ErrAlreadyShutdown, ErrInvalidOption error
 ```
 
@@ -207,9 +208,19 @@ dependency.
 
 **Lifecycle.**
 - **Construction:** gocron starts its goroutine when the scheduler is built, so `Shutdown` tears the scheduler down whether or not `Start` ran. A `goleak` test covers the construct-then-discard path.
-- **Idempotence and refusal:** `Shutdown` is idempotent. `Start` after `Shutdown` returns `ErrAlreadyShutdown`, and a second `Start` returns `ErrAlreadyStarted`.
+- **Idempotence and refusal:** `Shutdown` is idempotent. The scheduler is shut down exactly once, and every call waits for that one shutdown and returns its result, so a second caller (a deferred call beside a signal handler) never sees success while a purge is still running. A call whose own context ends first returns that context's error, and the shutdown carries on. `Start` after `Shutdown` returns `ErrAlreadyShutdown`, and a second `Start` returns `ErrAlreadyStarted`.
 - **A partial `Start` is not retryable:** if scheduling fails partway, the sweeper shuts itself down, and a retry gets `ErrAlreadyShutdown` rather than double-registering jobs.
 - **`ctx` passed to `Start`:** it bounds each run. The sweeper's lifetime ends with `Shutdown`.
+- **Waiting for a running purge at shutdown:**
+  - **Default:** `Shutdown` waits up to 10 seconds (gocron's own stop timeout), or until its context is done, whichever comes first.
+  - **Override:** `WithStopTimeout`.
+
+**Other options and conventions (added in implementation).**
+- **`WithLogger`** (default `slog.Default()`) receives the one record the sweeper writes itself: a distributed-lock failure. Like the runner's records, it carries the task, a fixed reason and the error's type, never the error's text.
+- **`JobPrefix`** (`"sweep:"`) is a named constant, because the job name is the lock key a consumer's locker sees.
+- **A nil runner** is refused at construction.
+
+**Dependency guard.** gocron is listed among the integration-only modules the core may never require. clockwork cannot be on that list, because the core module requires it for its own tests. The existing ban on clockwork in production code keeps it out of the core's build.
 
 ### 7. Test-first throughout
 
