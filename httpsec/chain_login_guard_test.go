@@ -428,7 +428,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 				require.True(t, ok, "the refusal is recorded")
 
 				flow, _ := attrValue(rec, "flow")
-				assert.Equal(t, "password-login:form", flow.String())
+				assert.Equal(t, "password-login-form", flow.String())
 			},
 		},
 		{
@@ -445,7 +445,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 				require.True(t, ok, "the refusal is recorded")
 
 				flow, _ := attrValue(rec, "flow")
-				assert.Equal(t, "password-login:form", flow.String())
+				assert.Equal(t, "password-login-form", flow.String())
 			},
 		},
 		{
@@ -462,7 +462,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 				require.True(t, ok, "the refusal is recorded")
 
 				flow, _ := attrValue(rec, "flow")
-				assert.Equal(t, "password-login:basic", flow.String())
+				assert.Equal(t, "password-login-basic", flow.String())
 			},
 		},
 		{
@@ -479,7 +479,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 				require.True(t, ok, "the refusal is recorded")
 
 				flow, _ := attrValue(rec, "flow")
-				assert.Equal(t, "password-login:basic", flow.String())
+				assert.Equal(t, "password-login-basic", flow.String())
 			},
 		},
 		{
@@ -534,7 +534,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 				return snapshot(h), last
 			},
 			assert: func(t *testing.T, h *loginGuardHarness, _ counts, _ served) {
-				assert.Equal(t, 2, h.reportedFor("throttled:"+passwordLoginNamespace+":form:"+loginGuardSource),
+				assert.Equal(t, 2, h.reportedFor("throttled:"+passwordLoginNamespace+"-form:"+loginGuardSource),
 					"the first throttle is written, the other two are held back and reported by the flush")
 			},
 		},
@@ -677,7 +677,8 @@ func recordingLimiterFactory(t *testing.T) (ratelimit.LimiterFactory, func(names
 // conflictCheckingFactory returns a factory that builds every limiter in
 // memory and refuses a namespace asked for again with a different limit or
 // window, wrapping ratelimit.ErrConfig, as a storage-backed factory does when
-// two policies would share one bucket. A namespace asked for again with the
+// two policies would share one bucket, and refuses a namespace containing a
+// colon, as the Redis factory does. A namespace asked for again with the
 // same policy gets the limiter it built the first time, so a shared bucket is
 // observable. It also returns a lookup of the requests made for one namespace.
 func conflictCheckingFactory(t *testing.T) (ratelimit.LimiterFactory, func(namespace string) []limiterAsked) {
@@ -705,6 +706,11 @@ func conflictCheckingFactory(t *testing.T) (ratelimit.LimiterFactory, func(names
 
 			ask := limiterAsked{namespace, limit, window}
 			calls = append(calls, ask)
+
+			if strings.Contains(namespace, ":") {
+				return nil, fmt.Errorf("%w: the namespace %q contains a colon, which separates it from the key",
+					ratelimit.ErrConfig, namespace)
+			}
 
 			if prior, ok := known[namespace]; ok {
 				if prior.asked != ask {
@@ -780,8 +786,8 @@ func TestChain_PasswordLoginOwnLimiterUnderSharedFactory(t *testing.T) {
 					askedFor("password-login"))
 				assert.Equal(t, []limiterAsked{{"password-login-ipv6-aggregate", 200, 15 * time.Minute}},
 					askedFor("password-login-ipv6-aggregate"))
-				assert.Equal(t, []limiterAsked{{"password-login:form-ipv6-aggregate", 40, time.Minute}},
-					askedFor("password-login:form-ipv6-aggregate"))
+				assert.Equal(t, []limiterAsked{{"password-login-form-ipv6-aggregate", 40, time.Minute}},
+					askedFor("password-login-form-ipv6-aggregate"))
 			},
 		},
 		{
@@ -794,10 +800,10 @@ func TestChain_PasswordLoginOwnLimiterUnderSharedFactory(t *testing.T) {
 			},
 			assert: func(t *testing.T, c *httpsec.Chain, err error, askedFor func(string) []limiterAsked) {
 				require.NoError(t, err)
-				assert.Equal(t, []limiterAsked{{"password-login:form-ipv6-aggregate", 40, time.Minute}},
-					askedFor("password-login:form-ipv6-aggregate"))
-				assert.Equal(t, []limiterAsked{{"password-login:basic-ipv6-aggregate", 40, time.Minute}},
-					askedFor("password-login:basic-ipv6-aggregate"))
+				assert.Equal(t, []limiterAsked{{"password-login-form-ipv6-aggregate", 40, time.Minute}},
+					askedFor("password-login-form-ipv6-aggregate"))
+				assert.Equal(t, []limiterAsked{{"password-login-basic-ipv6-aggregate", 40, time.Minute}},
+					askedFor("password-login-basic-ipv6-aggregate"))
 
 				rotate(t, 40, func(addr string) served { return formLoginFrom(t, c, addr, "user", "wrong") })
 				requireThrottled(t, formLoginFrom(t, c, "2001:db8:1:ff::1", "user", "wrong"))
@@ -927,7 +933,7 @@ func TestChain_PasswordLoginAggregate(t *testing.T) {
 			},
 			assert: func(t *testing.T, b built) {
 				require.NoError(t, b.err)
-				assert.ElementsMatch(t, []limiterAsked{{"password-login:form-ipv6-aggregate", 40, time.Minute}, shared}, b.aggregates,
+				assert.ElementsMatch(t, []limiterAsked{{"password-login-form-ipv6-aggregate", 40, time.Minute}, shared}, b.aggregates,
 					"form login's aggregate is four times its own limiter; Basic keeps the shared one")
 			},
 		},
@@ -938,7 +944,7 @@ func TestChain_PasswordLoginAggregate(t *testing.T) {
 			},
 			assert: func(t *testing.T, b built) {
 				require.NoError(t, b.err)
-				assert.ElementsMatch(t, []limiterAsked{{"password-login:basic-ipv6-aggregate", 40, time.Minute}, shared}, b.aggregates,
+				assert.ElementsMatch(t, []limiterAsked{{"password-login-basic-ipv6-aggregate", 40, time.Minute}, shared}, b.aggregates,
 					"Basic's aggregate is four times its own limiter; form login keeps the shared one")
 			},
 		},
@@ -1025,7 +1031,7 @@ func TestChain_PasswordLoginAggregate(t *testing.T) {
 
 			var aggregates []limiterAsked
 			for _, ns := range []string{
-				aggregateNamespace, "password-login:form-ipv6-aggregate", "password-login:basic-ipv6-aggregate",
+				aggregateNamespace, "password-login-form-ipv6-aggregate", "password-login-basic-ipv6-aggregate",
 			} {
 				aggregates = append(aggregates, askedFor(ns)...)
 			}

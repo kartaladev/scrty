@@ -57,8 +57,8 @@ const passwordLoginFlow = "password-login"
 // log keys and IPv6 aggregate namespace ("<flow>-ipv6-aggregate") share
 // nothing with the other endpoint's, whatever factory the chain builds from.
 const (
-	passwordLoginFormFlow  = "password-login:form"
-	passwordLoginBasicFlow = "password-login:basic"
+	passwordLoginFormFlow  = "password-login-form"
+	passwordLoginBasicFlow = "password-login-basic"
 )
 
 // The allowance a source gets for failed password logins before its attempts
