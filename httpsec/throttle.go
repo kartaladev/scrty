@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"net/netip"
 	"time"
 
@@ -75,6 +76,11 @@ func (c *config) rateLimiterFactory() ratelimit.LimiterFactory {
 // the chain's default summary record). Its throttled-source record is the only
 // one a throttled attempt produces.
 //
+// Unless the chain turned it off (WithoutIPv6Aggregate), the guard also counts
+// IPv6 sources by the chain's aggregate prefix, in a limiter the chain's
+// factory builds under "<flow>-ipv6-aggregate" with limit times the chain's
+// multiplier over window, whether or not the flow brought its own limiter.
+//
 // option is the Enable... option the endpoint came from, so a wiring failure
 // names the setting the consumer has to change rather than the internals it
 // failed in.
@@ -95,11 +101,36 @@ func (c *config) resolveSourceGuard(
 		limiter = built
 	}
 
-	guard, err := ratelimit.NewSourceGuard(flow, limiter,
+	opts := []ratelimit.GuardOption{
 		ratelimit.WithSourceGuardLogger(c.logger),
 		ratelimit.WithSourceGuardKeyer(c.keyer),
 		ratelimit.WithSourceGuardLogInterval(logInterval),
-		ratelimit.WithSourceGuardLogReporter(c.refusalLogReporter()))
+		ratelimit.WithSourceGuardLogReporter(c.refusalLogReporter()),
+	}
+
+	// The aggregate is the chain's, not the flow's: it is built from the
+	// chain's factory even when the flow brought its own limiter, because a
+	// flow's limiter says nothing about the allocation its sources share.
+	if c.aggregateOn() {
+		namespace := flow + "-ipv6-aggregate"
+
+		// A wrapped product would quietly shrink the aggregate's limit, even
+		// below the flow's own, so a multiplier that overflows is refused.
+		if limit > math.MaxInt/c.aggregateMultiplier {
+			return nil, newConfigError("%s: WithIPv6Aggregate multiplier %d times the %s limit of %d "+
+				"overflows an int", option, c.aggregateMultiplier, flow, limit)
+		}
+
+		agg, err := c.rateLimiterFactory().NewLimiter(namespace, limit*c.aggregateMultiplier, window)
+		if err != nil {
+			return nil, newConfigError("%s could not build its IPv6 aggregate limiter for namespace %q: %s",
+				option, namespace, err)
+		}
+
+		opts = append(opts, ratelimit.WithSourceGuardIPv6Aggregate(c.aggregateBits, agg))
+	}
+
+	guard, err := ratelimit.NewSourceGuard(flow, limiter, opts...)
 	if err != nil {
 		return nil, newConfigError("%s could not build its source guard: %s", option, err)
 	}

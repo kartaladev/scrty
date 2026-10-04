@@ -45,6 +45,16 @@ func newConfigError(format string, args ...any) error {
 // one consistent answer about what "one source" means.
 const defaultIPv6SourcePrefix = 64
 
+// defaultIPv6AggregatePrefix is the prefix length the chain also counts IPv6
+// clients by, as an aggregate over the sources inside it. A /56 is the
+// allocation a residential customer commonly receives: 256 /64s that one
+// client can rotate through.
+const defaultIPv6AggregatePrefix = 56
+
+// defaultIPv6AggregateMultiplier is how many times a flow's own limit its IPv6
+// aggregate allows, since the aggregate is shared by every source inside it.
+const defaultIPv6AggregateMultiplier = 4
+
 // maxIPv6SourcePrefix is the width of an IPv6 address, and so the narrowest a
 // source can be counted at: one prefix per address.
 const maxIPv6SourcePrefix = 128
@@ -143,6 +153,16 @@ type config struct {
 	logout *logout
 
 	ipv6Prefix int
+
+	// aggregateBits and aggregateMultiplier shape the IPv6 aggregate every
+	// source guard also counts by. aggregateExplicit records that
+	// WithIPv6Aggregate was given and aggregateOff that WithoutIPv6Aggregate
+	// was; both are only recorded by the options and checked at assembly,
+	// because the options can come in any order.
+	aggregateBits       int
+	aggregateMultiplier int
+	aggregateExplicit   bool
+	aggregateOff        bool
 
 	// recoverer is the account recovery EnableAccountRecovery's endpoints run,
 	// built at assembly (wireAccountRecovery), and nil on a chain without
@@ -244,6 +264,10 @@ func eachInterceptor[T any](c *config, fn func(T) error) error {
 // it, and checking half an option's worth of configuration would report a fault
 // the next option was about to fix.
 func (c *config) validate() error {
+	if err := c.validateAggregate(); err != nil {
+		return err
+	}
+
 	for _, e := range c.enabled {
 		if err := e.check(); err != nil {
 			return err
@@ -276,9 +300,12 @@ func requireDep(option, dependency string, v any) error {
 // enabled.
 func New(opts ...Option) (*Chain, error) {
 	c := &config{
-		logger:          slog.Default(),
-		ipv6Prefix:      defaultIPv6SourcePrefix,
-		refusalInterval: defaultRefusalLogInterval,
+		logger:     slog.Default(),
+		ipv6Prefix: defaultIPv6SourcePrefix,
+
+		aggregateBits:       defaultIPv6AggregatePrefix,
+		aggregateMultiplier: defaultIPv6AggregateMultiplier,
+		refusalInterval:     defaultRefusalLogInterval,
 
 		enrolmentLifetime: defaultEnrolmentLifetime,
 	}
@@ -576,6 +603,11 @@ func WithRateLimiterFactory(f ratelimit.LimiterFactory) Option {
 // source. A prefix outside 1..128 is refused: 0 would pool every client into
 // one bucket, and more than 128 is not an address. IPv4 is always counted per
 // address.
+//
+// The chain also counts IPv6 clients by an aggregate prefix, /56 by default
+// (WithIPv6Aggregate, WithoutIPv6Aggregate). A prefix of /56 or wider makes
+// that default redundant, so it is skipped; an explicit aggregate must then be
+// strictly wider than this prefix, or the chain is refused.
 func WithIPv6SourcePrefix(bits int) Option {
 	return func(c *config) error {
 		if bits < 1 || bits > maxIPv6SourcePrefix {
@@ -586,6 +618,113 @@ func WithIPv6SourcePrefix(bits int) Option {
 		}
 
 		c.ipv6Prefix = bits
+		return nil
+	}
+}
+
+// aggregateOn reports whether the source guards also count IPv6 clients by an
+// aggregate prefix: unless WithoutIPv6Aggregate was given, when the consumer
+// asked for one, or when the default /56 is wider than the source prefix.
+func (c *config) aggregateOn() bool {
+	if c.aggregateOff {
+		return false
+	}
+
+	return c.aggregateExplicit || c.ipv6Prefix > defaultIPv6AggregatePrefix
+}
+
+// validateAggregate refuses an aggregate that cannot take effect. It runs after
+// every option has been applied, so the order the options came in does not
+// matter.
+func (c *config) validateAggregate() error {
+	if c.aggregateExplicit && c.aggregateOff {
+		return newConfigError("WithIPv6Aggregate and WithoutIPv6Aggregate contradict each other: " +
+			"give one or the other")
+	}
+
+	if !c.aggregateExplicit {
+		return nil
+	}
+
+	if c.aggregateMultiplier < 1 {
+		return newConfigError("WithIPv6Aggregate takes a multiplier of at least 1, and %d would "+
+			"leave the aggregate unable to admit even one source's allowance", c.aggregateMultiplier)
+	}
+
+	if c.aggregateBits < 1 || c.aggregateBits >= maxIPv6SourcePrefix {
+		return newConfigError("WithIPv6Aggregate takes a prefix length in 1..%d, and %d would either "+
+			"pool every IPv6 client into one bucket or name no wider group than an address",
+			maxIPv6SourcePrefix-1, c.aggregateBits)
+	}
+
+	if c.aggregateBits >= c.ipv6Prefix {
+		return newConfigError("WithIPv6Aggregate must be strictly wider than the source prefix "+
+			"(WithIPv6SourcePrefix, %d): an aggregate of /%d would count exactly what the source key does",
+			c.ipv6Prefix, c.aggregateBits)
+	}
+
+	return nil
+}
+
+// WithIPv6Aggregate sets the prefix and the allowance of the aggregate every
+// source guard the chain builds also counts IPv6 clients by, so that a client
+// rotating through the /64s of its own allocation cannot buy a fresh allowance
+// with each one. Every source inside the /bits prefix shares one aggregate
+// allowance of multiplier times the flow's own limit, over the flow's window:
+// the aggregate counts a failure beside the source's own count, and an attempt
+// is refused when either is over its limit.
+//
+// Default: a /56 at 4 times the flow's limit, over the flow's window, when the
+// source prefix (WithIPv6SourcePrefix, default 64) is narrower than /56. The
+// default is skipped when the source prefix is /56 or wider, since an aggregate
+// no wider than the source would count what the source key already does. An
+// explicit WithIPv6Aggregate is never skipped: it is checked instead.
+//
+// A /56 aggregate leaves a /48 holder 256 /56s, each with its own aggregate,
+// and so still 256 times 4 times a flow's allowance; WithIPv6Aggregate(48, n)
+// closes that, at the price of throttling every /56 inside the /48 together.
+//
+// Each guard's aggregate limiter is built from the chain's limiter factory
+// (WithRateLimiterFactory) under the namespace "<flow>-ipv6-aggregate", for
+// example "api-key-ipv6-aggregate", even when the flow was given a limiter of
+// its own (WithAPIKeyLimiter and the like): the aggregate has no option of its
+// own beyond this one. With the in-memory default factory the aggregate counts
+// per replica, even when the flow's own limiter is a shared one; a consumer who
+// wants a fleet-wide aggregate configures a shared factory with
+// WithRateLimiterFactory.
+//
+// A prefix outside 1..127, a prefix not strictly narrower than the source
+// prefix, a multiplier below 1, and combining it with WithoutIPv6Aggregate are
+// refused when the chain is built, whatever order the options came in. IPv4
+// clients, including IPv4-mapped IPv6 addresses, have no aggregate.
+func WithIPv6Aggregate(bits, multiplier int) Option {
+	return func(c *config) error {
+		c.aggregateBits = bits
+		c.aggregateMultiplier = multiplier
+		c.aggregateExplicit = true
+
+		return nil
+	}
+}
+
+// WithoutIPv6Aggregate turns off the IPv6 aggregate every source guard the
+// chain builds would otherwise also count clients by, so that each source is
+// limited by its own allowance alone.
+//
+// Default: a /56 aggregate at 4 times the flow's limit, over the flow's window,
+// built from the chain's limiter factory under "<flow>-ipv6-aggregate", and
+// skipped when the source prefix (WithIPv6SourcePrefix) is /56 or wider. Turning
+// it off gives up the cap on a client rotating through the /64s of its own
+// allocation: a /48 holder gets 65536 sources, each with a flow's full
+// allowance, and a /56 holder 256. Use it when a limit applied upstream already
+// covers that, or when the chain's source prefix is wide enough on its own.
+//
+// Combining it with WithIPv6Aggregate is a configuration error, whatever order
+// the two came in.
+func WithoutIPv6Aggregate() Option {
+	return func(c *config) error {
+		c.aggregateOff = true
+
 		return nil
 	}
 }
