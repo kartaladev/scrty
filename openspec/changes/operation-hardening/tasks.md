@@ -48,4 +48,4 @@ Ownership and order:
 ## 6. Integration
 
 - [x] 6.1 Whole-workspace gate: `go build ./...`, `go vet ./...` and `go test -race -count=1 ./...` in every module of `go.work` (Docker running), `gofmt -l .` empty, and `golangci-lint run ./...` clean in every module. Verify by every command's output.
-- [ ] 6.2 Whole-branch review against every requirement and scenario of `specs/expiry-sweeping/spec.md` and design decisions 1–6. Verify by the review reporting no open finding.
+- [x] 6.2 Whole-branch review against every requirement and scenario of `specs/expiry-sweeping/spec.md` and design decisions 1–6. Verify by the review reporting no open finding.
