@@ -85,4 +85,4 @@ Ownership:
   - `go build ./...`, `go vet ./...` and `go test -race -count=1 ./...` in every module of `go.work` (with Docker for the store and Redis conformance runs), plus `go test -race ./...` in `ginsec` and `fibersec`;
   - `gofmt -l .` empty;
   - `golangci-lint run ./...` clean.
-- [ ] 5.2 Whole-branch review against every requirement in this change's spec deltas and design decisions 1–4. Verify by the review reporting no open finding.
+- [x] 5.2 Whole-branch review against every requirement in this change's spec deltas and design decisions 1–4. Verify by the review reporting no open finding.

@@ -14,8 +14,9 @@ import (
 // which is an upper bound on what remains: the attempt store answers counts,
 // not instants, so the policy cannot tell how much of the wait has already
 // passed. The refusal lifts no later than the window after the newest failure,
-// so a Wait longer than the configured window overstates it. Wait is zero where no wait lifts the lock — at the ceiling, and
-// under WithFixedLockout — and a caller must not read zero as "try now".
+// so a Wait longer than the configured window overstates it. Wait is zero
+// where no wait lifts the lock — at the ceiling, and under
+// WithFixedLockout — and a caller must not read zero as "try now".
 //
 // A consumer that discloses locks may render Wait as an HTTP Retry-After
 // header; the library writes none itself. A consumer that does not disclose

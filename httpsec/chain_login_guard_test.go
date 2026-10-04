@@ -500,6 +500,66 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 func TestChain_PasswordLoginFactoryNamespace(t *testing.T) {
 	t.Parallel()
 
+	f, askedFor := recordingLimiterFactory(t)
+
+	h := newLoginGuardHarness(t)
+	h.chain(t, nil, nil, httpsec.WithRateLimiterFactory(f))
+
+	login := askedFor(passwordLoginNamespace)
+
+	require.Len(t, login, 1, "form login and Basic share one limiter, asked for once")
+	assert.Equal(t, limiterAsked{passwordLoginNamespace, 50, 15 * time.Minute}, login[0])
+}
+
+// TestChain_FlowLimiterWinsOverFactory pins that a limiter given to a flow's
+// own option is used instead of the chain's factory: when every endpoint has
+// its own, the factory is never asked for the password-login limiter.
+func TestChain_FlowLimiterWinsOverFactory(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		loginOpts func(t *testing.T) []httpsec.LoginOption
+		basicOpts func(t *testing.T) []httpsec.BasicAuthOption
+		assert    func(t *testing.T, asked []limiterAsked)
+	}
+
+	cases := []testCase{
+		{
+			name: "both endpoints given their own limiter",
+			loginOpts: func(t *testing.T) []httpsec.LoginOption {
+				return []httpsec.LoginOption{httpsec.WithLoginLimiter(memLimiter(t, 10, 15*time.Minute))}
+			},
+			basicOpts: func(t *testing.T) []httpsec.BasicAuthOption {
+				return []httpsec.BasicAuthOption{httpsec.WithBasicAuthLimiter(memLimiter(t, 10, 15*time.Minute))}
+			},
+			assert: func(t *testing.T, asked []limiterAsked) {
+				assert.Empty(t, asked, "the factory is not asked for a limiter nothing would use")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f, askedFor := recordingLimiterFactory(t)
+
+			h := newLoginGuardHarness(t)
+			h.chain(t, tc.loginOpts(t), tc.basicOpts(t), httpsec.WithRateLimiterFactory(f))
+
+			tc.assert(t, askedFor(passwordLoginNamespace))
+		})
+	}
+}
+
+// recordingLimiterFactory returns a factory that builds every limiter in
+// memory and records each request, and a lookup of the requests made for one
+// namespace. Callers look a namespace up rather than count every request:
+// other limiters the chain may ask for are not their concern.
+func recordingLimiterFactory(t *testing.T) (ratelimit.LimiterFactory, func(namespace string) []limiterAsked) {
+	t.Helper()
+
 	var (
 		mu    sync.Mutex
 		asked []limiterAsked
@@ -518,22 +578,20 @@ func TestChain_PasswordLoginFactoryNamespace(t *testing.T) {
 			return memory.NewLimiter(namespace, limit, window)
 		}).AnyTimes()
 
-	h := newLoginGuardHarness(t)
-	h.chain(t, nil, nil, httpsec.WithRateLimiterFactory(f))
+	return f, func(namespace string) []limiterAsked {
+		mu.Lock()
+		defer mu.Unlock()
 
-	mu.Lock()
-	defer mu.Unlock()
+		var out []limiterAsked
 
-	var login []limiterAsked
-
-	for _, a := range asked {
-		if a.namespace == passwordLoginNamespace {
-			login = append(login, a)
+		for _, a := range asked {
+			if a.namespace == namespace {
+				out = append(out, a)
+			}
 		}
-	}
 
-	require.Len(t, login, 1, "form login and Basic share one limiter, asked for once")
-	assert.Equal(t, limiterAsked{passwordLoginNamespace, 50, 15 * time.Minute}, login[0])
+		return out
+	}
 }
 
 // TestChain_PasswordLoginLimiterOptions pins that an endpoint's own limiter

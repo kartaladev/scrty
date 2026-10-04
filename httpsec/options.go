@@ -824,10 +824,10 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 // errors.Is(err, policy.ErrAccountLocked) still holds, and errors.As still
 // reaches the *policy.LockoutError and its wait, so a consumer's own error
 // handler can render a lock however it chooses — at which point the
-// disclosure is the consumer's. Account recovery turns the joined refusal into its own
-// recovery.ErrRefused, keeping it beneath, so a locked account's recovery
-// reads as an unknown user's or a wrong code's, and is still identifiable as
-// a lock.
+// disclosure is the consumer's. Account recovery turns the joined refusal
+// into its own recovery.ErrRefused, keeping it beneath, so a locked account's
+// recovery reads as an unknown user's or a wrong code's, and is still
+// identifiable as a lock.
 //
 // With this option the refusal is the policy's reason alone, which
 // StatusForError answers 429 Too Many Requests, and no decoy runs. A 429 is not
@@ -843,8 +843,8 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 // guidance lists among the responses a login must not give.
 //
 // It governs only the response to a lock, at form login, Basic and account
-// recovery's password proof, and nothing else. A lock refusal still counts against the source's
-// password-login allowance either way.
+// recovery's password proof, and nothing else. A lock refusal still counts
+// against the source's password-login allowance either way.
 func WithLockDisclosure() Option {
 	return func(c *config) error {
 		c.discloseLocks = true

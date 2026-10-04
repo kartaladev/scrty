@@ -12,8 +12,7 @@ OWASP ASVS 5.0 asks that anti-automation controls prevent malicious account lock
 - **An alternative to the hard lock.** The default becomes an escalating wait capped by a ceiling (design decision 2), recorded as a departure from the current hard lock, which remains available as an option.
 - **Lockout responses that do not reveal lockout status by default**, with explicit disclosure available as an option. A disclosed lock answers 429 instead of 423 (design decision 3).
 - **Login records failures on a context the caller cannot cancel**, as every other guarded flow does. Today the login failure is recorded on the request context.
-  - **Status:** `UNREPRODUCED`. It needs an attempt store that honours cancellation.
-  - **First red step:** reproduce it.
+  - **Status:** `REPRODUCED` (design decision 4 records the tests and output).
 
 ## Capabilities
 

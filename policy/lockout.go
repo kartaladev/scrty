@@ -87,8 +87,8 @@ const (
 // WithLockoutThreshold, the span with WithLockoutWindow, the waits with
 // WithLockoutWait, the cap with WithLockoutCeiling and the clock with
 // WithLockoutClock. WithFixedLockout replaces the escalating wait with a hard
-// lock; WithFixedLockout(5, 15*time.Minute) restores the established
-// behaviour of five failures locking an account for fifteen minutes.
+// lock; WithFixedLockout(5, 15*time.Minute) restores the previous
+// default of five failures locking an account for fifteen minutes.
 //
 // A refusal for a locked identifier is a *LockoutError, which matches
 // ErrAccountLocked and carries the wait owed.
@@ -219,7 +219,7 @@ func WithLockoutCeiling(n int) LockoutOption {
 // successful authentication clears them. The default is the escalating wait,
 // with no fixed lock.
 //
-// WithFixedLockout(5, 15*time.Minute) restores the established behaviour.
+// WithFixedLockout(5, 15*time.Minute) restores the previous default (5 failures per 15 minutes).
 // Know what it gives up: anyone who knows a username can keep its owner locked
 // out for as long as they keep failing, which the escalating wait exists to
 // prevent.
@@ -245,7 +245,7 @@ func WithFixedLockout(threshold int, window time.Duration) LockoutOption {
 // (WithLockoutWait); a ceiling of 100 failures, NIST SP 800-63B's cap
 // (WithLockoutCeiling); an in-memory store (WithAttemptStore) and the system
 // clock (WithLockoutClock). WithFixedLockout(5, 15*time.Minute) restores the
-// established hard lock instead.
+// previous default instead: 5 failures per 15 minutes.
 //
 // Every misconfiguration is an error wrapping ErrConfig, rather than something
 // evaluation copes with: a threshold, window or first wait of zero or less; a

@@ -9,7 +9,7 @@ See proposal.md for why. The current state:
 - **No per-source guard on login.** Every other guessable flow builds one through `resolveSourceGuard` (`httpsec/throttle.go`), from the chain's `LimiterFactory`.
 - **Status mapping.** `httpsec/status.go` maps `policy.ErrAccountLocked` to 423. It maps `authenticate.ErrAuthenticationFailed` and `ratelimit.ErrThrottled` to 401, and the authentication-failed row comes first. A joined error carrying both the authentication failure and the lock therefore maps to 401.
 - **Decoy work.** The password provider already verifies a reference hash for an unknown user (`authenticate/password.go`). Nothing outside it can ask for that work.
-- **The established design** has a hard lock, answers 423, puts no per-source limit on login, and records on the request's context. Decisions 2 and 3 below depart from it, and are recorded as departures. Decision 1 adds behaviour. Decision 4 fixes a claimed defect, pending reproduction.
+- **The established design** has a hard lock, answers 423, puts no per-source limit on login, and records on the request's context. Decisions 2 and 3 below depart from it, and are recorded as departures. Decision 1 adds behaviour. Decision 4 fixes a defect, reproduced before the fix.
 
 ## Goals / Non-Goals
 
@@ -153,13 +153,12 @@ type DecoyVerifier interface {
 
 **Cost:** one password hash per refused attempt. The per-source guard (decision 1) bounds it, because locked refusals count against the source.
 
-### 4. Failures are recorded on an uncancellable context (pending reproduction)
+### 4. Failures are recorded on an uncancellable context
 
-**Claim, `UNREPRODUCED`:** login records the failed attempt on the request's context. An attempt store that honours cancellation, which SQL drivers do, then drops the failure of a client that disconnects as soon as it has sent its guess. That is a free guess.
+**Defect, `REPRODUCED`:** login recorded the failed attempt on the request's context. An attempt store that honours cancellation, which SQL drivers do, then drops the failure of a client that disconnects as soon as it has sent its guess. That is a free guess.
 
-- **First red step:** a typed `MockAttemptStore` whose `RecordFailure` returns `ctx.Err()`, and a form login whose context is cancelled before recording. It runs on the unchanged code. Basic gets the same test.
+- **Proof:** first written as `TestFormLogin_RecordsFailureOnUncancellableContext` and `TestBasicAuth_RecordsFailureOnUncancellableContext`, now the table `TestLogin_RecordsFailureOnUncancellableContext` with rows `form login` and `basic` (`httpsec/login_cancel_test.go`): a typed `MockAttemptStore` whose `RecordFailure` returns `ctx.Err()`, and an exchange built from a context cancelled before recording. Run with `go test -run 'Test(FormLogin|BasicAuth)_RecordsFailureOnUncancellableContext' -count=1 ./httpsec/` on the unchanged code, both failed with `Received unexpected error: context canceled` ("the failure must be recorded on a context the client cannot cancel"), and pass with the fix. Re-confirmed by mutation in the whole-branch review.
 - **Fix:** record on `context.WithoutCancel(ctx)`, as `SourceGuard.RecordFailure` already does. The source-guard failure is uncancellable already.
-- **If the test passes on the unchanged code,** the claim is wrong. The decision is removed and nothing changes.
 - **No override.** A failure that goes uncounted is a free guess, never a policy choice.
 
 ## Risks / Trade-offs
@@ -168,8 +167,9 @@ type DecoyVerifier interface {
 - **[A concurrent burst gets one guess per in-flight request each time a wait lapses]** → Check-then-record through an unchanged port is not atomic, so k simultaneous requests each pass pre-authentication before any records (reproduced at policy level in review). The hard lock had the same race once, at the threshold; the escalating wait reopens it at every lapse. Bounded per source by decision 1, not per account. Closing it needs an atomic count-and-record port, which this decision rejects; it is a stated limit, as for the rate limiter's own burst bound.
 - **[A shared address's own users trip the guard]** → The 50 default leaves room. A consumer gives the endpoint its own limiter.
 - **[An attacker who guesses steadily can keep an account's owner waiting up to an hour at a time]** → This is NIST's accepted cost of escalating waits, far below the hard lock's indefinite lockout. A correct password after any wait clears it, and the ceiling is unreachable at about 24 guesses a day.
-- **[The in-memory attempt store now holds failures for 24 hours, not 15 minutes]** → Memory grows with failing usernames over a longer span. A deployment of more than one replica already needs a durable store, whose purge (`PurgeExpired`) uses the policy's own window.
+- **[A longer window means more failures to keep]** → The window now counts 24 hours, not 15 minutes. The in-memory store is unchanged: it never purges and releases failures only on `Reset`, so the window changes what is counted, not what is held. A durable store's purge (`PurgeExpired`) uses the policy's own window, so it now keeps 24 hours of rows. A deployment of more than one replica already needs a durable store.
 - **[A concealed lock still answers a little sooner than a wrong password]** → A wrong password costs a user load, a password check and an attempt-store write; a concealed lock costs only the decoy check. The password check dominates, so the gap is one user-store read and one attempt-store write. Recording a failure on a lock is rejected (decision 2: it would let an attacker keep the wait running), and loading the user would let a slow user store reveal existence. Accepted as a stated limit.
+- **[A Basic machine client retrying a locked account spends its address's allowance]** → Locked refusals count against the source (decision 1), so an automated Basic client looping on a locked account can throttle every account behind its address within minutes. Accepted: that is the same signal as an attacker hammering a locked account. The consumer gives Basic its own limiter (`WithBasicAuthLimiter`) or fixes the client.
 - **[A decoy hash per locked refusal costs CPU]** → Bounded per source by decision 1. A consumer that discloses locks skips it.
 - **[A consumer's own handler can still render "locked" from the joined error]** → That is the consumer's choice, and the godoc of `WithLockDisclosure` says so.
 
@@ -178,9 +178,12 @@ type DecoyVerifier interface {
 Before the first tag, so these are recorded default changes, not breaking releases. On upgrade:
 - the lockout policy waits instead of hard-locking;
 - a lock answers 401 instead of 423, and 429 when disclosed;
-- login gains a per-source guard, which means one more factory call, namespace `password-login`.
+- login gains a per-source guard, which means one more factory call, namespace `password-login`;
+- a form login or Basic request whose client address cannot be attributed (empty, not a single IP, unspecified) is refused with 401 before any work, where it was evaluated before;
+- a form login or Basic request is refused when the limiter cannot answer;
+- account recovery's password proof refuses a locked account as recovery-refused (401) instead of the bare lock.
 
-A consumer wanting the old behaviour uses `WithFixedLockout(5, 15*time.Minute)` and `WithLockDisclosure()`; the disclosed status is then 429, not 423, and a consumer who needs 423 maps `policy.ErrAccountLocked` in their own error handler.
+A consumer wanting the old lock uses `WithFixedLockout(5, 15*time.Minute)` and `WithLockDisclosure()`. That is not the old behaviour in full: the disclosed status is 429, not 423 (a consumer who needs 423 maps `policy.ErrAccountLocked` in their own error handler), and the per-source guard and the unattributable-source refusal still apply. A permissive limiter passed to `WithLoginLimiter` and `WithBasicAuthLimiter` relaxes the guard; the unattributable-source refusal has no override, as for every guarded flow.
 
 ## References
 

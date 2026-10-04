@@ -48,48 +48,60 @@ func serveOn(ctx context.Context, chain *httpsec.Chain, req *http.Request) {
 	_ = run(ex)
 }
 
-// TestFormLogin_RecordsFailureOnUncancellableContext pins that a client which
-// disconnects right after sending a wrong password is still charged for it.
-func TestFormLogin_RecordsFailureOnUncancellableContext(t *testing.T) {
+// TestLogin_RecordsFailureOnUncancellableContext pins that a client which
+// disconnects right after sending a wrong password is still charged for it,
+// on form login and on Basic authentication alike.
+func TestLogin_RecordsFailureOnUncancellableContext(t *testing.T) {
 	t.Parallel()
 
-	h := newAuthHarness(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	recorded := expectCancelThenFail(h, cancel)
+	type testCase struct {
+		name   string
+		option func(h *authHarness) httpsec.Option
+		// request builds the wrong-password request the client hangs up after.
+		request func(ctx context.Context) *http.Request
+		assert  func(t *testing.T, recorded context.Context)
+	}
 
-	chain, err := httpsec.New(
-		httpsec.WithLogger(h.logger()),
-		httpsec.EnableFormLogin(h.formLoginDeps()),
-	)
-	require.NoError(t, err)
+	failureReachedStore := func(t *testing.T, recorded context.Context) {
+		require.NotNil(t, recorded, "the failure must reach the attempt store")
+		assert.NoError(t, recorded.Err(),
+			"the failure must be recorded on a context the client cannot cancel")
+	}
 
-	serveOn(ctx, chain, formRequest(ctx, "/login", "username=ada&password=wrong"))
+	cases := []testCase{
+		{
+			name:   "form login",
+			option: func(h *authHarness) httpsec.Option { return httpsec.EnableFormLogin(h.formLoginDeps()) },
+			request: func(ctx context.Context) *http.Request {
+				return formRequest(ctx, "/login", "username=ada&password=wrong")
+			},
+			assert: failureReachedStore,
+		},
+		{
+			name:   "basic",
+			option: func(h *authHarness) httpsec.Option { return httpsec.EnableBasicAuth(h.basicAuthDeps()) },
+			request: func(ctx context.Context) *http.Request {
+				return basicRequest(ctx, "ada", "wrong")
+			},
+			assert: failureReachedStore,
+		},
+	}
 
-	require.NotNil(t, *recorded, "the failure must reach the attempt store")
-	assert.NoError(t, (*recorded).Err(),
-		"the failure must be recorded on a context the client cannot cancel")
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// TestBasicAuth_RecordsFailureOnUncancellableContext is the same guarantee for
-// Basic authentication.
-func TestBasicAuth_RecordsFailureOnUncancellableContext(t *testing.T) {
-	t.Parallel()
+			h := newAuthHarness(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			recorded := expectCancelThenFail(h, cancel)
 
-	h := newAuthHarness(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	recorded := expectCancelThenFail(h, cancel)
+			chain, err := httpsec.New(httpsec.WithLogger(h.logger()), tc.option(h))
+			require.NoError(t, err)
 
-	chain, err := httpsec.New(
-		httpsec.WithLogger(h.logger()),
-		httpsec.EnableBasicAuth(h.basicAuthDeps()),
-	)
-	require.NoError(t, err)
+			serveOn(ctx, chain, tc.request(ctx))
 
-	serveOn(ctx, chain, basicRequest(ctx, "ada", "wrong"))
-
-	require.NotNil(t, *recorded, "the failure must reach the attempt store")
-	assert.NoError(t, (*recorded).Err(),
-		"the failure must be recorded on a context the client cannot cancel")
+			tc.assert(t, *recorded)
+		})
+	}
 }
