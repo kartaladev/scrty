@@ -90,7 +90,7 @@ Measured in the exploratory harness, against the single-lock baseline:
 | Mixed throughput, 8 cores (ns/op) | 284 | — | 32.3 | — | 280 |
 
 - **Why 64:** it cuts the worst stall 51-fold and gives a 9-fold gain on 8 cores. 256 shards adds little and costs more fixed memory per limiter. The number is a constant, not an option. It changes no observable behaviour except latency, and an option for it would be a tuning knob with no policy behind it. The spec pins a floor (at least 64 parts) and a ratio to the single-lock sweep (at most one-thirtieth), not the number itself.
-- **Compaction:** sweeping leaves a Go map's buckets allocated. Emptying a 1,000,000-key map left 96 MiB held. After a sweep, a shard whose map has fallen below a quarter of its high-water mark, with a high-water mark of at least 1,024 keys, copies its survivors into a fresh map and resets the mark. The copy costs time proportional to the survivors, which is at most a quarter of what the sweep just scanned, so it does not change the stall bound. Below 1,024 keys the retained memory is not worth a copy.
+- **Compaction:** sweeping leaves a Go map's buckets allocated. Emptying a 1,000,000-key map left 96 MiB held. After a sweep, a shard whose map has fallen below a quarter of its high-water mark, with a high-water mark of at least 1,024 keys, copies its survivors into a fresh map and resets the mark. The copy costs time proportional to the survivors: under a quarter of the most keys the shard has held, and never more than the sweep just scanned, so a compacting call takes at most about twice one shard's sweep. Below 1,024 keys the retained memory is not worth a copy.
 - **Alternatives:**
   - *Two generations* (`cur` and `prev` maps, with `prev` dropped once a window). The drop is O(1) and frees memory. But it keeps the single lock, so 8-core throughput stays at today's 280 ns/op, and expired keys hold cap places for up to two windows instead of one.
   - *Shards with two generations each.* It combines both and keeps the two-window hold, for more complexity than the measured stall justifies.
@@ -175,7 +175,7 @@ Measured in the exploratory harness, against the single-lock baseline:
   - Bounded by the cap (about 37 MiB per limiter), and returned by compaction.
 - **[The latency bound is measured on a developer machine]**
   - The spec states it as a ratio to the single-lock sweep on the same machine, so it does not depend on hardware.
-  - The benchmark is not a CI gate. Task 4 records its numbers in this design.
+  - The benchmark is not a CI gate: CI runs under the race detector and on shared runners, where timing measures the scheduler. The measurement tests are opt-in (`SCRTY_MEASURE=1`) and skipped by a plain `go test`. Under `-race` the ratio is logged, not asserted. Otherwise the measurement takes the best of five trials against the median of three reference scans, since preemption and GC only ever add time. Tasks 1.1 and 3.4 record its numbers in this design.
 
 ## Migration Plan
 

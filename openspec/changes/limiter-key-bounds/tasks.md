@@ -13,14 +13,14 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 1. Baseline benchmark (design "Context"; rate-limiting "Inline pruning never stalls the whole limiter")
 
-- [x] 1.1 Add `ratelimit/memory_bench_test.go`, with heavy cases skipped under `-short`. Run it on the unchanged limiter. It measures, over distinct /64 keys with limit 10, window 15 min and one failure per key:
+- [x] 1.1 Add `ratelimit/memory_bench_test.go`, with the measurement tests opt-in through `SCRTY_MEASURE=1` and skipped under `-short`. Run it on the unchanged limiter. It measures, over distinct /64 keys with limit 10, window 15 min and one failure per key:
   - the heap per key at 100,000 and 1,000,000 keys;
   - the worst check that triggers inline pruning with 1,000,000 expired keys, and the worst latency of eight concurrent readers of other keys during it;
   - a single-lock reference: one scan of a plain map holding the same keys under one mutex, which is the denominator of the spec's one-thirtieth ratio;
   - the heap after every key is swept and the GC runs;
   - mixed 90/10 check/record throughput with `-cpu 1,8`.
 
-  Verify with `go test -run 'TestMemoryLimiterMeasure' -count=1 -v ./ratelimit/` and `go test -run '^$' -bench 'BenchmarkMemoryLimiter' -benchmem -count 6 -cpu 1,8 ./ratelimit/`. Report the figures, so the main session can confirm or correct design.md's baseline table.
+  Verify with `SCRTY_MEASURE=1 go test -run 'TestMemoryLimiterMeasure' -count=1 -v ./ratelimit/` and `go test -run '^$' -bench 'BenchmarkMemoryLimiter' -benchmem -count 6 -cpu 1,8 ./ratelimit/`. Report the figures, so the main session can confirm or correct design.md's baseline table.
 
 ## 2. A clock stepped backwards (decision 4; rate-limiting MODIFIED "The in-memory limiter bounds its own memory without disarming limits", scenario "Clock stepped backwards")
 
@@ -29,8 +29,8 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 3. Sharding and compaction (decision 3; rate-limiting "Inline pruning never stalls the whole limiter", MODIFIED "The in-memory limiter bounds its own memory without disarming limits")
 
-- [ ] 3.1 Red step for "Memory is returned after a flood": `TestMemoryLimiter_ReturnsMemoryAfterFlood`, skipped under `-short`. It fails on the unchanged limiter because the swept map keeps its buckets. Record the failing output. Verify with `go test -run TestMemoryLimiter_ReturnsMemoryAfterFlood -count=1 ./ratelimit/`
-- [ ] 3.2 Split `MemoryLimiter` into 64 shards, each with its own mutex, map, `sweptAt` and high-water mark, selected by `hash/maphash` with a seed drawn per limiter.
+- [x] 3.1 Red step for "Memory is returned after a flood": `TestMemoryLimiter_ReturnsMemoryAfterFlood`, skipped under `-short`. It fails on the unchanged limiter because the swept map keeps its buckets. Record the failing output. Verify with `go test -run TestMemoryLimiter_ReturnsMemoryAfterFlood -count=1 ./ratelimit/`
+- [x] 3.2 Split `MemoryLimiter` into 64 shards, each with its own mutex, map, `sweptAt` and high-water mark, selected by `hash/maphash` with a seed drawn per limiter.
   - `Exceeded` and `RecordFailure` lock and sweep only their key's shard.
   - `Prune` sweeps the shards one at a time.
   - `StampsFor` reads one shard.
@@ -38,8 +38,8 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
   - Covers scenarios "Inline pruning under traffic", "Oldest expired, newest live" and "Clock stepped backwards", and the concurrent-use requirement under `-race`.
 
   Verify with `go test -race -count=1 ./ratelimit/...` and `go test -race -run TestRateLimitConformance_Memory ./...` in `test`
-- [ ] 3.3 Compaction: after a sweep, a shard whose map has fallen below a quarter of its high-water mark, with a mark of at least 1,024 keys, copies its survivors into a fresh map and resets the mark. This turns 3.1 green. Add a test that a compacted shard still holds and counts every live key. Verify with `go test -race -count=1 ./ratelimit/...` and 3.1 passing
-- [ ] 3.4 Re-run 1.1's measurements against the sharded limiter, covering scenario "One million expired keys". The worst pruning-triggering check must be at most one-thirtieth of the single-lock reference. Godoc on `MemoryLimiter` states the shard count, why it has no option, and the stall bound. Verify with 1.1's commands, the ratio reported with both figures, and `go doc ./ratelimit MemoryLimiter`
+- [x] 3.3 Compaction: after a sweep, a shard whose map has fallen below a quarter of its high-water mark, with a mark of at least 1,024 keys, copies its survivors into a fresh map and resets the mark. This turns 3.1 green. Add a test that a compacted shard still holds and counts every live key. Verify with `go test -race -count=1 ./ratelimit/...` and 3.1 passing
+- [x] 3.4 Re-run 1.1's measurements against the sharded limiter, covering scenario "One million expired keys". The worst pruning-triggering check must be at most one-thirtieth of the single-lock reference. Godoc on `MemoryLimiter` states the shard count, why it has no option, and the stall bound. Verify with 1.1's commands, the ratio reported with both figures, and `go doc ./ratelimit MemoryLimiter`
 
 ## 4. Key cap (decisions 1, 2; rate-limiting "The in-memory limiter caps the keys it holds", "A full in-memory limiter refuses new keys and keeps counting held ones", "A full in-memory limiter says so")
 

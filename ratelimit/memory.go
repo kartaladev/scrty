@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"fmt"
+	"hash/maphash"
 	"log/slog"
 	"slices"
 	"sync"
@@ -28,6 +29,29 @@ const perReplicaWarning = "ratelimit: the in-memory limiter counts only this rep
 // most the limit's number of failure stamps per key and sweeps keys whose newest
 // stamp has left the window from inside its own calls, so it needs no background
 // goroutine and nothing to stop.
+//
+// # Sweeping
+//
+// The keys are divided into 64 shards, each with its own lock. A key's shard is
+// chosen by a hash seeded afresh for every limiter, so an attacker cannot aim a
+// flood at one shard. Each shard sweeps itself at most once per window, from the
+// first check or record that lands in it once the window is up, and a check or
+// record waits only for its own shard's sweep: never for another shard's, and
+// never for the limiter as a whole. The longest a call can wait is therefore one
+// shard's sweep, about a sixty-fourth of the keys held. The limiter's benchmark
+// holds that worst call, with a million expired keys, to at most one-thirtieth
+// of sweeping every key under a single lock.
+//
+// A Go map keeps its memory after its keys are deleted, so a shard whose sweep
+// leaves it holding fewer than a quarter of the most keys it has held, where
+// that most was at least 1,024, copies its survivors into a fresh map and lets
+// the old one go. The memory a flood took is returned once its keys have been
+// swept, rather than held for the life of the process.
+//
+// The shard count has no option. It changes how long a call can wait and
+// nothing else — which keys are held, what they count and when they are swept
+// are the same at any count — so an option for it would be a tuning knob with
+// no policy behind it.
 //
 // # Limits, stated
 //
@@ -56,12 +80,10 @@ type MemoryLimiter struct {
 	// every call would bury it in the traffic it is warning about.
 	warnOnce sync.Once
 
-	mu   sync.Mutex
-	keys map[string][]time.Time
-	// sweptAt is when the inline sweep last ran. Pacing the sweep by the window
-	// rather than by traffic keeps its cost proportional to time rather than to
-	// the request rate an attacker chooses.
-	sweptAt time.Time
+	// seed is drawn per limiter, so which shard a key lands in cannot be worked
+	// out in advance and an attacker cannot aim a flood at one shard.
+	seed   maphash.Seed
+	shards [shardCount]memoryShard
 }
 
 // NewMemoryLimiter returns a limiter that reports a key as exceeded once it has
@@ -81,7 +103,6 @@ func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*M
 		window: window,
 		clock:  clock.System(),
 		logger: slog.Default(),
-		keys:   map[string][]time.Time{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -103,7 +124,12 @@ func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*M
 		return nil, fmt.Errorf("%w: the logger is nil, so the per-replica warning would be lost", ErrConfig)
 	}
 
-	l.sweptAt = l.clock.Now()
+	l.seed = maphash.MakeSeed()
+	now := l.clock.Now()
+	for i := range l.shards {
+		l.shards[i].keys = map[string][]time.Time{}
+		l.shards[i].sweptAt = now
+	}
 
 	return l, nil
 }
@@ -125,13 +151,14 @@ func (l *MemoryLimiter) Exceeded(ctx context.Context, key string) (bool, error) 
 	}
 
 	now := l.clock.Now()
+	s := l.shardFor(key)
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	l.sweepLocked(now)
+	s.sweepLocked(now, l.window)
 
-	return l.countLocked(key, now) >= l.limit, nil
+	return s.countLocked(key, now.Add(-l.window)) >= l.limit, nil
 }
 
 // RecordFailure counts one failure for key at the current time.
@@ -144,17 +171,13 @@ func (l *MemoryLimiter) RecordFailure(_ context.Context, key string) error {
 	l.warnOnce.Do(l.warnPerReplica)
 
 	now := l.clock.Now()
+	s := l.shardFor(key)
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	l.sweepLocked(now)
-
-	stamps := append(l.keys[key], now)
-	if len(stamps) > l.limit {
-		stamps = dropOldest(stamps)
-	}
-	l.keys[key] = stamps
+	s.sweepLocked(now, l.window)
+	s.recordLocked(key, now, l.limit)
 
 	return nil
 }
@@ -166,13 +189,17 @@ func (l *MemoryLimiter) RecordFailure(_ context.Context, key string) error {
 // the only keys it can remove are those the window no longer counts. It is
 // therefore always safe to call, and calling it often costs time rather than
 // allowances.
+//
+// The shards are swept one after another, each locked only while it is swept,
+// so a Prune never holds more than one shard and a check waits at most for its
+// own shard's part of it.
 func (l *MemoryLimiter) Prune() {
 	now := l.clock.Now()
+	cutoff := now.Add(-l.window)
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	l.pruneLocked(now)
+	for i := range l.shards {
+		l.shards[i].prune(now, cutoff)
+	}
 }
 
 // StampsFor reports how many failure stamps the limiter currently holds for key,
@@ -180,74 +207,17 @@ func (l *MemoryLimiter) Prune() {
 // measures what the limiter is keeping, not what it is counting; Exceeded
 // answers the latter.
 func (l *MemoryLimiter) StampsFor(key string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s := l.shardFor(key)
 
-	return len(l.keys[key])
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.keys[key])
 }
 
-// countLocked returns how many of key's stamps the window still counts.
-//
-// The comparison is strictly after now-window, which is what makes "a one-minute
-// window" mean the same thing at every call site: a stamp exactly one window old
-// has expired, and one a nanosecond younger has not. Every stamp is examined
-// rather than the slice being searched, because nothing here guarantees the
-// stamps are ordered — a clock stepped backwards by an NTP correction is enough
-// to break that — and there are at most limit of them.
-func (l *MemoryLimiter) countLocked(key string, now time.Time) int {
-	cutoff := now.Add(-l.window)
-
-	count := 0
-	for _, stamp := range l.keys[key] {
-		if stamp.After(cutoff) {
-			count++
-		}
-	}
-
-	return count
-}
-
-// sweepLocked runs the inline sweep at most once per window.
-//
-// The sweep is what keeps the limiter's memory proportional to the sources
-// currently failing rather than to every source that has ever failed, and it
-// runs from the calls themselves so that there is no goroutine to start, stop or
-// leak. Pacing it by the window rather than by call count means an attacker
-// cannot make it run on every request by sending more of them.
-func (l *MemoryLimiter) sweepLocked(now time.Time) {
-	// A clock stepped backwards leaves sweptAt in the future, and pacing on a
-	// negative interval would stop sweeping until the clock caught up again.
-	// Re-arming from now resumes it one window later; sweeping sooner never
-	// removes a live key, because keys are judged by their newest stamp.
-	if now.Before(l.sweptAt) {
-		l.sweptAt = now
-
-		return
-	}
-	if now.Sub(l.sweptAt) < l.window {
-		return
-	}
-
-	l.pruneLocked(now)
-}
-
-// pruneLocked removes keys whose newest stamp has left the window.
-//
-// A key is judged by its newest stamp alone. Dropping a key with one expired and
-// one live stamp would forget a failure the window still counts, which is how a
-// memory bound turns into a lifted limit; keeping it costs at most limit stamps
-// until its newest stamp expires too.
-func (l *MemoryLimiter) pruneLocked(now time.Time) {
-	cutoff := now.Add(-l.window)
-
-	for key, stamps := range l.keys {
-		if newest(stamps).After(cutoff) {
-			continue
-		}
-		delete(l.keys, key)
-	}
-
-	l.sweptAt = now
+// shardFor returns the shard that holds key.
+func (l *MemoryLimiter) shardFor(key string) *memoryShard {
+	return &l.shards[maphash.String(l.seed, key)%shardCount]
 }
 
 // warnPerReplica states the default limiter's one limit where an operator will

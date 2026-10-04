@@ -122,11 +122,11 @@ Also add:
 - `TestMemoryLimiterMeasure_HeapAfterSweep`: the heap after every key is swept and `heapAlloc()` runs.
 - `BenchmarkMemoryLimiter_Mixed`: `b.RunParallel` over 100,000 prefilled keys, 90% `Exceeded` and 10% `RecordFailure`, picking keys with a per-goroutine `rand.New(rand.NewPCG(seed, 0))`.
 
-Each measurement test starts with `if testing.Short() { t.Skip("measurement") }`.
+Each measurement test starts with `skipUnlessMeasuring(t)`, which skips it under `-short` and unless `SCRTY_MEASURE` is set: wall-clock timing on a loaded machine or a shared CI runner measures the scheduler, so these run on demand on a quiet machine (design.md, Risks). Task 3.4's assertion takes the best of five trials against the median of three reference scans, and is logged rather than asserted under `-race`.
 
 - [ ] **Step 2: Run and capture**
 
-Run: `go test -run 'TestMemoryLimiterMeasure' -count=1 -v ./ratelimit/`
+Run: `SCRTY_MEASURE=1 go test -run 'TestMemoryLimiterMeasure' -count=1 -v ./ratelimit/`
 Run: `go test -run '^$' -bench 'BenchmarkMemoryLimiter' -benchmem -count 6 -cpu 1,8 ./ratelimit/ | tee /tmp/bench-baseline.txt`
 Expected, on the unchanged code: heap about 149 MiB at 1M keys, a sweep of about 100 ms, and a heap after the sweep of about 96 MiB (figures vary by machine). Report all of them.
 
