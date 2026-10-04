@@ -95,8 +95,13 @@ func throttledAPIKeyChain(
 
 	h := newAPIKeyHarness(t)
 
+	// The limiter is a mock, which reports no policy, so the chain would warn
+	// at construction that the flow counts no IPv6 aggregate. Every source
+	// here is IPv4, which no aggregate counts, and the records under test are
+	// the refusals alone, so the aggregate is turned off outright.
 	c, err := httpsec.New(append([]httpsec.Option{
 		httpsec.WithLogger(log),
+		httpsec.WithoutIPv6Aggregate(),
 		httpsec.EnableAPIKey(h.keys, httpsec.WithAPIKeyLimiter(exceededLimiter(t))),
 	}, opts...)...)
 	require.NoError(t, err)

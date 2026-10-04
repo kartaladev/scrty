@@ -38,6 +38,34 @@ func WithMemoryLimiterLogger(logger *slog.Logger) MemoryOption {
 	return func(l *MemoryLimiter) { l.logger = logger }
 }
 
+// DefaultMemoryLimiterMaxKeys is how many keys a MemoryLimiter holds at most
+// when WithMemoryLimiterMaxKeys is not given: about 37 MiB at the measured cost
+// of at most 157 bytes a key. 250,000 distinct sources failing inside one window
+// is far beyond what one replica sees in normal traffic; a deployment that
+// large belongs on a shared Limiter.
+const DefaultMemoryLimiterMaxKeys = 250_000
+
+// WithMemoryLimiterMaxKeys sets how many keys the limiter holds at most.
+// Default: DefaultMemoryLimiterMaxKeys (250,000), about 37 MiB at the measured
+// cost of at most 157 bytes a key.
+//
+// At the maximum, a key the limiter does not already hold is refused: Exceeded
+// reports it as exceeded with an error wrapping ErrLimiterFull, and
+// RecordFailure stores nothing and returns that error. Keys already held are
+// checked and recorded as before, and nothing is evicted to make room, because
+// evicting a key would reset a live count. A key frees its place only when a
+// sweep or Prune removes it, and the limiter writes a warning through its
+// logger while it is full.
+//
+// A value of zero or less fails construction with ErrConfig. There is no
+// unbounded mode, because unbounded memory is what the cap exists to prevent; a
+// consumer who accepts that cost passes math.MaxInt. MemoryLimiterFactory
+// applies the option to every limiter it builds, so one option sets the cap
+// for every flow the factory serves.
+func WithMemoryLimiterMaxKeys(n int) MemoryOption {
+	return func(l *MemoryLimiter) { l.maxKeys = n }
+}
+
 // KeyerOption configures a SourceKeyer.
 type KeyerOption func(*SourceKeyer)
 
@@ -111,8 +139,11 @@ func WithSourceGuardLogInterval(d time.Duration) GuardOption {
 // and the count.
 //
 // fn receives the sampler key and how many records it stood for. The key is
-// "throttled:<flow>:<canonical source>" for a throttled source, or
-// "limiter:<flow>:" for a limiter that failed, the latter with an empty detail.
+// "throttled:<flow>:<canonical source>" for a throttled source,
+// "throttled:<flow>:<aggregate prefix>" for a throttled IPv6 aggregate
+// (WithSourceGuardIPv6Aggregate), "limiter:<flow>:" for a limiter that
+// failed, or "full:<flow>:" for a limiter that is full (ErrLimiterFull), the
+// last two with an empty detail.
 // A canonical IPv6 source contains colons itself, so the key splits safely only
 // on its first two separators. It is
 // called when a key's window lapses before the key recurs, and by
@@ -127,4 +158,34 @@ func WithSourceGuardLogInterval(d time.Duration) GuardOption {
 // option to keep the default summary record.
 func WithSourceGuardLogReporter(fn func(key string, suppressed int)) GuardOption {
 	return func(g *SourceGuard) { g.reporter = fn }
+}
+
+// WithSourceGuardIPv6Aggregate also counts every IPv6 source under its
+// enclosing /bits prefix, in limiter, so that a client rotating through the /64s
+// of its own allocation cannot buy a fresh allowance with each one. A check is
+// refused when either the source or its aggregate is over its limit, and a
+// recorded failure counts against both.
+//
+// Default: off. A guard cannot invent a limit for a limiter it was not given,
+// and an aggregate needs a limit of its own — wider than the source's, since it
+// is shared by every source inside it — which a Limiter cannot vary per key.
+// httpsec's chain turns it on for the guards it builds, where the flow's limit
+// is known.
+//
+// The aggregate is counted under "<flow>:<prefix>", for example
+// "api-key:2001:db8:1::/56". IPv4 sources, including IPv4-mapped IPv6
+// addresses, have no aggregate and never consult limiter. A limiter shared with
+// other guards keeps the counts apart only if the flow names differ, as for the
+// source limiter.
+//
+// Construction fails with ErrConfig when limiter is nil (typed nil included),
+// when bits is outside 1..127, or when bits is not strictly less than the
+// keyer's IPv6Prefix (WithSourceGuardKeyer): an aggregate no wider than the
+// source would count exactly what the source key already does.
+func WithSourceGuardIPv6Aggregate(bits int, limiter Limiter) GuardOption {
+	return func(g *SourceGuard) {
+		g.aggregateSet = true
+		g.aggregateBits = bits
+		g.aggregate = limiter
+	}
 }

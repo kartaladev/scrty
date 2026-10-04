@@ -13,9 +13,9 @@ End sites are typically assigned a /56 or a /48, which is 256 to 65,536 /64 pref
 - **An optional cap on keys held by the in-memory limiter.**
   - At the cap, new keys fail closed (they are refused as throttled).
   - The cap is stated, and so is its cost: an attacker at the cap refuses new sources.
-  - The default is decided in design.
+  - The default is decided in design: 250,000 keys per limiter (design decision 1).
 - **An aggregate IPv6 limit.** A second, coarser prefix (for example /48), counted alongside the /64, with its own limit. A single allocation cannot then multiply its allowance by rotating /64s.
-- **Lock contention:** the in-memory limiter's sweep no longer stalls checks for the whole key set. Sharding or incremental sweeping is chosen in design, measured with a benchmark.
+- **Lock contention:** the in-memory limiter's sweep no longer stalls checks for the whole key set. The design chooses 64 shards with compaction, measured with a benchmark (design decision 3).
 - **Unchanged:** inline pruning never removes a key whose newest failure is inside the window.
 
 ## Capabilities
@@ -27,6 +27,7 @@ None.
 ### Modified Capabilities
 
 - `rate-limiting`: the key cap, the aggregate prefix limit, and sweep latency bounds.
+- `http-security-chain`: chain source guards count an IPv6 aggregate by default, with options to change or turn it off.
 
 ## Impact
 

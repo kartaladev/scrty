@@ -310,3 +310,70 @@ func TestUnavailable_GuardOverWrappedLimiter(t *testing.T) {
 		})
 	}
 }
+
+// TestUnavailable_FullLocalCount pins what fall-back mode does with a local
+// count an outage has filled. While the backend is down, a key the local count
+// does not hold is refused, failing closed. Once the backend answers again, the
+// local count holds nothing for that key, so it counts zero locally and the
+// backend's answer decides.
+func TestUnavailable_FullLocalCount(t *testing.T) {
+	t.Parallel()
+
+	const newKey = "new-source"
+
+	type testCase struct {
+		name    string
+		arrange func(t *testing.T, h *harness)
+		assert  func(t *testing.T, exceeded bool, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:    "outage: a key the full local count does not hold is refused",
+			arrange: func(*testing.T, *harness) {},
+			assert: func(t *testing.T, exceeded bool, err error) {
+				require.ErrorIs(t, err, ratelimit.ErrLimiterFull)
+				assert.True(t, exceeded, "a full local count must fail closed while the backend is down")
+				assert.NotContains(t, err.Error(), newKey)
+				assert.NotContains(t, err.Error(), "context", "a full local count is not a caller that went away")
+			},
+		},
+		{
+			name: "recovered: a key the full local count does not hold is the backend's to decide",
+			arrange: func(t *testing.T, h *harness) {
+				t.Helper()
+				h.clock.Advance(defaultInterval)
+				h.backend.EXPECT().Exceeded(gomock.Any(), newKey).Return(false, nil)
+			},
+			assert: func(t *testing.T, exceeded bool, err error) {
+				require.NoError(t, err)
+				assert.False(t, exceeded, "a healthy backend's answer was overruled by a full local count")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHarness(t, ratelimit.UnavailableFallBackToLocal)
+			local, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
+				ratelimit.WithMemoryLimiterClock(h.clock),
+				ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)),
+				ratelimit.WithMemoryLimiterMaxKeys(2))
+			require.NoError(t, err)
+			unavailable.ReplaceLocal(h.limiter, local)
+
+			// The outage fills the local count.
+			h.openBreaker(t)
+			for _, key := range []string{"a", "b"} {
+				require.NoError(t, h.limiter.RecordFailure(t.Context(), key))
+			}
+
+			tc.arrange(t, h)
+
+			exceeded, err := h.limiter.Exceeded(t.Context(), newKey)
+			tc.assert(t, exceeded, err)
+		})
+	}
+}

@@ -334,6 +334,7 @@ var sentinelRegistry = map[string]map[string]error{
 	"github.com/kartaladev/scrty/ratelimit": {
 		"ratelimit.ErrBackendUnavailable":   ratelimit.ErrBackendUnavailable,
 		"ratelimit.ErrConfig":               ratelimit.ErrConfig,
+		"ratelimit.ErrLimiterFull":          ratelimit.ErrLimiterFull,
 		"ratelimit.ErrSourceEmpty":          ratelimit.ErrSourceEmpty,
 		"ratelimit.ErrSourceNotAnIP":        ratelimit.ErrSourceNotAnIP,
 		"ratelimit.ErrSourceUnattributable": ratelimit.ErrSourceUnattributable,
@@ -392,6 +393,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"ratelimit.ErrConfig":                     "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
+		"ratelimit.ErrLimiterFull": "returned by a full in-memory limiter, never by a flow: every built-in caller " +
+			"wraps or replaces it with a throttle or refusal sentinel before it leaves",
 		"ratelimit.ErrSourceUnattributable":     "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
 		"ratelimit.ErrSourceEmpty":              "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
 		"ratelimit.ErrSourceNotAnIP":            "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",

@@ -5,8 +5,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -202,6 +205,20 @@ func TestNewMemoryLimiterRefusesALimiterThatCannotWork(t *testing.T) {
 			assert: refused,
 		},
 		{
+			name:   "a maximum of zero keys holds no source at all",
+			limit:  testLimit,
+			window: testWindow,
+			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterMaxKeys(0)},
+			assert: refused,
+		},
+		{
+			name:   "a negative maximum of keys holds no source at all",
+			limit:  testLimit,
+			window: testWindow,
+			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterMaxKeys(-1)},
+			assert: refused,
+		},
+		{
 			name:   "the smallest limiter that can work is accepted",
 			limit:  1,
 			window: time.Nanosecond,
@@ -333,12 +350,16 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 		}
 		clock.Advance(testWindow + time.Second)
 
-		_, err := l.Exceeded(t.Context(), "unrelated")
-		require.NoError(t, err)
+		// A check sweeps only its own key's shard, so every key is checked: that
+		// reaches every shard, as traffic does.
+		for i := range keys {
+			_, err := l.Exceeded(t.Context(), fmt.Sprintf("k%d", i))
+			require.NoError(t, err)
+		}
 
 		for i := range keys {
 			require.Zero(t, l.StampsFor(fmt.Sprintf("k%d", i)),
-				"an expired key was still held after a check swept the limiter")
+				"an expired key was still held after checks swept the limiter")
 		}
 	})
 
@@ -348,19 +369,31 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 		clock := clockwork.NewFakeClockAt(epoch)
 		l := newLimiter(t, clock)
 
+		// Sweeps are per shard, and one unrelated key shares k's shard only one time
+		// in sixty-four, so the traffic is spread over enough keys that one of them
+		// all but certainly does (the chance none does is about 1.5e-7).
+		unrelated := make([]string, 1000)
+		for i := range unrelated {
+			unrelated[i] = fmt.Sprintf("u%d", i)
+		}
+		checkAll := func() {
+			for _, u := range unrelated {
+				_, err := l.Exceeded(t.Context(), u)
+				require.NoError(t, err)
+			}
+		}
+
 		clock.Advance(30 * time.Second)
 		require.NoError(t, l.RecordFailure(t.Context(), "k")) // expires at epoch+90s
 
 		clock.Advance(30 * time.Second) // epoch+60s: a sweep runs and keeps the live key
-		_, err := l.Exceeded(t.Context(), "unrelated")
-		require.NoError(t, err)
+		checkAll()
 		require.Equal(t, 1, l.StampsFor("k"), "a sweep dropped a key that was still inside its window")
 
 		clock.Advance(31 * time.Second) // epoch+91s: the key has expired, but the window is not up
-		for range 100 {
-			_, err := l.Exceeded(t.Context(), "unrelated")
-			require.NoError(t, err)
-			require.NoError(t, l.RecordFailure(t.Context(), "unrelated"))
+		checkAll()
+		for _, u := range unrelated {
+			require.NoError(t, l.RecordFailure(t.Context(), u))
 		}
 		assert.Equal(t, 1, l.StampsFor("k"),
 			"the limiter swept again inside the same window, so traffic paces the sweep instead of the window")
@@ -370,8 +403,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 		assert.False(t, exceeded, "an unswept expired stamp was counted, so memory drove the limit")
 
 		clock.Advance(29 * time.Second) // epoch+120s: one window since the last sweep
-		_, err = l.Exceeded(t.Context(), "unrelated")
-		require.NoError(t, err)
+		checkAll()
 		assert.Zero(t, l.StampsFor("k"), "the next window's sweep did not run")
 	})
 }
@@ -430,4 +462,180 @@ func (r *logRecorder) String() string {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(new(bytes.Buffer), nil))
+}
+
+// settableClock is a clock a test can set to any instant, backwards included,
+// which clockwork's fake clock cannot do.
+type settableClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *settableClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.now
+}
+
+func (c *settableClock) Set(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.now = at
+}
+
+// TestMemoryLimiter_SweepResumesAfterClockSteppedBack pins that a clock stepped
+// backwards after a sweep does not stop the inline sweep until the clock catches
+// up: keys recorded after the step must still be swept once they expire.
+func TestMemoryLimiter_SweepResumesAfterClockSteppedBack(t *testing.T) {
+	t.Parallel()
+
+	clk := &settableClock{now: epoch}
+	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow, ratelimit.WithMemoryLimiterClock(clk))
+	require.NoError(t, err)
+
+	l.Prune()
+	clk.Set(epoch.Add(-time.Hour))
+
+	keys := slash64Keys(1000)
+	for _, k := range keys {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+
+	clk.Set(epoch.Add(-time.Hour + 2*time.Minute))
+	for _, k := range keys {
+		_, err := l.Exceeded(t.Context(), k)
+		require.NoError(t, err)
+	}
+
+	for _, k := range keys {
+		require.Zero(t, l.StampsFor(k), "key %s was still held after its window passed", k)
+	}
+}
+
+// TestMemoryLimiter_ReturnsMemoryAfterFlood pins that a flood's memory is given
+// back once its keys have expired and been swept, rather than held by the map's
+// buckets for the life of the process.
+func TestMemoryLimiter_ReturnsMemoryAfterFlood(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates 1M keys")
+	}
+
+	clk := clockwork.NewFakeClockAt(epoch)
+	keys := slash64Keys(1_000_000)
+	base := heapAlloc()
+	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
+		ratelimit.WithMemoryLimiterClock(clk),
+		ratelimit.WithMemoryLimiterLogger(discardLogger()),
+		ratelimit.WithMemoryLimiterMaxKeys(math.MaxInt)) // a flood past the default cap
+	require.NoError(t, err)
+	for _, k := range keys {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+	// Signed, so a heap that reads below base cannot wrap around to a huge value.
+	peak := int64(heapAlloc()) - int64(base) //nolint:gosec // G115: heap sizes are far below MaxInt64
+
+	clk.Advance(2*testWindow + time.Second)
+	for _, k := range keys {
+		_, _ = l.Exceeded(t.Context(), k)
+	}
+	after := int64(heapAlloc()) - int64(base) //nolint:gosec // G115: heap sizes are far below MaxInt64
+	runtime.KeepAlive(l)
+	runtime.KeepAlive(keys)
+
+	assert.Less(t, after, peak/10, "peak=%d after=%d", peak, after)
+}
+
+// TestMemoryLimiter_CompactionKeepsLiveKeys pins that replacing a shard's map
+// after a sweep carries every surviving key across with its stamps, so giving
+// memory back never forgets a failure the window still counts.
+func TestMemoryLimiter_CompactionKeepsLiveKeys(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(epoch)
+	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
+		ratelimit.WithMemoryLimiterClock(clk),
+		ratelimit.WithMemoryLimiterLogger(discardLogger()))
+	require.NoError(t, err)
+
+	keys := slash64Keys(200_000) // about 3,000 per shard, above the 1,024 mark
+	for _, k := range keys {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+	clk.Advance(50 * time.Second)
+	live := keys[:1000] // a few per shard: well under a quarter of each
+	for _, k := range live {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+	clk.Advance(20 * time.Second) // the first stamps have expired; the live keys' second stamps have not
+	l.Prune()
+
+	for _, k := range live {
+		assert.Equal(t, 2, l.StampsFor(k), "key %s lost stamps when its shard was compacted", k)
+		exceeded, err := l.Exceeded(t.Context(), k)
+		require.NoError(t, err)
+		assert.False(t, exceeded, "key %s", k)
+	}
+	assert.Zero(t, l.StampsFor(keys[len(keys)-1]), "an expired key survived the prune")
+}
+
+// TestMemoryLimiter_ConcurrentSweepsKeepLiveKeys pins that inline sweeps,
+// explicit prunes and the compactions they trigger, running in every shard at
+// once, never lose a failure the window still counts while new failures for the
+// same keys are being recorded.
+func TestMemoryLimiter_ConcurrentSweepsKeepLiveKeys(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(epoch)
+	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
+		ratelimit.WithMemoryLimiterClock(clk),
+		ratelimit.WithMemoryLimiterLogger(discardLogger()))
+	require.NoError(t, err)
+
+	keys := slash64Keys(100_000) // about 1,500 per shard, above the 1,024 mark
+	for _, k := range keys {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+	clk.Advance(50 * time.Second)
+	live := keys[:2000] // about 30 per shard: every shard compacts and carries them
+	for _, k := range live {
+		require.NoError(t, l.RecordFailure(t.Context(), k))
+	}
+	clk.Advance(20 * time.Second) // the first stamps have expired; the live keys' second stamps have not
+
+	const workers = 8
+	var (
+		wg   sync.WaitGroup
+		lost atomic.Int64
+	)
+	for w := range workers {
+		wg.Add(2)
+		go func() { // records a third failure for each live key and looks for all of them
+			defer wg.Done()
+			for i := w; i < len(live); i += workers {
+				_ = l.RecordFailure(t.Context(), live[i])
+				if l.StampsFor(live[i]) < 2 {
+					lost.Add(1)
+				}
+			}
+		}()
+		go func() { // drives sweeps in every shard, inline and explicit
+			defer wg.Done()
+			for i := len(live) + w; i < len(keys); i += workers {
+				_, _ = l.Exceeded(t.Context(), keys[i])
+				if i%10_000 < workers {
+					l.Prune()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	l.Prune()
+
+	assert.Zero(t, lost.Load(), "a failure the window still counts vanished while shards were swept")
+	for _, k := range live {
+		assert.Equal(t, testLimit, l.StampsFor(k), "key %s", k)
+	}
+	assert.Zero(t, l.StampsFor(keys[len(keys)-1]), "an expired key survived")
 }

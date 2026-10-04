@@ -32,9 +32,17 @@ const maxRawKeyLen = 512
 type Limiter struct {
 	limiter ratelimit.Limiter
 	check   serverCheck
+
+	// limit and window are the policy NewLimiter was given, kept so Policy can
+	// report them; the wrapped limiter does not expose its own.
+	limit  int
+	window time.Duration
 }
 
-var _ ratelimit.Limiter = (*Limiter)(nil)
+var (
+	_ ratelimit.Limiter        = (*Limiter)(nil)
+	_ ratelimit.PolicyReporter = (*Limiter)(nil)
+)
 
 // NewLimiter returns a Limiter counting up to limit failures per key within
 // window, in namespace, over client.
@@ -97,7 +105,12 @@ func NewLimiter(client redis.UniversalClient, namespace string, limit int, windo
 		return nil, err
 	}
 
-	return &Limiter{limiter: wrapped, check: newServerCheck(client, cfg)}, nil
+	return &Limiter{
+		limiter: wrapped,
+		check:   newServerCheck(client, cfg),
+		limit:   limit,
+		window:  window.Truncate(time.Microsecond),
+	}, nil
 }
 
 func validate(client redis.UniversalClient, namespace string, limit int, window time.Duration, cfg config) error {
@@ -194,6 +207,13 @@ func (l *Limiter) Exceeded(ctx context.Context, key string) (bool, error) {
 // the source unthrottled.
 func (l *Limiter) RecordFailure(ctx context.Context, key string) error {
 	return l.limiter.RecordFailure(ctx, key)
+}
+
+// Policy reports the limit and window the limiter was built with
+// (NewLimiter's arguments), the window in the whole microseconds it is counted
+// in. Both are fixed at construction.
+func (l *Limiter) Policy() (limit int, window time.Duration) {
+	return l.limit, l.window
 }
 
 // backend talks to the server; the decorator from internal/unavailable wraps
