@@ -14,8 +14,6 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/recovery"
 )
 
 // expiryTaskNames returns the names of tasks, in order.
@@ -69,15 +67,12 @@ func expiryMFAHarness(t *testing.T, extra ...mfa.Method) *mfaHarness {
 	return h
 }
 
-// expiryRecoveryHarness is the recovery harness with its issued codes kept in
-// a store that judges expiry on the harness's clock, as the chain-built core's
-// managers do, and with MFA over methods when there are any.
+// expiryRecoveryHarness is the recovery harness, whose core and default stores
+// share its fake clock, with MFA over methods when there are any.
 func expiryRecoveryHarness(t *testing.T, methods ...mfa.Method) *recoveryHarness {
 	t.Helper()
 
 	h := newRecoveryHarness(t)
-	h.coreOpts = append(h.coreOpts,
-		recovery.WithIssuedCodeStore(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(h.clock))))
 
 	if len(methods) > 0 {
 		h.chainOpts = append(h.chainOpts, httpsec.EnableMFA(methods, httpsec.WithMFATokens(h.tokens)))
@@ -150,72 +145,6 @@ func TestChain_ExpiryTasks(t *testing.T) {
 					"mfa-challenges:zeta", "mfa-challenges:alpha", "mfa-challenges:mid",
 					"mfa-challenges:beta", "mfa-challenges:omega", "mfa-challenges:kappa",
 				}, expiryTaskNames(tasks))
-			},
-		},
-		{
-			name: "every EnableMFA contributes its challenge tasks",
-			chain: func(t *testing.T) *httpsec.Chain {
-				h := expiryMFAHarness(t, namedChallengeStubs("a")...)
-				h.chainOpts = append(h.chainOpts, httpsec.EnableMFA(namedChallengeStubs("b"),
-					httpsec.WithMFATokens(h.tokens),
-					httpsec.WithMFAVerifyPrefix("/x/verify"),
-					httpsec.WithMFABeginPrefix("/x/begin")))
-
-				return h.bearerChain(t)
-			},
-			assert: func(t *testing.T, tasks []expiry.Task) {
-				assert.Equal(t, []string{"mfa-challenges:a", "mfa-challenges:b"}, expiryTaskNames(tasks))
-			},
-		},
-		{
-			name:   "a challenge begun through the first EnableMFA is swept by its task",
-			bubble: true,
-			chain: func(t *testing.T) *httpsec.Chain {
-				h := expiryMFAHarness(t, namedChallengeStubs("a")...)
-				h.chainOpts = append(h.chainOpts, httpsec.EnableMFA(namedChallengeStubs("b"),
-					httpsec.WithMFATokens(h.tokens),
-					httpsec.WithMFAVerifyPrefix("/x/verify"),
-					httpsec.WithMFABeginPrefix("/x/begin")))
-				c := h.bearerChain(t)
-				s := h.pendingSession(t, factor.Password)
-
-				out := serve(t, c, bearerPost(t.Context(), httpsec.DefaultMFABeginPrefix+"/a", mfaTokenFor(s.ID)))
-				require.NoError(t, out.err)
-				require.Equal(t, http.StatusOK, out.rec.Code, "the begin issued a challenge")
-
-				time.Sleep(httpsec.DefaultMFAChallengeTTL + time.Hour + time.Second)
-
-				return c
-			},
-			assert: func(t *testing.T, tasks []expiry.Task) {
-				removed, err := runExpiryTask(t, tasks, "mfa-challenges:a")
-				require.NoError(t, err)
-				assert.Equal(t, 1, removed)
-			},
-		},
-		{
-			// The chain accepts two EnableMFA over one method name; their
-			// tasks then share a name, which expiry.NewRunner refuses. The
-			// consumer renames one (Task.Name) before building a runner.
-			name: "two EnableMFA sharing a method name give tasks the runner refuses",
-			chain: func(t *testing.T) *httpsec.Chain {
-				h := expiryMFAHarness(t, namedChallengeStubs("a")...)
-				h.chainOpts = append(h.chainOpts, httpsec.EnableMFA(namedChallengeStubs("a"),
-					httpsec.WithMFATokens(h.tokens),
-					httpsec.WithMFAVerifyPrefix("/x/verify"),
-					httpsec.WithMFABeginPrefix("/x/begin")))
-
-				return h.bearerChain(t)
-			},
-			assert: func(t *testing.T, tasks []expiry.Task) {
-				assert.Equal(t, []string{"mfa-challenges:a", "mfa-challenges:a"}, expiryTaskNames(tasks))
-
-				_, err := expiry.NewRunner(tasks)
-				require.Error(t, err)
-
-				tasks[1].Name = "mfa-challenges:a-second"
-				_, err = expiry.NewRunner(tasks)
-				require.NoError(t, err)
 			},
 		},
 		{

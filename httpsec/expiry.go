@@ -13,13 +13,10 @@ const mfaChallengeTaskPrefix = "mfa-challenges:"
 // components the chain builds itself, in this order:
 //
 //  1. "mfa-challenges:<method>" for each challenge method (an
-//     mfa.ChallengeMethod, such as a passkey) of each EnableMFA, in
-//     registration order and each in its configured order. Its pending
-//     challenges are issued to a signed-in user who still owes a second
-//     factor. A method with no challenge step, such as TOTP, keeps no pending
-//     state and contributes no task. Two EnableMFA that share a challenge
-//     method's name yield two tasks of the same name, which expiry.NewRunner
-//     refuses; rename one by setting its Name.
+//     mfa.ChallengeMethod, such as a passkey) given to EnableMFA, in the
+//     order given. Its pending challenges are issued to a signed-in user who
+//     still owes a second factor. A method with no challenge step, such as
+//     TOTP, keeps no pending state and contributes no task.
 //  2. The tasks of the recovery.Recoverer that EnableAccountRecovery builds:
 //     "recovery-issued-codes" when issued codes are enabled, and
 //     "recovery-finish-tokens" and "recovery-cancel-tokens" when the core may
