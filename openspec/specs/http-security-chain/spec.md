@@ -53,7 +53,8 @@ Building a chain SHALL return a configuration error, and no usable chain, when t
 - an enabled built-in interceptor missing a dependency it needs, including a dependency that is present but holds a nil value;
 - an absent rate-limiter factory, when the option is given;
 - an absent refusal log reporter;
-- a login body limit of zero or less.
+- a login body limit of zero or less;
+- form login or HTTP Basic authentication enabled more than once.
 
 The error SHALL name the option and the dependency at fault. Every public option SHALL either take effect or be refused at construction.
 
@@ -68,6 +69,10 @@ The error SHALL name the option and the dependency at fault. Every public option
 #### Scenario: Absent interceptor
 - **WHEN** a consumer registers an absent interceptor at any slot
 - **THEN** construction fails
+
+#### Scenario: Form login enabled twice
+- **WHEN** a consumer enables form login twice, on two paths, each with its own limiter
+- **THEN** construction fails with an error naming form login, because one chain has one form login and its password-login flow names one endpoint
 
 #### Scenario: Absent factory
 - **WHEN** the chain is given a rate-limiter factory option holding a nil value

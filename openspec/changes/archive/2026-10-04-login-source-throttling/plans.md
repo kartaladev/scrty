@@ -60,6 +60,7 @@
 | H4 | 4.6 | `httpsec/chain_login_guard_test.go`, `httpsec/options.go` (godoc of the two login limiter options) | `httpsec/throttle.go`, `ratelimit/`, everything else | Sonnet | Tests and godoc over behaviour the rebase brought in; after the rebase onto `limiter-key-bounds` |
 | H5 | 4.7 | `httpsec/login.go` (`wirePasswordLogin`), `httpsec/options.go` and `httpsec/doc.go` (godoc), `httpsec/chain_login_guard_test.go` | `httpsec/throttle.go`, `ratelimit/`, `redis/` | Sonnet | Flow naming with the design decided; red test given |
 | H6 | 4.8 | `httpsec/login.go` (constants), `httpsec/options.go` and `httpsec/doc.go` (godoc), `httpsec/chain_login_guard_test.go`, `test/httpsec_login_redis_test.go` (new) | `httpsec/throttle.go`, `ratelimit/`, `redis/` | Sonnet | A rename with a stated red test |
+| H7 | 4.9 | `httpsec/options.go` (`EnableFormLogin`, `EnableBasicAuth` and their godoc), the new test | everything else | Sonnet | A known construction-refusal pattern with a stated red test |
 
 **Order:**
 - H1, P1 and A1 start together.
@@ -581,6 +582,25 @@ After 4.7, tasks 5.1 and 5.2 are rerun.
 - [ ] **Step 2: Run** `cd test && go test -race -run 'TestLoginOwnLimiterUnderRedisFactory' -count=1 .` and `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/`. Expected FAIL: `the namespace "password-login:basic-ipv6-aggregate" contains a colon, which separates it from the key`.
 - [ ] **Step 3: Implement** the hyphenated constants; update every expected name in `chain_login_guard_test.go`, the two options' godoc and `doc.go`.
 - [ ] **Step 4: Verify** both Step 2 commands pass; `go test -race -count=1 ./httpsec/...`; `gofmt -l httpsec test`; `golangci-lint run ./httpsec/...` and in `test`.
+
+### Task 4.9: One form login and one Basic per chain (after archiving, same pull request)
+
+**Files:** Modify `httpsec/options.go` (`EnableFormLogin` ~943, `EnableBasicAuth` ~1156; their godoc). Test in `httpsec/chain_login_guard_test.go` (or a new `httpsec/login_twice_test.go`).
+
+**Interfaces:** Consumes the existing `eachInterceptor(c, func(*T) error) error` helper and `newConfigError`, exactly as `EnableAccountRecovery` uses them (`httpsec/recoveryoptions.go` ~262):
+
+```go
+if err := eachInterceptor(c, func(*formLogin) error {
+	return newConfigError("%s was given twice; one chain has one form login", option)
+}); err != nil {
+	return err
+}
+```
+
+- [ ] **Step 1: Failing table `TestChain_LoginEnabledTwice`:** "form login twice" (`EnableFormLogin` with default path and again with `WithLoginPath("/admin/login")`, each `WithLoginLimiter` of a different policy) → `httpsec.New` returns an error matching the chain's configuration-error sentinel whose text names `EnableFormLogin` and "given twice"; "Basic twice" → names `EnableBasicAuth`; "each once" → builds.
+- [ ] **Step 2: Run** `go test -race -run 'TestChain_LoginEnabledTwice' -count=1 ./httpsec/`. Expected FAIL: "An error is expected but got nil" on both twice rows.
+- [ ] **Step 3: Implement** the guard in both options before registering, mirroring `EnableAccountRecovery`; godoc of both options states that a chain has one of each and a second call is refused.
+- [ ] **Step 4: Verify** `go test -race -count=1 ./httpsec/...`, `cd test && go test -race -count=1 ./...` (the conformance suites build chains), ginsec and fibersec `go test -race ./...`, `gofmt -l httpsec`, `golangci-lint run ./httpsec/...`.
 
 ### Task 5.1: Whole-workspace gate (main session)
 
