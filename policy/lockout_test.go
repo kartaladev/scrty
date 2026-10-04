@@ -47,6 +47,23 @@ func recordFailures(t *testing.T, p *policy.AccountLockoutPolicy, username strin
 	}
 }
 
+// lockoutDefaultCutoff is the cutoff the default 24-hour window puts behind
+// lockoutNow.
+var lockoutDefaultCutoff = lockoutNow.Add(-24 * time.Hour)
+
+// failuresEndingAt records n failures for username, the newest exactly newest
+// before lockoutNow and each earlier one a second before the next, so a case
+// pins both the count and the age of the newest failure.
+func failuresEndingAt(username string, n int, newest time.Duration) func(*testing.T, *policy.MemoryAttemptStore) {
+	return func(t *testing.T, store *policy.MemoryAttemptStore) {
+		t.Helper()
+
+		for i := range n {
+			failuresAt(t, store, username, lockoutNow.Add(-newest-time.Duration(i)*time.Second))
+		}
+	}
+}
+
 // failuresAt records one failure per instant directly in the store, for the
 // cases that pin a failure to the edge of the window.
 func failuresAt(t *testing.T, store *policy.MemoryAttemptStore, username string, at ...time.Time) {
@@ -64,7 +81,7 @@ func TestAccountLockoutPolicyDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 5, p.Threshold(), "the default threshold is not five")
-	assert.Equal(t, 15*time.Minute, p.Window(), "the default window is not fifteen minutes")
+	assert.Equal(t, 24*time.Hour, p.Window(), "the default window is not twenty-four hours")
 	assert.Equal(t, []policy.Phase{policy.PreAuthentication}, p.Phases(),
 		"the lockout rule must apply whether or not the submitted secret is correct, which is the pre-authentication phase")
 	assert.NotEmpty(t, p.Name())
@@ -107,46 +124,103 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 			assert: allows,
 		},
 		{
-			name: "one failure short of the threshold is allowed",
-			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				failuresAt(t, store, "ada",
-					lockoutNow.Add(-time.Minute),
-					lockoutNow.Add(-2*time.Minute),
-					lockoutNow.Add(-3*time.Minute),
-					lockoutNow.Add(-4*time.Minute))
-			},
+			name:   "one failure short of the threshold is allowed",
+			record: failuresEndingAt("ada", 4, time.Second),
 			assert: allows,
 		},
 		{
-			name: "at the threshold the account is locked",
-			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				failuresAt(t, store, "ada",
-					lockoutNow.Add(-time.Minute),
-					lockoutNow.Add(-2*time.Minute),
-					lockoutNow.Add(-3*time.Minute),
-					lockoutNow.Add(-4*time.Minute),
-					lockoutNow.Add(-5*time.Minute))
-			},
+			name:   "at the threshold the first wait is owed",
+			record: failuresEndingAt("ada", 5, 10*time.Second),
 			assert: denies,
 		},
 		{
-			name: "above the threshold the account is locked",
-			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				for i := range 9 {
-					failuresAt(t, store, "ada", lockoutNow.Add(-time.Duration(i+1)*time.Minute))
-				}
-			},
+			name:   "the first wait is still owed one second before it ends",
+			record: failuresEndingAt("ada", 5, 29*time.Second),
 			assert: denies,
+		},
+		{
+			name:   "once the first wait is served the next attempt is allowed",
+			record: failuresEndingAt("ada", 5, 31*time.Second),
+			assert: allows,
+		},
+		{
+			// FailureCount counts strictly after its cutoff, so a newest
+			// failure exactly as old as the wait has served it.
+			name:   "a newest failure exactly as old as the wait is allowed",
+			record: failuresEndingAt("ada", 5, 30*time.Second),
+			assert: allows,
+		},
+		{
+			name:   "a newest failure one nanosecond inside the wait is denied",
+			record: failuresEndingAt("ada", 5, 30*time.Second-time.Nanosecond),
+			assert: denies,
+		},
+		{
+			// Seven failures are two beyond the threshold: 30s doubled twice.
+			name:   "the wait doubles for each failure beyond the threshold",
+			record: failuresEndingAt("ada", 7, 100*time.Second),
+			assert: denies,
+		},
+		{
+			name:   "a doubled wait once served is allowed",
+			record: failuresEndingAt("ada", 7, 121*time.Second),
+			assert: allows,
+		},
+		{
+			name:   "the wait never exceeds the longest wait",
+			record: failuresEndingAt("ada", 20, 61*time.Minute),
+			assert: allows,
+		},
+		{
+			name:   "the longest wait is owed until it ends",
+			record: failuresEndingAt("ada", 20, 59*time.Minute),
+			assert: denies,
+		},
+		{
+			// 30s doubled 65 times overflows time.Duration; the wait must cap
+			// at the longest wait rather than wrap to a short or negative one.
+			name:   "a huge exponent caps at the longest wait rather than overflowing",
+			record: failuresEndingAt("ada", 70, 59*time.Minute),
+			assert: denies,
+		},
+		{
+			name:   "a huge exponent once the longest wait is served is allowed",
+			record: failuresEndingAt("ada", 70, 61*time.Minute),
+			assert: allows,
+		},
+		{
+			name:   "at the ceiling the account is refused however old its newest failure",
+			record: failuresEndingAt("ada", 100, 2*time.Hour),
+			assert: denies,
+		},
+		{
+			name:   "one failure short of the ceiling is still only a wait",
+			record: failuresEndingAt("ada", 99, 2*time.Hour),
+			assert: allows,
+		},
+		{
+			name:   "a consumer ceiling refuses at its own count",
+			opts:   []policy.LockoutOption{policy.WithLockoutCeiling(20)},
+			record: failuresEndingAt("ada", 20, 2*time.Hour),
+			assert: denies,
+		},
+		{
+			name:   "a consumer's own first wait is owed",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(5*time.Minute, time.Hour)},
+			record: failuresEndingAt("ada", 5, 4*time.Minute),
+			assert: denies,
+		},
+		{
+			name:   "a consumer's own longest wait caps the escalation",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(30*time.Second, 2*time.Minute)},
+			record: failuresEndingAt("ada", 10, 3*time.Minute),
+			assert: allows,
 		},
 		{
 			name: "a failure exactly at the window edge does not count",
 			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				failuresAt(t, store, "ada",
-					lockoutNow.Add(-time.Minute),
-					lockoutNow.Add(-2*time.Minute),
-					lockoutNow.Add(-3*time.Minute),
-					lockoutNow.Add(-4*time.Minute),
-					lockoutCutoff)
+				failuresEndingAt("ada", 4, 10*time.Second)(t, store)
+				failuresAt(t, store, "ada", lockoutDefaultCutoff)
 			},
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Allow, d.Outcome,
@@ -156,65 +230,80 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 		{
 			name: "a failure one nanosecond inside the window counts",
 			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				failuresAt(t, store, "ada",
-					lockoutNow.Add(-time.Minute),
-					lockoutNow.Add(-2*time.Minute),
-					lockoutNow.Add(-3*time.Minute),
-					lockoutNow.Add(-4*time.Minute),
-					lockoutCutoff.Add(time.Nanosecond))
+				failuresEndingAt("ada", 4, 10*time.Second)(t, store)
+				failuresAt(t, store, "ada", lockoutDefaultCutoff.Add(time.Nanosecond))
 			},
 			assert: denies,
 		},
 		{
 			name: "failures older than the window have fallen out of it",
 			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				for i := range 5 {
-					failuresAt(t, store, "ada", lockoutNow.Add(-20*time.Minute-time.Duration(i)*time.Minute))
+				for i := range 10 {
+					failuresAt(t, store, "ada", lockoutNow.Add(-25*time.Hour-time.Duration(i)*time.Minute))
 				}
 			},
 			assert: allows,
 		},
 		{
-			name: "a consumer threshold of three locks at three failures",
-			opts: []policy.LockoutOption{policy.WithLockoutThreshold(3)},
-			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				failuresAt(t, store, "ada",
-					lockoutNow.Add(-time.Minute),
-					lockoutNow.Add(-2*time.Minute),
-					lockoutNow.Add(-3*time.Minute))
-			},
+			name:   "a consumer threshold of three owes a wait at three failures",
+			opts:   []policy.LockoutOption{policy.WithLockoutThreshold(3)},
+			record: failuresEndingAt("ada", 3, 10*time.Second),
 			assert: denies,
 		},
 		{
-			name: "a consumer window of one hour still counts a failure the default would have dropped",
-			opts: []policy.LockoutOption{policy.WithLockoutWindow(time.Hour), policy.WithLockoutThreshold(1)},
+			name: "a consumer window of one hour drops a failure the default would still count",
+			opts: []policy.LockoutOption{policy.WithLockoutWindow(time.Hour)},
 			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				failuresAt(t, store, "ada", lockoutNow.Add(-45*time.Minute))
-			},
-			assert: denies,
-		},
-		{
-			name: "another identifier's failures do not lock this one",
-			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				for i := range 5 {
-					failuresAt(t, store, "grace", lockoutNow.Add(-time.Duration(i+1)*time.Minute))
-				}
+				failuresEndingAt("ada", 4, 10*time.Second)(t, store)
+				failuresAt(t, store, "ada", lockoutNow.Add(-2*time.Hour))
 			},
 			assert: allows,
 		},
 		{
-			name: "the instant the phase is being evaluated at wins over the policy's own clock",
-			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
-				for i := range 5 {
-					failuresAt(t, store, "ada", lockoutNow.Add(-time.Duration(i+1)*time.Minute))
-				}
-			},
+			// A fixed lock owes no wait: it holds for as long as the window
+			// counts the threshold, however old the newest failure.
+			name:   "a fixed lock denies at its threshold however old the newest failure",
+			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			record: failuresEndingAt("ada", 5, 10*time.Minute),
+			assert: denies,
+		},
+		{
+			name:   "a fixed lock lifts once the failures leave its window",
+			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			record: failuresEndingAt("ada", 5, 16*time.Minute),
+			assert: allows,
+		},
+		{
+			name:   "a fixed lock allows below its threshold",
+			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			record: failuresEndingAt("ada", 4, 10*time.Second),
+			assert: allows,
+		},
+		{
+			// The escalating default's ceiling of 100 has no meaning under a
+			// fixed lock, whose own threshold is the only count that locks.
+			name:   "a fixed lock ignores the escalating ceiling",
+			opts:   []policy.LockoutOption{policy.WithFixedLockout(200, 24*time.Hour)},
+			record: failuresEndingAt("ada", 150, 2*time.Hour),
+			assert: allows,
+		},
+		{
+			name:   "another identifier's failures do not lock this one",
+			record: failuresEndingAt("grace", 5, 10*time.Second),
+			assert: allows,
+		},
+		{
+			// By the policy's own clock the newest failure is 10 seconds old
+			// and the wait is owed; by the phase's instant it is 70 seconds
+			// old and served.
+			name:   "the instant the phase is being evaluated at wins over the policy's own clock",
+			record: failuresEndingAt("ada", 5, 10*time.Second),
 			input: func() *policy.Input {
-				return &policy.Input{Username: "ada", Now: lockoutNow.Add(30 * time.Minute)}
+				return &policy.Input{Username: "ada", Now: lockoutNow.Add(time.Minute)}
 			},
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Allow, d.Outcome,
-					"the policy judged the window against its own clock rather than the instant the phase carried")
+					"the policy judged the wait against its own clock rather than the instant the phase carried")
 			},
 		},
 		{
@@ -336,7 +425,7 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 			name: "a store that cannot count refuses the request rather than letting it through",
 			expect: func(store *MockAttemptStore) {
 				store.EXPECT().
-					FailureCount(gomock.Any(), "ada", lockoutCutoff).
+					FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).
 					Return(0, errAttemptStoreDown)
 			},
 			assert: func(t *testing.T, d policy.Decision) {
@@ -351,7 +440,7 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 			name: "a count the store could not stand behind is not counted as below the threshold",
 			expect: func(store *MockAttemptStore) {
 				store.EXPECT().
-					FailureCount(gomock.Any(), "ada", lockoutCutoff).
+					FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).
 					Return(0, errAttemptStoreDown)
 			},
 			assert: func(t *testing.T, d policy.Decision) {
@@ -368,7 +457,7 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 			},
 			expect: func(store *MockAttemptStore) {
 				store.EXPECT().
-					FailureCount(gomock.Any(), "ada", lockoutCutoff).
+					FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).
 					DoAndReturn(func(ctx context.Context, _ string, _ time.Time) (int, error) {
 						return 0, ctx.Err()
 					})
@@ -376,6 +465,67 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Deny, d.Outcome)
 				assert.ErrorIs(t, d.Reason, context.Canceled)
+			},
+		},
+		{
+			// Below the threshold no wait can be owed, so the policy must not
+			// spend a second query finding out: the strict mock fails the case
+			// on any further call.
+			name: "below the threshold the window is the only query",
+			expect: func(store *MockAttemptStore) {
+				store.EXPECT().
+					FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).
+					Return(4, nil)
+			},
+			assert: func(t *testing.T, d policy.Decision) {
+				assert.Equal(t, policy.Allow, d.Outcome)
+			},
+		},
+		{
+			name: "at the threshold the second query asks about the first wait exactly",
+			expect: func(store *MockAttemptStore) {
+				gomock.InOrder(
+					store.EXPECT().FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).Return(5, nil),
+					store.EXPECT().FailureCount(gomock.Any(), "ada", lockoutNow.Add(-30*time.Second)).Return(0, nil),
+				)
+			},
+			assert: func(t *testing.T, d policy.Decision) {
+				assert.Equal(t, policy.Allow, d.Outcome)
+			},
+		},
+		{
+			// The ceiling is reached on the window's count alone, so no wait is
+			// asked about.
+			name: "at the ceiling the window is the only query",
+			expect: func(store *MockAttemptStore) {
+				store.EXPECT().
+					FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).
+					Return(100, nil)
+			},
+			assert: func(t *testing.T, d policy.Decision) {
+				assert.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, policy.ErrAccountLocked)
+			},
+		},
+		{
+			// The window says a wait is owed; a store that then cannot say
+			// whether it has been served must not be read as "served".
+			name: "a store that cannot count the wait refuses rather than letting it through",
+			expect: func(store *MockAttemptStore) {
+				gomock.InOrder(
+					store.EXPECT().FailureCount(gomock.Any(), "ada", lockoutDefaultCutoff).Return(7, nil),
+					store.EXPECT().
+						FailureCount(gomock.Any(), "ada", lockoutNow.Add(-120*time.Second)).
+						Return(0, errAttemptStoreDown),
+				)
+			},
+			assert: func(t *testing.T, d policy.Decision) {
+				assert.Equal(t, policy.Deny, d.Outcome,
+					"a store that failed on the wait query let the request through")
+				assert.ErrorIs(t, d.Reason, errAttemptStoreDown, "the cause was collapsed")
+				assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+				assert.NotErrorIs(t, d.Reason, policy.ErrAccountLocked,
+					"an outage was reported to the caller as a locked account")
 			},
 		},
 	}
@@ -506,7 +656,7 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 
 		store := newReapableAttemptStore(t)
 		store.reaper.EXPECT().
-			DeleteAttemptsBefore(gomock.Any(), lockoutCutoff).
+			DeleteAttemptsBefore(gomock.Any(), lockoutDefaultCutoff).
 			Return(3, nil)
 
 		p := lockoutWith(t, policy.WithAttemptStore(store))
@@ -530,13 +680,29 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("a fixed lock's own window is the cutoff", func(t *testing.T) {
+		t.Parallel()
+
+		store := newReapableAttemptStore(t)
+		store.reaper.EXPECT().
+			DeleteAttemptsBefore(gomock.Any(), lockoutCutoff).
+			Return(0, nil)
+
+		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithFixedLockout(5, 15*time.Minute))
+
+		_, err := p.PurgeExpired(t.Context())
+		require.NoError(t, err)
+	})
+
 	t.Run("a purge does not free a failure the window still counts", func(t *testing.T) {
 		t.Parallel()
 
+		// A fixed lock of one failure per 15 minutes: the failure locks for as
+		// long as the window counts it, so a purge that took it would unlock.
 		store := newSweepingAttemptStore()
 		require.NoError(t, store.RecordFailure(t.Context(), "ada", lockoutNow.Add(-5*time.Minute)))
 
-		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithLockoutThreshold(1))
+		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithFixedLockout(1, 15*time.Minute))
 
 		removed, err := p.PurgeExpired(t.Context())
 		require.NoError(t, err)
@@ -551,14 +717,14 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 
 		store := newSweepingAttemptStore()
 		require.NoError(t, store.RecordFailure(t.Context(), "ada", lockoutNow.Add(-5*time.Minute)))
-		require.NoError(t, store.RecordFailure(t.Context(), "ada", lockoutNow.Add(-20*time.Minute)))
+		require.NoError(t, store.RecordFailure(t.Context(), "ada", lockoutNow.Add(-25*time.Hour)))
 
 		p := lockoutWith(t, policy.WithAttemptStore(store))
 
 		removed, err := p.PurgeExpired(t.Context())
 		require.NoError(t, err)
 		assert.Equal(t, 1, removed, "the sweep did not remove exactly the failure that had aged out")
-		assert.Equal(t, 1, store.held("ada"), "the sweep took a failure the fifteen-minute window still counts")
+		assert.Equal(t, 1, store.held("ada"), "the sweep took a failure the 24-hour window still counts")
 	})
 
 	t.Run("the default in-memory store reports unsupported rather than a silent zero", func(t *testing.T) {
@@ -589,7 +755,7 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 
 		store := newReapableAttemptStore(t)
 		store.reaper.EXPECT().
-			DeleteAttemptsBefore(gomock.Any(), lockoutCutoff).
+			DeleteAttemptsBefore(gomock.Any(), lockoutDefaultCutoff).
 			Return(0, errAttemptStoreDown)
 
 		p := lockoutWith(t, policy.WithAttemptStore(store))

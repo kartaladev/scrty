@@ -73,6 +73,11 @@
 // refused with a *ChallengeError, which carries the challenge as fields and
 // names only its kind in text.
 //
+// A locked account's login is the one refusal concealed by default: form
+// login, Basic and account recovery's password proof answer it as a wrong
+// password, joined to the lock so a consumer's handler still sees it, and
+// WithLockDisclosure answers it with the lock itself, mapped to 429.
+//
 // WithErrorHandler replaces what a refusal is answered with on the net/http
 // chain only. A framework that already owns how a request is refused keeps that
 // ownership: on gin the refusal goes to gin's error channel, and on fiber to
@@ -86,6 +91,10 @@
 // shares. Each flow asks for its own namespace, limit and window, so replacing
 // the storage keeps every flow's own policy. The sites, by namespace:
 //
+//   - "password-login": EnableFormLogin and EnableBasicAuth, one limiter the
+//     two endpoints share, so a source spraying passwords across both spends
+//     one allowance: failed logins and locked-account refusals per source, 50
+//     per 15 minutes.
 //   - "api-key": EnableAPIKey, failures per source, 20 per minute.
 //   - "magic-link-redeem": EnableMagicLink, failures per source, 10 per 15
 //     minutes.
@@ -105,22 +114,27 @@
 //   - "recovery-user": the recovery.Recoverer EnableAccountRecovery builds,
 //     failed recoveries per user, 5 per 15 minutes.
 //
-// A flow given a limiter of its own (WithAPIKeyLimiter, WithMFAVerifyLimiter
-// and the like) uses that one, and the factory is never asked for it. The
-// components a consumer builds and hands the chain — the recovery.Codes of
-// RecoveryDeps and the passkey.Manager of PasskeyDeps — build their limiters
-// themselves, through their own factory options (recovery.WithCodeLimiterFactory,
-// passkey.WithConfirmLimiterFactory). Every source guard the chain builds keys
-// IPv6 clients by the chain's prefix (WithIPv6SourcePrefix), and also counts
-// them by an aggregate: by default a /56 at 4 times the flow's limit, over the
-// flow's window, built from the factory under "<flow>-ipv6-aggregate" even for
-// a flow that was given a limiter of its own, so a client rotating through the
-// /64s of its allocation cannot buy a fresh allowance with each. For a flow
-// given its own limiter, the limit and window are that limiter's, read through
-// ratelimit.PolicyReporter; one that reports none gets no default aggregate and
-// a warning at construction, and refuses an explicit one. Set it with
-// WithIPv6Aggregate, or turn it off with WithoutIPv6Aggregate; the default is
-// skipped when the source prefix is /56 or wider.
+// A flow given a limiter of its own (WithLoginLimiter, WithBasicAuthLimiter,
+// WithAPIKeyLimiter, WithMFAVerifyLimiter and the like) uses that one, and the
+// factory is never asked for it. The two password endpoints then run under
+// flows of their own, "password-login-form" and "password-login-basic", so the
+// IPv6 aggregate each is given is built under "password-login-form-ipv6-aggregate"
+// or "password-login-basic-ipv6-aggregate" and shares nothing with the other
+// endpoint's. The components a consumer builds and hands
+// the chain — the recovery.Codes of RecoveryDeps and the passkey.Manager of
+// PasskeyDeps — build their limiters themselves, through their own factory
+// options (recovery.WithCodeLimiterFactory, passkey.WithConfirmLimiterFactory).
+// Every source guard the chain builds keys IPv6 clients by the chain's prefix
+// (WithIPv6SourcePrefix), and also counts them by an aggregate: by default a
+// /56 at 4 times the flow's limit, over the flow's window, built from the
+// factory under "<flow>-ipv6-aggregate" even for a flow that was given a
+// limiter of its own, so a client rotating through the /64s of its allocation
+// cannot buy a fresh allowance with each. For a flow given its own limiter, the
+// limit and window are that limiter's, read through ratelimit.PolicyReporter;
+// one that reports none gets no default aggregate and a warning at
+// construction, and refuses an explicit one. Set it with WithIPv6Aggregate, or
+// turn it off with WithoutIPv6Aggregate; the default is skipped when the source
+// prefix is /56 or wider.
 //
 // # A dependency's failure never reaches a record or a returned error's text
 //

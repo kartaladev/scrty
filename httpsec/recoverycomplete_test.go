@@ -187,17 +187,30 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 		},
 		{
-			name: "a locked account is refused with the lockout before the password is checked",
+			name: "a locked account is refused as a wrong password, after one decoy and no password check",
 			arrange: func(t *testing.T, h *recoveryHarness) {
-				lockout, err := policy.NewAccountLockoutPolicy(
-					policy.WithAttemptStore(h.attempts), policy.WithLockoutThreshold(1))
-				require.NoError(t, err)
-
-				h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(engineOf(t, lockout)))
-				require.NoError(t, h.attempts.RecordFailure(t.Context(), e2eAddress, time.Now()))
-
-				// A strict double: any password check fails the test.
-				h.authn = NewMockAuthenticator(gomock.NewController(t))
+				lockRecovery(t, h)
+				h.authn = lockDecoyAuthenticator(t, 1)
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				return h.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, h.saved(t),
+					httpsec.RecoveryPasswordParam, e2ePassword))
+			},
+			assert: func(t *testing.T, _ *recoveryHarness, out served) {
+				require.ErrorIs(t, out.err, recovery.ErrRefused, "as an unknown user or a wrong code is")
+				require.ErrorIs(t, out.err, policy.ErrAccountLocked,
+					"the consumer's own handler can still tell it is a lock")
+				assert.Equal(t, recovery.ErrRefused.Error(), out.err.Error())
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			name: "a locked account, with locks disclosed, is refused with the lock alone and no decoy",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				lockRecovery(t, h)
+				h.chainOpts = append(h.chainOpts, httpsec.WithLockDisclosure())
+				h.authn = lockDecoyAuthenticator(t, 0)
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
 				return h.complete(t, recoveryForm(
@@ -206,7 +219,9 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *recoveryHarness, out served) {
 				require.ErrorIs(t, out.err, policy.ErrAccountLocked)
-				assert.Equal(t, http.StatusLocked, httpsec.StatusForError(out.err))
+				assert.NotErrorIs(t, out.err, recovery.ErrRefused)
+				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+				assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(out.err))
 			},
 		},
 		{
@@ -976,6 +991,42 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			tc.assert(t, h, tc.act(t, h))
 		})
 	}
+}
+
+// lockRecovery locks the recovering user: a lockout of one failure, with that
+// failure already recorded.
+func lockRecovery(t *testing.T, h *recoveryHarness) {
+	t.Helper()
+
+	lockout, err := policy.NewAccountLockoutPolicy(
+		policy.WithAttemptStore(h.attempts), policy.WithFixedLockout(1, time.Hour))
+	require.NoError(t, err)
+
+	h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(engineOf(t, lockout)))
+	require.NoError(t, h.attempts.RecordFailure(t.Context(), e2eAddress, time.Now()))
+}
+
+// lockDecoyAuthenticator is a manager over the password provider whose user
+// loader and encoder are strict doubles: loading the user, which checking the
+// account's own password would need, fails the row, and the presented password
+// must be matched against the reference hash exactly decoys times.
+func lockDecoyAuthenticator(t *testing.T, decoys int) authenticate.Authenticator {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	enc := NewMockEncoder(ctrl)
+	enc.EXPECT().Encode(gomock.Any()).Return(lockReferenceHash, nil).Times(1)
+	enc.EXPECT().Match(e2ePassword, lockReferenceHash).Return(false).Times(decoys)
+
+	provider, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
+		authenticate.WithPasswordEncoder(enc),
+		authenticate.WithPasswordAuthenticatorLogger(slog.New(slog.DiscardHandler)))
+	require.NoError(t, err)
+
+	m, err := authenticate.NewManager(provider)
+	require.NoError(t, err)
+
+	return m
 }
 
 // recoveryLogs is the capturing handler the row's WithLogger installed.

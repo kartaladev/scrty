@@ -76,9 +76,14 @@ type Request struct {
 // PasswordCheck checks a password proof for the username a recovery names. It
 // is supplied with WithPasswordCheck.
 //
-// An error wrapping authenticate.ErrAuthenticationFailed is a wrong password
-// and becomes ErrRefused. Any other error is returned by the recovery
-// unchanged. Either way it is counted against the user, and marked as a
+// An error wrapping authenticate.ErrAuthenticationFailed is a refused password
+// and becomes ErrRefused, with ErrRefused's text. The check's error stays
+// beneath it, so whatever else it wraps remains identifiable with errors.Is: a
+// lock the check concealed as a failed authentication, by joining the lock
+// with authenticate.ErrAuthenticationFailed, is refused like a wrong password
+// and still reads as a lock to the consumer's handler. Any other error is
+// returned by the recovery unchanged, so a lock returned alone is disclosed as
+// itself. Either way it is counted against the user, and marked as a
 // refusal after a valid code (see RefusedAfterValidCode), so it is counted
 // against the source too. The recovery cannot tell a check that met an outage
 // from one that refused: an implementation should return a lockout or a
@@ -200,7 +205,7 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 	if v.has(ProofPassword) {
 		if err := r.passwordCheck(ctx, req.Username, req.Password); err != nil {
 			if errors.Is(err, authenticate.ErrAuthenticationFailed) {
-				err = ErrRefused
+				err = refusedByCheck(err)
 			}
 
 			return nil, r.refuse(ctx, v.user, err, true)
@@ -212,6 +217,18 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 	}
 
 	return v, nil
+}
+
+// refusedByCheck turns a password check's authentication failure into
+// ErrRefused.
+//
+// The check's error stays beneath ErrRefused, so a consumer's handler can
+// still identify what it carried, such as a lock the check concealed as a
+// failed authentication, with errors.Is. The text is ErrRefused's alone: the
+// check's own text may name the user or the reason, and the refusal must read
+// the same as a wrong password, a wrong code or an unknown user.
+func refusedByCheck(err error) error {
+	return diag.Wrap(err, ErrRefused.Error(), ErrRefused) //nolint:forbidigo // the library's own sentinel text, not the dependency's
 }
 
 // shape checks the request's form: a username, exactly two proofs of

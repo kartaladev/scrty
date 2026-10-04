@@ -94,8 +94,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found | 404 |
 | request too large | 413 |
 | new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
-| account locked | 423 |
-| too many sessions | 429 |
+| account locked, too many sessions | 429 |
 | held recovery presented before its hold ends | 409 |
 | any other error | 500 |
 
@@ -229,6 +228,14 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 
 #### Scenario: Refused passkey ceremony
 - **WHEN** the error is the refusal of a passwordless finish whose signature does not verify
+- **THEN** the mapping returns 401
+
+#### Scenario: Disclosed account lock
+- **WHEN** the error is the account-locked refusal alone
+- **THEN** the mapping returns 429
+
+#### Scenario: Concealed account lock
+- **WHEN** the error joins the authentication failure refusal with the account-locked refusal
 - **THEN** the mapping returns 401
 
 ### Requirement: A challenge takes precedence over a sentinel

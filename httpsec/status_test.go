@@ -95,7 +95,12 @@ func TestStatusForError(t *testing.T) {
 			want: 422,
 		},
 		{name: "password history unavailable is a dependency failure", err: password.ErrHistoryUnavailable, want: 500},
-		{name: "account locked", err: policy.ErrAccountLocked, want: 423},
+		{name: "account locked", err: policy.ErrAccountLocked, want: 429},
+		{
+			name: "concealed account lock answers as the authentication failure",
+			err:  errors.Join(authenticate.ErrAuthenticationFailed, policy.ErrAccountLocked),
+			want: 401,
+		},
 		{name: "too many sessions", err: policy.ErrTooManySessions, want: 429},
 		{name: "unknown identity provider", err: oidc.ErrUnknownProvider, want: 404},
 		{name: "unknown MFA method", err: httpsec.ErrUnknownMFAMethod, want: 404},

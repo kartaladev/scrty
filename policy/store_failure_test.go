@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,6 +73,30 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 			input: &policy.Input{Username: "alice", Now: mfaNow},
 			assert: func(t *testing.T, d policy.Decision, _ *bytes.Buffer) {
 				assertFixedReason(t, d, policy.ErrPolicyDenied)
+			},
+		},
+		{
+			// The window's count succeeded and owes a wait; the query that
+			// asks whether it has been served is the one that fails.
+			name: "lockout: the attempt store could not count failures inside the wait",
+			build: func(t *testing.T, _ *bytes.Buffer) policy.Policy {
+				store := NewMockAttemptStore(gomock.NewController(t))
+				gomock.InOrder(
+					store.EXPECT().FailureCount(gomock.Any(), "alice", mfaNow.Add(-24*time.Hour)).Return(7, nil),
+					store.EXPECT().FailureCount(gomock.Any(), "alice", mfaNow.Add(-120*time.Second)).
+						Return(0, errLeakyStore),
+				)
+
+				p, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store))
+				require.NoError(t, err)
+
+				return p
+			},
+			input: &policy.Input{Username: "alice", Now: mfaNow},
+			assert: func(t *testing.T, d policy.Decision, _ *bytes.Buffer) {
+				assertFixedReason(t, d, policy.ErrPolicyDenied)
+				assert.NotErrorIs(t, d.Reason, policy.ErrAccountLocked,
+					"an outage was reported to the caller as a locked account")
 			},
 		},
 		{

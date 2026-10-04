@@ -48,8 +48,147 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
 				assert.Equal(t, 5, p.Threshold())
-				assert.Equal(t, 15*time.Minute, p.Window())
+				assert.Equal(t, 24*time.Hour, p.Window())
 			},
+		},
+		{
+			// A first wait of zero is no wait at all, so the escalation would
+			// never start and every account would get unlimited guesses.
+			name:   "a zero first wait is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(0, time.Hour)},
+			assert: refused,
+		},
+		{
+			name:   "a negative first wait is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(-time.Second, time.Hour)},
+			assert: refused,
+		},
+		{
+			name:   "a longest wait shorter than the first is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(time.Minute, time.Second)},
+			assert: refused,
+		},
+		{
+			name: "a longest wait equal to the first is a flat wait, and allowed",
+			opts: []policy.LockoutOption{policy.WithLockoutWait(time.Minute, time.Minute)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+			},
+		},
+		{
+			// The ceiling is where waiting stops lifting the lock, so it must
+			// leave at least one escalated wait between it and the threshold.
+			name:   "a ceiling equal to the default threshold is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutCeiling(5)},
+			assert: refused,
+		},
+		{
+			name: "a ceiling below a consumer threshold is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutThreshold(10),
+				policy.WithLockoutCeiling(8),
+			},
+			assert: refused,
+		},
+		{
+			name:   "a consumer threshold at the default ceiling is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutThreshold(100)},
+			assert: refused,
+		},
+		{
+			// NIST caps consecutive failures at 100; a higher ceiling is the
+			// consumer's documented departure, not a wiring mistake.
+			name: "a ceiling above one hundred is allowed",
+			opts: []policy.LockoutOption{policy.WithLockoutCeiling(150)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+			},
+		},
+		{
+			name: "a fixed lock keeps its own threshold and window",
+			opts: []policy.LockoutOption{policy.WithFixedLockout(3, 15*time.Minute)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 3, p.Threshold())
+				assert.Equal(t, 15*time.Minute, p.Window(), "Window did not report the fixed lock's window")
+			},
+		},
+		{
+			// A fixed lock has no ceiling, so a threshold at or above the
+			// escalating default's ceiling is still a fixed lock.
+			name: "a fixed lock above the escalating ceiling is allowed",
+			opts: []policy.LockoutOption{policy.WithFixedLockout(200, 24*time.Hour)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+			},
+		},
+		{
+			name:   "a fixed lock with a zero window is refused",
+			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 0)},
+			assert: refused,
+		},
+		{
+			name:   "a fixed lock with a zero threshold is refused",
+			opts:   []policy.LockoutOption{policy.WithFixedLockout(0, 15*time.Minute)},
+			assert: refused,
+		},
+		{
+			name: "a fixed lock with a wait option is refused",
+			opts: []policy.LockoutOption{
+				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithLockoutWait(time.Second, time.Minute),
+			},
+			assert: refused,
+		},
+		{
+			name: "a fixed lock with a ceiling option is refused",
+			opts: []policy.LockoutOption{
+				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithLockoutCeiling(50),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				refused(t, p, err)
+				assert.Contains(t, err.Error(), "WithLockoutCeiling")
+				assert.NotContains(t, err.Error(), "WithLockoutWait", "the error named an option that was not combined")
+				assert.NotContains(t, err.Error(), "WithLockoutThreshold", "the error named an option that was not combined")
+				assert.NotContains(t, err.Error(), "WithLockoutWindow", "the error named an option that was not combined")
+			},
+		},
+		{
+			name: "a fixed lock with several conflicting options names each of them",
+			opts: []policy.LockoutOption{
+				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithLockoutThreshold(3),
+				policy.WithLockoutWait(time.Second, time.Minute),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				refused(t, p, err)
+				assert.Contains(t, err.Error(), "WithLockoutThreshold")
+				assert.Contains(t, err.Error(), "WithLockoutWait")
+				assert.NotContains(t, err.Error(), "WithLockoutCeiling")
+			},
+		},
+		{
+			// The order of the options must not matter: a threshold set
+			// before the fixed lock would otherwise be silently overwritten.
+			name: "a threshold option before a fixed lock is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutThreshold(3),
+				policy.WithFixedLockout(5, 15*time.Minute),
+			},
+			assert: refused,
+		},
+		{
+			name: "a window option after a fixed lock is refused",
+			opts: []policy.LockoutOption{
+				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithLockoutWindow(time.Hour),
+			},
+			assert: refused,
 		},
 		{
 			name: "a consumer's own threshold and window are kept",

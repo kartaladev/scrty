@@ -393,3 +393,24 @@ func (a *passwordAuthenticator) FlushRefusalLogs() error {
 
 var _ Authenticator = (*passwordAuthenticator)(nil)
 var _ RefusalLogFlusher = (*passwordAuthenticator)(nil)
+
+// VerifyDecoy verifies the presented password against the reference hash built
+// at construction, through the configured encoder, and discards the verdict.
+//
+// It never loads the user, so a slow user store cannot tell a decoy from a
+// real verification, or reveal whether an account exists. It reports handled
+// only for *identity.UsernamePassword; any other credentials are declined
+// without any hashing.
+func (a *passwordAuthenticator) VerifyDecoy(_ context.Context, c identity.Credentials) bool {
+	creds, ok := c.(*identity.UsernamePassword)
+	if !ok {
+		return false
+	}
+
+	// Deliberately unused: the verification is the point, not its verdict.
+	_ = a.enc.Match(string(creds.Password), a.reference)
+
+	return true
+}
+
+var _ DecoyVerifier = (*passwordAuthenticator)(nil)

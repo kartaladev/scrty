@@ -641,9 +641,12 @@ func lockedAccountIsRefused() Scenario {
 		},
 		Request: sending(formBody("username=" + Username + "&password=" + Password)),
 		Assert: func(t *testing.T, res Result) {
-			assert.Equal(t, http.StatusLocked, res.Status)
+			// Concealed by default: answered as a wrong password, and still a
+			// lock to the consumer's own handler.
+			assert.Equal(t, http.StatusUnauthorized, res.Status)
 			assert.Empty(t, res.Body)
 			require.ErrorIs(t, res.Refusal, policy.ErrAccountLocked)
+			require.ErrorIs(t, res.Refusal, authenticate.ErrAuthenticationFailed)
 
 			assert.Equal(t, 0, res.Effects.AuthenticatorCalls(),
 				"a locked account is refused before its password is checked")
