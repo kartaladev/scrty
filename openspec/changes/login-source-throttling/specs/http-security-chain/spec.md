@@ -96,6 +96,10 @@ Form login and Basic authentication SHALL share one source guard for the flow `p
 - **WHEN** a chain with a consumer's factory enables form login and Basic authentication
 - **THEN** the factory is asked once for namespace `password-login`, with a limit of 50 and a window of 15 minutes
 
+#### Scenario: Own limiter under a shared factory
+- **WHEN** a chain with a shared limiter factory that refuses one namespace with two policies enables form login with its own limiter of 10 per minute and Basic with the default
+- **THEN** construction succeeds, and form login's guard and IPv6 aggregate share no bucket with Basic's
+
 #### Scenario: Unattributable source
 - **WHEN** a form login arrives with no client address
 - **THEN** it is refused as unattributable without the password being evaluated

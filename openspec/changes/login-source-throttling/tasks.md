@@ -81,9 +81,11 @@ Ownership:
 
 - [x] 4.6 After rebasing onto `limiter-key-bounds`: the `password-login` guard's IPv6 aggregate. Tests: with the default factory the chain asks for `password-login-ipv6-aggregate` at 200 per 15 minutes; addresses rotating across /64s inside one /56 exhaust it; a consumer limiter given through `WithLoginLimiter` that reports a policy gets an aggregate sized from it; one that reports none gets no aggregate and one construction warning naming the option, and with an explicit `WithIPv6Aggregate` construction fails. Godoc of `WithLoginLimiter` and `WithBasicAuthLimiter` states this. Verify with `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/` and `go doc ./httpsec WithLoginLimiter`
 
+- [ ] 4.7 An endpoint given its own limiter runs under its own flow (`password-login:form`, `password-login:basic`), so its guard and IPv6 aggregate share nothing with the other endpoint. Red first: a conflict-checking factory in the httpsec tests (refusing one namespace with two policies, as the Redis factory does) makes `WithLoginLimiter(10/min)` plus a default Basic fail construction on the unchanged code; equal own limiters on both endpoints get separate aggregate buckets. Update the godoc of both options, the 4.6 rows' expected namespaces, and the WARN/refusal assertions. Covers http-security-chain scenario "Own limiter under a shared factory". Verify with `go test -race -run 'TestChain_PasswordLogin' -count=1 ./httpsec/`
+
 ## 5. Integration
 
-- [x] 5.1 Whole-workspace gate. Verify with:
+- [ ] 5.1 Whole-workspace gate. Verify with:
   - `go build ./...`, `go vet ./...` and `go test -race -count=1 ./...` in every module of `go.work` (with Docker for the store and Redis conformance runs), plus `go test -race ./...` in `ginsec` and `fibersec`;
   - `gofmt -l .` empty;
   - `golangci-lint run ./...` clean.
