@@ -33,7 +33,7 @@ func (h *recoveryHarness) withCodesEndpoint() {
 	h.chainOpts = append(h.chainOpts, httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 		Verifier: h.tokens, Sessions: h.sessions, Users: h.users,
 	}))
-	h.recOpts = append(h.recOpts, httpsec.WithRecoveryClockForTest(h.clock.Now))
+	h.chainOpts = append(h.chainOpts, httpsec.WithClock(h.clock))
 }
 
 // fullSession is a session a password login created at the harness's current

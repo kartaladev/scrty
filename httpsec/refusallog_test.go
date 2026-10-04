@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
-	"testing/synctest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -138,14 +138,14 @@ func TestRefusalLogSampling(t *testing.T) {
 		opts []httpsec.Option
 		// act drives the chain's throttled API key flow through attempt, and
 		// the OIDC handoff flow of a chain over the same log through redeem.
-		act    func(t *testing.T, attempt func(source string), redeem func())
+		act    func(t *testing.T, attempt func(source string), redeem func(), advance func(time.Duration))
 		assert func(t *testing.T, records []slog.Record)
 	}
 
 	cases := []testCase{
 		{
 			name: "a flood from one source writes one warning in the window",
-			act: func(_ *testing.T, attempt func(string), _ func()) {
+			act: func(_ *testing.T, attempt func(string), _ func(), _ func(time.Duration)) {
 				for range 50 {
 					attempt("198.51.100.7")
 				}
@@ -157,7 +157,7 @@ func TestRefusalLogSampling(t *testing.T) {
 		},
 		{
 			name: "two sources do not suppress each other",
-			act: func(_ *testing.T, attempt func(string), _ func()) {
+			act: func(_ *testing.T, attempt func(string), _ func(), _ func(time.Duration)) {
 				attempt("198.51.100.7")
 				attempt("203.0.113.9")
 			},
@@ -167,7 +167,7 @@ func TestRefusalLogSampling(t *testing.T) {
 		},
 		{
 			name: "a flood against one flow does not suppress another flow",
-			act: func(_ *testing.T, attempt func(string), redeem func()) {
+			act: func(_ *testing.T, attempt func(string), redeem func(), _ func(time.Duration)) {
 				for range 10 {
 					attempt(flushSource)
 				}
@@ -187,7 +187,7 @@ func TestRefusalLogSampling(t *testing.T) {
 		{
 			name: "an interval of zero disables sampling",
 			opts: []httpsec.Option{httpsec.WithRefusalLogInterval(0)},
-			act: func(_ *testing.T, attempt func(string), _ func()) {
+			act: func(_ *testing.T, attempt func(string), _ func(), _ func(time.Duration)) {
 				for range 5 {
 					attempt("198.51.100.7")
 				}
@@ -198,12 +198,11 @@ func TestRefusalLogSampling(t *testing.T) {
 		},
 		{
 			name: "a written record carries the count suppressed before it",
-			act: func(_ *testing.T, attempt func(string), _ func()) {
+			act: func(_ *testing.T, attempt func(string), _ func(), advance func(time.Duration)) {
 				for range 4 {
 					attempt("198.51.100.7")
 				}
-				synctest.Wait()
-				time.Sleep(time.Minute + time.Second) // the window rolls
+				advance(time.Minute + time.Second) // the window rolls
 				attempt("198.51.100.7")
 			},
 			assert: func(t *testing.T, records []slog.Record) {
@@ -216,20 +215,21 @@ func TestRefusalLogSampling(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// No t.Parallel: synctest.Test owns the bubble's goroutines, and
-			// its fake clock is what the guard samples by.
-			synctest.Test(t, func(t *testing.T) {
-				var h capturingHandler
+			t.Parallel()
 
-				log := slog.New(&h)
-				_, attempt := throttledAPIKeyChain(t, log, tc.opts...)
-				handoffs := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
-					httpsec.WithHandoffLimiter(exceededLimiter(t)))
+			// The chain's sampler reads the chain's clock, which a case moves
+			// by advancing it.
+			fc := clockwork.NewFakeClock()
 
-				tc.act(t, attempt, func() { redeemGarbage(t, handoffs, 1) })
-				synctest.Wait()
-				tc.assert(t, throttledRecords(h.records()))
-			})
+			var h capturingHandler
+
+			log := slog.New(&h)
+			_, attempt := throttledAPIKeyChain(t, log, append([]httpsec.Option{httpsec.WithClock(fc)}, tc.opts...)...)
+			handoffs := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
+				httpsec.WithHandoffLimiter(exceededLimiter(t)))
+
+			tc.act(t, attempt, func() { redeemGarbage(t, handoffs, 1) }, fc.Advance)
+			tc.assert(t, throttledRecords(h.records()))
 		})
 	}
 }

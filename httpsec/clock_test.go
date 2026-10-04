@@ -125,6 +125,7 @@ func TestWithClock(t *testing.T) {
 			name: "System clock by default",
 			act: func(t *testing.T) observed {
 				h := newMFAHarness(t)
+				h.systemClock = true
 				h.channel(factor.AuthenticatorApp).neverVerifies().recordsNoFailure()
 				h.limiter.EXPECT().Exceeded(gomock.Any(), mfa.VerifyThrottleKey(testMFAUser)).
 					Return(false, nil).AnyTimes()
