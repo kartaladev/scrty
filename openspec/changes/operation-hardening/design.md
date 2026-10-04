@@ -254,10 +254,17 @@ The reviews of this change found two faults in code the change builds on. Both a
 - **Evidence:** reproduced by a failing test in a scratch copy during review; pending reproduction in the tree. The scenario "A manager's default store follows the manager's time source" becomes the first failing test.
 - **Default:** a manager given no store builds its default store on the manager's own time source.
 - **Override:** `WithStore` with the consumer's own store, which keeps its own clock.
-- **Scope:** the implementation also looks, with gopls, for other constructors that build a time-keeping default without passing their clock, and fixes each one on the same rule.
+- **Scope:** the implementation also looks for other constructors that build a time-keeping default without passing their clock, and fixes each one on the same rule. The search found one more:
+  - `session.NewManager`, whose default memory store read the system clock while the manager read its own. It now builds the store on the manager's clock. When that clock only tells the time and cannot wait (a `clock.Clock` rather than a `clock.Timed`), it is adapted to the store's clock type. The waiting half of that adapter is never used, because the manager never starts its default store's housekeeping.
+
+  The other stores the search covered are not affected:
+  - some take their cutoff or time from the caller rather than reading a clock: API keys, lockout attempts, recovery codes and records, passkey credentials, OIDC links and handoffs, MFA enrolments;
+  - some already received their owner's clock: passkey ceremonies, recovery hold tokens, OIDC flows;
+  - the chain's default MFA challenge store reads the system clock, and so do the managers over it, because the chain itself has no time-source option. A chain clock would be a new option, outside this change.
 
 **(b) A second `EnableMFA` on one chain is refused.**
-- **The fault:** the chain accepts `EnableMFA` twice, on two prefixes, but its MFA lookup keeps only the last interceptor. The challenge raised at login would therefore offer only the second configuration's methods, and the first's would never be offered. This is UNREPRODUCED; the first task writes that test.
+- **The fault:** the chain accepts `EnableMFA` twice, on two prefixes, but the challenge raised at login offers the methods of only one of them: the other's are never offered.
+- **Evidence:** REPRODUCED by `TestChain_TwoEnableMFAOfferOnlyTheLast` before the refusal replaced it. With `EnableMFA([totp])` and `EnableMFA([email-code])`, both usable by the user, the challenge's `Methods` held only `totp`; the second configuration's method was dropped (not the first's, as first assumed).
 - **Default:** a second `EnableMFA` fails construction with an error naming MFA, as a second form login, Basic or account recovery already does.
 - **Override:** none needed. A consumer gives one `EnableMFA` every method, and each method keeps its own begin and verify paths under that prefix.
 - **`Chain.ExpiryTasks`** keeps collecting every MFA interceptor the chain registered. That stays correct with exactly one. Its test row and godoc sentence about two configurations sharing a method name become unreachable, and are replaced by the construction refusal.
