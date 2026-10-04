@@ -36,8 +36,12 @@ API keys, OIDC links, MFA enrolments, passkey credentials (pending or active), a
 - **AND** a challenge issued within its window is kept
 
 #### Scenario: Only enabled components contribute tasks
-- **WHEN** a chain enables MFA with the TOTP method and does not enable account recovery
-- **THEN** the chain's expiry tasks include the TOTP challenge task and no recovery task
+- **WHEN** a chain enables MFA with the passkey challenge method and does not enable account recovery
+- **THEN** the chain's expiry tasks include the passkey challenge task and no recovery task
+
+#### Scenario: A factor with no challenge state contributes no task
+- **WHEN** a chain enables MFA with only the TOTP method, which keeps no pending challenge
+- **THEN** the chain contributes no MFA challenge task
 
 #### Scenario: Consumer task for their own state
 - **WHEN** a consumer adds a task with their own name and purge operation for a table they own

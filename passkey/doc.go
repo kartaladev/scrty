@@ -85,4 +85,13 @@
 // No error this package returns carries a challenge, user handle, public key,
 // attestation statement, credential ID or emailed code. A credential is named
 // only by its library identifier.
+//
+// # Expired challenges
+//
+// Ceremony challenges live in Deps.Challenges under one-time managers the
+// Manager builds itself. Manager.ExpiryTasks returns the tasks that delete the
+// expired ones, "passkey-registration-challenges" and
+// "passkey-login-challenges", for an expiry.Runner or a scheduler. Pending and
+// active passkeys are never swept: they are created only by an authenticated
+// user and are bounded per user.
 package passkey

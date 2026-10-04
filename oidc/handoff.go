@@ -429,3 +429,16 @@ func (h *HandoffManager) FlushRefusalLogs() error {
 
 	return nil
 }
+
+// PurgeExpired deletes the handoff records that expired before the manager's
+// own now, read from its clock (WithHandoffClock), and returns how many the
+// store removed. A redeemed record expires like any other, so spent codes go
+// once their lifetime has passed.
+//
+// The cutoff is the manager's and is not configurable: nothing counts expired
+// handoffs, so there is no window to wait out, and a code that has not yet
+// expired is never deleted. A store error is returned with whatever count the
+// store reported. HandoffExpiryTask wraps it as a task.
+func (h *HandoffManager) PurgeExpired(ctx context.Context) (int, error) {
+	return h.store.DeleteExpired(ctx, h.clock.Now())
+}
