@@ -12,9 +12,10 @@ The system SHALL provide an expiry task for each of the following, and each task
 - login attempts older than the lockout window;
 - idle keys held by the in-memory rate limiter;
 - expired OIDC flows;
-- spent or expired OIDC handoffs.
+- spent or expired OIDC handoffs;
+- expired one-time state the library keeps on its own behalf: passkey ceremony challenges, MFA challenges, and account-recovery issued codes and hold tokens, each through the component that owns it.
 
-API keys, OIDC links, MFA enrolments, signing keys and identity records SHALL NOT be deleted by any expiry task. Each built-in task SHALL carry a stable default name that is used in logs, results and lock keys, and SHALL leave its scheduling interval unset.
+API keys, OIDC links, MFA enrolments, passkey credentials (pending or active), account-recovery records, signing keys and identity records SHALL NOT be deleted by any expiry task. Each built-in task SHALL carry a stable default name that is used in logs, results and lock keys, and SHALL leave its scheduling interval unset.
 
 #### Scenario: Expired and live sessions
 - **WHEN** two expired sessions and one valid session exist and the session task runs
@@ -28,6 +29,15 @@ API keys, OIDC links, MFA enrolments, signing keys and identity records SHALL NO
 #### Scenario: Durable records untouched
 - **WHEN** every expiry task runs against stores holding an API key past its optional expiry, an OIDC link, an MFA enrolment and a signing key
 - **THEN** none of them is deleted
+
+#### Scenario: Unauthenticated ceremony state is swept
+- **WHEN** strangers made passwordless passkey begins whose challenges have expired and passed their issuance window, and the passkey component's tasks run
+- **THEN** those challenges are deleted
+- **AND** a challenge issued within its window is kept
+
+#### Scenario: Only enabled components contribute tasks
+- **WHEN** a chain enables MFA with the TOTP method and does not enable account recovery
+- **THEN** the chain's expiry tasks include the TOTP challenge task and no recovery task
 
 #### Scenario: Consumer task for their own state
 - **WHEN** a consumer adds a task with their own name and purge operation for a table they own

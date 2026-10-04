@@ -51,7 +51,7 @@ Departures from established behaviour are labelled (a) when a settled scrty deci
 | Module | Package | Contents | Dependencies |
 |---|---|---|---|
 | core | `expiry` | `Task`, `Runner`, `Result`, `Report`, sentinels | standard library only |
-| core | `session`, `onetime`, `magiclink`, `policy`, `ratelimit`, `oidc` | expiry task constructors | `expiry` |
+| core | `session`, `onetime`, `magiclink`, `policy`, `ratelimit`, `oidc`, `passkey`, `httpsec` | expiry task constructors | `expiry` |
 | `github.com/kartaladev/scrty/sweep` | `sweep` | `Sweeper`: gocron scheduling of a `Runner` | gocron v2, clockwork, core |
 
 - **`expiry` is a leaf package (departure (a)).** Owning packages return an `expiry.Task`, so they import `expiry`, which has no third-party dependency. If the task type lived in the scheduler package, every owning package would carry gocron in its build graph, which the core module's no-scheduler rule forbids.
@@ -73,15 +73,19 @@ type Task struct {
 
 | Constructor | Accepts | Task name |
 |---|---|---|
-| `session.ExpiryTask(s session.Store)` | the base store contract, which already has expiry deletion | `sessions` |
-| `magiclink.ExpiryTask(m *magiclink.Manager)` | the manager, which owns the purpose and window | `magiclink-tokens` |
-| `onetime.ExpiryTask(m *onetime.Manager)` | the manager, which owns the purpose and window | `one-time-tokens:<purpose>` |
-| `policy.LockoutExpiryTask(p *policy.LockoutPolicy)` | the policy, which owns the window | `login-attempts` |
-| `ratelimit.ExpiryTask(l *ratelimit.MemoryLimiter)` | the in-memory limiter | `ratelimit` |
-| `oidc.FlowExpiryTask(r oidc.FlowPurger)` | the purge capability, not the flow store port | `oidc-flows` |
-| `oidc.HandoffExpiryTask(m *oidc.HandoffManager)` | the handoff owner | `oidc-handoffs` |
+| `session.ExpiryTask(s session.Store)` | the base store contract, whose `DeleteExpired(ctx)` already uses now | `sessions` |
+| `magiclink.ExpiryTask(m *magiclink.Manager)` | the manager; it gains `PurgeExpired(ctx)`, delegating to the one-time manager it wraps | `magiclink-tokens` |
+| `onetime.ExpiryTask(m *onetime.Manager)` | the manager, which owns the purpose and window (`Purpose()`, `PurgeExpired`) | `one-time-tokens:<purpose>` |
+| `policy.LockoutExpiryTask(p *policy.AccountLockoutPolicy)` | the policy, which owns the window | `login-attempts` |
+| `ratelimit.ExpiryTask(l *ratelimit.MemoryLimiter)` | the in-memory limiter; its `Prune()` comes to return the number of keys removed | `ratelimit` |
+| `oidc.FlowExpiryTask(m *oidc.Manager)` | the login manager; it gains `PurgeExpiredFlows(ctx)`, which deletes flows expired before its own clock's now | `oidc-flows` |
+| `oidc.HandoffExpiryTask(m *oidc.HandoffManager)` | the handoff owner; it gains `PurgeExpired(ctx)`, on the same rule | `oidc-handoffs` |
+| `(*passkey.Manager).ExpiryTasks() []expiry.Task` | the ceremony owner, over the one-time managers it builds | `passkey-registration-challenges`, `passkey-login-challenges` |
+| `(*httpsec.Chain).ExpiryTasks() []expiry.Task` | the chain, over the one-time state of components it builds: each MFA method's challenges, and the recoverer's issued codes and hold tokens | `mfa-challenges:<method>`, `recovery-issued-codes`, `recovery-finish-tokens`, `recovery-cancel-tokens`, each only when that component is enabled |
 
-- **Why a capability interface for flows:** a constructor that accepted the flow store port would compile against a stateless store with no rows, and reveal the mismatch only on its first run. Accepting the capability makes that a compile error.
+- **Why OIDC tasks wrap the owners, not the stores:** `FlowStore.DeleteExpired` and `HandoffStore.DeleteExpired` take their cutoff from the caller. A task over the store would have to choose that cutoff itself, which is exactly what decision 2 forbids; the owner already holds the store and the clock, so the cutoff stays with it. Expired flows and handoffs feed no count, so the owner's cutoff is simply its own now.
+- **Why owners expose the state they build themselves (added in planning):** passkey ceremonies, MFA challenges and recovery codes live in one-time stores whose managers the library builds internally, so `onetime.ExpiryTask` cannot reach them. With a durable store their rows would grow without bound, and the passwordless begin and recovery start write them for callers who have not authenticated. The owner returns tasks over its own managers, so the cutoff stays with them. A component that is not enabled contributes no task.
+- **Pending passkey credentials and account-recovery records are not swept.** They are created only by an authenticated user or after valid proofs, are bounded per user, and a recovery record is its audit trail.
 - **Why each constructor wraps the owner and not the store:** the owner derives the cutoff. A task that reached past the one-time manager to its store would have to pick a cutoff itself, and the obvious choice, the TTL, frees issuance quota.
 - **Names are stable and part of the contract,** because they appear in logs and results and form the distributed lock key. A deployment with two limiters renames one task, for example `ratelimit:apikey`, because duplicate names are refused.
 - **The rate-limiter task** is not needed to bound memory under traffic, since the limiter prunes inline. It exists for a limiter that goes quiet, whose last window's keys would otherwise stay allocated.
@@ -232,6 +236,22 @@ Each group ends with a `/simplify` pass and a re-run.
 - [A purge that ignores its context runs past its deadline] → Stated in godoc. Durable adapters pass the context to the driver.
 - [N replicas without a lock each sweep] → Deletes are idempotent, and a lock is one option away. The godoc says what the lock tests do not prove.
 
+- [The rate-limiter task touches the file `limiter-key-bounds` rewrites] → Its lane runs last, after that change lands on main (agreed with the session implementing it). `Prune` then reports the count its shards already compute.
+- [gocron issue #959: cancellation with a scheduler-level concurrency limit plus singleton mode can skip cleanup] → The sweeper uses per-job singleton mode only and never `WithLimitConcurrentJobs`.
+
 ## Migration Plan
 
 Not applicable: this is a new library with no consumers and no tags. For deployers, apply the migration sets before the first release that wires a database.
+
+## References
+
+**Researched (accessed 2026-10-04):**
+
+*Decision 6, the scheduled sweeper:*
+- [gocron v2 package documentation](https://pkg.go.dev/github.com/go-co-op/gocron/v2) (v2.22.0, released 2026-07-09, MIT): `WithClock(clockwork.Clock)`, `WithDistributedLocker` keyed by job name, `WithSingletonMode(LimitModeReschedule)` dropping overlapping ticks, `WithStartAt(WithStartImmediately())`, job errors surfaced only through event listeners, `NewScheduler` starting its goroutine before `Start`, and `Shutdown` releasing it whether or not `Start` ran. Behaviours confirmed by a probe test under `-race` with goleak.
+- [gocron PR #946](https://github.com/go-co-op/gocron/pull/946): fake-clock timing fix in v2.22.0, the minimum version pinned.
+- [gocron issue #959](https://github.com/go-co-op/gocron/pull/959): open; the combination the sweeper avoids.
+- [clockwork package documentation](https://pkg.go.dev/github.com/jonboulle/clockwork) (v0.5.0, Apache-2.0): `NewFakeClock`, `Advance`, `BlockUntilContext`.
+- [OSV](https://osv.dev) queries for both modules and `govulncheck` on a module importing them: no known vulnerabilities. Live figures (versions, stars: gocron 7168, clockwork 730) were read on 2026-10-04 and drift.
+
+Decisions 1–5 are reasoned from scrty's own settled specs and the established design.

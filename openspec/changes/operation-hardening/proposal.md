@@ -20,7 +20,8 @@ The obvious cleanup job is also dangerous: a delete keyed on expiry alone remove
   - magic-link tokens, plus one-time tokens of any other purpose;
   - login attempts;
   - the in-memory rate limiter;
-  - OIDC flows and handoffs.
+  - OIDC flows and handoffs;
+  - the one-time state the library keeps on its own behalf: passkey ceremony challenges (`passkey.Manager`), and the MFA challenges and account-recovery codes and hold tokens of the components the HTTP chain builds (`httpsec.Chain`).
 
   Each wraps its owner's purge. None accepts a duration or chooses a cadence.
 - Add the nested module **`github.com/kartaladev/scrty/sweep`**, which runs the expiry runner on a schedule with gocron:
@@ -45,13 +46,13 @@ The obvious cleanup job is also dangerous: a delete keyed on expiry alone remove
 
 ### Modified Capabilities
 
-None. No specs have been archived yet.
+None. The owners gain purge entry points where they lacked one (`magiclink.Manager`, `oidc.Manager`, `oidc.HandoffManager`), and the in-memory limiter's prune reports how many keys it removed; each of those is covered by the `expiry-sweeping` requirements rather than by a change to its owner's spec.
 
 ## Impact
 
 - **New code, core module:**
   - the `expiry` package (runner, task, result, report), with the standard library only;
-  - an expiry task constructor in each owning package: `session`, `onetime`, `magiclink`, `policy`, `ratelimit`, `oidc`.
+  - an expiry task constructor in each owning package: `session`, `onetime`, `magiclink`, `policy`, `ratelimit`, `oidc`, `passkey`, and `httpsec` for the components the chain builds.
 - **New module:** `github.com/kartaladev/scrty/sweep`, which depends on gocron v2 and clockwork. It is added to `go.work`, to the dependency guard and to the CI matrix. The core module gains no dependency.
 - **Depends on:**
   - the existing purge operations of `sessions`, `one-time-tokens`, `security-policy` and `rate-limiting` (authn-authz-core), `magic-link` (auth-methods) and `oidc-login` (oidc-brokering). No new store operation is needed;
