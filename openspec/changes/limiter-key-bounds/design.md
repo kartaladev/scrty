@@ -20,7 +20,20 @@ See proposal.md for why. The current state that shapes the approach:
 | Mixed check/record throughput, 8 cores | 284 ns/op, against 114 ns/op on 1 core |
 | Heap after sweeping every key, then GC | 96 MiB. The map keeps its buckets. |
 
-Task 1 turns this harness into the benchmark that stays in the tree.
+The in-tree benchmark (task 1.1, `ratelimit/memory_bench_test.go`) confirmed these on the unchanged limiter: 149.3 MiB and 156.5 B/key at 1,000,000 keys; 11.4 MiB and 119.3 B/key at 100,000; a 101.7 ms sweep against a 98.1 ms single-lock reference scan; 95.9 MiB still held after sweeping every key; and 112.9 ns/op on one core against 369.4 ns/op on eight.
+
+**After this change** (the same in-tree benchmark, tasks 3.4 and 7.2; `SCRTY_MEASURE=1`, best of five trials against the median of three reference scans):
+
+| | Before | After |
+|---|---|---|
+| Heap at 1,000,000 keys | 149.3 MiB | 149.5 MiB (unchanged per key) |
+| Worst check while 1,000,000 expired keys are swept | 101.7 ms | 1.8–2.1 ms; ratio to the reference 46–53 on a quiet machine, 46.3 in the final review run (spec: at least 30) |
+| Reader p99 during the sweep | 23.6 µs | 1.25–1.5 µs |
+| Heap after sweeping every key, then GC | 95.9 MiB | 0 (compaction) |
+| Mixed throughput, 1 core | 112.9 ns/op | 117.7 ns/op (no significant change) |
+| Mixed throughput, 8 cores | 369.4 ns/op | 29.45 ns/op (−92%) |
+
+These are hardware-specific (Go 1.27.1, Apple M4 Pro) and drift with machine load; the ratio, not the absolute times, is what the spec pins.
 
 ## Goals / Non-Goals
 
@@ -81,7 +94,7 @@ The limiter becomes 64 shards. Each shard has its own mutex, map, `sweptAt` and 
 - `Prune` sweeps the shards one after another, locking each only while sweeping it.
 - `StampsFor` reads one shard.
 
-Measured in the exploratory harness, against the single-lock baseline:
+Measured in the exploratory harness, against the single-lock baseline, to choose between the candidates; the in-tree figures for the chosen 64 shards are in Context:
 
 | 1,000,000 expired keys | Baseline | 16 shards | 64 shards | 256 shards | Two generations |
 |---|---|---|---|---|---|

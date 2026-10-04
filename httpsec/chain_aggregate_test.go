@@ -3,6 +3,7 @@ package httpsec_test
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"testing"
 	"time"
 
@@ -231,6 +232,29 @@ func TestChain_IPv6Aggregate_FlowLimiter(t *testing.T) {
 		return NewMockLimiter(gomock.NewController(t))
 	}
 
+	// reporting is a limiter that reports a fixed policy, whatever it counts.
+	// Construction must not consult it beyond Policy.
+	reporting := func(t *testing.T, limit int, window time.Duration) ratelimit.Limiter {
+		t.Helper()
+
+		return fixedPolicyLimiter{Limiter: noPolicy(t), limit: limit, window: window}
+	}
+
+	// refusedFlowLimiter asserts the chain was refused as a configuration
+	// error naming the api-key flow and every text in names.
+	refusedFlowLimiter := func(names ...string) func(*testing.T, *apiKeyHarness, *httpsec.Chain, error, *capturingHandler) {
+		return func(t *testing.T, _ *apiKeyHarness, c *httpsec.Chain, err error, _ *capturingHandler) {
+			require.ErrorIs(t, err, httpsec.ErrConfig)
+			assert.Contains(t, err.Error(), "api-key", "the error names the flow")
+
+			for _, n := range names {
+				assert.Contains(t, err.Error(), n)
+			}
+
+			assert.Nil(t, c)
+		}
+	}
+
 	type testCase struct {
 		name string
 		// factory is the chain's factory, holding the row's expectations.
@@ -321,6 +345,77 @@ func TestChain_IPv6Aggregate_FlowLimiter(t *testing.T) {
 			},
 		},
 		{
+			name: "consumer limiter reports an unusable policy",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(reporting(t, 0, 0))}
+			},
+			assert: refusedFlowLimiter(),
+		},
+		{
+			name: "consumer limiter reports a negative window",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(reporting(t, 10, -time.Second))}
+			},
+			assert: refusedFlowLimiter(),
+		},
+		{
+			name: "consumer limit too large for the default aggregate",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(reporting(t, math.MaxInt, time.Minute))}
+			},
+			assert: refusedFlowLimiter("WithoutIPv6Aggregate", "WithIPv6Aggregate"),
+		},
+		{
+			name: "explicit aggregate over a reporting limiter",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t, limiterAsked{"api-key-ipv6-aggregate", 60, time.Hour})
+			},
+			opts: []httpsec.Option{httpsec.WithIPv6Aggregate(48, 2)},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(reporting(t, 30, time.Hour))}
+			},
+			assert: func(t *testing.T, _ *apiKeyHarness, _ *httpsec.Chain, err error, _ *capturingHandler) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "no warning when the aggregate is off",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			opts: []httpsec.Option{httpsec.WithoutIPv6Aggregate()},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(noPolicy(t))}
+			},
+			assert: func(t *testing.T, _ *apiKeyHarness, _ *httpsec.Chain, err error, logs *capturingHandler) {
+				require.NoError(t, err)
+				assert.Empty(t, apiKeyWarnings(logs))
+			},
+		},
+		{
+			name: "no warning when the source prefix is wide",
+			factory: func(t *testing.T) *MockLimiterFactory {
+				return factoryExpecting(t)
+			},
+			opts: []httpsec.Option{httpsec.WithIPv6SourcePrefix(48)},
+			apiKey: func(t *testing.T) []httpsec.APIKeyOption {
+				return []httpsec.APIKeyOption{httpsec.WithAPIKeyLimiter(noPolicy(t))}
+			},
+			assert: func(t *testing.T, _ *apiKeyHarness, _ *httpsec.Chain, err error, logs *capturingHandler) {
+				require.NoError(t, err)
+				assert.Empty(t, apiKeyWarnings(logs))
+			},
+		},
+		{
 			name: "default flow unchanged",
 			factory: func(t *testing.T) *MockLimiterFactory {
 				return factoryExpecting(t,
@@ -352,3 +447,14 @@ func TestChain_IPv6Aggregate_FlowLimiter(t *testing.T) {
 		})
 	}
 }
+
+// fixedPolicyLimiter is a limiter that reports a fixed policy through
+// ratelimit.PolicyReporter. The embedded limiter does the counting.
+type fixedPolicyLimiter struct {
+	ratelimit.Limiter
+
+	limit  int
+	window time.Duration
+}
+
+func (l fixedPolicyLimiter) Policy() (int, time.Duration) { return l.limit, l.window }

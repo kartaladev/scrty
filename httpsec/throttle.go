@@ -172,13 +172,27 @@ func (c *config) aggregateLimiter(
 		}
 
 		limit, window = r.Policy()
+
+		// A policy that cannot size an aggregate is refused here rather than
+		// left to the factory: a consumer's factory might accept it, and an
+		// aggregate built from it would quietly change the flow's limit.
+		if limit < 1 || window <= 0 {
+			return nil, newConfigError("%s: the %s limiter reports a limit of %d over %s, which cannot "+
+				"size its IPv6 aggregate", option, flow, limit, window)
+		}
 	}
 
 	// A wrapped product would quietly shrink the aggregate's limit, even below
 	// the flow's own, so a multiplier that overflows is refused.
 	if limit > math.MaxInt/c.aggregateMultiplier {
-		return nil, newConfigError("%s: WithIPv6Aggregate multiplier %d times the %s limit of %d "+
-			"overflows an int", option, c.aggregateMultiplier, flow, limit)
+		if c.aggregateExplicit {
+			return nil, newConfigError("%s: WithIPv6Aggregate multiplier %d times the %s limit of %d "+
+				"overflows an int", option, c.aggregateMultiplier, flow, limit)
+		}
+
+		return nil, newConfigError("%s: the default IPv6 aggregate, %d times the %s limit of %d, overflows "+
+			"an int: turn it off with WithoutIPv6Aggregate or size it with WithIPv6Aggregate",
+			option, c.aggregateMultiplier, flow, limit)
 	}
 
 	namespace := flow + "-ipv6-aggregate"

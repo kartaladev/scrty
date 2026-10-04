@@ -690,15 +690,20 @@ func (c *config) validateAggregate() error {
 // consumer chose. A limiter that does not implement it gets no default
 // aggregate for that flow, and one warning when the chain is built; under an
 // explicit WithIPv6Aggregate it is a configuration error naming the flow, since
-// the chain cannot size the aggregate that was asked for.
+// the chain cannot size the aggregate that was asked for. A limiter that
+// reports a limit below 1 or a non-positive window is refused the same way,
+// under the default or an explicit aggregate, before the factory is asked. So
+// is a flow whose limit times the multiplier overflows an int; for the default
+// aggregate that means an effectively unbounded consumer limiter, and the
+// error points to WithoutIPv6Aggregate or an explicit WithIPv6Aggregate.
 //
 // Each guard's aggregate limiter is built from the chain's limiter factory
 // (WithRateLimiterFactory) under the namespace "<flow>-ipv6-aggregate", for
 // example "api-key-ipv6-aggregate", even when the flow was given a limiter of
-// its own: the aggregate has no option of its own beyond this one. With the in-memory default factory the aggregate counts
-// per replica, even when the flow's own limiter is a shared one; a consumer who
-// wants a fleet-wide aggregate configures a shared factory with
-// WithRateLimiterFactory.
+// its own: the aggregate has no option of its own beyond this one. With the
+// in-memory default factory the aggregate counts per replica, even when the
+// flow's own limiter is a shared one; a consumer who wants a fleet-wide
+// aggregate configures a shared factory with WithRateLimiterFactory.
 //
 // A prefix outside 1..127, a prefix not strictly narrower than the source
 // prefix, a multiplier below 1, and combining it with WithoutIPv6Aggregate are
