@@ -534,13 +534,13 @@ func TestMemoryLimiter_ReturnsMemoryAfterFlood(t *testing.T) {
 		require.NoError(t, l.RecordFailure(t.Context(), k))
 	}
 	// Signed, so a heap that reads below base cannot wrap around to a huge value.
-	peak := int64(heapAlloc()) - int64(base)
+	peak := int64(heapAlloc()) - int64(base) //nolint:gosec // G115: heap sizes are far below MaxInt64
 
 	clk.Advance(2*testWindow + time.Second)
 	for _, k := range keys {
 		_, _ = l.Exceeded(t.Context(), k)
 	}
-	after := int64(heapAlloc()) - int64(base)
+	after := int64(heapAlloc()) - int64(base) //nolint:gosec // G115: heap sizes are far below MaxInt64
 	runtime.KeepAlive(l)
 	runtime.KeepAlive(keys)
 

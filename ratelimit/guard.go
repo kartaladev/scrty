@@ -16,7 +16,9 @@ import (
 // ErrThrottled is returned by SourceGuard.Check for an attempt that must not run:
 // the source is over its limit, or the limiter could not say whether it is. The
 // source's IPv6 aggregate (WithSourceGuardIPv6Aggregate) being over its limit,
-// or its limiter being unable to answer, refuses the same way.
+// or its limiter being unable to answer, refuses the same way. So does a limiter
+// that is full (ErrLimiterFull): it is refused as throttled, with its own error
+// still reachable, and reported as full rather than as down.
 //
 // The two are deliberately one error to the caller. A caller that told them
 // apart would be deciding, on the request path, whether an outage is a good
@@ -38,10 +40,14 @@ const keySeparator = ":"
 const (
 	sampleThrottled       = "throttled"
 	sampleLimiterFailure  = "limiter"
+	sampleLimiterFull     = "full"
 	sampleUnattributable  = "unattributable"
 	msgThrottled          = "ratelimit: refusing an attempt from a source over its limit"
 	msgThrottledAggregate = "ratelimit: refusing an attempt from an IPv6 aggregate over its limit"
 	msgLimiterUnavailable = "ratelimit: refusing an attempt because the limiter could not be consulted"
+	msgLimiterFull        = "ratelimit: refusing an attempt because the limiter is full"
+	msgNotRecordedFull    = "ratelimit: a failed attempt was not counted because the limiter is full"
+	reasonLimiterFull     = "limiter-full"
 	msgContextEnded       = "ratelimit: refusing an attempt whose context had already ended"
 	msgUnattributable     = "ratelimit: refusing an attempt from an unattributable client address"
 	msgNotRecorded        = "ratelimit: a failed attempt was not counted"
@@ -203,7 +209,9 @@ func (g *SourceGuard) validateAggregate() error {
 //
 // A limiter that could not answer has its own error returned behind fixed
 // library text, never its own; ErrThrottled and the limiter's error both stay
-// reachable through errors.Is, so a caller's status mapping is unchanged.
+// reachable through errors.Is, so a caller's status mapping is unchanged. A
+// limiter that is full (ErrLimiterFull) is refused the same way, behind text
+// that says so, and is reported as full rather than as unavailable.
 func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, error) {
 	addr, aggregate, err := g.keyer.keys(clientAddr, g.aggregateBits)
 	if err != nil {
@@ -265,10 +273,39 @@ func (g *SourceGuard) Check(ctx context.Context, clientAddr string) (Source, err
 // either one fails closed in exactly the same way; fromAggregate says which one
 // it was, so the record can name the aggregate when that is the limiter down.
 func (g *SourceGuard) refuseUnconsultable(ctx context.Context, src Source, err error, fromAggregate bool) error {
+	// A context that ended is reported as such, whatever else the error says.
+	if errors.Is(err, ErrLimiterFull) && !contextCaused(ctx, err) {
+		g.reportFull(ctx, msgLimiterFull, src, fromAggregate)
+
+		return diag.Wrap(err,
+			"ratelimit: too many failures from this source: the limiter is full", ErrThrottled)
+	}
+
 	g.reportUnconsultableLimiter(ctx, src, err, fromAggregate)
 
 	return diag.Wrap(err,
 		"ratelimit: too many failures from this source: the limiter could not be consulted", ErrThrottled)
+}
+
+// contextCaused reports whether err is the caller's own context ending.
+func contextCaused(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil && errors.Is(err, ctxErr)
+}
+
+// reportFull writes about a limiter that is holding its maximum number of keys.
+// It has its own sampler family, so a flood of new sources at the cap neither
+// writes a record per attempt nor takes the slot a real outage needs. The
+// limiter's error is not attached: the record's reason says everything it
+// could, and the error is the library's own sentinel.
+func (g *SourceGuard) reportFull(ctx context.Context, msg string, s Source, fromAggregate bool) {
+	attrs := []slog.Attr{slog.String("source", s.addr), slog.String("reason", reasonLimiterFull)}
+	if fromAggregate {
+		attrs = append(attrs, slog.String("aggregate", s.aggregateAddr))
+	}
+
+	g.sampled(ctx, slog.LevelWarn, msg, sampleKey(sampleLimiterFull, g.flow, ""), attrs...)
 }
 
 // RecordFailure counts one failure against the source a Check returned. Which
@@ -304,7 +341,7 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
 	recordCtx := context.WithoutCancel(ctx)
 
 	if err := g.limiter.RecordFailure(recordCtx, s.key); err != nil {
-		g.reportNotRecorded(ctx, err, slog.String("source", s.addr))
+		g.reportNotRecorded(ctx, err, s, false)
 	}
 
 	// The aggregate is recorded whether or not the source was. The two are
@@ -315,15 +352,25 @@ func (g *SourceGuard) RecordFailure(ctx context.Context, s Source) {
 	// is nothing here to count it in.
 	if s.aggregateKey != "" && g.aggregate != nil {
 		if err := g.aggregate.RecordFailure(recordCtx, s.aggregateKey); err != nil {
-			g.reportNotRecorded(ctx, err,
-				slog.String("source", s.addr), slog.String("aggregate", s.aggregateAddr))
+			g.reportNotRecorded(ctx, err, s, true)
 		}
 	}
 }
 
-// reportNotRecorded writes about a failure a limiter did not count, through the
-// same sampler as the limiter's other failures.
-func (g *SourceGuard) reportNotRecorded(ctx context.Context, err error, attrs ...slog.Attr) {
+// reportNotRecorded writes about a failure a limiter did not count. A full
+// limiter goes under the full family, apart from the limiter's other failures,
+// so a flood at the cap cannot take the outage record's sampling slot.
+func (g *SourceGuard) reportNotRecorded(ctx context.Context, err error, s Source, fromAggregate bool) {
+	if errors.Is(err, ErrLimiterFull) {
+		g.reportFull(ctx, msgNotRecordedFull, s, fromAggregate)
+
+		return
+	}
+
+	attrs := []slog.Attr{slog.String("source", s.addr)}
+	if fromAggregate {
+		attrs = append(attrs, slog.String("aggregate", s.aggregateAddr))
+	}
 	g.sampled(ctx, slog.LevelWarn, msgNotRecorded,
 		sampleKey(sampleLimiterFailure, g.flow, ""), append(attrs, diag.Failure("limiter", err)...)...)
 }
@@ -342,7 +389,7 @@ func (g *SourceGuard) Flush() { g.sampler.Flush() }
 // is written at warning level under one sampler key per flow — the limiter is
 // either up for that flow or it is not, and one record per window says so.
 func (g *SourceGuard) reportUnconsultableLimiter(ctx context.Context, s Source, err error, fromAggregate bool) {
-	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+	if contextCaused(ctx, err) {
 		attrs := append([]slog.Attr{
 			slog.String("flow", g.flow),
 			slog.String("source", s.addr),

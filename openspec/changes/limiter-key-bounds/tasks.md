@@ -65,7 +65,7 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
   Godoc states the default is off at this level and why. Covers scenario "Aggregate no wider than the source". Verify with `go test -race -run 'TestNewSourceGuard' -count=1 ./ratelimit/`
 - [x] 5.3 Check and record with an aggregate. `Source` carries both keys. Check consults the source and then the aggregate; either one exceeded, or either limiter's error, refuses with `ErrThrottled`. Record counts against both, and logs each recording error independently. Uses mockgen `Limiter` doubles and the in-memory limiter. Covers scenarios "Rotating /64s inside one aggregate", "Another aggregate is unaffected" and "IPv4 unaffected". Verify with `go test -race -run 'TestSourceGuard_Aggregate' -count=1 ./ratelimit/`
 - [x] 5.4 Aggregate refusal records: an `aggregate` field, sampled under `throttled:<flow>:<aggregate prefix>`. Covers scenario "Rotation inside a throttled aggregate". Verify with `go test -race -run 'TestSourceGuard_AggregateLog' -count=1 ./ratelimit/`
-- [ ] 5.5 Full-limiter refusals in the guard: a check failing with `ErrLimiterFull` refuses with `ErrThrottled` and writes its own "limiter full" record, sampled under `full:<flow>:`, apart from the limiter-unavailable record. Update `WithSourceGuardLogReporter`'s godoc with the new key family. Covers scenario "Full limiter behind a guard". Verify with `go test -race -run 'TestSourceGuard_Full' -count=1 ./ratelimit/` and `go doc ./ratelimit WithSourceGuardLogReporter`
+- [x] 5.5 Full-limiter refusals in the guard: a check failing with `ErrLimiterFull` refuses with `ErrThrottled` and writes its own "limiter full" record, sampled under `full:<flow>:`, apart from the limiter-unavailable record. Update `WithSourceGuardLogReporter`'s godoc with the new key family. Covers scenario "Full limiter behind a guard". Verify with `go test -race -run 'TestSourceGuard_Full' -count=1 ./ratelimit/` and `go doc ./ratelimit WithSourceGuardLogReporter`
 
 ## 6. Chain default aggregate (decision 6; http-security-chain "Chain source guards count an IPv6 aggregate by default", "Contradictory aggregate settings fail at construction", MODIFIED "Chain-level rate-limit settings reach every guard the chain builds"; rate-limiting MODIFIED "A limiter factory builds every built-in flow's limiter")
 
@@ -81,7 +81,7 @@ Group 5 needs 4.2 (the full-limiter sentinel) only for task 5.5. Group 6 needs g
 
 ## 7. Integration
 
-- [ ] 7.1 Whole-workspace gate. Verify with:
+- [x] 7.1 Whole-workspace gate. Verify with:
   - `go build ./...`, `go vet ./...` and `go test -race -count=1 ./...` in every module of `go.work`, including `test`, with Docker for the Redis conformance;
   - `gofmt -l .` empty;
   - `golangci-lint run ./...` clean.

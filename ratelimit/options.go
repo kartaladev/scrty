@@ -141,8 +141,9 @@ func WithSourceGuardLogInterval(d time.Duration) GuardOption {
 // fn receives the sampler key and how many records it stood for. The key is
 // "throttled:<flow>:<canonical source>" for a throttled source,
 // "throttled:<flow>:<aggregate prefix>" for a throttled IPv6 aggregate
-// (WithSourceGuardIPv6Aggregate), or "limiter:<flow>:" for a limiter that
-// failed, the latter with an empty detail.
+// (WithSourceGuardIPv6Aggregate), "limiter:<flow>:" for a limiter that
+// failed, or "full:<flow>:" for a limiter that is full (ErrLimiterFull), the
+// last two with an empty detail.
 // A canonical IPv6 source contains colons itself, so the key splits safely only
 // on its first two separators. It is
 // called when a key's window lapses before the key recurs, and by

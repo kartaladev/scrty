@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -802,4 +803,214 @@ func logRecords(t *testing.T, recorder *logRecorder) []map[string]any {
 	}
 
 	return out
+}
+
+// TestSourceGuard_Full pins how a guard reports a limiter that is holding its
+// maximum number of keys: the attempt is refused like any other, but the record
+// says the limiter is full, not that it is down, and a flood at the cap cannot
+// take the sampling slot the outage record needs.
+func TestSourceGuard_Full(t *testing.T) {
+	t.Parallel()
+
+	const (
+		fullMsg    = "ratelimit: refusing an attempt because the limiter is full"
+		notCounted = "ratelimit: a failed attempt was not counted because the limiter is full"
+		fullKey    = "full:" + testFlow + ":"
+	)
+
+	errFull := fmt.Errorf("memory limiter: %w", ratelimit.ErrLimiterFull)
+	errDown := errors.New("dial tcp: connection refused")
+
+	type testCase struct {
+		name string
+		ctx  func(ctx context.Context) context.Context // nil means identity
+		// addr is the client address checked; an IPv6 one inside the aggregate
+		// gives the guard an aggregate limiter.
+		addr string
+		// limiters returns the source limiter and the aggregate limiter; the
+		// latter is nil for a guard without an aggregate.
+		limiters func(t *testing.T) (source, aggregate ratelimit.Limiter)
+		// run is the exercise; nil means one Check of addr.
+		run    func(t *testing.T, g *ratelimit.SourceGuard, ctx context.Context, addr string) (ratelimit.Source, error)
+		assert func(t *testing.T, src ratelimit.Source, err error, records []map[string]any, summaries []summaryCall)
+	}
+
+	refusedAsFull := func(t *testing.T, src ratelimit.Source, err error) {
+		t.Helper()
+		require.ErrorIs(t, err, ratelimit.ErrThrottled)
+		require.ErrorIs(t, err, ratelimit.ErrLimiterFull, "the limiter's own error was lost behind the refusal")
+		assert.NotContains(t, err.Error(), "could not be consulted", "a full limiter was described as unreachable")
+		assert.Equal(t, ratelimit.Source{}, src, "a refused check still handed back a source to record against")
+	}
+
+	cases := []testCase{
+		{
+			name: "source limiter full",
+			addr: testSource,
+			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, errFull)
+				return l, nil
+			},
+			assert: func(t *testing.T, src ratelimit.Source, err error, records []map[string]any, _ []summaryCall) {
+				t.Helper()
+				refusedAsFull(t, src, err)
+				require.Len(t, records, 1, "exactly one record, and not the outage one")
+				assert.Equal(t, "WARN", records[0]["level"])
+				assert.Equal(t, fullMsg, records[0]["msg"])
+				assert.Equal(t, "limiter-full", records[0]["reason"])
+				assert.Equal(t, testSource, records[0]["source"])
+				assert.Equal(t, testFlow, records[0]["flow"])
+				assert.NotContains(t, records[0], "aggregate")
+			},
+		},
+		{
+			name: "aggregate limiter full",
+			addr: aggregatedSource,
+			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
+				t.Helper()
+				source := NewMockLimiter(gomock.NewController(t))
+				source.EXPECT().Exceeded(gomock.Any(), sourceKey).Return(false, nil)
+				aggregate := NewMockLimiter(gomock.NewController(t))
+				aggregate.EXPECT().Exceeded(gomock.Any(), aggregateKey).Return(true, errFull)
+				return source, aggregate
+			},
+			assert: func(t *testing.T, src ratelimit.Source, err error, records []map[string]any, _ []summaryCall) {
+				t.Helper()
+				refusedAsFull(t, src, err)
+				require.Len(t, records, 1, "exactly one record, and not the outage one")
+				assert.Equal(t, "WARN", records[0]["level"])
+				assert.Equal(t, fullMsg, records[0]["msg"])
+				assert.Equal(t, "limiter-full", records[0]["reason"])
+				assert.Equal(t, "2001:db8:1:2::/64", records[0]["source"])
+				assert.Equal(t, aggregatedPrefix, records[0]["aggregate"])
+			},
+		},
+		{
+			name: "sampling",
+			addr: testSource,
+			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, errFull).Times(20)
+				return l, nil
+			},
+			run: func(t *testing.T, g *ratelimit.SourceGuard, ctx context.Context, addr string) (ratelimit.Source, error) {
+				t.Helper()
+				var (
+					src ratelimit.Source
+					err error
+				)
+				for range 20 {
+					src, err = g.Check(ctx, addr)
+				}
+				g.Flush()
+				return src, err
+			},
+			assert: func(t *testing.T, src ratelimit.Source, err error, records []map[string]any, summaries []summaryCall) {
+				t.Helper()
+				refusedAsFull(t, src, err)
+				require.Len(t, records, 1, "a flood at the cap wrote a record per attempt")
+				assert.Equal(t, fullMsg, records[0]["msg"])
+				assert.Equal(t, []summaryCall{{key: fullKey, suppressed: 19}}, summaries,
+					"Flush did not report the suppressed refusals under the full family")
+			},
+		},
+		{
+			name: "ended context is not full",
+			addr: testSource,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return cctx
+			},
+			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(true, context.Canceled)
+				return l, nil
+			},
+			assert: func(t *testing.T, src ratelimit.Source, err error, records []map[string]any, _ []summaryCall) {
+				t.Helper()
+				require.ErrorIs(t, err, ratelimit.ErrThrottled)
+				assert.NotErrorIs(t, err, ratelimit.ErrLimiterFull)
+				assert.Equal(t, ratelimit.Source{}, src)
+				require.Len(t, records, 1)
+				assert.Equal(t, "DEBUG", records[0]["level"])
+				assert.Equal(t, "ratelimit: refusing an attempt whose context had already ended", records[0]["msg"])
+			},
+		},
+		{
+			name: "full on record",
+			addr: testSource,
+			limiters: func(t *testing.T) (ratelimit.Limiter, ratelimit.Limiter) {
+				t.Helper()
+				l := NewMockLimiter(gomock.NewController(t))
+				gomock.InOrder(
+					l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, nil),
+					l.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Return(errFull),
+					l.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Return(false, errDown),
+				)
+				return l, nil
+			},
+			run: func(t *testing.T, g *ratelimit.SourceGuard, ctx context.Context, addr string) (ratelimit.Source, error) {
+				t.Helper()
+				src, err := g.Check(ctx, addr)
+				require.NoError(t, err)
+				g.RecordFailure(ctx, src)
+
+				// An outage after the flood must still find its own sampling slot.
+				return g.Check(ctx, addr)
+			},
+			assert: func(t *testing.T, _ ratelimit.Source, err error, records []map[string]any, _ []summaryCall) {
+				t.Helper()
+				require.ErrorIs(t, err, ratelimit.ErrThrottled)
+				require.Len(t, records, 2, "the full record and the outage record are both written")
+
+				assert.Equal(t, "WARN", records[0]["level"])
+				assert.Equal(t, notCounted, records[0]["msg"])
+				assert.Equal(t, "limiter-full", records[0]["reason"])
+				assert.Equal(t, testSource, records[0]["source"])
+				assert.NotContains(t, records[0], "aggregate")
+
+				assert.Equal(t, "ratelimit: refusing an attempt because the limiter could not be consulted",
+					records[1]["msg"], "a full limiter at record time took the outage record's sampling slot")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			source, aggregate := tc.limiters(t)
+			recorder, logger := newLogRecorder()
+			summaries := &summaryRecorder{}
+			opts := []ratelimit.GuardOption{
+				ratelimit.WithSourceGuardLogger(logger),
+				ratelimit.WithSourceGuardClock(clockwork.NewFakeClock()),
+				ratelimit.WithSourceGuardLogReporter(summaries.report),
+			}
+			if aggregate != nil {
+				opts = append(opts, ratelimit.WithSourceGuardIPv6Aggregate(aggregateBits, aggregate))
+			}
+			g, err := ratelimit.NewSourceGuard(testFlow, source, opts...)
+			require.NoError(t, err)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			var src ratelimit.Source
+			if tc.run != nil {
+				src, err = tc.run(t, g, ctx, tc.addr)
+			} else {
+				src, err = g.Check(ctx, tc.addr)
+			}
+
+			tc.assert(t, src, err, logRecords(t, recorder), summaries.received())
+		})
+	}
 }

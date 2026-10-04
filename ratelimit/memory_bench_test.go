@@ -231,7 +231,7 @@ func runStallTrial(t *testing.T) stallTrial {
 			defer wg.Done()
 
 			var local readerStats
-			rng := rand.New(rand.NewPCG(uint64(r), 0))
+			rng := rand.New(rand.NewPCG(uint64(r), 0)) //nolint:gosec // G404: picks benchmark keys, not secrets
 			for !stop.Load() {
 				k := keys[rng.IntN(hotKeys)]
 				start := time.Now()
@@ -348,7 +348,7 @@ func BenchmarkMemoryLimiter_Mixed(b *testing.B) {
 
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
-		rng := rand.New(rand.NewPCG(seed.Add(1), 0))
+		rng := rand.New(rand.NewPCG(seed.Add(1), 0)) //nolint:gosec // G404: picks benchmark keys, not secrets
 		for pb.Next() {
 			k := keys[rng.IntN(n)]
 			if rng.IntN(10) == 0 {
