@@ -29,5 +29,5 @@ separate dispatches.
 
 ## 4. Integration
 
-- [ ] 4.1 Whole-workspace gate: `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module of `go.work` (Docker running), and `gofmt -l` empty. Verify by every command's output.
+- [x] 4.1 Whole-workspace gate: `go build ./...`, `go vet ./...`, `go test -race -count=1 ./...` and `golangci-lint run ./...` in every module of `go.work` (Docker running), and `gofmt -l` empty. Verify by every command's output.
 - [ ] 4.2 Whole-branch review against every requirement and scenario of `specs/http-security-chain/spec.md` and design decisions 1–7. Verify by the review reporting no open finding.
