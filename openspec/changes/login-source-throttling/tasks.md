@@ -83,7 +83,7 @@ Ownership:
 
 ## 5. Integration
 
-- [ ] 5.1 Whole-workspace gate. Verify with:
+- [x] 5.1 Whole-workspace gate. Verify with:
   - `go build ./...`, `go vet ./...` and `go test -race -count=1 ./...` in every module of `go.work` (with Docker for the store and Redis conformance runs), plus `go test -race ./...` in `ginsec` and `fibersec`;
   - `gofmt -l .` empty;
   - `golangci-lint run ./...` clean.
