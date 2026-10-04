@@ -45,13 +45,18 @@ const (
 type Option func(*Manager)
 
 // WithStore replaces where tokens are kept. The default is NewMemoryStore,
-// which does not survive a restart.
+// which does not survive a restart, and which reads the manager's own clock
+// (see WithClock).
+//
+// A store given here keeps its own clock: the manager never replaces or wraps
+// it, so a consumer who gives a manager a clock and a store gives the store the
+// same clock themselves.
 //
 // A nil store is a configuration error rather than a silent fallback to memory:
 // a consumer who passed one meant to supply their own, and quietly keeping
 // their users' password-reset tokens in process memory is not a failure they
 // would find out about until a deploy.
-func WithStore(s Store) Option { return func(m *Manager) { m.store = s } }
+func WithStore(s Store) Option { return func(m *Manager) { m.store, m.storeSet = s, true } }
 
 // WithTTL replaces how long an issued token stays valid. The default is 15
 // minutes. Zero or less is a configuration error: it would expire every token
@@ -74,6 +79,10 @@ func WithIssuanceWindow(d time.Duration) Option {
 func WithIDGenerator(g id.Generator) Option { return func(m *Manager) { m.ids = g } }
 
 // WithClock replaces the time source. The default is clock.System().
+//
+// The default in-memory store reads this same clock, so a manager given a
+// fake clock and no store judges expiry and purges on that clock. A store
+// given through WithStore keeps its own.
 //
 // Any type with Now satisfies clock.Clock, a clockwork fake included. A nil
 // clock, typed nil included, is a configuration error rather than a silent

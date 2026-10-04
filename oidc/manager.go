@@ -287,3 +287,15 @@ func (m *Manager) RoleSyncProviders() []string {
 	}
 	return nil
 }
+
+// PurgeExpiredFlows deletes the login flows that expired before the manager's
+// own now, read from its clock (WithClock), and returns how many the flow store
+// removed.
+//
+// The cutoff is the manager's and is not configurable: nothing counts expired
+// flows, so there is no window to wait out, and a flow that has not yet expired
+// is never deleted. A flow store error is returned with whatever count the
+// store reported. FlowExpiryTask wraps it as a task.
+func (m *Manager) PurgeExpiredFlows(ctx context.Context) (int, error) {
+	return m.flows.DeleteExpired(ctx, m.clock.Now())
+}

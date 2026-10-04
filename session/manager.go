@@ -133,7 +133,6 @@ const perProcessWarning = "session: the default in-memory store keeps sessions i
 // than a mistake.
 func NewManager(opts ...ManagerOption) (*Manager, error) {
 	m := &Manager{
-		store:           NewMemoryStore(),
 		idleTimeout:     defaultIdleTimeout,
 		absoluteTimeout: defaultAbsoluteTimeout,
 		clock:           clock.System(),
@@ -152,7 +151,7 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	if m.absoluteTimeout <= 0 {
 		return nil, fmt.Errorf("%w: absolute timeout must be positive, got %s", ErrConfig, m.absoluteTimeout)
 	}
-	if nilcheck.IsNil(m.store) {
+	if m.storeSupplied && nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
 	}
 	if nilcheck.IsNil(m.clock) {
@@ -163,6 +162,10 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	}
 
 	if !m.storeSupplied {
+		// The default store judges expiry itself, so it reads the manager's
+		// clock: otherwise a manager on a fake or shifted clock would sweep
+		// and refuse sessions by a different time than it created them by.
+		m.store = NewMemoryStore(WithMemoryStoreClock(timedClock(m.clock)))
 		m.logger.Warn(perProcessWarning)
 	}
 
@@ -411,3 +414,23 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 
 	return rotated, nil
 }
+
+// timedClock adapts the manager's clock to the clock.Timed that
+// NewMemoryStore takes, so the default store's time checks follow the
+// manager. A clock that can already wait is used as it is. For one that
+// cannot, After exists only to satisfy the type: the manager never starts its
+// default store, so no housekeeping loop ever waits on it.
+func timedClock(c clock.Clock) clock.Timed {
+	if t, ok := c.(clock.Timed); ok {
+		return t
+	}
+
+	return nowOnly{Clock: c, waiter: clock.System()}
+}
+
+type nowOnly struct {
+	clock.Clock
+	waiter clock.Timed
+}
+
+func (c nowOnly) After(d time.Duration) <-chan time.Time { return c.waiter.After(d) }

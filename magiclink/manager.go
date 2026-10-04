@@ -551,3 +551,16 @@ func (m *Manager) redemptionError(ctx context.Context, err, refusal error) error
 		return ErrInvalidLink
 	}
 }
+
+// PurgeExpired deletes the magic-link tokens that are expired and also older
+// than the issuance window, and reports how many it removed. It follows the
+// one-time manager's rule exactly: a token still inside the issuance window is
+// kept even when expired, so a purge never lowers the count that
+// WithIssuanceLimit decides on, and only this flow's own purpose is touched.
+//
+// A token store that cannot purge yields an error matching
+// onetime.ErrReapUnsupported. Nothing calls it on a timer; ExpiryTask wraps it
+// for a sweep.
+func (m *Manager) PurgeExpired(ctx context.Context) (int, error) {
+	return m.tokens.PurgeExpired(ctx)
+}

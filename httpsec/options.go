@@ -1462,6 +1462,11 @@ type MFAOption func(*mfaInterceptor) error
 // consumer who must accept another encoding puts an interceptor of their own
 // in front of the endpoint.
 //
+// A chain has one MFA configuration: a second EnableMFA is refused whatever
+// prefix or methods it carries, because the challenge a refused request
+// carries lists the methods of one configuration, so give every method to one
+// EnableMFA.
+//
 // The set is required and is checked by mfa.LookupsFor: an empty set, an
 // absent method, a method reporting no channel, a name that is not one path
 // segment, two methods sharing a name and a malformed response format are all
@@ -1481,6 +1486,15 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 	const option = "EnableMFA"
 
 	return func(c *config) error {
+		// The challenge a refused request carries lists the methods of one
+		// configuration, so a second would leave its methods unoffered.
+		if err := eachInterceptor(c, func(*mfaInterceptor) error {
+			return newConfigError("%s was given twice; one chain offers one set of second-factor "+
+				"methods, so give every method to one EnableMFA", option)
+		}); err != nil {
+			return err
+		}
+
 		// LookupsFor is the one place a wrongly declared method is caught, so
 		// the rules and their messages are stated once for the policy lookups
 		// and for this endpoint rather than drifting apart.

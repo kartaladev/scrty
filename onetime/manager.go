@@ -37,6 +37,7 @@ import (
 type Manager struct {
 	purpose        string
 	store          Store
+	storeSet       bool
 	ttl            time.Duration
 	issuanceWindow time.Duration
 	ids            id.Generator
@@ -72,7 +73,6 @@ type Manager struct {
 func NewManager(purpose string, opts ...Option) (*Manager, error) {
 	m := &Manager{
 		purpose:        strings.TrimSpace(purpose),
-		store:          NewMemoryStore(),
 		ttl:            defaultTTL,
 		issuanceWindow: defaultIssuanceWindow,
 		ids:            id.NewV7Generator(),
@@ -95,7 +95,7 @@ func NewManager(purpose string, opts ...Option) (*Manager, error) {
 	if m.issuanceWindow <= 0 {
 		return nil, fmt.Errorf("%w: issuance window must be positive, got %s", ErrConfig, m.issuanceWindow)
 	}
-	if nilcheck.IsNil(m.store) {
+	if m.storeSet && nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
 	}
 	if nilcheck.IsNil(m.ids) {
@@ -106,6 +106,12 @@ func NewManager(purpose string, opts ...Option) (*Manager, error) {
 	}
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
+	}
+
+	// The default store reads the manager's clock, so a manager on a fake or
+	// shifted clock purges by the same time it expires by.
+	if !m.storeSet {
+		m.store = NewMemoryStore(WithMemoryStoreClock(m.clock))
 	}
 
 	return m, nil

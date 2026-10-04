@@ -163,4 +163,15 @@
 // text, and no personal data beyond what a capability's own godoc names (the
 // throttled source address, the opaque user reference in MFA and policy
 // records), is ever added to a record.
+//
+// # Sweeping expired state
+//
+// Some built-ins keep one-time state in managers the chain builds itself: the
+// pending challenges of EnableMFA's challenge methods, and the issued codes and
+// hold tokens of the recovery core EnableAccountRecovery builds. No task built
+// outside the chain can reach those managers, so Chain.ExpiryTasks returns the
+// tasks that delete their expired records, one per enabled component, for an
+// expiry.Runner or a scheduler. Components the consumer builds and hands to the
+// chain, such as a session store or a passkey.Manager, are swept through their
+// own packages' tasks.
 package httpsec

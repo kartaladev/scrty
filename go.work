@@ -8,5 +8,6 @@ use (
 	./passkey/webauthn
 	./pgx
 	./redis
+	./sweep
 	./test
 )

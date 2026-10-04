@@ -42,7 +42,9 @@ const (
 type ManagerOption func(*Manager)
 
 // WithStore replaces where sessions are kept. The default is NewMemoryStore,
-// which does not survive a restart.
+// which does not survive a restart, and which reads the manager's own clock
+// (see WithClock). A store given here keeps its own clock; the manager never
+// replaces it.
 //
 // A nil store is a configuration error rather than a silent fallback to
 // memory: a consumer who passed one meant to supply their own, and quietly
@@ -72,6 +74,10 @@ func WithAbsoluteTimeout(d time.Duration) ManagerOption {
 }
 
 // WithClock replaces the time source. The default is clock.System().
+//
+// The default in-memory store reads this same clock, so a manager given a fake
+// clock and no store creates, refuses and sweeps sessions by one time. A store
+// given through WithStore keeps its own.
 //
 // A nil clock, typed nil included, is a configuration error rather than a
 // silent fallback: a caller passing one meant to inject a clock, and falling

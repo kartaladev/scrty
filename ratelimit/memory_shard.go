@@ -148,10 +148,14 @@ func (s *memoryShard) compactLocked() {
 // prune locks the shard for the length of one pruneLocked, and no longer, and
 // passes how many keys it removed to release before unlocking. Releasing under
 // the lock, as the inline sweep does, means the limiter's count of held keys
-// never stays above the keys it holds once the shard is free again.
-func (s *memoryShard) prune(now, cutoff time.Time, release func(removed int)) {
+// never stays above the keys it holds once the shard is free again. It returns
+// the number of keys removed.
+func (s *memoryShard) prune(now, cutoff time.Time, release func(removed int)) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	release(s.pruneLocked(now, cutoff))
+	removed := s.pruneLocked(now, cutoff)
+	release(removed)
+
+	return removed
 }
