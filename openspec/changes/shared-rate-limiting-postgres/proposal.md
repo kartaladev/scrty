@@ -34,6 +34,7 @@ None.
 
 - `rate-limiting`: adds the PostgreSQL limiter's guarantees (primary only, ambient transactions ignored, the prune bound).
 - `security-state-stores` and `schema-migrations`: the limiter table, and its exception to ambient-transaction participation.
+- `store-conformance`: the limiter is excluded from the ambient-transaction suite, and the suite says so.
 - `expiry-sweeping`: the rate-limiter task accepts any limiter that can prune.
 
 ## Impact
