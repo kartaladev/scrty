@@ -112,16 +112,6 @@ func EnableRecoveryGateForTest() Option {
 	}
 }
 
-// WithRecoveryClockForTest replaces the clock the recovery endpoints judge
-// time by, which is otherwise time.Now, so a test can judge the regeneration
-// window on the same fake clock its sessions were created on.
-func WithRecoveryClockForTest(now func() time.Time) RecoveryOption {
-	return func(i *recoveryInterceptor) error {
-		i.now = now
-		return nil
-	}
-}
-
 // MintProofForTest mints the library's second-factor proof, which only library
 // code can do, so a test can hand the login tail a login whose second factor
 // was met at its first.

@@ -83,7 +83,7 @@ context: |
     shared-rate-limiting (rate-limiting, http-security-chain; Redis/Valkey),
     shared-rate-limiting-postgres (rate-limiting; after operation-hardening), login-source-throttling,
     atomic-code-attempts, limiter-key-bounds, trusted-proxy-client-ip, bff-resource-server
-    (bff-session, resource-server, csrf-protection)
+    (bff-session, resource-server, csrf-protection), chain-time-source (http-security-chain)
 
 rules:
   design:

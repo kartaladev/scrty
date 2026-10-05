@@ -16,6 +16,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -320,17 +321,23 @@ func TestMFABegin(t *testing.T) {
 // store's issuance window, and sweeps a method's expired challenges at most
 // once per window.
 //
-// Every case begins through the chain, several times over. The chain's
-// challenge managers read the system clock, so the cases that move time run
-// inside a synctest bubble and move it with time.Sleep.
+// Every case begins through the chain, several times over, on the harness's
+// fake clock, which the chain reads through WithClock and a case moves with
+// advance. Two cases still run inside a synctest bubble, for a reason that is
+// not the clock: the slow sweep races a consumer's store against real timers (a
+// request deadline and the store's own three-second wait), and the atomic claim
+// holds a purge on a one-minute timer that a bubble lets fail at once, rather
+// than hang, when a begin never arrives.
 func TestMFABeginIssuance(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
+		name string
+		// bubble runs the case inside synctest, for the two cases that race
+		// real timers of a store the consumer supplies.
 		bubble bool
 		// store is the consumer's challenge store; nil keeps the default.
-		store func() onetime.Store
+		store func(clk *clockwork.FakeClock) onetime.Store
 		opts  []httpsec.MFAOption
 		// act begins, as often as the case needs, and returns every outcome.
 		act    func(t *testing.T, b beginner) []served
@@ -356,7 +363,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			t.Helper()
 
 			outs := times(t, b.begin, n)
-			time.Sleep(wait)
+			b.advance(wait)
 			b.relogin()
 
 			return append(outs, b.begin())
@@ -424,9 +431,8 @@ func TestMFABeginIssuance(t *testing.T) {
 		{
 			// The limit is over the issuance window: once it has passed, the
 			// user may ask again.
-			name:   "the limit counts within the issuance window",
-			bubble: true,
-			act:    beginsThen(httpsec.DefaultMFAChallengeLimit, window+time.Second),
+			name: "the limit counts within the issuance window",
+			act:  beginsThen(httpsec.DefaultMFAChallengeLimit, window+time.Second),
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, _ *capturingHandler, outs []served) {
 				for _, out := range outs {
 					require.NoError(t, out.err)
@@ -435,11 +441,12 @@ func TestMFABeginIssuance(t *testing.T) {
 			},
 		},
 		{
-			name:   "expired challenges are removed",
-			bubble: true,
-			store:  func() onetime.Store { return onetime.NewMemoryStore() },
-			opts:   []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
-			act:    beginsThen(200, httpsec.DefaultMFAChallengeTTL+window+time.Second),
+			name: "expired challenges are removed",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
+			},
+			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
+			act:  beginsThen(200, httpsec.DefaultMFAChallengeTTL+window+time.Second),
 			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, _ *capturingHandler, outs []served) {
 				require.Len(t, outs, 201)
 				for _, out := range outs {
@@ -449,10 +456,11 @@ func TestMFABeginIssuance(t *testing.T) {
 			},
 		},
 		{
-			name:   "expired challenges are swept at most once per issuance window",
-			bubble: true,
-			store:  func() onetime.Store { return &countingReaper{MemoryStore: onetime.NewMemoryStore()} },
-			act:    beginsThen(5, window+time.Second),
+			name: "expired challenges are swept at most once per issuance window",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return &countingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+			},
+			act: beginsThen(5, window+time.Second),
 			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, _ *capturingHandler, outs []served) {
 				for _, out := range outs {
 					require.NoError(t, out.err)
@@ -464,9 +472,11 @@ func TestMFABeginIssuance(t *testing.T) {
 		{
 			// A store that cannot purge is the consumer's choice: the begin
 			// is served, and the failure is logged rather than refused.
-			name:  "a store that cannot purge does not refuse the begin",
-			store: func() onetime.Store { return storeOnly{Store: onetime.NewMemoryStore()} },
-			act:   func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
+			name: "a store that cannot purge does not refuse the begin",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return storeOnly{Store: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+			},
+			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, logs *capturingHandler, outs []served) {
 				require.Len(t, outs, 1)
 				require.NoError(t, outs[0].err)
@@ -478,9 +488,11 @@ func TestMFABeginIssuance(t *testing.T) {
 			// A store that cannot purge would not start purging on a retry, so
 			// its turn is kept: a second begin in the same window neither
 			// tries again nor logs again.
-			name:  "a store that cannot purge keeps its turn",
-			store: func() onetime.Store { return &unsupportedReaper{MemoryStore: onetime.NewMemoryStore()} },
-			act:   func(t *testing.T, b beginner) []served { return times(t, b.begin, 2) },
+			name: "a store that cannot purge keeps its turn",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return &unsupportedReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+			},
+			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 2) },
 			assert: func(t *testing.T, _ *challengeStub, store onetime.Store, logs *capturingHandler, outs []served) {
 				require.Len(t, outs, 2)
 				for _, out := range outs {
@@ -493,9 +505,11 @@ func TestMFABeginIssuance(t *testing.T) {
 		{
 			// A store that fails the purge is logged as unavailable, and the
 			// begin in hand is still served.
-			name:  "a store that fails the purge does not refuse the begin",
-			store: func() onetime.Store { return failingPurge{MemoryStore: onetime.NewMemoryStore(), err: errPurge} },
-			act:   func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
+			name: "a store that fails the purge does not refuse the begin",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return failingPurge{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), err: errPurge}
+			},
+			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, logs *capturingHandler, outs []served) {
 				require.Len(t, outs, 1)
 				require.NoError(t, outs[0].err)
@@ -509,7 +523,9 @@ func TestMFABeginIssuance(t *testing.T) {
 			// next begin sweeps again.
 			name:   "a slow sweep does not hold the begin past its deadline",
 			bubble: true,
-			store:  func() onetime.Store { return &slowReaper{MemoryStore: onetime.NewMemoryStore()} },
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return &slowReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+			},
 			act: func(_ *testing.T, b beginner) []served {
 				return []served{b.within(100 * time.Millisecond), b.begin()}
 			},
@@ -529,19 +545,20 @@ func TestMFABeginIssuance(t *testing.T) {
 			// issuance window, so the count the limit rests on is untouched:
 			// A, issued a window ago, goes; B, expired but inside the window,
 			// and C, unexpired, stay and still count.
-			name:   "a sweep leaves the count intact",
-			bubble: true,
-			store:  func() onetime.Store { return &countingReaper{MemoryStore: onetime.NewMemoryStore()} },
-			opts:   []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(3)},
+			name: "a sweep leaves the count intact",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return &countingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+			},
+			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(3)},
 			act: func(_ *testing.T, b beginner) []served {
 				outs := []served{b.begin()} // A, and the first window's sweep
-				time.Sleep(50 * time.Minute)
+				b.advance(50 * time.Minute)
 				b.relogin()
 				outs = append(outs, b.begin()) // B
-				time.Sleep(9 * time.Minute)
+				b.advance(9 * time.Minute)
 				b.relogin()
 				outs = append(outs, b.begin()) // C
-				time.Sleep(time.Minute + time.Second)
+				b.advance(time.Minute + time.Second)
 				b.relogin()
 
 				return append(outs, b.begin(), b.begin()) // the second sweep, D, then refused
@@ -560,13 +577,14 @@ func TestMFABeginIssuance(t *testing.T) {
 		},
 		{
 			// Of begins racing once a window has passed, exactly one sweeps.
-			name:   "concurrent begins sweep once",
-			bubble: true,
-			store:  func() onetime.Store { return &countingReaper{MemoryStore: onetime.NewMemoryStore()} },
-			opts:   []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
+			name: "concurrent begins sweep once",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return &countingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))}
+			},
+			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
 			act: func(_ *testing.T, b beginner) []served {
 				outs := []served{b.begin()}
-				time.Sleep(window + time.Second)
+				b.advance(window + time.Second)
 				b.relogin()
 
 				racing := make([]served, 16)
@@ -594,8 +612,8 @@ func TestMFABeginIssuance(t *testing.T) {
 			// issued its challenge, none of them purges too.
 			name:   "the sweep claim is atomic",
 			bubble: true,
-			store: func() onetime.Store {
-				return &holdingReaper{MemoryStore: onetime.NewMemoryStore(), others: 15, arrived: make(chan struct{})}
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return &holdingReaper{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), others: 15, arrived: make(chan struct{})}
 			},
 			opts: []httpsec.MFAOption{httpsec.WithMFAChallengeLimit(1000)},
 			act: func(_ *testing.T, b beginner) []served {
@@ -624,9 +642,11 @@ func TestMFABeginIssuance(t *testing.T) {
 			// The count is what the limit rests on, so a store that cannot
 			// answer it refuses the begin rather than lifting the limit, and
 			// its own text stays out of the refusal.
-			name:  "a store that cannot count refuses the begin",
-			store: func() onetime.Store { return failingCount{MemoryStore: onetime.NewMemoryStore(), err: errCount} },
-			act:   func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
+			name: "a store that cannot count refuses the begin",
+			store: func(clk *clockwork.FakeClock) onetime.Store {
+				return failingCount{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), err: errCount}
+			},
+			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, _ *capturingHandler, outs []served) {
 				require.Len(t, outs, 1)
 				require.ErrorIs(t, outs[0].err, errCount)
@@ -653,7 +673,7 @@ func TestMFABeginIssuance(t *testing.T) {
 			var store onetime.Store
 			h.mfaOpts = tc.opts
 			if tc.store != nil {
-				store = tc.store()
+				store = tc.store(h.clock)
 				h.mfaOpts = append([]httpsec.MFAOption{httpsec.WithMFAChallengeStore(store)}, h.mfaOpts...)
 			}
 
@@ -693,7 +713,8 @@ func TestMFABeginIssuance(t *testing.T) {
 
 					return serve(t, c, bearerPost(t.Context(), testMFABeginPath, mfaTokenFor(handle)))
 				},
-				within: within,
+				within:  within,
+				advance: h.clock.Advance,
 				relogin: func() {
 					next := h.pendingSession(t, factor.Password)
 
@@ -725,17 +746,14 @@ func TestMFABeginIssuance(t *testing.T) {
 // presenting it spends, before the method is asked anything.
 //
 // Every case begins through the chain and answers through it, authenticating
-// by bearer token as a deployment does. The chain's challenge managers read
-// the system clock — the chain has no clock option — so the cases about expiry
-// run inside a synctest bubble and move time with time.Sleep.
+// by bearer token as a deployment does. The cases about expiry move the
+// harness's fake clock, which the chain reads through WithClock.
 func TestMFAChallengeVerify(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name string
-		// bubble runs the case inside synctest, for the cases that move time.
-		bubble bool
-		stub   func(c *challengeStub)
+		stub func(c *challengeStub)
 		// extra are challenge methods configured after the passkey.
 		extra []mfa.Method
 		// failures is how many failed verifications the case must count.
@@ -771,12 +789,12 @@ func TestMFAChallengeVerify(t *testing.T) {
 	beginThenAnswer := func(wait time.Duration, respond func(challenge string) string) func(
 		*testing.T, *mfaHarness, *httpsec.Chain, *session.Session,
 	) []served {
-		return func(t *testing.T, _ *mfaHarness, c *httpsec.Chain, s *session.Session) []served {
+		return func(t *testing.T, h *mfaHarness, c *httpsec.Chain, s *session.Session) []served {
 			t.Helper()
 
 			challenge := beginOn(t, c, s)
 			if wait > 0 {
-				time.Sleep(wait)
+				h.clock.Advance(wait)
 			}
 
 			return []served{answerOn(t, c, s, respond(challenge))}
@@ -932,14 +950,12 @@ func TestMFAChallengeVerify(t *testing.T) {
 		twoMethodsKeepTheirPurposes(),
 		{
 			name:     "expired challenge",
-			bubble:   true,
 			failures: 1,
 			act:      beginThenAnswer(6*time.Minute, answer),
 			assert:   refusedUnasked,
 		},
 		{
 			name:     "consumer challenge lifetime",
-			bubble:   true,
 			failures: 1,
 			opts:     []httpsec.MFAOption{httpsec.WithMFAChallengeTTL(2 * time.Minute)},
 			act:      beginThenAnswer(3*time.Minute, answer),
@@ -948,9 +964,8 @@ func TestMFAChallengeVerify(t *testing.T) {
 		{
 			// The control for the two above: the same wait, inside the
 			// default lifetime, is answered.
-			name:   "a challenge answered within its lifetime",
-			bubble: true,
-			act:    beginThenAnswer(3*time.Minute, answer),
+			name: "a challenge answered within its lifetime",
+			act:  beginThenAnswer(3*time.Minute, answer),
 			assert: func(t *testing.T, _ *mfaHarness, stub *challengeStub, outs []served) {
 				require.Len(t, outs, 1)
 				require.NoError(t, outs[0].err)
@@ -1042,12 +1057,6 @@ func TestMFAChallengeVerify(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			if tc.bubble {
-				synctest.Test(t, run)
-
-				return
-			}
-
 			run(t)
 		})
 	}
@@ -1123,6 +1132,8 @@ type beginner struct {
 	begin   func() served
 	within  func(d time.Duration) served
 	relogin func()
+	// advance moves the chain's clock on by d.
+	advance func(d time.Duration)
 }
 
 // slowReaper is a consumer's challenge store whose first purge answers only

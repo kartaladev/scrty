@@ -203,7 +203,7 @@ func EnableMFAEnrolment(d EnrolmentDeps, opts ...EnrolmentOption) Option {
 		i := &enrolmentInterceptor{
 			users:             d.Users,
 			sender:            d.Sender,
-			now:               time.Now,
+			now:               c.now,
 			beginPrefix:       DefaultEnrolmentBeginPrefix,
 			confirmPrefix:     DefaultEnrolmentConfirmPrefix,
 			emailPrefix:       DefaultEnrolmentEmailConfirmPrefix,

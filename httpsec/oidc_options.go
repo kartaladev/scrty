@@ -94,7 +94,7 @@ func EnableOIDCLogin(m *oidc.Manager, h *oidc.HandoffManager, opts ...OIDCOption
 		i := &oidcInterceptor{
 			manager:         m,
 			handoffs:        h,
-			now:             time.Now,
+			now:             c.now,
 			authorizePath:   DefaultOIDCAuthorizePath,
 			callbackPath:    DefaultOIDCCallbackPath,
 			handoffPath:     DefaultOIDCHandoffPath,

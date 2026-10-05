@@ -18,6 +18,17 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
+// clockOpt gives the chain the harness's clock, which its sessions share, so a
+// case moves one time for both. The options that follow it, h.chainOpts among
+// them, may replace it.
+func (h *mfaHarness) clockOpt() []httpsec.Option {
+	if h.systemClock {
+		return nil
+	}
+
+	return []httpsec.Option{httpsec.WithClock(h.clock)}
+}
+
 // bearerChain is the chain a real deployment runs: a bearer first factor that
 // resolves the session a token names, and the second factor behind it. It is
 // what makes rotation observable end to end — the credential a caller holds
@@ -30,14 +41,14 @@ func (h *mfaHarness) bearerChain(t *testing.T) *httpsec.Chain {
 		httpsec.WithMFATokens(h.tokens),
 	}, h.mfaOpts...)
 
-	c, err := httpsec.New(append([]httpsec.Option{
+	c, err := httpsec.New(append(append(h.clockOpt(),
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 			Verifier: h.tokens,
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
 		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...),
-	}, h.chainOpts...)...)
+	), h.chainOpts...)...)
 	require.NoError(t, err)
 
 	return c
@@ -53,14 +64,14 @@ func (h *mfaHarness) buildChain(t *testing.T) (*httpsec.Chain, error) {
 		httpsec.WithMFATokens(h.tokens),
 	}, h.mfaOpts...)
 
-	return httpsec.New(
+	return httpsec.New(append(h.clockOpt(),
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 			Verifier: h.tokens,
 			Sessions: h.sessions,
 			Users:    h.users,
 		}),
 		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extra...), mfaOpts...),
-	)
+	)...)
 }
 
 // bearerRequestTo is a request carrying an access token, as a client that has

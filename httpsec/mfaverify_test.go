@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -46,9 +47,15 @@ const testMFACode = "123456"
 // asked to verify a code the endpoint should have refused first, and the
 // limiter the throttle counts failures through.
 type mfaHarness struct {
-	sessions *session.Manager
-	method   *MockMethod
-	limiter  *MockLimiter
+	// clock is the time the harness's sessions and its chain share. A case
+	// that moves time advances it; no case sleeps.
+	clock *clockwork.FakeClock
+	// systemClock builds the chain without WithClock, for the one case about
+	// what a chain reads by default.
+	systemClock bool
+	sessions    *session.Manager
+	method      *MockMethod
+	limiter     *MockLimiter
 
 	// response is the format the method declares: TOTP's form field unless a
 	// case declares another.
@@ -95,13 +102,18 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager()
+	// It starts at the present, so a session is as fresh on it as it would be
+	// on the system clock.
+	clk := clockwork.NewFakeClockAt(time.Now().Truncate(time.Minute))
+
+	sessions, err := session.NewManager(session.WithClock(clk))
 	require.NoError(t, err)
 
 	m := NewMockMethod(ctrl)
 	m.EXPECT().Name().Return("totp").AnyTimes()
 
 	h := &mfaHarness{
+		clock:    clk,
 		sessions: sessions,
 		method:   m,
 		response: mfa.FormField("code", 4<<10),

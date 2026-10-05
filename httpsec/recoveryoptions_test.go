@@ -191,7 +191,11 @@ func TestEnableAccountRecovery_Config(t *testing.T) {
 
 				return append(opts, opts[len(opts)-1])
 			},
-			assert: refused,
+			assert: func(t *testing.T, h *recoveryHarness, chain *httpsec.Chain, err error) {
+				refused(t, h, chain, err)
+				assert.Contains(t, err.Error(), "EnableAccountRecovery", "the error names the option given twice")
+				assert.Contains(t, err.Error(), "given twice")
+			},
 		},
 		{
 			name: "off by default: a POST to the complete path reaches the application",

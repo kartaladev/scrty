@@ -3,7 +3,6 @@ package httpsec_test
 import (
 	"net/http"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -85,16 +84,13 @@ func expiryRecoveryHarness(t *testing.T, methods ...mfa.Method) *recoveryHarness
 // of the components it builds, and that each task sweeps the state those
 // components issued while serving requests, not a copy of it.
 //
-// The chain's MFA challenge managers read the system clock, so the case that
-// expires a challenge runs inside a synctest bubble and moves time with
-// time.Sleep; the recovery core runs on the harness's fake clock.
+// Every case moves time on its harness's fake clock, which the chain reads
+// through WithClock.
 func TestChain_ExpiryTasks(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name string
-		// bubble runs the case inside synctest.
-		bubble bool
 		// chain builds the chain and issues, through it, whatever the case
 		// sweeps.
 		chain  func(t *testing.T) *httpsec.Chain
@@ -173,8 +169,7 @@ func TestChain_ExpiryTasks(t *testing.T) {
 			},
 		},
 		{
-			name:   "the MFA task sweeps a challenge begun through the chain",
-			bubble: true,
+			name: "the MFA task sweeps a challenge begun through the chain",
 			chain: func(t *testing.T) *httpsec.Chain {
 				h := expiryMFAHarness(t, namedChallengeStubs("passkey")...)
 				c := h.bearerChain(t)
@@ -186,7 +181,7 @@ func TestChain_ExpiryTasks(t *testing.T) {
 
 				// Past the challenge's lifetime and the hour-long issuance
 				// window, with no begin since to sweep it inline.
-				time.Sleep(httpsec.DefaultMFAChallengeTTL + time.Hour + time.Second)
+				h.clock.Advance(httpsec.DefaultMFAChallengeTTL + time.Hour + time.Second)
 
 				return c
 			},
@@ -241,12 +236,6 @@ func TestChain_ExpiryTasks(t *testing.T) {
 
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
-			if tc.bubble {
-				synctest.Test(t, run)
-
-				return
-			}
 
 			run(t)
 		})

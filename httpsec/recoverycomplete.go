@@ -223,13 +223,15 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 		i.tokens = login.tokens
 	}
 
-	// The chain's logger and limiter factory first, so a recovery.WithLogger
-	// or limiter option the consumer passed replaces them; the password check
-	// last, so the chain's own always wins. The factory is handed over only
-	// when the consumer configured one: without it the core builds its own
-	// in-memory default, on its own logger and clock.
-	opts := make([]recovery.Option, 0, len(i.coreOpts)+3)
-	opts = append(opts, recovery.WithLogger(c.logger))
+	// The chain's logger, clock and limiter factory first, so a
+	// recovery.WithLogger, recovery.WithClock or limiter option the consumer
+	// passed replaces them; the password check last, so the chain's own always
+	// wins. The factory is handed over only when the consumer configured one:
+	// without it the core builds its own in-memory default, on the core's
+	// logger and clock, which are the chain's unless the consumer replaced
+	// them.
+	opts := make([]recovery.Option, 0, len(i.coreOpts)+4)
+	opts = append(opts, recovery.WithLogger(c.logger), recovery.WithClock(c.clock))
 
 	if c.limiterFactory != nil {
 		opts = append(opts, recovery.WithUserLimiterFactory(c.limiterFactory))

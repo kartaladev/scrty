@@ -84,12 +84,12 @@ type VerifyThrottle struct {
 // NewVerifyThrottle builds the throttle.
 //
 // Defaults: an in-memory limiter of 5 failures per 15 minutes
-// (WithVerifyLimiter), a one-minute log-sampling window (WithVerifyLogInterval)
-// and slog.Default (WithVerifyLogger). The log interval governs MFA
-// verification records alone, so an attacker hammering one user cannot silence
-// any other part of the library.
+// (WithVerifyLimiter), a one-minute log-sampling window (WithVerifyLogInterval),
+// slog.Default (WithVerifyLogger) and clock.System() (WithVerifyClock). The log
+// interval governs MFA verification records alone, so an attacker hammering
+// one user cannot silence any other part of the library.
 //
-// A limiter or logger given as nil — including a non-nil interface holding a
+// A limiter, logger or clock given as nil — including a non-nil interface holding a
 // nil pointer — is a configuration error rather than a silent fallback to the
 // default: a consumer who passed the option meant to replace something.
 func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
@@ -107,6 +107,10 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 
 	if t.logger == nil {
 		return nil, errors.New("mfa: verification throttle logger must not be nil")
+	}
+
+	if nilcheck.IsNil(t.clock) {
+		return nil, fmt.Errorf("%w: verification throttle clock must not be nil", ErrConfig)
 	}
 
 	if err := t.resolveLimiter(); err != nil {

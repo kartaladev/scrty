@@ -49,17 +49,19 @@ type sourceGuard interface {
 var _ sourceGuard = (*ratelimit.SourceGuard)(nil)
 
 // rateLimiterFactory is the factory every limiter the chain builds comes from:
-// the consumer's (WithRateLimiterFactory), or else the in-memory default,
-// writing its per-replica warning through the chain's logger.
+// the consumer's (WithRateLimiterFactory), which keeps its own clock, or else
+// the in-memory default, writing its per-replica warning through the chain's
+// logger and counting its windows on the chain's clock.
 //
 // It is resolved after every option has been applied, because which logger
-// that is is not settled until then.
+// and clock those are is not settled until then.
 func (c *config) rateLimiterFactory() ratelimit.LimiterFactory {
 	if c.limiterFactory != nil {
 		return c.limiterFactory
 	}
 
-	return ratelimit.MemoryLimiterFactory(ratelimit.WithMemoryLimiterLogger(c.logger))
+	return ratelimit.MemoryLimiterFactory(ratelimit.WithMemoryLimiterLogger(c.logger),
+		ratelimit.WithMemoryLimiterClock(c.clock))
 }
 
 // resolveSourceGuard builds the per-source guard an endpoint counts its
@@ -71,7 +73,8 @@ func (c *config) rateLimiterFactory() ratelimit.LimiterFactory {
 // endpoint's own default limit and window. The guard is named after the flow,
 // keys its clients by the chain's keyer (WithIPv6SourcePrefix), logs through
 // the chain's logger, samples its refusal records over logInterval, the window
-// the endpoint's own records are sampled over, and reports the counts it
+// the endpoint's own records are sampled over, on the chain's clock (which
+// leaves a limiter's own sense of time alone), and reports the counts it
 // suppressed to the chain's refusal-log reporter (WithRefusalLogReporter, or
 // the chain's default summary record). Its throttled-source record is the only
 // one a throttled attempt produces.
@@ -116,6 +119,7 @@ func (c *config) resolveSourceGuard(
 		ratelimit.WithSourceGuardKeyer(c.keyer),
 		ratelimit.WithSourceGuardLogInterval(logInterval),
 		ratelimit.WithSourceGuardLogReporter(c.refusalLogReporter()),
+		ratelimit.WithSourceGuardClock(c.clock),
 	}
 
 	aggregate, err := c.aggregateLimiter(option, flow, own, limit, window)
