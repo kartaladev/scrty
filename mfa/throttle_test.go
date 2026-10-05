@@ -582,6 +582,21 @@ func TestWithVerifyClock(t *testing.T) {
 			assert: refused,
 		},
 		{
+			// With a consumer's limiter no default limiter is built, so only the
+			// throttle's own check stands between a nil clock and a panic at
+			// the first sampled record.
+			name: "nil clock beside a consumer's limiter",
+			opts: func(*clockwork.FakeClock) []mfa.ThrottleOption {
+				l, err := ratelimit.NewMemoryLimiter(5, 15*time.Minute)
+				if err != nil {
+					panic(err)
+				}
+
+				return []mfa.ThrottleOption{mfa.WithVerifyLimiter(l), mfa.WithVerifyClock(nil)}
+			},
+			assert: refused,
+		},
+		{
 			name: "a throttle window follows the given clock",
 			opts: func(fc *clockwork.FakeClock) []mfa.ThrottleOption {
 				return []mfa.ThrottleOption{mfa.WithVerifyClock(fc)}
