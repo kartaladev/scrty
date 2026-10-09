@@ -336,6 +336,7 @@ func TestChain_Clock(t *testing.T) {
 				engine, seen := recordNow(t, policy.PreAuthentication)
 
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 
 				c, err := httpsec.New(httpsec.WithLogger(h.logger()), httpsec.WithPolicyEngine(engine),
 					httpsec.EnableBasicAuth(h.basicAuthDeps()), httpsec.WithClock(clk))

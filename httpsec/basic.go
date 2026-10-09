@@ -186,6 +186,14 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		return nil, err
 	}
 
+	// A proven password supersedes the guesses before it, as at the login
+	// form: a Basic client's typos must not add up to a lock its owner keeps
+	// hitting with the right password.
+	if err := b.attempts.Reset(ctx, username); err != nil {
+		b.log.LogAttrs(ctx, slog.LevelError, msgAttemptsNotReset,
+			diag.Failure("attempt-store", err)...)
+	}
+
 	// Stateless: there is no later request in which this caller could answer a
 	// challenge, so the phase decides outright and its challenge carries
 	// nothing to come back to.

@@ -534,6 +534,7 @@ func TestGuardBehindAuthentication(t *testing.T) {
 			name: "behind Basic authentication",
 			build: func(t *testing.T, h *authHarness, _ *context.Context) *httpsec.Chain {
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 
 				chain, err := httpsec.New(
 					httpsec.WithLogger(h.logger()),
