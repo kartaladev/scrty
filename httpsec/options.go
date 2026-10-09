@@ -881,8 +881,12 @@ type FormLoginDeps struct {
 	Tokens token.Generator
 
 	// Attempts is where a failed login is recorded and a successful one clears
-	// what came before. Supply the same store the account-lockout policy reads
-	// — a failure recorded in one store and counted in another locks nothing.
+	// what came before. Supply the account-lockout policy's own view,
+	// lockout.Attempts(): it records into the store the policy reads, and it
+	// is what reports lockout transitions to an observer the policy was given.
+	// A bare store the policy also reads locks just the same, but nothing
+	// recorded through it is reported. A failure recorded in one store and
+	// counted in another locks nothing.
 	Attempts policy.AttemptStore
 }
 
@@ -1125,10 +1129,13 @@ type BasicAuthDeps struct {
 	// Authenticator judges the decoded credentials.
 	Authenticator authenticate.Authenticator
 
-	// Attempts is where a refused credential is recorded. Supply the same
-	// store the account-lockout policy reads, so a password guessed at over
-	// Basic counts towards the same lockout as one guessed at over the login
-	// form.
+	// Attempts is where a refused credential is recorded. Supply the
+	// account-lockout policy's own view, lockout.Attempts(): it records into
+	// the store the policy reads, and it is what reports lockout transitions
+	// to an observer the policy was given. A bare store the policy also reads
+	// locks just the same, but nothing recorded through it is reported. A
+	// password guessed at over Basic counts towards the same lockout as one
+	// guessed at over the login form.
 	Attempts policy.AttemptStore
 }
 
@@ -2148,6 +2155,10 @@ type PasswordChangeOption func(*passwordChangeGate) error
 // refused until a new login clears it. Register one with
 // WithChangePasswordEndpoint to let a caller pay the debt without logging in
 // again. A request carrying no session passes the gate untouched.
+//
+// A successful resolve also clears the caller's lockout failures (see
+// ChangePasswordFunc); there is no option to keep them, since they were
+// guesses at a password that no longer exists.
 //
 // A POST to the chain's logout path always passes, so a caller owing a change
 // can end the session; the path is the one EnableLogout configured, read when

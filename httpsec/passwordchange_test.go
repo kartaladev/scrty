@@ -3,6 +3,8 @@ package httpsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -617,4 +619,416 @@ func TestPasswordChangeGateLogout(t *testing.T) {
 			tc.assert(t, sessions, s, serve(t, chain, tc.request(t.Context())))
 		})
 	}
+}
+
+// TestChangePasswordEndpointClearsLockoutFailures pins that a password the
+// caller has just changed is not held to guesses made at the old one: the
+// gate clears the principal's username in every attempt store the chain's
+// password logins record into, and clears nothing when the change fails.
+func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		options func(t *testing.T, h *authHarness, other policy.AttemptStore) []httpsec.Option
+		expect  func(h *authHarness, other *MockAttemptStore)
+		change  httpsec.ChangePasswordFunc
+		request func(ctx context.Context) *http.Request
+		assert  func(t *testing.T, h *authHarness, s served)
+
+		// user is what the bearer step loads the caller as, and storedUser()
+		// when nil. saveErr is what saving the resolved session fails with.
+		user    *identity.Details
+		saveErr error
+	}
+
+	changes := func(ex *httpsec.Exchange) error {
+		ex.Writer.WriteHeader(http.StatusNoContent)
+
+		return nil
+	}
+	refuses := func(*httpsec.Exchange) error { return errChangeRefused }
+	post := func(ctx context.Context) *http.Request { return changePasswordRequest(ctx, http.MethodPost, true) }
+	succeeded := func(t *testing.T, _ *authHarness, s served) {
+		require.NoError(t, s.err)
+		assert.Equal(t, http.StatusNoContent, s.rec.Code)
+	}
+	login := func(_ *testing.T, h *authHarness, _ policy.AttemptStore) []httpsec.Option {
+		return []httpsec.Option{httpsec.EnableFormLogin(h.formLoginDeps())}
+	}
+
+	cases := []testCase{
+		{
+			name:    "a successful change clears the principal's username in the login store",
+			options: login,
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+			},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			name: "a distinct Basic store is cleared too",
+			options: func(_ *testing.T, h *authHarness, other policy.AttemptStore) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableFormLogin(h.formLoginDeps()),
+					httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: other}),
+				}
+			},
+			expect: func(h *authHarness, other *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+				other.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+			},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			name: "a store shared by form login and Basic is cleared once",
+			options: func(_ *testing.T, h *authHarness, _ policy.AttemptStore) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableFormLogin(h.formLoginDeps()),
+					httpsec.EnableBasicAuth(h.basicAuthDeps()),
+				}
+			},
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+			},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			// Pins that a chain with no password login has no password lockout, so
+			// there is nothing to clear and nothing to fail on.
+			name:    "a chain with no password login clears nothing and does not fail",
+			options: func(*testing.T, *authHarness, policy.AttemptStore) []httpsec.Option { return nil },
+			expect:  func(*authHarness, *MockAttemptStore) {},
+			change:  changes, request: post, assert: succeeded,
+		},
+		{
+			// Pins that a value whose dynamic type holds a slice cannot be
+			// compared with ==, so it is treated as distinct, never as a panic.
+			name: "an attempt store of an uncomparable type is cleared without panicking",
+			options: func(_ *testing.T, h *authHarness, _ policy.AttemptStore) []httpsec.Option {
+				s := uncomparableStore{AttemptStore: h.attempts, tags: []string{"x"}}
+				d := h.formLoginDeps()
+				d.Attempts = s
+
+				return []httpsec.Option{
+					httpsec.EnableFormLogin(d),
+					httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: s}),
+				}
+			},
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(2)
+			},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			// A struct whose field is an interface is comparable by type, yet
+			// == panics when that interface holds an uncomparable value.
+			name: "an attempt store wrapping an uncomparable store is cleared without panicking",
+			options: func(_ *testing.T, h *authHarness, _ policy.AttemptStore) []httpsec.Option {
+				s := wrappingStore{AttemptStore: uncomparableStore{AttemptStore: h.attempts, tags: []string{"x"}}}
+				d := h.formLoginDeps()
+				d.Attempts = s
+
+				return []httpsec.Option{
+					httpsec.EnableFormLogin(d),
+					httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: h.authn, Attempts: s}),
+				}
+			},
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(2)
+			},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			// The identifier is read before the consumer's function runs, so a
+			// function that replaces the exchange's context cannot change it.
+			name:    "a change function that replaces the context cannot change the username cleared",
+			options: login,
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+			},
+			change: func(ex *httpsec.Exchange) error {
+				ex.SetContext(identity.WithPrincipal(ex.Context(), &identity.Principal{Username: "mallory"}))
+				ex.Writer.WriteHeader(http.StatusNoContent)
+
+				return nil
+			},
+			request: post, assert: succeeded,
+		},
+		{
+			name:    "a change function that drops the principal still has the original username cleared",
+			options: login,
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+			},
+			change: func(ex *httpsec.Exchange) error {
+				ex.SetContext(context.Background())
+				ex.Writer.WriteHeader(http.StatusNoContent)
+
+				return nil
+			},
+			request: post, assert: succeeded,
+		},
+		{
+			name:    "a refused change clears nothing",
+			options: login,
+			expect:  func(*authHarness, *MockAttemptStore) {},
+			change:  refuses, request: post,
+			assert: func(t *testing.T, _ *authHarness, s served) { require.ErrorIs(t, s.err, errChangeRefused) },
+		},
+		{
+			name:    "a client that hangs up after changing its password is still cleared",
+			options: login,
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).
+					DoAndReturn(func(ctx context.Context, _ string) error {
+						if ctx.Err() != nil {
+							return fmt.Errorf("cleared on a cancelled context: %w", ctx.Err())
+						}
+
+						return nil
+					}).Times(1)
+			},
+			change: func(ex *httpsec.Exchange) error {
+				cancel, ok := ex.Context().Value(cancelKey{}).(context.CancelFunc)
+				if !ok {
+					return errors.New("passwordchange_test: no cancel function on the exchange")
+				}
+
+				cancel()
+
+				ex.Writer.WriteHeader(http.StatusNoContent)
+
+				return nil
+			},
+			request: post,
+			assert: func(t *testing.T, h *authHarness, s served) {
+				require.NoError(t, s.err)
+				for _, r := range h.logs.records() {
+					assert.NotEqual(t, msgFailuresNotCleared, r.Message,
+						"the clearing ran on the client's cancelled context")
+				}
+			},
+		},
+		{
+			// The password has changed by the time the session is saved, so a
+			// save that then fails does not bring the old guesses back.
+			name:    "a session that cannot be saved after the change is still cleared",
+			options: login,
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).Return(nil).Times(1)
+			},
+			change: changes, request: post,
+			saveErr: errSaveFailed,
+			assert: func(t *testing.T, _ *authHarness, s served) {
+				require.ErrorIs(t, s.err, errSaveFailed)
+			},
+		},
+		{
+			// Pins that the store matches exactly, so only the principal's
+			// own spelling is cleared. The token names the caller "ada" and the
+			// loader stores them as "Ada": "Ada" is cleared, and neither the
+			// token's spelling nor a case-folded one is.
+			name:    "only the principal's exact username is cleared",
+			options: login,
+			user: func() *identity.Details {
+				d := storedUser()
+				d.Username = "Ada"
+
+				return d
+			}(),
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), "Ada").Return(nil).Times(1)
+			},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			// A principal with no username names no identifier, and an empty
+			// string is never cleared.
+			name:    "a principal with an empty username clears nothing and does not fail",
+			options: login,
+			user: func() *identity.Details {
+				d := storedUser()
+				d.Username = ""
+
+				return d
+			}(),
+			expect: func(*authHarness, *MockAttemptStore) {},
+			change: changes, request: post, assert: succeeded,
+		},
+		{
+			// The password has changed; a store that cannot clear is bookkeeping
+			// that failed, reported once with its type and never its text or the
+			// username, and the consumer's response is what the client reads.
+			name:    "a clearing that fails is logged and the consumer's response stands",
+			options: login,
+			expect: func(h *authHarness, _ *MockAttemptStore) {
+				h.attempts.EXPECT().Reset(gomock.Any(), testSubject).
+					Return(errors.New("db: column secret_hint=hunter2")).Times(1)
+			},
+			change: changes, request: post,
+			assert: func(t *testing.T, h *authHarness, s served) {
+				succeeded(t, h, s)
+
+				var cleared []slog.Record
+				for _, r := range h.logs.records() {
+					if r.Message == msgFailuresNotCleared {
+						cleared = append(cleared, r)
+					}
+				}
+				require.Len(t, cleared, 1, "one error record names the failed clearing")
+				assert.Equal(t, slog.LevelError, cleared[0].Level)
+
+				errType, ok := attrValue(cleared[0], "error_type")
+				require.True(t, ok, "the record names the store's error type")
+				assert.Equal(t, "*errors.errorString", errType.String())
+
+				for _, r := range h.logs.records() {
+					r.Attrs(func(a slog.Attr) bool {
+						assert.NotContains(t, a.Value.String(), "hunter2", "a store's error text reached the log")
+
+						return true
+					})
+				}
+				cleared[0].Attrs(func(a slog.Attr) bool {
+					assert.NotEqual(t, testSubject, a.Value.String(), "the username reached the log")
+
+					return true
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			user := tc.user
+			if user == nil {
+				user = storedUser()
+			}
+
+			h := newAuthHarness(t)
+			h.expectVerified()
+			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
+			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(user, nil).AnyTimes()
+			h.expectSaved(&savedSessions{}, tc.saveErr)
+
+			other := NewMockAttemptStore(gomock.NewController(t))
+			tc.expect(h, other)
+
+			opts := append([]httpsec.Option{
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableBearerToken(h.bearerTokenDeps()),
+				httpsec.EnablePasswordChangeGate(h.sessions,
+					httpsec.WithChangePasswordEndpoint(testChangePasswordPath, tc.change)),
+			}, tc.options(t, h, other)...)
+
+			chain, err := httpsec.New(opts...)
+			require.NoError(t, err)
+
+			tc.assert(t, h, serveHangingUp(t, chain, tc.request(t.Context())))
+		})
+	}
+}
+
+// serveHangingUp is serve on an exchange whose context carries its own cancel
+// function under cancelKey, so the consumer's function can hang the client up
+// mid-request as a real client disconnecting would.
+func serveHangingUp(t *testing.T, chain *httpsec.Chain, req *http.Request) served {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	out := served{rec: httptest.NewRecorder()}
+	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+		out.handlerRan = true
+		out.handled = ex
+
+		return nil
+	})
+
+	ex := httpsec.NewExchange(context.WithValue(ctx, cancelKey{}, cancel),
+		httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(out.rec))
+	out.err = run(ex)
+
+	return out
+}
+
+// msgFailuresNotCleared is the record the gate writes for a store that could
+// not clear the failures a password change superseded.
+const msgFailuresNotCleared = "httpsec: lockout failures could not be cleared after a password change"
+
+// errSaveFailed is what the session store fails with when a test needs the
+// resolved session's save to fail.
+var errSaveFailed = errors.New("passwordchange_test: the session could not be saved")
+
+// cancelKey carries a request's cancel function, so a test's change function
+// can hang the client up mid-request.
+type cancelKey struct{}
+
+// uncomparableStore is an attempt store whose dynamic type cannot be compared
+// with ==, as a consumer's struct value holding a slice cannot.
+type uncomparableStore struct {
+	policy.AttemptStore
+
+	tags []string
+}
+
+// wrappingStore is a comparable struct type whose embedded interface may hold
+// a value that cannot be compared.
+type wrappingStore struct {
+	policy.AttemptStore
+}
+
+// TestChangePasswordEndpointLetsTheNewPasswordIn pins, against a real lockout
+// over the in-memory store, that the new password is not refused for guesses
+// made at the old one: seven failures owe a wait, the caller resolves a
+// password change, and a form login posted at once is let in.
+func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
+	t.Parallel()
+
+	h := newAuthHarness(t)
+	store := policy.NewMemoryAttemptStore()
+	now := time.Now()
+	for i := range 7 {
+		require.NoError(t, store.RecordFailure(t.Context(), testSubject, now.Add(-time.Duration(i)*time.Second)))
+	}
+
+	lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store))
+	require.NoError(t, err)
+	engine, err := policy.NewEngine(lockout)
+	require.NoError(t, err)
+
+	h.expectVerified()
+	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
+	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil).AnyTimes()
+	h.expectSaved(&savedSessions{}, nil)
+	h.expectAuthenticated(testPrincipal())
+	h.expectSessionOpened("a-new-token")
+
+	login := h.formLoginDeps()
+	login.Attempts = store
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(h.logger()),
+		httpsec.WithPolicyEngine(engine),
+		httpsec.EnableBearerToken(h.bearerTokenDeps()),
+		httpsec.EnableFormLogin(login),
+		httpsec.EnablePasswordChangeGate(h.sessions,
+			httpsec.WithChangePasswordEndpoint(testChangePasswordPath, func(ex *httpsec.Exchange) error {
+				ex.Writer.WriteHeader(http.StatusNoContent)
+
+				return nil
+			})),
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, serve(t, chain, changePasswordRequest(t.Context(), http.MethodPost, true)).err)
+
+	got := serve(t, chain, formRequest(t.Context(), httpsec.DefaultLoginPath,
+		"username="+testSubject+"&password=the-new-one"))
+
+	require.NoError(t, got.err, "the new password was refused for guesses at the old one")
 }
