@@ -68,11 +68,25 @@ func TestAccountLockoutPolicyLockoutError(t *testing.T) {
 				"policy: account locked after repeated failures: 100 failures within 24h0m0s"),
 		},
 		{
-			name:   "under a fixed lock the refusal carries no wait",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			name:   "under a sliding lock the refusal carries no wait",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(5, 15*time.Minute)},
 			record: failuresEndingAt("ada", 5, 10*time.Minute),
 			assert: owing(0,
 				"policy: account locked after repeated failures: 5 failures within 15m0s"),
+		},
+		{
+			name:   "a flat fifteen-minute wait is owed one second before it ends",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(15*time.Minute, 15*time.Minute)},
+			record: failuresEndingAt("ada", 5, 15*time.Minute-time.Second),
+			assert: owing(15*time.Minute,
+				"policy: account locked after repeated failures: 5 failures within 24h0m0s"),
+		},
+		{
+			name:   "a further failure owes the same flat wait, not a doubled one",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(15*time.Minute, 15*time.Minute)},
+			record: failuresEndingAt("ada", 6, 14*time.Minute),
+			assert: owing(15*time.Minute,
+				"policy: account locked after repeated failures: 6 failures within 24h0m0s"),
 		},
 	}
 

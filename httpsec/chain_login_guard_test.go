@@ -316,7 +316,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 			name: "locked-account refusals count against the source",
 			arrange: func(t *testing.T, h *loginGuardHarness) {
 				lockout, err := policy.NewAccountLockoutPolicy(
-					policy.WithAttemptStore(h.attempts), policy.WithFixedLockout(1, time.Hour))
+					policy.WithAttemptStore(h.attempts), policy.WithSlidingLockout(1, time.Hour))
 				require.NoError(t, err)
 
 				h.lockout = lockout
@@ -341,7 +341,7 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 			name: "Basic locked refusals count against the source",
 			arrange: func(t *testing.T, h *loginGuardHarness) {
 				lockout, err := policy.NewAccountLockoutPolicy(
-					policy.WithAttemptStore(h.attempts), policy.WithFixedLockout(1, time.Hour))
+					policy.WithAttemptStore(h.attempts), policy.WithSlidingLockout(1, time.Hour))
 				require.NoError(t, err)
 
 				h.lockout = lockout
@@ -1175,7 +1175,7 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 	return httpsec.New(append(base, opts...)...)
 }
 
-// lockingAda is an engine whose fixed lockout holds ada locked.
+// lockingAda is an engine whose sliding lockout holds ada locked.
 func lockingAda(t *testing.T) *policy.Engine {
 	t.Helper()
 
@@ -1183,7 +1183,7 @@ func lockingAda(t *testing.T) *policy.Engine {
 	require.NoError(t, attempts.RecordFailure(t.Context(), "ada", time.Now()))
 
 	lockout, err := policy.NewAccountLockoutPolicy(
-		policy.WithAttemptStore(attempts), policy.WithFixedLockout(1, time.Hour))
+		policy.WithAttemptStore(attempts), policy.WithSlidingLockout(1, time.Hour))
 	require.NoError(t, err)
 
 	return engineOf(t, lockout)

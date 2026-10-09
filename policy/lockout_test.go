@@ -260,30 +260,58 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 			assert: allows,
 		},
 		{
-			// A fixed lock owes no wait: it holds for as long as the window
+			// A sliding lock owes no wait: it holds for as long as the window
 			// counts the threshold, however old the newest failure.
-			name:   "a fixed lock denies at its threshold however old the newest failure",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			name:   "a sliding lock denies at its threshold however old the newest failure",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(5, 15*time.Minute)},
 			record: failuresEndingAt("ada", 5, 10*time.Minute),
 			assert: denies,
 		},
 		{
-			name:   "a fixed lock lifts once the failures leave its window",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			name:   "a sliding lock lifts once the failures leave its window",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(5, 15*time.Minute)},
 			record: failuresEndingAt("ada", 5, 16*time.Minute),
 			assert: allows,
 		},
 		{
-			name:   "a fixed lock allows below its threshold",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 15*time.Minute)},
+			// Failures spread across the window: only the oldest is outside it,
+			// so four remain and the sliding lock has already lifted.
+			name: "a sliding lock lifts as soon as its oldest failure leaves the window",
+			opts: []policy.LockoutOption{policy.WithSlidingLockout(5, 15*time.Minute)},
+			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
+				failuresAt(t, store, "ada",
+					lockoutNow.Add(-15*time.Minute-time.Second),
+					lockoutNow.Add(-14*time.Minute),
+					lockoutNow.Add(-10*time.Minute),
+					lockoutNow.Add(-5*time.Minute),
+					lockoutNow.Add(-time.Minute))
+			},
+			assert: allows,
+		},
+		{
+			name: "a sliding lock holds while its oldest failure is still inside the window",
+			opts: []policy.LockoutOption{policy.WithSlidingLockout(5, 15*time.Minute)},
+			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
+				failuresAt(t, store, "ada",
+					lockoutNow.Add(-15*time.Minute+time.Second),
+					lockoutNow.Add(-14*time.Minute),
+					lockoutNow.Add(-10*time.Minute),
+					lockoutNow.Add(-5*time.Minute),
+					lockoutNow.Add(-time.Minute))
+			},
+			assert: denies,
+		},
+		{
+			name:   "a sliding lock allows below its threshold",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(5, 15*time.Minute)},
 			record: failuresEndingAt("ada", 4, 10*time.Second),
 			assert: allows,
 		},
 		{
 			// The escalating default's ceiling of 100 has no meaning under a
-			// fixed lock, whose own threshold is the only count that locks.
-			name:   "a fixed lock ignores the escalating ceiling",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(200, 24*time.Hour)},
+			// sliding lock, whose own threshold is the only count that locks.
+			name:   "a sliding lock ignores the escalating ceiling",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(200, 24*time.Hour)},
 			record: failuresEndingAt("ada", 150, 2*time.Hour),
 			assert: allows,
 		},
@@ -313,6 +341,35 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 				assert.Equal(t, policy.Deny, d.Outcome)
 				assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
 			},
+		},
+		{
+			// FailureCount counts strictly after its cutoff, so the lock is lifted
+			// at the instant the fifteen minutes have passed.
+			name:   "a flat fifteen-minute wait is served exactly at its end",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(15*time.Minute, 15*time.Minute)},
+			record: failuresEndingAt("ada", 5, 15*time.Minute),
+			assert: allows,
+		},
+		{
+			name:   "six failures under a flat wait are allowed once it ends",
+			opts:   []policy.LockoutOption{policy.WithLockoutWait(15*time.Minute, 15*time.Minute)},
+			record: failuresEndingAt("ada", 6, 15*time.Minute),
+			assert: allows,
+		},
+		{
+			// 24 failures a day is what the default waits let a patient guesser
+			// make. Five days of it is 120 failures, but the ceiling counts only
+			// the window, so it never refuses.
+			name: "failures outside the window do not count toward the ceiling",
+			record: func(t *testing.T, store *policy.MemoryAttemptStore) {
+				for day := range 5 {
+					for i := range 24 {
+						failuresAt(t, store, "ada", lockoutNow.Add(
+							-2*time.Hour-time.Duration(day)*24*time.Hour-time.Duration(i)*time.Minute))
+					}
+				}
+			},
+			assert: allows,
 		},
 	}
 
@@ -680,7 +737,7 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("a fixed lock's own window is the cutoff", func(t *testing.T) {
+	t.Run("a sliding lock's own window is the cutoff", func(t *testing.T) {
 		t.Parallel()
 
 		store := newReapableAttemptStore(t)
@@ -688,7 +745,7 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 			DeleteAttemptsBefore(gomock.Any(), lockoutCutoff).
 			Return(0, nil)
 
-		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithFixedLockout(5, 15*time.Minute))
+		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithSlidingLockout(5, 15*time.Minute))
 
 		_, err := p.PurgeExpired(t.Context())
 		require.NoError(t, err)
@@ -697,12 +754,12 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 	t.Run("a purge does not free a failure the window still counts", func(t *testing.T) {
 		t.Parallel()
 
-		// A fixed lock of one failure per 15 minutes: the failure locks for as
+		// A sliding lock of one failure per 15 minutes: the failure locks for as
 		// long as the window counts it, so a purge that took it would unlock.
 		store := newSweepingAttemptStore()
 		require.NoError(t, store.RecordFailure(t.Context(), "ada", lockoutNow.Add(-5*time.Minute)))
 
-		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithFixedLockout(1, 15*time.Minute))
+		p := lockoutWith(t, policy.WithAttemptStore(store), policy.WithSlidingLockout(1, 15*time.Minute))
 
 		removed, err := p.PurgeExpired(t.Context())
 		require.NoError(t, err)

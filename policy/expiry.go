@@ -13,7 +13,7 @@ import (
 // The task is named "login-attempts". It sets no Interval, because only the
 // deployment knows its cadence, and it accepts no cutoff: the cutoff is p's own
 // window behind p's own clock (24 hours by default, or what WithLockoutWindow
-// or WithFixedLockout set). It never deletes a failure the policy would still
+// or WithSlidingLockout set). It never deletes a failure the policy would still
 // count, so a sweep cannot unlock an account that is locked.
 //
 // A store that cannot purge, the default in-memory one among them, yields an

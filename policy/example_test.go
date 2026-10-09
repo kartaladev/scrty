@@ -2,7 +2,11 @@ package policy_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/jonboulle/clockwork"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
@@ -135,4 +139,70 @@ func ExampleWithFederatedChallengeWhenUnmet() {
 	// Output:
 	// true
 	// <nil>
+}
+
+// A lock of fixed duration: once five failures fall in the day, the
+// identifier is refused for exactly fifteen minutes after its newest one.
+func ExampleWithLockoutWait_fixedDuration() {
+	clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+	store := policy.NewMemoryAttemptStore()
+
+	lockout, err := policy.NewAccountLockoutPolicy(
+		policy.WithLockoutWait(15*time.Minute, 15*time.Minute),
+		policy.WithAttemptStore(store),
+		policy.WithLockoutClock(clk),
+	)
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	ctx := context.Background()
+	for range 5 {
+		if err := store.RecordFailure(ctx, "ada", clk.Now()); err != nil {
+			fmt.Println(err)
+
+			return
+		}
+	}
+
+	d := lockout.Evaluate(ctx, &policy.Input{Username: "ada"})
+
+	var locked *policy.LockoutError
+	if errors.As(d.Reason, &locked) {
+		fmt.Println(d.Outcome, locked.Wait)
+	}
+
+	clk.Advance(15 * time.Minute)
+	fmt.Println(lockout.Evaluate(ctx, &policy.Input{Username: "ada"}).Outcome)
+	// Output:
+	// Deny 15m0s
+	// Allow
+}
+
+// Reports go to the consumer's observer. The policy's view records failures and
+// reports them, so the chain is handed lockout.Attempts() rather than the bare
+// store.
+func ExampleWithLockoutObserver() {
+	lockout, err := policy.NewAccountLockoutPolicy(
+		policy.WithLockoutObserver(func(_ context.Context, r policy.LockoutReport) {
+			fmt.Println(r.Identifier, r.Kind, r.Failures)
+		}),
+	)
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	ctx := context.Background()
+	for range 5 {
+		_ = lockout.RecordFailure(ctx, "ada")
+	}
+	_ = lockout.Reset(ctx, "ada")
+
+	// Output:
+	// ada locked 5
+	// ada cleared 5
 }

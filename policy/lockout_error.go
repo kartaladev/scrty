@@ -16,7 +16,7 @@ import (
 // passed. The refusal lifts no later than the window after the newest failure,
 // so a Wait longer than the configured window overstates it. Wait is zero
 // where no wait lifts the lock — at the ceiling, and under
-// WithFixedLockout — and a caller must not read zero as "try now".
+// WithSlidingLockout — and a caller must not read zero as "try now".
 //
 // A consumer that discloses locks may render Wait as an HTTP Retry-After
 // header; the library writes none itself. A consumer that does not disclose
@@ -27,7 +27,7 @@ import (
 // never anything an attempt store said.
 type LockoutError struct {
 	// Wait is the escalated wait owed, or zero at the ceiling and under a
-	// fixed lock.
+	// sliding lock.
 	Wait time.Duration
 
 	failures int

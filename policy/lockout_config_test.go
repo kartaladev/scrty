@@ -43,6 +43,19 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 
 	cases := []testCase{
 		{
+			name:   "a nil lockout observer is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutObserver(nil)},
+			assert: refused,
+		},
+		{
+			name: "a nil lockout logger is ignored",
+			opts: []policy.LockoutOption{policy.WithLockoutLogger(nil)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				assert.NotNil(t, p)
+			},
+		},
+		{
 			name: "no options construct the documented defaults",
 			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
 				require.NoError(t, err)
@@ -107,47 +120,59 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			},
 		},
 		{
-			name: "a fixed lock keeps its own threshold and window",
-			opts: []policy.LockoutOption{policy.WithFixedLockout(3, 15*time.Minute)},
+			name: "a sliding lock keeps its own threshold and window",
+			opts: []policy.LockoutOption{policy.WithSlidingLockout(3, 15*time.Minute)},
 			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
 				assert.Equal(t, 3, p.Threshold())
-				assert.Equal(t, 15*time.Minute, p.Window(), "Window did not report the fixed lock's window")
+				assert.Equal(t, 15*time.Minute, p.Window(), "Window did not report the sliding lock's window")
 			},
 		},
 		{
-			// A fixed lock has no ceiling, so a threshold at or above the
-			// escalating default's ceiling is still a fixed lock.
-			name: "a fixed lock above the escalating ceiling is allowed",
-			opts: []policy.LockoutOption{policy.WithFixedLockout(200, 24*time.Hour)},
+			// A sliding lock has no ceiling, so a threshold at or above the
+			// escalating default's ceiling is still a sliding lock.
+			name: "a sliding lock above the escalating ceiling is allowed",
+			opts: []policy.LockoutOption{policy.WithSlidingLockout(200, 24*time.Hour)},
 			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
 			},
 		},
 		{
-			name:   "a fixed lock with a zero window is refused",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(5, 0)},
+			name:   "a sliding lock with a zero window is refused",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(5, 0)},
 			assert: refused,
 		},
 		{
-			name:   "a fixed lock with a zero threshold is refused",
-			opts:   []policy.LockoutOption{policy.WithFixedLockout(0, 15*time.Minute)},
+			name:   "a sliding lock with a zero threshold is refused",
+			opts:   []policy.LockoutOption{policy.WithSlidingLockout(0, 15*time.Minute)},
 			assert: refused,
 		},
 		{
-			name: "a fixed lock with a wait option is refused",
+			name: "a sliding lock with a wait option is refused",
 			opts: []policy.LockoutOption{
-				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithSlidingLockout(5, 15*time.Minute),
 				policy.WithLockoutWait(time.Second, time.Minute),
 			},
 			assert: refused,
 		},
 		{
-			name: "a fixed lock with a ceiling option is refused",
+			name: "a conflicting option names the sliding lock it conflicts with",
 			opts: []policy.LockoutOption{
-				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithSlidingLockout(5, 15*time.Minute),
+				policy.WithLockoutWait(time.Minute, time.Hour),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				refused(t, p, err)
+				assert.ErrorContains(t, err, "WithSlidingLockout")
+				assert.NotContains(t, err.Error(), "WithFixedLockout")
+			},
+		},
+		{
+			name: "a sliding lock with a ceiling option is refused",
+			opts: []policy.LockoutOption{
+				policy.WithSlidingLockout(5, 15*time.Minute),
 				policy.WithLockoutCeiling(50),
 			},
 			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
@@ -159,9 +184,9 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			},
 		},
 		{
-			name: "a fixed lock with several conflicting options names each of them",
+			name: "a sliding lock with several conflicting options names each of them",
 			opts: []policy.LockoutOption{
-				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithSlidingLockout(5, 15*time.Minute),
 				policy.WithLockoutThreshold(3),
 				policy.WithLockoutWait(time.Second, time.Minute),
 			},
@@ -174,18 +199,18 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 		},
 		{
 			// The order of the options must not matter: a threshold set
-			// before the fixed lock would otherwise be silently overwritten.
-			name: "a threshold option before a fixed lock is refused",
+			// before the sliding lock would otherwise be silently overwritten.
+			name: "a threshold option before a sliding lock is refused",
 			opts: []policy.LockoutOption{
 				policy.WithLockoutThreshold(3),
-				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithSlidingLockout(5, 15*time.Minute),
 			},
 			assert: refused,
 		},
 		{
-			name: "a window option after a fixed lock is refused",
+			name: "a window option after a sliding lock is refused",
 			opts: []policy.LockoutOption{
-				policy.WithFixedLockout(5, 15*time.Minute),
+				policy.WithSlidingLockout(5, 15*time.Minute),
 				policy.WithLockoutWindow(time.Hour),
 			},
 			assert: refused,

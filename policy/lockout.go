@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -32,10 +33,11 @@ const (
 	// gets very few guesses at full rate.
 	defaultLockoutThreshold = 5
 
-	// defaultLockoutWindow is how far back failures are counted. NIST SP
-	// 800-63B counts consecutive failures, and a successful authentication
-	// already clears them through Reset; a day bounds what the store holds
-	// while keeping a slow, steady guesser's failures in view.
+	// defaultLockoutWindow is how far back failures are counted. A day bounds
+	// what the store holds while keeping a slow, steady guesser's failures in
+	// view; a successful authentication clears them sooner, through Reset.
+	// Failures older than the window no longer count toward anything, the
+	// ceiling included.
 	defaultLockoutWindow = 24 * time.Hour
 
 	// defaultLockoutFirstWait and defaultLockoutLongestWait are the ends of
@@ -44,10 +46,14 @@ const (
 	defaultLockoutFirstWait   = 30 * time.Second
 	defaultLockoutLongestWait = time.Hour
 
-	// defaultLockoutCeiling is NIST SP 800-63B's cap on consecutive failed
-	// attempts for one account. With the default waits an attacker reaches
-	// about one guess an hour, some 24 a day, so the ceiling is out of reach
-	// of a guesser who respects the waits.
+	// defaultLockoutCeiling is how many failures inside the window refuse an
+	// identifier outright. It borrows the number NIST SP 800-63B-4 §3.2.2
+	// uses, but it is not that section's cap: NIST counts consecutive failures
+	// in total and disables the authenticator until it is bound again, while
+	// this ceiling counts only the window and lifts as failures age out. With
+	// the default waits a guesser who respects them makes about 24 guesses a
+	// day, so the ceiling bounds bursts of concurrent requests, not a patient
+	// guesser's total.
 	defaultLockoutCeiling = 100
 
 	// lockoutPolicyName is what this policy calls itself in logs and in an
@@ -67,9 +73,12 @@ const (
 // identifier owes a wait of 30 seconds, doubled for each failure beyond the
 // threshold and never more than an hour, and it is refused while its newest
 // failure is more recent than that wait. Once the wait has passed, the next
-// attempt is judged on its merits. At 100 failures in the window, the cap NIST
-// SP 800-63B-4 §3.2.2 sets, it is refused however long it has waited, until
-// failures leave the window or a successful authentication clears them.
+// attempt is judged on its merits. At 100 failures in the window it is refused
+// however long it has waited, until failures leave the window or a successful
+// authentication clears them. That ceiling limits the guessing rate, about 24
+// guesses a day under the default waits, not the total. It is not NIST SP
+// 800-63B-4 §3.2.2's cap on consecutive failures, which disables the
+// authenticator until it is bound again; this policy never disables anything.
 //
 // Waiting rather than locking is the point. A hard lock lets anyone who knows
 // a username keep its owner out for as long as they keep failing; an
@@ -86,9 +95,11 @@ const (
 // deployment of more than one replica needs — the free failures with
 // WithLockoutThreshold, the span with WithLockoutWindow, the waits with
 // WithLockoutWait, the cap with WithLockoutCeiling and the clock with
-// WithLockoutClock. WithFixedLockout replaces the escalating wait with a hard
-// lock; WithFixedLockout(5, 15*time.Minute) restores the previous
-// default of five failures locking an account for fifteen minutes.
+// WithLockoutClock. WithSlidingLockout replaces the escalating wait with a
+// sliding lock, which limits the failure rate within a window; WithLockoutWait
+// with equal waits gives a lock of fixed duration instead. WithLockoutObserver
+// adds an observer told of lockout transitions, recorded through the policy's
+// view of its store, Attempts; by default nothing is reported.
 //
 // A refusal for a locked identifier is a *LockoutError, which matches
 // ErrAccountLocked and carries the wait owed.
@@ -111,16 +122,27 @@ type AccountLockoutPolicy struct {
 	longestWait time.Duration
 	ceiling     int
 
-	// fixed selects the hard lock WithFixedLockout configures, whose
+	// sliding selects the sliding lock WithSlidingLockout configures, whose
 	// threshold and window replace the escalating ones at construction.
-	fixed          bool
-	fixedThreshold int
-	fixedWindow    time.Duration
+	sliding          bool
+	slidingThreshold int
+	slidingWindow    time.Duration
 
 	// The set flags record which escalating options a consumer passed, so
-	// that combining one with WithFixedLockout is refused whatever the
+	// that combining one with WithSlidingLockout is refused whatever the
 	// order of the options.
 	setThreshold, setWindow, setWait, setCeiling bool
+
+	// observer is told of lockout transitions recorded through attempts;
+	// setObserver records that WithLockoutObserver was passed, so a nil one
+	// is refused rather than read as "none".
+	observer    LockoutObserver
+	setObserver bool
+	logger      *slog.Logger
+
+	// attempts is the view Attempts hands out, and the one RecordFailure and
+	// Reset go through: the store itself when there is no observer.
+	attempts AttemptStore
 }
 
 // LockoutOption configures an AccountLockoutPolicy. Every option names the
@@ -146,7 +168,7 @@ func WithAttemptStore(s AttemptStore) LockoutOption {
 // including those that have never failed. So is a threshold at or above the
 // ceiling (WithLockoutCeiling, 100 by default), which would refuse an account
 // outright before it ever owed a wait. It cannot be combined with
-// WithFixedLockout, which sets its own.
+// WithSlidingLockout, which sets its own.
 func WithLockoutThreshold(n int) LockoutOption {
 	return func(p *AccountLockoutPolicy) {
 		p.threshold = n
@@ -160,7 +182,7 @@ func WithLockoutThreshold(n int) LockoutOption {
 //
 // Zero or less is a configuration error: no failure is ever inside a window of
 // zero, so lockout would be disabled while reading, at every call site, exactly
-// like a lockout that works. It cannot be combined with WithFixedLockout, which
+// like a lockout that works. It cannot be combined with WithSlidingLockout, which
 // sets its own.
 func WithLockoutWindow(d time.Duration) LockoutOption {
 	return func(p *AccountLockoutPolicy) {
@@ -189,7 +211,21 @@ func WithLockoutClock(clk clock.Clock) LockoutOption {
 // A first wait of zero or less is a configuration error, since it never starts
 // the escalation, and so is a longest wait shorter than the first. A longest
 // wait equal to the first is allowed and makes the wait flat. It cannot be
-// combined with WithFixedLockout, which has no wait.
+// combined with WithSlidingLockout, which has no wait.
+//
+// Equal waits make a lock of fixed duration. WithLockoutWait(15*time.Minute,
+// 15*time.Minute) refuses an identifier that has reached the threshold for
+// exactly 15 minutes after its newest failure, and lets it try again at the
+// instant they have passed. Refused attempts are not recorded, so the lock
+// runs from the failure that reached the threshold. Unlike the CIS benchmark's
+// lockout, the count is not cleared when the lock ends: the failures stay in
+// the window, so each further failure locks again for the full duration, one
+// guess per duration rather than a fresh threshold's worth. This is the
+// configuration for an audit that asks for a minimum lock duration;
+// WithSlidingLockout does not provide one. The ceiling (WithLockoutCeiling)
+// still applies: a guesser who keeps to one failure per duration reaches it,
+// 100 failures by default, within about a day, and is then refused until
+// failures age out of the window, so "exactly" holds only below the ceiling.
 func WithLockoutWait(first, longest time.Duration) LockoutOption {
 	return func(p *AccountLockoutPolicy) {
 		p.firstWait, p.longestWait = first, longest
@@ -198,14 +234,14 @@ func WithLockoutWait(first, longest time.Duration) LockoutOption {
 }
 
 // WithLockoutCeiling replaces how many failures in the window refuse an
-// identifier however long it has waited. The default is 100, the cap on
-// consecutive failed attempts NIST SP 800-63B-4 §3.2.2 sets.
+// identifier however long it has waited. The default is 100.
 //
 // A ceiling not above the threshold is a configuration error: it would refuse
 // an account outright before it ever owed a wait. A ceiling above 100 is
-// allowed, but departs from NIST's cap, and a consumer who sets one owns that
-// departure. It cannot be combined with WithFixedLockout, which has no
-// ceiling.
+// allowed. The ceiling counts failures inside the window, which age out; it is
+// not a cap on consecutive failures in total and never disables the
+// authenticator (see AccountLockoutPolicy). It cannot be combined with
+// WithSlidingLockout, which has no ceiling.
 func WithLockoutCeiling(n int) LockoutOption {
 	return func(p *AccountLockoutPolicy) {
 		p.ceiling = n
@@ -213,27 +249,32 @@ func WithLockoutCeiling(n int) LockoutOption {
 	}
 }
 
-// WithFixedLockout replaces the escalating wait with a hard lock: an
-// identifier with at least threshold failures in window is refused however
-// long ago its newest failure was, until failures leave the window or a
-// successful authentication clears them. The default is the escalating wait,
-// with no fixed lock.
+// WithSlidingLockout replaces the escalating wait with a sliding lock: an
+// identifier is refused while at least threshold of its failures fall inside
+// the last window, however long ago its newest failure was, and is allowed
+// again as soon as enough of them leave the window. The default is the
+// escalating wait, with no sliding lock.
 //
-// WithFixedLockout(5, 15*time.Minute) restores the previous default (5 failures per 15 minutes).
-// Know what it gives up: anyone who knows a username can keep its owner locked
-// out for as long as they keep failing, which the escalating wait exists to
-// prevent.
+// It limits the failure rate, not how long a lock lasts. Failures bunched
+// together lock for nearly the whole window; failures spread across it lock
+// only until the oldest ages out, which can be seconds. A deployment that must
+// hold a lock for a fixed duration sets equal waits instead (see
+// WithLockoutWait).
+//
+// Know what it gives up: anyone who knows a username can keep its owner
+// refused for as long as they keep failing, which the escalating wait exists
+// to prevent.
 //
 // A threshold or window of zero or less is a configuration error, as for
 // WithLockoutThreshold and WithLockoutWindow. Combining it with
 // WithLockoutThreshold, WithLockoutWindow, WithLockoutWait or
 // WithLockoutCeiling is a configuration error whatever the order, since each
-// would mean something different, or nothing, under a fixed lock. A refusal
-// under a fixed lock carries no wait.
-func WithFixedLockout(threshold int, window time.Duration) LockoutOption {
+// would mean something different, or nothing, under a sliding lock. A refusal
+// under a sliding lock carries no wait.
+func WithSlidingLockout(threshold int, window time.Duration) LockoutOption {
 	return func(p *AccountLockoutPolicy) {
-		p.fixedThreshold, p.fixedWindow = threshold, window
-		p.fixed = true
+		p.slidingThreshold, p.slidingWindow = threshold, window
+		p.sliding = true
 	}
 }
 
@@ -242,21 +283,24 @@ func WithFixedLockout(threshold int, window time.Duration) LockoutOption {
 //
 // Defaults: a threshold of 5 free failures (WithLockoutThreshold) in a window
 // of 24 hours (WithLockoutWindow); a wait of 30 seconds doubling up to 1 hour
-// (WithLockoutWait); a ceiling of 100 failures, NIST SP 800-63B's cap
+// (WithLockoutWait); a ceiling of 100 failures in the window
 // (WithLockoutCeiling); an in-memory store (WithAttemptStore) and the system
-// clock (WithLockoutClock). WithFixedLockout(5, 15*time.Minute) restores the
-// previous default instead: 5 failures per 15 minutes.
+// clock (WithLockoutClock); no lockout observer (WithLockoutObserver), and
+// slog.Default for its records (WithLockoutLogger). WithSlidingLockout replaces
+// the escalating wait with a sliding lock.
 //
 // Every misconfiguration is an error wrapping ErrConfig, rather than something
 // evaluation copes with: a threshold, window or first wait of zero or less; a
 // longest wait shorter than the first; a ceiling not above the threshold;
-// WithFixedLockout combined with any threshold, window, wait or ceiling
+// WithSlidingLockout combined with any threshold, window, wait or ceiling
 // option; and a missing store or clock. Each produces a policy that reads like
 // a lockout at every call site and is not one — a window of zero contains no
 // failure, so nothing ever locks, and a threshold of zero is already reached by
 // an account that has never failed, so everyone is locked out. A constructor
 // can report that before any traffic arrives, which is the difference between
-// a line of wiring being wrong and a login page being down.
+// a line of wiring being wrong and a login page being down. A nil lockout
+// observer is refused too: a consumer who passed one meant to be told, and
+// would hear nothing.
 func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, error) {
 	p := &AccountLockoutPolicy{
 		store:     NewMemoryAttemptStore(),
@@ -267,6 +311,7 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 		firstWait:   defaultLockoutFirstWait,
 		longestWait: defaultLockoutLongestWait,
 		ceiling:     defaultLockoutCeiling,
+		logger:      slog.Default(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -274,7 +319,7 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 		}
 	}
 
-	if p.fixed {
+	if p.sliding {
 		var conflicts []string
 		for _, c := range []struct {
 			set  bool
@@ -291,11 +336,11 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 		}
 		if len(conflicts) > 0 {
 			return nil, fmt.Errorf(
-				"%w: WithFixedLockout sets its own threshold and window and has no wait or ceiling, so "+
+				"%w: WithSlidingLockout sets its own threshold and window and has no wait or ceiling, so "+
 					"combining it with %s would silently change what that option means",
 				ErrConfig, strings.Join(conflicts, ", "))
 		}
-		p.threshold, p.window = p.fixedThreshold, p.fixedWindow
+		p.threshold, p.window = p.slidingThreshold, p.slidingWindow
 	}
 
 	if p.threshold <= 0 {
@@ -309,7 +354,7 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 				"lockout would be disabled while every call site still reads like a lockout",
 			ErrConfig, p.window)
 	}
-	if !p.fixed {
+	if !p.sliding {
 		if err := p.validateEscalation(); err != nil {
 			return nil, err
 		}
@@ -319,6 +364,16 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 	}
 	if nilcheck.IsNil(p.clock) {
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
+	}
+
+	if p.setObserver && p.observer == nil {
+		return nil, fmt.Errorf("%w: lockout observer must not be nil: a consumer who passed "+
+			"one meant to be told, and would hear nothing", ErrConfig)
+	}
+
+	p.attempts = p.store
+	if p.observer != nil {
+		p.attempts = &observedAttempts{p: p}
 	}
 
 	return p, nil
@@ -357,12 +412,12 @@ func (p *AccountLockoutPolicy) Name() string { return lockoutPolicyName }
 func (p *AccountLockoutPolicy) Phases() []Phase { return []Phase{PreAuthentication} }
 
 // Threshold reports how many failures inside the window are free before a wait
-// is owed, or lock the account under a fixed lock: what WithLockoutThreshold or
-// WithFixedLockout configured.
+// is owed, or lock the account under a sliding lock: what WithLockoutThreshold or
+// WithSlidingLockout configured.
 func (p *AccountLockoutPolicy) Threshold() int { return p.threshold }
 
 // Window reports how far back failures are counted: what WithLockoutWindow or
-// WithFixedLockout configured.
+// WithSlidingLockout configured.
 func (p *AccountLockoutPolicy) Window() time.Duration { return p.window }
 
 // Evaluate denies when the submitted identifier owes a wait or has reached the
@@ -373,11 +428,11 @@ func (p *AccountLockoutPolicy) Window() time.Duration { return p.window }
 // the ceiling it denies with no wait. Between the two it asks a second
 // question, whether any failure is more recent than the wait owed, and denies
 // if one is. Counting is strictly after each cutoff, so a newest failure
-// exactly as old as the wait has served it. Under WithFixedLockout it denies
+// exactly as old as the wait has served it. Under WithSlidingLockout it denies
 // whenever the threshold is reached in the window.
 //
 // A locked identifier's reason is a *LockoutError matching ErrAccountLocked,
-// whose Wait is the wait owed, or zero at the ceiling and under a fixed lock.
+// whose Wait is the wait owed, or zero at the ceiling and under a sliding lock.
 //
 // Now is the instant the phase carries, so every policy in the phase judges
 // the same request against the same moment; the policy's own clock answers
@@ -414,7 +469,7 @@ func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision
 		return storeDenied(err)
 	}
 
-	if p.fixed {
+	if p.sliding {
 		if count >= p.threshold {
 			return lockedDecision(count, p.window, 0)
 		}
@@ -497,8 +552,11 @@ func lockedDecision(failures int, window, wait time.Duration) Decision {
 // recorded: a failure nobody counted is a guess the attacker got for free.
 // The store's own error comes back behind fixed library text; it stays
 // reachable through errors.Is and errors.As, but its text never is.
+//
+// It records through Attempts, so a failure that leaves username locked is
+// reported to the observer given by WithLockoutObserver.
 func (p *AccountLockoutPolicy) RecordFailure(ctx context.Context, username string) error {
-	if err := p.store.RecordFailure(ctx, username, p.clock.Now()); err != nil {
+	if err := p.attempts.RecordFailure(ctx, username, p.clock.Now()); err != nil {
 		return diag.Wrap(err, "policy: record a failed attempt")
 	}
 
@@ -511,8 +569,12 @@ func (p *AccountLockoutPolicy) RecordFailure(ctx context.Context, username strin
 //
 // The store's own error comes back behind fixed library text; it stays
 // reachable through errors.Is and errors.As, but its text never is.
+//
+// It clears through Attempts, so an administrator's reset that removed
+// failures is reported to the observer given by WithLockoutObserver, just as
+// a login's is.
 func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error {
-	if err := p.store.Reset(ctx, username); err != nil {
+	if err := p.attempts.Reset(ctx, username); err != nil {
 		return diag.Wrap(err, "policy: clear failed attempts")
 	}
 
@@ -520,7 +582,7 @@ func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error
 }
 
 // PurgeExpired deletes the failures that have aged out of the window — the
-// policy's own, 24 hours by default or the fixed lock's — and reports how many
+// policy's own, 24 hours by default or the sliding lock's — and reports how many
 // went.
 //
 // It takes no window of its own. The cutoff is this policy's own window behind

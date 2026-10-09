@@ -234,6 +234,7 @@ func recoveryScenarios() []Scenario {
 		recoverySavedAndIssuedCodesReachRecoveryPending(),
 		recoveryEnrolmentThenVerifyReachesFullSession(),
 		recoveryPasswordRouteReachesFullSession(),
+		recoveryAtTheCeilingSignsInAfterTheResolve(),
 		recoveryHeldRecoveryCancelledByLogin(),
 		recoveryCooldownRefusesAfterReLogin(),
 		recoveryCompleteEndpointIssuesACredential(),
@@ -484,6 +485,79 @@ func recoveryPasswordRouteReachesFullSession() Scenario {
 			assert.True(t, s.EnrolmentOriginDeadline.IsZero(), "the confinement marker is cleared")
 			assert.True(t, s.AbsoluteExpiresAt.After(time.Now().Add(time.Hour)),
 				"the deadline a login would have had is restored")
+		},
+	}
+}
+
+// recoveryAtTheCeilingSignsInAfterTheResolve pins spec http-security-chain
+// "Recovered account at the ceiling": an account that has reached the lockout
+// ceiling recovers, its recovery-pending session resolves a password change,
+// and the change clears the lockout failures, so a form login with the new
+// password is let in.
+func recoveryAtTheCeilingSignsInAfterTheResolve() Scenario {
+	return Scenario{
+		Name: "a recovered account at the lockout ceiling signs in after resolving a password change",
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			fx, sessions := newRecoveryFixture(t)
+			ctx := t.Context()
+
+			s, err := sessions.Create(ctx, UserID, session.WithFirstFactor(factor.Recovery))
+			require.NoError(t, err)
+
+			sessions.MarkRecoveryPending(s, 15*time.Minute, fx.Clock.Now())
+			require.NoError(t, sessions.Save(ctx, s))
+
+			// One hundred failures in the window: the default ceiling, which
+			// locks until failures leave the window rather than for a wait.
+			attempts := policy.NewMemoryAttemptStore()
+			now := time.Now()
+			for i := range 100 {
+				require.NoError(t, attempts.RecordFailure(ctx, Username, now.Add(-time.Duration(i)*time.Second)))
+			}
+
+			lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(attempts))
+			require.NoError(t, err)
+			engine, err := policy.NewEngine(lockout)
+			require.NoError(t, err)
+
+			effects := &Effects{Sessions: sessions, Recovery: fx, SessionID: s.ID, Attempts: attempts}
+
+			return ChainSpec{
+				Options: []httpsec.Option{
+					httpsec.WithPolicyEngine(engine),
+					httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
+						Verifier: fixtureTokens{}, Sessions: sessions, Users: fixtureUsers{},
+					}),
+					httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+						Authenticator: &fixtureAuthenticator{calls: &effects.authCalls},
+						Sessions:      sessions,
+						Tokens:        fixtureTokens{},
+						Attempts:      attempts,
+					}),
+					httpsec.EnablePasswordChangeGate(sessions,
+						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+				},
+				Effects: effects,
+			}
+		},
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			login := formBody("username=" + Username + "&password=" + Password)
+
+			// The account is at the ceiling before the resolve, so the login
+			// below is let in because of the clearing and nothing else.
+			require.ErrorIs(t, send(login).Refusal, policy.ErrAccountLocked,
+				"the account starts at the lockout ceiling")
+
+			resolve := authenticatedRequest(http.MethodPost, recoveryResolvePath)(spec)
+			resolve.Header["Content-Type"] = "application/x-www-form-urlencoded"
+			resolve.Body = url.Values{"password": {Password}}.Encode()
+			require.NoError(t, send(resolve).Refusal)
+
+			res := send(login)
+			require.NoError(t, res.Refusal, "the new password was refused for guesses at the old one")
+			assert.Equal(t, http.StatusOK, res.Status)
 		},
 	}
 }
