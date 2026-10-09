@@ -69,6 +69,8 @@ var statusTable = []statusRow{
 	// to authenticate.ErrAuthenticationFailed, which the row above answers 401
 	// first, so a lock reads as a wrong password.
 	{policy.ErrAccountLocked, http.StatusTooManyRequests},
+	// A held identifier is also a locked one; it answers the same way.
+	{policy.ErrAccountHeld, http.StatusTooManyRequests},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
 
 	// A held recovery presented before its hold ends: well formed and

@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 	time "time"
 
+	policy "github.com/kartaladev/scrty/policy"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -215,6 +216,148 @@ func (c *MockAttemptReaperDeleteAttemptsBeforeCall) Do(f func(context.Context, t
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockAttemptReaperDeleteAttemptsBeforeCall) DoAndReturn(f func(context.Context, time.Time) (int, error)) *MockAttemptReaperDeleteAttemptsBeforeCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// MockFailureStreakStore is a mock of FailureStreakStore interface.
+type MockFailureStreakStore struct {
+	ctrl     *gomock.Controller
+	recorder *MockFailureStreakStoreMockRecorder
+	isgomock struct{}
+}
+
+// MockFailureStreakStoreMockRecorder is the mock recorder for MockFailureStreakStore.
+type MockFailureStreakStoreMockRecorder struct {
+	mock *MockFailureStreakStore
+}
+
+// NewMockFailureStreakStore creates a new mock instance.
+func NewMockFailureStreakStore(ctrl *gomock.Controller) *MockFailureStreakStore {
+	mock := &MockFailureStreakStore{ctrl: ctrl}
+	mock.recorder = &MockFailureStreakStoreMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockFailureStreakStore) EXPECT() *MockFailureStreakStoreMockRecorder {
+	return m.recorder
+}
+
+// AddStreakFailure mocks base method.
+func (m *MockFailureStreakStore) AddStreakFailure(ctx context.Context, username string, at, since time.Time, limit int) (policy.FailureStreak, bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AddStreakFailure", ctx, username, at, since, limit)
+	ret0, _ := ret[0].(policy.FailureStreak)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// AddStreakFailure indicates an expected call of AddStreakFailure.
+func (mr *MockFailureStreakStoreMockRecorder) AddStreakFailure(ctx, username, at, since, limit any) *MockFailureStreakStoreAddStreakFailureCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddStreakFailure", reflect.TypeOf((*MockFailureStreakStore)(nil).AddStreakFailure), ctx, username, at, since, limit)
+	return &MockFailureStreakStoreAddStreakFailureCall{Call: call}
+}
+
+// MockFailureStreakStoreAddStreakFailureCall wrap *gomock.Call
+type MockFailureStreakStoreAddStreakFailureCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockFailureStreakStoreAddStreakFailureCall) Return(streak policy.FailureStreak, setHold bool, err error) *MockFailureStreakStoreAddStreakFailureCall {
+	c.Call = c.Call.Return(streak, setHold, err)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockFailureStreakStoreAddStreakFailureCall) Do(f func(context.Context, string, time.Time, time.Time, int) (policy.FailureStreak, bool, error)) *MockFailureStreakStoreAddStreakFailureCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockFailureStreakStoreAddStreakFailureCall) DoAndReturn(f func(context.Context, string, time.Time, time.Time, int) (policy.FailureStreak, bool, error)) *MockFailureStreakStoreAddStreakFailureCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// DeleteStreaksBefore mocks base method.
+func (m *MockFailureStreakStore) DeleteStreaksBefore(ctx context.Context, retainSince time.Time) (int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteStreaksBefore", ctx, retainSince)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteStreaksBefore indicates an expected call of DeleteStreaksBefore.
+func (mr *MockFailureStreakStoreMockRecorder) DeleteStreaksBefore(ctx, retainSince any) *MockFailureStreakStoreDeleteStreaksBeforeCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteStreaksBefore", reflect.TypeOf((*MockFailureStreakStore)(nil).DeleteStreaksBefore), ctx, retainSince)
+	return &MockFailureStreakStoreDeleteStreaksBeforeCall{Call: call}
+}
+
+// MockFailureStreakStoreDeleteStreaksBeforeCall wrap *gomock.Call
+type MockFailureStreakStoreDeleteStreaksBeforeCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockFailureStreakStoreDeleteStreaksBeforeCall) Return(arg0 int, arg1 error) *MockFailureStreakStoreDeleteStreaksBeforeCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockFailureStreakStoreDeleteStreaksBeforeCall) Do(f func(context.Context, time.Time) (int, error)) *MockFailureStreakStoreDeleteStreaksBeforeCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockFailureStreakStoreDeleteStreaksBeforeCall) DoAndReturn(f func(context.Context, time.Time) (int, error)) *MockFailureStreakStoreDeleteStreaksBeforeCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// FailureStreak mocks base method.
+func (m *MockFailureStreakStore) FailureStreak(ctx context.Context, username string, since time.Time) (policy.FailureStreak, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "FailureStreak", ctx, username, since)
+	ret0, _ := ret[0].(policy.FailureStreak)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// FailureStreak indicates an expected call of FailureStreak.
+func (mr *MockFailureStreakStoreMockRecorder) FailureStreak(ctx, username, since any) *MockFailureStreakStoreFailureStreakCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FailureStreak", reflect.TypeOf((*MockFailureStreakStore)(nil).FailureStreak), ctx, username, since)
+	return &MockFailureStreakStoreFailureStreakCall{Call: call}
+}
+
+// MockFailureStreakStoreFailureStreakCall wrap *gomock.Call
+type MockFailureStreakStoreFailureStreakCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockFailureStreakStoreFailureStreakCall) Return(arg0 policy.FailureStreak, arg1 error) *MockFailureStreakStoreFailureStreakCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockFailureStreakStoreFailureStreakCall) Do(f func(context.Context, string, time.Time) (policy.FailureStreak, error)) *MockFailureStreakStoreFailureStreakCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockFailureStreakStoreFailureStreakCall) DoAndReturn(f func(context.Context, string, time.Time) (policy.FailureStreak, error)) *MockFailureStreakStoreFailureStreakCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
