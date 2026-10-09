@@ -183,7 +183,30 @@ func ExpiryTask(p Pruner) expiry.Task {
   - `func LimiterKey(key string) string`: the 512-byte and `sha256:` digest rule.
 
 - [ ] **Step 1: Failing migration test (2.1).**
-  - In `test/migrate_securitystate_test.go`, add `"rate_limit_buckets"` to `securityStateTables`, and fix its comment to say fourteen.
+  - In `test/migrate_securitystate_test.go`, add `"rate_limit_buckets"` to `securityStateTables`, and fix its comment to say fifteen. The fourteenth table, `login_failure_streaks`, came with `consecutive-failure-hold`.
+  - Add the table to the exact maps the schema checks compare against, or "exact columns per table" and "exact indexes per table" fail for a reason the task does not name:
+    - a column-type constant beside the others: `colTimestamptzArray = "timestamp with time zone[]"` (what `format_type` prints for `timestamptz[]`);
+    - in `securityStateColumns`:
+
+      ```go
+      "rate_limit_buckets": {
+      	required("namespace", colText),
+      	required("key", colText),
+      	required("stamps", colTimestamptzArray),
+      	required("newest_at", colTimestamptz),
+      	required("longest_window_us", colBigint),
+      },
+      ```
+
+    - in `securityStateIndexes`, the primary key as the only index:
+
+      ```go
+      "rate_limit_buckets": {
+      	"CREATE UNIQUE INDEX rate_limit_buckets_pkey ON rate_limit_buckets USING btree (namespace, key)",
+      },
+      ```
+
+      Take the exact text from the red run's diff if `pg_indexes` renders it differently.
   - Exempt it in the uuid primary-key case.
   - Add table cases, in the file's existing closure form, on catalogue queries:
     - `relpersistence = 'p'` for `rate_limit_buckets`;

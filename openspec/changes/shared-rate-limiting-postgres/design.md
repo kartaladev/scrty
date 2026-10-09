@@ -14,7 +14,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - `sqlstore` (core, `*sql.DB`) and `pgx` (nested module, `*pgxpool.Pool`) share their SQL through `internal/pgschema` constants.
   - The stores pick up an ambient transaction from the context or from `WithTxResolver`.
   - `gorm` has native stores of its own over `*gorm.DB`.
-- **Migrations.** The security-state set is one embedded goose file, `migrate/securitystate/20260926000000_security_state.sql`, with thirteen tables and no storage parameters. Nothing is tagged, so the file may still be edited.
+- **Migrations.** The security-state set is one embedded goose file, `migrate/securitystate/20260926000000_security_state.sql`, with fourteen tables and no storage parameters. The fourteenth, `login_failure_streaks`, came with `consecutive-failure-hold`, and the migration tests pin every table's exact columns and indexes. Nothing is tagged, so the file may still be edited.
 - **The test module** provides:
   - `RunTestPostgres(t, opts...) PostgresConn{DB *sql.DB, DSN string}`, on a shared server per image or an own server;
   - a matrix over `SCRTY_TEST_POSTGRES_IMAGE`, with 15 and 18 in CI;
@@ -89,7 +89,7 @@ CREATE TABLE rate_limit_buckets (
   - a 1-D array of 128 elements without nulls is 24 + 128 × 8 = 1,048 bytes.
 - **Storage parameters come from the benchmark** (decision 11). They are set in the migration, so an operator can still change them with `ALTER TABLE … SET (…)`. That is the override. The library never changes them at runtime.
 - **The table name is fixed**, as every security-state table's name is. The override is a consumer's own limiter behind the port. A table-name option would be the only one of its kind in the adapters.
-- **Migration:** added to the initial file before the first tag, with the matching `DROP TABLE IF EXISTS` in the down section. The set's table-list tests go from thirteen to fourteen.
+- **Migration:** added to the initial file before the first tag, with the matching `DROP TABLE IF EXISTS` in the down section. The set's table-list tests go from fourteen to fifteen, and the bucket table joins the tests' exact column and index maps.
 
 ### 3. Each row stays under the TOAST threshold
 
@@ -258,7 +258,7 @@ Until then the migration carries provisional values: `fillfactor = 70`, with the
 
 - **None from established behaviour.** It has no database-backed limiter. The in-memory limiter's recorded decisions are kept, and the prune keeps their rule: no cutoff, never disarm.
 - **From scrty's own settled specs**, each through a delta in this change:
-  - `schema-migrations`: a fourteenth table, with a natural key in place of a uuid;
+  - `schema-migrations`: a fifteenth table, with a natural key in place of a uuid;
   - `security-state-stores` and `store-conformance`: the limiter does not join ambient transactions, and does not run that suite;
   - `expiry-sweeping`: the rate-limiter task covers any pruner;
   - `MemoryLimiter.Prune`'s signature (decision 8).
