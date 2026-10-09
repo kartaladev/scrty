@@ -84,6 +84,7 @@ When the consumer's `ChangePasswordFunc` succeeds, the gate clears failures for 
 The policy gains `WithLockoutObserver(func(context.Context, LockoutReport))` and a method that returns an `AttemptStore` view of its own store (name provisional: `Attempts()`). The consumer hands this view to `FormLoginDeps.Attempts` and `BasicAuthDeps.Attempts`, and those fields' godoc changes to recommend it. The view behaves like this:
 - **`RecordFailure`** writes through. With an observer configured, it then reads `FailureCount` over the policy's window and reports when the identifier is now locked. The kind is `Ceiling` at or above the ceiling, and `Locked` at or above the threshold, which also covers the sliding lock.
 - **`Reset`**, with an observer configured, reads the count first, and reports `Cleared` after a successful reset only if the count was above zero.
+- **A report that cannot be made is logged, never turned into an error.** When the count cannot be read, either after a recorded failure or before a reset, the write still goes ahead and its result is returned unchanged. No report is sent, and one record with fixed text and the store's error type says a report was lost. The two paths log alike, so a consumer auditing reports sees every gap.
 - **`FailureCount`** passes through.
 - **Without an observer**, the view passes everything through, at no extra cost.
 

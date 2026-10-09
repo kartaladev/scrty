@@ -1286,6 +1286,8 @@ Expected: PASS, including the existing `TestChangePasswordEndpoint` cases. They 
 - Modify: `httpsec/passwordchange.go` (`resolve`, `clearFailures`)
 - Test: `httpsec/passwordchange_test.go`
 
+> **As implemented:** the test harness's `serve` builds the exchange on `t.Context()` and ignores the request's context, so a `withCancel` request never reaches the gate and the case below passes without the fix. The hang-up case therefore runs through a `serveHangingUp` helper that builds the exchange itself on a cancellable context carrying its cancel function. The fixture named `storedPrincipal()` below is `testPrincipal()` in the code.
+
 - [ ] **Step 1: Write the failing cases** in `TestChangePasswordEndpointClearsLockoutFailures`. The hang-up case cancels the request's own context from inside the consumer's function, through a cancel function carried on that context:
 
 ```go
