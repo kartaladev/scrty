@@ -43,6 +43,7 @@ func TestAmbientTx(t *testing.T) {
 	}, storefix.SessionAmbient()))
 	t.Run("one-time tokens", runAmbient(conn, newOneTimeStore, storefix.OneTimeAmbient[*sqlstore.OneTimeStore]()))
 	t.Run("login attempts", runAmbient(conn, newAttemptStore, storefix.AttemptAmbient[*sqlstore.AttemptStore]()))
+	t.Run("login failure streaks", runAmbient(conn, newAttemptStore, storefix.FailureStreakAmbient[*sqlstore.AttemptStore]()))
 	t.Run("signing keys", runAmbient(conn, func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) signingkey.KeyStore {
 		return newSigningKeyStore(t, db, c, opts...)
 	}, storefix.SigningKeyAmbient(func() (signingkey.KeyStore, error) {

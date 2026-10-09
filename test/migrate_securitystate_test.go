@@ -66,9 +66,9 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// securityStateTables lists the thirteen tables the security-state set creates.
+// securityStateTables lists the fourteen tables the security-state set creates.
 var securityStateTables = []string{
-	"sessions", "signing_keys", "login_attempts", "mfa_enrolments",
+	"sessions", "signing_keys", "login_attempts", "login_failure_streaks", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
 	"recovery_codes", "account_recoveries", "passkey_credentials", "passkey_user_handles",
 }
@@ -175,6 +175,13 @@ var securityStateColumns = map[string][]column{
 		required("id", colUUID),
 		required("username", colText),
 		required("attempted_at", colTimestamptz),
+	},
+	"login_failure_streaks": {
+		required("id", colUUID),
+		required("username", colText),
+		required("failures", colInteger),
+		required("newest_failure_at", colTimestamptz),
+		optional("held_at", colTimestamptz),
 	},
 	"mfa_enrolments": {
 		required("id", colUUID),
@@ -321,6 +328,11 @@ var securityStateIndexes = map[string][]string{
 		"CREATE INDEX login_attempts_username ON login_attempts USING btree (username, attempted_at)",
 		"CREATE INDEX login_attempts_time ON login_attempts USING btree (attempted_at)",
 	},
+	"login_failure_streaks": {
+		"CREATE UNIQUE INDEX login_failure_streaks_pkey ON login_failure_streaks USING btree (id)",
+		"CREATE UNIQUE INDEX login_failure_streaks_username_key ON login_failure_streaks USING btree (username)",
+		"CREATE INDEX login_failure_streaks_inactive ON login_failure_streaks USING btree (newest_failure_at) WHERE (held_at IS NULL)",
+	},
 	"mfa_enrolments": {
 		"CREATE UNIQUE INDEX mfa_enrolments_pkey ON mfa_enrolments USING btree (id)",
 		"CREATE UNIQUE INDEX mfa_enrolments_user_id_key ON mfa_enrolments USING btree (user_id)",
@@ -420,7 +432,7 @@ type schemaCheck struct {
 func securityStateSchemaChecks(versionTable string) []schemaCheck {
 	return []schemaCheck{
 		{
-			name:  "fresh database has the thirteen tables and the version table",
+			name:  "fresh database has the fourteen tables and the version table",
 			query: `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1`,
 			assert: func(t *testing.T, rows []string) {
 				want := append(slices.Clone(securityStateTables), versionTable)
@@ -492,6 +504,28 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 					"recovery_codes.spent_at:YES:",
 					"account_recoveries.completed_at:YES:",
 					"account_recoveries.cancelled_at:YES:",
+				}, rows)
+			},
+		},
+		{
+			// Spec scenario "Consecutive failure counts": one streak per
+			// login name, and the hold instant is a nullable guard with no
+			// default, so a streak is not held until a write sets it.
+			name: "consecutive failure counts are unique per login name, with a nullable hold and no default",
+			query: `SELECT 'unique:' || i.indexname
+			          FROM pg_indexes i
+			         WHERE i.schemaname = current_schema()
+			           AND i.tablename = 'login_failure_streaks'
+			           AND i.indexdef LIKE 'CREATE UNIQUE INDEX % USING btree (username)'
+			        UNION ALL
+			        SELECT 'held_at:' || is_nullable || ':' || coalesce(column_default, '')
+			          FROM information_schema.columns
+			         WHERE table_schema = current_schema()
+			           AND table_name = 'login_failure_streaks' AND column_name = 'held_at'`,
+			assert: func(t *testing.T, rows []string) {
+				assert.ElementsMatch(t, []string{
+					"unique:login_failure_streaks_username_key",
+					"held_at:YES:",
 				}, rows)
 			},
 		},

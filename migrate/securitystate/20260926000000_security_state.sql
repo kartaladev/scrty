@@ -70,6 +70,19 @@ CREATE INDEX login_attempts_username ON login_attempts (username, attempted_at);
 -- do not consolidate these two indexes.
 CREATE INDEX login_attempts_time ON login_attempts (attempted_at);
 
+-- One row per identifier: its consecutive failures since they were last
+-- cleared or restarted. NULL held_at = not held; a NOT NULL default would hold
+-- every new streak.
+CREATE TABLE login_failure_streaks (
+    id                uuid PRIMARY KEY,
+    username          text NOT NULL UNIQUE,
+    failures          integer NOT NULL,
+    newest_failure_at timestamptz NOT NULL,
+    held_at           timestamptz NULL
+);
+-- The purge deletes inactive streaks that are not held, by time alone.
+CREATE INDEX login_failure_streaks_inactive ON login_failure_streaks (newest_failure_at) WHERE held_at IS NULL;
+
 CREATE TABLE mfa_enrolments (
     id           uuid PRIMARY KEY,
     user_id      text NOT NULL UNIQUE,
@@ -237,6 +250,7 @@ DROP TABLE IF EXISTS oidc_links;
 DROP TABLE IF EXISTS one_time_tokens;
 DROP TABLE IF EXISTS api_keys;
 DROP TABLE IF EXISTS mfa_enrolments;
+DROP TABLE IF EXISTS login_failure_streaks;
 DROP TABLE IF EXISTS login_attempts;
 DROP TABLE IF EXISTS signing_keys;
 DROP TABLE IF EXISTS sessions;

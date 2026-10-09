@@ -165,6 +165,8 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	}
 	// ignoring drops a result an operation returns beside its error.
 	ignoring := func(_ any, err error) error { return err }
+	// ignoring2 drops the two results an operation returns beside its error.
+	ignoring2 := func(_, _ any, err error) error { return err }
 	errNotStored := errors.New("the enrolment was not written")
 	flag := func(ok bool, err error) error {
 		if err == nil && !ok {
@@ -248,10 +250,24 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`SELECT count(*) FROM "login_attempts" WHERE username = $1 AND attempted_at > $2`)},
 		{name: "attempt reset", run: with(func(ctx context.Context, s storeSet) error {
 			return s.attempts.Reset(ctx, "stmt-user")
-		}), assert: one(`DELETE FROM "login_attempts" WHERE username = $1`)},
+		}), assert: one(`WITH attempts AS (DELETE FROM login_attempts WHERE username = $1) DELETE FROM login_failure_streaks WHERE username = $1`)},
 		{name: "attempt purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.DeleteAttemptsBefore(ctx, now.Add(-time.Hour)))
 		}), assert: one(`DELETE FROM "login_attempts" WHERE attempted_at < $1`)},
+		{name: "streak add of a new streak", run: with(func(ctx context.Context, s storeSet) error {
+			return ignoring2(s.attempts.AddStreakFailure(ctx, "stmt-streak-new", now, now.Add(-time.Hour), 5))
+		}), assert: one(streakAddStmt)},
+		{name: "streak add to a stored streak", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, ignoring2(seed.attempts.AddStreakFailure(ctx, "stmt-streak-old", now, now.Add(-time.Hour), 5)))
+			started()
+			return ignoring2(counted.attempts.AddStreakFailure(ctx, "stmt-streak-old", now, now.Add(-time.Hour), 5))
+		}, assert: one(streakAddStmt)},
+		{name: "streak read", run: with(func(ctx context.Context, s storeSet) error {
+			return ignoring(s.attempts.FailureStreak(ctx, "stmt-streak-read", now.Add(-time.Hour)))
+		}), assert: one(`SELECT failures, newest_failure_at, held_at FROM login_failure_streaks WHERE username = $1 AND (held_at IS NOT NULL OR newest_failure_at > $2)`)},
+		{name: "streak purge", run: with(func(ctx context.Context, s storeSet) error {
+			return ignoring(s.attempts.DeleteStreaksBefore(ctx, now.Add(-time.Hour)))
+		}), assert: one(`DELETE FROM login_failure_streaks WHERE held_at IS NULL AND newest_failure_at < $1`)},
 
 		{name: "signing key store", run: with(func(ctx context.Context, s storeSet) error {
 			return s.keys.Store(ctx, storefix.SigningKey("stmt-kid", []byte("PKCS8")))
@@ -469,6 +485,9 @@ const (
 	// The TOTP verification statements run verbatim from the shared schema
 	// statements, so they are pinned as written there.
 	verifyChargeStmt = `UPDATE mfa_enrolments SET verify_attempts = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN 1 ELSE verify_attempts + 1 END, verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN $3 ELSE verify_window_until END WHERE user_id = $1 AND confirmed_at IS NOT NULL AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4) RETURNING verify_window_until`
+	// streakAddStmt is the streak upsert, whitespace collapsed: one statement
+	// whether it creates the streak or advances a stored one.
+	streakAddStmt    = `WITH prev AS ( SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
 	verifyRefundStmt = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 )
 
