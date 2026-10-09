@@ -365,6 +365,12 @@ func (c *config) build() (*Chain, error) {
 	// configured after EnablePasswordChangeGate, so it is handed over here.
 	c.wirePasswordChange()
 
+	// A capped lockout policy holds only what its own view records, so a
+	// password login handed any other store would disarm the cap silently.
+	if err := c.checkAttemptViews(); err != nil {
+		return nil, err
+	}
+
 	// The enrolment path takes the enrollable methods EnableMFA was given and the
 	// chain's sessions and logout path, any of which an option applied after
 	// EnableMFAEnrolment may still have set.
@@ -887,6 +893,14 @@ type FormLoginDeps struct {
 	// A bare store the policy also reads locks just the same, but nothing
 	// recorded through it is reported. A failure recorded in one store and
 	// counted in another locks nothing.
+	//
+	// When the policy has a consecutive-failure cap (policy.WithLockoutCap),
+	// its view is required: only the view advances the consecutive count, so
+	// any other store here, the policy's own bare store included, fails New
+	// with a configuration error naming this field. That check covers only
+	// the policies registered in the engine before New runs: a capped policy
+	// added later is not checked, and its view must still be what this login
+	// records into.
 	Attempts policy.AttemptStore
 }
 
@@ -1135,7 +1149,16 @@ type BasicAuthDeps struct {
 	// to an observer the policy was given. A bare store the policy also reads
 	// locks just the same, but nothing recorded through it is reported. A
 	// password guessed at over Basic counts towards the same lockout as one
-	// guessed at over the login form.
+	// guessed at over the login form. A successful authentication clears the
+	// username's failures through it, as form login does.
+	//
+	// When the policy has a consecutive-failure cap (policy.WithLockoutCap),
+	// its view is required: only the view advances the consecutive count, so
+	// any other store here, the policy's own bare store included, fails New
+	// with a configuration error naming this field. That check covers only
+	// the policies registered in the engine before New runs: a capped policy
+	// added later is not checked, and its view must still be what this login
+	// records into.
 	Attempts policy.AttemptStore
 }
 
@@ -1170,6 +1193,12 @@ type BasicAuthOption func(*basicAuth) error
 //     wrong password after a decoy password verification (WithLockDisclosure)
 //     and counts against the source.
 //  4. Authenticate. A failure is recorded against the account and the source.
+//     A success clears the username's failures through BasicAuthDeps.Attempts,
+//     as form login does, including its count towards a cap set with
+//     policy.WithLockoutCap; a store that fails to clear is logged and the
+//     request still succeeds. It costs one reset of the attempt store per
+//     successful request; for a policy with a cap that reset clears both the
+//     failure log and the consecutive count.
 //  5. Run the stateless-authentication phase, and continue with the caller
 //     published.
 //
