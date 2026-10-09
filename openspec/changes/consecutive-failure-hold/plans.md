@@ -57,7 +57,7 @@
 | 2 | D1 | 3.1–3.3 | `migrate/securitystate/20260926000000_security_state.sql`, `internal/pgschema/streaks.go` (new), `sqlstore/attempts.go`, `pgx/attempts.go`, `gorm/attempts.go`, `gorm/rows.go` (only if a row type is needed), `test/sqlstore/attempts_test.go`, `test/pgxstore/attempts_test.go`, `test/gormstore/attempts_test.go`, `test/migrate_securitystate_test.go`, `test/internal/storefix/ambients.go`, `test/crossbackend/streak_test.go` (new), the ambient wiring files in `test/sqlstore`, `test/pgxstore`, `test/gormstore` | `policy/`, `httpsec/` | Opus: one conditional upsert that must be atomic under concurrency, on three drivers | Opus |
 | 2 | P1 | 4.1–4.4 | `policy/lockout.go`, `policy/lockout_error.go`, `policy/lockout_observer.go`, `policy/lockout_cap_test.go` (new), `policy/lockout_config_test.go` | `httpsec/`, `test/`, `policy/streak.go`, `policy/attempts.go` | Opus: security-critical refusal logic written for the first time | Opus |
 | 3 | P2 | 4.5–4.7 | `policy/lockout.go`, `policy/lockout_observer.go`, `policy/lockout_cap_test.go`, `policy/lockout_observer_test.go`, `policy/example_test.go`, `policy/doc.go` | `httpsec/`, `test/` | Opus: concurrency, and exact once-only reporting | Opus |
-| 4 | H1 | 5.1–5.4 | `policy/engine.go`, `policy/attempt_views.go` (new), `policy/engine_test.go`, `httpsec/lockout_wiring.go` (new), `httpsec/lockout_wiring_test.go` (new), `httpsec/held_test.go` (new), the one call in the chain's assembly (`httpsec/chain.go` `build`), `httpsec/options.go` (godoc only), `test/httpsecconformance/hold_scenarios.go` (new), the `Scenarios()` list in `test/httpsecconformance/scenarios.go` | `policy/lockout*.go`, `policy/streak.go` | Opus: an interface `httpsec` compiles against, and a construction guard a mistake would silently disarm | Opus |
+| 4 | H1 | 5.1–5.4 | `policy/engine.go`, `policy/attempt_views.go` (new), `policy/engine_test.go`, `httpsec/lockout_wiring.go` (new), `httpsec/lockout_wiring_test.go` (new), `httpsec/held_test.go` (new), `httpsec/options.go` (the one call in the chain's assembly, `build`, and godoc), `test/httpsecconformance/hold_scenarios.go` (new), the `Scenarios()` list in `test/httpsecconformance/scenarios.go` | `policy/lockout*.go`, `policy/streak.go` | Opus: an interface `httpsec` compiles against, and a construction guard a mistake would silently disarm | Opus |
 | 4 | X1 | 6.1 | `test/expirytasks_test.go` | everything else | Sonnet: scenarios in an existing test file | Sonnet |
 | 5 | main session | 7.1 | — | — | — | — |
 | 5 | review | 7.2 | — | — | — | Opus |
@@ -360,13 +360,13 @@ type StreakStore interface {
 func RunFailureStreakRace(t *testing.T, newStore func(t *testing.T) StreakStore)
 ```
 
-- [ ] **Step 1: Write the suite.** It uses the `suiteCase` form of `suite.go` (`name`, `assert func(t, ctx, s, clk)`). Use `suiteStart` as the base instant, a limit of 5, and a retention cutoff `since := suiteStart.Add(-30 * 24 * time.Hour)`. Cases:
+- [ ] **Step 1: Write the suite.** It uses the `suiteCase` form of `suite.go` (`name`, `assert func(t, ctx, s, clk)`). Use `suiteStart` as the base instant, a limit of 5, and a retention cutoff `since := suiteStart.Add(-30 * 24 * time.Hour)`. An "old" failure is added at `old := since.Add(-time.Hour)` **with its own instant's cutoff** `oldSince := old.Add(-30 * 24 * time.Hour)`, as a store would have seen it then. Added against `since`, each old add would itself restart at one, and the streak could never build up. Cases:
   1. **counts from one:** one add gives `{Failures: 1, Newest: at}`, with the hold not set.
   2. **advances by one per add:** three adds give 3.
-  3. **restarts after the cutoff:** four adds at `since.Add(-time.Hour)`, then one add at `suiteStart` with cutoff `since`, gives 1 and is not held.
-  4. **reads as empty after the cutoff:** two adds at `since.Add(-time.Hour)`; `FailureStreak(ctx, u, since)` returns `FailureStreak{}`.
+  3. **restarts after the cutoff:** four adds at `old` (cutoff `oldSince`), then one add at `suiteStart` with cutoff `since`, gives 1 and is not held.
+  4. **reads as empty after the cutoff:** two adds at `old` (cutoff `oldSince`); `FailureStreak(ctx, u, since)` returns `FailureStreak{}`.
   5. **the add reaching the limit sets the hold once:** six adds; exactly one returns `setHold`, and it is the fifth. `HeldAt` equals the fifth's `at`, and the count is 6.
-  6. **a held streak never restarts or reads empty:** five adds at `since.Add(-time.Hour)` (held). The read with cutoff `since` is held with 5. An add at `suiteStart` gives 6, still held, and `HeldAt` is unchanged.
+  6. **a held streak never restarts or reads empty:** five adds at `old` (cutoff `oldSince`, held). The read with cutoff `since` is held with 5. An add at `suiteStart` gives 6, still held, and `HeldAt` is unchanged.
   7. **a streak above a lowered limit is held by its next add** (Review Focus 1): seven adds with limit 100 (not held), then one add with limit 5. That add returns `setHold` true, with 8 failures.
   8. **newest never moves backwards** (Review Focus 2): an add at `suiteStart`, then one at `suiteStart.Add(-time.Minute)`, gives `Newest == suiteStart` and a count of 2.
   9. **Reset clears the streak, the hold and the log:**
@@ -380,7 +380,7 @@ func RunFailureStreakRace(t *testing.T, newStore func(t *testing.T) StreakStore)
       - the read is empty or holds what was added, and never another identifier's streak (as the attempt suite's NUL case).
   13. **purge refuses a zero cutoff:** `DeleteStreaksBefore(ctx, time.Time{})` returns `ErrRetainSinceRequired` and deletes nothing.
   14. **purge keeps holds and recent streaks:**
-      - `old` has two adds at `since.Add(-time.Hour)`; `held` has five adds at `since.Add(-time.Hour)`; `recent` has one add at `suiteStart`;
+      - `stale` has two adds at `old`; `held` has five adds at `old` (both with cutoff `oldSince`); `recent` has one add at `suiteStart`;
       - `DeleteStreaksBefore(ctx, since)` returns 1;
       - `held` is still held, and `recent` still reads 1.
 
@@ -843,6 +843,7 @@ Expected: FAIL. "Cap reached across days" is allowed, because no hold is evaluat
 - Modify: `policy/lockout.go` (godoc of `Reset`, only if the tests need no code change; the code path already goes through the view and the store's `Reset`)
 
 - [ ] **Step 1: Write the table** over the memory store and a fake clock:
+  - Seed old failures by advancing the fake clock to their instant and recording through the view, so each is added with the cutoff of its own time. Recording them all at a single "now" with old instants would restart the streak on every add.
   - **"Inactive count restarts":** cap 100; 99 failures, the newest 31 days ago; one more now. Allowed, and `FailureStreak` reads `Failures == 1`. Read it through a type assertion of the policy's store to `policy.FailureStreakStore`, with cutoff `now - 30d`.
   - **"Consumer retention":** cap 100, retention 7 days; 99 failures, the newest 8 days ago; one more now. Allowed.
   - **"A hold does not expire":** cap 100; held 31 days ago. Denied as held.
@@ -977,7 +978,7 @@ Expected: PASS, and the text shows.
 
 **Files:**
 - Create: `policy/attempt_views.go`; Modify: `policy/engine.go` (`RequiredAttemptViews`); Test: `policy/engine_test.go`
-- Create: `httpsec/lockout_wiring.go`; Modify: the chain's assembly (`build` in `httpsec/chain.go`: one call); Test: `httpsec/lockout_wiring_test.go`
+- Create: `httpsec/lockout_wiring.go`; Modify: the chain's assembly (`build` in `httpsec/options.go`: one call); Test: `httpsec/lockout_wiring_test.go`
 
 **Interfaces:**
 - Produces, in `policy`:

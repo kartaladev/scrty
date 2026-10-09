@@ -48,7 +48,7 @@ The in-memory store and the three durable stores implement it. A conformance sui
 
 ### 2. The policy's view advances the streak, and the chain refuses a capped policy whose view it was not given
 
-`WithLockoutCap(n)` enables the cap. The policy's `Attempts()` view, which every login endpoint is already told to use, records the failure in the log and then adds it to the streak, with the policy's retention cutoff and cap. The streak is written first, because it is the record that cannot be rebuilt.
+`WithLockoutCap(n)` enables the cap. The policy's `Attempts()` view, which every login endpoint is already told to use, adds the failure to the streak, with the policy's retention cutoff and cap, and then records it in the log. The streak is written first, because it is the record that cannot be rebuilt.
 - A failure of either write is returned to the caller.
 - The chain already logs a failed record with fixed text, and the windowed lock and the hold each fail closed on a failed read.
 
@@ -121,6 +121,14 @@ The view reports:
 - a release (provisional: `LockoutReleased`) in place of `LockoutCleared` when a reset clears a held identifier.
 
 Further failures that race the hold are reported as before, at or above the ceiling or the threshold. Reports carry the identifier as submitted, so known and unknown identifiers are reported alike.
+
+Two edges are decided here:
+- **A hold is reported even when the log write failed.** The streak is written first. When it reports that it set the hold and the log write then fails, the hold is still reported, with both errors returned. No later write sets the hold again, so withholding this report would lose it for good. This is the one exception to "a failure the store could not record is not reported".
+- **A reset whose streak cannot be read reports nothing.** The policy cannot then tell a release from a clearing. The reset still happens, and the lost report is logged with fixed text.
+
+A release is reported whatever the window holds, and carries the consecutive count.
+
+The kind of a reset's report is read before the store's reset, in a separate step. A failure that sets the hold between the two is reported as held, and the reset that lifts it is reported as cleared rather than released; two concurrent resets of one held identifier may both report a release. The reset itself is the store's single atomic operation and is never affected. Reports are advisory, so this is accepted and documented rather than closed by widening the store contract to return what `Reset` removed.
 
 - **Default:** no observer, as before.
 - **Override:** `WithLockoutObserver`.
