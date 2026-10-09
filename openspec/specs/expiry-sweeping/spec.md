@@ -75,6 +75,18 @@ No expiry task and no runner or scheduler setting SHALL accept a retention windo
 - **THEN** the task's result carries the purge-unsupported error, matched by the same check as for any other task
 - **AND** the result is not reported as a successful run that removed zero
 
+#### Scenario: A hold survives every sweep
+- **WHEN** with a cap configured and the default 30-day retention, `ada` became held 90 days ago, and the login-attempt task runs
+- **THEN** `ada` is still held
+
+#### Scenario: A recent consecutive count survives
+- **WHEN** with a cap configured and the default 30-day retention, `ada` has a consecutive count of ten with its newest failure 29 days ago, and the login-attempt task runs
+- **THEN** the consecutive count for `ada` is still ten
+
+#### Scenario: An inactive consecutive count is deleted
+- **WHEN** with a cap configured and the default 30-day retention, `ada` has a consecutive count of ten with its newest failure 31 days ago, and the login-attempt task runs
+- **THEN** the count for `ada` is deleted, and the next failure for `ada` starts a count of one, as it would have without the sweep
+
 ### Requirement: One task's failure does not affect other tasks
 A task that returns an error or panics SHALL have that failure recorded in its result and logged. The remaining tasks in the same run SHALL still run, and the process SHALL NOT crash. A recovered panic SHALL be reported as a task-panicked error that includes the panic value.
 

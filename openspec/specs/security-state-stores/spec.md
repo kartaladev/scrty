@@ -7,7 +7,7 @@ Keeps scrty's security state (sessions, signing keys, login attempts, MFA enrolm
 ## Requirements
 
 ### Requirement: Durable stores exist for every security-state record on every supported backend
-scrty SHALL provide a durable store for each security-state record type (sessions, signing keys, login attempts, MFA enrolments, API keys, one-time tokens, OIDC links, OIDC flows, OIDC handoffs, saved recovery codes, recovery records, passkey credentials and passkey user handles) on each supported database access backend. Each durable store SHALL satisfy the same store contract as the in-memory default for that record type. A record written through one store instance SHALL be visible to every other store instance, on any supported backend, connected to the same database.
+scrty SHALL provide a durable store for each security-state record type (sessions, signing keys, login attempts, consecutive login failure counts and holds, MFA enrolments, API keys, one-time tokens, OIDC links, OIDC flows, OIDC handoffs, saved recovery codes, recovery records, passkey credentials and passkey user handles) on each supported database access backend. Each durable store SHALL satisfy the same store contract as the in-memory default for that record type. A record written through one store instance SHALL be visible to every other store instance, on any supported backend, connected to the same database.
 
 #### Scenario: State survives a process restart
 - **WHEN** a session is saved through a durable store, the process exits, and a new store instance is created against the same database
@@ -29,6 +29,10 @@ scrty SHALL provide a durable store for each security-state record type (session
 #### Scenario: Passkey seen by another backend
 - **WHEN** a passkey credential is inserted through the store of one supported backend
 - **THEN** a store of a different supported backend, connected to the same database, finds it by its credential ID with every attribute equal
+
+#### Scenario: A hold seen by another backend
+- **WHEN** an identifier becomes held through the attempt store of one supported backend
+- **THEN** the attempt store of a different supported backend, connected to the same database, reads it as held with the same consecutive count
 
 ### Requirement: Single-use consumption is atomic
 Consuming a one-time token or an OIDC handoff SHALL be decided by a single conditional write on "not yet consumed". At most one consumption of a record SHALL ever succeed, however many callers race. An unknown record and an already-consumed record SHALL be refused with the same outcome. A refused consumption SHALL change nothing, and the time of the first successful consumption SHALL be kept.
