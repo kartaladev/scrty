@@ -47,7 +47,7 @@ const (
 	tokenPurpose  = "expiry-tasks" //nolint:gosec // a purpose label, not a credential
 	tokenSubject  = "token-subject"
 	failedAccount = "alice"
-	// lockoutWindow is the fixed lock's window, which is also how far back the
+	// lockoutWindow is the sliding lock's window, which is also how far back the
 	// attempt purge keeps failures.
 	lockoutWindow = 15 * time.Minute
 )
@@ -230,7 +230,7 @@ func TestExpiryTasks(t *testing.T) {
 			lockout, err := policy.NewAccountLockoutPolicy(
 				policy.WithAttemptStore(st.attempts),
 				policy.WithLockoutClock(clk),
-				policy.WithFixedLockout(5, lockoutWindow),
+				policy.WithSlidingLockout(5, lockoutWindow),
 			)
 			require.NoError(t, err)
 

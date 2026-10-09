@@ -999,7 +999,7 @@ func lockRecovery(t *testing.T, h *recoveryHarness) {
 	t.Helper()
 
 	lockout, err := policy.NewAccountLockoutPolicy(
-		policy.WithAttemptStore(h.attempts), policy.WithFixedLockout(1, time.Hour))
+		policy.WithAttemptStore(h.attempts), policy.WithSlidingLockout(1, time.Hour))
 	require.NoError(t, err)
 
 	h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(engineOf(t, lockout)))

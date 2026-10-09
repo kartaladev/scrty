@@ -25,6 +25,14 @@
 // store the lockout policy counts failures in is a port, with an in-memory
 // implementation as its default.
 //
+// The lockout policy makes an identifier wait, longer each time, by default.
+// Equal first and longest waits (WithLockoutWait) make a lock of fixed
+// duration instead. Unlike the CIS benchmark's lockout, the count is not
+// cleared when that lock ends, so each further failure locks again. The
+// ceiling still applies: a guesser who keeps to one failure per duration
+// reaches it within about a day, and is then refused until failures age out of
+// the window.
+//
 // # A store that fails
 //
 // When a store or lookup the consumer supplies cannot answer, the policy
