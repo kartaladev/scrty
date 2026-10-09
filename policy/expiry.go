@@ -16,6 +16,10 @@ import (
 // or WithSlidingLockout set). It never deletes a failure the policy would still
 // count, so a sweep cannot unlock an account that is locked.
 //
+// With a cap (WithLockoutCap) the task also deletes the consecutive counts
+// that have aged out of the cap retention (WithLockoutCapRetention), and never
+// a hold: a held identifier stays held however many sweeps run.
+//
 // A store that cannot purge, the default in-memory one among them, yields an
 // error that matches both expiry.ErrPurgeUnsupported and ErrReapUnsupported,
 // never a run that removed nothing.

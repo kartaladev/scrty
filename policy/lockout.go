@@ -78,7 +78,8 @@ const (
 // authentication clears them. That ceiling limits the guessing rate, about 24
 // guesses a day under the default waits, not the total. It is not NIST SP
 // 800-63B-4 §3.2.2's cap on consecutive failures, which disables the
-// authenticator until it is bound again; this policy never disables anything.
+// authenticator until it is bound again. That cap is opt-in: WithLockoutCap
+// holds an identifier until its failures are cleared.
 //
 // Waiting rather than locking is the point. A hard lock lets anyone who knows
 // a username keep its owner out for as long as they keep failing; an
@@ -95,20 +96,27 @@ const (
 // deployment of more than one replica needs — the free failures with
 // WithLockoutThreshold, the span with WithLockoutWindow, the waits with
 // WithLockoutWait, the cap with WithLockoutCeiling and the clock with
-// WithLockoutClock. WithSlidingLockout replaces the escalating wait with a
-// sliding lock, which limits the failure rate within a window; WithLockoutWait
-// with equal waits gives a lock of fixed duration instead. WithLockoutObserver
+// WithLockoutClock. WithLockoutCap adds a cap on consecutive failures, which
+// holds an identifier until its failures are cleared; by default there is
+// none. WithSlidingLockout replaces the escalating wait with a sliding lock,
+// which limits the failure rate within a window; WithLockoutWait with equal
+// waits gives a lock of fixed duration instead. WithLockoutObserver
 // adds an observer told of lockout transitions, recorded through the policy's
 // view of its store, Attempts; by default nothing is reported.
 //
 // A refusal for a locked identifier is a *LockoutError, which matches
 // ErrAccountLocked and carries the wait owed.
 //
-// There is no unlock call and no lock record. Whether an identifier is refused
-// is worked out from its failures at every evaluation, so a wait or lock
-// expires by itself as the failures age, and a successful authentication
-// clears it through Reset. Nothing has to run on a timer for a refused user to
-// get back in.
+// A wait or lock has no record of its own. Whether an identifier owes one is
+// worked out from its failures at every evaluation, so it expires by itself as
+// the failures age, and a successful authentication clears it through Reset.
+// Nothing has to run on a timer for a refused user to get back in.
+//
+// A cap is the exception (WithLockoutCap). Under one, the store keeps a
+// record of each identifier's consecutive failures, and the record of one
+// that reached the cap is a hold: it is refused until its failures are
+// cleared, by a password change through the chain or by Reset, which is the
+// unlock call. A hold never expires.
 //
 // A policy is safe for concurrent use as far as its store is: it holds no
 // mutable state of its own after construction.
@@ -139,6 +147,16 @@ type AccountLockoutPolicy struct {
 	observer    LockoutObserver
 	setObserver bool
 	logger      *slog.Logger
+
+	// capLimit and capRetention are WithLockoutCap's cap and
+	// WithLockoutCapRetention's retention; the set flags record which of them
+	// a consumer passed, so a retention without a cap is refused. streaks is
+	// the store's FailureStreakStore half, and is nil exactly when there is no
+	// cap.
+	capLimit                int
+	capRetention            time.Duration
+	setCap, setCapRetention bool
+	streaks                 FailureStreakStore
 
 	// attempts is the view Attempts hands out, and the one RecordFailure and
 	// Reset go through: the store itself when there is no observer.
@@ -278,6 +296,92 @@ func WithSlidingLockout(threshold int, window time.Duration) LockoutOption {
 	}
 }
 
+// NISTLockoutCap is the limit NIST SP 800-63B-4 §3.2.2 sets on consecutive
+// failed attempts for one account: 100. Pass it to WithLockoutCap to hold an
+// identifier at that limit. It is a documented value to pass, not a default:
+// a policy has no cap unless WithLockoutCap sets one.
+const NISTLockoutCap = 100
+
+// defaultLockoutCapRetention is how long a consecutive count below the cap
+// lives after its newest failure, once WithLockoutCap sets a cap.
+const defaultLockoutCapRetention = 30 * 24 * time.Hour
+
+// WithLockoutCap holds an identifier once n consecutive failures have been
+// recorded for it, however many days they are spread over. The default is no
+// cap: an identifier is never held, and only the windowed waits and ceiling
+// apply. NISTLockoutCap is the value to pass for NIST's limit.
+//
+// A held identifier is refused before its password is checked, with a
+// *LockoutError that matches both ErrAccountLocked and ErrAccountHeld and
+// carries no wait. The hold is a record in the attempt store, kept until the
+// identifier's failures are cleared, and only that lifts it:
+//   - a password change through the httpsec chain, including the one that
+//     completes an account recovery;
+//   - the policy's Reset, which is the unlock for an administrator or a
+//     support tool.
+//
+// There is no time-based release: no wait, window or retention ends a hold,
+// and neither does a correct password, which is never checked while the hold
+// stands.
+//
+// NIST SP 800-63B-4 §3.2.2 limits consecutive failed attempts for one account
+// to 100. A lower cap is within that limit; a cap above NISTLockoutCap is
+// accepted, and no longer meets it.
+//
+// A hold is a denial of service in the hands of anyone who knows a username:
+// they can hold its account by failing on purpose, which is why the cap is
+// opt-in. What bounds that risk:
+//   - account recovery with saved recovery codes still works while an account
+//     is held and needs no password, and the password change after it lifts
+//     the hold;
+//   - the per-source password-login guard of the httpsec chain (50 failures
+//     per 15 minutes by default) bounds what one source can send;
+//   - the escalating waits allow one identifier about 24 failures a day after
+//     the first day, so reaching a cap of 100 takes about four days, in which
+//     the owner's own successful login clears the count.
+//
+// The policy cannot tell an identifier that names an account from one that
+// does not, and holds them alike. Held records are never pruned, by the
+// retention or by PurgeExpired, so a spray of unknown identifiers leaves one
+// held record per name; a consumer clears them with Reset.
+//
+// A cap needs an attempt store that keeps consecutive failures
+// (FailureStreakStore); the default in-memory store and the library's durable
+// stores do. Failures count toward the cap only when recorded through the
+// policy's view, Attempts, or its RecordFailure, so the view, not the bare
+// store, is what the chain's login endpoints must record into. The httpsec
+// chain checks this at construction, but only for policies registered in its
+// engine before httpsec.New runs; a capped policy added later is not checked.
+// A count below the cap expires after the retention (WithLockoutCapRetention,
+// 30 days by default).
+//
+// It is a configuration error for n to be zero or less, or not above the
+// threshold (the first lock would already be a hold), and for the store not to
+// implement FailureStreakStore.
+func WithLockoutCap(n int) LockoutOption {
+	return func(p *AccountLockoutPolicy) {
+		p.capLimit = n
+		p.setCap = true
+	}
+}
+
+// WithLockoutCapRetention replaces how long a consecutive count below the cap
+// lives after its newest failure. The default is 30 days. A count whose newest
+// failure is older is no longer counted, the next failure starts a new count,
+// and PurgeExpired removes it. A hold never expires this way, and is never
+// purged.
+//
+// It is a configuration error for d to be zero or less, for it to be given
+// without WithLockoutCap, which makes it meaningless, and for it to be shorter
+// than the lockout window, since a count would then expire while the window
+// still counts its failures.
+func WithLockoutCapRetention(d time.Duration) LockoutOption {
+	return func(p *AccountLockoutPolicy) {
+		p.capRetention = d
+		p.setCapRetention = true
+	}
+}
+
 // NewAccountLockoutPolicy returns a policy that makes an account wait, longer
 // each time, after repeated failures.
 //
@@ -312,6 +416,8 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 		longestWait: defaultLockoutLongestWait,
 		ceiling:     defaultLockoutCeiling,
 		logger:      slog.Default(),
+
+		capRetention: defaultLockoutCapRetention,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -366,13 +472,23 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 		return nil, fmt.Errorf("%w: clock must not be nil", ErrConfig)
 	}
 
+	if p.setCapRetention && !p.setCap {
+		return nil, fmt.Errorf("%w: WithLockoutCapRetention has no cap to retain counts for: "+
+			"pass WithLockoutCap too, or drop it", ErrConfig)
+	}
+	if p.setCap {
+		if err := p.validateCap(); err != nil {
+			return nil, err
+		}
+	}
+
 	if p.setObserver && p.observer == nil {
 		return nil, fmt.Errorf("%w: lockout observer must not be nil: a consumer who passed "+
 			"one meant to be told, and would hear nothing", ErrConfig)
 	}
 
 	p.attempts = p.store
-	if p.observer != nil {
+	if p.observer != nil || p.streaks != nil {
 		p.attempts = &observedAttempts{p: p}
 	}
 
@@ -402,6 +518,37 @@ func (p *AccountLockoutPolicy) validateEscalation() error {
 	return nil
 }
 
+// validateCap refuses a cap the policy could not enforce, or whose retention
+// would let a count expire while the window still counts its failures. On
+// success it keeps the store's FailureStreakStore half, which is what turns
+// the cap on.
+func (p *AccountLockoutPolicy) validateCap() error {
+	if p.capLimit <= 0 {
+		return fmt.Errorf("%w: WithLockoutCap must be positive, got %d: "+
+			"leave the option out for no cap", ErrConfig, p.capLimit)
+	}
+	if p.capLimit <= p.threshold {
+		return fmt.Errorf("%w: WithLockoutCap must be above the threshold, got cap %d and threshold %d: "+
+			"the first lock would already be a hold", ErrConfig, p.capLimit, p.threshold)
+	}
+	if p.capRetention <= 0 {
+		return fmt.Errorf("%w: WithLockoutCapRetention must be positive, got %s", ErrConfig, p.capRetention)
+	}
+	if p.capRetention < p.window {
+		return fmt.Errorf("%w: WithLockoutCapRetention %s is shorter than the lockout window %s: "+
+			"a count would expire while the window still counts its failures",
+			ErrConfig, p.capRetention, p.window)
+	}
+	streaks, ok := p.store.(FailureStreakStore)
+	if !ok {
+		return fmt.Errorf("%w: WithLockoutCap needs an attempt store that keeps consecutive failures "+
+			"(policy.FailureStreakStore), and %T does not", ErrConfig, p.store)
+	}
+	p.streaks = streaks
+
+	return nil
+}
+
 // Name identifies this policy in logs and in an engine's configuration errors.
 func (p *AccountLockoutPolicy) Name() string { return lockoutPolicyName }
 
@@ -420,6 +567,15 @@ func (p *AccountLockoutPolicy) Threshold() int { return p.threshold }
 // WithSlidingLockout configured.
 func (p *AccountLockoutPolicy) Window() time.Duration { return p.window }
 
+// Cap reports the consecutive-failure cap WithLockoutCap configured, or zero
+// when there is none.
+func (p *AccountLockoutPolicy) Cap() int { return p.capLimit }
+
+// CapRetention reports how long a consecutive count below the cap lives after
+// its newest failure: what WithLockoutCapRetention configured, or 30 days. It
+// only applies when Cap is not zero.
+func (p *AccountLockoutPolicy) CapRetention() time.Duration { return p.capRetention }
+
 // Evaluate denies when the submitted identifier owes a wait or has reached the
 // ceiling, and allows otherwise.
 //
@@ -434,6 +590,14 @@ func (p *AccountLockoutPolicy) Window() time.Duration { return p.window }
 // A locked identifier's reason is a *LockoutError matching ErrAccountLocked,
 // whose Wait is the wait owed, or zero at the ceiling and under a sliding lock.
 //
+// With a cap (WithLockoutCap), it first reads the identifier's consecutive
+// failures, and a held identifier is denied there and then, whatever the
+// window holds: its reason is a *LockoutError matching both ErrAccountLocked
+// and ErrAccountHeld, with no wait. Evaluating never writes, so a request
+// refused here, whatever password it carries, leaves the hold as it was. An
+// identifier that is not held is judged by the window exactly as without a
+// cap.
+//
 // Now is the instant the phase carries, so every policy in the phase judges
 // the same request against the same moment; the policy's own clock answers
 // only when the caller left that instant zero.
@@ -444,8 +608,9 @@ func (p *AccountLockoutPolicy) Window() time.Duration { return p.window }
 //
 // A store that cannot answer denies, with a reason of fixed text that matches
 // ErrPolicyDenied and wraps the store's error, reachable through errors.Is and
-// errors.As but not repeated in the text. That holds for either query, so a
-// store that answers the window but not the wait still denies. Failing open
+// errors.As but not repeated in the text. That holds for every query, so a
+// store that answers the window but not the wait, or the window but not
+// whether the identifier is held, still denies. Failing open
 // would let an attacker who can break the store disable lockout altogether, so
 // the one thing this policy will not do is treat "I do not know" as "nothing
 // recorded".
@@ -462,6 +627,18 @@ func (p *AccountLockoutPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	now := in.Now
 	if now.IsZero() {
 		now = p.clock.Now()
+	}
+
+	if p.streaks != nil {
+		// A hold is checked first and decides alone: it outlives every
+		// window, so the windowed count has nothing to add to it.
+		streak, err := p.streaks.FailureStreak(ctx, in.Username, now.Add(-p.capRetention))
+		if err != nil {
+			return storeDenied(err)
+		}
+		if streak.Held() {
+			return Decision{Outcome: Deny, Reason: &LockoutError{failures: streak.Failures, held: true}}
+		}
 	}
 
 	count, err := p.store.FailureCount(ctx, in.Username, now.Add(-p.window))
@@ -570,9 +747,15 @@ func (p *AccountLockoutPolicy) RecordFailure(ctx context.Context, username strin
 // The store's own error comes back behind fixed library text; it stays
 // reachable through errors.Is and errors.As, but its text never is.
 //
+// It is also the unlock an administrator or a support tool calls. With a cap
+// (WithLockoutCap) it lifts a hold, which nothing else in the policy does: the
+// store's Reset clears the hold and the consecutive count together with the
+// failures in the window, so the identifier is neither held nor waiting
+// afterwards. It is not an error for an identifier with nothing to clear.
+//
 // It clears through Attempts, so an administrator's reset that removed
 // failures is reported to the observer given by WithLockoutObserver, just as
-// a login's is.
+// a login's is, and one that lifted a hold is reported as LockoutReleased.
 func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error {
 	if err := p.attempts.Reset(ctx, username); err != nil {
 		return diag.Wrap(err, "policy: clear failed attempts")
@@ -585,11 +768,18 @@ func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error
 // policy's own, 24 hours by default or the sliding lock's — and reports how many
 // went.
 //
+// With a cap (WithLockoutCap) it then deletes the consecutive counts that have
+// aged out of the retention (WithLockoutCapRetention) and adds them to the
+// total. It never deletes a count the policy still counts, nor a hold. Without a cap it never touches the counts.
+//
 // It takes no window of its own. The cutoff is this policy's own window behind
 // its own clock, so the failures the policy would still count are exactly the
 // ones the sweep leaves: a caller cannot pass a shorter retention and unlock
 // an account that is locked right now, and a sweep is therefore safe to run at
 // any moment, as often as the deployment likes.
+//
+// When an error is returned the count is 0, even if some attempts were already
+// removed.
 //
 // Purging is a capability a store may not have, so it is a separate contract.
 // A store that does not implement AttemptReaper — the default in-memory one
@@ -608,16 +798,34 @@ func (p *AccountLockoutPolicy) PurgeExpired(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("%w: %T", ErrReapUnsupported, p.store)
 	}
 
-	removed, err := reaper.DeleteAttemptsBefore(ctx, p.clock.Now().Add(-p.window))
-	if err != nil {
-		if err == ErrRetainSinceRequired { //nolint:errorlint // identity: a bare sentinel carries no store text
-			return 0, err
-		}
+	now := p.clock.Now()
 
-		return 0, diag.Wrap(err, "policy: purge stale failed attempts")
+	removed, err := reaper.DeleteAttemptsBefore(ctx, now.Add(-p.window))
+	if err != nil {
+		return 0, purgeFailed(err, "policy: purge stale failed attempts")
 	}
 
-	return removed, nil
+	if p.streaks == nil {
+		return removed, nil
+	}
+
+	streaks, err := p.streaks.DeleteStreaksBefore(ctx, now.Add(-p.capRetention))
+	if err != nil {
+		return 0, purgeFailed(err, "policy: purge inactive consecutive failures")
+	}
+
+	return removed + streaks, nil
+}
+
+// purgeFailed puts a store's purge error behind the fixed text msg, except
+// ErrRetainSinceRequired, which carries no store text and comes back as
+// itself.
+func purgeFailed(err error, msg string) error {
+	if err == ErrRetainSinceRequired { //nolint:errorlint // identity: a bare sentinel carries no store text
+		return err
+	}
+
+	return diag.Wrap(err, msg)
 }
 
 var _ Policy = (*AccountLockoutPolicy)(nil)

@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -31,10 +32,26 @@ const (
 	// an exact tally of what it removed. A reset that found nothing to clear
 	// is not reported.
 	LockoutCleared
+
+	// LockoutHeld reports the failure that made its identifier held by the
+	// consecutive-failure cap (WithLockoutCap). It is reported once per hold,
+	// by the one write the store reports as having set it, so it is exact
+	// even under a concurrent burst, and including when a cap lowered below an
+	// existing count is reached by the next failure. That write is reported
+	// only as LockoutHeld; later failures are reported by the window, as
+	// before.
+	LockoutHeld
+
+	// LockoutReleased reports a reset that lifted a hold, in place of
+	// LockoutCleared, whether or not the window held any failures. The reset
+	// reads the streak before it resets, so a concurrent failure that sets the
+	// hold in between is reported as LockoutCleared, and two concurrent resets
+	// of one held identifier may both report a release.
+	LockoutReleased
 )
 
-// String returns "locked", "at-ceiling" or "cleared", and "unknown" for a
-// value that is none of them.
+// String returns "locked", "at-ceiling", "cleared", "held" or "released", and
+// "unknown" for a value that is none of them.
 func (k LockoutReportKind) String() string {
 	switch k {
 	case LockoutLocked:
@@ -43,6 +60,10 @@ func (k LockoutReportKind) String() string {
 		return "at-ceiling"
 	case LockoutCleared:
 		return "cleared"
+	case LockoutHeld:
+		return "held"
+	case LockoutReleased:
+		return "released"
 	default:
 		return "unknown"
 	}
@@ -62,7 +83,9 @@ type LockoutReport struct {
 	Kind LockoutReportKind
 
 	// Failures is how many failures were in the window: after the recorded
-	// failure, or, for LockoutCleared, just before the reset removed them.
+	// failure, or, for LockoutCleared, just before the reset removed them. For
+	// LockoutHeld it is the consecutive count after the failure that set the
+	// hold, and for LockoutReleased the consecutive count the reset cleared.
 	Failures int
 
 	// At is the instant of the recorded failure, or the policy clock's
@@ -93,7 +116,14 @@ type LockoutReport struct {
 // and only its report is lost, which the policy logs through
 // WithLockoutLogger. The same holds for a reset: if the failures could not be
 // counted before it, the reset still clears them, and only the LockoutCleared
-// report is lost and logged.
+// report is lost and logged; with a cap, a reset whose consecutive count could
+// not be read loses its report the same way, since the policy cannot tell a
+// release from a clearing without it.
+//
+// With a cap (WithLockoutCap) it is also told of the failure that sets a hold,
+// LockoutHeld, even when the failure log could not record that failure: the
+// hold is in the store and no later write sets it again. A reset that lifts a
+// hold is reported as LockoutReleased.
 //
 // ctx is the caller's context, which may already be cancelled; an observer
 // that hands work off detaches it first (context.WithoutCancel).
@@ -110,7 +140,16 @@ type LockoutObserver func(ctx context.Context, r LockoutReport)
 //
 // With an observer, recording a failure also counts the identifier's failures
 // in the window, and a reset counts them before clearing, which is one extra
-// store read on each.
+// store read on each. With a cap as well, a reset also reads the
+// consecutive count, a second read; the failure that sets a hold needs no
+// read.
+//
+// A reset reads the consecutive count before it resets, so a report is a
+// reading taken just before the reset, not a lock on the identifier. A failure
+// that sets the hold in between leaves the reset reported as LockoutCleared
+// rather than LockoutReleased, and two concurrent resets of one held
+// identifier may both report LockoutReleased. Reports are advisory; the reset
+// itself is unaffected.
 //
 // A nil observer is a configuration error rather than "none": a consumer who
 // passed one meant to be told, and would hear nothing.
@@ -146,14 +185,20 @@ func WithLockoutLogger(l *slog.Logger) LockoutOption {
 //
 // It returns the same value on every call, so a consumer that hands it to
 // several endpoints hands them one store, and anything that deduplicates
-// stores sees one. Without an observer it is the store itself. A failure
-// recorded straight into the store, rather than through this view, is not
-// reported.
+// stores sees one. Without an observer or a cap it is the store itself. A
+// failure recorded straight into the store, rather than through this view, is
+// not reported.
+//
+// With a cap (WithLockoutCap) the view's RecordFailure writes the identifier's
+// consecutive-failure streak and then the failure log, and always attempts the
+// log even when the streak write failed; it returns both errors joined. A zero
+// instant is recorded at the policy's clock, for both writes.
 func (p *AccountLockoutPolicy) Attempts() AttemptStore { return p.attempts }
 
 // observedAttempts is the view Attempts hands out when the policy has an
-// observer: it forwards every call to the policy's store and reports the
-// transitions its writes cause.
+// observer or a cap: it forwards every call to the policy's store, advances
+// the identifier's consecutive-failure streak when there is a cap, and
+// reports the transitions its writes cause when there is an observer.
 type observedAttempts struct {
 	p *AccountLockoutPolicy
 }
@@ -164,15 +209,50 @@ const msgReportLost = "policy: a lockout report was lost: the attempt store reco
 
 func (o *observedAttempts) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	p := o.p
-	if err := p.store.RecordFailure(ctx, username, at); err != nil {
-		return err
+
+	// A capped view records a zero instant at the policy's clock, for the
+	// streak and the log alike: a hold set at the zero instant would read as no
+	// hold at all.
+	if p.streaks != nil && at.IsZero() {
+		at = p.clock.Now()
+	}
+
+	// The streak goes first: it is the record that cannot be rebuilt from the
+	// log. A failed streak write does not skip the log, though: the log entry
+	// alone keeps the windowed lock counting while the streak store is failing.
+	// When both writes fail both errors are returned, joined; when only one
+	// does, that error is returned as it is.
+	var (
+		streak    FailureStreak
+		setHold   bool
+		streakErr error
+	)
+	if p.streaks != nil {
+		streak, setHold, streakErr = p.streaks.AddStreakFailure(ctx, username, at, at.Add(-p.capRetention), p.capLimit)
+	}
+	logErr := p.store.RecordFailure(ctx, username, at)
+
+	// The hold is reported by the one write the store says set it, whatever
+	// became of the log: no later write sets it again, so a report lost here
+	// would be lost for good. That write is reported as the hold and not also
+	// by the window.
+	if setHold && p.observer != nil {
+		p.report(ctx, LockoutReport{Identifier: username, Kind: LockoutHeld, Failures: streak.Failures, At: at})
+
+		return joinWriteErrors(streakErr, logErr)
+	}
+	if logErr != nil {
+		return joinWriteErrors(streakErr, logErr)
+	}
+	if p.observer == nil {
+		return streakErr
 	}
 
 	count, err := p.store.FailureCount(ctx, username, at.Add(-p.window))
 	if err != nil {
 		p.logger.LogAttrs(ctx, slog.LevelError, msgReportLost, diag.Failure("attempt-store", err)...)
 
-		return nil
+		return streakErr
 	}
 
 	switch {
@@ -182,7 +262,21 @@ func (o *observedAttempts) RecordFailure(ctx context.Context, username string, a
 		p.report(ctx, LockoutReport{Identifier: username, Kind: LockoutLocked, Failures: count, At: at})
 	}
 
-	return nil
+	return streakErr
+}
+
+// joinWriteErrors returns the one error that is set as itself, so a caller
+// that compares the store's error by identity still can, and joins the two
+// only when both writes failed.
+func joinWriteErrors(streakErr, logErr error) error {
+	if streakErr == nil {
+		return logErr
+	}
+	if logErr == nil {
+		return streakErr
+	}
+
+	return errors.Join(streakErr, logErr)
 }
 
 // msgClearReportLost is the record for a reset that succeeded but whose
@@ -209,6 +303,11 @@ func (p *AccountLockoutPolicy) report(ctx context.Context, r LockoutReport) {
 
 func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	p := o.p
+	if p.observer == nil {
+		// Nothing to report, so nothing to count first. The store's Reset
+		// clears the streak, hold included, with the log.
+		return p.store.Reset(ctx, username)
+	}
 	now := p.clock.Now()
 
 	// Read first, so a report can say what the reset removed. A count that
@@ -216,17 +315,31 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	// asked for, and only the report depends on the count.
 	count, countErr := p.store.FailureCount(ctx, username, now.Add(-p.window))
 
+	// With a cap the streak is read too, to tell a release from a clearing.
+	// Without it the policy cannot tell which one the reset was, so it
+	// reports neither rather than the wrong one.
+	var (
+		streak    FailureStreak
+		streakErr error
+	)
+	if p.streaks != nil {
+		streak, streakErr = p.streaks.FailureStreak(ctx, username, now.Add(-p.capRetention))
+	}
+
 	if err := p.store.Reset(ctx, username); err != nil {
 		return err
 	}
 
-	if countErr != nil {
+	switch {
+	case streakErr != nil:
+		p.logger.LogAttrs(ctx, slog.LevelError, msgClearReportLost, diag.Failure("attempt-store", streakErr)...)
+	case streak.Held():
+		// A hold outlives the window, so its release is reported whatever
+		// the window held, and in place of the clearing.
+		p.report(ctx, LockoutReport{Identifier: username, Kind: LockoutReleased, Failures: streak.Failures, At: now})
+	case countErr != nil:
 		p.logger.LogAttrs(ctx, slog.LevelError, msgClearReportLost, diag.Failure("attempt-store", countErr)...)
-
-		return nil
-	}
-
-	if count > 0 {
+	case count > 0:
 		p.report(ctx, LockoutReport{Identifier: username, Kind: LockoutCleared, Failures: count, At: now})
 	}
 

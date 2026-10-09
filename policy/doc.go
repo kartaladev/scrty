@@ -33,6 +33,16 @@
 // reaches it within about a day, and is then refused until failures age out of
 // the window.
 //
+// A consumer who wants NIST SP 800-63B-4 §3.2.2's limit on consecutive
+// failures adds a cap with WithLockoutCap(NISTLockoutCap); there is none by
+// default. Under a cap, the identifier that reaches it is held: refused before
+// its password is checked, whatever its waits, until its failures are cleared
+// by a password change through the chain or by the policy's Reset, the unlock
+// for an administrator. A hold never expires, and anyone who knows a username
+// can cause one, which is why the cap is opt-in; WithLockoutCap documents the
+// mitigations. A count below the cap expires after 30 days of inactivity
+// (WithLockoutCapRetention).
+//
 // # A store that fails
 //
 // When a store or lookup the consumer supplies cannot answer, the policy

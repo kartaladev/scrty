@@ -206,3 +206,43 @@ func ExampleWithLockoutObserver() {
 	// ada locked 5
 	// ada cleared 5
 }
+
+// A cap at NIST's limit: one hundred consecutive failures hold the identifier,
+// spaced so that each failure's wait has passed by the next, and the hold outlasts any
+// wait. Only clearing its failures lifts it; here, the policy's Reset, which
+// is the unlock an administrator or support tool calls.
+func ExampleWithLockoutCap() {
+	clk := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	lockout, err := policy.NewAccountLockoutPolicy(
+		policy.WithLockoutClock(clk),
+		policy.WithLockoutCap(policy.NISTLockoutCap),
+	)
+	if err != nil {
+		fmt.Println(err)
+
+		return
+	}
+
+	ctx := context.Background()
+	for range policy.NISTLockoutCap {
+		if err := lockout.Attempts().RecordFailure(ctx, "ada", clk.Now()); err != nil {
+			fmt.Println(err)
+
+			return
+		}
+		clk.Advance(2 * time.Hour)
+	}
+
+	d := lockout.Evaluate(ctx, &policy.Input{Username: "ada"})
+	fmt.Println(d.Outcome, errors.Is(d.Reason, policy.ErrAccountHeld))
+
+	if err := lockout.Reset(ctx, "ada"); err != nil {
+		fmt.Println(err)
+
+		return
+	}
+	fmt.Println(lockout.Evaluate(ctx, &policy.Input{Username: "ada"}).Outcome)
+	// Output:
+	// Deny true
+	// Allow
+}
