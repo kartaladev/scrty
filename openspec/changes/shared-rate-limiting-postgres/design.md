@@ -145,6 +145,7 @@ WHERE b.namespace = $1 AND b.key = $2 AND s > t.now - $3 * interval '1 microseco
 
 - **Operation timeout:** the decorator bounds each call with a context deadline (default 250ms). Both drivers send a cancel request when that deadline passes.
 - **Lock timeout:** a cancel request is asynchronous and needs a new connection. So the record also tells the server to stop waiting for the row: `set_config('lock_timeout', <operation timeout>, true)`, transaction-local.
+  - **Bound:** the lock timeout is the operation timeout in whole milliseconds, at least 1ms. PostgreSQL refuses a `lock_timeout` above 2,147,483,647ms (about 24.8 days), and every record would then fail as unavailable. So an operation timeout above that maximum is a configuration error naming it, not a value silently capped (library-design rules 4 and 6).
   - **Where it runs:** it is evaluated in the `SELECT` that feeds the `INSERT`, so it is in force before the conflict path waits for the row. That keeps the record to one statement and one round trip on both backends.
   - **Proof:** the order is the executor's, not something the documentation promises. The `rate-limiting` scenario "Row held by another session" is the test that proves it, on both supported majors.
   - **Fallback if it fails red-for-the-wrong-reason or flakes:** wrap the record in an explicit transaction with `SET LOCAL lock_timeout`, as a pipelined batch on pgx and `BeginTx` on `database/sql`. Record the switch here.
@@ -213,7 +214,7 @@ func ExpiryTask(p Pruner) expiry.Task // name "ratelimit", interval unset
 
 The tests live in the `test` module, because no other module may import it:
 - **Conformance:** `ratelimittest.Run` against both backends, on the shared server with app-clock harnesses, so `Advance` drives time. `SecondInstance` builds a limiter of the other backend, which proves the scenario "Backends share one table".
-- **Database clock:** a separate short-window real-time test, as for Redis.
+- **Database clock:** a separate short-window real-time test, as for Redis. It also records several failures on one key and asserts that each record's `newest_at` equals its newest stamp exactly, which pins the read-once rule of decision 5.
 - **Outage:**
   - `RunTestPostgres` gains `Stop`/`Start` for own servers, mirroring `RedisConn`;
   - one test per unavailable mode, plus one that the breaker refuses without waiting.
@@ -226,7 +227,7 @@ The tests live in the `test` module, because no other module may import it:
   - trimming by time on record;
   - a prune that uses the checking instance's window;
   - a limiter that joins the ambient transaction;
-  - `now()` read twice.
+  - the time read twice in one record statement, once for the stamp and once for `newest_at`. In app-clock mode both reads return the passed `$now`, so the variant behaves exactly like the real statement and the conformance run cannot catch it. Its proof is the database-clock test instead: two `clock_timestamp()` calls differ by microseconds on nearly every record, so across several records `newest_at` departs from the newest stamp. The correct statement can never make them differ, so the test does not flake when green.
 
 ### 11. The benchmark settles storage parameters and the pool advice
 

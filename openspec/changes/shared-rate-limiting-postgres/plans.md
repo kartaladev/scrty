@@ -473,7 +473,13 @@ func (f *LimiterFactory) Prune(ctx context.Context) (int, error)
 func (f *LimiterFactory) Verify(ctx context.Context) error
 ```
 
-  In `test/pg_ratelimit_test.go`: `type pgLimiterBuilder func(t *testing.T, db *sql.DB, dsn, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter`, which Lane E extends with a pgx builder.
+  In `test/pg_ratelimit_test.go` (as landed by Lane D):
+  - `type pgLimiterBuilder func(t *testing.T, db *sql.DB, dsn, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter`, plus a `pgFactoryBuilder`;
+  - `type pgBackend struct{ name string; limiter pgLimiterBuilder; factory pgFactoryBuilder }`, with `sqlstoreBackend`;
+  - shared runners that take backends, not builders hard-wired to `sqlstore`: `runPGConformance(t, first, second pgBackend)`, `runPGKeys`, `runPGFactory`, `runPGFactoryPrune`, `runPGVerify`, and the clock-behind-newest runner;
+  - thin per-backend test functions, so each backend keeps its own `-run` filter: `TestSQLStoreLimiter_Conformance`, `TestSQLStoreLimiter_Keys`, `TestSQLStoreLimiter_ClockBehindNewest`, `TestSQLStoreLimiter_ConformanceCatchesBrokenVariants` (with its child `TestSQLStoreLimiter_ConformanceBroken`), `TestSQLStoreLimiter_Factory`, `TestSQLStoreLimiter_FactoryPrune`, `TestSQLStoreLimiter_Verify`.
+
+  Lane E adds a `pgxBackend` and `TestPgxLimiter_*` wrappers over the same runners.
 
 - [ ] **Step 1: Failing construction table (4.1)** in `sqlstore/limiter_test.go`, with a non-nil `*sql.DB` from `sql.OpenDB` over a connector that never dials:
 
@@ -549,13 +555,9 @@ func TestNewLimiter(t *testing.T) {
   - **Operation timeout:** `pgTestTimeout = 5 * time.Second`, for the same reason as `redisTestTimeout`.
 
   ```go
-  func TestRateLimitConformance_SQLStore(t *testing.T) {
+  func TestSQLStoreLimiter_Conformance(t *testing.T) {
   	t.Parallel()
-  	set := securitystate.Set() // as test/migrate_securitystate_test.go:44 obtains it
-  	conn := RunTestPostgres(t, WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
-  	h := newPGHarness(conn.DB, conn.DSN, sqlstoreBuilder).harness()
-  	require.NotNil(t, h.SecondInstance)
-  	ratelimittest.Run(t, h)
+  	runPGConformance(t, sqlstoreBackend, sqlstoreBackend) // migrated server from RunTestPostgres inside the runner
   }
   ```
 
@@ -565,7 +567,7 @@ func TestNewLimiter(t *testing.T) {
     - `newest_at = T`;
     - the stamps are ascending.
 
-- [ ] **Step 6: Run it and see it fail.** With `Exceeded` returning `false, nil` and `RecordFailure` returning `nil`, Run: `(cd test && go test -count=1 -run 'TestRateLimitConformance_SQLStore' ./...)`. Expected: FAIL on "limit reached is exceeded".
+- [ ] **Step 6: Run it and see it fail.** With `Exceeded` returning `false, nil` and `RecordFailure` returning `nil`, Run: `(cd test && go test -count=1 -run 'TestSQLStoreLimiter_Conformance' ./...)`. Expected: FAIL on "limit reached is exceeded".
 
 - [ ] **Step 7: Implement the backend** in `sqlstore/limiter.go`:
 
@@ -610,11 +612,9 @@ func (b *limiterBackend) RecordFailure(ctx context.Context, key string) error {
   - `NewLimiter` wraps the backend with `unavailable.Wrap(b, namespace, limit, window, cfg.unavailable)`, and keeps `limit` and `window.Truncate(time.Microsecond)` for `Policy`.
   - Errors from the driver are wrapped, never logged with their text.
 
-- [ ] **Step 8: Run it and see it pass.** Then prove the suite catches the design's broken variants. In a scratch build tag or a test-only backend constructed in `test/pg_ratelimit_test.go`, run `ratelimittest.Run` against:
-  1. a record statement that first removes stamps `<= now - window` (trimming by time);
-  2. a record that calls `clock_timestamp()` twice, once for the stamp and once for `newest_at`.
+- [ ] **Step 8: Run it and see it pass.** Then prove the suite catches the trimming-by-time variant: a test-only backend in `test/pg_ratelimit_test.go` whose record first removes stamps `<= now - window`. Run `ratelimittest.Run` against it and record which scenario failed (expected: "shorter-window instance does not disarm a longer one"). Keep it as `TestSQLStoreLimiter_ConformanceCatchesBrokenVariants`, asserting that the inner run fails, with the seen-to-fail mechanism of `test/redis_ratelimit_test.go`.
 
-  Both runs must fail; record which scenario failed for each. Keep them as `TestRateLimitConformance_SQLStoreRejectsBrokenVariants`, asserting that the inner run fails. Reuse the seen-to-fail mechanism already in `test/redis_ratelimit_test.go` if it has one, so the pattern matches.
+  The time-read-twice variant is **not** run here: in app-clock mode both reads return the passed `$now`, so it behaves exactly like the real statement. Task 6.3 proves it in database-clock mode (design decision 10).
 
 - [ ] **Step 9: Failing factory and `Verify` tests (4.3).** Add tables to `test/pg_ratelimit_test.go`:
   - **Factory:**
@@ -663,7 +663,7 @@ func (b *limiterBackend) RecordFailure(ctx context.Context, key string) error {
 
 - [ ] **Step 14: Verify the lane:**
   - `go test -count=1 ./sqlstore/`
-  - `(cd test && go test -count=1 -run 'TestRateLimitConformance_SQLStore|TestSQLStoreLimiter' ./...)` on 15 and 18
+  - `(cd test && go test -count=1 -run 'TestSQLStoreLimiter' ./...)` on 15 and 18
   - `gofmt -l .`
 
   Report the red outputs from steps 2, 6, 8 and 10.
@@ -693,22 +693,18 @@ func (b *limiterBackend) RecordFailure(ctx context.Context, key string) error {
 - [ ] **Step 5: Failing conformance run (5.2)** in `test/pg_ratelimit_test.go`:
 
 ```go
-func TestRateLimitConformance_Pgx(t *testing.T) {
+func TestPgxLimiter_Conformance(t *testing.T) {
 	t.Parallel()
-	set := securitystate.Set()
-	conn := RunTestPostgres(t, WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
-	h := newPGHarness(conn.DB, conn.DSN, pgxBuilder).harness()
-	h.SecondInstance = newPGHarness(conn.DB, conn.DSN, sqlstoreBuilder).secondInstanceOver(h) // other backend, same scope and clock
-	ratelimittest.Run(t, h)
+	runPGConformance(t, pgxBackend, sqlstoreBackend) // second instance on the other backend, same scope and clock
 }
 ```
 
-  `pgxBuilder` opens a pool with `openPool`-style config from `conn.DSN`, closed at cleanup. `secondInstanceOver` shares the first harness's fake clock and its namespace scoping. This is the spec scenario "Backends share one table".
+  `pgxBackend`'s builders open a pool from `conn.DSN` (a `pgxpool.Pool`, closed at cleanup). Passing `sqlstoreBackend` as the second instance proves the spec scenario "Backends share one table". Add `TestPgxLimiter_Keys` and `TestPgxLimiter_ClockBehindNewest` over the same runners.
 
 - [ ] **Step 6: Run it and see it fail** against stub methods (`false, nil` and `nil`).
 - [ ] **Step 7: Implement.** The backend uses `pool.QueryRow(ctx, …).Scan` and `pool.Exec(ctx, …)` with the same `pgschema` statements and arguments as Task 4 Step 7. The `now()` value is `*time.Time` or nil (`pgtype` accepts both). SQLSTATE comes from `errors.As(err, &pgErr *pgconn.PgError)`.
 - [ ] **Step 8: Run it and see it pass.**
-- [ ] **Step 9: Factory and `Verify` (5.3).** Parameterise Task 4 Step 9's tables over a `[]pgLimiterBuilder{sqlstoreBuilder, pgxBuilder}`, not a copy, and see the pgx rows fail against stubs first.
+- [ ] **Step 9: Factory and `Verify` (5.3).** Add `TestPgxLimiter_Factory`, `TestPgxLimiter_FactoryPrune` and `TestPgxLimiter_Verify`, each calling Task 4's shared runner with `pgxBackend` (not a copy of the tables), and see them fail against stubs first.
 - [ ] **Step 10: Implement**, mirroring Task 4 Step 11. **Step 11:** run all of them on both majors.
 - [ ] **Step 12: Godoc and example (5.4),** mirroring Task 4 Step 13. Check with `(cd pgx && go vet ./... && go test -count=1 -run Example ./...)`.
 
@@ -759,10 +755,21 @@ Every test in this task loops over both backends and runs under both `SCRTY_TEST
     4. `conn.Start(t)`, advance past the probe interval, and the next check reaches the database.
   - **Red** comes from asserting against a limiter built **without** `Wrap`, a test-only raw backend, where the breaker assertion fails.
   - **Green:** `-run 'Unavailable'`.
-- [ ] **6.3 Database clock.**
-  - **Failing test:** no `WithLimiterClock`; window 2s, limit 1; record; `Exceeded` is true; after 2.1s, `Exceeded` is false.
-  - **Red:** a builder that passes a fake clock frozen at construction stays exceeded.
-  - **Green:** `-run 'DatabaseClock'`.
+- [ ] **6.3 Database clock.** Both backends, no `WithLimiterClock`.
+  - **Window test:** window 2s, limit 1; record; `Exceeded` is true; after 2.1s, `Exceeded` is false.
+    - **Red:** a builder that passes a fake clock frozen at construction stays exceeded.
+  - **Read-once test** (design decisions 5 and 10): with limit 20, record 20 failures on one key. After each record, read the row out of band and assert `newest_at = stamps[array_upper(stamps, 1)]` exactly:
+
+    ```go
+    var equal bool
+    require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+    	`SELECT newest_at = stamps[array_upper(stamps, 1)] FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`,
+    	ns, key).Scan(&equal))
+    assert.True(t, equal, "record %d: newest_at differs from the newest stamp", i)
+    ```
+
+    - **Red:** a test-only record statement that reads `clock_timestamp()` separately for the stamp and for `newest_at`. Two reads differ by microseconds on nearly every record, so across 20 records the assertion fails; confirm that message. The correct statement can never make them differ, so the green run does not flake.
+  - **Green:** `-run 'DatabaseClock'` in `test`, both backends.
 - [ ] **6.4 Ambient transactions ignored.**
   - **Failing test:**
     1. begin a transaction on the same database and attach it with each backend's `WithTx`;
