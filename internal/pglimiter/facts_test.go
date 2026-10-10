@@ -1,6 +1,7 @@
 package pglimiter_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,13 +15,17 @@ import (
 func TestFactsCheck(t *testing.T) {
 	t.Parallel()
 
-	healthy := pglimiter.Facts{InRecovery: false, Version: 150000, TableExists: true, Logged: true}
+	healthy := pglimiter.Facts{InRecovery: false, Version: 150000, Encoding: "UTF8", Persistence: "p"}
 
 	const (
 		standby = "the server is a standby (in recovery); the limiter must run on the primary, " +
 			"because a standby lags, so it undercounts, and refuses writes"
 		missing = "the table rate_limit_buckets does not resolve through the connection's search_path; " +
 			"apply the security-state migration set (migrate.SecurityState) to this database"
+		encoding = "the database's server encoding is %s; the limiter needs UTF8, " +
+			"the encoding every key and namespace is stored in"
+		temporary = "the table rate_limit_buckets resolves to a temporary table, which shadows the migration's " +
+			"and lasts only for its session; drop it"
 		unlogged = "the table rate_limit_buckets is unlogged, so a crash or a failover would reset every limit to zero; " +
 			"make it logged again with ALTER TABLE rate_limit_buckets SET LOGGED"
 	)
@@ -66,14 +71,39 @@ func TestFactsCheck(t *testing.T) {
 		{
 			name: "missing table",
 			facts: func(f pglimiter.Facts) pglimiter.Facts {
-				f.TableExists, f.Logged = false, false
+				f.Persistence = ""
 				return f
 			},
 			assert: refusedWith(missing),
 		},
 		{
+			name:   "LATIN1 database",
+			facts:  func(f pglimiter.Facts) pglimiter.Facts { f.Encoding = "LATIN1"; return f },
+			assert: refusedWith(fmt.Sprintf(encoding, "LATIN1")),
+		},
+		{
+			name:   "SQL_ASCII database",
+			facts:  func(f pglimiter.Facts) pglimiter.Facts { f.Encoding = "SQL_ASCII"; return f },
+			assert: refusedWith(fmt.Sprintf(encoding, "SQL_ASCII")),
+		},
+		{
+			name: "encoding before the missing table",
+			facts: func(pglimiter.Facts) pglimiter.Facts {
+				return pglimiter.Facts{Version: 150000, Encoding: "LATIN1"}
+			},
+			assert: refusedWith(fmt.Sprintf(encoding, "LATIN1")),
+		},
+		{
+			name: "temporary table",
+			facts: func(f pglimiter.Facts) pglimiter.Facts {
+				f.Persistence = "t"
+				return f
+			},
+			assert: refusedWith(temporary),
+		},
+		{
 			name:   "unlogged table",
-			facts:  func(f pglimiter.Facts) pglimiter.Facts { f.Logged = false; return f },
+			facts:  func(f pglimiter.Facts) pglimiter.Facts { f.Persistence = "u"; return f },
 			assert: refusedWith(unlogged),
 		},
 	}

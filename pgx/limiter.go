@@ -45,8 +45,9 @@ import (
 // # Startup
 //
 // Constructors perform no I/O. Call Verify at startup, before traffic: it
-// refuses a standby, an unsupported server, a missing or unlogged table, and
-// a role that may not run the limiter's statements.
+// refuses a standby, an unsupported server, a database that is not UTF8, a
+// missing, unlogged or temporary table, and a role that may not run the
+// limiter's statements.
 //
 // # Pruning
 //

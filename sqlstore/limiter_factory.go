@@ -35,7 +35,8 @@ import (
 //
 // Like the limiters it builds, it needs a handle that reaches only the
 // primary, ignores any transaction a caller has attached, and should be
-// checked with Verify at startup; see Limiter.
+// checked with Verify at startup; see Limiter. The database must be UTF8;
+// Verify refuses any other encoding.
 //
 // Each check is one primary-key read, and each recorded failure is one upsert
 // of one row, nearly always a HOT update, so a guarded flow writes to the
@@ -165,9 +166,12 @@ func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
 //   - a server in recovery: a standby lags, so it undercounts, and refuses
 //     writes;
 //   - a server older than PostgreSQL 15 (server_version_num 150000);
+//   - a database whose server encoding is not UTF8, SQL_ASCII included: keys
+//     and namespaces are stored as UTF-8;
 //   - a rate_limit_buckets table that does not resolve through the
 //     connection's search_path, naming the security-state migration set; a
 //     table of that name in a schema outside the search_path does not count;
+//   - a temporary table of that name, which shadows the migration's;
 //   - an unlogged table, which a crash truncates and a standby never
 //     receives, so a failover would reset every limit to zero;
 //   - a role that may not run the limiter's record, check or delete

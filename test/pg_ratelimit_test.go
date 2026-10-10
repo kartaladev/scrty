@@ -12,7 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,6 +61,10 @@ type pgBackend struct {
 	// allow builds a limiter in ratelimit.UnavailableAllow mode.
 	allow   pgLimiterBuilder
 	factory pgFactoryBuilder
+	// verifyFactory builds the factory a Verify case checks from its target,
+	// which may carry an afterConnect hook the backend's own pool must run.
+	// Nil means factory over the target's handle and DSN.
+	verifyFactory func(t *testing.T, target pgVerifyTarget, clk clock.Clock) pgFactory
 }
 
 // pgLimiterOptions are the options every sqlstore limiter in these tests
@@ -123,6 +129,20 @@ func pgxTestPool(t *testing.T, dsn string) *pgxpool.Pool {
 	return pool
 }
 
+// pgxTargetPool opens a pool of its own on the target's DSN, closed at
+// cleanup, running the target's afterConnect on every connection it opens.
+func pgxTargetPool(t *testing.T, target pgVerifyTarget) *pgxpool.Pool {
+	t.Helper()
+
+	cfg, err := pgxpool.ParseConfig(target.dsn)
+	require.NoError(t, err)
+	cfg.AfterConnect = target.afterConnect
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 // pgxBackend is the native pgx limiter.
 var pgxBackend = pgBackend{
 	name: "pgx",
@@ -142,6 +162,12 @@ var pgxBackend = pgBackend{
 	factory: func(t *testing.T, _ *sql.DB, dsn string, clk clock.Clock) pgFactory {
 		t.Helper()
 		f, err := pgxstore.NewLimiterFactory(pgxTestPool(t, dsn), pgxLimiterOptions(clk)...)
+		require.NoError(t, err)
+		return f
+	},
+	verifyFactory: func(t *testing.T, target pgVerifyTarget, clk clock.Clock) pgFactory {
+		t.Helper()
+		f, err := pgxstore.NewLimiterFactory(pgxTargetPool(t, target), pgxLimiterOptions(clk)...)
 		require.NoError(t, err)
 		return f
 	},
@@ -657,6 +683,53 @@ type pgVerifyTarget struct {
 	db    *sql.DB
 	dsn   string
 	admin *sql.DB
+	// afterConnect, when set, runs on every connection the backend opens to
+	// the database; db already runs it, and the pgx backend's own pool is
+	// built to run it too.
+	afterConnect func(ctx context.Context, c *pgx.Conn) error
+}
+
+// pgEncodedDatabase creates a database with encoding enc on conn's server,
+// dropped at cleanup, and returns a target on it. It carries no migration;
+// Verify must refuse it on the encoding before it looks for the table.
+func pgEncodedDatabase(t *testing.T, conn PostgresConn, enc string) pgVerifyTarget {
+	t.Helper()
+
+	sum := sha256.Sum256([]byte(t.Name()))
+	name := "scrty_enc_" + hex.EncodeToString(sum[:6])
+	_, err := conn.DB.ExecContext(t.Context(),
+		`CREATE DATABASE `+name+` ENCODING '`+enc+`' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`) //nolint:gosec // G202: fixed identifiers
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := conn.DB.ExecContext(ctx, `DROP DATABASE `+name+` WITH (FORCE)`) //nolint:gosec // G202: fixed identifier
+		assert.NoError(t, err)
+	})
+
+	u, err := url.Parse(conn.DSN)
+	require.NoError(t, err)
+	u.Path = "/" + name
+	db, err := sql.Open("pgx", u.String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() }) // runs before the drop: cleanups are last in, first out
+	return pgVerifyTarget{db: db, dsn: u.String(), admin: conn.DB}
+}
+
+// pgTempTableTarget returns a target on conn's database whose every
+// connection has a temporary rate_limit_buckets shadowing the migration's.
+func pgTempTableTarget(t *testing.T, conn PostgresConn) pgVerifyTarget {
+	t.Helper()
+
+	shadow := func(ctx context.Context, c *pgx.Conn) error {
+		_, err := c.Exec(ctx, `CREATE TEMP TABLE rate_limit_buckets (LIKE public.rate_limit_buckets INCLUDING ALL)`)
+		return err
+	}
+	cfg, err := pgx.ParseConfig(conn.DSN)
+	require.NoError(t, err)
+	db := stdlib.OpenDB(*cfg, stdlib.OptionAfterConnect(shadow))
+	t.Cleanup(func() { _ = db.Close() })
+	return pgVerifyTarget{db: db, dsn: conn.DSN, admin: conn.DB, afterConnect: shadow}
 }
 
 // pgRoleTarget creates a login role on conn's server that holds only
@@ -765,6 +838,31 @@ CREATE TABLE other.rate_limit_buckets (
 			assert: refused("security-state migration set"),
 		},
 		{
+			name:   "LATIN1 database",
+			target: func(t *testing.T) pgVerifyTarget { return pgEncodedDatabase(t, migratedLimiterDB(t), "LATIN1") },
+			assert: refused("LATIN1", "UTF8"),
+		},
+		{
+			name:   "SQL_ASCII database",
+			target: func(t *testing.T) pgVerifyTarget { return pgEncodedDatabase(t, migratedLimiterDB(t), "SQL_ASCII") },
+			assert: refused("SQL_ASCII", "UTF8"),
+		},
+		{
+			name:   "EUC_JP database",
+			target: func(t *testing.T) pgVerifyTarget { return pgEncodedDatabase(t, migratedLimiterDB(t), "EUC_JP") },
+			assert: refused("EUC_JP", "UTF8"),
+		},
+		{
+			// The database is UTF8, so the encoding check passes and the
+			// persistence check is the one that must refuse.
+			name:   "temporary table shadowing the migration's",
+			target: func(t *testing.T) pgVerifyTarget { return pgTempTableTarget(t, migratedLimiterDB(t)) },
+			assert: func(t *testing.T, target pgVerifyTarget, err error) {
+				refused("temporary")(t, target, err)
+				assert.NotContains(t, err.Error(), "SET LOGGED")
+			},
+		},
+		{
 			name: "unlogged table",
 			target: func(t *testing.T) pgVerifyTarget {
 				conn := migratedLimiterDB(t)
@@ -837,7 +935,12 @@ CREATE TABLE other.rate_limit_buckets (
 				ctx = tc.ctx(ctx)
 			}
 			for _, clk := range []clock.Clock{nil, clockwork.NewFakeClockAt(time.Unix(1_700_000_000, 0))} {
-				f := b.factory(t, target.db, target.dsn, clk)
+				var f pgFactory
+				if b.verifyFactory != nil {
+					f = b.verifyFactory(t, target, clk)
+				} else {
+					f = b.factory(t, target.db, target.dsn, clk)
+				}
 				tc.assert(t, target, f.Verify(ctx))
 				if tc.prunes {
 					_, err := f.Prune(ctx)

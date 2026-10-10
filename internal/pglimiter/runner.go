@@ -113,7 +113,7 @@ func (b *backend) RecordFailure(ctx context.Context, key string) error {
 func Verify(ctx context.Context, r Runner, prefix string, cfg Config) error {
 	var facts Facts
 	err := r.QueryRow(ctx, pgschema.LimiterServerFacts).
-		Scan(&facts.InRecovery, &facts.Version, &facts.TableExists, &facts.Logged)
+		Scan(&facts.InRecovery, &facts.Version, &facts.Encoding, &facts.Persistence)
 	if err != nil {
 		return diag.Wrap(err, prefix+": verify: the server's state could not be read")
 	}

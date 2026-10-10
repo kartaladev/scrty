@@ -52,6 +52,8 @@ func rowScanning(ctrl *gomock.Controller, err error, values ...any) *MockRow {
 				*d = v.(bool)
 			case *int:
 				*d = v.(int)
+			case *string:
+				*d = v.(string)
 			default:
 				panic("unexpected scan destination")
 			}
@@ -67,10 +69,10 @@ func rowScanning(ctrl *gomock.Controller, err error, values ...any) *MockRow {
 func uncounted(ctrl *gomock.Controller) pglimiter.Result { return NewMockResult(ctrl) }
 
 func factsRow(ctrl *gomock.Controller, f pglimiter.Facts) *MockRow {
-	return rowScanning(ctrl, nil, f.InRecovery, f.Version, f.TableExists, f.Logged)
+	return rowScanning(ctrl, nil, f.InRecovery, f.Version, f.Encoding, f.Persistence)
 }
 
-var healthyFacts = pglimiter.Facts{Version: 180006, TableExists: true, Logged: true}
+var healthyFacts = pglimiter.Facts{Version: 180006, Encoding: "UTF8", Persistence: "p"}
 
 // withClock gives cfg the fake clock at testAt, as WithLimiterClock does.
 func withClock(cfg pglimiter.Config) pglimiter.Config {
@@ -183,7 +185,7 @@ func TestVerify(t *testing.T) {
 			prefix: "pgx",
 			script: func(ctrl *gomock.Controller, r *MockRunner) {
 				r.EXPECT().QueryRow(gomock.Any(), pgschema.LimiterServerFacts).
-					Return(factsRow(ctrl, pglimiter.Facts{InRecovery: true, Version: 180006, TableExists: true, Logged: true})).
+					Return(factsRow(ctrl, pglimiter.Facts{InRecovery: true, Version: 180006, Encoding: "UTF8", Persistence: "p"})).
 					Times(1)
 			},
 			assert: func(t *testing.T, err error) {

@@ -91,14 +91,14 @@ WHERE d.namespace = v.namespace AND d.key = v.key`
 	LimiterDeleteKey = `DELETE FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`
 
 	// LimiterServerFacts reports, in one row, whether the server is a standby
-	// (in_recovery), its server_version_num, whether the bucket table
-	// resolves through search_path (table_exists) and whether that table is
-	// logged (logged).
+	// (in_recovery), its server_version_num, its server_encoding, and the
+	// relpersistence of the bucket table that resolves through search_path:
+	// 'p' permanent, 'u' unlogged, 't' temporary, or '' when none resolves.
 	LimiterServerFacts = `SELECT pg_is_in_recovery(),
   current_setting('server_version_num')::int,
-  to_regclass('rate_limit_buckets') IS NOT NULL,
-  coalesce((SELECT c.relpersistence = 'p' FROM pg_class c
-            WHERE c.oid = to_regclass('rate_limit_buckets')), false)`
+  current_setting('server_encoding'),
+  coalesce((SELECT c.relpersistence::text FROM pg_class c
+            WHERE c.oid = to_regclass('rate_limit_buckets')), '')`
 )
 
 // LimiterKey maps a caller's key to its stored form: as given, unless it is
