@@ -48,6 +48,13 @@ const (
 	stormResetters = 3
 	stormAdders    = 6
 	stormAddsEach  = 200
+
+	// stormTimeout bounds a reset storm, whose value is its volume of
+	// row-serialised calls. Healthy, a storm ends in about a second, but on a
+	// CPU-starved CI runner its database can take tens of seconds, so its hang
+	// guard is wider than defaultRaceTimeout. It still only exists so a blocked
+	// call fails instead of hanging the binary.
+	stormTimeout = 2 * time.Minute
 )
 
 var (
@@ -513,14 +520,14 @@ func RunFailureStreakRace(t *testing.T, newStore func(t *testing.T) StreakStore)
 		ctx := t.Context()
 		s := newStore(t)
 
-		raceCtx, cancel := context.WithTimeout(ctx, defaultRaceTimeout)
+		raceCtx, cancel := context.WithTimeout(ctx, stormTimeout)
 		defer cancel()
 
 		start := make(chan struct{})
 		var adders, resetters sync.WaitGroup
-		errs := make(chan error, raceStreakRecords*stormAdders*stormAddsEach+raceStreakRecords*stormResetters)
+		errs := make(chan error, stormRecords*stormAdders*stormAddsEach+stormRecords*stormResetters)
 		done := make(chan struct{})
-		for i := range raceStreakRecords {
+		for i := range stormRecords {
 			username := fmt.Sprintf("reset-race-%d", i)
 			for range stormAdders {
 				adders.Go(func() {
@@ -562,7 +569,7 @@ func RunFailureStreakRace(t *testing.T, newStore func(t *testing.T) StreakStore)
 			assert.NoError(t, err)
 		}
 
-		for i := range raceStreakRecords {
+		for i := range stormRecords {
 			username := fmt.Sprintf("reset-race-%d", i)
 			require.NoError(t, s.Reset(ctx, username))
 			assertStreakEmpty(t, readStreak(ctx, t, s, username, streakSince))
@@ -575,7 +582,7 @@ func RunFailureStreakRace(t *testing.T, newStore func(t *testing.T) StreakStore)
 		ctx := t.Context()
 		s := newStore(t)
 
-		raceCtx, cancel := context.WithTimeout(ctx, defaultRaceTimeout)
+		raceCtx, cancel := context.WithTimeout(ctx, stormTimeout)
 		defer cancel()
 
 		start := make(chan struct{})
