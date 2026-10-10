@@ -100,7 +100,9 @@ func WithLimiterOnUnavailable(m ratelimit.UnavailableMode) LimiterOption {
 // deadline is shorter ends first, and is not taken for one; a deployment
 // whose request deadlines are shorter than this timeout lowers it below them.
 //
-// A zero or negative timeout fails construction with ratelimit.ErrConfig.
+// A zero or negative timeout, or one above 2147483647ms (about 24.8 days),
+// the most PostgreSQL accepts for lock_timeout, fails construction with
+// ratelimit.ErrConfig.
 func WithLimiterOperationTimeout(d time.Duration) LimiterOption {
 	return func(c *limiterConfig) { c.unavailable.Timeout = d }
 }

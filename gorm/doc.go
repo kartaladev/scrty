@@ -89,8 +89,8 @@
 // nothing: the limiter deliberately ignores any transaction a caller has
 // attached, since a failure recorded inside the request's transaction would
 // roll back with the request, so it needs only the pool, never the stores'
-// transaction resolution, and gorm's logger and callbacks would only see its
-// bound keys.
+// transaction resolution, and running it through gorm would only expose its
+// bound keys to gorm's logger and callbacks.
 //
 // # Errors
 //

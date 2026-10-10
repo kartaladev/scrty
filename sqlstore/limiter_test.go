@@ -108,6 +108,16 @@ func TestNewLimiter(t *testing.T) {
 			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(-time.Second)}, assert: refused("timeout"),
 		},
 		{
+			name: "timeout at the lock_timeout maximum accepted", db: db, namespace: "api-key", limit: 20, window: time.Minute,
+			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(2147483647 * time.Millisecond)},
+			assert: accepted,
+		},
+		{
+			name: "timeout above the lock_timeout maximum", db: db, namespace: "api-key", limit: 20, window: time.Minute,
+			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(2147483648 * time.Millisecond)},
+			assert: refused("timeout", "at most 2147483647ms"),
+		},
+		{
 			name: "zero probe interval", db: db, namespace: "api-key", limit: 20, window: time.Minute,
 			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterProbeInterval(0)}, assert: refused("probe"),
 		},
@@ -207,6 +217,16 @@ func TestNewLimiterFactory(t *testing.T) {
 			name: "zero probe interval", db: new(sql.DB), opts: []sqlstore.LimiterOption{sqlstore.WithLimiterProbeInterval(0)},
 			assert: refused("probe"),
 		},
+		{
+			name: "timeout at the lock_timeout maximum accepted", db: new(sql.DB),
+			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(2147483647 * time.Millisecond)},
+			assert: accepted,
+		},
+		{
+			name: "timeout above the lock_timeout maximum", db: new(sql.DB),
+			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(2147483648 * time.Millisecond)},
+			assert: refused("at most 2147483647ms"),
+		},
 	}
 
 	for _, tc := range cases {
@@ -272,6 +292,10 @@ func TestLimiterFactory_NewLimiter(t *testing.T) {
 		{
 			name: "same namespace and policy again", before: built(request{"api-key", 3, time.Minute}),
 			ask: request{"api-key", 3, time.Minute}, assert: accepted(3, time.Minute),
+		},
+		{
+			name: "same namespace and policy differing below a microsecond", before: built(request{"api-key", 3, time.Minute}),
+			ask: request{"api-key", 3, time.Minute + 500*time.Nanosecond}, assert: accepted(3, time.Minute),
 		},
 		{
 			name: "same namespace with another limit", before: built(request{"api-key", 3, time.Minute}),

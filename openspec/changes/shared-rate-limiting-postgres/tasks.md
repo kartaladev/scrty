@@ -10,7 +10,7 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 ## 2. The table and its statements
 
 - [x] 2.1 Add `rate_limit_buckets` to the initial security-state migration, with its `DROP TABLE IF EXISTS` in the down section (design decision 2): a logged table, primary key `(namespace, key)`, no other index, and provisional `fillfactor = 70`. Red: extend `test/migrate_securitystate_test.go` so the table list holds fifteen tables, the bucket table's columns and indexes join the test's exact column and index maps (`securityStateColumns`, `securityStateIndexes`), the key-type exception is checked, and new cases assert a logged table (`relpersistence = 'p'`), the primary-key index as its only index, and `reloptions` that declare a fillfactor. Verify: `go test -count=1 -run 'SecurityState' ./...` in the `test` module, green on both `postgres:15` and `postgres:18` (`SCRTY_TEST_POSTGRES_IMAGE`), and the leftover-table check passes after rollback.
-- [ ] 2.2 Add the check, record, prune and verify statements, the maximums and the long-key digest rule to `internal/pgschema/ratelimit.go` (design decisions 3–7). Red: a unit test of the key mapping (512 bytes stored as given, 513 bytes and a `sha256:`-prefixed key stored as the digest). The statements themselves are proven through the public limiters, because the `test` module cannot import an internal package. Those proofs are:
+- [x] 2.2 Add the check, record, prune and verify statements, the maximums and the long-key digest rule to `internal/pgschema/ratelimit.go` (design decisions 3–7). Red: a unit test of the key mapping (512 bytes stored as given, 513 bytes and a `sha256:`-prefixed key stored as the digest). The statements themselves are proven through the public limiters, because the `test` module cannot import an internal package. Those proofs are:
   - the record keeps only the newest `limit` stamps in ascending order;
   - `newest_at` and `longest_window_us` take the larger value;
   - the check counts strictly after the cutoff;
@@ -25,7 +25,7 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 
 ## 4. The limiter on `database/sql` (`sqlstore`)
 
-- [ ] 4.1 `sqlstore.NewLimiter`, `LimiterOption` and its options, with construction refusals (design decision 1, `rate-limiting` "refuses a policy too large for one row"). Red: a construction table test for each refusal:
+- [x] 4.1 `sqlstore.NewLimiter`, `LimiterOption` and its options, with construction refusals (design decision 1, `rate-limiting` "refuses a policy too large for one row"). Red: a construction table test for each refusal:
   - a nil handle, typed nil included;
   - an empty namespace or one with a colon;
   - a limit of 0 or 129, or a namespace of 65 bytes;
@@ -33,9 +33,9 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
   - a nil clock or logger, an unknown mode, a non-positive timeout or probe interval;
 
   plus the accepted cases at 128 and 64. Verify: `go test -count=1 -run 'TestNewLimiter' ./sqlstore/`.
-- [ ] 4.2 `Exceeded` and `RecordFailure` over the `pgschema` statements, wrapped by `internal/unavailable.Wrap`. The record sets `lock_timeout` in its source row, and long keys are stored as digests (design decisions 3–6). Red: the `ratelimittest` conformance run for `sqlstore` in app-clock mode, seen failing against the trimming-by-time variant. (The time-read-twice variant is invisible in app-clock mode; 6.3 proves it.) Verify: `go test -count=1 -run 'TestSQLStoreLimiter_Conformance' ./...` in the `test` module, green on both majors.
-- [ ] 4.3 `sqlstore.NewLimiterFactory`: same-namespace dedupe, conflicting-policy refusal, `Prune(ctx)` across namespaces, and `Verify` on both factory and limiter (design decisions 6 and 7). Red: table tests for dedupe and conflict, and `Verify` tests against a standby, a missing table, an unlogged table, a `SELECT`-only role and a supported server. Verify: `go test -count=1 -run 'TestSQLStoreLimiter' ./...` in the `test` module, green on both majors.
-- [ ] 4.4 Godoc for the limiter, the factory and each option: the defaults, the 128 and 64 maximums, primary-only, ignored ambient transactions, `Verify` at startup, and the factory as pruner. Add an example. The `gorm` package's godoc shows `sqlstore.NewLimiterFactory(db.DB())`. Verify: `go test -count=1 -run Example ./sqlstore/ ./gorm/` and `go doc ./sqlstore NewLimiterFactory`.
+- [x] 4.2 `Exceeded` and `RecordFailure` over the `pgschema` statements, wrapped by `internal/unavailable.Wrap`. The record sets `lock_timeout` in its source row, and long keys are stored as digests (design decisions 3–6). Red: the `ratelimittest` conformance run for `sqlstore` in app-clock mode, seen failing against the trimming-by-time variant. (The time-read-twice variant is invisible in app-clock mode; 6.3 proves it.) Verify: `go test -count=1 -run 'TestSQLStoreLimiter_Conformance' ./...` in the `test` module, green on both majors.
+- [x] 4.3 `sqlstore.NewLimiterFactory`: same-namespace dedupe, conflicting-policy refusal, `Prune(ctx)` across namespaces, and `Verify` on both factory and limiter (design decisions 6 and 7). Red: table tests for dedupe and conflict, and `Verify` tests against a standby, a missing table, an unlogged table, a `SELECT`-only role and a supported server. Verify: `go test -count=1 -run 'TestSQLStoreLimiter' ./...` in the `test` module, green on both majors.
+- [x] 4.4 Godoc for the limiter, the factory and each option: the defaults, the 128 and 64 maximums, primary-only, ignored ambient transactions, `Verify` at startup, and the factory as pruner. Add an example. The `gorm` package's godoc shows `sqlstore.NewLimiterFactory(db.DB())`. Verify: `go test -count=1 -run Example ./sqlstore/ ./gorm/` and `go doc ./sqlstore NewLimiterFactory`.
 
 ## 5. The limiter on pgx (`pgx` module)
 

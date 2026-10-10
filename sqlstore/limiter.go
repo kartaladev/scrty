@@ -80,11 +80,11 @@ var (
 // that a key longer than 512 bytes, or one that itself starts with
 // "sha256:", is stored as "sha256:" and the hex digest of the key.
 //
-// Maximums: a limit of at most 128 and a
-// namespace of at most 64 bytes, counted in bytes, not characters. They keep
-// the widest row under PostgreSQL's TOAST threshold, so a record never
-// rewrites an out-of-line array. They have no override; a flow needing a
-// larger limit belongs on the Redis limiter.
+// Maximums: a limit of at most 128 and a namespace of at most 64 bytes,
+// counted in bytes, not characters. They keep the widest row under
+// PostgreSQL's TOAST threshold, so a record never rewrites an out-of-line
+// array. They have no override; a flow needing a larger limit belongs on the
+// Redis limiter.
 //
 // Every replica must configure a namespace with the same limit and window.
 // Replicas that disagree, as during a rollout, each count with their own
@@ -107,14 +107,16 @@ var (
 //
 // It performs no I/O. A nil handle, an empty namespace or one containing a
 // colon or longer than 64 bytes, a limit below 1 or above 128, a window
-// shorter than one microsecond, or an option it refuses is an error wrapping
-// ratelimit.ErrConfig, and the Limiter is nil.
+// shorter than one microsecond, or an option it refuses, such as an operation
+// timeout above 2147483647ms, is an error wrapping ratelimit.ErrConfig, and
+// the Limiter is nil.
 func NewLimiter(db *sql.DB, namespace string, limit int, window time.Duration, opts ...LimiterOption) (*Limiter, error) {
 	cfg := newLimiterConfig(opts)
 	if err := validateLimiter(db, namespace, limit, window, cfg); err != nil {
 		return nil, err
 	}
 
+	window = window.Truncate(time.Microsecond)
 	b := &limiterBackend{
 		db:          db,
 		namespace:   namespace,
@@ -132,7 +134,7 @@ func NewLimiter(db *sql.DB, namespace string, limit int, window time.Duration, o
 		limiter: wrapped,
 		check:   newLimiterCheck(db, cfg),
 		limit:   limit,
-		window:  window.Truncate(time.Microsecond),
+		window:  window,
 	}, nil
 }
 
@@ -154,6 +156,9 @@ func validateLimiter(db *sql.DB, namespace string, limit int, window time.Durati
 			ratelimit.ErrConfig, limit, pgschema.LimiterMaxLimit)
 	case window < time.Microsecond:
 		return fmt.Errorf("%w: a window of %s is shorter than the microsecond stamps are stored in", ratelimit.ErrConfig, window)
+	case cfg.unavailable.Timeout.Milliseconds() > pgschema.LimiterMaxLockTimeoutMS:
+		return fmt.Errorf("%w: an operation timeout of %s is above the lock_timeout PostgreSQL accepts, at most %dms",
+			ratelimit.ErrConfig, cfg.unavailable.Timeout, pgschema.LimiterMaxLockTimeoutMS)
 	case cfg.clockSet && nilcheck.IsNil(cfg.clock):
 		return fmt.Errorf("%w: the limiter clock is nil", ratelimit.ErrConfig)
 	}

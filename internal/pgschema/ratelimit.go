@@ -27,6 +27,12 @@ const (
 	// runs against (PostgreSQL 15).
 	LimiterMinServerVersion = 150000
 
+	// LimiterMaxLockTimeoutMS is the largest value, in milliseconds, that
+	// PostgreSQL accepts for lock_timeout (an int32). A record sets
+	// lock_timeout from the limiter's operation timeout, so a timeout above it
+	// would make every record fail.
+	LimiterMaxLockTimeoutMS = 2147483647
+
 	limiterMaxRawKey    = 512
 	limiterDigestPrefix = "sha256:"
 )

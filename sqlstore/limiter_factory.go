@@ -70,7 +70,7 @@ const limiterFactoryProbeNamespace = "factory"
 // rate_limit_buckets table of the database behind db, each configured by
 // opts. The defaults are NewLimiter's: the database's clock, refusal while
 // the database cannot be reached, a 250ms operation timeout, a 1s probe
-// interval, and slog.Default().
+// interval, sampled allow-mode logging every minute, and slog.Default().
 //
 // It checks db and opts as NewLimiter would, so a wiring mistake fails here
 // rather than at the first flow's constructor: a nil handle, or an option
@@ -106,7 +106,9 @@ func NewLimiterFactory(db *sql.DB, opts ...LimiterOption) (*LimiterFactory, erro
 // namespace longer than 64 bytes included. A refused request does not claim
 // the namespace. On error the limiter is nil.
 func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
-	asked := limiterPolicy{limit: limit, window: window}
+	// The window is counted in whole microseconds, so 1m and 1m+500ns are one
+	// policy.
+	asked := limiterPolicy{limit: limit, window: window.Truncate(time.Microsecond)}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()

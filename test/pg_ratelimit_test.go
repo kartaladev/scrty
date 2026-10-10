@@ -14,6 +14,8 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/migrate"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -291,10 +293,23 @@ type brokenRecordLimiter struct {
 	record   string
 }
 
+// pgStoredKey is the form the limiter stores key in: as given, except that a
+// key longer than 512 bytes, or one that itself starts with "sha256:", is
+// stored as "sha256:" and the hex digest of the key. The test module cannot
+// import the core module's internal package that holds the mapping, so the
+// documented contract is restated here; the key tests pin both sides of it.
+func pgStoredKey(key string) string {
+	if len(key) <= 512 && !strings.HasPrefix(key, "sha256:") {
+		return key
+	}
+	sum := sha256.Sum256([]byte(key))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 func (l *brokenRecordLimiter) RecordFailure(ctx context.Context, key string) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgTestTimeout)
 	defer cancel()
-	_, err := l.db.ExecContext(ctx, l.record, l.ns, key, l.limit, l.windowUS,
+	_, err := l.db.ExecContext(ctx, l.record, l.ns, pgStoredKey(key), l.limit, l.windowUS,
 		l.clk.Now().UTC().Truncate(time.Microsecond), "5000ms")
 	return err
 }
@@ -488,10 +503,10 @@ type pgVerifyTarget struct {
 	admin *sql.DB
 }
 
-// pgRoleTarget creates a login role on conn's server that may only SELECT from
-// the bucket table, and returns a handle connected as it. The role is dropped
-// at cleanup, before the database is.
-func pgRoleTarget(t *testing.T, conn PostgresConn) pgVerifyTarget {
+// pgRoleTarget creates a login role on conn's server that holds only
+// privileges (a GRANT list) on the bucket table, and returns a handle
+// connected as it. The role is dropped at cleanup, before the database is.
+func pgRoleTarget(t *testing.T, conn PostgresConn, privileges string) pgVerifyTarget {
 	t.Helper()
 
 	sum := sha256.Sum256([]byte(t.Name()))
@@ -499,7 +514,7 @@ func pgRoleTarget(t *testing.T, conn PostgresConn) pgVerifyTarget {
 	ctx := t.Context()
 	_, err := conn.DB.ExecContext(ctx, `CREATE ROLE `+role+` LOGIN PASSWORD 'readonly'`)
 	require.NoError(t, err)
-	_, err = conn.DB.ExecContext(ctx, `GRANT SELECT ON rate_limit_buckets TO `+role)
+	_, err = conn.DB.ExecContext(ctx, `GRANT `+privileges+` ON rate_limit_buckets TO `+role)
 	require.NoError(t, err)
 
 	u, err := url.Parse(conn.DSN)
@@ -529,6 +544,9 @@ func runPGVerify(t *testing.T, b pgBackend) {
 	type testCase struct {
 		name   string
 		target func(t *testing.T) pgVerifyTarget
+		ctx    func(ctx context.Context) context.Context // nil means identity
+		// prunes also runs the factory's Prune, which must succeed.
+		prunes bool
 		assert func(t *testing.T, target pgVerifyTarget, err error)
 	}
 
@@ -538,6 +556,18 @@ func runPGVerify(t *testing.T, b pgBackend) {
 			require.ErrorIs(t, err, ratelimit.ErrConfig)
 			for _, w := range want {
 				assert.Contains(t, err.Error(), w)
+			}
+		}
+	}
+	// notConfig is a failure of the call, not of the wiring: it does not wrap
+	// ratelimit.ErrConfig, so a caller can retry instead of refusing to start.
+	notConfig := func(extra func(t *testing.T, err error)) func(t *testing.T, _ pgVerifyTarget, err error) {
+		return func(t *testing.T, _ pgVerifyTarget, err error) {
+			t.Helper()
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, ratelimit.ErrConfig)
+			if extra != nil {
+				extra(t, err)
 			}
 		}
 	}
@@ -590,8 +620,42 @@ CREATE TABLE other.rate_limit_buckets (
 		},
 		{
 			name:   "role that may only read the table",
-			target: func(t *testing.T) pgVerifyTarget { return pgRoleTarget(t, migratedLimiterDB(t)) },
+			target: func(t *testing.T) pgVerifyTarget { return pgRoleTarget(t, migratedLimiterDB(t), "SELECT") },
 			assert: refused("record statement"),
+		},
+		{
+			name: "role holding exactly the documented privileges",
+			target: func(t *testing.T) pgVerifyTarget {
+				return pgRoleTarget(t, migratedLimiterDB(t), "SELECT, INSERT, UPDATE, DELETE")
+			},
+			prunes: true,
+			assert: func(t *testing.T, _ pgVerifyTarget, err error) { require.NoError(t, err) },
+		},
+		{
+			name:   "ended context",
+			target: func(t *testing.T) pgVerifyTarget { return plain(migratedLimiterDB(t)) },
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+				return cctx
+			},
+			assert: notConfig(func(t *testing.T, err error) { assert.ErrorIs(t, err, context.Canceled) }),
+		},
+		{
+			name: "unreachable server",
+			target: func(t *testing.T) pgVerifyTarget {
+				set := migrate.SecurityState()
+				conn := RunTestPostgres(t, WithTestPostgresOwnServer(),
+					WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
+				conn.Stop(t)
+				return plain(conn)
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				_ = cancel // released with the test's context
+				return cctx
+			},
+			assert: notConfig(nil),
 		},
 		{
 			name:   "migrated primary",
@@ -611,15 +675,23 @@ CREATE TABLE other.rate_limit_buckets (
 			t.Parallel()
 
 			target := tc.target(t)
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
 			for _, clk := range []clock.Clock{nil, clockwork.NewFakeClockAt(time.Unix(1_700_000_000, 0))} {
 				f := b.factory(t, target.db, target.dsn, clk)
-				tc.assert(t, target, f.Verify(t.Context()))
+				tc.assert(t, target, f.Verify(ctx))
+				if tc.prunes {
+					_, err := f.Prune(ctx)
+					require.NoError(t, err, "a role with the documented privileges cannot prune")
+				}
 
 				l, err := f.NewLimiter("api-key", 3, time.Minute)
 				require.NoError(t, err)
 				v, ok := l.(ratelimit.Verifier)
 				require.True(t, ok, "the limiter does not implement ratelimit.Verifier")
-				tc.assert(t, target, v.Verify(t.Context()))
+				tc.assert(t, target, v.Verify(ctx))
 			}
 		})
 	}
@@ -629,4 +701,73 @@ func TestSQLStoreLimiter_Verify(t *testing.T) {
 	t.Parallel()
 
 	runPGVerify(t, sqlstoreBackend)
+}
+
+// TestSQLStoreLimiter_GormConsumer pins that an application on gorm gets a
+// shared limiter by handing the *sql.DB under its gorm handle to the factory:
+// two limiters built over it for one namespace, as two replicas would, count
+// together.
+func TestSQLStoreLimiter_GormConsumer(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// secondNamespace is the namespace the second replica counts in.
+		secondNamespace string
+		assert          func(t *testing.T, first, second ratelimit.Limiter)
+	}
+
+	cases := []testCase{
+		{
+			name:            "replicas of one namespace count together",
+			secondNamespace: "api-key",
+			assert: func(t *testing.T, first, second ratelimit.Limiter) {
+				for _, l := range []ratelimit.Limiter{first, second} {
+					got, err := l.Exceeded(t.Context(), "k")
+					require.NoError(t, err)
+					assert.True(t, got, "two failures on one replica and one on the other did not reach the limit of 3")
+				}
+			},
+		},
+		{
+			name:            "another namespace counts apart",
+			secondNamespace: "magic-link",
+			assert: func(t *testing.T, first, second ratelimit.Limiter) {
+				for _, l := range []ratelimit.Limiter{first, second} {
+					got, err := l.Exceeded(t.Context(), "k")
+					require.NoError(t, err)
+					assert.False(t, got, "a failure in another namespace was counted")
+				}
+			},
+		},
+	}
+
+	conn := migratedLimiterDB(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Each replica is a gorm handle of its own over the database.
+			replica := func(namespace string) ratelimit.Limiter {
+				gdb, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
+				require.NoError(t, err)
+				sqlDB, err := gdb.DB()
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = sqlDB.Close() })
+
+				f, err := sqlstore.NewLimiterFactory(sqlDB, pgLimiterOptions(nil)...)
+				require.NoError(t, err)
+				require.NoError(t, f.Verify(t.Context()))
+				l, err := f.NewLimiter(pgScopedNamespace(t, namespace), 3, time.Minute)
+				require.NoError(t, err)
+				return l
+			}
+			first, second := replica("api-key"), replica(tc.secondNamespace)
+
+			require.NoError(t, first.RecordFailure(t.Context(), "k"))
+			require.NoError(t, first.RecordFailure(t.Context(), "k"))
+			require.NoError(t, second.RecordFailure(t.Context(), "k"))
+			tc.assert(t, first, second)
+		})
+	}
 }
