@@ -58,7 +58,13 @@ func Example_sharedLimiter() {
 	// The same namespace with another policy is a wiring mistake.
 	_, err = factory.NewLimiter("api-key", 5, time.Minute)
 	fmt.Println(err != nil)
+
+	// The second-factor factory builds a namespace of its own, never one the
+	// first factory already built.
+	limiter, err = secondFactor.NewLimiter("magic-link", 5, time.Minute)
+	fmt.Println(limiter != nil, err)
 	// Output:
 	// true <nil>
 	// true
+	// true <nil>
 }

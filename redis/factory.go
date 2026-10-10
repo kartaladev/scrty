@@ -20,8 +20,11 @@ import (
 // limiter over the same buckets, exactly as another replica would: two chains
 // built from one factory, or a flow constructed twice, count together. Asked
 // for with a different limit or window, it is refused, because one bucket
-// cannot hold two policies. The factory cannot see other processes, so every
-// replica must still configure a namespace the same way.
+// cannot hold two policies.
+//
+// The check covers this factory only. It cannot see another factory in the
+// same process, over the same handle or not, nor another process, so no two
+// factories or replicas may build one namespace with different policies.
 //
 // It is safe for concurrent use.
 type Factory struct {

@@ -58,6 +58,10 @@ func ExampleNewLimiterFactory() {
 	chainOpt := httpsec.WithRateLimiterFactory(factory)
 	_, _ = chainOpt, secondFactor // httpsec.New(chainOpt, ...), mfa.WithVerifyLimiterFactory(secondFactor), ...
 
+	// Each factory builds its own namespaces, never one the other builds too.
+	_, _ = factory.NewLimiter("api-key", 20, time.Minute)
+	_, _ = secondFactor.NewLimiter("magic-link", 5, time.Minute)
+
 	// One prune covers every namespace in the table, whichever factory built
 	// its limiters, so one task is enough.
 	runner, err := expiry.NewRunner([]expiry.Task{ratelimit.ExpiryTask(factory)})
