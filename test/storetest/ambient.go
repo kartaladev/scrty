@@ -48,6 +48,11 @@ type Ambient[S any] struct {
 //     not take the write with it.
 //
 // It fails at once, naming every missing input, when h or a is missing one.
+//
+// The shared PostgreSQL rate limiter (sqlstore.Limiter and pgx.Limiter) does
+// not run this suite: it ignores the caller's transaction by design, so a
+// failure recorded in a request that rolls back still counts. Its own test
+// pins that opposite guarantee.
 func RunAmbientTx[S any](t *testing.T, h DurableHarness[S], a Ambient[S]) {
 	t.Helper()
 
