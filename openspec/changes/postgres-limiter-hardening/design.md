@@ -18,15 +18,17 @@ Constraints that shape the approach:
 - One copy of the logic both adapters share.
 
 **Non-Goals:**
-- **A cap-free limiter (one row per failure).** It stays the escape hatch for limits above the new maximum (decision 1, option C).
+- **A cap-free limiter (one row per failure)** (decision 1, option C). A limit above the new maximum goes to the Redis limiter or the consumer's own.
 - **Clamping the chain's default aggregate to a backend's maximum.** It would add an interface to `ratelimit` and change `httpsec` for a case the new maximum already covers.
 - **Any change to the Redis limiter's behaviour.** Only its godoc sentence changes (decision 8).
 
 ## Decisions
 
-### 1. The limit maximum — **PENDING: the user's decision**
+### 1. The limit maximum rises to 400 through a storage parameter
 
-The specs and tasks wait on this decision. The prune, encoding and other decisions below do not depend on it.
+**Decision:** option A, chosen by the user on 2026-10-10. The migration sets `toast_tuple_target = 8160` on `rate_limit_buckets`, and the maximum limit rises from 128 to 400. A limit above 400 is a configuration error naming 400.
+- **Default:** 400, with the storage parameter set by the migration.
+- **Override:** none for the maximum itself; a consumer needing more uses the Redis limiter or their own limiter behind the port. The storage parameter can be changed with `ALTER TABLE … SET`, at a cost in performance, not correctness, and `Verify` does not check it.
 
 **Measured** (postgres 15.19 and 18.6, Docker on arm64 macOS; directional, single client):
 - **The binding ceiling is HOT, not TOAST.** An update is HOT only while old and new versions fit one 8 kB page, so a row of about 4,072 bytes or less. At 4,168 bytes, HOT fell to 0%, with about 4.5 kB of WAL per update. TOAST's trigger, a row of about 2,032 bytes, can be raised.
@@ -36,8 +38,8 @@ The specs and tasks wait on this decision. The prune, encoding and other decisio
   - 450 stamps: 4,256 bytes with a 512-byte key.
 - **The hard per-row limit** is 8,160 bytes (`row is too big`), about 1,010 stamps.
 
-**Options:**
-- **A (recommended).** Set `toast_tuple_target = 8160` on `rate_limit_buckets` in the migration, and raise the maximum to **400**.
+**Options considered:**
+- **A (chosen).** Set `toast_tuple_target = 8160` on `rate_limit_buckets` in the migration, and raise the maximum to **400**.
   - **Measured:** the array stays in-line and uncompressed. HOT was 100% up to about 450 stamps, even at the 512-byte key maximum. At 256 stamps it ran 5,273 tps against 4,236 for default storage on pg18.
   - **Reach:** covers the defaults, and a login limit doubled to 100.
   - **Above 400:** a configuration error naming 400. The consumer uses the Redis limiter or their own limiter behind the port.
@@ -212,11 +214,11 @@ Each claim is marked REPRODUCED or UNREPRODUCED, as `defect-claims.md` requires.
 
 ## Migration Plan
 
-There are no tags and no consumers. The migration is edited in place if decision 1 takes option A. The change lands on PR #13's branch, before it merges, or as its own branch after it.
+There are no tags and no consumers. The migration is edited in place for decision 1. The change lands on PR #13's branch, before it merges, or as its own branch after it.
 
 ## Open Questions
 
-None beyond decision 1, which is not deferrable: it decides the specs and tasks, and waits on the user.
+None.
 
 ## References
 
