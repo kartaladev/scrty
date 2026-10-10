@@ -713,7 +713,7 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			conn := migratedLimiterDB(t, WithTestPostgresOwnServer())
+			conn := migratedLimiterDB(t, WithTestPostgresRestartable())
 			dialer := &pgDialer{}
 			tc.assert(t, pgOutage{
 				conn:   conn,

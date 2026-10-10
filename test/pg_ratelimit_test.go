@@ -801,7 +801,7 @@ CREATE TABLE other.rate_limit_buckets (
 			name: "unreachable server",
 			target: func(t *testing.T) pgVerifyTarget {
 				set := migrate.SecurityState()
-				conn := RunTestPostgres(t, WithTestPostgresOwnServer(),
+				conn := RunTestPostgres(t, WithTestPostgresRestartable(),
 					WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
 				conn.Stop(t)
 				return plain(conn)

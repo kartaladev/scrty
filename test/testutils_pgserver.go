@@ -363,8 +363,9 @@ func startPostgresContainer(ctx context.Context, image string) (*postgres.Postgr
 
 // startPostgresContainerWith is startPostgresContainer with a choice of where
 // the data lives, and further customizers. An in-memory data directory
-// (inMemory) is lost when the container stops, so an own server, which Stop
-// and Start may restart, keeps its data on the container's disk instead.
+// (inMemory) is lost when the container stops, so an own server that Stop and
+// Start may restart (WithTestPostgresRestartable) keeps its data on the
+// container's disk instead; every other own server keeps it in memory.
 func startPostgresContainerWith(ctx context.Context, image string, inMemory bool, extra ...testcontainers.ContainerCustomizer) (*postgres.PostgresContainer, error) {
 	for attempt := 1; ; attempt++ {
 		opts := []testcontainers.ContainerCustomizer{
