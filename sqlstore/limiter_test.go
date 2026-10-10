@@ -229,6 +229,27 @@ func TestNewLimiterFactory(t *testing.T) {
 			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(2147483648 * time.Millisecond)},
 			assert: refused("at most 2147483647ms"),
 		},
+		{
+			name: "prune batch 1 accepted", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterPruneBatchSize(1)}, assert: accepted,
+		},
+		{
+			name: "prune batch 0", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterPruneBatchSize(0)}, assert: refused("batch"),
+		},
+		{
+			name: "prune batch -1", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterPruneBatchSize(-1)}, assert: refused("batch"),
+		},
+		{
+			name: "nil option ignored", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{nil, sqlstore.WithLimiterPruneBatchSize(2)}, assert: accepted,
+		},
+		{
+			// The option after the nil one still applies, so its invalid size is refused.
+			name: "option after a nil option applies", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{nil, sqlstore.WithLimiterPruneBatchSize(0)}, assert: refused("batch"),
+		},
 	}
 
 	for _, tc := range cases {

@@ -51,6 +51,8 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, want.LogInterval, got.Unavailable.LogInterval)
 	assert.Same(t, want.Logger, got.Unavailable.Logger)
 	assert.NotNil(t, got.Unavailable.Clock)
+	assert.Equal(t, pglimiter.DefaultPruneBatchSize, got.PruneBatchSize)
+	assert.Equal(t, 1000, pglimiter.DefaultPruneBatchSize)
 	require.NoError(t, got.Validate())
 }
 
@@ -139,6 +141,30 @@ func TestConfigValidate(t *testing.T) {
 				return c
 			},
 			assert: refusedWith("an operation timeout of 0s bounds nothing"),
+		},
+		{
+			name: "prune batch of one",
+			cfg: func(c pglimiter.Config) pglimiter.Config {
+				c.PruneBatchSize = 1
+				return c
+			},
+			assert: accepted,
+		},
+		{
+			name: "prune batch of zero",
+			cfg: func(c pglimiter.Config) pglimiter.Config {
+				c.PruneBatchSize = 0
+				return c
+			},
+			assert: refusedWith("a prune batch of 0 keys removes nothing"),
+		},
+		{
+			name: "negative prune batch",
+			cfg: func(c pglimiter.Config) pglimiter.Config {
+				c.PruneBatchSize = -1
+				return c
+			},
+			assert: refusedWith("a prune batch of -1 keys removes nothing"),
 		},
 	}
 

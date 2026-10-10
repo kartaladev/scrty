@@ -245,6 +245,27 @@ func TestNewLimiterFactory(t *testing.T) {
 			opts:   []pgxstore.LimiterOption{pgxstore.WithLimiterOperationTimeout(2147483648 * time.Millisecond)},
 			assert: refused("at most 2147483647ms"),
 		},
+		{
+			name: "prune batch 1 accepted", db: newIdlePool(t),
+			opts: []pgxstore.LimiterOption{pgxstore.WithLimiterPruneBatchSize(1)}, assert: accepted,
+		},
+		{
+			name: "prune batch 0", db: newIdlePool(t),
+			opts: []pgxstore.LimiterOption{pgxstore.WithLimiterPruneBatchSize(0)}, assert: refused("batch"),
+		},
+		{
+			name: "prune batch -1", db: newIdlePool(t),
+			opts: []pgxstore.LimiterOption{pgxstore.WithLimiterPruneBatchSize(-1)}, assert: refused("batch"),
+		},
+		{
+			name: "nil option ignored", db: newIdlePool(t),
+			opts: []pgxstore.LimiterOption{nil, pgxstore.WithLimiterPruneBatchSize(2)}, assert: accepted,
+		},
+		{
+			// The option after the nil one still applies, so its invalid size is refused.
+			name: "option after a nil option applies", db: newIdlePool(t),
+			opts: []pgxstore.LimiterOption{nil, pgxstore.WithLimiterPruneBatchSize(0)}, assert: refused("batch"),
+		},
 	}
 
 	for _, tc := range cases {

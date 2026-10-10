@@ -342,7 +342,7 @@ func (e pgStatementEdit) apply(t *testing.T) string {
 
 // pgStatementEdits are every edit a broken variant of these tests makes; the
 // drift guard below applies each.
-var pgStatementEdits = []pgStatementEdit{pgRecordReadingTimeTwice, pgPruneByCheckingWindow, pgPruneWithoutRowLock}
+var pgStatementEdits = []pgStatementEdit{pgRecordReadingTimeTwice, pgPruneByCheckingWindow, pgPruneWithoutRowLock, pgPruneWithoutSkipLocked}
 
 // TestPGLimiter_StatementEditsApply is the drift guard of the broken
 // variants: each edit still finds, exactly once, the text it replaces in the

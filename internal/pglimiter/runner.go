@@ -23,9 +23,10 @@ type Row interface {
 // satisfies it; the pgx adapter wraps its command tag.
 //
 // Not every database/sql driver reports a row count, so the core calls
-// RowsAffected only for a statement whose outcome depends on the count. The
-// record and the probe's statements never call it: their success is Exec's
-// error alone.
+// RowsAffected only for a statement whose outcome depends on the count: the
+// prune's batch, whose count is what the prune reports and what ends its
+// loop, so an unreadable count fails the batch. The record and the probe's
+// statements never call it: their success is Exec's error alone.
 type Result interface {
 	RowsAffected() (int64, error)
 }

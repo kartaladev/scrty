@@ -74,18 +74,24 @@ ON CONFLICT (namespace, key) DO UPDATE SET
   newest_at = GREATEST(b.newest_at, EXCLUDED.newest_at),
   longest_window_us = GREATEST(b.longest_window_us, EXCLUDED.longest_window_us)`
 
-	// LimiterPrune deletes every key whose newest stamp is older than the
-	// longest window ever recorded for it: $1 now or NULL. Rows another
-	// transaction holds are skipped (FOR UPDATE SKIP LOCKED), so a sweep never
-	// waits on, or deletes under, a live record. Rows affected is the count
-	// removed.
-	LimiterPrune = `WITH t AS (SELECT coalesce($1::timestamptz, clock_timestamp()) AS now),
-victims AS (
-  SELECT b.namespace, b.key FROM rate_limit_buckets b CROSS JOIN t
-  WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= t.now
+	// LimiterPrune deletes one batch of idle keys: those whose newest stamp is
+	// at least the longest window ever recorded for them older than $1, at
+	// most $2 of them. It locks each victim (FOR UPDATE), and the lock rechecks
+	// idleness on a row a record updated after the statement's snapshot, so a
+	// key recorded during the prune is kept. Rows another transaction holds
+	// are skipped (SKIP LOCKED), never waited for. Rows affected is the count
+	// removed. Run it in a loop until a batch removes fewer than $2, each batch
+	// its own transaction, so no record waits on more than one batch.
+	LimiterPrune = `WITH v AS (
+  SELECT b.namespace, b.key FROM rate_limit_buckets b
+  WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= $1::timestamptz
+  LIMIT $2::bigint
   FOR UPDATE OF b SKIP LOCKED)
-DELETE FROM rate_limit_buckets d USING victims v
+DELETE FROM rate_limit_buckets d USING v
 WHERE d.namespace = v.namespace AND d.key = v.key`
+
+	// LimiterClock reads the database clock once, for a prune's whole run.
+	LimiterClock = `SELECT clock_timestamp()`
 
 	// LimiterDeleteKey forgets one key: $1 namespace, $2 key.
 	LimiterDeleteKey = `DELETE FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`

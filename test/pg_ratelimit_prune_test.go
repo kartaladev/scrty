@@ -1,9 +1,12 @@
 package test
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +15,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
+	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
@@ -129,8 +135,9 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 				removed, err := ratelimit.ExpiryTask(e.factory).Run(ctx)
 				elapsed := time.Since(start)
 				t.Logf("prune with a held row returned after %s", elapsed)
-				require.NoError(t, err)
+				// Checked before the error: a prune that waits ends with ctx's.
 				assert.Less(t, elapsed, 500*time.Millisecond, "the prune waited on the held row")
+				require.NoError(t, err)
 				assert.Equal(t, 0, removed)
 				assert.Equal(t, 1, e.rows(t, ns), "the held row was removed")
 			},
@@ -318,12 +325,13 @@ func TestPGLimiter_Prune(t *testing.T) {
 }
 
 // pgPruneByCheckingWindow is a prune that measures idleness by one instance's
-// window, $2, rather than by the longest window recorded for each key.
+// window, $3, rather than by the longest window recorded for each key. $2 is
+// the batch size.
 var pgPruneByCheckingWindow = pgStatementEdit{
 	name: "prune-by-checking-window",
 	stmt: pgPruneName,
 	old:  "b.longest_window_us * interval",
-	new:  "$2::bigint * interval",
+	new:  "$3::bigint * interval",
 }
 
 // pgPruneWithoutRowLock is a prune that takes no row lock on its victims, so
@@ -337,8 +345,19 @@ var pgPruneWithoutRowLock = pgStatementEdit{
 	new:  "",
 }
 
+// pgPruneWithoutSkipLocked is a prune that locks its victims but waits for a
+// row another session holds, rather than skipping it.
+var pgPruneWithoutSkipLocked = pgStatementEdit{
+	name: "prune-without-skip-locked",
+	stmt: pgPruneName,
+	old:  " SKIP LOCKED",
+	new:  "",
+}
+
 // pgStatementPruneFactory is a factory whose prune runs a statement of the
-// test's own, with the fake clock's time as $1 and extra after it.
+// test's own, once, with the fake clock's time as $1 and extra after it. One
+// statement is enough for the prune cases, none of which has 1,000 rows, the
+// batch size the variants pass as $2.
 type pgStatementPruneFactory struct {
 	pgFactory // the real factory, for NewLimiter and Verify
 
@@ -381,15 +400,21 @@ func pgBrokenPruneBackend(edit pgStatementEdit, extra ...any) pgFaultBackend {
 var pgPruneBroken = pgFaultVariants(runPGPrune,
 	pgFaultVariant{
 		name:      pgPruneByCheckingWindow.name,
-		backend:   pgBrokenPruneBackend(pgPruneByCheckingWindow, time.Minute.Microseconds()),
+		backend:   pgBrokenPruneBackend(pgPruneByCheckingWindow, 1000, time.Minute.Microseconds()),
 		failsCase: "longest recorded window protects a key",
 		failsWith: "the prune removed a key a 15-minute instance still counts",
 	},
 	pgFaultVariant{
 		name:      pgPruneWithoutRowLock.name,
-		backend:   pgBrokenPruneBackend(pgPruneWithoutRowLock),
+		backend:   pgBrokenPruneBackend(pgPruneWithoutRowLock, 1000),
 		failsCase: "prune against an uncommitted record on an idle key keeps the key",
 		failsWith: "the prune deleted a key a committed record had made live",
+	},
+	pgFaultVariant{
+		name:      pgPruneWithoutSkipLocked.name,
+		backend:   pgBrokenPruneBackend(pgPruneWithoutSkipLocked, 1000),
+		failsCase: "row another session holds is skipped without waiting",
+		failsWith: "the prune waited on the held row",
 	},
 )
 
@@ -403,4 +428,257 @@ func TestPGLimiter_PruneCatchesBrokenVariants(t *testing.T) {
 	t.Parallel()
 
 	catchPGFaultVariants(t, "TestPGLimiter_PruneBroken", pgPruneBroken)
+}
+
+// pruneFactoryOptions are what a prune test's factory differs by. The zero
+// value is the production defaults: the 250ms operation timeout, the database
+// clock and prune batches of 1,000 keys.
+type pruneFactoryOptions struct {
+	// clock, when set, is the factory's clock, and the test timeout replaces
+	// the default operation timeout, as the other builders give it.
+	clock clock.Clock
+	// batch, when set, is the prune batch size.
+	batch int
+}
+
+// pruneFactory builds b's factory over conn, configured by o, with a
+// discarded log.
+func pruneFactory(t *testing.T, b pgBackend, conn PostgresConn, o pruneFactoryOptions) pgFactory {
+	t.Helper()
+
+	discard := slog.New(slog.DiscardHandler)
+	switch b.name {
+	case sqlstoreBackend.name:
+		opts := []sqlstore.LimiterOption{sqlstore.WithLimiterLogger(discard)}
+		if o.clock != nil {
+			opts = pgLimiterOptions(o.clock)
+		}
+		if o.batch != 0 {
+			opts = append(opts, sqlstore.WithLimiterPruneBatchSize(o.batch))
+		}
+		f, err := sqlstore.NewLimiterFactory(conn.DB, opts...)
+		require.NoError(t, err)
+		return f
+	case pgxBackend.name:
+		opts := []pgxstore.LimiterOption{pgxstore.WithLimiterLogger(discard)}
+		if o.clock != nil {
+			opts = pgxLimiterOptions(o.clock)
+		}
+		if o.batch != 0 {
+			opts = append(opts, pgxstore.WithLimiterPruneBatchSize(o.batch))
+		}
+		f, err := pgxstore.NewLimiterFactory(pgxTestPool(t, conn.DSN), opts...)
+		require.NoError(t, err)
+		return f
+	}
+	t.Fatalf("no prune factory for backend %q", b.name)
+	return nil
+}
+
+// runPGPruneUnderRecords pins that a prune over a million idle keys holds no
+// record past its 250ms operation timeout, and keeps every key recorded while
+// it runs: records arrive about every 3ms on keys the prune is removing.
+func runPGPruneUnderRecords(t *testing.T, b pgBackend) {
+	t.Helper()
+
+	conn := migratedLimiterDB(t)
+	ns := pgScopedNamespace(t, "victims")
+	_, err := conn.DB.ExecContext(t.Context(), `
+INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
+SELECT $1, 'k' || g, ARRAY[now() - interval '1 hour'], now() - interval '1 hour', 60000000
+FROM generate_series(1, 1000000) AS g`, ns)
+	require.NoError(t, err)
+
+	// The production defaults: the test timeout would hide a record waiting
+	// on the prune.
+	f := pruneFactory(t, b, conn, pruneFactoryOptions{})
+	l, err := f.NewLimiter(ns, 5, time.Minute)
+	require.NoError(t, err)
+
+	done := make(chan struct{})
+	var (
+		removed  int
+		pruneErr error
+		pruneDur time.Duration
+	)
+	go func() {
+		defer close(done)
+		start := time.Now()
+		removed, pruneErr = f.Prune(t.Context())
+		pruneDur = time.Since(start)
+	}()
+
+	var (
+		mu       sync.Mutex
+		recorded []string
+		slow     []time.Duration
+		worst    time.Duration
+	)
+	var wg sync.WaitGroup
+	tick := time.NewTicker(3 * time.Millisecond) // about 300 records a second
+	defer tick.Stop()
+	for i := 0; ; i++ {
+		select {
+		case <-done:
+			wg.Wait()
+			t.Logf("the prune removed %d keys in %s; %d records, worst wait %s, %d over 250ms",
+				removed, pruneDur, len(recorded)+len(slow), worst, len(slow))
+			require.NoError(t, pruneErr)
+			assert.Positive(t, removed)
+			assert.Zero(t, len(slow), "records waited on the prune past their timeout")
+			assert.Empty(t, pgMissingKeys(t, conn, ns, recorded), "the prune removed keys recorded during the run")
+			return
+		case <-tick.C:
+			key := fmt.Sprintf("k%d", 1+(i*7919)%1000000) // spread over the victims
+			wg.Go(func() {
+				start := time.Now()
+				err := l.RecordFailure(t.Context(), key)
+				d := time.Since(start)
+				mu.Lock()
+				defer mu.Unlock()
+				worst = max(worst, d)
+				if err != nil || d > 250*time.Millisecond {
+					slow = append(slow, d)
+					return
+				}
+				recorded = append(recorded, key)
+			})
+		}
+	}
+}
+
+// pgMissingKeys returns those of keys that have no bucket row in ns.
+func pgMissingKeys(t *testing.T, conn PostgresConn, ns string, keys []string) []string {
+	t.Helper()
+
+	rows, err := conn.DB.QueryContext(t.Context(), `
+SELECT k FROM unnest($2::text[]) AS k
+EXCEPT SELECT key FROM rate_limit_buckets WHERE namespace = $1`, ns, keys)
+	require.NoError(t, err)
+	defer func() { _ = rows.Close() }()
+	var missing []string
+	for rows.Next() {
+		var k string
+		require.NoError(t, rows.Scan(&k))
+		missing = append(missing, k)
+	}
+	require.NoError(t, rows.Err())
+	return missing
+}
+
+// TestPGLimiter_PruneUnderRecords runs alone, its backends one after the
+// other, so that no other test's load is taken for a wait on the prune.
+func TestPGLimiter_PruneUnderRecords(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seeds a million rows")
+	}
+
+	for _, b := range []pgBackend{sqlstoreBackend, pgxBackend} {
+		t.Run(b.name, func(t *testing.T) { runPGPruneUnderRecords(t, b) })
+	}
+}
+
+// pgFailThirdDelete installs a trigger that lets two bucket deletes through
+// and fails every later one with a distinctive message, which it returns.
+func pgFailThirdDelete(t *testing.T, conn PostgresConn) string {
+	t.Helper()
+
+	const marker = "scrty-distinctive-7f3a"
+	_, err := conn.DB.ExecContext(t.Context(), `
+CREATE SEQUENCE prune_deletes;
+CREATE FUNCTION fail_third_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF nextval('prune_deletes') > 2 THEN RAISE EXCEPTION '`+marker+`'; END IF;
+  RETURN OLD;
+END $$;
+CREATE TRIGGER fail_third_delete BEFORE DELETE ON rate_limit_buckets
+  FOR EACH ROW EXECUTE FUNCTION fail_third_delete();`)
+	require.NoError(t, err)
+	return marker
+}
+
+// runPGFactoryPruneBatches pins the factory's batched prune over 5 idle keys
+// with a batch of 2: every key is removed and counted, and a batch that fails
+// after one has committed leaves that batch's keys removed and counted, with
+// an error that repeats none of the server's text.
+func runPGFactoryPruneBatches(t *testing.T, b pgBackend) {
+	t.Helper()
+
+	type testCase struct {
+		name string
+		// batch is the prune batch size; 0 means 2.
+		batch int
+		// before runs on the case's database after the keys go idle and
+		// before the prune, when set; its result reaches assert.
+		before func(t *testing.T, conn PostgresConn) string
+		assert func(t *testing.T, removed, left int, err error, before string)
+	}
+
+	cases := []testCase{
+		{
+			name: "batch of 2 removes all 5 idle keys",
+			assert: func(t *testing.T, removed, left int, err error, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, 5, removed)
+				assert.Zero(t, left, "idle keys are left")
+			},
+		},
+		{
+			name:  "batch above the largest 32-bit integer removes all 5 idle keys",
+			batch: math.MaxInt32 + 1,
+			assert: func(t *testing.T, removed, left int, err error, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, 5, removed)
+				assert.Zero(t, left, "idle keys are left")
+			},
+		},
+		{
+			name:   "failed batch after a committed one returns its count and no server text",
+			before: pgFailThirdDelete,
+			assert: func(t *testing.T, removed, left int, err error, marker string) {
+				assert.Equal(t, 2, removed, "the committed batch's count was not returned")
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), marker, "the error repeats the server's text")
+				assert.Equal(t, 3, left, "the committed batch was not kept, or the failed batch was not rolled back")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := migratedLimiterDB(t)
+			clk := clockwork.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+			f := pruneFactory(t, b, conn, pruneFactoryOptions{clock: clk, batch: cmp.Or(tc.batch, 2)})
+			ns := pgScopedNamespace(t, "batches")
+			l, err := f.NewLimiter(ns, 1, time.Minute)
+			require.NoError(t, err)
+			for i := range 5 {
+				require.NoError(t, l.RecordFailure(t.Context(), fmt.Sprintf("idle-%d", i)))
+			}
+			clk.Advance(time.Minute)
+			var before string
+			if tc.before != nil {
+				before = tc.before(t, conn)
+			}
+
+			removed, err := f.Prune(t.Context())
+			var left int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT count(*) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&left))
+			tc.assert(t, removed, left, err, before)
+		})
+	}
+}
+
+func TestPGLimiter_FactoryPruneBatches(t *testing.T) {
+	t.Parallel()
+
+	for _, b := range []pgBackend{sqlstoreBackend, pgxBackend} {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+			runPGFactoryPruneBatches(t, b)
+		})
+	}
 }

@@ -54,6 +54,8 @@ func rowScanning(ctrl *gomock.Controller, err error, values ...any) *MockRow {
 				*d = v.(int)
 			case *string:
 				*d = v.(string)
+			case *time.Time:
+				*d = v.(time.Time)
 			default:
 				panic("unexpected scan destination")
 			}

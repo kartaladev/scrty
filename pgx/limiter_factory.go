@@ -10,8 +10,6 @@ import (
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/pglimiter"
-	"github.com/kartaladev/scrty/internal/pgschema"
-	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -52,10 +50,10 @@ import (
 // the logins' pool or had its own. A database that cannot absorb that load
 // calls for the Redis limiter, not another pool on the same server.
 //
-// Run the prune task every ten minutes or so. It scans the whole table, in
-// about 1.5s for a million rows, and skips any row a record holds. How often
-// it runs only bounds the table's size, never a limit: it removes a key only
-// once the longest window recorded for it has passed.
+// Run the prune task every ten minutes or so. It deletes in batches, about
+// 2.8s in all for a million idle rows, and skips any row a record holds. How
+// often it runs only bounds the table's size, never a limit: it removes a key
+// only once the longest window recorded for it has passed.
 //
 // The migration sets toast_tuple_target on the bucket table so a row of up to
 // 400 stamps stays in-line; dropping it costs performance, not correctness.
@@ -64,7 +62,6 @@ import (
 type LimiterFactory struct {
 	pool     *pgxpool.Pool
 	opts     []LimiterOption
-	clock    clock.Clock // nil: the database's clock
 	check    limiterCheck
 	registry *pglimiter.Registry
 }
@@ -101,7 +98,6 @@ func NewLimiterFactory(pool *pgxpool.Pool, opts ...LimiterOption) (*LimiterFacto
 	return &LimiterFactory{
 		pool:     pool,
 		opts:     opts,
-		clock:    cfg.core.Clock,
 		check:    limiterCheck{runner: limiterRunner{pool: pool}, cfg: cfg.core},
 		registry: pglimiter.NewRegistry(),
 	}, nil
@@ -133,20 +129,18 @@ func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Dur
 // counts any failure of such a key, so a prune never frees quota. It accepts
 // no cutoff.
 //
-// It is one statement. Rows another session holds, such as a record in
-// flight, are skipped rather than waited for, and kept until a later prune. It
-// reads the whole table, so its cost grows with the number of keys; it applies
-// no operation timeout of its own, and is bounded by ctx, which an
-// expiry.Runner bounds with its run timeout.
+// It runs in batches (WithLimiterPruneBatchSize), each its own transaction,
+// so a record on a key being pruned waits at most one batch. Rows another
+// session holds, such as a record in flight, are skipped rather than waited
+// for, and kept until a later prune. It applies no operation timeout of its
+// own, and is bounded by ctx, which an expiry.Runner bounds with its run
+// timeout; ctx is checked between batches.
 //
-// Run it through ratelimit.ExpiryTask(f). A database failure is an error
-// wrapping the driver's, with nothing deleted.
+// Run it through ratelimit.ExpiryTask(f). On a failure or an ended ctx, it
+// returns the keys the committed batches removed, a lower bound, with an
+// error that repeats none of the server's text.
 func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
-	tag, err := f.pool.Exec(ctx, pgschema.LimiterPrune, pglimiter.Now(f.clock))
-	if err != nil {
-		return 0, fmt.Errorf("pgx: rate-limit prune: %w", err)
-	}
-	return int(tag.RowsAffected()), nil
+	return pglimiter.Prune(ctx, f.check.runner, "pgx", f.check.cfg)
 }
 
 // Verify checks, before traffic, that the database behind the factory's

@@ -27,21 +27,23 @@ type Config struct {
 	// unavailable.DefaultConfig, so every field an option leaves alone keeps
 	// the decorator's own default.
 	Unavailable unavailable.Config
-	// PruneBatchSize is how many keys one prune batch deletes at most. No
-	// option sets it yet, and nothing reads it.
+	// PruneBatchSize is how many keys one prune batch deletes at most, each
+	// batch its own transaction. It starts at DefaultPruneBatchSize.
 	PruneBatchSize int
 }
 
 // DefaultConfig returns the configuration with every default: the database's
-// clock and the decorator's own defaults (unavailable.DefaultConfig).
+// clock, the decorator's own defaults (unavailable.DefaultConfig), and prune
+// batches of DefaultPruneBatchSize keys.
 func DefaultConfig() Config {
-	return Config{Unavailable: unavailable.DefaultConfig()}
+	return Config{Unavailable: unavailable.DefaultConfig(), PruneBatchSize: DefaultPruneBatchSize}
 }
 
 // Validate refuses a configuration the limiter cannot run with, in this
 // order: an operation timeout above the largest lock_timeout PostgreSQL
-// accepts, a clock option given a nil clock (typed nil included), and anything
-// unavailable.ValidateConfig refuses. Every refusal wraps ratelimit.ErrConfig.
+// accepts, a clock option given a nil clock (typed nil included), a prune
+// batch below one key, and anything unavailable.ValidateConfig refuses. Every
+// refusal wraps ratelimit.ErrConfig.
 func (c Config) Validate() error {
 	switch {
 	case c.Unavailable.Timeout.Milliseconds() > pgschema.LimiterMaxLockTimeoutMS:
@@ -49,6 +51,8 @@ func (c Config) Validate() error {
 			ratelimit.ErrConfig, c.Unavailable.Timeout, pgschema.LimiterMaxLockTimeoutMS)
 	case c.ClockSet && nilcheck.IsNil(c.Clock):
 		return fmt.Errorf("%w: the limiter clock is nil", ratelimit.ErrConfig)
+	case c.PruneBatchSize < 1:
+		return fmt.Errorf("%w: a prune batch of %d keys removes nothing", ratelimit.ErrConfig, c.PruneBatchSize)
 	}
 	return unavailable.ValidateConfig(c.Unavailable)
 }
