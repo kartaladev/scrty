@@ -45,9 +45,9 @@ module and run with `go test -count=1 -run '<Name>' ./...` from `test/`.
 
 ## 7. Integration
 
-- [ ] 7.1 Run `go test -count=1 ./...` in every workspace module, `go vet ./...`, `gofmt -l .` and the project's lint target. Verify all are clean, and keep the output.
-- [ ] 7.2 Run `BenchmarkPostgresLimiter` and `BenchmarkPostgresLimiterPrune` on PostgreSQL 15 and 18, and compare them with the figures in `design.md`. Verify there is no regression at the default limits, and record any drift in `design.md`.
-- [ ] 7.3 Run a whole-branch review against every requirement in `specs/rate-limiting/spec.md` and decisions 1–10. Verify every finding is fixed or answered.
+- [x] 7.1 Run `go test -count=1 ./...` in every workspace module, `go vet ./...`, `gofmt -l .` and the project's lint target. Verify all are clean, and keep the output.
+- [x] 7.2 Run `BenchmarkPostgresLimiter` and `BenchmarkPostgresLimiterPrune` on PostgreSQL 15 and 18, and compare them with the figures in `design.md`. Verify there is no regression at the default limits, and record any drift in `design.md`.
+- [x] 7.3 Run a whole-branch review against every requirement in `specs/rate-limiting/spec.md` and decisions 1–10. Verify every finding is fixed or answered.
 
 ## Workflow follow-up
 

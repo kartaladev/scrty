@@ -90,6 +90,10 @@ WHERE d.namespace = v.namespace AND d.key = v.key
   - the run took 2.7–2.8s in total;
   - no recorded key was lost.
   - At steady state (2% victims), 392ms against 410ms for the single statement.
+  - **Rechecked at the final gate** (2026-10-11), `BenchmarkPostgresLimiterPrune`, 6 runs each, against the branch's base (90% of rows idle):
+    - 10⁶ rows: batched 1.9–3.0s against 1.26–1.47s for the single statement, on PostgreSQL 15 and 18. The batched total agrees with the 2.7–2.8s above.
+    - 10⁵ rows: batched 479–669ms against 91–116ms, 4–7 times longer. This cost was not recorded before. A fixed cost per batch commit, about 5ms on the benchmark host, would explain it; that is unverified. The prune runs in the background every ten minutes or so, so its total time is not on any request's path, and the trade (a longer run for a bounded wait per record) is the one this decision makes.
+    - No key that should survive was removed, and no batch returned an error.
   - Batches of 5,000 or more ran 116–289ms each, too close to the record's timeout.
 - **The limit of the bound.** A record waits at most one batch, but a batch is not always short. Measured across 22 runs of the prune test inside the whole test module, with the host starved by the module's other test binaries (21,975 batches): typically 3.7ms, 99% within 97ms, 99.9% within 310ms, worst 870ms. 30 batches went over 250ms, mostly the first four of a run and the final full-table scan. On an overloaded server a record behind such a batch fails as unavailable. The godoc of `WithLimiterPruneBatchSize` and of `Prune` states this limit, as `library-design` requires of a limit on a guarantee. A per-batch time budget and a smaller default were considered and not taken: neither removes the limit, because a starved host delays a record without any prune at all (below, under the defect claim).
 - **Guarantees.** Both were tested with a forced race:
@@ -213,6 +217,7 @@ Each claim is marked REPRODUCED or UNREPRODUCED, as `defect-claims.md` requires.
 - **Decision 5 — REPRODUCED.**
   - **Test:** `TestSQLStoreLimiter_Verify` and `TestPgxLimiter_Verify`, case "temporary table shadowing the migration's". Before task 4.3 the error called the table unlogged and advised `SET LOGGED`.
   - **Unit test:** `TestFactsCheck`, case "temporary table".
+- **Final-gate benchmark, limiter at the default limits** (2026-10-11): `BenchmarkPostgresLimiter/ff=70/av=default`, every load, pool and backend, 6 runs each on PostgreSQL 15 and 18, against the branch's base. No errors on either side, and table size unchanged within noise. Medians were 24–32µs per operation on both sides. The differences benchstat called significant ran in both directions, with spreads up to ±1000%, because other projects' containers shared the host. So the run shows no regression at the defaults, but it cannot resolve a change of a few percent.
 - **Decisions 6–10** are quality and documentation changes, not defect claims. Existing tests pin the behaviour 6 and 7 must keep.
 
 ## Risks / Trade-offs
@@ -220,6 +225,7 @@ Each claim is marked REPRODUCED or UNREPRODUCED, as `defect-claims.md` requires.
 - **[Rows near 4 kB cost more WAL per update]** (option A): about 1.2–1.4 kB at 400–500 stamps. → Only limiters configured that high pay it. Every default stays at or below 200 stamps.
 - **[An operator recreates the table without the storage parameter]** (option A) → Rows above the TOAST threshold degrade to TOAST: slower, never wrong. Documented beside the migration and in the factory godoc.
 - **[A batched prune over a sparse table scans repeatedly]** → Each batch scans from the start until it finds `n` victims. At victims of about one per 10⁴ rows, that is roughly one scan per batch. This case was not measured. The steady state was measured, at 2% victims and with none.
+- **[The batched prune takes longer in total]** (decision 2): 4–7 times the single statement at 10⁵ rows, 1.3–2.4 times at 10⁶. → It runs in the background and bounds each record's wait instead; measured at the final gate.
 - **[One batch can outlast the operation timeout on an overloaded server]** (decision 2) → A record behind it fails as unavailable. Stated in the godoc and the spec; batches run in milliseconds on a server with capacity to spare.
 - **[A prune cancelled mid-run reports a partial count]** → Documented as a lower bound, returned with the error.
 - **[The shared core is a refactor of tested code]** → Both adapters' existing suites must stay green unchanged. Its review is held to the stricter standard of a refactor that keeps behaviour.
