@@ -39,10 +39,10 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 
 ## 5. The limiter on pgx (`pgx` module)
 
-- [ ] 5.1 `pgx.NewLimiter`, `LimiterOption` and its construction refusals, mirroring 4.1 over `*pgxpool.Pool`. Red: the same construction table. Verify: `go test -count=1 -run 'TestNewLimiter' ./...` in `pgx`.
-- [ ] 5.2 `Exceeded` and `RecordFailure`, mirroring 4.2. Red: the conformance run for pgx in app-clock mode, with a `SecondInstance` from `sqlstore`, which proves the scenario "Backends share one table". Verify: `go test -count=1 -run 'TestPgxLimiter_Conformance' ./...` in the `test` module, green on both majors.
-- [ ] 5.3 `pgx.NewLimiterFactory`, `Prune` and `Verify`, mirroring 4.3. Red: the same table and `Verify` tests for pgx. Verify: `go test -count=1 -run 'TestPgxLimiter' ./...` in the `test` module, green on both majors.
-- [ ] 5.4 Godoc and example, mirroring 4.4. Verify: `go test -count=1 -run Example ./...` in `pgx`.
+- [x] 5.1 `pgx.NewLimiter`, `LimiterOption` and its construction refusals, mirroring 4.1 over `*pgxpool.Pool`. Red: the same construction table. Verify: `go test -count=1 -run 'TestNewLimiter' ./...` in `pgx`.
+- [x] 5.2 `Exceeded` and `RecordFailure`, mirroring 4.2. Red: the conformance run for pgx in app-clock mode, with a `SecondInstance` from `sqlstore`, which proves the scenario "Backends share one table". Verify: `go test -count=1 -run 'TestPgxLimiter_Conformance' ./...` in the `test` module, green on both majors.
+- [x] 5.3 `pgx.NewLimiterFactory`, `Prune` and `Verify`, mirroring 4.3. Red: the same table and `Verify` tests for pgx. Verify: `go test -count=1 -run 'TestPgxLimiter' ./...` in the `test` module, green on both majors.
+- [x] 5.4 Godoc and example, mirroring 4.4. Verify: `go test -count=1 -run Example ./...` in `pgx`.
 
 ## 6. Fault, clock and transaction behaviour (both backends)
 
