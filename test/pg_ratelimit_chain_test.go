@@ -19,6 +19,10 @@ import (
 	"github.com/kartaladev/scrty/test"
 )
 
+// chainTestTimeout is the generous operation timeout the chain test gives
+// both factories, in place of the production default.
+const chainTestTimeout = 5 * time.Second
+
 // capturingFactory records each limiter a factory builds, with the limit it
 // was asked for, so a test can drive the limiter a chain built.
 type capturingFactory struct {
@@ -81,7 +85,10 @@ func TestPGLimiter_DefaultChainBuilds(t *testing.T) {
 		{
 			name: "sqlstore",
 			factory: func(t *testing.T, conn test.PostgresConn) ratelimit.LimiterFactory {
-				f, err := sqlstore.NewLimiterFactory(conn.DB)
+				// The test is about the chain building and counting, not the operation
+				// timeout: a slow first dial under -race would exceed the 250ms default
+				// and open the breaker mid-count.
+				f, err := sqlstore.NewLimiterFactory(conn.DB, sqlstore.WithLimiterOperationTimeout(chainTestTimeout))
 				require.NoError(t, err)
 				return f
 			},
@@ -93,7 +100,10 @@ func TestPGLimiter_DefaultChainBuilds(t *testing.T) {
 				pool, err := pgxpool.New(t.Context(), conn.DSN)
 				require.NoError(t, err)
 				t.Cleanup(pool.Close)
-				f, err := pgxstore.NewLimiterFactory(pool)
+				// The test is about the chain building and counting, not the operation
+				// timeout: a slow first dial under -race would exceed the 250ms default
+				// and open the breaker mid-count.
+				f, err := pgxstore.NewLimiterFactory(pool, pgxstore.WithLimiterOperationTimeout(chainTestTimeout))
 				require.NoError(t, err)
 				return f
 			},
