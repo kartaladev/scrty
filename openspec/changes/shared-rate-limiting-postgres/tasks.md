@@ -54,7 +54,7 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 
 ## 7. Benchmark and the decisions it settles
 
-- [ ] 7.1 Write the benchmark in the `test` module (design decision 11), covering:
+- [x] 7.1 Write the benchmark in the `test` module (design decision 11), covering:
   - fillfactor 100, 90, 70 and 50;
   - default and lowered autovacuum scale factors;
   - the three loads;
@@ -62,7 +62,7 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
   - prune time at 10⁵ and 10⁶ rows.
 
   It reports the p50/p99 latencies, the HOT ratio from `pg_stat_user_tables` and the table size. Verify: `go test -run '^$' -bench 'PostgresLimiter' -benchtime=… ./...` completes on 18 and 15, and the raw output is saved for the main session.
-- [ ] 7.2 The main session reads the results, then:
+- [x] 7.2 The main session reads the results, then:
   - sets the fillfactor and autovacuum values in the migration;
   - writes the numbers, the pool recommendation for API-key-heavy traffic and the recommended prune interval into design decision 11;
   - updates the godoc of both factories with the recommendation, the prune interval and per-flow write cost.

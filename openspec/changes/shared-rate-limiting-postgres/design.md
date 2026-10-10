@@ -87,7 +87,7 @@ CREATE TABLE rate_limit_buckets (
   - it is microsecond-precise, the precision the shared limiters already document;
   - it reads naturally out of band;
   - a 1-D array of 128 elements without nulls is 24 + 128 × 8 = 1,048 bytes.
-- **Storage parameters come from the benchmark** (decision 11). They are set in the migration, so an operator can still change them with `ALTER TABLE … SET (…)`. That is the override. The library never changes them at runtime.
+- **Storage parameters come from the benchmark** (decision 11): `fillfactor = 70` and both autovacuum scale factors at `0.01`. They are set in the migration, so an operator can still change them with `ALTER TABLE … SET (…)`. That is the override. The library never changes them at runtime.
 - **The table name is fixed**, as every security-state table's name is. The override is a consumer's own limiter behind the port. A table-name option would be the only one of its kind in the adapters.
 - **Migration:** added to the initial file before the first tag, with the matching `DROP TABLE IF EXISTS` in the down section. The set's table-list tests go from fourteen to fifteen, and the bucket table joins the tests' exact column and index maps.
 
@@ -256,7 +256,49 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
 - the recommendation for API-key-heavy traffic, which does one check per request: a separate pool, or the shared one, and from what request rate;
 - the prune interval the godoc recommends.
 
-Until then the migration carries provisional values: `fillfactor = 70`, with the server's autovacuum defaults.
+**Results** (2026-10-10; own server per major, 32 concurrent workers on a 32-connection pool, 20,000 operations per case, two counts, both backends):
+- **The test server is tuned for speed, not durability:** `fsync`, `synchronous_commit` and `full_page_writes` off, data on tmpfs. WAL and disk cost are understated, so the figures below are relative, not absolute.
+- **No operation failed** in either major's sweep (96 cases each).
+- **Latency barely depends on the storage parameters.** Every fillfactor and both autovacuum settings fall within run-to-run noise:
+  - check p50 about 1.0ms, p99 2–3ms;
+  - record p50 about 1.0–1.1ms, p99 2.2–4ms.
+  - One case, at fillfactor 50, reached a check p99 of 4.3ms.
+- **Throughput:** about 25µs of wall time per operation across the 32 workers, so about 40,000 operations per second saturate the pool.
+- **HOT ratio:** about 0.99 on the hot-key load at every fillfactor. On the check-heavy mix, whose records land on 100 hot keys, it rises as the fillfactor falls:
+
+  | fillfactor | HOT ratio | table per 10⁵ keys |
+  |---|---|---|
+  | 100 | 0.95 | 15 MB |
+  | 90 | 0.97 | 16 MB |
+  | 70 | 0.99 | 19–20 MB |
+  | 50 | 1.00 | 24–25 MB |
+
+  PostgreSQL 15 and 18 agree to two places.
+- **A shared pool hurts logins.** A simulated login load ran at 300 logins per second, each a `SELECT` and an `INSERT` on `login_attempts`:
+  - alone on its pool, login p99 is 3–5ms;
+  - with the limiter saturating the same pool, it is 7–40ms on 18 and 6–146ms on 15, with run-to-run spread of about 2x;
+  - the two backends do not differ beyond noise.
+- **Prune:**
+
+  | Rows | PostgreSQL 15 | PostgreSQL 18 |
+  |---|---|---|
+  | 10⁵ | about 80ms | about 90ms |
+  | 10⁶ | about 1.25s | about 1.5s |
+
+  It removed only rows past their bound in every run.
+
+**Decided:**
+- **`fillfactor = 70`.** It is the lowest measured value that reaches a HOT ratio of 0.99 on the update-heavy mix. It costs about a quarter more table size than 100, and no measurable latency. 50 adds almost nothing to the HOT ratio for half again the size.
+- **`autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_insert_scale_factor = 0.01`.**
+  - The runs show no cost for the lower values. Runs this short cannot show their benefit either, so the choice is reasoned, not measured.
+  - The reasoning: the table is small and every row is updated or pruned constantly. The server default of 20% dead tuples would let it bloat to several times its live size between vacuums. 1% keeps it near its live size, and vacuuming a table this small is cheap.
+- **Pool advice: a limiter checked on every API-key request gets its own pool.**
+  - A limiter that saturates a pool it shares with logins raised login p99 by an order of magnitude.
+  - A pool connection is busy about 1ms per limiter operation (Little's law), so N limiter operations per second hold about N/1000 connections on average.
+  - The flows guarded only on failure (sign-in, magic link, recovery, passkey begin) run at the rate of logins and attacks on them, and may share the pool.
+  - API-key traffic does one check per request. It moves to its own pool once its rate holds a noticeable share of the shared pool's connections: for a 32-connection pool, on the order of a few thousand requests per second.
+  - That threshold is derived from the measured per-operation cost, not measured directly between the two points the benchmark ran (unverified).
+- **Prune interval: every 10 minutes.** A run over 10⁶ rows takes about 1.5s of one connection, and `SKIP LOCKED` keeps it off rows a record holds. A shorter interval only bounds the table more tightly, and a longer one never frees quota early, because the prune's rule does not depend on how often it runs.
 
 ### 12. Departures
 

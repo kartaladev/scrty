@@ -597,14 +597,19 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			},
 		},
 		{
-			name: "rate_limit_buckets declares its own fill factor",
+			// The values the limiter benchmark settled: room on each page for
+			// HOT updates, and autovacuum that keeps up with a small table
+			// whose rows are updated and pruned constantly.
+			name: "rate_limit_buckets declares its own fill factor and autovacuum storage parameters",
 			query: `SELECT unnest(c.reloptions) FROM pg_class c
 			          JOIN pg_namespace n ON n.oid = c.relnamespace
 			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
 			assert: func(t *testing.T, rows []string) {
-				assert.True(t, slices.ContainsFunc(rows, func(o string) bool {
-					return strings.HasPrefix(o, "fillfactor=")
-				}), "reloptions: %v", rows)
+				assert.ElementsMatch(t, []string{
+					"fillfactor=70",
+					"autovacuum_vacuum_scale_factor=0.01",
+					"autovacuum_vacuum_insert_scale_factor=0.01",
+				}, rows)
 			},
 		},
 		{

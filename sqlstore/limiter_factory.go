@@ -36,6 +36,24 @@ import (
 // primary, ignores any transaction a caller has attached, and should be
 // checked with Verify at startup; see Limiter.
 //
+// Each check is one primary-key read, and each recorded failure is one upsert
+// of one row, nearly always a HOT update, so a guarded flow writes to the
+// primary only when an attempt fails or, for the flows that count every
+// begin (passkey and enrolment begins, recovery starts), once per begin. A
+// pool connection is busy about a millisecond per operation, so a limiter
+// doing N operations a second holds about N/1000 connections on average.
+// The flows guarded on failure may share the application's handle. A limiter
+// checked on every API-key request belongs on a handle of its own once its rate
+// is a noticeable share of the shared handle's connections, on the order of a
+// few thousand requests a second for 32 connections: in measurement, a
+// limiter saturating a handle it shared with logins raised the logins' p99 by
+// an order of magnitude.
+//
+// Run the prune task every ten minutes or so. It scans the whole table, in
+// about 1.5s for a million rows, and skips any row a record holds. How often
+// it runs only bounds the table's size, never a limit: it removes a key only
+// once the longest window recorded for it has passed.
+//
 // It is safe for concurrent use.
 type LimiterFactory struct {
 	db    *sql.DB
