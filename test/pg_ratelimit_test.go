@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,6 +19,7 @@ import (
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/migrate"
+	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/sqlstore"
@@ -81,6 +83,48 @@ var sqlstoreBackend = pgBackend{
 	factory: func(t *testing.T, db *sql.DB, _ string, clk clock.Clock) pgFactory {
 		t.Helper()
 		f, err := sqlstore.NewLimiterFactory(db, pgLimiterOptions(clk)...)
+		require.NoError(t, err)
+		return f
+	},
+}
+
+// pgxLimiterOptions are the options every pgx limiter in these tests takes,
+// the counterpart of pgLimiterOptions.
+func pgxLimiterOptions(clk clock.Clock) []pgxstore.LimiterOption {
+	opts := []pgxstore.LimiterOption{
+		pgxstore.WithLimiterOperationTimeout(pgTestTimeout),
+		pgxstore.WithLimiterLogger(slog.New(slog.DiscardHandler)),
+	}
+	if clk != nil {
+		opts = append(opts, pgxstore.WithLimiterClock(clk))
+	}
+	return opts
+}
+
+// pgxTestPool opens a pool of its own on dsn, closed at cleanup. The pgx
+// limiter takes a *pgxpool.Pool, so it cannot borrow the *sql.DB the harness
+// passes.
+func pgxTestPool(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+
+	pool, err := pgxpool.New(t.Context(), dsn)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// pgxBackend is the native pgx limiter.
+var pgxBackend = pgBackend{
+	name: "pgx",
+	limiter: func(t *testing.T, _ *sql.DB, dsn, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter {
+		t.Helper()
+		l, err := pgxstore.NewLimiter(pgxTestPool(t, dsn), ns, limit, window, pgxLimiterOptions(clk)...)
+		require.NoError(t, err)
+		return l
+	},
+	factory: func(t *testing.T, _ *sql.DB, dsn string, clk clock.Clock) pgFactory {
+		t.Helper()
+		f, err := pgxstore.NewLimiterFactory(pgxTestPool(t, dsn), pgxLimiterOptions(clk)...)
 		require.NoError(t, err)
 		return f
 	},
@@ -701,6 +745,45 @@ func TestSQLStoreLimiter_Verify(t *testing.T) {
 	t.Parallel()
 
 	runPGVerify(t, sqlstoreBackend)
+}
+
+// TestPgxLimiter_Conformance runs the suite against the pgx limiter with the
+// sqlstore limiter as the other replica, which also pins that the two backends
+// share one table: failures recorded through one are counted by the other.
+func TestPgxLimiter_Conformance(t *testing.T) {
+	t.Parallel()
+
+	runPGConformance(t, pgxBackend, sqlstoreBackend)
+}
+
+func TestPgxLimiter_Keys(t *testing.T) {
+	t.Parallel()
+
+	runPGKeys(t, pgxBackend)
+}
+
+func TestPgxLimiter_ClockBehindNewest(t *testing.T) {
+	t.Parallel()
+
+	runPGClockBehindNewest(t, pgxBackend)
+}
+
+func TestPgxLimiter_Factory(t *testing.T) {
+	t.Parallel()
+
+	runPGFactory(t, pgxBackend)
+}
+
+func TestPgxLimiter_FactoryPrune(t *testing.T) {
+	t.Parallel()
+
+	runPGFactoryPrune(t, pgxBackend)
+}
+
+func TestPgxLimiter_Verify(t *testing.T) {
+	t.Parallel()
+
+	runPGVerify(t, pgxBackend)
 }
 
 // TestSQLStoreLimiter_GormConsumer pins that an application on gorm gets a
