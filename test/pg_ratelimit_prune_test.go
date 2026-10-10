@@ -37,6 +37,16 @@ func (e pgPruneEnv) limiter(t *testing.T, f pgFactory, ns string, limit int, win
 	return l
 }
 
+// lockWaiters counts the sessions of the case's database waiting on a lock.
+func (e pgPruneEnv) lockWaiters(t *testing.T) int {
+	t.Helper()
+
+	var n int
+	require.NoError(t, e.conn.DB.QueryRowContext(t.Context(),
+		`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&n))
+	return n
+}
+
 // rows counts the bucket rows of ns.
 func (e pgPruneEnv) rows(t *testing.T, ns string) int {
 	t.Helper()
@@ -50,8 +60,9 @@ func (e pgPruneEnv) rows(t *testing.T, ns string) int {
 // runPGPrune pins the prune through ratelimit.ExpiryTask(factory): the
 // longest window a key was recorded with protects it, an idle key is removed
 // and counted, a row another session holds is skipped without waiting, one
-// run covers every namespace, and a prune racing records on an idle key never
-// loses a live count.
+// run covers every namespace, a prune racing an uncommitted record on an idle
+// key never deletes the count that record commits, and records and prunes
+// running together raise no error.
 func runPGPrune(t *testing.T, b pgFaultBackend) {
 	t.Helper()
 
@@ -144,7 +155,89 @@ func runPGPrune(t *testing.T, b pgFaultBackend) {
 			},
 		},
 		{
-			name: "prune racing records on an idle key never loses a live count",
+			// The interleaving that loses a count: a record holds the idle
+			// key's row, uncommitted, while the prune runs. Under READ
+			// COMMITTED the prune's snapshot shows the idle version, so the
+			// key is a victim; FOR UPDATE SKIP LOCKED then finds the row
+			// locked and skips it, without waiting. A prune with no row lock
+			// instead waits in its DELETE, and once the record commits
+			// rechecks only its join to the victims, so it deletes the live
+			// version. The commit is held until the prune has either returned
+			// or is seen waiting on a lock, so the prune's snapshot predates
+			// the commit either way.
+			name: "prune against an uncommitted record on an idle key keeps the key",
+			assert: func(t *testing.T, e pgPruneEnv) {
+				const limit = 2
+				ns := e.ns("api-key")
+				l := e.limiter(t, e.factory, ns, limit, time.Minute)
+				require.NoError(t, l.RecordFailure(t.Context(), "k"))
+				e.clock.Advance(2 * time.Minute)
+
+				// Another session records limit failures and does not
+				// commit yet: the key is live in its version only.
+				rec, err := e.conn.DB.BeginTx(t.Context(), nil)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = rec.Rollback() })
+				now := e.clock.Now().UTC().Truncate(time.Microsecond)
+				for range limit {
+					_, err := rec.ExecContext(t.Context(), pgStatement(t, pgRecordName),
+						ns, pgStoredKey("k"), limit, time.Minute.Microseconds(), now, "5000ms")
+					require.NoError(t, err)
+				}
+
+				type result struct {
+					removed int
+					err     error
+				}
+				done := make(chan result, 1)
+				go func() {
+					n, err := ratelimit.ExpiryTask(e.factory).Run(t.Context())
+					done <- result{removed: n, err: err}
+				}()
+
+				var (
+					res      result
+					finished bool
+				)
+				deadline := time.After(5 * time.Second)
+			wait:
+				for {
+					select {
+					case res = <-done:
+						finished = true
+						break wait
+					case <-deadline:
+						t.Error("the prune neither returned nor waited on the record's row")
+						break wait
+					case <-time.After(20 * time.Millisecond):
+						if e.lockWaiters(t) > 0 {
+							t.Log("the prune is waiting on the record's row")
+							break wait
+						}
+					}
+				}
+				require.NoError(t, rec.Commit())
+				if !finished {
+					select {
+					case res = <-done:
+					case <-time.After(5 * time.Second):
+						t.Fatal("the prune did not return after the record committed")
+					}
+				}
+
+				require.NoError(t, res.err)
+				assert.Equal(t, 0, res.removed, "the prune deleted a key a committed record had made live")
+				exceeded, err := l.Exceeded(t.Context(), "k")
+				require.NoError(t, err)
+				assert.True(t, exceeded, "the %d failures the record committed no longer count", limit)
+			},
+		},
+		{
+			// Contention only: many records and prunes at once raise no
+			// error (no deadlock, no lock wait given up) and the key ends
+			// exceeded. It does not reliably reach the interleaving that
+			// loses a count; the case above pins that.
+			name: "records and prunes running together raise no error",
 			assert: func(t *testing.T, e pgPruneEnv) {
 				const racers = 50
 				ns := e.ns("api-key")
@@ -226,26 +319,38 @@ func TestPGLimiter_Prune(t *testing.T) {
 
 // pgPruneByCheckingWindow is a prune that measures idleness by one instance's
 // window, $2, rather than by the longest window recorded for each key.
-const pgPruneByCheckingWindow = `WITH t AS (SELECT coalesce($1::timestamptz, clock_timestamp()) AS now),
-victims AS (
-  SELECT b.namespace, b.key FROM rate_limit_buckets b CROSS JOIN t
-  WHERE b.newest_at + $2::bigint * interval '1 microsecond' <= t.now
-  FOR UPDATE OF b SKIP LOCKED)
-DELETE FROM rate_limit_buckets d USING victims v
-WHERE d.namespace = v.namespace AND d.key = v.key`
-
-// pgWindowPruneFactory is a factory whose prune runs pgPruneByCheckingWindow
-// with the window of the instance checking, one minute.
-type pgWindowPruneFactory struct {
-	pgFactory // the real factory, for NewLimiter and Verify
-
-	db  *sql.DB
-	clk *clockwork.FakeClock
+var pgPruneByCheckingWindow = pgStatementEdit{
+	name: "prune-by-checking-window",
+	stmt: pgPruneName,
+	old:  "b.longest_window_us * interval",
+	new:  "$2::bigint * interval",
 }
 
-func (f *pgWindowPruneFactory) Prune(ctx context.Context) (int, error) {
-	res, err := f.db.ExecContext(ctx, pgPruneByCheckingWindow,
-		f.clk.Now().UTC().Truncate(time.Microsecond), time.Minute.Microseconds())
+// pgPruneWithoutRowLock is a prune that takes no row lock on its victims, so
+// its DELETE waits on a row a record holds and, under READ COMMITTED, deletes
+// the version that record committed: the DELETE rechecks only its join to the
+// victims, not their idleness.
+var pgPruneWithoutRowLock = pgStatementEdit{
+	name: "prune-without-row-lock",
+	stmt: pgPruneName,
+	old:  "\n  FOR UPDATE OF b SKIP LOCKED",
+	new:  "",
+}
+
+// pgStatementPruneFactory is a factory whose prune runs a statement of the
+// test's own, with the fake clock's time as $1 and extra after it.
+type pgStatementPruneFactory struct {
+	pgFactory // the real factory, for NewLimiter and Verify
+
+	db    *sql.DB
+	clk   *clockwork.FakeClock
+	stmt  string
+	extra []any
+}
+
+func (f *pgStatementPruneFactory) Prune(ctx context.Context) (int, error) {
+	args := append([]any{f.clk.Now().UTC().Truncate(time.Microsecond)}, f.extra...)
+	res, err := f.db.ExecContext(ctx, f.stmt, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -253,26 +358,40 @@ func (f *pgWindowPruneFactory) Prune(ctx context.Context) (int, error) {
 	return int(n), err
 }
 
-var pgPruneBroken = pgFaultVariants(runPGPrune, pgFaultVariant{
-	name: "prune-by-checking-window",
-	backend: func() pgFaultBackend {
-		b := sqlstoreFaultBackend
-		b.name = pgFaultBrokenBackend
-		b.factory = func(t *testing.T, conn PostgresConn, o pgFaultOptions) pgFactory {
-			t.Helper()
-			clk, ok := o.clock.(*clockwork.FakeClock)
-			require.True(t, ok, "the prune cases run on a fake clock")
-			return &pgWindowPruneFactory{
-				pgFactory: sqlstoreFaultBackend.factory(t, conn, o),
-				db:        pgFaultDB(t, conn, nil),
-				clk:       clk,
-			}
+// pgBrokenPruneBackend is the sqlstore backend, named as a broken variant,
+// whose factory prunes with edit's statement and extra.
+func pgBrokenPruneBackend(edit pgStatementEdit, extra ...any) pgFaultBackend {
+	b := sqlstoreFaultBackend
+	b.name = pgFaultBrokenBackend
+	b.factory = func(t *testing.T, conn PostgresConn, o pgFaultOptions) pgFactory {
+		t.Helper()
+		clk, ok := o.clock.(*clockwork.FakeClock)
+		require.True(t, ok, "the prune cases run on a fake clock")
+		return &pgStatementPruneFactory{
+			pgFactory: sqlstoreFaultBackend.factory(t, conn, o),
+			db:        pgFaultDB(t, conn, pgFaultOptions{}),
+			clk:       clk,
+			stmt:      edit.apply(t),
+			extra:     extra,
 		}
-		return b
-	}(),
-	failsCase: "longest recorded window protects a key",
-	failsWith: "the prune removed a key a 15-minute instance still counts",
-})
+	}
+	return b
+}
+
+var pgPruneBroken = pgFaultVariants(runPGPrune,
+	pgFaultVariant{
+		name:      pgPruneByCheckingWindow.name,
+		backend:   pgBrokenPruneBackend(pgPruneByCheckingWindow, time.Minute.Microseconds()),
+		failsCase: "longest recorded window protects a key",
+		failsWith: "the prune removed a key a 15-minute instance still counts",
+	},
+	pgFaultVariant{
+		name:      pgPruneWithoutRowLock.name,
+		backend:   pgBrokenPruneBackend(pgPruneWithoutRowLock),
+		failsCase: "prune against an uncommitted record on an idle key keeps the key",
+		failsWith: "the prune deleted a key a committed record had made live",
+	},
+)
 
 // TestPGLimiter_PruneBroken is the child half of
 // TestPGLimiter_PruneCatchesBrokenVariants. Without a variant named it skips.

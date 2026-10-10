@@ -1,22 +1,87 @@
 package test
 
 import (
+	"context"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
+// pgArgsTracer records the SQL and arguments of every statement a handle
+// runs, so a test sees what a limiter passed as its now parameter.
+type pgArgsTracer struct {
+	mu    sync.Mutex
+	calls []pgTracedCall
+}
+
+type pgTracedCall struct {
+	sql  string
+	args []any
+}
+
+var _ pgx.QueryTracer = (*pgArgsTracer)(nil)
+
+func (r *pgArgsTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, pgTracedCall{sql: data.SQL, args: pgStatementArgs(data.Args)})
+	return ctx
+}
+
+// pgStatementArgs drops the query options a driver passes ahead of a
+// statement's arguments, as pgx's database/sql adapter passes the result
+// formats of a query, and copies the rest.
+func pgStatementArgs(args []any) []any {
+	for len(args) > 0 {
+		switch args[0].(type) {
+		case pgx.QueryResultFormats, pgx.QueryResultFormatsByOID, pgx.QueryExecMode, pgx.QueryRewriter:
+			args = args[1:]
+			continue
+		}
+		break
+	}
+	return append([]any(nil), args...)
+}
+
+func (*pgArgsTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// args returns the arguments of every traced run of stmt, in order.
+func (r *pgArgsTracer) args(stmt string) [][]any {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out [][]any
+	for _, c := range r.calls {
+		if c.sql == stmt {
+			out = append(out, c.args)
+		}
+	}
+	return out
+}
+
+// pgClockEnv is what a database-clock case drives: the database, the case's
+// namespace, the limiter, and the tracer on every handle the limiter was
+// built over.
+type pgClockEnv struct {
+	conn   PostgresConn
+	ns     string
+	l      ratelimit.Limiter
+	tracer *pgArgsTracer
+}
+
 // runPGDatabaseClock pins the default time source, the database's
-// clock_timestamp(), with no application clock configured: a failure stops
-// counting one window after it was recorded, in real time, and each record
-// reads the time once, so the newest stamp it writes and newest_at agree to
-// the microsecond.
+// clock_timestamp(), with no application clock configured: the record and the
+// check pass no time of their own, a failure stops counting one window after
+// it was recorded, in real time, and each record reads the time once, so the
+// newest stamp it writes and newest_at agree to the microsecond.
 func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 	t.Helper()
 
@@ -24,15 +89,43 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 		name   string
 		limit  int
 		window time.Duration
-		assert func(t *testing.T, conn PostgresConn, ns string, l ratelimit.Limiter)
+		assert func(t *testing.T, e pgClockEnv)
 	}
 
 	cases := []testCase{
 		{
+			// The now parameter is NULL, which the statements read as
+			// clock_timestamp(). Behaviour alone cannot tell the database's
+			// clock from the host's here, since the container shares the
+			// host's: the arguments can.
+			name:   "with no clock configured the statements pass no time",
+			limit:  1,
+			window: time.Minute,
+			assert: func(t *testing.T, e pgClockEnv) {
+				require.NoError(t, e.l.RecordFailure(t.Context(), "k"))
+				_, err := e.l.Exceeded(t.Context(), "k")
+				require.NoError(t, err)
+
+				records := e.tracer.args(pgStatement(t, pgRecordName))
+				require.NotEmpty(t, records, "no record statement was traced")
+				for _, args := range records {
+					require.Len(t, args, 6)
+					assert.Nil(t, args[4], "the record passed an application time with no clock configured")
+				}
+				checks := e.tracer.args(pgStatement(t, pgCheckName))
+				require.NotEmpty(t, checks, "no check statement was traced")
+				for _, args := range checks {
+					require.Len(t, args, 4)
+					assert.Nil(t, args[3], "the check passed an application time with no clock configured")
+				}
+			},
+		},
+		{
 			name:   "a failure stops counting one window later",
 			limit:  1,
 			window: 2 * time.Second,
-			assert: func(t *testing.T, _ PostgresConn, _ string, l ratelimit.Limiter) {
+			assert: func(t *testing.T, e pgClockEnv) {
+				l := e.l
 				require.NoError(t, l.RecordFailure(t.Context(), "k"))
 				exceeded, err := l.Exceeded(t.Context(), "k")
 				require.NoError(t, err)
@@ -48,7 +141,8 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 			name:   "each record leaves newest_at at its newest stamp",
 			limit:  20,
 			window: time.Minute,
-			assert: func(t *testing.T, conn PostgresConn, ns string, l ratelimit.Limiter) {
+			assert: func(t *testing.T, e pgClockEnv) {
+				l, conn, ns := e.l, e.conn, e.ns
 				// More records than the limit: the reads of the broken
 				// variant fall in one microsecond often enough that twenty
 				// records could all agree by chance, and a full row keeps
@@ -71,8 +165,9 @@ func runPGDatabaseClock(t *testing.T, b pgFaultBackend) {
 			t.Parallel()
 
 			ns := pgScopedNamespace(t, "clock")
-			l := b.limiter(t, conn, ns, tc.limit, tc.window, pgFaultOptions{})
-			tc.assert(t, conn, ns, l)
+			tracer := &pgArgsTracer{}
+			l := b.limiter(t, conn, ns, tc.limit, tc.window, pgFaultOptions{tracer: tracer})
+			tc.assert(t, pgClockEnv{conn: conn, ns: ns, l: l, tracer: tracer})
 		})
 	}
 }
@@ -86,14 +181,12 @@ func TestPGLimiter_DatabaseClock(t *testing.T) {
 // pgRecordReadingTimeTwice is a record that reads clock_timestamp() once for
 // the stamp and again for newest_at, so the two differ by however long lay
 // between the reads.
-const pgRecordReadingTimeTwice = `INSERT INTO rate_limit_buckets AS b (namespace, key, stamps, newest_at, longest_window_us)
-SELECT $1, $2, ARRAY[coalesce($5::timestamptz, clock_timestamp())], coalesce($5::timestamptz, clock_timestamp()), $4::bigint
-FROM (SELECT set_config('lock_timeout', $6::text, true)) AS lt
-ON CONFLICT (namespace, key) DO UPDATE SET
-  stamps = (SELECT array_agg(n.s ORDER BY n.s) FROM
-            (SELECT s FROM unnest(b.stamps || EXCLUDED.stamps) AS u(s) ORDER BY s DESC LIMIT $3::int) AS n),
-  newest_at = GREATEST(b.newest_at, EXCLUDED.newest_at),
-  longest_window_us = GREATEST(b.longest_window_us, EXCLUDED.longest_window_us)`
+var pgRecordReadingTimeTwice = pgStatementEdit{
+	name: "time-read-twice",
+	stmt: pgRecordName,
+	old:  "ARRAY[t.now], t.now,",
+	new:  "ARRAY[coalesce($5::timestamptz, clock_timestamp())], coalesce($5::timestamptz, clock_timestamp()),",
+}
 
 var pgDatabaseClockBroken = pgFaultVariants(runPGDatabaseClock,
 	pgFaultVariant{
@@ -110,10 +203,22 @@ var pgDatabaseClockBroken = pgFaultVariants(runPGDatabaseClock,
 		name: "time-read-twice",
 		backend: brokenLimiterBackend(func(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, o pgFaultOptions) ratelimit.Limiter {
 			t.Helper()
-			return newPGStatementLimiter(t, conn, ns, limit, window, o, nil, pgRecordReadingTimeTwice, "5000ms")
+			return newPGStatementLimiter(t, conn, ns, limit, window, o, nil, pgRecordReadingTimeTwice.apply(t), "5000ms")
 		}),
 		failsCase: "each record leaves newest_at at its newest stamp",
 		failsWith: "newest_at differs from the newest stamp",
+	},
+	pgFaultVariant{
+		// The host's clock where none is configured: limiterNow returning
+		// time.Now() for a nil clock. Every behavioural case passes it.
+		name: "host-clock-by-default",
+		backend: brokenLimiterBackend(func(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, o pgFaultOptions) ratelimit.Limiter {
+			t.Helper()
+			o.clock = clock.System()
+			return newPGStatementLimiter(t, conn, ns, limit, window, o, nil, pgStatement(t, pgRecordName), "5000ms")
+		}),
+		failsCase: "with no clock configured the statements pass no time",
+		failsWith: "the record passed an application time with no clock configured",
 	},
 )
 

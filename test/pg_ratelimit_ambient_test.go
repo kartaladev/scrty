@@ -32,7 +32,7 @@ type pgAmbient struct {
 func sqlstoreAmbient(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, resolved bool) pgAmbient {
 	t.Helper()
 
-	db := pgFaultDB(t, conn, nil)
+	db := pgFaultDB(t, conn, pgFaultOptions{})
 	tx, err := db.BeginTx(t.Context(), nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tx.Rollback() })
@@ -58,7 +58,7 @@ func sqlstoreAmbient(t *testing.T, conn PostgresConn, ns string, limit int, wind
 func pgxAmbient(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, resolved bool) pgAmbient {
 	t.Helper()
 
-	pool := pgFaultPool(t, conn, nil)
+	pool := pgFaultPool(t, conn, pgFaultOptions{})
 	tx, err := pool.Begin(t.Context())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
@@ -137,7 +137,7 @@ var pgJoiningBackend = func() pgFaultBackend {
 	b.ambient = func(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, resolved bool) pgAmbient {
 		t.Helper()
 
-		db := pgFaultDB(t, conn, nil)
+		db := pgFaultDB(t, conn, pgFaultOptions{})
 		tx, err := db.BeginTx(t.Context(), nil)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = tx.Rollback() })
@@ -155,7 +155,7 @@ var pgJoiningBackend = func() pgFaultBackend {
 			sessions: sessions,
 			ctx:      ctx,
 			limiter: newPGStatementLimiter(t, conn, ns, limit, window, pgFaultOptions{},
-				dbExecer(tx), pgRecordStatement, "5000ms"),
+				dbExecer(tx), pgStatement(t, pgRecordName), "5000ms"),
 			rollback: tx.Rollback,
 		}
 	}
@@ -169,6 +169,10 @@ var pgIgnoresAmbientTxBroken = pgFaultVariants(runPGIgnoresAmbientTx,
 		failsCase: "transaction attached to the context",
 		failsWith: "the failure recorded during the rolled back transaction was lost",
 	},
+	// The same joining limiter as above, guarded at the resolver case. The
+	// limiter has no resolver to honour, so this variant carries no defect of
+	// its own: it documents that the resolver path, too, is caught when a
+	// limiter writes in the caller's transaction.
 	pgFaultVariant{
 		name:      "joins-the-resolved-transaction",
 		backend:   pgJoiningBackend,
