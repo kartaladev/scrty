@@ -21,7 +21,7 @@
 - Time: `clock_timestamp()` read once per statement by default; `WithLimiterClock` passes `$now`.
 - Each limiter on the `database/sql` backend takes a `*sql.DB`, and each pgx one a `*pgxpool.Pool`. Neither ever joins an ambient transaction.
 - PostgreSQL supported: 15 and 18 (`SCRTY_TEST_POSTGRES_IMAGE`); `Verify` floor `server_version_num >= 150000`.
-- Never cite the predecessor; never copy from `.claude/.legacy`.
+- Never cite the predecessor; never copy from the reference snapshot.
 - Agents never run `git checkout --`, `restore`, `reset --hard`, `stash` or `clean`, and never edit `openspec/`.
 
 ## Review Focus
