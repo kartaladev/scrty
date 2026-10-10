@@ -171,7 +171,7 @@ WITH t AS (SELECT coalesce($1::timestamptz, clock_timestamp()) AS now),
 victims AS (
     SELECT b.namespace, b.key FROM rate_limit_buckets b, t
     WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= t.now
-    FOR UPDATE SKIP LOCKED)
+    FOR UPDATE OF b SKIP LOCKED)
 DELETE FROM rate_limit_buckets b USING victims v
 WHERE b.namespace = v.namespace AND b.key = v.key;
 ```

@@ -238,8 +238,20 @@ CREATE TABLE passkey_user_handles (
     handle  bytea NOT NULL UNIQUE
 );
 
+-- Shared rate-limit buckets: one row per namespace and key. No index on a
+-- column that changes, so updates stay HOT; logged, so a failover keeps limits.
+CREATE TABLE rate_limit_buckets (
+    namespace         text          NOT NULL,
+    key               text          NOT NULL,
+    stamps            timestamptz[] NOT NULL,
+    newest_at         timestamptz   NOT NULL,
+    longest_window_us bigint        NOT NULL,
+    PRIMARY KEY (namespace, key)
+) WITH (fillfactor = 70);
+
 -- +goose Down
 -- Reverse creation order; IF EXISTS so teardown completes after a test drops a table.
+DROP TABLE IF EXISTS rate_limit_buckets;
 DROP TABLE IF EXISTS passkey_user_handles;
 DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS account_recoveries;

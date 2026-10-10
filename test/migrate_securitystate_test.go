@@ -66,11 +66,12 @@ func queryStrings(t *testing.T, db *sql.DB, query string, args ...any) []string 
 	return out
 }
 
-// securityStateTables lists the fourteen tables the security-state set creates.
+// securityStateTables lists the fifteen tables the security-state set creates.
 var securityStateTables = []string{
 	"sessions", "signing_keys", "login_attempts", "login_failure_streaks", "mfa_enrolments",
 	"api_keys", "one_time_tokens", "oidc_links", "oidc_flows", "oidc_handoffs",
 	"recovery_codes", "account_recoveries", "passkey_credentials", "passkey_user_handles",
+	"rate_limit_buckets",
 }
 
 // column is one column of the security-state set as the catalogue reports
@@ -106,6 +107,8 @@ const (
 	colSmallint    = "smallint"
 	colBoolean     = "boolean"
 	colTimestamptz = "timestamp with time zone" // microsecond precision: no modifier
+
+	colTimestamptzArray = "timestamp with time zone[]"
 )
 
 // Default expressions as pg_get_expr reports them.
@@ -300,6 +303,13 @@ var securityStateColumns = map[string][]column{
 		required("user_id", colText),
 		required("handle", colBytea),
 	},
+	"rate_limit_buckets": {
+		required("namespace", colText),
+		required("key", colText),
+		required("stamps", colTimestamptzArray),
+		required("newest_at", colTimestamptz),
+		required("longest_window_us", colBigint),
+	},
 }
 
 // securityStateIndexes pins every index of every security-state table, keyed
@@ -379,6 +389,9 @@ var securityStateIndexes = map[string][]string{
 		"CREATE UNIQUE INDEX passkey_user_handles_user_id_key ON passkey_user_handles USING btree (user_id)",
 		"CREATE UNIQUE INDEX passkey_user_handles_handle_key ON passkey_user_handles USING btree (handle)",
 	},
+	"rate_limit_buckets": {
+		"CREATE UNIQUE INDEX rate_limit_buckets_pkey ON rate_limit_buckets USING btree (namespace, key)",
+	},
 }
 
 // groupByTable splits rows of "table|value" into a map from table to its
@@ -432,7 +445,7 @@ type schemaCheck struct {
 func securityStateSchemaChecks(versionTable string) []schemaCheck {
 	return []schemaCheck{
 		{
-			name:  "fresh database has the fourteen tables and the version table",
+			name:  "fresh database has the fifteen tables and the version table",
 			query: `SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY 1`,
 			assert: func(t *testing.T, rows []string) {
 				want := append(slices.Clone(securityStateTables), versionTable)
@@ -457,10 +470,12 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			             AND c.table_schema = k.table_schema
 			          WHERE tc.constraint_type = 'PRIMARY KEY'
 			            AND tc.table_schema = current_schema()
-			            AND c.table_name <> $1`,
+			            AND c.table_name <> $1
+			            AND c.table_name <> 'rate_limit_buckets'`,
 			args: []any{versionTable},
 			assert: func(t *testing.T, rows []string) {
-				require.Len(t, rows, len(securityStateTables))
+				// rate_limit_buckets is keyed by (namespace, key), not a uuid.
+				require.Len(t, rows, len(securityStateTables)-1)
 				for _, r := range rows {
 					assert.True(t, strings.HasSuffix(r, ":uuid"), r)
 				}
@@ -558,6 +573,38 @@ func securityStateSchemaChecks(versionTable string) []schemaCheck {
 			assert: func(t *testing.T, rows []string) {
 				want := sortedByTable(securityStateColumns, column.String)
 				assert.Equal(t, want, groupByTable(t, rows))
+			},
+		},
+		{
+			name: "rate_limit_buckets is a logged table",
+			query: `SELECT c.relpersistence::text FROM pg_class c
+			          JOIN pg_namespace n ON n.oid = c.relnamespace
+			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
+			assert: func(t *testing.T, rows []string) {
+				assert.Equal(t, []string{"p"}, rows, "unlogged would lose every limit on a crash or failover")
+			},
+		},
+		{
+			name: "rate_limit_buckets has its primary key as its only index",
+			query: `SELECT i.indexrelid::regclass::text || '|' || i.indisprimary::text
+			          FROM pg_index i
+			          JOIN pg_class c ON c.oid = i.indrelid
+			          JOIN pg_namespace n ON n.oid = c.relnamespace
+			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
+			assert: func(t *testing.T, rows []string) {
+				assert.Equal(t, []string{"rate_limit_buckets_pkey|true"}, rows,
+					"an index on a column that changes would stop updates being HOT")
+			},
+		},
+		{
+			name: "rate_limit_buckets declares its own fill factor",
+			query: `SELECT unnest(c.reloptions) FROM pg_class c
+			          JOIN pg_namespace n ON n.oid = c.relnamespace
+			         WHERE n.nspname = current_schema() AND c.relname = 'rate_limit_buckets'`,
+			assert: func(t *testing.T, rows []string) {
+				assert.True(t, slices.ContainsFunc(rows, func(o string) bool {
+					return strings.HasPrefix(o, "fillfactor=")
+				}), "reloptions: %v", rows)
 			},
 		},
 		{
