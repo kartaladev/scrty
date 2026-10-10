@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
@@ -55,6 +56,8 @@ type pgFactoryBuilder func(t *testing.T, db *sql.DB, dsn string, clk clock.Clock
 type pgBackend struct {
 	name    string
 	limiter pgLimiterBuilder
+	// allow builds a limiter in ratelimit.UnavailableAllow mode.
+	allow   pgLimiterBuilder
 	factory pgFactoryBuilder
 }
 
@@ -77,6 +80,13 @@ var sqlstoreBackend = pgBackend{
 	limiter: func(t *testing.T, db *sql.DB, _, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter {
 		t.Helper()
 		l, err := sqlstore.NewLimiter(db, ns, limit, window, pgLimiterOptions(clk)...)
+		require.NoError(t, err)
+		return l
+	},
+	allow: func(t *testing.T, db *sql.DB, _, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter {
+		t.Helper()
+		opts := append(pgLimiterOptions(clk), sqlstore.WithLimiterOnUnavailable(ratelimit.UnavailableAllow))
+		l, err := sqlstore.NewLimiter(db, ns, limit, window, opts...)
 		require.NoError(t, err)
 		return l
 	},
@@ -119,6 +129,13 @@ var pgxBackend = pgBackend{
 	limiter: func(t *testing.T, _ *sql.DB, dsn, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter {
 		t.Helper()
 		l, err := pgxstore.NewLimiter(pgxTestPool(t, dsn), ns, limit, window, pgxLimiterOptions(clk)...)
+		require.NoError(t, err)
+		return l
+	},
+	allow: func(t *testing.T, _ *sql.DB, dsn, ns string, limit int, window time.Duration, clk clock.Clock) ratelimit.Limiter {
+		t.Helper()
+		opts := append(pgxLimiterOptions(clk), pgxstore.WithLimiterOnUnavailable(ratelimit.UnavailableAllow))
+		l, err := pgxstore.NewLimiter(pgxTestPool(t, dsn), ns, limit, window, opts...)
 		require.NoError(t, err)
 		return l
 	},
@@ -280,6 +297,100 @@ func TestSQLStoreLimiter_Keys(t *testing.T) {
 	runPGKeys(t, sqlstoreBackend)
 }
 
+// runPGPoisonKey pins that a key PostgreSQL's text type cannot hold, one with
+// a NUL byte or invalid UTF-8, is stored as a digest: it is recorded and
+// counted like any key, and it neither reads as an outage nor trips the
+// breaker for the other keys of the namespace, in refuse mode (an innocent
+// key is checked without error) or in allow mode (a key at its limit stays
+// exceeded).
+func runPGPoisonKey(t *testing.T, b pgBackend) {
+	t.Helper()
+
+	type testCase struct {
+		name   string
+		poison string
+		assert func(t *testing.T, b pgBackend, conn PostgresConn, clk clock.Clock, poison string)
+	}
+	cases := []testCase{
+		{
+			name: "NUL byte, refuse mode", poison: "user\x00",
+			assert: assertPoisonRefuse,
+		},
+		{
+			name: "invalid UTF-8, refuse mode", poison: "user\xff",
+			assert: assertPoisonRefuse,
+		},
+		{
+			name: "NUL byte, allow mode", poison: "user\x00",
+			assert: assertPoisonAllow,
+		},
+		{
+			name: "invalid UTF-8, allow mode", poison: "user\xff",
+			assert: assertPoisonAllow,
+		},
+	}
+
+	conn := migratedLimiterDB(t)
+	clk := clockwork.NewFakeClockAt(time.Unix(1_700_000_000, 0))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, b, conn, clk, tc.poison)
+		})
+	}
+}
+
+const pgPoisonLimit = 3
+
+func assertPoisonRefuse(t *testing.T, b pgBackend, conn PostgresConn, clk clock.Clock, poison string) {
+	t.Helper()
+
+	l := b.limiter(t, conn.DB, conn.DSN, pgScopedNamespace(t, "poison"), pgPoisonLimit, time.Minute, clk)
+	for range pgPoisonLimit {
+		require.NoError(t, l.RecordFailure(t.Context(), poison))
+	}
+	got, err := l.Exceeded(t.Context(), poison)
+	require.NoError(t, err)
+	assert.True(t, got, "the poison key does not count its own failures")
+
+	got, err = l.Exceeded(t.Context(), "innocent")
+	require.NoError(t, err, "the poison key opened the breaker for the namespace")
+	assert.False(t, got)
+}
+
+func assertPoisonAllow(t *testing.T, b pgBackend, conn PostgresConn, clk clock.Clock, poison string) {
+	t.Helper()
+
+	l := b.allow(t, conn.DB, conn.DSN, pgScopedNamespace(t, "poison"), pgPoisonLimit, time.Minute, clk)
+	for range pgPoisonLimit {
+		require.NoError(t, l.RecordFailure(t.Context(), "victim"))
+	}
+	got, err := l.Exceeded(t.Context(), "victim")
+	require.NoError(t, err)
+	require.True(t, got, "the victim is not at its limit")
+
+	require.NoError(t, l.RecordFailure(t.Context(), poison))
+	_, err = l.Exceeded(t.Context(), poison)
+	require.NoError(t, err)
+
+	got, err = l.Exceeded(t.Context(), "victim")
+	require.NoError(t, err)
+	assert.True(t, got, "the poison key lifted the victim's limit")
+}
+
+func TestSQLStoreLimiter_PoisonKey(t *testing.T) {
+	t.Parallel()
+
+	runPGPoisonKey(t, sqlstoreBackend)
+}
+
+func TestPgxLimiter_PoisonKey(t *testing.T) {
+	t.Parallel()
+
+	runPGPoisonKey(t, pgxBackend)
+}
+
 // runPGClockBehindNewest pins a record whose application clock reads behind
 // the key's newest stamp: newest_at keeps the newest, and the stamps stay
 // ascending.
@@ -338,12 +449,13 @@ type brokenRecordLimiter struct {
 }
 
 // pgStoredKey is the form the limiter stores key in: as given, except that a
-// key longer than 512 bytes, or one that itself starts with "sha256:", is
-// stored as "sha256:" and the hex digest of the key. The test module cannot
+// key longer than 512 bytes, one that itself starts with "sha256:", or one
+// that is not valid UTF-8 or contains a NUL byte, is stored as "sha256:" and
+// the hex digest of the key. The test module cannot
 // import the core module's internal package that holds the mapping, so the
 // documented contract is restated here; the key tests pin both sides of it.
 func pgStoredKey(key string) string {
-	if len(key) <= 512 && !strings.HasPrefix(key, "sha256:") {
+	if len(key) <= 512 && !strings.HasPrefix(key, "sha256:") && utf8.ValidString(key) && !strings.ContainsRune(key, 0) {
 		return key
 	}
 	sum := sha256.Sum256([]byte(key))

@@ -73,6 +73,8 @@ func TestNewLimiter(t *testing.T) {
 		{name: "typed nil handle", db: (*pgxpool.Pool)(nil), namespace: "api-key", limit: 20, window: time.Minute, assert: refused("nil")},
 		{name: "empty namespace", db: db, namespace: "", limit: 20, window: time.Minute, assert: refused("namespace")},
 		{name: "colon in namespace", db: db, namespace: "a:b", limit: 20, window: time.Minute, assert: refused("colon")},
+		{name: "NUL in namespace", db: db, namespace: "a\x00b", limit: 20, window: time.Minute, assert: refused("UTF-8", "NUL")},
+		{name: "invalid UTF-8 in namespace", db: db, namespace: "a\xffb", limit: 20, window: time.Minute, assert: refused("UTF-8", "NUL")},
 		{name: "64-byte namespace accepted", db: db, namespace: strings.Repeat("n", 64), limit: 20, window: time.Minute, assert: accepted},
 		{name: "65-byte namespace", db: db, namespace: strings.Repeat("n", 65), limit: 20, window: time.Minute, assert: refused("64")},
 		{
@@ -326,6 +328,8 @@ func TestLimiterFactory_NewLimiter(t *testing.T) {
 			ask: request{"magic-link", 5, time.Hour}, assert: accepted(5, time.Hour),
 		},
 		{name: "65-byte namespace", ask: request{strings.Repeat("n", 65), 3, time.Minute}, assert: refused("64")},
+		{name: "NUL in namespace", ask: request{"a\x00b", 3, time.Minute}, assert: refused("UTF-8", "NUL")},
+		{name: "invalid UTF-8 in namespace", ask: request{"a\xffb", 3, time.Minute}, assert: refused("UTF-8", "NUL")},
 		{name: "limit 129", ask: request{"api-key", 129, time.Minute}, assert: refused("128")},
 		{
 			name: "a refused request does not claim the namespace",

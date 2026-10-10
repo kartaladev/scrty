@@ -83,7 +83,7 @@ func (c limiterCheck) verify(ctx context.Context) error {
 // probe runs the limiter's record, check and delete statements once, on a
 // probe key of its own: an empty namespace, which no limiter can have, and a
 // random key. The record proves INSERT and UPDATE, the check SELECT, and the
-// delete the DELETE the prune needs. The probe row is deleted in the same
+// delete the probe row, with the DELETE privilege the prune needs. The probe row is deleted in the same
 // call; if the delete is what fails, the row is left for the prune, which
 // removes it as soon as it runs, its window being one microsecond.
 func (c limiterCheck) probe(ctx context.Context) error {
@@ -100,7 +100,7 @@ func (c limiterCheck) probe(ctx context.Context) error {
 		return probeError(err, "check")
 	}
 	if _, err := c.db.ExecContext(ctx, pgschema.LimiterDeleteKey, "", key); err != nil {
-		return probeError(err, "prune")
+		return probeError(err, "delete")
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -77,8 +78,10 @@ var (
 // required: two flows sharing a namespace would share their buckets. It may
 // not contain a colon, as for every shared limiter, so a namespace valid on
 // one shared backend is valid on the other. Keys are stored as given, except
-// that a key longer than 512 bytes, or one that itself starts with
-// "sha256:", is stored as "sha256:" and the hex digest of the key.
+// that a key longer than 512 bytes, one that itself starts with
+// "sha256:", or one that is not valid UTF-8 or contains a NUL byte (which
+// PostgreSQL's text type cannot store), is stored as "sha256:" and the hex
+// digest of the key.
 //
 // Maximums: a limit of at most 128 and a namespace of at most 64 bytes,
 // counted in bytes, not characters. They keep the widest row under
@@ -91,7 +94,9 @@ var (
 // window. Each record carries the longest window the key has been recorded
 // with, and a key is pruned only once its newest failure is that long past,
 // so a shorter-window record never removes failures that a longer-window
-// replica still counts.
+// replica still counts. Replicas that disagree on the limit trim the row to
+// the lower limit when they record, so a higher-limit replica undercounts
+// until its own records refill it.
 //
 // Defaults, each replaced by its option: time from the database's
 // clock_timestamp(), read once per statement (WithLimiterClock); refusal of
@@ -106,7 +111,7 @@ var (
 // stored in; any part of it below a microsecond is dropped.
 //
 // It performs no I/O. A nil handle, an empty namespace or one containing a
-// colon or longer than 64 bytes, a limit below 1 or above 128, a window
+// colon, a NUL byte or invalid UTF-8, or longer than 64 bytes, a limit below 1 or above 128, a window
 // shorter than one microsecond, or an option it refuses, such as an operation
 // timeout above 2147483647ms, is an error wrapping ratelimit.ErrConfig, and
 // the Limiter is nil.
@@ -146,6 +151,8 @@ func validateLimiter(db *sql.DB, namespace string, limit int, window time.Durati
 		return fmt.Errorf("%w: the namespace is empty, so this limiter would share buckets with every other", ratelimit.ErrConfig)
 	case strings.Contains(namespace, ":"):
 		return fmt.Errorf("%w: the namespace %q contains a colon, which separates it from the key", ratelimit.ErrConfig, namespace)
+	case !utf8.ValidString(namespace) || strings.ContainsRune(namespace, 0):
+		return fmt.Errorf("%w: the namespace must be valid UTF-8 without NUL bytes, which PostgreSQL's text type cannot store", ratelimit.ErrConfig)
 	case len(namespace) > pgschema.LimiterMaxNamespace:
 		return fmt.Errorf("%w: the namespace is %d bytes, longer than the %d bytes a bucket's row holds",
 			ratelimit.ErrConfig, len(namespace), pgschema.LimiterMaxNamespace)

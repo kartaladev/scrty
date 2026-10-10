@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+	"unicode/utf8"
 )
 
 // The shared rate limiter's table, bounds and statements, over
@@ -98,12 +99,15 @@ WHERE d.namespace = v.namespace AND d.key = v.key`
 )
 
 // LimiterKey maps a caller's key to its stored form: as given, unless it is
-// longer than 512 bytes or itself begins "sha256:", when it is "sha256:" and
-// the hex SHA-256 digest of the key, the same on every replica. Hashing a
-// key that looks like a digest keeps a caller's key from colliding with the
-// stored form of another.
+// longer than 512 bytes, itself begins "sha256:", is not valid UTF-8 or
+// contains a NUL byte, when it is "sha256:" and the hex SHA-256 digest of the
+// key, the same on every replica. Hashing a key that looks like a digest
+// keeps a caller's key from colliding with the stored form of another; a key
+// PostgreSQL's text type would reject (SQLSTATE 22021) is hashed so that it
+// counts like any other and is never taken for an outage.
 func LimiterKey(key string) string {
-	if len(key) <= limiterMaxRawKey && !strings.HasPrefix(key, limiterDigestPrefix) {
+	if len(key) <= limiterMaxRawKey && !strings.HasPrefix(key, limiterDigestPrefix) &&
+		utf8.ValidString(key) && !strings.ContainsRune(key, 0) {
 		return key
 	}
 	sum := sha256.Sum256([]byte(key))

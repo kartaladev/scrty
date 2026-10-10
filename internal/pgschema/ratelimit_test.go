@@ -43,6 +43,24 @@ func TestLimiterKey(t *testing.T) {
 				assert.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), got)
 			},
 		},
+		{
+			name: "NUL byte is hashed", in: "user\x00",
+			assert: func(t *testing.T, got string) {
+				sum := sha256.Sum256([]byte("user\x00"))
+				assert.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), got)
+			},
+		},
+		{
+			name: "invalid UTF-8 is hashed", in: "user\xff",
+			assert: func(t *testing.T, got string) {
+				sum := sha256.Sum256([]byte("user\xff"))
+				assert.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), got)
+			},
+		},
+		{
+			name: "valid multi-byte UTF-8 stored as given", in: "usér-é",
+			assert: func(t *testing.T, got string) { assert.Equal(t, "usér-é", got) },
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -185,7 +185,7 @@ func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
 //     table of that name in a schema outside the search_path does not count;
 //   - an unlogged table, which a crash truncates and a standby never
 //     receives, so a failover would reset every limit to zero;
-//   - a role that may not run the limiter's record, check or prune
+//   - a role that may not run the limiter's record, check or delete
 //     statements (SQLSTATE 42501), naming the statement refused.
 //
 // The last check runs each statement once, on a probe row of its own: an

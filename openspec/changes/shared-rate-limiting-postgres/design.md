@@ -109,6 +109,11 @@ The widest row has these parts:
 - **Default and limit:** a limit above 128, or a namespace above 64 bytes, is a configuration error that names the maximum (library-design rule 4). The largest built-in default is 30 (the passwordless begin).
 - **Override:** none. A consumer who needs more than 128 failures per window is far past NIST's 100-failure ceiling for a single account. That consumer uses the Redis limiter, which has no row to fit.
 - **Long keys:** the digest rule of the Redis limiter applies. A key longer than 512 bytes, or one that begins with `sha256:`, is stored as `sha256:` followed by its hex digest.
+- **Keys PostgreSQL text cannot hold:** a key containing a NUL byte, or one that is not valid UTF-8, is stored as the same digest. A Redis key may hold any bytes, but a `text` column refuses both (SQLSTATE `22021`).
+  - **Why it matters:** without the digest, the refusal would reach the decorator as an outage. One such key would open the breaker for its whole namespace: in the default mode every other key would be refused for the probe interval, and in allow mode every limit would be lifted.
+  - **The effect:** the two shared backends accept the same keys.
+  - **Proof:** found by the whole-branch review, with a failing test for each mode and backend.
+- **Namespaces:** a namespace containing a NUL byte, or one that is not valid UTF-8, is a configuration error. `Verify`'s probe uses the empty namespace, so it could not catch such a namespace, and every call would fail at runtime instead (library-design rule 6).
 
 ### 4. The statements: one read per check, one upsert per record
 
@@ -288,7 +293,7 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
   It removed only rows past their bound in every run.
 
 **Decided:**
-- **`fillfactor = 70`.** It is the lowest measured value that reaches a HOT ratio of 0.99 on the update-heavy mix. It costs about a quarter more table size than 100, and no measurable latency. 50 adds almost nothing to the HOT ratio for half again the size.
+- **`fillfactor = 70`.** It is the lowest measured value that reaches a HOT ratio of 0.99 on the update-heavy mix. It costs about a quarter more table size than 100, and no measurable latency. 50 adds almost nothing to the HOT ratio for half again the size. The HOT ratio was measured on a hot set of 100 keys, a table of a few pages. Its value on a large table under sustained updates is not measured, and an operator who sees bloat lowers the fill factor further with `ALTER TABLE … SET`.
 - **`autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_insert_scale_factor = 0.01`.**
   - The runs show no cost for the lower values. Runs this short cannot show their benefit either, so the choice is reasoned, not measured.
   - The reasoning: the table is small and every row is updated or pruned constantly. The server default of 20% dead tuples would let it bloat to several times its live size between vacuums. 1% keeps it near its live size, and vacuuming a table this small is cheap.
@@ -311,7 +316,7 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
 
 ## Risks / Trade-offs
 
-- **[Every passkey begin, recovery start and enrolment begin writes a row and WAL on the primary]** → It is measured (decision 11). The godoc states the write rate per flow and recommends Redis above the measured ceiling.
+- **[Every passkey begin, recovery start and enrolment begin writes a row and WAL on the primary]** → It is measured (decision 11). The godoc states the write cost per flow and the pool advice. The benchmark found no throughput ceiling short of pool saturation, at about 40,000 operations per second on the test server. So the godoc names no request rate above which Redis is required; a deployment past its own pool's capacity is where Redis applies.
 - **[A check on every API-key request shares the login pool]** → The benchmark settles whether a separate pool is advised. The constructor takes any pool.
 - **[The prune scans the whole table]** → The benchmark measures it, the godoc recommends an interval, and `SKIP LOCKED` keeps it off hot rows.
 - **[The lock-timeout ordering is executor behaviour, not documented]** → It is pinned by a test on both majors, with an explicit-transaction fallback (decision 6).
