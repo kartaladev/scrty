@@ -40,14 +40,19 @@ import (
 // of one row, nearly always a HOT update, so a guarded flow writes to the
 // primary only when an attempt fails or, for the flows that count every
 // begin (passkey and enrolment begins, recovery starts), once per begin. A
-// pool connection is busy about a millisecond per operation, so a limiter
-// doing N operations a second holds about N/1000 connections on average.
-// The flows guarded on failure may share the application's handle. A limiter
-// checked on every API-key request belongs on a handle of its own once its rate
-// is a noticeable share of the shared handle's connections, on the order of a
-// few thousand requests a second for 32 connections: in measurement, a
-// limiter saturating a handle it shared with logins raised the logins' p99 by
-// an order of magnitude.
+// pool connection is busy under a millisecond per operation, so a limiter
+// doing N operations a second holds under N/1000 connections on average; the
+// limiter, API-key checks included, may share the application's handle sized
+// for that. What a busy limiter costs the rest of the application is the
+// server's work, not pool slots: in measurement, a limiter saturating the
+// server raised a login load's p99 from about 3ms to 5-8ms whether it shared
+// the logins' pool or had its own. A database that cannot absorb that load
+// calls for the Redis limiter, not another pool on the same server.
+//
+// Keep the handle's idle connections near its open limit with
+// sql.DB.SetMaxIdleConns. database/sql keeps two by default, and the
+// connection churn that causes made the measured record p99 six to eight
+// times worse.
 //
 // Run the prune task every ten minutes or so. It scans the whole table, in
 // about 1.5s for a million rows, and skips any row a record holds. How often

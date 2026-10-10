@@ -268,7 +268,7 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
   - check p50 about 1.0ms, p99 2–3ms;
   - record p50 about 1.0–1.1ms, p99 2.2–4ms.
   - One case, at fillfactor 50, reached a check p99 of 4.3ms.
-- **Throughput:** about 25µs of wall time per operation across the 32 workers, so about 40,000 operations per second saturate the pool.
+- **Throughput:** about 25µs of wall time per operation across the 32 workers, so about 40,000 operations per second saturate the server; the corrected second run below confirms the figure.
 - **HOT ratio:** about 0.99 on the hot-key load at every fillfactor. On the check-heavy mix, whose records land on 100 hot keys, it rises as the fillfactor falls:
 
   | fillfactor | HOT ratio | table per 10⁵ keys |
@@ -279,10 +279,12 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
   | 50 | 1.00 | 24–25 MB |
 
   PostgreSQL 15 and 18 agree to two places.
-- **A shared pool hurts logins.** A simulated login load ran at 300 logins per second, each a `SELECT` and an `INSERT` on `login_attempts`:
-  - alone on its pool, login p99 is 3–5ms;
-  - with the limiter saturating the same pool, it is 7–40ms on 18 and 6–146ms on 15, with run-to-run spread of about 2x;
-  - the two backends do not differ beyond noise.
+- **The limiter costs logins server time, not pool slots.** This was measured in a second run (2026-10-10, revised by the whole-branch review), with exactly 32 workers, every connection warmed, and three counts. A simulated login load ran at 300 logins per second, each a `SELECT` and an `INSERT` on `login_attempts`.
+  - **Alone on the server,** login p99 is about 3ms.
+  - **With the limiter saturating the server,** login p99 is 5–8ms. That holds whether the logins share the limiter's pool (`shared`) or have a second pool of their own (`separate`). The two modes do not differ beyond noise, on either major or backend.
+  - **So a separate pool buys nothing measurable.** The cost is the server's work for the limiter's statements.
+  - **The first sweep's 7–146ms login p99 was a harness artefact.** `database/sql` keeps only two idle connections by default, so its pool kept closing and redialing. That also put the `sqlstore` record p99 at 13–17ms, against about 2ms once 32 idle connections are kept. The fillfactor, HOT-ratio and size figures above do not depend on connection handling and stand.
+  - **Limiter latency with warmed pools:** check p50 about 0.75ms and p99 about 1.5ms; record p50 about 0.8ms and p99 1.7–3ms.
 - **Prune:**
 
   | Rows | PostgreSQL 15 | PostgreSQL 18 |
@@ -297,12 +299,11 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
 - **`autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_insert_scale_factor = 0.01`.**
   - The runs show no cost for the lower values. Runs this short cannot show their benefit either, so the choice is reasoned, not measured.
   - The reasoning: the table is small and every row is updated or pruned constantly. The server default of 20% dead tuples would let it bloat to several times its live size between vacuums. 1% keeps it near its live size, and vacuuming a table this small is cheap.
-- **Pool advice: a limiter checked on every API-key request gets its own pool.**
-  - A limiter that saturates a pool it shares with logins raised login p99 by an order of magnitude.
-  - A pool connection is busy about 1ms per limiter operation (Little's law), so N limiter operations per second hold about N/1000 connections on average.
-  - The flows guarded only on failure (sign-in, magic link, recovery, passkey begin) run at the rate of logins and attacks on them, and may share the pool.
-  - API-key traffic does one check per request. It moves to its own pool once its rate holds a noticeable share of the shared pool's connections: for a 32-connection pool, on the order of a few thousand requests per second.
-  - That threshold is derived from the measured per-operation cost, not measured directly between the two points the benchmark ran (unverified).
+- **Pool advice: no separate pool is required, and the idle-connection setting matters.**
+  - The limiter may share the application's pool, API-key traffic included. A pool connection is busy under a millisecond per operation (Little's law), so N limiter operations per second hold under N/1000 connections on average. Size the pool for that.
+  - What a busy limiter costs the rest of the application is server load: login p99 rose from about 3ms to 5–8ms with the limiter saturating the server, whichever pool it used.
+  - A deployment whose database cannot absorb that load moves the limiter to Redis, not to another pool on the same server.
+  - **On `database/sql`, keep idle connections near the open limit** (`SetMaxIdleConns`). The default of two made the measured record p99 six to eight times worse through connection churn. pgx's pool keeps its connections and needs nothing.
 - **Prune interval: every 10 minutes.** A run over 10⁶ rows takes about 1.5s of one connection, and `SKIP LOCKED` keeps it off rows a record holds. A shorter interval only bounds the table more tightly, and a longer one never frees quota early, because the prune's rule does not depend on how often it runs.
 
 ### 12. Departures
@@ -317,7 +318,7 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
 ## Risks / Trade-offs
 
 - **[Every passkey begin, recovery start and enrolment begin writes a row and WAL on the primary]** → It is measured (decision 11). The godoc states the write cost per flow and the pool advice. The benchmark found no throughput ceiling short of pool saturation, at about 40,000 operations per second on the test server. So the godoc names no request rate above which Redis is required; a deployment past its own pool's capacity is where Redis applies.
-- **[A check on every API-key request shares the login pool]** → The benchmark settles whether a separate pool is advised. The constructor takes any pool.
+- **[A check on every API-key request shares the login pool]** → Measured: a separate pool made no difference, and the cost is server load (decision 11). The constructor takes any pool, and the `sqlstore` godoc asks for idle connections near the open limit.
 - **[The prune scans the whole table]** → The benchmark measures it, the godoc recommends an interval, and `SKIP LOCKED` keeps it off hot rows.
 - **[The lock-timeout ordering is executor behaviour, not documented]** → It is pinned by a test on both majors, with an explicit-transaction fallback (decision 6).
 - **[Table bloat if autovacuum falls behind]** → A lowered fillfactor, per-table autovacuum settings from the benchmark, and a table size the godoc documents.

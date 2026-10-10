@@ -8,7 +8,10 @@ package test
 //	go test -run '^$' -bench 'PostgresLimiter/ff=70/av=default/load=hot' .
 //
 // Case names read ff=<fillfactor>/av=<default|low>/load=<hot|distinct|checkheavy>
-// /pool=<own|shared>/backend=<sqlstore|pgx>. The server is the tuned test
+// /pool=<own|shared|separate>/backend=<sqlstore|pgx>. Pool own is the limiter
+// alone; shared adds a login load on the limiter's pool; separate adds the same
+// login load on a second pool of the same size against the same server, which
+// isolates pool queueing from the load on the server. The server is the tuned test
 // server (fsync off, data on tmpfs), so WAL cost and disk latency are
 // understated; relative differences between cases are the finding, not the
 // absolute numbers.
@@ -23,7 +26,6 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
-	"runtime"
 	"slices"
 	"strconv"
 	"sync"
@@ -131,38 +133,71 @@ func (s *benchSamples) report(b *testing.B, prefix string) {
 type benchPool struct {
 	limiter func(ns string) (ratelimit.Limiter, error)
 	login   func(ctx context.Context, user string) error
+	warm    func(ctx context.Context) error // opens every connection of the pool
 	close   func()
+}
+
+// newBenchDB opens a database/sql pool of benchPoolConns connections.
+func newBenchDB(b *testing.B, dsn string) *sql.DB {
+	b.Helper()
+	db, err := sql.Open("pgx", dsn)
+	require.NoError(b, err)
+	db.SetMaxOpenConns(benchPoolConns)
+	db.SetMaxIdleConns(benchPoolConns)
+	return db
 }
 
 type benchBackend struct {
 	name string
-	open func(b *testing.B, conn PostgresConn) benchPool
+	open func(b *testing.B, db *sql.DB, dsn string) benchPool
 }
 
 var benchBackends = []benchBackend{
-	{name: "sqlstore", open: func(b *testing.B, conn PostgresConn) benchPool {
+	{name: "sqlstore", open: func(b *testing.B, db *sql.DB, _ string) benchPool {
+		// Keep every warmed connection: the default of two idle would close
+		// the rest at once and make each operation redial.
+		db.SetMaxIdleConns(benchPoolConns)
 		return benchPool{
 			limiter: func(ns string) (ratelimit.Limiter, error) {
-				return sqlstore.NewLimiter(conn.DB, ns, benchLimit, benchWindow,
+				return sqlstore.NewLimiter(db, ns, benchLimit, benchWindow,
 					sqlstore.WithLimiterOperationTimeout(pgTestTimeout),
 					sqlstore.WithLimiterLogger(slog.New(slog.DiscardHandler)))
 			},
 			login: func(ctx context.Context, user string) error {
 				var n int
-				if err := conn.DB.QueryRowContext(ctx,
+				if err := db.QueryRowContext(ctx,
 					`SELECT count(*) FROM login_attempts WHERE username = $1 AND attempted_at > now() - interval '15 minutes'`,
 					user).Scan(&n); err != nil {
 					return err
 				}
-				_, err := conn.DB.ExecContext(ctx,
+				_, err := db.ExecContext(ctx,
 					`INSERT INTO login_attempts (id, username, attempted_at) VALUES (gen_random_uuid(), $1, now())`, user)
 				return err
+			},
+			warm: func(ctx context.Context) error {
+				conns := make([]*sql.Conn, 0, benchPoolConns)
+				defer func() {
+					for _, c := range conns {
+						_ = c.Close()
+					}
+				}()
+				for range benchPoolConns {
+					c, err := db.Conn(ctx)
+					if err != nil {
+						return err
+					}
+					conns = append(conns, c)
+					if err := c.PingContext(ctx); err != nil {
+						return err
+					}
+				}
+				return nil
 			},
 			close: func() {},
 		}
 	}},
-	{name: "pgx", open: func(b *testing.B, conn PostgresConn) benchPool {
-		cfg, err := pgxpool.ParseConfig(conn.DSN)
+	{name: "pgx", open: func(b *testing.B, _ *sql.DB, dsn string) benchPool {
+		cfg, err := pgxpool.ParseConfig(dsn)
 		require.NoError(b, err)
 		cfg.MaxConns = benchPoolConns
 		pool, err := pgxpool.NewWithConfig(b.Context(), cfg)
@@ -183,6 +218,25 @@ var benchBackends = []benchBackend{
 				_, err := pool.Exec(ctx,
 					`INSERT INTO login_attempts (id, username, attempted_at) VALUES (gen_random_uuid(), $1, now())`, user)
 				return err
+			},
+			warm: func(ctx context.Context) error {
+				conns := make([]*pgxpool.Conn, 0, benchPoolConns)
+				defer func() {
+					for _, c := range conns {
+						c.Release()
+					}
+				}()
+				for range benchPoolConns {
+					c, err := pool.Acquire(ctx)
+					if err != nil {
+						return err
+					}
+					conns = append(conns, c)
+					if err := c.Ping(ctx); err != nil {
+						return err
+					}
+				}
+				return nil
 			},
 			close: pool.Close,
 		}
@@ -225,16 +279,12 @@ type benchCase struct {
 	ff      int
 	av      string // "default" or "low"
 	load    string // "hot", "distinct" or "checkheavy"
-	shared  bool
+	pool    string // "own", "shared" or "separate"
 	backend benchBackend
 }
 
 func (c benchCase) name() string {
-	pool := "own"
-	if c.shared {
-		pool = "shared"
-	}
-	return fmt.Sprintf("ff=%d/av=%s/load=%s/pool=%s/backend=%s", c.ff, c.av, c.load, pool, c.backend.name)
+	return fmt.Sprintf("ff=%d/av=%s/load=%s/pool=%s/backend=%s", c.ff, c.av, c.load, c.pool, c.backend.name)
 }
 
 // benchConfigure sets the table's storage parameters for a case and leaves it
@@ -268,7 +318,7 @@ func tupleCounters(b *testing.B, db *sql.DB) (upd, hot int64) {
 	// only after up to ten seconds, so close the idle connections first. The
 	// caller closes the limiter's own pool before reading.
 	db.SetMaxIdleConns(0)
-	db.SetMaxIdleConns(2)
+	db.SetMaxIdleConns(benchPoolConns)
 	time.Sleep(500 * time.Millisecond)
 	conn, err := db.Conn(b.Context())
 	require.NoError(b, err)
@@ -358,8 +408,20 @@ func (l *loginLoad) stop(b *testing.B) {
 
 func runBenchCase(b *testing.B, conn PostgresConn, c benchCase) {
 	benchConfigure(b, conn.DB, c)
-	pool := c.backend.open(b, conn)
+	pool := c.backend.open(b, conn.DB, conn.DSN)
 	defer pool.close()
+	require.NoError(b, pool.warm(b.Context()))
+
+	// The separate arrangement runs the logins on a second pool of the same
+	// size against the same server.
+	loginPool := pool
+	if c.pool == "separate" {
+		loginDB := newBenchDB(b, conn.DSN)
+		defer func() { _ = loginDB.Close() }()
+		loginPool = c.backend.open(b, loginDB, conn.DSN)
+		defer loginPool.close()
+		require.NoError(b, loginPool.warm(b.Context()))
+	}
 
 	lim, err := pool.limiter(benchNamespace)
 	require.NoError(b, err)
@@ -369,8 +431,7 @@ func runBenchCase(b *testing.B, conn PostgresConn, c benchCase) {
 	var distinct atomic.Int64
 	distinctKey := func() string { return "key-" + strconv.FormatInt(distinct.Add(1), 10) }
 
-	// Warm the connections, then, for the distinct load, fill the keys b.N
-	// does not cover, unmeasured.
+	// For the distinct load, fill the keys b.N does not cover, unmeasured.
 	if c.load == "distinct" {
 		if fill := benchDistinctKeys - b.N; fill > 0 {
 			var next atomic.Int64
@@ -390,58 +451,67 @@ func runBenchCase(b *testing.B, conn PostgresConn, c benchCase) {
 		}
 	}
 	updBefore, hotBefore := tupleCounters(b, conn.DB)
+	// Reading the counters closed the idle connections; open them again.
+	require.NoError(b, pool.warm(b.Context()))
 
 	var login *loginLoad
-	if c.shared {
-		login = startLoginLoad(b.Context(), pool)
+	if c.pool != "own" {
+		login = startLoginLoad(b.Context(), loginPool)
 	}
 
 	var checks, records benchSamples
 	var workers atomic.Uint64
-	b.SetParallelism(max(1, (benchRecorders+runtime.GOMAXPROCS(0)-1)/runtime.GOMAXPROCS(0)))
+	var next atomic.Int64
+	var wg sync.WaitGroup
 	b.ReportAllocs()
 	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		id := workers.Add(1)
-		rng := rand.New(rand.NewPCG(id, 1))
-		lc := make([]int64, 0, 4096)
-		lr := make([]int64, 0, 4096)
-		n := int(id) * 7
-		ctx := context.Background()
-		for pb.Next() {
-			n++
-			var (
-				err    error
-				isRead bool
-			)
-			start := time.Now()
-			switch c.load {
-			case "hot":
-				err = lim.RecordFailure(ctx, hotKey(n))
-			case "distinct":
-				err = lim.RecordFailure(ctx, distinctKey())
-			default: // checkheavy
-				if rng.IntN(100) < 95 {
-					isRead = true
-					_, err = lim.Exceeded(ctx, hotKey(rng.IntN(benchHotKeys)))
-				} else {
-					err = lim.RecordFailure(ctx, hotKey(rng.IntN(benchHotKeys)))
+	for range benchRecorders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id := workers.Add(1)
+			rng := rand.New(rand.NewPCG(id, 1))
+			lc := make([]int64, 0, 4096)
+			lr := make([]int64, 0, 4096)
+			n := int(id) * 7
+			ctx := context.Background()
+			for next.Add(1) <= int64(b.N) {
+				n++
+				var (
+					err    error
+					isRead bool
+				)
+				start := time.Now()
+				switch c.load {
+				case "hot":
+					err = lim.RecordFailure(ctx, hotKey(n))
+				case "distinct":
+					err = lim.RecordFailure(ctx, distinctKey())
+				default: // checkheavy
+					if rng.IntN(100) < 95 {
+						isRead = true
+						_, err = lim.Exceeded(ctx, hotKey(rng.IntN(benchHotKeys)))
+					} else {
+						err = lim.RecordFailure(ctx, hotKey(rng.IntN(benchHotKeys)))
+					}
+				}
+				d := time.Since(start).Nanoseconds()
+				switch {
+				case err != nil:
+					errs.note(b, err)
+				case isRead:
+					lc = append(lc, d)
+				default:
+					lr = append(lr, d)
 				}
 			}
-			d := time.Since(start).Nanoseconds()
-			switch {
-			case err != nil:
-				errs.note(b, err)
-			case isRead:
-				lc = append(lc, d)
-			default:
-				lr = append(lr, d)
-			}
-		}
-		checks.merge(lc)
-		records.merge(lr)
-	})
+			checks.merge(lc)
+			records.merge(lr)
+		}()
+	}
+	wg.Wait()
 	b.StopTimer()
+	b.ReportMetric(benchRecorders, "workers")
 
 	if login != nil {
 		login.stop(b)
@@ -472,9 +542,9 @@ func BenchmarkPostgresLimiter(b *testing.B) {
 	for _, ff := range []int{100, 90, 70, 50} {
 		for _, av := range []string{"default", "low"} {
 			for _, load := range []string{"hot", "distinct", "checkheavy"} {
-				for _, shared := range []bool{false, true} {
+				for _, pool := range []string{"own", "shared", "separate"} {
 					for _, be := range benchBackends {
-						c := benchCase{ff: ff, av: av, load: load, shared: shared, backend: be}
+						c := benchCase{ff: ff, av: av, load: load, pool: pool, backend: be}
 						b.Run(c.name(), func(b *testing.B) { runBenchCase(b, conn, c) })
 					}
 				}
@@ -484,7 +554,7 @@ func BenchmarkPostgresLimiter(b *testing.B) {
 }
 
 // BenchmarkPostgresLimiterLoginBaseline is the login load alone on a pool,
-// the comparison for the login-p99-ns of the shared-pool cases.
+// the comparison for the login-p99-ns of the shared and separate pool cases.
 func BenchmarkPostgresLimiterLoginBaseline(b *testing.B) {
 	if testing.Short() {
 		b.Skip("the PostgreSQL limiter benchmark starts a server and is long")
@@ -494,8 +564,9 @@ func BenchmarkPostgresLimiterLoginBaseline(b *testing.B) {
 	for _, be := range benchBackends {
 		b.Run("backend="+be.name, func(b *testing.B) {
 			benchConfigure(b, conn.DB, benchCase{ff: 70, av: "default"})
-			pool := be.open(b, conn)
+			pool := be.open(b, conn.DB, conn.DSN)
 			defer pool.close()
+			require.NoError(b, pool.warm(b.Context()))
 
 			login := startLoginLoad(b.Context(), pool)
 			b.ResetTimer()
@@ -506,8 +577,9 @@ func BenchmarkPostgresLimiterLoginBaseline(b *testing.B) {
 	}
 }
 
-// BenchmarkPostgresLimiterPrune times one factory Prune over idle rows. The
-// refill between repetitions is not timed. -benchtime does not apply: each
+// BenchmarkPostgresLimiterPrune times one factory Prune over a table of idle
+// rows, past their bound, and a tenth as many live rows, which must survive.
+// The refill between repetitions is not timed. -benchtime does not apply: each
 // size runs benchPruneReps times and reports the mean as ns/op.
 func BenchmarkPostgresLimiterPrune(b *testing.B) {
 	if testing.Short() {
@@ -537,13 +609,18 @@ func BenchmarkPostgresLimiterPrune(b *testing.B) {
 				prune, closePool := be.prune(b)
 				defer closePool()
 
+				live := rows / 10 // a tenth of the table is live and must survive
+				idle := rows - live
 				var total time.Duration
 				var errCount, wrong int64
 				for range benchPruneReps {
 					for _, q := range []string{`TRUNCATE rate_limit_buckets`, fmt.Sprintf(
 						`INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
 						 SELECT 'bench', 'k' || g, ARRAY[now() - interval '1 hour']::timestamptz[], now() - interval '1 hour', 1000000
-						 FROM generate_series(1, %d) g`, rows), `VACUUM ANALYZE rate_limit_buckets`} {
+						 FROM generate_series(1, %d) g`, idle), fmt.Sprintf(
+						`INSERT INTO rate_limit_buckets (namespace, key, stamps, newest_at, longest_window_us)
+						 SELECT 'bench', 'live' || g, ARRAY[now()]::timestamptz[], now(), 900000000
+						 FROM generate_series(1, %d) g`, live), `VACUUM ANALYZE rate_limit_buckets`} {
 						_, err := conn.DB.ExecContext(b.Context(), q)
 						require.NoError(b, err, q)
 					}
@@ -553,8 +630,13 @@ func BenchmarkPostgresLimiterPrune(b *testing.B) {
 					if err != nil {
 						errCount++
 						b.Logf("prune error: %v", err)
-					} else if removed != rows {
-						wrong++
+					} else {
+						var left int
+						require.NoError(b, conn.DB.QueryRowContext(b.Context(),
+							`SELECT count(*) FROM rate_limit_buckets WHERE key LIKE 'live%'`).Scan(&left))
+						if removed != idle || left != live {
+							wrong++
+						}
 					}
 				}
 				b.ReportMetric(float64(rows), "rows")
