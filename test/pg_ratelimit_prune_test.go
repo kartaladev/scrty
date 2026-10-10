@@ -4,17 +4,23 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/unavailable"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -432,13 +438,19 @@ func TestPGLimiter_PruneCatchesBrokenVariants(t *testing.T) {
 
 // pruneFactoryOptions are what a prune test's factory differs by. The zero
 // value is the production defaults: the 250ms operation timeout, the database
-// clock and prune batches of 1,000 keys.
+// clock and prune batches of 1,000 keys, over conn's handle or a pool of the
+// factory's own.
 type pruneFactoryOptions struct {
 	// clock, when set, is the factory's clock, and the test timeout replaces
 	// the default operation timeout, as the other builders give it.
 	clock clock.Clock
 	// batch, when set, is the prune batch size.
 	batch int
+	// timeout, when set, replaces the operation timeout.
+	timeout time.Duration
+	// pool, when set, is the pool a pgx factory runs on, so that two
+	// factories can share one.
+	pool *pgxpool.Pool
 }
 
 // pruneFactory builds b's factory over conn, configured by o, with a
@@ -456,6 +468,9 @@ func pruneFactory(t *testing.T, b pgBackend, conn PostgresConn, o pruneFactoryOp
 		if o.batch != 0 {
 			opts = append(opts, sqlstore.WithLimiterPruneBatchSize(o.batch))
 		}
+		if o.timeout != 0 {
+			opts = append(opts, sqlstore.WithLimiterOperationTimeout(o.timeout))
+		}
 		f, err := sqlstore.NewLimiterFactory(conn.DB, opts...)
 		require.NoError(t, err)
 		return f
@@ -467,7 +482,14 @@ func pruneFactory(t *testing.T, b pgBackend, conn PostgresConn, o pruneFactoryOp
 		if o.batch != 0 {
 			opts = append(opts, pgxstore.WithLimiterPruneBatchSize(o.batch))
 		}
-		f, err := pgxstore.NewLimiterFactory(pgxTestPool(t, conn.DSN), opts...)
+		if o.timeout != 0 {
+			opts = append(opts, pgxstore.WithLimiterOperationTimeout(o.timeout))
+		}
+		pool := o.pool
+		if pool == nil {
+			pool = pgxTestPool(t, conn.DSN)
+		}
+		f, err := pgxstore.NewLimiterFactory(pool, opts...)
 		require.NoError(t, err)
 		return f
 	}
@@ -475,11 +497,389 @@ func pruneFactory(t *testing.T, b pgBackend, conn PostgresConn, o pruneFactoryOp
 	return nil
 }
 
+// pruneRecordConns is how many connections the records of
+// runPGPruneUnderRecords run on: the harness handle's open limit.
+const pruneRecordConns = 32
+
+// prunePool is the handle b's records run on, sized to pruneRecordConns and
+// keeping every connection it opens, with a count of its open connections.
+type prunePool struct {
+	pool *pgxpool.Pool // the pgx backend's; nil for sqlstore
+	open func() int
+}
+
+// newPrunePool sizes b's handle over conn to pruneRecordConns connections,
+// all kept open once opened: conn's handle for sqlstore, whose default of two
+// idle connections would close the rest after each burst and make records
+// dial again, or a pool of its own for pgx.
+func newPrunePool(t *testing.T, b pgBackend, conn PostgresConn) prunePool {
+	t.Helper()
+
+	if b.name == pgxBackend.name {
+		cfg, err := pgxpool.ParseConfig(conn.DSN)
+		require.NoError(t, err)
+		cfg.MaxConns = pruneRecordConns
+		pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+		require.NoError(t, err)
+		t.Cleanup(pool.Close)
+		return prunePool{pool: pool, open: func() int { return int(pool.Stat().TotalConns()) }}
+	}
+	conn.DB.SetMaxOpenConns(pruneRecordConns)
+	conn.DB.SetMaxIdleConns(pruneRecordConns)
+	return prunePool{open: func() int { return conn.DB.Stats().OpenConnections }}
+}
+
+// warmPrunePool runs bursts of records until p holds pruneRecordConns open
+// connections, so that a later record does not dial. It records through warm,
+// a factory over p with the test timeout, on keys of a namespace of its own: a
+// connection slow to open must not fail the warm-up, nor trip the breaker of
+// the limiter under test.
+func warmPrunePool(t *testing.T, p prunePool, warm pgFactory) {
+	t.Helper()
+
+	l, err := warm.NewLimiter(pgScopedNamespace(t, "warm-up"), 5, time.Minute)
+	require.NoError(t, err)
+	// A burst opens a connection per record only while the records overlap,
+	// so it repeats until every connection is open. What ends the loop is the
+	// count alone: the seed, the migrations or a factory's construction may
+	// have opened some of the connections, and a burst whose records did not
+	// all overlap ran no record on some. A record may therefore still prepare
+	// its statement on first use of a connection, a round trip on an open
+	// connection, not a dial.
+	for round := 0; p.open() < pruneRecordConns; round++ {
+		require.Less(t, round, 20, "the warm-up opened %d of %d connections", p.open(), pruneRecordConns)
+		var wg sync.WaitGroup
+		for i := range pruneRecordConns {
+			wg.Go(func() {
+				assert.NoError(t, l.RecordFailure(t.Context(), fmt.Sprintf("warm-%d-%d", round, i)))
+			})
+		}
+		wg.Wait()
+	}
+}
+
+// pruneRecord is one record runPGPruneUnderRecords made during the prune.
+type pruneRecord struct {
+	key   string
+	start time.Duration // since the prune began
+	wait  time.Duration
+	err   error
+}
+
+// pruneFailures describes failed, the records that errored or outlasted the
+// timeout: the first to start, distinctly, and how many of the rest timed out
+// or were refused at once, as an open breaker refuses them.
+func pruneFailures(failed []pruneRecord, timeout time.Duration) string {
+	if len(failed) == 0 {
+		return "none"
+	}
+	slices.SortFunc(failed, func(a, b pruneRecord) int { return cmp.Compare(a.start, b.start) })
+	first := failed[0]
+	var timedOut, refused int
+	for _, r := range failed[1:] {
+		if r.wait >= timeout {
+			timedOut++
+		} else {
+			refused++
+		}
+	}
+	return fmt.Sprintf("first: key %s, started %s into the prune, waited %s, error %v; "+
+		"then %d more timed out and %d were refused at once (the breaker)",
+		first.key, first.start, first.wait, first.err, timedOut, refused)
+}
+
+// pruneLockWaits is what sampleLockWaits saw of the records' waits on locks
+// the prune held. Every time in it is the server's: each sample reads the
+// server's clock with the waits it lists.
+type pruneLockWaits struct {
+	// longest is the longest such wait any sample saw still under way: a
+	// lower bound, from the lock's waitstart to the last sample that saw it,
+	// or the record's lock timeout for a wait given up while its prune
+	// transaction was open (see abandoned).
+	longest time.Duration
+	// bound is the longest a wait can have lasted: from its waitstart to the
+	// first sample that no longer saw it, or to the last sample for one still
+	// under way then. A wait given up at the lock timeout whose batch
+	// committed before the next sample is seen at most just short of the
+	// timeout, so longest misses it; bound does not, being the timeout or
+	// more for every wait that reached it.
+	bound time.Duration
+	// waits counts the distinct waits seen.
+	waits int
+	// abandoned counts the waits that ended while the prune transaction they
+	// waited on was still open. That transaction still held the lock, so the
+	// record was not granted it: the server gave up the wait at the record's
+	// lock_timeout, its operation timeout, and the wait lasted that long. A
+	// record's client giving up does not end a server-side wait: pgx's
+	// default context handling closes the connection rather than send a
+	// cancel request, and a backend waiting on a lock does not notice its
+	// client is gone.
+	abandoned int
+	// gap is the longest time between two consecutive successful samples,
+	// from the one taken before the prune started to the one taken after
+	// every record returned. A wait shorter than gap can fall between two
+	// samples unseen; a wait at least as long as the timeout cannot while gap
+	// is shorter than it.
+	gap time.Duration
+	// pruneSeen counts the samples that found a prune transaction open, and
+	// recordSessions the record sessions the last sample found in the
+	// database, idle or not. Both match pg_stat_activity's query text
+	// exactly, as the wait query does, so a positive count shows the match
+	// finds the statements the adapters send.
+	pruneSeen, recordSessions int
+	// samples and failed count the samples taken and those whose query
+	// failed; firstErr is the first such failure.
+	samples, failed int
+	firstErr        error
+}
+
+// pruneLockWaitsQuery lists the record sessions of the current database
+// waiting on a lock the prune holds: $1 is the record statement and $2 the
+// prune's, as pg_stat_activity shows them. The prune locks its victims FOR
+// UPDATE SKIP LOCKED, which marks each row with its transaction id and never
+// waits, so it keeps no heavyweight tuple lock a record could queue on: a
+// record that finds a victim locked waits for the prune transaction's id,
+// with the prune session among its pg_blocking_pids. A record queued on a
+// row's tuple lock waits on the record ahead of it on that row, not on the
+// prune; the records here take distinct keys. The first column is the
+// server's clock at the sample, on every row, and a sample with no wait has
+// one row with only it; each wait row then has the waiter's pid, the time its
+// wait began, and the blocking prune transaction's pid and start, which
+// identify it.
+const pruneLockWaitsQuery = `
+SELECT n.at, w.pid, w.waitstart, w.blocker_pid, w.blocker_start
+FROM (SELECT clock_timestamp() AS at) AS n
+LEFT JOIN LATERAL (
+  SELECT a.pid, l.waitstart, p.pid AS blocker_pid, p.xact_start AS blocker_start
+  FROM pg_stat_activity a
+  JOIN pg_locks l ON l.pid = a.pid AND NOT l.granted AND l.waitstart IS NOT NULL
+    AND l.locktype = 'transactionid'
+  JOIN LATERAL (
+    SELECT s.pid, s.xact_start FROM unnest(pg_blocking_pids(a.pid)) AS bp(pid)
+    JOIN pg_stat_activity s ON s.pid = bp.pid
+    WHERE s.query = $2 AND s.xact_start IS NOT NULL
+    LIMIT 1) AS p ON true
+  WHERE a.datname = current_database() AND a.wait_event_type = 'Lock' AND a.query = $1) AS w ON true`
+
+// pruneOpenTxQuery lists the open transactions of prune sessions: $1 is the
+// prune statement.
+const pruneOpenTxQuery = `
+SELECT pid, xact_start FROM pg_stat_activity
+WHERE datname = current_database() AND query = $1 AND xact_start IS NOT NULL`
+
+// pruneRecordSessionsQuery counts the sessions of the current database whose
+// current or last statement is $1, the record statement.
+const pruneRecordSessionsQuery = `
+SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND query = $1`
+
+// pruneSampleEvery is how often sampleLockWaits samples.
+const pruneSampleEvery = 10 * time.Millisecond
+
+// pruneTx identifies a prune transaction: its session and its start, in
+// microseconds since the epoch, the precision the server keeps.
+type pruneTx struct {
+	pid   int
+	start int64
+}
+
+// requireTrackedInFull fails t unless the server's track_activity_query_size
+// keeps every byte of each of stmts: pg_stat_activity truncates a longer
+// statement, and the sampler's exact match would then never find it, seeing
+// no wait at all.
+func requireTrackedInFull(t *testing.T, db *sql.DB, stmts ...string) {
+	t.Helper()
+
+	// The setting counts the terminating NUL, so a statement keeps all of
+	// its bytes only when it is shorter than the setting.
+	var size int
+	require.NoError(t, db.QueryRowContext(t.Context(),
+		`SELECT setting::int FROM pg_settings WHERE name = 'track_activity_query_size'`).Scan(&size))
+	for _, stmt := range stmts {
+		require.Less(t, len(stmt), size,
+			"pg_stat_activity truncates a statement to track_activity_query_size, so the sampler would never match it: %.60q", stmt)
+	}
+}
+
+// sampleLockWaits polls, every pruneSampleEvery on a connection of its own,
+// the waits of conn's record sessions on locks the prune holds, until stop
+// closes, and then sends what it saw. It takes its first sample before it
+// returns, so it covers everything started after the call. lockTimeout is the
+// records' lock timeout, the length of a wait the server gave up. It reads
+// the server's own record of each wait, and the server's clock, so a stalled
+// test process does not lengthen a wait it reports: the client's clock counts
+// the stall, the server's lock wait counts only the prune.
+func sampleLockWaits(t *testing.T, conn PostgresConn, lockTimeout time.Duration, stop <-chan struct{}) <-chan pruneLockWaits {
+	t.Helper()
+
+	recordStmt, pruneStmt := pgStatement(t, pgRecordName), pgStatement(t, pgPruneName)
+	db, err := sql.Open("pgx", conn.DSN)
+	require.NoError(t, err)
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	require.NoError(t, db.PingContext(t.Context()))
+	requireTrackedInFull(t, db, recordStmt, pruneStmt)
+
+	type wait struct {
+		since   time.Time
+		blocker pruneTx
+	}
+	var (
+		got     pruneLockWaits
+		lastAt  time.Time
+		waiting = map[int]wait{} // by the record session's pid
+	)
+	fail := func(err error) {
+		got.failed++
+		if got.firstErr == nil {
+			got.firstErr = err
+		}
+	}
+	// ended closes w, a wait no longer seen at at.
+	ended := func(w wait, at time.Time, open map[pruneTx]bool) {
+		bound := at.Sub(w.since)
+		if open[w.blocker] {
+			got.abandoned++
+			got.longest = max(got.longest, lockTimeout)
+			bound = max(bound, lockTimeout)
+		}
+		got.bound = max(got.bound, bound)
+	}
+	sample := func() {
+		got.samples++
+		rows, err := db.QueryContext(t.Context(), pruneLockWaitsQuery, recordStmt, pruneStmt)
+		if err != nil {
+			fail(err)
+			return
+		}
+		var at time.Time
+		now := map[int]wait{}
+		for rows.Next() {
+			var (
+				pid, blockerPID  sql.NullInt64
+				since, blockerAt sql.NullTime
+			)
+			if err := rows.Scan(&at, &pid, &since, &blockerPID, &blockerAt); err != nil {
+				fail(err)
+				_ = rows.Close()
+				return
+			}
+			if pid.Valid {
+				now[int(pid.Int64)] = wait{
+					since:   since.Time,
+					blocker: pruneTx{pid: int(blockerPID.Int64), start: blockerAt.Time.UnixMicro()},
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			fail(err)
+			return
+		}
+		// Read after the waits: a prune transaction open now was open when
+		// they were read, so a wait that had ended by then ended while it
+		// still held the lock.
+		open := map[pruneTx]bool{}
+		txs, err := db.QueryContext(t.Context(), pruneOpenTxQuery, pruneStmt)
+		if err != nil {
+			fail(err)
+			return
+		}
+		for txs.Next() {
+			var (
+				pid   int
+				start time.Time
+			)
+			if err := txs.Scan(&pid, &start); err != nil {
+				fail(err)
+				_ = txs.Close()
+				return
+			}
+			open[pruneTx{pid: pid, start: start.UnixMicro()}] = true
+		}
+		if err := txs.Err(); err != nil {
+			fail(err)
+			return
+		}
+
+		if len(open) > 0 {
+			got.pruneSeen++
+		}
+		if !lastAt.IsZero() {
+			got.gap = max(got.gap, at.Sub(lastAt))
+		}
+		lastAt = at
+		for pid, w := range now {
+			// Compared by microsecond, as pruneTx is: == on time.Time also
+			// compares the Location, which two scans need not share.
+			if prev, ok := waiting[pid]; !ok || prev.blocker != w.blocker ||
+				prev.since.UnixMicro() != w.since.UnixMicro() {
+				if ok {
+					ended(prev, at, open)
+				}
+				got.waits++
+			}
+			got.longest = max(got.longest, at.Sub(w.since))
+			waiting[pid] = w
+		}
+		for pid, w := range waiting {
+			if _, still := now[pid]; !still {
+				ended(w, at, open)
+				delete(waiting, pid)
+			}
+		}
+	}
+	// last takes the final sample, closes the waits still under way at it,
+	// and counts the record sessions.
+	last := func() {
+		sample()
+		for _, w := range waiting {
+			got.bound = max(got.bound, lastAt.Sub(w.since))
+		}
+		if err := db.QueryRowContext(t.Context(), pruneRecordSessionsQuery, recordStmt).Scan(&got.recordSessions); err != nil {
+			fail(err)
+		}
+	}
+
+	sample()
+	out := make(chan pruneLockWaits, 1)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				last()
+				out <- got
+				return
+			case <-time.After(pruneSampleEvery):
+				sample()
+			}
+		}
+	}()
+	return out
+}
+
 // runPGPruneUnderRecords pins that a prune over a million idle keys holds no
-// record past its 250ms operation timeout, and keeps every key recorded while
-// it runs: records arrive about every 3ms on keys the prune is removing.
+// record on a key it is removing for as long as the record's 250ms operation
+// timeout, and keeps every key recorded while it runs: records arrive about
+// every 3ms on keys the prune is removing, with the production timeout and
+// breaker. Their connections are open before the prune starts, so a wait is a
+// wait on the prune, not on dialling.
+//
+// What it asserts is the server's lock wait, not the client's: the longest
+// any record's wait on a lock the prune held can have lasted, from its start
+// to the first sample that no longer saw it, a wait the server gave up at the
+// record's lock timeout counting as that long. It also asserts that no record
+// was refused a lock (SQLSTATE 55P03), that the samples left no gap a full
+// wait could hide in, and that enough records reached the database for the
+// waits to be exercised at all. The client's clock counts
+// every stall of a busy host, which is not the prune's doing; the server's
+// lock wait counts only the prune. A prune that held its victims' locks for
+// its whole run would hold records for seconds, and each would end at its
+// lock timeout. Records that failed or outlasted the timeout by the client's
+// clock are logged, the first one named, so a failure stays diagnosable.
 func runPGPruneUnderRecords(t *testing.T, b pgBackend) {
 	t.Helper()
+
+	const timeout = unavailable.DefaultTimeout // the factories' default
 
 	conn := migratedLimiterDB(t)
 	ns := pgScopedNamespace(t, "victims")
@@ -489,30 +889,40 @@ SELECT $1, 'k' || g, ARRAY[now() - interval '1 hour'], now() - interval '1 hour'
 FROM generate_series(1, 1000000) AS g`, ns)
 	require.NoError(t, err)
 
-	// The production defaults: the test timeout would hide a record waiting
-	// on the prune.
-	f := pruneFactory(t, b, conn, pruneFactoryOptions{})
+	p := newPrunePool(t, b, conn)
+	warmPrunePool(t, p, pruneFactory(t, b, conn, pruneFactoryOptions{pool: p.pool, timeout: pgTestTimeout}))
+
+	// The production defaults, the timeout and the breaker: the test timeout
+	// would let a record wait on the prune past 250ms unnoticed.
+	f := pruneFactory(t, b, conn, pruneFactoryOptions{pool: p.pool})
 	l, err := f.NewLimiter(ns, 5, time.Minute)
 	require.NoError(t, err)
+	warmed := p.open()
 
+	// The sampler runs from before the prune starts until every record has
+	// returned, and its result is read only after it has stopped.
+	stopSampling := make(chan struct{})
+	lockWaits := sampleLockWaits(t, conn, timeout, stopSampling)
 	done := make(chan struct{})
 	var (
 		removed  int
 		pruneErr error
 		pruneDur time.Duration
 	)
+	begin := time.Now()
 	go func() {
 		defer close(done)
-		start := time.Now()
 		removed, pruneErr = f.Prune(t.Context())
-		pruneDur = time.Since(start)
+		pruneDur = time.Since(begin)
 	}()
 
 	var (
-		mu       sync.Mutex
-		recorded []string
-		slow     []time.Duration
-		worst    time.Duration
+		mu        sync.Mutex
+		recorded  []string
+		slow      []pruneRecord
+		attempted int
+		refused   int // records the server refused a lock: SQLSTATE 55P03
+		worst     time.Duration
 	)
 	var wg sync.WaitGroup
 	tick := time.NewTicker(3 * time.Millisecond) // about 300 records a second
@@ -521,11 +931,28 @@ FROM generate_series(1, 1000000) AS g`, ns)
 		select {
 		case <-done:
 			wg.Wait()
-			t.Logf("the prune removed %d keys in %s; %d records, worst wait %s, %d over 250ms",
-				removed, pruneDur, len(recorded)+len(slow), worst, len(slow))
+			close(stopSampling)
+			waits := <-lockWaits
+			t.Logf("the prune removed %d keys in %s; %d records, %d succeeded, on %d warmed connections",
+				removed, pruneDur, attempted, len(recorded), warmed)
+			t.Logf("server: %d record waits on the prune's locks, longest seen %s, at most %s, %d given up while the prune held the lock; %d records refused a lock (55P03)",
+				waits.waits, waits.longest, waits.bound, waits.abandoned, refused)
+			t.Logf("sampler: %d samples, %d failed (first error %v), longest gap %s; prune transaction seen in %d, %d record sessions",
+				waits.samples, waits.failed, waits.firstErr, waits.gap, waits.pruneSeen, waits.recordSessions)
+			t.Logf("client: worst record wait %s; %d records failed or waited past %s: %s",
+				worst, len(slow), timeout, pruneFailures(slow, timeout))
+
 			require.NoError(t, pruneErr)
 			assert.Positive(t, removed)
-			assert.Zero(t, len(slow), "records waited on the prune past their timeout")
+			assert.GreaterOrEqual(t, len(recorded), pruneMinRecorded,
+				"only %d of %d records reached the database and succeeded, so the waits below were barely exercised",
+				len(recorded), attempted)
+			require.Less(t, waits.failed, waits.samples, "no lock-wait sample succeeded")
+			assert.Positive(t, waits.pruneSeen, "no sample matched the prune's statement in pg_stat_activity")
+			assert.Positive(t, waits.recordSessions, "no session matched the record statement in pg_stat_activity")
+			assert.Less(t, waits.gap, timeout, "the samples left a gap a wait as long as the timeout could fall in unseen")
+			assert.Less(t, waits.bound, timeout, "a record waited on a lock the prune held for as long as its timeout")
+			assert.Zero(t, refused, "the server refused records a lock (SQLSTATE 55P03): a wait reached the timeout")
 			assert.Empty(t, pgMissingKeys(t, conn, ns, recorded), "the prune removed keys recorded during the run")
 			return
 		case <-tick.C:
@@ -537,15 +964,38 @@ FROM generate_series(1, 1000000) AS g`, ns)
 				mu.Lock()
 				defer mu.Unlock()
 				worst = max(worst, d)
-				if err != nil || d > 250*time.Millisecond {
-					slow = append(slow, d)
-					return
+				attempted++
+				if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == pgLockNotAvailable {
+					refused++
 				}
-				recorded = append(recorded, key)
+				if err != nil || d > timeout {
+					slow = append(slow, pruneRecord{key: key, start: start.Sub(begin), wait: d, err: err})
+				}
+				if err == nil {
+					recorded = append(recorded, key)
+				}
 			})
 		}
 	}
 }
+
+// pgLockNotAvailable is the SQLSTATE of a lock wait the server gave up at
+// lock_timeout. A record's error keeps the server's error in its chain: the
+// adapters wrap it with %w and the unavailable decorator keeps it as its
+// fault's cause. A record whose client gave up first returns its context's
+// error instead, so a count of zero is a complement to the sampler's bound,
+// not a proof on its own.
+const pgLockNotAvailable = "55P03"
+
+// pruneMinRecorded is how many records runPGPruneUnderRecords requires to
+// have reached the database and succeeded during the prune. A refused record
+// never reaches a lock, so without a floor a limiter whose breaker refused
+// every record would pass with no wait to measure. Records arrive about 300 a
+// second over a prune of about 3 seconds, some 900 in all; 100 still leaves
+// room for the breaker to open twice, a second of refusals each, on a host
+// stall that is not the prune's doing, and a success is the backend's own,
+// since the default refuse mode answers an unavailable backend with an error.
+const pruneMinRecorded = 100
 
 // pgMissingKeys returns those of keys that have no bucket row in ns.
 func pgMissingKeys(t *testing.T, conn PostgresConn, ns string, keys []string) []string {
@@ -566,11 +1016,19 @@ EXCEPT SELECT key FROM rate_limit_buckets WHERE namespace = $1`, ns, keys)
 	return missing
 }
 
-// TestPGLimiter_PruneUnderRecords runs alone, its backends one after the
-// other, so that no other test's load is taken for a wait on the prune.
+// isolatedEnv names the environment variable that, when non-empty, lets
+// TestPGLimiter_PruneUnderRecords run. make test-isolated sets it.
+const isolatedEnv = "SCRTY_TEST_ISOLATED"
+
+// TestPGLimiter_PruneUnderRecords runs only in its own invocation (make
+// test-isolated), its backends one after the other, so that the load of the
+// other packages' tests is not taken for a wait on the prune.
 func TestPGLimiter_PruneUnderRecords(t *testing.T) {
 	if testing.Short() {
 		t.Skip("seeds a million rows")
+	}
+	if os.Getenv(isolatedEnv) == "" {
+		t.Skipf("runs alone: set %s=1, or run make test-isolated", isolatedEnv)
 	}
 
 	for _, b := range []pgBackend{sqlstoreBackend, pgxBackend} {

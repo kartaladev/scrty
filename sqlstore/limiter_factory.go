@@ -138,11 +138,13 @@ func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Dur
 // no cutoff.
 //
 // It runs in batches (WithLimiterPruneBatchSize), each its own transaction,
-// so a record on a key being pruned waits at most one batch. Rows another
-// session holds, such as a record in flight, are skipped rather than waited
-// for, and kept until a later prune. It applies no operation timeout of its
-// own, and is bounded by ctx, which an expiry.Runner bounds with its run
-// timeout; ctx is checked between batches.
+// so a record on a key being pruned waits at most one batch: milliseconds on
+// a server with capacity to spare, but on an overloaded one a batch can
+// outlast the operation timeout, and the record behind it fails as
+// unavailable. Rows another session holds, such as a record in flight, are
+// skipped rather than waited for, and kept until a later prune. It applies
+// no operation timeout of its own, and is bounded by ctx, which an
+// expiry.Runner bounds with its run timeout; ctx is checked between batches.
 //
 // Run it through ratelimit.ExpiryTask(f). On a failure or an ended ctx, it
 // returns the keys the committed batches removed, a lower bound, with an

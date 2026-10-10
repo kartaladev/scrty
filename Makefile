@@ -15,14 +15,17 @@ export PATH := $(BIN):$(PATH)
 # workspace, so it is never linted or tested here.
 MODULES := $(shell go list -m -f '{{.Dir}}')
 
-.PHONY: tools check fmt-check vet lint test vuln generate-check
+.PHONY: tools check fmt-check vet lint test test-isolated vuln generate-check
 
 # GOWORK=off because tools/ is deliberately outside go.work: in workspace mode the
 # tool pattern resolves against the workspace modules, which declare no tools.
 tools:
 	cd tools && GOWORK=off GOBIN=$(BIN) go install tool
 
+# test-isolated runs from the recipe, after every prerequisite has finished, so
+# that make -j never runs it beside the rest of the suite.
 check: tools fmt-check vet lint test vuln generate-check
+	@$(MAKE) --no-print-directory test-isolated
 
 # gofmt -l exits 0 whether or not it names files, so the output is what fails.
 fmt-check:
@@ -37,6 +40,13 @@ lint:
 
 test:
 	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && go test -race -count=1 ./...); done
+
+# TestPGLimiter_PruneUnderRecords measures lock waits caused by the prune and asserts
+# no gap between its samples reaches the operation timeout. Inside `go test ./...`
+# the packages run concurrently and starve the host, which that guard takes for a
+# wait on the prune, so the test skips there and runs alone here.
+test-isolated:
+	@set -eu -o pipefail; cd test && SCRTY_TEST_ISOLATED=1 go test -race -count=1 -p 1 -run '^TestPGLimiter_PruneUnderRecords$$' -v .
 
 vuln:
 	@set -eu -o pipefail; for m in $(MODULES); do (cd "$$m" && govulncheck ./...); done

@@ -137,9 +137,11 @@ func WithLimiterLogger(l *slog.Logger) LimiterOption {
 // WithLimiterPruneBatchSize sets how many keys one batch of the factory's
 // prune removes. Each batch is its own transaction, and holds its victims'
 // row locks only until it commits, so a record on a key being pruned waits at
-// most one batch. Default: 1,000, which ran in 18-29ms over a million idle
-// keys; batches of 5,000 or more ran over 100ms, near the default operation
-// timeout. A size below 1 fails construction with ratelimit.ErrConfig.
+// most one batch. Default: 1,000, whose batches took about 3ms each over a
+// million idle keys; batches of 5,000 or more ran over 100ms, near the
+// default operation timeout. On an overloaded server one batch can outlast
+// the operation timeout, and a record behind it then fails as unavailable.
+// A size below 1 fails construction with ratelimit.ErrConfig.
 //
 // Only a factory's prune uses it, but NewLimiter refuses a size below 1 too,
 // as it refuses every invalid option.

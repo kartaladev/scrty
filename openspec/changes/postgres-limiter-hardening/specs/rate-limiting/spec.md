@@ -65,13 +65,17 @@ Verifying a PostgreSQL limiter, or its factory, SHALL fail with a configuration 
 - **WHEN** a PostgreSQL limiter is verified against a UTF-8 database where every other check passes
 - **THEN** verification succeeds
 
-### Requirement: A PostgreSQL prune never holds a record past its timeout
+### Requirement: A PostgreSQL prune holds a record for at most one batch
 A PostgreSQL prune SHALL remove idle keys in batches, each committed on its own, so that a record on a key the prune is removing waits no longer than one batch. The default batch SHALL be 1,000 keys. A factory option SHALL set the batch size, and a size below 1 SHALL be a configuration error. A key recorded while the prune runs SHALL be kept.
 
 #### Scenario: Record during a large prune
-- **WHEN** the prune runs over at least 100,000 idle keys with the default batch size, while records with an operation timeout of 250 milliseconds are made on keys the prune is removing
-- **THEN** every record completes within its timeout
+- **WHEN** the prune runs over at least 100,000 idle keys with the default batch size, while records with an operation timeout of 250 milliseconds are made on keys the prune is removing, with the records' connections already open
+- **THEN** no record waits on a lock the prune holds for as long as its timeout
 - **AND** every key so recorded is kept
+
+#### Scenario: The bound's limit is documented
+- **WHEN** a consumer reads the documentation of the prune and of the batch-size option
+- **THEN** it states that on an overloaded server one batch can outlast the operation timeout, and that a record behind it then fails as unavailable
 
 #### Scenario: Consumer sets the batch size
 - **WHEN** a factory built with a prune batch size of 2 prunes 5 idle keys

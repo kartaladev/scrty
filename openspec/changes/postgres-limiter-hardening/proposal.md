@@ -9,7 +9,7 @@ It also found smaller defects in error text, diagnostics, construction, duplicat
 ## What Changes
 
 - **The limit maximum rises above the largest built-in ask.** It rises to 400, with a table storage parameter that keeps a row of that size in-line (`design.md`, decision 1). A limit above the new maximum stays a configuration error naming it.
-- **The prune bounds itself.** It deletes in short batches of 1,000 keys by default, each its own transaction, so no record waits on it past its timeout. The returned count is the keys removed by batches that committed. A new option sets the batch size.
+- **The prune bounds itself.** It deletes in short batches of 1,000 keys by default, each its own transaction, so a record waits on it for at most one batch. The returned count is the keys removed by batches that committed. A new option sets the batch size.
 - **`Verify` refuses a database whose server encoding is not UTF-8**, SQL_ASCII included, with a configuration error naming the encoding. The godoc states the requirement.
 - **A failed prune's error no longer carries the server's text**, as `Verify`'s errors already do not.
 - **`Verify` names a temporary table for what it is**, instead of calling it unlogged and advising `SET LOGGED`.
@@ -30,7 +30,7 @@ None.
   - "A PostgreSQL limiter refuses a policy too large for one row" gets a new maximum, and a scenario showing the default chain builds.
   - "A PostgreSQL limiter reads and writes only the primary" gets a scenario for a temporary table.
   - New: "A PostgreSQL limiter refuses a database that is not UTF-8".
-  - New: "A PostgreSQL prune never holds a record past its timeout", with the batch-size default and override.
+  - New: "A PostgreSQL prune holds a record for at most one batch", with the batch-size default and override.
   - New: "A failed PostgreSQL prune reports a partial count and no server text".
 
 ## Impact
