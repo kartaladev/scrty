@@ -20,8 +20,8 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 
 ## 3. Test helpers
 
-- [ ] 3.1 Give `PostgresConn` `Stop` and `Start` for own servers, mirroring `RedisConn`, refusing both on a shared server. Red: a test that a query after `Stop` errors and one after `Start` succeeds, and a test that `Stop` on a shared server is refused. Verify: `go test -count=1 -run 'TestRunTestPostgres' ./...` in the `test` module.
-- [ ] 3.2 Add `RunTestPostgresStandby`, which starts a streaming standby of an own primary with `pg_basebackup -R`, from the same image (design decision 10). Red: a test that `pg_is_in_recovery()` is true on the standby, and that a row written on the primary appears there. Verify: that test green on both majors.
+- [x] 3.1 Give `PostgresConn` `Stop` and `Start` for own servers, mirroring `RedisConn`, refusing both on a shared server. Red: a test that a query after `Stop` errors and one after `Start` succeeds, and a test that `Stop` on a shared server is refused. Verify: `go test -count=1 -run 'TestRunTestPostgres' ./...` in the `test` module.
+- [x] 3.2 Add `RunTestPostgresStandby`, which starts a streaming standby of an own primary with `pg_basebackup -R`, from the same image (design decision 10). Red: a test that `pg_is_in_recovery()` is true on the standby, and that a row written on the primary appears there. Verify: that test green on both majors.
 
 ## 4. The limiter on `database/sql` (`sqlstore`)
 

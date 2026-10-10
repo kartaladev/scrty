@@ -429,3 +429,10 @@ func terminatePostgresContainer(ctx context.Context, ctr *postgres.PostgresConta
 		log.Printf("failed to terminate PostgreSQL container %s: %v", ctr.GetContainerID(), err)
 	}
 }
+
+// running reports whether the server's container is up, as the container
+// itself tracks it across Stop and Start. A server with no container is taken
+// to be running.
+func (s *postgresServer) running() bool {
+	return s.ctr == nil || s.ctr.IsRunning()
+}

@@ -1844,3 +1844,13 @@ func TestRunTestPostgresStandby_Migrations(t *testing.T) {
 		assert.NoError(c, s.Standby.DB.QueryRowContext(ctx, `SELECT count(*) FROM standby_migrated`).Scan(&n))
 	}, 30*time.Second, 200*time.Millisecond, "the primary's migration never reached the standby")
 }
+
+// A test that leaves its own server stopped must still clean up: terminating
+// the container removes the database, so neither the drop nor the migration
+// rollback may run against a server that is down.
+func TestRunTestPostgres_StopLeftStopped(t *testing.T) {
+	t.Parallel()
+
+	conn := RunTestPostgres(t, WithTestPostgresOwnServer())
+	conn.Stop(t)
+}

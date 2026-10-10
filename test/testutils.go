@@ -673,6 +673,12 @@ func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) Postg
 	// after both, on a database nothing in this call still uses; and after an
 	// own server's Terminate, so it runs before it.
 	tb.Cleanup(func() {
+		// An own server is terminated with the test, which removes the
+		// database; and a test may have left it stopped, where a drop could
+		// only fail.
+		if srv.resolve {
+			return
+		}
 		// Not tb.Context(): it is already cancelled by the time cleanup runs.
 		ctx, cancel := context.WithTimeout(context.Background(), postgresTeardownBudget)
 		defer cancel()
@@ -698,7 +704,14 @@ func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) Postg
 	if err != nil {
 		tb.Fatalf("%v", err)
 	}
-	postgresRegisterTeardown(tb, db, cfg, sets)
+	tb.Cleanup(func() {
+		// A test may have left its own server stopped: the rollback could
+		// only fail, and terminating the container removes the data anyway.
+		if srv.resolve && !srv.running() {
+			return
+		}
+		postgresTeardown(tb, db, cfg, sets)
+	})
 
 	conn := PostgresConn{DB: db, DSN: dsn}
 	if srv.resolve {
@@ -886,13 +899,6 @@ func postgresProviders(db *sql.DB, migrations []postgresMigrations) ([]postgresA
 		sets = append(sets, postgresAppliedSet{dir: m.dir, provider: p})
 	}
 	return sets, nil
-}
-
-// postgresRegisterTeardown registers the migration teardown of a call whose
-// database already carries sets: see postgresTeardown.
-func postgresRegisterTeardown(tb cleanupTB, db *sql.DB, cfg *testConfig, sets []postgresAppliedSet) {
-	tb.Helper()
-	tb.Cleanup(func() { postgresTeardown(tb, db, cfg, sets) })
 }
 
 // postgresTeardown rolls every one of sets back to version zero, last first,
