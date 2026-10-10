@@ -18,8 +18,10 @@ const (
 	LimiterTable = "rate_limit_buckets"
 
 	// LimiterMaxLimit is the largest limit a limiter may be built with. A
-	// bucket keeps at most that many stamps, which bounds the row's size.
-	LimiterMaxLimit = 128
+	// bucket keeps at most that many stamps, which bounds the row's size: at
+	// 400 stamps and the longest key a row is under 4 kB, so it stays in-line
+	// (the table's toast_tuple_target) and an update stays HOT.
+	LimiterMaxLimit = 400
 
 	// LimiterMaxNamespace is the longest namespace, in bytes.
 	LimiterMaxNamespace = 64
@@ -52,10 +54,11 @@ WHERE b.namespace = $1 AND b.key = $2
 	// $1 namespace, $2 key, $3 limit (int), $4 window in microseconds
 	// (int64), $5 now or NULL, $6 lock timeout as text, such as "250ms".
 	//
-	// A new key gets one row holding the stamp. An existing key keeps the
-	// newest $3 of its stamps and the new one, ascending, so a clock behind
-	// the stored newest stamp still leaves them ordered; newest_at and
-	// longest_window_us only grow (GREATEST).
+	// A new key gets one row holding the stamp. An existing key keeps at most
+	// $3 stamps, the new one included: the newest $3 of its stored stamps and
+	// the new one, ascending, so a clock behind the stored newest stamp still
+	// leaves them ordered; newest_at and longest_window_us only grow
+	// (GREATEST).
 	//
 	// lock_timeout is set, transaction-local, by a set_config in the SELECT
 	// the INSERT reads from. That SELECT is evaluated before ON CONFLICT

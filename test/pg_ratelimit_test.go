@@ -967,3 +967,43 @@ func TestSQLStoreLimiter_GormConsumer(t *testing.T) {
 		})
 	}
 }
+
+// TestPGLimiter_WidestRow pins the widest row the cap allows: a limit of 400
+// stamps under a 512-byte key records and counts without a "row is too big"
+// error, and the stamp array stays in the table's own storage.
+func TestPGLimiter_WidestRow(t *testing.T) {
+	t.Parallel()
+
+	for _, b := range []pgBackend{sqlstoreBackend, pgxBackend} {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := migratedLimiterDB(t)
+			const ns = "widest"
+			key := strings.Repeat("k", 512)
+			lim := b.limiter(t, conn.DB, conn.DSN, ns, 400, time.Hour, nil)
+
+			for range 400 {
+				require.NoError(t, lim.RecordFailure(t.Context(), key))
+			}
+			exceeded, err := lim.Exceeded(t.Context(), key)
+			require.NoError(t, err)
+			assert.True(t, exceeded)
+
+			var stamps int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT cardinality(stamps) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&stamps))
+			assert.Equal(t, 400, stamps)
+			// The stored datum is neither TOASTed nor compressed: its size is at
+			// least the raw 8 bytes of each of the 400 stamps.
+			var size int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT pg_column_size(stamps) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&size))
+			assert.GreaterOrEqual(t, size, 400*8, "stamp array was compressed or moved out of line")
+			var opts string
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT array_to_string(coalesce(reloptions, '{}'), ',') FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&opts))
+			assert.Contains(t, opts, "toast_tuple_target=8160")
+		})
+	}
+}

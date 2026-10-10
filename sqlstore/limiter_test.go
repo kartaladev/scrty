@@ -72,8 +72,8 @@ func TestNewLimiter(t *testing.T) {
 		},
 		{name: "zero limit", db: db, namespace: "api-key", limit: 0, window: time.Minute, assert: refused("limit")},
 		{name: "negative limit", db: db, namespace: "api-key", limit: -1, window: time.Minute, assert: refused("limit")},
-		{name: "limit 129", db: db, namespace: "api-key", limit: 129, window: time.Minute, assert: refused("128")},
-		{name: "limit 128 accepted", db: db, namespace: "api-key", limit: 128, window: time.Minute, assert: accepted},
+		{name: "limit 401", db: db, namespace: "api-key", limit: 401, window: time.Minute, assert: refused("400")},
+		{name: "limit 400 accepted", db: db, namespace: "api-key", limit: 400, window: time.Minute, assert: accepted},
 		{name: "sub-microsecond window", db: db, namespace: "api-key", limit: 20, window: 999 * time.Nanosecond, assert: refused("microsecond")},
 		{name: "one-microsecond window accepted", db: db, namespace: "api-key", limit: 20, window: time.Microsecond, assert: accepted},
 		{
@@ -314,7 +314,7 @@ func TestLimiterFactory_NewLimiter(t *testing.T) {
 		{name: "65-byte namespace", ask: request{strings.Repeat("n", 65), 3, time.Minute}, assert: refused("64")},
 		{name: "NUL in namespace", ask: request{"a\x00b", 3, time.Minute}, assert: refused("UTF-8", "NUL")},
 		{name: "invalid UTF-8 in namespace", ask: request{"a\xffb", 3, time.Minute}, assert: refused("UTF-8", "NUL")},
-		{name: "limit 129", ask: request{"api-key", 129, time.Minute}, assert: refused("128")},
+		{name: "limit 401", ask: request{"api-key", 401, time.Minute}, assert: refused("400")},
 		{
 			name: "a refused request does not claim the namespace",
 			before: func(t *testing.T, f *sqlstore.LimiterFactory) {

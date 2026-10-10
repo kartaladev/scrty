@@ -59,6 +59,9 @@ import (
 // it runs only bounds the table's size, never a limit: it removes a key only
 // once the longest window recorded for it has passed.
 //
+// The migration sets toast_tuple_target on the bucket table so a row of up to
+// 400 stamps stays in-line; dropping it costs performance, not correctness.
+//
 // It is safe for concurrent use.
 type LimiterFactory struct {
 	db    *sql.DB
@@ -125,7 +128,7 @@ func NewLimiterFactory(db *sql.DB, opts ...LimiterOption) (*LimiterFactory, erro
 //
 // A namespace this factory has already built with a different limit or
 // window is an error wrapping ratelimit.ErrConfig, naming the namespace and
-// both policies; so is anything NewLimiter refuses, a limit above 128 or a
+// both policies; so is anything NewLimiter refuses, a limit above 400 or a
 // namespace longer than 64 bytes included. A refused request does not claim
 // the namespace. On error the limiter is nil.
 func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {

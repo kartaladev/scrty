@@ -83,11 +83,11 @@ var (
 // PostgreSQL's text type cannot store), is stored as "sha256:" and the hex
 // digest of the key.
 //
-// Maximums: a limit of at most 128 and a namespace of at most 64 bytes,
-// counted in bytes, not characters. They keep the widest row under
-// PostgreSQL's TOAST threshold, so a record never rewrites an out-of-line
-// array. They have no override; a flow needing a larger limit belongs on the
-// Redis limiter.
+// Maximums: a limit of at most 400 and a namespace of at most 64 bytes,
+// counted in bytes, not characters. They keep the widest row under 4 kB, which
+// the migration's storage parameter (toast_tuple_target) keeps in-line, so a
+// record never rewrites an out-of-line array. They have no override; a flow
+// needing a larger limit belongs on the Redis limiter.
 //
 // Every replica must configure a namespace with the same limit and window.
 // Replicas that disagree, as during a rollout, each count with their own
@@ -111,7 +111,7 @@ var (
 // stored in; any part of it below a microsecond is dropped.
 //
 // It performs no I/O. A nil handle, an empty namespace or one containing a
-// colon, a NUL byte or invalid UTF-8, or longer than 64 bytes, a limit below 1 or above 128, a window
+// colon, a NUL byte or invalid UTF-8, or longer than 64 bytes, a limit below 1 or above 400, a window
 // shorter than one microsecond, or an option it refuses, such as an operation
 // timeout above 2147483647ms, is an error wrapping ratelimit.ErrConfig, and
 // the Limiter is nil.
