@@ -71,5 +71,5 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 
 ## 8. Integration
 
-- [ ] 8.1 Whole-branch gate: `gofmt -l` empty; `go vet ./...` clean in every module; the race detector green on core, `pgx` and `test` (`go test -race -count=1 ./...`), on both `SCRTY_TEST_POSTGRES_IMAGE` majors; and the module dependency guard passes (the core module has no new dependency).
+- [x] 8.1 Whole-branch gate: `gofmt -l` empty; `go vet ./...` clean in every module; the race detector green on core, `pgx` and `test` (`go test -race -count=1 ./...`), on both `SCRTY_TEST_POSTGRES_IMAGE` majors; and the module dependency guard passes (the core module has no new dependency).
 - [ ] 8.2 Whole-branch review against every requirement in this change's deltas (`rate-limiting`, `schema-migrations`, `security-state-stores`, `store-conformance`, `expiry-sweeping`). Every finding is either fixed or recorded in `design.md`.
