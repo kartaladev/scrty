@@ -18,8 +18,10 @@ const (
 	LimiterTable = "rate_limit_buckets"
 
 	// LimiterMaxLimit is the largest limit a limiter may be built with. A
-	// bucket keeps at most that many stamps, which bounds the row's size.
-	LimiterMaxLimit = 128
+	// bucket keeps at most that many stamps, which bounds the row's size: at
+	// 400 stamps and the longest key a row is under 4 kB, so it stays in-line
+	// (the table's toast_tuple_target) and an update stays HOT.
+	LimiterMaxLimit = 400
 
 	// LimiterMaxNamespace is the longest namespace, in bytes.
 	LimiterMaxNamespace = 64
@@ -52,10 +54,12 @@ WHERE b.namespace = $1 AND b.key = $2
 	// $1 namespace, $2 key, $3 limit (int), $4 window in microseconds
 	// (int64), $5 now or NULL, $6 lock timeout as text, such as "250ms".
 	//
-	// A new key gets one row holding the stamp. An existing key keeps the
-	// newest $3 of its stamps and the new one, ascending, so a clock behind
-	// the stored newest stamp still leaves them ordered; newest_at and
-	// longest_window_us only grow (GREATEST).
+	// A new key gets one row holding the stamp. For an existing key the
+	// stored stamps and the new one are taken together and the newest $3 of
+	// them are kept, ascending, so the row never holds more than $3 stamps. A
+	// stamp older than every kept one, such as a new one from a clock behind
+	// the stored stamps, is dropped; with room to spare it is kept in its
+	// place. newest_at and longest_window_us only grow (GREATEST).
 	//
 	// lock_timeout is set, transaction-local, by a set_config in the SELECT
 	// the INSERT reads from. That SELECT is evaluated before ON CONFLICT
@@ -71,31 +75,37 @@ ON CONFLICT (namespace, key) DO UPDATE SET
   newest_at = GREATEST(b.newest_at, EXCLUDED.newest_at),
   longest_window_us = GREATEST(b.longest_window_us, EXCLUDED.longest_window_us)`
 
-	// LimiterPrune deletes every key whose newest stamp is older than the
-	// longest window ever recorded for it: $1 now or NULL. Rows another
-	// transaction holds are skipped (FOR UPDATE SKIP LOCKED), so a sweep never
-	// waits on, or deletes under, a live record. Rows affected is the count
-	// removed.
-	LimiterPrune = `WITH t AS (SELECT coalesce($1::timestamptz, clock_timestamp()) AS now),
-victims AS (
-  SELECT b.namespace, b.key FROM rate_limit_buckets b CROSS JOIN t
-  WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= t.now
+	// LimiterPrune deletes one batch of idle keys: those whose newest stamp
+	// plus the longest window recorded for them is at or before $1, at most
+	// $2 of them. It locks each victim (FOR UPDATE), and the lock rechecks
+	// idleness on a row a record updated after the statement's snapshot, so a
+	// key recorded during the prune is kept. Rows another transaction holds
+	// are skipped (SKIP LOCKED), never waited for. Rows affected is the count
+	// removed. Run it in a loop until a batch removes fewer than $2, each batch
+	// its own transaction, so no record waits on more than one batch.
+	LimiterPrune = `WITH v AS (
+  SELECT b.namespace, b.key FROM rate_limit_buckets b
+  WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= $1::timestamptz
+  LIMIT $2::bigint
   FOR UPDATE OF b SKIP LOCKED)
-DELETE FROM rate_limit_buckets d USING victims v
+DELETE FROM rate_limit_buckets d USING v
 WHERE d.namespace = v.namespace AND d.key = v.key`
+
+	// LimiterClock reads the database clock once, for a prune's whole run.
+	LimiterClock = `SELECT clock_timestamp()`
 
 	// LimiterDeleteKey forgets one key: $1 namespace, $2 key.
 	LimiterDeleteKey = `DELETE FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`
 
 	// LimiterServerFacts reports, in one row, whether the server is a standby
-	// (in_recovery), its server_version_num, whether the bucket table
-	// resolves through search_path (table_exists) and whether that table is
-	// logged (logged).
+	// (in_recovery), its server_version_num, its server_encoding, and the
+	// relpersistence of the bucket table that resolves through search_path:
+	// 'p' permanent, 'u' unlogged, 't' temporary, or '' when none resolves.
 	LimiterServerFacts = `SELECT pg_is_in_recovery(),
   current_setting('server_version_num')::int,
-  to_regclass('rate_limit_buckets') IS NOT NULL,
-  coalesce((SELECT c.relpersistence = 'p' FROM pg_class c
-            WHERE c.oid = to_regclass('rate_limit_buckets')), false)`
+  current_setting('server_encoding'),
+  coalesce((SELECT c.relpersistence::text FROM pg_class c
+            WHERE c.oid = to_regclass('rate_limit_buckets')), '')`
 )
 
 // LimiterKey maps a caller's key to its stored form: as given, unless it is

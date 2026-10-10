@@ -151,6 +151,20 @@ func validate(backend ratelimit.Limiter, namespace string, limit int, window tim
 		return fmt.Errorf("%w: a limit of %d throttles every source from its first attempt", ratelimit.ErrConfig, limit)
 	case window <= 0:
 		return fmt.Errorf("%w: a window of %s counts no failure at all", ratelimit.ErrConfig, window)
+	}
+
+	return ValidateConfig(cfg)
+}
+
+// ValidateConfig checks cfg as Wrap does, without a backend, namespace or
+// policy: a known mode, a positive timeout and probe interval, a clock and a
+// logger. It is what a backend's factory checks its options with, so a wiring
+// mistake fails at the factory's constructor without building a decorator.
+//
+// A configuration Wrap would refuse is an error wrapping ratelimit.ErrConfig,
+// with the message Wrap gives.
+func ValidateConfig(cfg Config) error {
+	switch {
 	case !knownMode(cfg.Mode):
 		return fmt.Errorf("%w: unknown unavailable mode %d", ratelimit.ErrConfig, int(cfg.Mode))
 	case cfg.Timeout <= 0:

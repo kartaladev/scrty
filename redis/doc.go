@@ -35,8 +35,9 @@
 // WithLimiterClock replaces it.
 //
 // One namespace holds one policy. A factory refuses a namespace asked for
-// twice with a different limit or window. It cannot see other processes, so
-// every replica must configure each namespace the same way.
+// twice with a different limit or window. The check covers that factory only:
+// it cannot see another factory, in this process or another, so no two
+// factories or replicas may build one namespace with different policies.
 //
 // # Server requirements
 //

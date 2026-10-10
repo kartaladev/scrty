@@ -5,11 +5,10 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
-	"sync"
 	"time"
 
-	"github.com/kartaladev/scrty/internal/pgschema"
-	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/pglimiter"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -22,8 +21,11 @@ import (
 // limiter over the same buckets, exactly as another replica would: two chains
 // built from one factory, or a flow constructed twice, count together. Asked
 // for with a different limit or window, it is refused, because one bucket
-// cannot hold two policies. The factory cannot see other processes, so every
-// replica must still configure a namespace the same way.
+// cannot hold two policies.
+//
+// The check covers this factory only. It cannot see another factory in the
+// same process, over the same handle or not, nor another process, so no two
+// factories or replicas may build one namespace with different policies.
 //
 // The factory is also the table's pruner: hand it to ratelimit.ExpiryTask, and
 // run that task in the deployment's expiry.Runner. One prune covers every
@@ -34,7 +36,8 @@ import (
 //
 // Like the limiters it builds, it needs a handle that reaches only the
 // primary, ignores any transaction a caller has attached, and should be
-// checked with Verify at startup; see Limiter.
+// checked with Verify at startup; see Limiter. The database must be UTF8;
+// Verify refuses any other encoding.
 //
 // Each check is one primary-key read, and each recorded failure is one upsert
 // of one row, nearly always a HOT update, so a guarded flow writes to the
@@ -54,46 +57,33 @@ import (
 // connection churn that causes made the measured record p99 six to eight
 // times worse.
 //
-// Run the prune task every ten minutes or so. It scans the whole table, in
-// about 1.5s for a million rows, and skips any row a record holds. How often
-// it runs only bounds the table's size, never a limit: it removes a key only
-// once the longest window recorded for it has passed.
+// Run the prune task every ten minutes or so. It deletes in batches, about
+// 2.8s in all for a million idle rows, and skips any row a record holds. How
+// often it runs only bounds the table's size, never a limit: it removes a key
+// only once the longest window recorded for it has passed.
+//
+// The migration sets toast_tuple_target on the bucket table so a row of up to
+// 400 stamps stays in-line; dropping it costs performance, not correctness.
 //
 // It is safe for concurrent use.
 type LimiterFactory struct {
-	db    *sql.DB
-	opts  []LimiterOption
-	clock clock.Clock // nil: the database's clock
-	check limiterCheck
-
-	mu sync.Mutex
-	// built holds the policy each namespace was first built with.
-	built map[string]limiterPolicy
+	db       *sql.DB
+	opts     []LimiterOption
+	check    limiterCheck
+	registry *pglimiter.Registry
 }
-
-// limiterPolicy is the limit and window a namespace was built with.
-type limiterPolicy struct {
-	limit  int
-	window time.Duration
-}
-
-func (p limiterPolicy) String() string { return fmt.Sprintf("%d per %s", p.limit, p.window) }
 
 var (
 	_ ratelimit.LimiterFactory = (*LimiterFactory)(nil)
 	_ ratelimit.Pruner         = (*LimiterFactory)(nil)
 )
 
-// limiterFactoryProbeNamespace is the namespace of the limiter
-// NewLimiterFactory builds, and discards, to check the handle and options
-// once.
-const limiterFactoryProbeNamespace = "factory"
-
 // NewLimiterFactory returns a LimiterFactory whose limiters count in the
 // rate_limit_buckets table of the database behind db, each configured by
 // opts. The defaults are NewLimiter's: the database's clock, refusal while
 // the database cannot be reached, a 250ms operation timeout, a 1s probe
-// interval, sampled allow-mode logging every minute, and slog.Default().
+// interval, sampled allow-mode logging every minute, prune batches of 1,000 keys
+// (WithLimiterPruneBatchSize), and slog.Default().
 //
 // It checks db and opts as NewLimiter would, so a wiring mistake fails here
 // rather than at the first flow's constructor: a nil handle, or an option
@@ -105,17 +95,19 @@ const limiterFactoryProbeNamespace = "factory"
 // checks both.
 func NewLimiterFactory(db *sql.DB, opts ...LimiterOption) (*LimiterFactory, error) {
 	opts = slices.Clone(opts)
-	if _, err := NewLimiter(db, limiterFactoryProbeNamespace, 1, time.Second, opts...); err != nil {
+	if nilcheck.IsNil(db) {
+		return nil, fmt.Errorf("%w: the database handle is nil", ratelimit.ErrConfig)
+	}
+	cfg := newLimiterConfig(opts)
+	if err := cfg.core.Validate(); err != nil {
 		return nil, err
 	}
 
-	cfg := newLimiterConfig(opts)
 	return &LimiterFactory{
-		db:    db,
-		opts:  opts,
-		clock: cfg.clock,
-		check: newLimiterCheck(db, cfg),
-		built: map[string]limiterPolicy{},
+		db:       db,
+		opts:     opts,
+		check:    limiterCheck{runner: limiterRunner{db: db}, cfg: cfg.core},
+		registry: pglimiter.NewRegistry(),
 	}, nil
 }
 
@@ -125,28 +117,17 @@ func NewLimiterFactory(db *sql.DB, opts ...LimiterOption) (*LimiterFactory, erro
 //
 // A namespace this factory has already built with a different limit or
 // window is an error wrapping ratelimit.ErrConfig, naming the namespace and
-// both policies; so is anything NewLimiter refuses, a limit above 128 or a
+// both policies; so is anything NewLimiter refuses, a limit above 400 or a
 // namespace longer than 64 bytes included. A refused request does not claim
 // the namespace. On error the limiter is nil.
 func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
 	// The window is counted in whole microseconds, so 1m and 1m+500ns are one
 	// policy.
-	asked := limiterPolicy{limit: limit, window: window.Truncate(time.Microsecond)}
+	asked := pglimiter.Policy{Limit: limit, Window: window.Truncate(time.Microsecond)}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if p, ok := f.built[namespace]; ok && p != asked {
-		return nil, fmt.Errorf("%w: namespace %q is already built with %s, and was asked for %s; one bucket cannot hold two policies",
-			ratelimit.ErrConfig, namespace, p, asked)
-	}
-	l, err := NewLimiter(f.db, namespace, limit, window, f.opts...)
-	if err != nil {
-		return nil, err
-	}
-	f.built[namespace] = asked
-
-	return l, nil
+	return f.registry.Claim(namespace, asked, func() (ratelimit.Limiter, error) {
+		return NewLimiter(f.db, namespace, limit, window, f.opts...)
+	})
 }
 
 // Prune deletes every key, in every namespace of the table, whose newest
@@ -156,24 +137,20 @@ func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Dur
 // counts any failure of such a key, so a prune never frees quota. It accepts
 // no cutoff.
 //
-// It is one statement. Rows another session holds, such as a record in
-// flight, are skipped rather than waited for, and kept until a later prune. It
-// reads the whole table, so its cost grows with the number of keys; it applies
+// It runs in batches (WithLimiterPruneBatchSize), each its own transaction,
+// so a record on a key being pruned waits at most one batch: milliseconds on
+// a server with capacity to spare, but on an overloaded one a batch can
+// outlast the operation timeout, and the record behind it fails as
+// unavailable. Rows another session holds, such as a record in flight, are
+// skipped rather than waited for, and kept until a later prune. It applies
 // no operation timeout of its own, and is bounded by ctx, which an
-// expiry.Runner bounds with its run timeout.
+// expiry.Runner bounds with its run timeout; ctx is checked between batches.
 //
-// Run it through ratelimit.ExpiryTask(f). A database failure is an error
-// wrapping the driver's, with nothing deleted.
+// Run it through ratelimit.ExpiryTask(f). On a failure or an ended ctx, it
+// returns the keys the committed batches removed, a lower bound, with an
+// error that repeats none of the server's text.
 func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
-	res, err := f.db.ExecContext(ctx, pgschema.LimiterPrune, limiterNow(f.clock))
-	if err != nil {
-		return 0, fmt.Errorf("sqlstore: rate-limit prune: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("sqlstore: rate-limit prune: %w", err)
-	}
-	return int(n), nil
+	return pglimiter.Prune(ctx, f.check.runner, "sqlstore", f.check.cfg)
 }
 
 // Verify checks, before traffic, that the database behind the factory's
@@ -185,9 +162,12 @@ func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
 //   - a server in recovery: a standby lags, so it undercounts, and refuses
 //     writes;
 //   - a server older than PostgreSQL 15 (server_version_num 150000);
+//   - a database whose server encoding is not UTF8, SQL_ASCII included: keys
+//     and namespaces are stored as UTF-8;
 //   - a rate_limit_buckets table that does not resolve through the
 //     connection's search_path, naming the security-state migration set; a
 //     table of that name in a schema outside the search_path does not count;
+//   - a temporary table of that name, which shadows the migration's;
 //   - an unlogged table, which a crash truncates and a standby never
 //     receives, so a failover would reset every limit to zero;
 //   - a role that may not run the limiter's record, check or delete

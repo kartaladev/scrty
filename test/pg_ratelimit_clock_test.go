@@ -209,7 +209,7 @@ var pgDatabaseClockBroken = pgFaultVariants(runPGDatabaseClock,
 		failsWith: "newest_at differs from the newest stamp",
 	},
 	pgFaultVariant{
-		// The host's clock where none is configured: limiterNow returning
+		// The host's clock where none is configured: pglimiter.Now returning
 		// time.Now() for a nil clock. Every behavioural case passes it.
 		name: "host-clock-by-default",
 		backend: brokenLimiterBackend(func(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, o pgFaultOptions) ratelimit.Limiter {
@@ -233,4 +233,79 @@ func TestPGLimiter_DatabaseClockCatchesBrokenVariants(t *testing.T) {
 	t.Parallel()
 
 	catchPGFaultVariants(t, "TestPGLimiter_DatabaseClockBroken", pgDatabaseClockBroken)
+}
+
+// runPGBehindClock pins what a record keeps when the application clock reads
+// earlier than a stored stamp: the row never holds more than the limit, and a
+// stamp older than every kept one is the one dropped.
+func runPGBehindClock(t *testing.T, b pgFaultBackend) {
+	t.Helper()
+
+	base := time.Unix(1_700_000_000, 0)
+
+	type testCase struct {
+		name   string
+		limit  int
+		at     []time.Duration // application clock offsets of each record
+		assert func(t *testing.T, stamps []time.Time)
+	}
+
+	cases := []testCase{
+		{
+			name:  "a stamp older than every kept one is dropped at the limit",
+			limit: 2,
+			at:    []time.Duration{10 * time.Second, 11 * time.Second, 5 * time.Second},
+			assert: func(t *testing.T, stamps []time.Time) {
+				require.Len(t, stamps, 2, "the row holds more than the limit")
+				assert.True(t, stamps[0].Equal(base.Add(10*time.Second)), "oldest kept stamp: %v", stamps[0])
+				assert.True(t, stamps[1].Equal(base.Add(11*time.Second)), "newest kept stamp: %v", stamps[1])
+			},
+		},
+		{
+			name:  "a stamp behind the stored newest is kept while the row has room",
+			limit: 3,
+			at:    []time.Duration{10 * time.Second, 11 * time.Second, 5 * time.Second},
+			assert: func(t *testing.T, stamps []time.Time) {
+				require.Len(t, stamps, 3)
+				assert.True(t, stamps[0].Equal(base.Add(5*time.Second)), "ascending order lost: %v", stamps)
+				assert.True(t, stamps[2].Equal(base.Add(11*time.Second)), "ascending order lost: %v", stamps)
+			},
+		},
+	}
+
+	conn := migratedLimiterDB(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ns := pgScopedNamespace(t, "behind")
+			clk := clockwork.NewFakeClockAt(base)
+			l := b.limiter(t, conn, ns, tc.limit, time.Hour, pgFaultOptions{clock: clk})
+			var prev time.Duration
+			for _, at := range tc.at {
+				clk.Advance(at - prev)
+				prev = at
+				require.NoError(t, l.RecordFailure(t.Context(), "k"))
+			}
+
+			var stamps []time.Time
+			rows, err := conn.DB.QueryContext(t.Context(),
+				`SELECT unnest(stamps) FROM rate_limit_buckets WHERE namespace = $1 AND key = $2`, ns, "k")
+			require.NoError(t, err)
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var s time.Time
+				require.NoError(t, rows.Scan(&s))
+				stamps = append(stamps, s)
+			}
+			require.NoError(t, rows.Err())
+			tc.assert(t, stamps)
+		})
+	}
+}
+
+func TestPGLimiter_ApplicationClockBehindStoredStamps(t *testing.T) {
+	t.Parallel()
+
+	runPGFaultBackends(t, runPGBehindClock)
 }

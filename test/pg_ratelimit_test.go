@@ -12,13 +12,16 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/migrate"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -59,6 +62,10 @@ type pgBackend struct {
 	// allow builds a limiter in ratelimit.UnavailableAllow mode.
 	allow   pgLimiterBuilder
 	factory pgFactoryBuilder
+	// verifyFactory builds the factory a Verify case checks from its target,
+	// which may carry an afterConnect hook the backend's own pool must run.
+	// Nil means factory over the target's handle and DSN.
+	verifyFactory func(t *testing.T, target pgVerifyTarget, clk clock.Clock) pgFactory
 }
 
 // pgLimiterOptions are the options every sqlstore limiter in these tests
@@ -123,6 +130,20 @@ func pgxTestPool(t *testing.T, dsn string) *pgxpool.Pool {
 	return pool
 }
 
+// pgxTargetPool opens a pool of its own on the target's DSN, closed at
+// cleanup, running the target's afterConnect on every connection it opens.
+func pgxTargetPool(t *testing.T, target pgVerifyTarget) *pgxpool.Pool {
+	t.Helper()
+
+	cfg, err := pgxpool.ParseConfig(target.dsn)
+	require.NoError(t, err)
+	cfg.AfterConnect = target.afterConnect
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 // pgxBackend is the native pgx limiter.
 var pgxBackend = pgBackend{
 	name: "pgx",
@@ -142,6 +163,12 @@ var pgxBackend = pgBackend{
 	factory: func(t *testing.T, _ *sql.DB, dsn string, clk clock.Clock) pgFactory {
 		t.Helper()
 		f, err := pgxstore.NewLimiterFactory(pgxTestPool(t, dsn), pgxLimiterOptions(clk)...)
+		require.NoError(t, err)
+		return f
+	},
+	verifyFactory: func(t *testing.T, target pgVerifyTarget, clk clock.Clock) pgFactory {
+		t.Helper()
+		f, err := pgxstore.NewLimiterFactory(pgxTargetPool(t, target), pgxLimiterOptions(clk)...)
 		require.NoError(t, err)
 		return f
 	},
@@ -238,8 +265,8 @@ func TestSQLStoreLimiter_Conformance(t *testing.T) {
 
 // runPGKeys pins the stored form of keys: a key of 512 bytes is stored as
 // given and one of 513 as a digest, without the two sharing a bucket; a key
-// spelled like a digest is itself digested; and a limit of 128, the maximum,
-// is reached.
+// spelled like a digest is itself digested; and a limit at the maximum,
+// pgschema.LimiterMaxLimit, is reached.
 func runPGKeys(t *testing.T, b pgBackend) {
 	t.Helper()
 
@@ -272,7 +299,7 @@ func runPGKeys(t *testing.T, b pgBackend) {
 		{name: "512-byte key counts its own failures", limit: 3, recorded: long[:512], checked: long[:512], assert: exceeded},
 		{name: "513-byte key apart from its 512-byte prefix", limit: 3, recorded: long[:512], checked: long, assert: notExceeded},
 		{name: "key spelled as a digest is apart from the long key", limit: 3, recorded: long, checked: digestSpelled, assert: notExceeded},
-		{name: "limit at the maximum is reached", limit: 128, recorded: "k", checked: "k", assert: exceeded},
+		{name: "limit at the maximum is reached", limit: pgschema.LimiterMaxLimit, recorded: "k", checked: "k", assert: exceeded},
 	}
 
 	conn := migratedLimiterDB(t)
@@ -657,6 +684,53 @@ type pgVerifyTarget struct {
 	db    *sql.DB
 	dsn   string
 	admin *sql.DB
+	// afterConnect, when set, runs on every connection the backend opens to
+	// the database; db already runs it, and the pgx backend's own pool is
+	// built to run it too.
+	afterConnect func(ctx context.Context, c *pgx.Conn) error
+}
+
+// pgEncodedDatabase creates a database with encoding enc on conn's server,
+// dropped at cleanup, and returns a target on it. It carries no migration;
+// Verify must refuse it on the encoding before it looks for the table.
+func pgEncodedDatabase(t *testing.T, conn PostgresConn, enc string) pgVerifyTarget {
+	t.Helper()
+
+	sum := sha256.Sum256([]byte(t.Name()))
+	name := "scrty_enc_" + hex.EncodeToString(sum[:6])
+	_, err := conn.DB.ExecContext(t.Context(),
+		`CREATE DATABASE `+name+` ENCODING '`+enc+`' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`) //nolint:gosec // G202: fixed identifiers
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, err := conn.DB.ExecContext(ctx, `DROP DATABASE `+name+` WITH (FORCE)`) //nolint:gosec // G202: fixed identifier
+		assert.NoError(t, err)
+	})
+
+	u, err := url.Parse(conn.DSN)
+	require.NoError(t, err)
+	u.Path = "/" + name
+	db, err := sql.Open("pgx", u.String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() }) // runs before the drop: cleanups are last in, first out
+	return pgVerifyTarget{db: db, dsn: u.String(), admin: conn.DB}
+}
+
+// pgTempTableTarget returns a target on conn's database whose every
+// connection has a temporary rate_limit_buckets shadowing the migration's.
+func pgTempTableTarget(t *testing.T, conn PostgresConn) pgVerifyTarget {
+	t.Helper()
+
+	shadow := func(ctx context.Context, c *pgx.Conn) error {
+		_, err := c.Exec(ctx, `CREATE TEMP TABLE rate_limit_buckets (LIKE public.rate_limit_buckets INCLUDING ALL)`)
+		return err
+	}
+	cfg, err := pgx.ParseConfig(conn.DSN)
+	require.NoError(t, err)
+	db := stdlib.OpenDB(*cfg, stdlib.OptionAfterConnect(shadow))
+	t.Cleanup(func() { _ = db.Close() })
+	return pgVerifyTarget{db: db, dsn: conn.DSN, admin: conn.DB, afterConnect: shadow}
 }
 
 // pgRoleTarget creates a login role on conn's server that holds only
@@ -765,6 +839,31 @@ CREATE TABLE other.rate_limit_buckets (
 			assert: refused("security-state migration set"),
 		},
 		{
+			name:   "LATIN1 database",
+			target: func(t *testing.T) pgVerifyTarget { return pgEncodedDatabase(t, migratedLimiterDB(t), "LATIN1") },
+			assert: refused("LATIN1", "UTF8"),
+		},
+		{
+			name:   "SQL_ASCII database",
+			target: func(t *testing.T) pgVerifyTarget { return pgEncodedDatabase(t, migratedLimiterDB(t), "SQL_ASCII") },
+			assert: refused("SQL_ASCII", "UTF8"),
+		},
+		{
+			name:   "EUC_JP database",
+			target: func(t *testing.T) pgVerifyTarget { return pgEncodedDatabase(t, migratedLimiterDB(t), "EUC_JP") },
+			assert: refused("EUC_JP", "UTF8"),
+		},
+		{
+			// The database is UTF8, so the encoding check passes and the
+			// persistence check is the one that must refuse.
+			name:   "temporary table shadowing the migration's",
+			target: func(t *testing.T) pgVerifyTarget { return pgTempTableTarget(t, migratedLimiterDB(t)) },
+			assert: func(t *testing.T, target pgVerifyTarget, err error) {
+				refused("temporary")(t, target, err)
+				assert.NotContains(t, err.Error(), "SET LOGGED")
+			},
+		},
+		{
 			name: "unlogged table",
 			target: func(t *testing.T) pgVerifyTarget {
 				conn := migratedLimiterDB(t)
@@ -801,7 +900,7 @@ CREATE TABLE other.rate_limit_buckets (
 			name: "unreachable server",
 			target: func(t *testing.T) pgVerifyTarget {
 				set := migrate.SecurityState()
-				conn := RunTestPostgres(t, WithTestPostgresOwnServer(),
+				conn := RunTestPostgres(t, WithTestPostgresRestartable(),
 					WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
 				conn.Stop(t)
 				return plain(conn)
@@ -837,7 +936,12 @@ CREATE TABLE other.rate_limit_buckets (
 				ctx = tc.ctx(ctx)
 			}
 			for _, clk := range []clock.Clock{nil, clockwork.NewFakeClockAt(time.Unix(1_700_000_000, 0))} {
-				f := b.factory(t, target.db, target.dsn, clk)
+				var f pgFactory
+				if b.verifyFactory != nil {
+					f = b.verifyFactory(t, target, clk)
+				} else {
+					f = b.factory(t, target.db, target.dsn, clk)
+				}
 				tc.assert(t, target, f.Verify(ctx))
 				if tc.prunes {
 					_, err := f.Prune(ctx)
@@ -964,6 +1068,54 @@ func TestSQLStoreLimiter_GormConsumer(t *testing.T) {
 			require.NoError(t, first.RecordFailure(t.Context(), "k"))
 			require.NoError(t, second.RecordFailure(t.Context(), "k"))
 			tc.assert(t, first, second)
+		})
+	}
+}
+
+// TestPGLimiter_WidestRow pins the widest row the cap allows: a limit of 400
+// stamps under a 512-byte key records and counts without a "row is too big"
+// error, and the stamp array stays in the table's own storage.
+func TestPGLimiter_WidestRow(t *testing.T) {
+	t.Parallel()
+
+	for _, b := range []pgBackend{sqlstoreBackend, pgxBackend} {
+		t.Run(b.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := migratedLimiterDB(t)
+			const ns = "widest"
+			key := strings.Repeat("k", 512)
+			lim := b.limiter(t, conn.DB, conn.DSN, ns, 400, time.Hour, nil)
+
+			for range 400 {
+				require.NoError(t, lim.RecordFailure(t.Context(), key))
+			}
+			exceeded, err := lim.Exceeded(t.Context(), key)
+			require.NoError(t, err)
+			assert.True(t, exceeded)
+
+			var stamps int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT cardinality(stamps) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&stamps))
+			assert.Equal(t, 400, stamps)
+			// The stored datum is neither TOASTed nor compressed: its size is at
+			// least the raw 8 bytes of each of the 400 stamps.
+			var size int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT pg_column_size(stamps) FROM rate_limit_buckets WHERE namespace = $1`, ns).Scan(&size))
+			assert.GreaterOrEqual(t, size, 400*8, "stamp array was compressed or moved out of line")
+			var opts string
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT array_to_string(coalesce(reloptions, '{}'), ',') FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&opts))
+			assert.Contains(t, opts, "toast_tuple_target=8160")
+			// The table's TOAST relation holds no row: nothing was moved out of
+			// line, whatever the datum's size.
+			var toastRel string
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT format('%s', reltoastrelid::regclass) FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&toastRel))
+			var toastRows int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM `+toastRel).Scan(&toastRows))
+			assert.Zero(t, toastRows, "the stamp array was moved to the TOAST table")
 		})
 	}
 }

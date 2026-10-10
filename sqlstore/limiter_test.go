@@ -72,8 +72,8 @@ func TestNewLimiter(t *testing.T) {
 		},
 		{name: "zero limit", db: db, namespace: "api-key", limit: 0, window: time.Minute, assert: refused("limit")},
 		{name: "negative limit", db: db, namespace: "api-key", limit: -1, window: time.Minute, assert: refused("limit")},
-		{name: "limit 129", db: db, namespace: "api-key", limit: 129, window: time.Minute, assert: refused("128")},
-		{name: "limit 128 accepted", db: db, namespace: "api-key", limit: 128, window: time.Minute, assert: accepted},
+		{name: "limit 401", db: db, namespace: "api-key", limit: 401, window: time.Minute, assert: refused("400")},
+		{name: "limit 400 accepted", db: db, namespace: "api-key", limit: 400, window: time.Minute, assert: accepted},
 		{name: "sub-microsecond window", db: db, namespace: "api-key", limit: 20, window: 999 * time.Nanosecond, assert: refused("microsecond")},
 		{name: "one-microsecond window accepted", db: db, namespace: "api-key", limit: 20, window: time.Microsecond, assert: accepted},
 		{
@@ -229,6 +229,27 @@ func TestNewLimiterFactory(t *testing.T) {
 			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOperationTimeout(2147483648 * time.Millisecond)},
 			assert: refused("at most 2147483647ms"),
 		},
+		{
+			name: "prune batch 1 accepted", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterPruneBatchSize(1)}, assert: accepted,
+		},
+		{
+			name: "prune batch 0", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterPruneBatchSize(0)}, assert: refused("batch"),
+		},
+		{
+			name: "prune batch -1", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{sqlstore.WithLimiterPruneBatchSize(-1)}, assert: refused("batch"),
+		},
+		{
+			name: "nil option ignored", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{nil, sqlstore.WithLimiterPruneBatchSize(2)}, assert: accepted,
+		},
+		{
+			// The option after the nil one still applies, so its invalid size is refused.
+			name: "option after a nil option applies", db: new(sql.DB),
+			opts: []sqlstore.LimiterOption{nil, sqlstore.WithLimiterPruneBatchSize(0)}, assert: refused("batch"),
+		},
 	}
 
 	for _, tc := range cases {
@@ -314,7 +335,7 @@ func TestLimiterFactory_NewLimiter(t *testing.T) {
 		{name: "65-byte namespace", ask: request{strings.Repeat("n", 65), 3, time.Minute}, assert: refused("64")},
 		{name: "NUL in namespace", ask: request{"a\x00b", 3, time.Minute}, assert: refused("UTF-8", "NUL")},
 		{name: "invalid UTF-8 in namespace", ask: request{"a\xffb", 3, time.Minute}, assert: refused("UTF-8", "NUL")},
-		{name: "limit 129", ask: request{"api-key", 129, time.Minute}, assert: refused("128")},
+		{name: "limit 401", ask: request{"api-key", 401, time.Minute}, assert: refused("400")},
 		{
 			name: "a refused request does not claim the namespace",
 			before: func(t *testing.T, f *sqlstore.LimiterFactory) {

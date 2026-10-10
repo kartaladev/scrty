@@ -3,16 +3,14 @@ package pgx
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/pglimiter"
 	"github.com/kartaladev/scrty/internal/unavailable"
-	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -47,8 +45,9 @@ import (
 // # Startup
 //
 // Constructors perform no I/O. Call Verify at startup, before traffic: it
-// refuses a standby, an unsupported server, a missing or unlogged table, and
-// a role that may not run the limiter's statements.
+// refuses a standby, an unsupported server, a database that is not UTF8, a
+// missing, unlogged or temporary table, and a role that may not run the
+// limiter's statements.
 //
 // # Pruning
 //
@@ -84,11 +83,11 @@ var (
 // PostgreSQL's text type cannot store), is stored as "sha256:" and the hex
 // digest of the key.
 //
-// Maximums: a limit of at most 128 and a namespace of at most 64 bytes,
-// counted in bytes, not characters. They keep the widest row under
-// PostgreSQL's TOAST threshold, so a record never rewrites an out-of-line
-// array. They have no override; a flow needing a larger limit belongs on the
-// Redis limiter.
+// Maximums: a limit of at most 400 and a namespace of at most 64 bytes,
+// counted in bytes, not characters. They keep the widest row under 4 kB, which
+// the migration's storage parameter (toast_tuple_target) keeps in-line, so a
+// record never rewrites an out-of-line array. They have no override; a flow
+// needing a larger limit belongs on the Redis limiter.
 //
 // Every replica must configure a namespace with the same limit and window.
 // Replicas that disagree, as during a rollout, each count with their own
@@ -112,71 +111,36 @@ var (
 // stored in; any part of it below a microsecond is dropped.
 //
 // It performs no I/O. A nil pool (a typed nil included), an empty namespace or one containing a
-// colon, a NUL byte or invalid UTF-8, or longer than 64 bytes, a limit below 1 or above 128, a window
+// colon, a NUL byte or invalid UTF-8, or longer than 64 bytes, a limit below 1 or above 400, a window
 // shorter than one microsecond, or an option it refuses, such as an operation
 // timeout above 2147483647ms, is an error wrapping ratelimit.ErrConfig, and
 // the Limiter is nil.
 func NewLimiter(pool *pgxpool.Pool, namespace string, limit int, window time.Duration, opts ...LimiterOption) (*Limiter, error) {
 	cfg := newLimiterConfig(opts)
-	if err := validateLimiter(pool, namespace, limit, window, cfg); err != nil {
+	if nilcheck.IsNil(pool) {
+		return nil, fmt.Errorf("%w: the pool is nil", ratelimit.ErrConfig)
+	}
+	if err := pglimiter.ValidatePolicy(namespace, limit, window); err != nil {
+		return nil, err
+	}
+	if err := cfg.core.Validate(); err != nil {
 		return nil, err
 	}
 
 	window = window.Truncate(time.Microsecond)
-	b := &limiterBackend{
-		pool:        pool,
-		namespace:   namespace,
-		limit:       limit,
-		windowUS:    window.Microseconds(),
-		clock:       cfg.clock,
-		lockTimeout: lockTimeout(cfg.unavailable.Timeout),
-	}
-	wrapped, err := unavailable.Wrap(b, namespace, limit, window, cfg.unavailable)
+	r := limiterRunner{pool: pool}
+	wrapped, err := unavailable.Wrap(pglimiter.NewBackend(r, "pgx", namespace, limit, window, cfg.core),
+		namespace, limit, window, cfg.core.Unavailable)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Limiter{
 		limiter: wrapped,
-		check:   newLimiterCheck(pool, cfg),
+		check:   limiterCheck{runner: r, cfg: cfg.core},
 		limit:   limit,
 		window:  window,
 	}, nil
-}
-
-func validateLimiter(pool *pgxpool.Pool, namespace string, limit int, window time.Duration, cfg limiterConfig) error {
-	switch {
-	case nilcheck.IsNil(pool):
-		return fmt.Errorf("%w: the pool is nil", ratelimit.ErrConfig)
-	case namespace == "":
-		return fmt.Errorf("%w: the namespace is empty, so this limiter would share buckets with every other", ratelimit.ErrConfig)
-	case strings.Contains(namespace, ":"):
-		return fmt.Errorf("%w: the namespace %q contains a colon, which separates it from the key", ratelimit.ErrConfig, namespace)
-	case !utf8.ValidString(namespace) || strings.ContainsRune(namespace, 0):
-		return fmt.Errorf("%w: the namespace must be valid UTF-8 without NUL bytes, which PostgreSQL's text type cannot store", ratelimit.ErrConfig)
-	case len(namespace) > pgschema.LimiterMaxNamespace:
-		return fmt.Errorf("%w: the namespace is %d bytes, longer than the %d bytes a bucket's row holds",
-			ratelimit.ErrConfig, len(namespace), pgschema.LimiterMaxNamespace)
-	case limit <= 0:
-		return fmt.Errorf("%w: a limit of %d throttles every source from its first attempt", ratelimit.ErrConfig, limit)
-	case limit > pgschema.LimiterMaxLimit:
-		return fmt.Errorf("%w: a limit of %d is above %d, the most failure stamps a bucket's row holds",
-			ratelimit.ErrConfig, limit, pgschema.LimiterMaxLimit)
-	case window < time.Microsecond:
-		return fmt.Errorf("%w: a window of %s is shorter than the microsecond stamps are stored in", ratelimit.ErrConfig, window)
-	case cfg.unavailable.Timeout.Milliseconds() > pgschema.LimiterMaxLockTimeoutMS:
-		return fmt.Errorf("%w: an operation timeout of %s is above the lock_timeout PostgreSQL accepts, at most %dms",
-			ratelimit.ErrConfig, cfg.unavailable.Timeout, pgschema.LimiterMaxLockTimeoutMS)
-	case cfg.clockSet && nilcheck.IsNil(cfg.clock):
-		return fmt.Errorf("%w: the limiter clock is nil", ratelimit.ErrConfig)
-	}
-	return nil
-}
-
-// lockTimeout is the record's lock_timeout for an operation timeout d: whole
-// milliseconds, at least one, since zero would turn the setting off.
-func lockTimeout(d time.Duration) string {
-	return fmt.Sprintf("%dms", max(d.Milliseconds(), 1))
 }
 
 // Exceeded reports whether key holds the limit's number of failures within
@@ -216,48 +180,21 @@ func (l *Limiter) Policy() (limit int, window time.Duration) {
 // error.
 func (l *Limiter) Verify(ctx context.Context) error { return l.check.verify(ctx) }
 
-// limiterBackend talks to the database; the decorator from
-// internal/unavailable wraps it with the operation timeout, the breaker and
-// the unavailable modes.
-type limiterBackend struct {
-	pool        *pgxpool.Pool
-	namespace   string
-	limit       int
-	windowUS    int64
-	clock       clock.Clock // nil: the database's clock
-	lockTimeout string
+// limiterRunner runs the shared limiter's statements on the pool, never in a
+// transaction.
+type limiterRunner struct{ pool *pgxpool.Pool }
+
+func (r limiterRunner) Exec(ctx context.Context, q string, args ...any) (pglimiter.Result, error) {
+	tag, err := r.pool.Exec(ctx, q, args...)
+	return commandResult(tag), err
 }
 
-// now is the statements' now parameter: nil, which they read as the
-// database's clock_timestamp(), or the application clock in whole
-// microseconds.
-func (b *limiterBackend) now() any {
-	return limiterNow(b.clock)
-}
+// commandResult is a command tag as the shared limiter's Result; pgx always
+// reports the row count, so RowsAffected never fails.
+type commandResult pgconn.CommandTag
 
-// limiterNow is the now parameter for clk: nil for the database's clock.
-func limiterNow(clk clock.Clock) any {
-	if clk == nil {
-		return nil
-	}
-	return clk.Now().UTC().Truncate(time.Microsecond)
-}
+func (c commandResult) RowsAffected() (int64, error) { return pgconn.CommandTag(c).RowsAffected(), nil }
 
-func (b *limiterBackend) Exceeded(ctx context.Context, key string) (bool, error) {
-	var n int
-	err := b.pool.QueryRow(ctx, pgschema.LimiterCheck,
-		b.namespace, pgschema.LimiterKey(key), b.windowUS, b.now()).Scan(&n)
-	if err != nil {
-		return true, fmt.Errorf("pgx: rate-limit check: %w", err)
-	}
-	return n >= b.limit, nil
-}
-
-func (b *limiterBackend) RecordFailure(ctx context.Context, key string) error {
-	_, err := b.pool.Exec(ctx, pgschema.LimiterRecord,
-		b.namespace, pgschema.LimiterKey(key), b.limit, b.windowUS, b.now(), b.lockTimeout)
-	if err != nil {
-		return fmt.Errorf("pgx: rate-limit record: %w", err)
-	}
-	return nil
+func (r limiterRunner) QueryRow(ctx context.Context, q string, args ...any) pglimiter.Row {
+	return r.pool.QueryRow(ctx, q, args...)
 }

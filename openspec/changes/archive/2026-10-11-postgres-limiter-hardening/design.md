@@ -18,15 +18,17 @@ Constraints that shape the approach:
 - One copy of the logic both adapters share.
 
 **Non-Goals:**
-- **A cap-free limiter (one row per failure).** It stays the escape hatch for limits above the new maximum (decision 1, option C).
+- **A cap-free limiter (one row per failure)** (decision 1, option C). A limit above the new maximum goes to the Redis limiter or the consumer's own.
 - **Clamping the chain's default aggregate to a backend's maximum.** It would add an interface to `ratelimit` and change `httpsec` for a case the new maximum already covers.
 - **Any change to the Redis limiter's behaviour.** Only its godoc sentence changes (decision 8).
 
 ## Decisions
 
-### 1. The limit maximum — **PENDING: the user's decision**
+### 1. The limit maximum rises to 400 through a storage parameter
 
-The specs and tasks wait on this decision. The prune, encoding and other decisions below do not depend on it.
+**Decision:** option A, chosen by the user on 2026-10-10. The migration sets `toast_tuple_target = 8160` on `rate_limit_buckets`, and the maximum limit rises from 128 to 400. A limit above 400 is a configuration error naming 400.
+- **Default:** 400, with the storage parameter set by the migration.
+- **Override:** none for the maximum itself; a consumer needing more uses the Redis limiter or their own limiter behind the port. The storage parameter can be changed with `ALTER TABLE … SET`, at a cost in performance, not correctness, and `Verify` does not check it.
 
 **Measured** (postgres 15.19 and 18.6, Docker on arm64 macOS; directional, single client):
 - **The binding ceiling is HOT, not TOAST.** An update is HOT only while old and new versions fit one 8 kB page, so a row of about 4,072 bytes or less. At 4,168 bytes, HOT fell to 0%, with about 4.5 kB of WAL per update. TOAST's trigger, a row of about 2,032 bytes, can be raised.
@@ -36,8 +38,8 @@ The specs and tasks wait on this decision. The prune, encoding and other decisio
   - 450 stamps: 4,256 bytes with a 512-byte key.
 - **The hard per-row limit** is 8,160 bytes (`row is too big`), about 1,010 stamps.
 
-**Options:**
-- **A (recommended).** Set `toast_tuple_target = 8160` on `rate_limit_buckets` in the migration, and raise the maximum to **400**.
+**Options considered:**
+- **A (chosen).** Set `toast_tuple_target = 8160` on `rate_limit_buckets` in the migration, and raise the maximum to **400**.
   - **Measured:** the array stays in-line and uncompressed. HOT was 100% up to about 450 stamps, even at the 512-byte key maximum. At 256 stamps it ran 5,273 tps against 4,236 for default storage on pg18.
   - **Reach:** covers the defaults, and a login limit doubled to 100.
   - **Above 400:** a configuration error naming 400. The consumer uses the Redis limiter or their own limiter behind the port.
@@ -83,12 +85,17 @@ WHERE d.namespace = v.namespace AND d.key = v.key
 - **Default:** 1,000 keys per batch.
 - **Override:** a new factory option, `WithLimiterPruneBatchSize(n)`, on both backends. An `n` below 1 is a configuration error.
 - **Measured** at batches of 1,000, with 10⁶ idle rows and the same record load:
-  - batches took 18–29ms;
+  - batches took about 3ms each when the test ran alone (99% within 8ms, the final full-table scan up to 99ms). An earlier figure of 18–29ms per batch contradicted the 2.7–2.8s total and was wrong;
   - the worst record wait was 9–92ms, and no record waited over 250ms;
   - the run took 2.7–2.8s in total;
   - no recorded key was lost.
   - At steady state (2% victims), 392ms against 410ms for the single statement.
+  - **Rechecked at the final gate** (2026-10-11), `BenchmarkPostgresLimiterPrune`, 6 runs each, against the branch's base (90% of rows idle):
+    - 10⁶ rows: batched 1.9–3.0s against 1.26–1.47s for the single statement, on PostgreSQL 15 and 18. The batched total agrees with the 2.7–2.8s above.
+    - 10⁵ rows: batched 479–669ms against 91–116ms, 4–7 times longer. This cost was not recorded before. A fixed cost per batch commit, about 5ms on the benchmark host, would explain it; that is unverified. The prune runs in the background every ten minutes or so, so its total time is not on any request's path, and the trade (a longer run for a bounded wait per record) is the one this decision makes.
+    - No key that should survive was removed, and no batch returned an error.
   - Batches of 5,000 or more ran 116–289ms each, too close to the record's timeout.
+- **The limit of the bound.** A record waits at most one batch, but a batch is not always short. Measured across 22 runs of the prune test inside the whole test module, with the host starved by the module's other test binaries (21,975 batches): typically 3.7ms, 99% within 97ms, 99.9% within 310ms, worst 870ms. 30 batches went over 250ms, mostly the first four of a run and the final full-table scan. On an overloaded server a record behind such a batch fails as unavailable. The godoc of `WithLimiterPruneBatchSize` and of `Prune` states this limit, as `library-design` requires of a limit on a guarantee. A per-batch time budget and a smaller default were considered and not taken: neither removes the limit, because a starved host delays a record without any prune at all (below, under the defect claim).
 - **Guarantees.** Both were tested with a forced race:
   - **A key updated after the batch's snapshot is kept.** The locking subquery rechecks the bound on the new version.
   - **A held row is skipped, not waited for.**
@@ -194,12 +201,23 @@ Each claim is marked REPRODUCED or UNREPRODUCED, as `defect-claims.md` requires.
   - **Command:** `go test -count=1 -run TestRepro_PostgresFactoryWithDefaultFormLogin ./httpsec/`
   - **Failure:** `EnableFormLogin could not build its IPv6 aggregate limiter for namespace "password-login-ipv6-aggregate": ratelimit: invalid configuration: a limit of 200 is above 128, the most failure stamps a bucket's row holds`
   - **Shown to target the defect:** it passes once the maximum is raised in the export.
-  - **First task:** the same test, over both PostgreSQL factories, is this change's first red step.
-- **Decision 2 — REPRODUCED by experiment; failing test pending.** The measurements are in decision 2. The first task for it is a Go test in which a record on a victim key, during a prune over enough rows, fails against the single statement.
-- **Decision 3 — REPRODUCED by experiment for the SQLSTATEs; UNREPRODUCED for the breaker trip.** The first task is a `Verify` test against a LATIN1 and an EUC_JP database, seen passing vacuously today, then red once asserted.
-- **Decisions 4 and 5 — UNREPRODUCED** (no failing test yet). The first task for each is the failing test:
-  - a prune error over a driver error with a distinctive message, whose text must not appear;
-  - `Verify` against a temporary table, whose message must name it.
+  - **In-tree test:** `TestPGLimiter_DefaultChainBuilds`, over both factories (`test/pg_ratelimit_chain_test.go`). Before task 1.3 both subtests failed with the same configuration error naming 128. The boundary is pinned by `TestPGLimiter_WidestRow` and by the 400/401 cases of `TestNewLimiter` and `TestLimiterFactory_NewLimiter` in `sqlstore` and `pgx`.
+- **Decision 2 — REPRODUCED.**
+  - **Test:** `TestPGLimiter_PruneUnderRecords`, over both backends (`test/pg_ratelimit_prune_test.go`). It runs a prune over 1,000,000 idle keys while records with the default 250ms operation timeout hit victim keys. Every record must finish in time, and every recorded key must remain.
+  - **Failure against the single statement:** `records waited on the prune past their timeout`. On sqlstore, 795 of 929 records went over 250ms; on pgx, 616 of 743. Later records failed at once, because the breaker had opened.
+  - **With the batched prune:** no record went over 250ms, and the worst wait was 12–20ms across repeated runs.
+  - **Load-sensitivity, investigated.** Inside the whole test module the test failed 5 of 5 runs and alone 0 of 2. The first failing record was waiting to open a new connection and prepare its first statement (the server logged 142–212ms prepares on new sessions) while the host was starved; the breaker then failed the records after it. No lock wait was logged in the failing runs, and a control that replaced the prune with a 9s sleep failed 3 of 3. So the failure was the test's cold connection pool, not the prune. The scenario now requires the records' connections to be open, and the test warms its pool before the prune starts. Warming alone still left 3 of 6 full-module runs failing on the client's clock (prune 10–26s instead of about 3s, longest lock wait 139ms, one record finished 2ms late without error). So the test asserts on what the prune causes: the longest lock wait the server shows, sampled every 10ms, stays under the record's timeout. Against a one-batch prune, the sampler saw a 250ms wait, which is where the timeout cut it off, so the test still fails on a prune that holds its victims for the whole run. Client-side slow records are logged, with the first failure named, and are not asserted on. The test also requires that at least 100 records reached the database and succeeded (so a breaker refusing every record cannot pass it), that no gap between successful samples reaches the timeout (so the sampler could not have missed a whole wait), that no record failed with SQLSTATE 55P03, and that both statements are shorter than `track_activity_query_size` (so the sampler matches their full text). The gap guard needs a quiet host: inside `go test ./...` the test module's 11 packages run at once, and their load stalled the sampler past 250ms in 1 of 2 runs. So the test runs only in its own invocation: it skips unless `SCRTY_TEST_ISOLATED` is set, and `make test-isolated`, part of `make check`, runs it alone with `-p 1`. One limitation is stated rather than fixed: batches of 1,000 out of 10⁶ keys rarely meet a record's key, so a real run sees zero or one wait. The assertion bites on a prune that holds its locks too long, as the one-batch and slow-batch variants showed, not on a typical run. A record on a first-batch key possibly waited on that batch's lock in 2 of 10 traced failures; lock logging was off in those runs, so that stays UNREPRODUCED.
+  - **Guarantees:** `TestPGLimiter_PruneCatchesBrokenVariants` pins both. The `prune-without-row-lock` variant is caught by the uncommitted-record case, and `prune-without-skip-locked` by the held-row case.
+- **Decision 3 — REPRODUCED for the `Verify` refusal; the SQLSTATEs are reproduced by experiment; the breaker trip stays UNREPRODUCED**, since it was not run end to end.
+  - **Tests:** `TestSQLStoreLimiter_Verify` and `TestPgxLimiter_Verify`, cases "LATIN1 database", "SQL_ASCII database" and "EUC_JP database", each run on the factory and on the limiter. Before task 4.3 the error named the missing table, not the encoding.
+  - **Unit tests:** `TestFactsCheck`, cases "LATIN1 database", "SQL_ASCII database" and "encoding before the missing table".
+- **Decision 4 — REPRODUCED.**
+  - **Test:** `TestPGLimiter_FactoryPruneBatches`, case "failed batch after a committed one returns its count and no server text", on both backends. A trigger raises a distinctive message on the third delete. Before task 5.4 the prune returned 0 with five rows left, and the error carried the server's message.
+  - **Unit tests:** `TestPrune` (`internal/pglimiter`), cases "failed second batch", "clock read fails", "unreadable row count fails the batch", "cancelled during first batch", and the batch whose Exec hits the deadline.
+- **Decision 5 — REPRODUCED.**
+  - **Test:** `TestSQLStoreLimiter_Verify` and `TestPgxLimiter_Verify`, case "temporary table shadowing the migration's". Before task 4.3 the error called the table unlogged and advised `SET LOGGED`.
+  - **Unit test:** `TestFactsCheck`, case "temporary table".
+- **Final-gate benchmark, limiter at the default limits** (2026-10-11): `BenchmarkPostgresLimiter/ff=70/av=default`, every load, pool and backend, 6 runs each on PostgreSQL 15 and 18, against the branch's base. No errors on either side, and table size unchanged within noise. Medians were 24–32µs per operation on both sides. The differences benchstat called significant ran in both directions, with spreads up to ±1000%, because other projects' containers shared the host. So the run shows no regression at the defaults, but it cannot resolve a change of a few percent.
 - **Decisions 6–10** are quality and documentation changes, not defect claims. Existing tests pin the behaviour 6 and 7 must keep.
 
 ## Risks / Trade-offs
@@ -207,16 +225,18 @@ Each claim is marked REPRODUCED or UNREPRODUCED, as `defect-claims.md` requires.
 - **[Rows near 4 kB cost more WAL per update]** (option A): about 1.2–1.4 kB at 400–500 stamps. → Only limiters configured that high pay it. Every default stays at or below 200 stamps.
 - **[An operator recreates the table without the storage parameter]** (option A) → Rows above the TOAST threshold degrade to TOAST: slower, never wrong. Documented beside the migration and in the factory godoc.
 - **[A batched prune over a sparse table scans repeatedly]** → Each batch scans from the start until it finds `n` victims. At victims of about one per 10⁴ rows, that is roughly one scan per batch. This case was not measured. The steady state was measured, at 2% victims and with none.
+- **[The batched prune takes longer in total]** (decision 2): 4–7 times the single statement at 10⁵ rows, 1.3–2.4 times at 10⁶. → It runs in the background and bounds each record's wait instead; measured at the final gate.
+- **[One batch can outlast the operation timeout on an overloaded server]** (decision 2) → A record behind it fails as unavailable. Stated in the godoc and the spec; batches run in milliseconds on a server with capacity to spare.
 - **[A prune cancelled mid-run reports a partial count]** → Documented as a lower bound, returned with the error.
 - **[The shared core is a refactor of tested code]** → Both adapters' existing suites must stay green unchanged. Its review is held to the stricter standard of a refactor that keeps behaviour.
 
 ## Migration Plan
 
-There are no tags and no consumers. The migration is edited in place if decision 1 takes option A. The change lands on PR #13's branch, before it merges, or as its own branch after it.
+There are no tags and no consumers. The migration is edited in place for decision 1. The change lands on PR #13's branch, before it merges, or as its own branch after it.
 
 ## Open Questions
 
-None beyond decision 1, which is not deferrable: it decides the specs and tasks, and waits on the user.
+None.
 
 ## References
 

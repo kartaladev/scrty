@@ -1774,10 +1774,55 @@ func TestPostgresServerKeepsSerializableConflicts(t *testing.T) {
 	assert.Equal(t, "40001", pgErr.Code)
 }
 
+// TestRunTestPostgres_OwnServerStorage pins where an own server keeps its
+// data: tmpfs by default, disk when it must survive Stop and Start.
+func TestRunTestPostgres_OwnServerStorage(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []TestOption
+		assert func(t *testing.T, conn PostgresConn, mount string)
+	}
+
+	cases := []testCase{
+		{
+			name: "own server on tmpfs",
+			opts: []TestOption{WithTestPostgresOwnServer()},
+			assert: func(t *testing.T, _ PostgresConn, mount string) {
+				assert.Contains(t, mount, "tmpfs")
+			},
+		},
+		{
+			name: "restartable server on disk",
+			opts: []TestOption{WithTestPostgresRestartable()},
+			assert: func(t *testing.T, conn PostgresConn, mount string) {
+				require.NotEmpty(t, mount, "df printed no filesystem for the data directory")
+				assert.NotContains(t, mount, "tmpfs")
+				conn.Stop(t)
+				conn.Start(t)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conn := RunTestPostgres(t, tc.opts...)
+			code, r, err := conn.ctr.Exec(t.Context(), []string{"sh", "-c", "df -P " + postgresDataDir + " | tail -n 1"})
+			require.NoError(t, err)
+			require.Equal(t, 0, code)
+			out, err := io.ReadAll(r)
+			require.NoError(t, err)
+			tc.assert(t, conn, string(out))
+		})
+	}
+}
+
 func TestRunTestPostgres_StopStart(t *testing.T) {
 	t.Parallel()
 
-	conn := RunTestPostgres(t, WithTestPostgresOwnServer())
+	conn := RunTestPostgres(t, WithTestPostgresRestartable())
 	ctx := t.Context()
 	_, err := conn.DB.ExecContext(ctx, `CREATE TABLE restart_probe (v int); INSERT INTO restart_probe VALUES (7)`)
 	require.NoError(t, err)
@@ -1800,9 +1845,39 @@ func TestRunTestPostgres_Refusals(t *testing.T) {
 	// Stop and Start end the test with t.Fatal on a shared server, which a
 	// test cannot observe on its own *testing.T, so the check behind them is
 	// exercised directly, as TestRunTestRedis_Refusals does.
-	_, err := PostgresConn{}.own()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WithTestPostgresOwnServer")
+	type testCase struct {
+		name   string
+		conn   PostgresConn
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a shared server cannot be stopped",
+			conn: PostgresConn{},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "WithTestPostgresRestartable")
+			},
+		},
+		{
+			name: "a server not started restartable cannot be stopped",
+			conn: PostgresConn{ctr: &postgres.PostgresContainer{}},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "WithTestPostgresRestartable")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := tc.conn.own()
+			tc.assert(t, err)
+		})
+	}
 }
 
 func TestRunTestPostgresStandby(t *testing.T) {
@@ -1831,6 +1906,11 @@ func TestRunTestPostgresStandby(t *testing.T) {
 	// Both are own servers, so each can be stopped and restarted.
 	s.Standby.Stop(t)
 	s.Standby.Start(t)
+	s.Primary.Stop(t)
+	s.Primary.Start(t)
+	var v int
+	require.NoError(t, s.Primary.DB.QueryRowContext(ctx, `SELECT v FROM standby_probe`).Scan(&v))
+	assert.Equal(t, 1, v)
 }
 
 func TestRunTestPostgresStandby_Migrations(t *testing.T) {
@@ -1851,6 +1931,6 @@ func TestRunTestPostgresStandby_Migrations(t *testing.T) {
 func TestRunTestPostgres_StopLeftStopped(t *testing.T) {
 	t.Parallel()
 
-	conn := RunTestPostgres(t, WithTestPostgresOwnServer())
+	conn := RunTestPostgres(t, WithTestPostgresRestartable())
 	conn.Stop(t)
 }

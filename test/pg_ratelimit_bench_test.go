@@ -259,6 +259,7 @@ func provisionBenchPostgres(b *testing.B) PostgresConn {
 	}
 	requireHealthyProvider(b)
 
+	// The benchmark keeps the data on disk, as a real server does: tmpfs would flatter WAL and checkpoint cost.
 	ctr, err := startPostgresContainerWith(b.Context(), resolvePostgresImage(cfg), false)
 	require.NoError(b, err, "failed to start PostgreSQL test container")
 	b.Cleanup(func() {

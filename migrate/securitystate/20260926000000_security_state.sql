@@ -251,6 +251,11 @@ CREATE TABLE rate_limit_buckets (
     longest_window_us bigint        NOT NULL,
     PRIMARY KEY (namespace, key)
 ) WITH (fillfactor = 70,
+        -- Keeps a bucket's stamp array in-line up to a full page, so a row of up
+        -- to 400 stamps is never moved to TOAST and an update stays HOT. Without
+        -- it, rows above about 2 kB are TOASTed: slower, never wrong. A row past
+        -- the threshold also stops getting HOT updates.
+        toast_tuple_target = 8160,
         autovacuum_vacuum_scale_factor = 0.01,
         autovacuum_vacuum_insert_scale_factor = 0.01);
 

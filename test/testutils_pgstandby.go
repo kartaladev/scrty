@@ -79,7 +79,7 @@ exec postgres %s
 // RunTestPostgresStandby starts an own primary and a hot standby streaming
 // from it, and returns a connection to each.
 //
-// The primary is what RunTestPostgres(t, WithTestPostgresOwnServer(), opts...)
+// The primary is what RunTestPostgres(t, WithTestPostgresRestartable(), opts...)
 // returns, set up for streaming replication. The standby runs the same image
 // (WithTestPostgresImage, else PostgresImageEnv, else the default): it copies
 // the primary with pg_basebackup over a Docker network created for the call,
@@ -98,6 +98,9 @@ func RunTestPostgresStandby(t *testing.T, opts ...TestOption) PostgresStandby {
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	// The primary is an own server on disk, whatever the options say, so
+	// that Stop and Start keep its data.
+	cfg.ownServer, cfg.restartable = true, true
 	if err := cfg.postgresConfigError(); err != nil {
 		t.Fatalf("%v", err)
 	}
@@ -123,7 +126,7 @@ func RunTestPostgresStandby(t *testing.T, opts ...TestOption) PostgresStandby {
 		ContainerFilePath: "/docker-entrypoint-initdb.d/10-replication.sh",
 		FileMode:          0o755,
 	}
-	srv := startTestPostgres(t, image,
+	srv := startTestPostgres(t, image, true,
 		network.WithNetwork([]string{postgresPrimaryAlias}, nw),
 		testcontainers.WithFiles(hba),
 		testcontainers.WithCmdArgs("-c", "wal_level=replica", "-c", "max_wal_senders=4", "-c", "hot_standby=on"),
@@ -168,7 +171,7 @@ func RunTestPostgresStandby(t *testing.T, opts ...TestOption) PostgresStandby {
 
 	return PostgresStandby{
 		Primary: primary,
-		Standby: PostgresConn{DB: db, DSN: dsn, ctr: sbCtr},
+		Standby: PostgresConn{DB: db, DSN: dsn, ctr: sbCtr, restartable: true},
 	}
 }
 

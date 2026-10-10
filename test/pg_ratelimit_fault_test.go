@@ -342,7 +342,7 @@ func (e pgStatementEdit) apply(t *testing.T) string {
 
 // pgStatementEdits are every edit a broken variant of these tests makes; the
 // drift guard below applies each.
-var pgStatementEdits = []pgStatementEdit{pgRecordReadingTimeTwice, pgPruneByCheckingWindow, pgPruneWithoutRowLock}
+var pgStatementEdits = []pgStatementEdit{pgRecordReadingTimeTwice, pgPruneByCheckingWindow, pgPruneWithoutRowLock, pgPruneWithoutSkipLocked}
 
 // TestPGLimiter_StatementEditsApply is the drift guard of the broken
 // variants: each edit still finds, exactly once, the text it replaces in the
@@ -713,7 +713,7 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			conn := migratedLimiterDB(t, WithTestPostgresOwnServer())
+			conn := migratedLimiterDB(t, WithTestPostgresRestartable())
 			dialer := &pgDialer{}
 			tc.assert(t, pgOutage{
 				conn:   conn,

@@ -73,6 +73,7 @@ type testConfig struct {
 	finalizers         []string
 	leftoverTableCheck bool
 	ownServer          bool
+	restartable        bool
 
 	// Read by RunTestRedis only.
 	ownContainer bool
@@ -334,21 +335,26 @@ type PostgresConn struct {
 	// connected, so a handle left open does not block it.
 	DSN string
 
-	ctr *postgres.PostgresContainer // nil on a shared server
+	ctr         *postgres.PostgresContainer // nil on a shared server
+	restartable bool                        // the data is on disk, so Stop and Start keep it
 }
 
-// own returns the container behind an own-server connection, and an error on
-// a shared server.
+// own returns the container behind a restartable own-server connection, and
+// an error on a shared server or on an own server whose data is on tmpfs.
 func (c PostgresConn) own() (*postgres.PostgresContainer, error) {
-	if c.ctr == nil {
-		return nil, errors.New("Stop and Start need WithTestPostgresOwnServer: this is a shared server other tests are using")
+	switch {
+	case c.ctr == nil:
+		return nil, errors.New("Stop and Start need WithTestPostgresRestartable: this is a shared server other tests are using")
+	case !c.restartable:
+		return nil, errors.New("Stop and Start need WithTestPostgresRestartable: this own server keeps its data on tmpfs, which a restart loses")
 	}
 	return c.ctr, nil
 }
 
 // Stop stops an own server's container, so the next call fails as in an
-// outage. It fails the test on a shared server, which other tests are using.
-// The server keeps its data while stopped.
+// outage. It fails the test on a shared server, which other tests are using,
+// and on an own server built without WithTestPostgresRestartable. The server
+// keeps its data while stopped.
 func (c PostgresConn) Stop(t *testing.T) {
 	t.Helper()
 
@@ -361,7 +367,8 @@ func (c PostgresConn) Stop(t *testing.T) {
 }
 
 // Start starts an own server stopped by Stop, and returns once DB reaches it
-// again. It fails the test on a shared server. Docker may map the restarted
+// again. It fails the test on a shared server, and on an own server built
+// without WithTestPostgresRestartable. Docker may map the restarted
 // container to another host port: DB follows it, but DSN keeps the port it
 // was created with, so a handle opened on DSN after Start may not connect.
 // Open further handles before Stop, or build the address from the container.
@@ -515,14 +522,25 @@ func WithTestPostgresFinalizeScripts(scripts ...string) TestOption {
 
 // WithTestPostgresOwnServer gives this call a PostgreSQL container of its
 // own, terminated when its test ends, instead of a database on the server the
-// process shares. Use it for a test that changes server settings or stops the
-// server, which every other call on a shared server would see. The default is
+// process shares. Use it for a test that changes server settings, which every
+// other call on a shared server would see. Its data is on tmpfs, so Stop and
+// Start refuse it: a test that stops or restarts the server uses
+// WithTestPostgresRestartable instead. The default is
 // a server shared by every call in the process that resolves to the same
 // image. The call still gets a database cloned as usual, and the own server is
 // tuned for tests like the shared one. EnsureTestPostgresServer rejects this
 // option.
 func WithTestPostgresOwnServer() TestOption {
 	return func(c *testConfig) { c.ownServer = true }
+}
+
+// WithTestPostgresRestartable gives this call an own server, as
+// WithTestPostgresOwnServer does, whose data lives on the container's disk
+// rather than tmpfs, so it survives Stop and Start. Only a test that stops or
+// restarts its server needs it; Stop and Start refuse a server built without
+// it, whose tmpfs data a restart would lose.
+func WithTestPostgresRestartable() TestOption {
+	return func(c *testConfig) { c.ownServer, c.restartable = true, true }
 }
 
 // resolvePostgresImage returns the image cfg asks for: the
@@ -590,7 +608,7 @@ func RunTestPostgres(t *testing.T, opts ...TestOption) PostgresConn {
 
 	var srv *postgresServer
 	if cfg.ownServer {
-		srv = startTestPostgres(t, image)
+		srv = startTestPostgres(t, image, cfg.restartable)
 	} else {
 		var err error
 		if srv, err = defaultPostgresRegistry.server(image); err != nil {
@@ -716,6 +734,7 @@ func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) Postg
 	conn := PostgresConn{DB: db, DSN: dsn}
 	if srv.resolve {
 		conn.ctr = srv.ctr
+		conn.restartable = cfg.restartable
 	}
 	return conn
 }
@@ -740,12 +759,13 @@ const (
 const postgresStartAttempts = 3
 
 // startTestPostgres starts a PostgreSQL server of t's own, the one
-// WithTestPostgresOwnServer asks for, and terminates it when t ends. A
-// failure to start stops the test.
-func startTestPostgres(t *testing.T, image string, extra ...testcontainers.ContainerCustomizer) *postgresServer {
+// WithTestPostgresOwnServer asks for, and terminates it when t ends. Its data
+// is on tmpfs unless onDisk, which a server that restarts needs. A failure to
+// start stops the test.
+func startTestPostgres(t *testing.T, image string, onDisk bool, extra ...testcontainers.ContainerCustomizer) *postgresServer {
 	t.Helper()
 
-	ctr, err := startPostgresContainerWith(t.Context(), image, false, extra...)
+	ctr, err := startPostgresContainerWith(t.Context(), image, !onDisk, extra...)
 	require.NoError(t, err, "failed to start PostgreSQL test container")
 	t.Cleanup(func() {
 		// Not t.Context(): it is already cancelled by the time cleanup runs,

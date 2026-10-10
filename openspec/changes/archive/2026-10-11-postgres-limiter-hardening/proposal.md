@@ -8,8 +8,8 @@ It also found smaller defects in error text, diagnostics, construction, duplicat
 
 ## What Changes
 
-- **The limit maximum rises above the largest built-in ask.** How it rises is the decision still open in `design.md`, decision 1. The recommended answer is a table storage parameter and a maximum of 400. A limit above the new maximum stays a configuration error naming it.
-- **The prune bounds itself.** It deletes in short batches of 1,000 keys by default, each its own transaction, so no record waits on it past its timeout. The returned count is the keys removed by batches that committed. A new option sets the batch size.
+- **The limit maximum rises above the largest built-in ask.** It rises to 400, with a table storage parameter that keeps a row of that size in-line (`design.md`, decision 1). A limit above the new maximum stays a configuration error naming it.
+- **The prune bounds itself.** It deletes in short batches of 1,000 keys by default, each its own transaction, so a record waits on it for at most one batch. The returned count is the keys removed by batches that committed. A new option sets the batch size.
 - **`Verify` refuses a database whose server encoding is not UTF-8**, SQL_ASCII included, with a configuration error naming the encoding. The godoc states the requirement.
 - **A failed prune's error no longer carries the server's text**, as `Verify`'s errors already do not.
 - **`Verify` names a temporary table for what it is**, instead of calling it unlogged and advising `SET LOGGED`.
@@ -28,8 +28,10 @@ None.
 ### Modified Capabilities
 - `rate-limiting`:
   - "A PostgreSQL limiter refuses a policy too large for one row" gets a new maximum, and a scenario showing the default chain builds.
-  - "A PostgreSQL limiter reads and writes only the primary" adds the UTF-8 refusal.
-  - "The PostgreSQL limiter prunes idle keys through an expiry task" adds that a record never waits on a prune past its timeout, and the batch-size override.
+  - "A PostgreSQL limiter reads and writes only the primary" gets a scenario for a temporary table.
+  - New: "A PostgreSQL limiter refuses a database that is not UTF-8".
+  - New: "A PostgreSQL prune holds a record for at most one batch", with the batch-size default and override.
+  - New: "A failed PostgreSQL prune reports a partial count and no server text".
 
 ## Impact
 
@@ -37,7 +39,7 @@ None.
   - `internal/pgschema/ratelimit.go`: the maximum, the batched prune statement, the server-facts query and godoc.
   - A new internal package for the shared limiter core.
   - `sqlstore/limiter*.go` and `pgx/limiter*.go`, and `redis` godoc only.
-- **Migration:** `migrate/securitystate/20260926000000_security_state.sql` gets the storage parameter, if decision 1 takes it. It is still untagged, so it is edited in place.
+- **Migration:** `migrate/securitystate/20260926000000_security_state.sql` gets the storage parameter. It is still untagged, so it is edited in place.
 - **Tests:**
   - `test/pg_ratelimit_*`: a chain built over each PostgreSQL factory, a prune racing records, `Verify` on non-UTF-8 databases and a temporary table.
   - `test/testutils*.go`: the restartable-server option, and the tests that use it.

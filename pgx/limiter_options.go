@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/kartaladev/scrty/internal/unavailable"
+	"github.com/kartaladev/scrty/internal/pglimiter"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -19,24 +19,18 @@ import (
 // identity.
 type LimiterOption func(*limiterConfig)
 
-// limiterConfig is what the limiter options describe.
+// limiterConfig is what the limiter options describe: the shared limiter's
+// configuration, kept inside a type of this package so LimiterOption names no
+// internal type.
 type limiterConfig struct {
-	// clock is the application clock; nil means the database's
-	// clock_timestamp().
-	clock clock.Clock
-	// clockSet records that WithLimiterClock was given, so that a nil clock
-	// passed to it is refused rather than read as "use the database's".
-	clockSet bool
-	// unavailable configures the decorator. It starts from
-	// unavailable.DefaultConfig, so every field an option leaves alone keeps
-	// the decorator's own default.
-	unavailable unavailable.Config
+	core pglimiter.Config
 }
 
 // newLimiterConfig returns the configuration opts describe, over the
-// defaults.
+// defaults (pglimiter.DefaultConfig), which start the decorator from
+// unavailable.DefaultConfig.
 func newLimiterConfig(opts []LimiterOption) limiterConfig {
-	cfg := limiterConfig{unavailable: unavailable.DefaultConfig()}
+	cfg := limiterConfig{core: pglimiter.DefaultConfig()}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -64,9 +58,9 @@ func newLimiterConfig(opts []LimiterOption) limiterConfig {
 // ratelimit.ErrConfig.
 func WithLimiterClock(clk clock.Clock) LimiterOption {
 	return func(c *limiterConfig) {
-		c.clock = clk
-		c.clockSet = true
-		c.unavailable.Clock = clk
+		c.core.Clock = clk
+		c.core.ClockSet = true
+		c.core.Unavailable.Clock = clk
 	}
 }
 
@@ -85,7 +79,7 @@ func WithLimiterClock(clk clock.Clock) LimiterOption {
 // A mode other than the three ratelimit declares fails construction with
 // ratelimit.ErrConfig.
 func WithLimiterOnUnavailable(m ratelimit.UnavailableMode) LimiterOption {
-	return func(c *limiterConfig) { c.unavailable.Mode = m }
+	return func(c *limiterConfig) { c.core.Unavailable.Mode = m }
 }
 
 // WithLimiterOperationTimeout bounds each call to the database, records
@@ -104,7 +98,7 @@ func WithLimiterOnUnavailable(m ratelimit.UnavailableMode) LimiterOption {
 // the most PostgreSQL accepts for lock_timeout, fails construction with
 // ratelimit.ErrConfig.
 func WithLimiterOperationTimeout(d time.Duration) LimiterOption {
-	return func(c *limiterConfig) { c.unavailable.Timeout = d }
+	return func(c *limiterConfig) { c.core.Unavailable.Timeout = d }
 }
 
 // WithLimiterProbeInterval sets how long the limiter answers from its
@@ -115,7 +109,7 @@ func WithLimiterOperationTimeout(d time.Duration) LimiterOption {
 //
 // A zero or negative interval fails construction with ratelimit.ErrConfig.
 func WithLimiterProbeInterval(d time.Duration) LimiterOption {
-	return func(c *limiterConfig) { c.unavailable.ProbeInterval = d }
+	return func(c *limiterConfig) { c.core.Unavailable.ProbeInterval = d }
 }
 
 // WithLimiterUnavailableLogInterval sets how long, in
@@ -128,7 +122,7 @@ func WithLimiterProbeInterval(d time.Duration) LimiterOption {
 // record, for a consumer whose own handler samples. The other modes write
 // only their transitions, and are not sampled.
 func WithLimiterUnavailableLogInterval(d time.Duration) LimiterOption {
-	return func(c *limiterConfig) { c.unavailable.LogInterval = d }
+	return func(c *limiterConfig) { c.core.Unavailable.LogInterval = d }
 }
 
 // WithLimiterLogger sets where the limiter writes its outage records: the
@@ -137,5 +131,20 @@ func WithLimiterUnavailableLogInterval(d time.Duration) LimiterOption {
 // A nil logger fails construction with ratelimit.ErrConfig, because the
 // outage records would be lost.
 func WithLimiterLogger(l *slog.Logger) LimiterOption {
-	return func(c *limiterConfig) { c.unavailable.Logger = l }
+	return func(c *limiterConfig) { c.core.Unavailable.Logger = l }
+}
+
+// WithLimiterPruneBatchSize sets how many keys one batch of the factory's
+// prune removes. Each batch is its own transaction, and holds its victims'
+// row locks only until it commits, so a record on a key being pruned waits at
+// most one batch. Default: 1,000, whose batches took about 3ms each over a
+// million idle keys; batches of 5,000 or more ran over 100ms, near the
+// default operation timeout. On an overloaded server one batch can outlast
+// the operation timeout, and a record behind it then fails as unavailable.
+// A size below 1 fails construction with ratelimit.ErrConfig.
+//
+// Only a factory's prune uses it, but NewLimiter refuses a size below 1 too,
+// as it refuses every invalid option.
+func WithLimiterPruneBatchSize(n int) LimiterOption {
+	return func(c *limiterConfig) { c.core.PruneBatchSize = n }
 }
