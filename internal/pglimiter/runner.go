@@ -1,3 +1,5 @@
+//go:generate mockgen -source=runner.go -package=pglimiter_test -destination=runner_mock_test.go -typed
+
 package pglimiter
 
 import (

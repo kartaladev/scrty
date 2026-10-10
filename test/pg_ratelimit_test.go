@@ -21,6 +21,7 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/migrate"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -264,8 +265,8 @@ func TestSQLStoreLimiter_Conformance(t *testing.T) {
 
 // runPGKeys pins the stored form of keys: a key of 512 bytes is stored as
 // given and one of 513 as a digest, without the two sharing a bucket; a key
-// spelled like a digest is itself digested; and a limit of 128, the maximum,
-// is reached.
+// spelled like a digest is itself digested; and a limit at the maximum,
+// pgschema.LimiterMaxLimit, is reached.
 func runPGKeys(t *testing.T, b pgBackend) {
 	t.Helper()
 
@@ -298,7 +299,7 @@ func runPGKeys(t *testing.T, b pgBackend) {
 		{name: "512-byte key counts its own failures", limit: 3, recorded: long[:512], checked: long[:512], assert: exceeded},
 		{name: "513-byte key apart from its 512-byte prefix", limit: 3, recorded: long[:512], checked: long, assert: notExceeded},
 		{name: "key spelled as a digest is apart from the long key", limit: 3, recorded: long, checked: digestSpelled, assert: notExceeded},
-		{name: "limit at the maximum is reached", limit: 128, recorded: "k", checked: "k", assert: exceeded},
+		{name: "limit at the maximum is reached", limit: pgschema.LimiterMaxLimit, recorded: "k", checked: "k", assert: exceeded},
 	}
 
 	conn := migratedLimiterDB(t)
@@ -1107,6 +1108,14 @@ func TestPGLimiter_WidestRow(t *testing.T) {
 			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
 				`SELECT array_to_string(coalesce(reloptions, '{}'), ',') FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&opts))
 			assert.Contains(t, opts, "toast_tuple_target=8160")
+			// The table's TOAST relation holds no row: nothing was moved out of
+			// line, whatever the datum's size.
+			var toastRel string
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(),
+				`SELECT format('%s', reltoastrelid::regclass) FROM pg_class WHERE oid = 'rate_limit_buckets'::regclass`).Scan(&toastRel))
+			var toastRows int
+			require.NoError(t, conn.DB.QueryRowContext(t.Context(), `SELECT count(*) FROM `+toastRel).Scan(&toastRows))
+			assert.Zero(t, toastRows, "the stamp array was moved to the TOAST table")
 		})
 	}
 }

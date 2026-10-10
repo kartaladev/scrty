@@ -60,13 +60,11 @@ func TestPGLimiter_DefaultChainBuilds(t *testing.T) {
 		require.NoError(t, err)
 		var agg *capturedLimiter
 		f.mu.Lock()
-		for _, c := range f.built {
-			if c.limit == 200 {
-				agg = &c
-			}
+		if c, ok := f.built["password-login-ipv6-aggregate"]; ok && c.limit == 200 {
+			agg = &c
 		}
 		f.mu.Unlock()
-		require.NotNil(t, agg, "the chain built no limiter with a limit of 200")
+		require.NotNil(t, agg, "the chain built no password-login-ipv6-aggregate limiter with a limit of 200")
 		for range 199 {
 			require.NoError(t, agg.limiter.RecordFailure(t.Context(), "2001:db8::/64"))
 		}

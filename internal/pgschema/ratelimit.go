@@ -54,11 +54,12 @@ WHERE b.namespace = $1 AND b.key = $2
 	// $1 namespace, $2 key, $3 limit (int), $4 window in microseconds
 	// (int64), $5 now or NULL, $6 lock timeout as text, such as "250ms".
 	//
-	// A new key gets one row holding the stamp. An existing key keeps at most
-	// $3 stamps, the new one included: the newest $3 of its stored stamps and
-	// the new one, ascending, so a clock behind the stored newest stamp still
-	// leaves them ordered; newest_at and longest_window_us only grow
-	// (GREATEST).
+	// A new key gets one row holding the stamp. For an existing key the
+	// stored stamps and the new one are taken together and the newest $3 of
+	// them are kept, ascending, so the row never holds more than $3 stamps. A
+	// stamp older than every kept one, such as a new one from a clock behind
+	// the stored stamps, is dropped; with room to spare it is kept in its
+	// place. newest_at and longest_window_us only grow (GREATEST).
 	//
 	// lock_timeout is set, transaction-local, by a set_config in the SELECT
 	// the INSERT reads from. That SELECT is evaluated before ON CONFLICT
@@ -74,9 +75,9 @@ ON CONFLICT (namespace, key) DO UPDATE SET
   newest_at = GREATEST(b.newest_at, EXCLUDED.newest_at),
   longest_window_us = GREATEST(b.longest_window_us, EXCLUDED.longest_window_us)`
 
-	// LimiterPrune deletes one batch of idle keys: those whose newest stamp is
-	// at least the longest window ever recorded for them older than $1, at
-	// most $2 of them. It locks each victim (FOR UPDATE), and the lock rechecks
+	// LimiterPrune deletes one batch of idle keys: those whose newest stamp
+	// plus the longest window recorded for them is at or before $1, at most
+	// $2 of them. It locks each victim (FOR UPDATE), and the lock rechecks
 	// idleness on a row a record updated after the statement's snapshot, so a
 	// key recorded during the prune is kept. Rows another transaction holds
 	// are skipped (SKIP LOCKED), never waited for. Rows affected is the count

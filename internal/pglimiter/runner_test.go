@@ -426,7 +426,7 @@ func TestBackend_RecordFailure(t *testing.T) {
 		},
 		{
 			name: "a record error is wrapped with the prefix", prefix: "sqlstore",
-			script: func(ctrl *gomock.Controller, r *MockRunner) {
+			script: func(_ *gomock.Controller, r *MockRunner) {
 				r.EXPECT().Exec(gomock.Any(), pgschema.LimiterRecord, gomock.Any(), gomock.Any(), gomock.Any(),
 					gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errRecord)
 			},

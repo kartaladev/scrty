@@ -82,7 +82,8 @@ var (
 // rate_limit_buckets table of the database behind db, each configured by
 // opts. The defaults are NewLimiter's: the database's clock, refusal while
 // the database cannot be reached, a 250ms operation timeout, a 1s probe
-// interval, sampled allow-mode logging every minute, and slog.Default().
+// interval, sampled allow-mode logging every minute, prune batches of 1,000 keys
+// (WithLimiterPruneBatchSize), and slog.Default().
 //
 // It checks db and opts as NewLimiter would, so a wiring mistake fails here
 // rather than at the first flow's constructor: a nil handle, or an option

@@ -50,7 +50,6 @@ func Example_sharedLimiter() {
 	//
 	//	chain, err := httpsec.New(httpsec.WithRateLimiterFactory(factory), ...)
 	//	throttle, err := mfa.NewVerifyThrottle(mfa.WithVerifyLimiterFactory(secondFactor), ...)
-	_ = secondFactor
 
 	limiter, err := factory.NewLimiter("api-key", 20, time.Minute)
 	fmt.Println(limiter != nil, err)
@@ -61,7 +60,7 @@ func Example_sharedLimiter() {
 
 	// The second-factor factory builds a namespace of its own, never one the
 	// first factory already built.
-	limiter, err = secondFactor.NewLimiter("magic-link", 5, time.Minute)
+	limiter, err = secondFactor.NewLimiter("mfa-verify", 5, time.Minute)
 	fmt.Println(limiter != nil, err)
 	// Output:
 	// true <nil>

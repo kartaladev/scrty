@@ -1819,14 +1819,6 @@ func TestRunTestPostgres_OwnServerStorage(t *testing.T) {
 	}
 }
 
-func TestRunTestPostgres_StopRefusesNonRestartable(t *testing.T) {
-	t.Parallel()
-
-	_, err := PostgresConn{ctr: &postgres.PostgresContainer{}}.own()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WithTestPostgresRestartable")
-}
-
 func TestRunTestPostgres_StopStart(t *testing.T) {
 	t.Parallel()
 
@@ -1853,9 +1845,39 @@ func TestRunTestPostgres_Refusals(t *testing.T) {
 	// Stop and Start end the test with t.Fatal on a shared server, which a
 	// test cannot observe on its own *testing.T, so the check behind them is
 	// exercised directly, as TestRunTestRedis_Refusals does.
-	_, err := PostgresConn{}.own()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "WithTestPostgresRestartable")
+	type testCase struct {
+		name   string
+		conn   PostgresConn
+		assert func(t *testing.T, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a shared server cannot be stopped",
+			conn: PostgresConn{},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "WithTestPostgresRestartable")
+			},
+		},
+		{
+			name: "a server not started restartable cannot be stopped",
+			conn: PostgresConn{ctr: &postgres.PostgresContainer{}},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "WithTestPostgresRestartable")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := tc.conn.own()
+			tc.assert(t, err)
+		})
+	}
 }
 
 func TestRunTestPostgresStandby(t *testing.T) {

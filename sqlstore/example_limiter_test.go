@@ -46,8 +46,9 @@ func ExampleNewLimiterFactory() {
 		log.Fatal(err)
 	}
 
-	// At startup, before traffic: the primary, the server version, the
-	// table, that it is logged, and the role's privileges.
+	// At startup, before traffic: the primary, the server version, a
+	// UTF8 database, the table (not a temporary one), that it is logged, and
+	// the role's privileges.
 	if err := factory.Verify(ctx); err != nil {
 		log.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func ExampleNewLimiterFactory() {
 
 	// Each factory builds its own namespaces, never one the other builds too.
 	_, _ = factory.NewLimiter("api-key", 20, time.Minute)
-	_, _ = secondFactor.NewLimiter("magic-link", 5, time.Minute)
+	_, _ = secondFactor.NewLimiter("mfa-verify", 5, time.Minute)
 
 	// One prune covers every namespace in the table, whichever factory built
 	// its limiters, so one task is enough.
