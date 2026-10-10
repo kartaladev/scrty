@@ -4,11 +4,12 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/pglimiter"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -60,33 +61,17 @@ import (
 //
 // It is safe for concurrent use.
 type LimiterFactory struct {
-	pool  *pgxpool.Pool
-	opts  []LimiterOption
-	clock clock.Clock // nil: the database's clock
-	check limiterCheck
-
-	mu sync.Mutex
-	// built holds the policy each namespace was first built with.
-	built map[string]limiterPolicy
+	pool     *pgxpool.Pool
+	opts     []LimiterOption
+	clock    clock.Clock // nil: the database's clock
+	check    limiterCheck
+	registry *pglimiter.Registry
 }
-
-// limiterPolicy is the limit and window a namespace was built with.
-type limiterPolicy struct {
-	limit  int
-	window time.Duration
-}
-
-func (p limiterPolicy) String() string { return fmt.Sprintf("%d per %s", p.limit, p.window) }
 
 var (
 	_ ratelimit.LimiterFactory = (*LimiterFactory)(nil)
 	_ ratelimit.Pruner         = (*LimiterFactory)(nil)
 )
-
-// limiterFactoryProbeNamespace is the namespace of the limiter
-// NewLimiterFactory builds, and discards, to check the pool and options
-// once.
-const limiterFactoryProbeNamespace = "factory"
 
 // NewLimiterFactory returns a LimiterFactory whose limiters count in the
 // rate_limit_buckets table of the database behind pool, each configured by
@@ -104,17 +89,20 @@ const limiterFactoryProbeNamespace = "factory"
 // checks both.
 func NewLimiterFactory(pool *pgxpool.Pool, opts ...LimiterOption) (*LimiterFactory, error) {
 	opts = slices.Clone(opts)
-	if _, err := NewLimiter(pool, limiterFactoryProbeNamespace, 1, time.Second, opts...); err != nil {
+	if nilcheck.IsNil(pool) {
+		return nil, fmt.Errorf("%w: the pool is nil", ratelimit.ErrConfig)
+	}
+	cfg := newLimiterConfig(opts)
+	if err := cfg.core.Validate(); err != nil {
 		return nil, err
 	}
 
-	cfg := newLimiterConfig(opts)
 	return &LimiterFactory{
-		pool:  pool,
-		opts:  opts,
-		clock: cfg.clock,
-		check: newLimiterCheck(pool, cfg),
-		built: map[string]limiterPolicy{},
+		pool:     pool,
+		opts:     opts,
+		clock:    cfg.core.Clock,
+		check:    limiterCheck{runner: limiterRunner{pool: pool}, cfg: cfg.core},
+		registry: pglimiter.NewRegistry(),
 	}, nil
 }
 
@@ -130,22 +118,11 @@ func NewLimiterFactory(pool *pgxpool.Pool, opts ...LimiterOption) (*LimiterFacto
 func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
 	// The window is counted in whole microseconds, so 1m and 1m+500ns are one
 	// policy.
-	asked := limiterPolicy{limit: limit, window: window.Truncate(time.Microsecond)}
+	asked := pglimiter.Policy{Limit: limit, Window: window.Truncate(time.Microsecond)}
 
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if p, ok := f.built[namespace]; ok && p != asked {
-		return nil, fmt.Errorf("%w: namespace %q is already built with %s, and was asked for %s; one bucket cannot hold two policies",
-			ratelimit.ErrConfig, namespace, p, asked)
-	}
-	l, err := NewLimiter(f.pool, namespace, limit, window, f.opts...)
-	if err != nil {
-		return nil, err
-	}
-	f.built[namespace] = asked
-
-	return l, nil
+	return f.registry.Claim(namespace, asked, func() (ratelimit.Limiter, error) {
+		return NewLimiter(f.pool, namespace, limit, window, f.opts...)
+	})
 }
 
 // Prune deletes every key, in every namespace of the table, whose newest
@@ -164,7 +141,7 @@ func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Dur
 // Run it through ratelimit.ExpiryTask(f). A database failure is an error
 // wrapping the driver's, with nothing deleted.
 func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
-	tag, err := f.pool.Exec(ctx, pgschema.LimiterPrune, limiterNow(f.clock))
+	tag, err := f.pool.Exec(ctx, pgschema.LimiterPrune, pglimiter.Now(f.clock))
 	if err != nil {
 		return 0, fmt.Errorf("pgx: rate-limit prune: %w", err)
 	}

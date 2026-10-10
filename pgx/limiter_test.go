@@ -356,3 +356,16 @@ func TestLimiterFactory_NewLimiter(t *testing.T) {
 		})
 	}
 }
+
+// TestLimiter_VerifyErrorsStartWithThePrefix pins the adapter's prefix on the
+// shared core's errors: the idle pool's address refuses every connection.
+func TestLimiter_VerifyErrorsStartWithThePrefix(t *testing.T) {
+	t.Parallel()
+
+	l, err := pgxstore.NewLimiter(newIdlePool(t), "api-key", 3, time.Minute)
+	require.NoError(t, err)
+
+	err = l.Verify(t.Context())
+	require.Error(t, err)
+	assert.True(t, strings.HasPrefix(err.Error(), "pgx: "), "got %q", err)
+}

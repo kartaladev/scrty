@@ -209,7 +209,7 @@ var pgDatabaseClockBroken = pgFaultVariants(runPGDatabaseClock,
 		failsWith: "newest_at differs from the newest stamp",
 	},
 	pgFaultVariant{
-		// The host's clock where none is configured: limiterNow returning
+		// The host's clock where none is configured: pglimiter.Now returning
 		// time.Now() for a nil clock. Every behavioural case passes it.
 		name: "host-clock-by-default",
 		backend: brokenLimiterBackend(func(t *testing.T, conn PostgresConn, ns string, limit int, window time.Duration, o pgFaultOptions) ratelimit.Limiter {
