@@ -4,8 +4,8 @@ Every task is test-first: write the failing test, run it and confirm it fails fo
 
 ## 1. The expiry task accepts any pruner
 
-- [ ] 1.1 Add `ratelimit.Pruner` and change `ratelimit.ExpiryTask` to accept it. Change `MemoryLimiter.Prune` to `Prune(ctx) (int, error)`, and move every caller, found with gopls references, to the new form (design decisions 8 and 12). Red: a test that a fake `Pruner`'s count and error reach the task's result, plus the existing test that the in-memory limiter's quota is unchanged by a run. Verify: `go test -count=1 ./ratelimit/... ./expiry/...` and `go test -count=1 ./...` in the `test` module, both green, and `go vet ./...` clean.
-- [ ] 1.2 Godoc on `Pruner` and `ExpiryTask` names both built-in pruners, states that the task name is `ratelimit` and that no cutoff is accepted, and shows the rename for a second pruner. Verify: `go doc ./ratelimit Pruner` and `go doc ./ratelimit ExpiryTask` show it.
+- [x] 1.1 Add `ratelimit.Pruner` and change `ratelimit.ExpiryTask` to accept it. Change `MemoryLimiter.Prune` to `Prune(ctx) (int, error)`, and move every caller, found with gopls references, to the new form (design decisions 8 and 12). Red: a test that a fake `Pruner`'s count and error reach the task's result, plus the existing test that the in-memory limiter's quota is unchanged by a run. Verify: `go test -count=1 ./ratelimit/... ./expiry/...` and `go test -count=1 ./...` in the `test` module, both green, and `go vet ./...` clean.
+- [x] 1.2 Godoc on `Pruner` and `ExpiryTask` names both built-in pruners, states that the task name is `ratelimit` and that no cutoff is accepted, and shows the rename for a second pruner. Verify: `go doc ./ratelimit Pruner` and `go doc ./ratelimit ExpiryTask` show it.
 
 ## 2. The table and its statements
 

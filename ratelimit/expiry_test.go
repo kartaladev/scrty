@@ -1,6 +1,8 @@
 package ratelimit_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -90,7 +92,9 @@ func TestMemoryLimiter_Prune(t *testing.T) {
 			setup: func(t *testing.T, l *ratelimit.MemoryLimiter, clk *clockwork.FakeClock) {
 				recordFor(t, l, "a", "b")
 				clk.Advance(testWindow + time.Second)
-				require.Equal(t, 2, l.Prune())
+				n, err := l.Prune(t.Context())
+				require.NoError(t, err)
+				require.Equal(t, 2, n)
 			},
 			assert: func(t *testing.T, _ *ratelimit.MemoryLimiter, removed int) {
 				assert.Zero(t, removed)
@@ -104,7 +108,57 @@ func TestMemoryLimiter_Prune(t *testing.T) {
 
 			l, clk := newExpiryLimiter(t)
 			tc.setup(t, l, clk)
-			tc.assert(t, l, l.Prune())
+			removed, err := l.Prune(t.Context())
+			require.NoError(t, err)
+			tc.assert(t, l, removed)
+		})
+	}
+}
+
+type fakePruner struct {
+	removed int
+	err     error
+}
+
+func (f fakePruner) Prune(context.Context) (int, error) { return f.removed, f.err }
+
+// TestExpiryTask_ReportsPruner pins that the task reports what its pruner
+// reports, count and error alike.
+func TestExpiryTask_ReportsPruner(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("boom")
+	type testCase struct {
+		name   string
+		p      ratelimit.Pruner
+		assert func(t *testing.T, removed int, err error)
+	}
+	cases := []testCase{
+		{
+			name: "count reaches the result",
+			p:    fakePruner{removed: 7},
+			assert: func(t *testing.T, removed int, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 7, removed)
+			},
+		},
+		{
+			name: "error reaches the result",
+			p:    fakePruner{err: boom},
+			assert: func(t *testing.T, _ int, err error) {
+				assert.ErrorIs(t, err, boom)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			task := ratelimit.ExpiryTask(tc.p)
+			assert.Equal(t, "ratelimit", task.Name)
+			assert.Zero(t, task.Interval)
+			removed, err := task.Run(t.Context())
+			tc.assert(t, removed, err)
 		})
 	}
 }

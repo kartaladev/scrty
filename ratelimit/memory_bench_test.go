@@ -325,7 +325,7 @@ func TestMemoryLimiterMeasure_HeapAfterSweep(t *testing.T) {
 	full := heapAlloc()
 
 	clk.Advance(testWindow + time.Second)
-	l.Prune()
+	_, _ = l.Prune(t.Context())
 	swept := heapAlloc()
 
 	t.Logf("keys=%d full=%.1fMiB afterSweep=%.1fMiB", measuredKeys,

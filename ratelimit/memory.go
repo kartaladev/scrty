@@ -266,7 +266,8 @@ func (l *MemoryLimiter) RecordFailure(_ context.Context, key string) error {
 
 // Prune drops every key whose newest failure has left the window, for a consumer
 // that would rather sweep on its own schedule than wait for the inline sweep, and
-// returns how many keys it removed.
+// returns how many keys it removed. It implements Pruner; it ignores ctx, since
+// the sweep is in memory and short, and never returns an error.
 //
 // It takes no window and no cutoff, so no caller can shorten a limit by pruning:
 // the only keys it can remove are those the window no longer counts. It is
@@ -276,7 +277,7 @@ func (l *MemoryLimiter) RecordFailure(_ context.Context, key string) error {
 // The shards are swept one after another, each locked only while it is swept,
 // so a Prune never holds more than one shard and a check waits at most for its
 // own shard's part of it.
-func (l *MemoryLimiter) Prune() int {
+func (l *MemoryLimiter) Prune(_ context.Context) (int, error) {
 	now := l.clock.Now()
 	cutoff := now.Add(-l.window)
 
@@ -285,7 +286,7 @@ func (l *MemoryLimiter) Prune() int {
 		removed += l.shards[i].prune(now, cutoff, l.release)
 	}
 
-	return removed
+	return removed, nil
 }
 
 // StampsFor reports how many failure stamps the limiter currently holds for key,
