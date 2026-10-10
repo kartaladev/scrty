@@ -332,11 +332,11 @@ type pgStatementEdit struct {
 func (e pgStatementEdit) apply(t *testing.T) string {
 	t.Helper()
 
-	real := pgStatement(t, e.stmt)
-	require.Equal(t, 1, strings.Count(real, e.old),
+	stmt := pgStatement(t, e.stmt)
+	require.Equal(t, 1, strings.Count(stmt, e.old),
 		"variant %s: %s no longer contains, exactly once, the text it edits: %q", e.name, e.stmt, e.old)
-	edited := strings.Replace(real, e.old, e.new, 1)
-	require.NotEqual(t, real, edited, "variant %s: the edit left %s unchanged", e.name, e.stmt)
+	edited := strings.Replace(stmt, e.old, e.new, 1)
+	require.NotEqual(t, stmt, edited, "variant %s: the edit left %s unchanged", e.name, e.stmt)
 	return edited
 }
 

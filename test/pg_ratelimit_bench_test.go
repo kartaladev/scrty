@@ -153,7 +153,7 @@ type benchBackend struct {
 }
 
 var benchBackends = []benchBackend{
-	{name: "sqlstore", open: func(b *testing.B, db *sql.DB, _ string) benchPool {
+	{name: "sqlstore", open: func(_ *testing.B, db *sql.DB, _ string) benchPool {
 		// Keep every warmed connection: the default of two idle would close
 		// the rest at once and make each operation redial.
 		db.SetMaxIdleConns(benchPoolConns)
@@ -357,6 +357,9 @@ func startLoginLoad(parent context.Context, p benchPool) *loginLoad {
 	ctx, cancel := context.WithCancel(parent)
 	l := &loginLoad{cancel: cancel}
 	arrivals := make(chan time.Time, 1024)
+	// A login that arrived before the stop finishes after it: the workers drain
+	// the arrivals, so their operations outlive ctx's cancellation.
+	loginCtx := context.WithoutCancel(ctx)
 
 	l.wg.Add(1)
 	go func() {
@@ -381,11 +384,11 @@ func startLoginLoad(parent context.Context, p benchPool) *loginLoad {
 		l.wg.Add(1)
 		go func() {
 			defer l.wg.Done()
-			rng := rand.New(rand.NewPCG(uint64(w), 7))
+			rng := rand.New(rand.NewPCG(uint64(w), 7)) //nolint:gosec // G404: load-shaping, deterministic by design
 			var local []int64
 			for at := range arrivals {
 				user := "login-user-" + strconv.Itoa(rng.IntN(benchLoginUsers))
-				if err := p.login(context.Background(), user); err != nil {
+				if err := p.login(loginCtx, user); err != nil {
 					l.errs.Add(1)
 					continue
 				}
@@ -470,10 +473,10 @@ func runBenchCase(b *testing.B, conn PostgresConn, c benchCase) {
 		go func() {
 			defer wg.Done()
 			id := workers.Add(1)
-			rng := rand.New(rand.NewPCG(id, 1))
+			rng := rand.New(rand.NewPCG(id, 1)) //nolint:gosec // G404: load-shaping, not security
 			lc := make([]int64, 0, 4096)
 			lr := make([]int64, 0, 4096)
-			n := int(id) * 7
+			n := int(id) * 7 //nolint:gosec // G115: id counts the benchRecorders workers, a small number
 			ctx := context.Background()
 			for next.Add(1) <= int64(b.N) {
 				n++

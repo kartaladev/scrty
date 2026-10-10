@@ -683,7 +683,7 @@ func pgRoleTarget(t *testing.T, conn PostgresConn, privileges string) pgVerifyTa
 		_ = db.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_, err := conn.DB.ExecContext(ctx, `REVOKE ALL ON rate_limit_buckets FROM `+role)
+		_, err := conn.DB.ExecContext(ctx, `REVOKE ALL ON rate_limit_buckets FROM `+role) //nolint:gosec // G202: role is a fixed identifier the test created, not input
 		assert.NoError(t, err)
 		_, err = conn.DB.ExecContext(ctx, `DROP ROLE `+role)
 		assert.NoError(t, err)
@@ -807,8 +807,9 @@ CREATE TABLE other.rate_limit_buckets (
 				return plain(conn)
 			},
 			ctx: func(ctx context.Context) context.Context {
-				cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-				_ = cancel // released with the test's context
+				cctx, cancel := context.WithTimeout(ctx, 30*time.Second) //nolint:gosec // G118: the modifier cannot defer; the timer is bounded by 30s
+				// The cancel func is released with the test's context.
+				_ = cancel
 				return cctx
 			},
 			assert: notConfig(nil),

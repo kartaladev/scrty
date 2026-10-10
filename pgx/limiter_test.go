@@ -2,11 +2,11 @@ package pgx_test
 
 import (
 	"context"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
