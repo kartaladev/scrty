@@ -238,8 +238,25 @@ CREATE TABLE passkey_user_handles (
     handle  bytea NOT NULL UNIQUE
 );
 
+-- Shared rate-limit buckets: one row per namespace and key. No index on a
+-- column that changes, so updates stay HOT; logged, so a failover keeps limits.
+-- A fill factor of 70 leaves each page room for HOT updates, and autovacuum
+-- runs once 1% of this small, constantly updated and pruned table is dead.
+-- An operator may change any of them with ALTER TABLE ... SET.
+CREATE TABLE rate_limit_buckets (
+    namespace         text          NOT NULL,
+    key               text          NOT NULL,
+    stamps            timestamptz[] NOT NULL,
+    newest_at         timestamptz   NOT NULL,
+    longest_window_us bigint        NOT NULL,
+    PRIMARY KEY (namespace, key)
+) WITH (fillfactor = 70,
+        autovacuum_vacuum_scale_factor = 0.01,
+        autovacuum_vacuum_insert_scale_factor = 0.01);
+
 -- +goose Down
 -- Reverse creation order; IF EXISTS so teardown completes after a test drops a table.
+DROP TABLE IF EXISTS rate_limit_buckets;
 DROP TABLE IF EXISTS passkey_user_handles;
 DROP TABLE IF EXISTS passkey_credentials;
 DROP TABLE IF EXISTS account_recoveries;

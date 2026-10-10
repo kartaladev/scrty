@@ -14,7 +14,7 @@ See proposal.md for why this change exists. The constraints that shape the appro
   - `sqlstore` (core, `*sql.DB`) and `pgx` (nested module, `*pgxpool.Pool`) share their SQL through `internal/pgschema` constants.
   - The stores pick up an ambient transaction from the context or from `WithTxResolver`.
   - `gorm` has native stores of its own over `*gorm.DB`.
-- **Migrations.** The security-state set is one embedded goose file, `migrate/securitystate/20260926000000_security_state.sql`, with thirteen tables and no storage parameters. Nothing is tagged, so the file may still be edited.
+- **Migrations.** The security-state set is one embedded goose file, `migrate/securitystate/20260926000000_security_state.sql`, with fourteen tables and no storage parameters. The fourteenth, `login_failure_streaks`, came with `consecutive-failure-hold`, and the migration tests pin every table's exact columns and indexes. Nothing is tagged, so the file may still be edited.
 - **The test module** provides:
   - `RunTestPostgres(t, opts...) PostgresConn{DB *sql.DB, DSN string}`, on a shared server per image or an own server;
   - a matrix over `SCRTY_TEST_POSTGRES_IMAGE`, with 15 and 18 in CI;
@@ -87,9 +87,9 @@ CREATE TABLE rate_limit_buckets (
   - it is microsecond-precise, the precision the shared limiters already document;
   - it reads naturally out of band;
   - a 1-D array of 128 elements without nulls is 24 + 128 × 8 = 1,048 bytes.
-- **Storage parameters come from the benchmark** (decision 11). They are set in the migration, so an operator can still change them with `ALTER TABLE … SET (…)`. That is the override. The library never changes them at runtime.
+- **Storage parameters come from the benchmark** (decision 11): `fillfactor = 70` and both autovacuum scale factors at `0.01`. They are set in the migration, so an operator can still change them with `ALTER TABLE … SET (…)`. That is the override. The library never changes them at runtime.
 - **The table name is fixed**, as every security-state table's name is. The override is a consumer's own limiter behind the port. A table-name option would be the only one of its kind in the adapters.
-- **Migration:** added to the initial file before the first tag, with the matching `DROP TABLE IF EXISTS` in the down section. The set's table-list tests go from thirteen to fourteen.
+- **Migration:** added to the initial file before the first tag, with the matching `DROP TABLE IF EXISTS` in the down section. The set's table-list tests go from fourteen to fifteen, and the bucket table joins the tests' exact column and index maps.
 
 ### 3. Each row stays under the TOAST threshold
 
@@ -109,6 +109,11 @@ The widest row has these parts:
 - **Default and limit:** a limit above 128, or a namespace above 64 bytes, is a configuration error that names the maximum (library-design rule 4). The largest built-in default is 30 (the passwordless begin).
 - **Override:** none. A consumer who needs more than 128 failures per window is far past NIST's 100-failure ceiling for a single account. That consumer uses the Redis limiter, which has no row to fit.
 - **Long keys:** the digest rule of the Redis limiter applies. A key longer than 512 bytes, or one that begins with `sha256:`, is stored as `sha256:` followed by its hex digest.
+- **Keys PostgreSQL text cannot hold:** a key containing a NUL byte, or one that is not valid UTF-8, is stored as the same digest. A Redis key may hold any bytes, but a `text` column refuses both (SQLSTATE `22021`).
+  - **Why it matters:** without the digest, the refusal would reach the decorator as an outage. One such key would open the breaker for its whole namespace: in the default mode every other key would be refused for the probe interval, and in allow mode every limit would be lifted.
+  - **The effect:** the two shared backends accept the same keys.
+  - **Proof:** found by the whole-branch review, with a failing test for each mode and backend.
+- **Namespaces:** a namespace containing a NUL byte, or one that is not valid UTF-8, is a configuration error. `Verify`'s probe uses the empty namespace, so it could not catch such a namespace, and every call would fail at runtime instead (library-design rule 6).
 
 ### 4. The statements: one read per check, one upsert per record
 
@@ -145,8 +150,12 @@ WHERE b.namespace = $1 AND b.key = $2 AND s > t.now - $3 * interval '1 microseco
 
 - **Operation timeout:** the decorator bounds each call with a context deadline (default 250ms). Both drivers send a cancel request when that deadline passes.
 - **Lock timeout:** a cancel request is asynchronous and needs a new connection. So the record also tells the server to stop waiting for the row: `set_config('lock_timeout', <operation timeout>, true)`, transaction-local.
+  - **Bound:** the lock timeout is the operation timeout in whole milliseconds, at least 1ms. PostgreSQL refuses a `lock_timeout` above 2,147,483,647ms (about 24.8 days), and every record would then fail as unavailable. So an operation timeout above that maximum is a configuration error naming it, not a value silently capped (library-design rules 4 and 6).
   - **Where it runs:** it is evaluated in the `SELECT` that feeds the `INSERT`, so it is in force before the conflict path waits for the row. That keeps the record to one statement and one round trip on both backends.
   - **Proof:** the order is the executor's, not something the documentation promises. The `rate-limiting` scenario "Row held by another session" is the test that proves it, on both supported majors.
+    - **What the test can observe:** with the lock timeout equal to the operation timeout, the client's deadline always ends the call a few milliseconds first, so the caller sees a deadline error, never SQLSTATE `55P03`. The driver's cancel request then clears the server's wait, whether or not the lock timeout is in force.
+    - **So the test removes the cancel path.** Just before the timed record, it refuses new connections from the limiter's handle, so no cancel request can reach the server. Only the lock timeout can then end the wait, and the test asserts that no session is still waiting within a second. A variant with the lock timeout disabled fails exactly there. A separate probe, with a lock timeout below the deadline, saw `55P03` at about 104ms on a 100ms lock timeout.
+    - **The fallback was not needed.** The real record never waited past its timeout and never flaked, on either major or backend.
   - **Fallback if it fails red-for-the-wrong-reason or flakes:** wrap the record in an explicit transaction with `SET LOCAL lock_timeout`, as a pipelined batch on pgx and `BeginTx` on `database/sql`. Record the switch here.
   - **The check needs no lock timeout.** An MVCC read takes no row lock. A table-level conflict, such as a migration's `ALTER TABLE`, is bounded by the operation timeout.
 - **Unavailable:** these all go to the decorator, so the breaker, the modes and the local refusal hold after a failed record behave exactly as for Redis:
@@ -171,7 +180,7 @@ WITH t AS (SELECT coalesce($1::timestamptz, clock_timestamp()) AS now),
 victims AS (
     SELECT b.namespace, b.key FROM rate_limit_buckets b, t
     WHERE b.newest_at + b.longest_window_us * interval '1 microsecond' <= t.now
-    FOR UPDATE SKIP LOCKED)
+    FOR UPDATE OF b SKIP LOCKED)
 DELETE FROM rate_limit_buckets b USING victims v
 WHERE b.namespace = v.namespace AND b.key = v.key;
 ```
@@ -213,7 +222,7 @@ func ExpiryTask(p Pruner) expiry.Task // name "ratelimit", interval unset
 
 The tests live in the `test` module, because no other module may import it:
 - **Conformance:** `ratelimittest.Run` against both backends, on the shared server with app-clock harnesses, so `Advance` drives time. `SecondInstance` builds a limiter of the other backend, which proves the scenario "Backends share one table".
-- **Database clock:** a separate short-window real-time test, as for Redis.
+- **Database clock:** a separate short-window real-time test, as for Redis. It also records several failures on one key and asserts that each record's `newest_at` equals its newest stamp exactly, which pins the read-once rule of decision 5.
 - **Outage:**
   - `RunTestPostgres` gains `Stop`/`Start` for own servers, mirroring `RedisConn`;
   - one test per unavailable mode, plus one that the breaker refuses without waiting.
@@ -226,7 +235,7 @@ The tests live in the `test` module, because no other module may import it:
   - trimming by time on record;
   - a prune that uses the checking instance's window;
   - a limiter that joins the ambient transaction;
-  - `now()` read twice.
+  - the time read twice in one record statement, once for the stamp and once for `newest_at`. In app-clock mode both reads return the passed `$now`, so the variant behaves exactly like the real statement and the conformance run cannot catch it. Its proof is the database-clock test instead: two `clock_timestamp()` calls differ by microseconds on nearly every record, so across several records `newest_at` departs from the newest stamp. The correct statement can never make them differ, so the test does not flake when green.
 
 ### 11. The benchmark settles storage parameters and the pool advice
 
@@ -252,21 +261,64 @@ The benchmark lives in the `test` module, against an own server, on PostgreSQL 1
 - the recommendation for API-key-heavy traffic, which does one check per request: a separate pool, or the shared one, and from what request rate;
 - the prune interval the godoc recommends.
 
-Until then the migration carries provisional values: `fillfactor = 70`, with the server's autovacuum defaults.
+**Results** (2026-10-10; own server per major, 32 concurrent workers on a 32-connection pool, 20,000 operations per case, two counts, both backends):
+- **The test server is tuned for speed, not durability:** `fsync`, `synchronous_commit` and `full_page_writes` off, data on tmpfs. WAL and disk cost are understated, so the figures below are relative, not absolute.
+- **No operation failed** in either major's sweep (96 cases each).
+- **Latency barely depends on the storage parameters.** Every fillfactor and both autovacuum settings fall within run-to-run noise:
+  - check p50 about 1.0ms, p99 2–3ms;
+  - record p50 about 1.0–1.1ms, p99 2.2–4ms.
+  - One case, at fillfactor 50, reached a check p99 of 4.3ms.
+- **Throughput:** about 25µs of wall time per operation across the 32 workers, so about 40,000 operations per second saturate the server; the corrected second run below confirms the figure.
+- **HOT ratio:** about 0.99 on the hot-key load at every fillfactor. On the check-heavy mix, whose records land on 100 hot keys, it rises as the fillfactor falls:
+
+  | fillfactor | HOT ratio | table per 10⁵ keys |
+  |---|---|---|
+  | 100 | 0.95 | 15 MB |
+  | 90 | 0.97 | 16 MB |
+  | 70 | 0.99 | 19–20 MB |
+  | 50 | 1.00 | 24–25 MB |
+
+  PostgreSQL 15 and 18 agree to two places.
+- **The limiter costs logins server time, not pool slots.** This was measured in a second run (2026-10-10, revised by the whole-branch review), with exactly 32 workers, every connection warmed, and three counts. A simulated login load ran at 300 logins per second, each a `SELECT` and an `INSERT` on `login_attempts`.
+  - **Alone on the server,** login p99 is about 3ms.
+  - **With the limiter saturating the server,** login p99 is 5–8ms. That holds whether the logins share the limiter's pool (`shared`) or have a second pool of their own (`separate`). The two modes do not differ beyond noise, on either major or backend.
+  - **So a separate pool buys nothing measurable.** The cost is the server's work for the limiter's statements.
+  - **The first sweep's 7–146ms login p99 was a harness artefact.** `database/sql` keeps only two idle connections by default, so its pool kept closing and redialing. That also put the `sqlstore` record p99 at 13–17ms, against about 2ms once 32 idle connections are kept. The fillfactor, HOT-ratio and size figures above do not depend on connection handling and stand.
+  - **Limiter latency with warmed pools:** check p50 about 0.75ms and p99 about 1.5ms; record p50 about 0.8ms and p99 1.7–3ms.
+- **Prune:**
+
+  | Rows | PostgreSQL 15 | PostgreSQL 18 |
+  |---|---|---|
+  | 10⁵ | about 80ms | about 90ms |
+  | 10⁶ | about 1.25s | about 1.5s |
+
+  It removed only rows past their bound in every run.
+
+**Decided:**
+- **`fillfactor = 70`.** It is the lowest measured value that reaches a HOT ratio of 0.99 on the update-heavy mix. It costs about a quarter more table size than 100, and no measurable latency. 50 adds almost nothing to the HOT ratio for half again the size. The HOT ratio was measured on a hot set of 100 keys, a table of a few pages. Its value on a large table under sustained updates is not measured, and an operator who sees bloat lowers the fill factor further with `ALTER TABLE … SET`.
+- **`autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_insert_scale_factor = 0.01`.**
+  - The runs show no cost for the lower values. Runs this short cannot show their benefit either, so the choice is reasoned, not measured.
+  - The reasoning: the table is small and every row is updated or pruned constantly. The server default of 20% dead tuples would let it bloat to several times its live size between vacuums. 1% keeps it near its live size, and vacuuming a table this small is cheap.
+- **Pool advice: no separate pool is required, and the idle-connection setting matters.**
+  - The limiter may share the application's pool, API-key traffic included. A pool connection is busy under a millisecond per operation (Little's law), so N limiter operations per second hold under N/1000 connections on average. Size the pool for that.
+  - What a busy limiter costs the rest of the application is server load: login p99 rose from about 3ms to 5–8ms with the limiter saturating the server, whichever pool it used.
+  - A deployment whose database cannot absorb that load moves the limiter to Redis, not to another pool on the same server.
+  - **On `database/sql`, keep idle connections near the open limit** (`SetMaxIdleConns`). The default of two made the measured record p99 six to eight times worse through connection churn. pgx's pool keeps its connections and needs nothing.
+- **Prune interval: every 10 minutes.** A run over 10⁶ rows takes about 1.5s of one connection, and `SKIP LOCKED` keeps it off rows a record holds. A shorter interval only bounds the table more tightly, and a longer one never frees quota early, because the prune's rule does not depend on how often it runs.
 
 ### 12. Departures
 
 - **None from established behaviour.** It has no database-backed limiter. The in-memory limiter's recorded decisions are kept, and the prune keeps their rule: no cutoff, never disarm.
 - **From scrty's own settled specs**, each through a delta in this change:
-  - `schema-migrations`: a fourteenth table, with a natural key in place of a uuid;
+  - `schema-migrations`: a fifteenth table, with a natural key in place of a uuid;
   - `security-state-stores` and `store-conformance`: the limiter does not join ambient transactions, and does not run that suite;
   - `expiry-sweeping`: the rate-limiter task covers any pruner;
   - `MemoryLimiter.Prune`'s signature (decision 8).
 
 ## Risks / Trade-offs
 
-- **[Every passkey begin, recovery start and enrolment begin writes a row and WAL on the primary]** → It is measured (decision 11). The godoc states the write rate per flow and recommends Redis above the measured ceiling.
-- **[A check on every API-key request shares the login pool]** → The benchmark settles whether a separate pool is advised. The constructor takes any pool.
+- **[Every passkey begin, recovery start and enrolment begin writes a row and WAL on the primary]** → It is measured (decision 11). The godoc states the write cost per flow and the pool advice. The benchmark found no throughput ceiling short of pool saturation, at about 40,000 operations per second on the test server. So the godoc names no request rate above which Redis is required; a deployment past its own pool's capacity is where Redis applies.
+- **[A check on every API-key request shares the login pool]** → Measured: a separate pool made no difference, and the cost is server load (decision 11). The constructor takes any pool, and the `sqlstore` godoc asks for idle connections near the open limit.
 - **[The prune scans the whole table]** → The benchmark measures it, the godoc recommends an interval, and `SKIP LOCKED` keeps it off hot rows.
 - **[The lock-timeout ordering is executor behaviour, not documented]** → It is pinned by a test on both majors, with an explicit-transaction fallback (decision 6).
 - **[Table bloat if autovacuum falls behind]** → A lowered fillfactor, per-table autovacuum settings from the benchmark, and a table size the godoc documents.

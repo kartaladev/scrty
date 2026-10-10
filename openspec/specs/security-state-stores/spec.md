@@ -233,6 +233,8 @@ Durable session stores SHALL decide expiry and count active sessions using the s
 ### Requirement: Stores join a transaction the caller attached
 When a caller attaches its own transaction to the operation context through a backend's attach function, every store of that backend SHALL perform the operation inside that transaction. When no transaction is attached, the store SHALL use the database handle it was constructed with. The store SHALL NOT commit or roll back a transaction it did not open.
 
+The shared PostgreSQL rate limiter is not a store under this requirement: it SHALL ignore an attached transaction, as `rate-limiting` requires.
+
 #### Scenario: Rolled back with the caller
 - **WHEN** a caller begins a transaction, attaches it, saves a session through a durable store, and rolls back
 - **THEN** the session does not exist afterwards
@@ -244,6 +246,11 @@ When a caller attaches its own transaction to the operation context through a ba
 #### Scenario: No attached transaction
 - **WHEN** a session is saved with no transaction attached
 - **THEN** the session is visible to other connections immediately after the save returns
+
+#### Scenario: The rate limiter stays outside the caller's transaction
+- **WHEN** a caller attaches a transaction, records a failure through a PostgreSQL rate limiter and saves a session through a durable store, and rolls back
+- **THEN** the session does not exist afterwards
+- **AND** the recorded failure still counts
 
 ### Requirement: A consumer transaction manager can supply the transaction
 Each backend's stores SHALL accept a transaction resolver. When one is configured, the store SHALL ask the resolver for the current transaction instead of reading its own attachment, SHALL use the resolved transaction when the resolver reports one, and SHALL use its constructed handle otherwise.

@@ -1,11 +1,11 @@
 ## MODIFIED Requirements
 
 ### Requirement: The security-state set creates only security-state tables
-The security-state migration set SHALL create the tables for sessions, signing keys, login attempts, MFA enrolments, API keys, one-time tokens, OIDC links, OIDC flows, OIDC handoffs, saved recovery codes, recovery records, passkey credentials, passkey user handles and shared rate-limit buckets. It SHALL create no identity tables, SHALL declare no foreign key to any table outside the set, SHALL store every library-owned primary key in a native uuid column (rate-limit buckets, which are keyed by namespace and key rather than by a library-owned identifier, excepted), and SHALL store every user reference in a text column. The set SHALL be embedded in the library as plain SQL, so applying it needs no files on disk.
+The security-state migration set SHALL create the tables for sessions, signing keys, login attempts, consecutive login failure counts, MFA enrolments, API keys, one-time tokens, OIDC links, OIDC flows, OIDC handoffs, saved recovery codes, recovery records, passkey credentials, passkey user handles and shared rate-limit buckets. It SHALL create no identity tables, SHALL declare no foreign key to any table outside the set, SHALL store every library-owned primary key in a native uuid column (rate-limit buckets, which are keyed by namespace and key rather than by a library-owned identifier, excepted), and SHALL store every user reference in a text column. The set SHALL be embedded in the library as plain SQL, so applying it needs no files on disk.
 
 #### Scenario: Fresh database
 - **WHEN** the security-state set is applied to an empty database
-- **THEN** the fourteen security-state tables and the set's version table exist
+- **THEN** the fifteen security-state tables and the set's version table exist
 - **AND** no users, roles, organizations, groups or privileges table exists
 
 #### Scenario: Column types
@@ -39,6 +39,10 @@ The security-state migration set SHALL create the tables for sessions, signing k
 #### Scenario: Federated assurance columns
 - **WHEN** the set has been applied
 - **THEN** the sessions table and the OIDC handoffs table each have a non-null column for the asserted `amr` values, defaulting to an empty list, and a non-null text column for the asserted `acr`, defaulting to the empty string
+
+#### Scenario: Consecutive failure counts
+- **WHEN** the set has been applied
+- **THEN** consecutive failure counts are unique per login name, and the time an identifier became held is nullable with no default
 
 #### Scenario: Rate-limit bucket table
 - **WHEN** the set has been applied

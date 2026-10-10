@@ -53,6 +53,17 @@
 // that transaction, as PostgreSQL defines, a read (for example one cancelled
 // by a statement timeout) as much as a write. Refusals never do.
 //
+// # Rate limiting
+//
+// NewLimiterFactory and NewLimiter build a ratelimit.Limiter whose counts
+// live in the rate_limit_buckets table of the security-state migration set, so
+// one limit holds across every replica. They keep the same rows as the core's
+// sqlstore limiter, so the two count together. Unlike the stores above, the
+// limiter always runs on its pool and ignores any transaction attached with
+// WithTx, because a failure recorded inside a request's transaction would roll
+// back exactly when it must count. It takes its own LimiterOption type. Call
+// Verify at startup, and run ratelimit.ExpiryTask(factory) to prune the table.
+//
 // # Errors
 //
 // Refusals return the owning package's sentinels. Database failures, a

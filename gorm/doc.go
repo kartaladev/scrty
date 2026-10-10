@@ -70,6 +70,28 @@
 // (a tracing plugin, for example) still run on every store statement, and see
 // its bound values. A consumer registering one owns what it records.
 //
+// # Rate limiting
+//
+// There is no gorm-native shared rate limiter. A gorm consumer builds the
+// database/sql one, from package sqlstore, over the *sql.DB underneath the
+// gorm connection:
+//
+//	sqlDB, err := gdb.DB()
+//	if err != nil { ... }
+//	factory, err := sqlstore.NewLimiterFactory(sqlDB)
+//	if err != nil { ... }
+//	if err := factory.Verify(ctx); err != nil { ... } // at startup
+//	chain, err := httpsec.New(httpsec.WithRateLimiterFactory(factory), ...)
+//	runner, err := expiry.NewRunner([]expiry.Task{ratelimit.ExpiryTask(factory), ...})
+//
+// Its limiters count across instances like any other PostgreSQL limiter, in
+// the same table as the pgx adapter's. A gorm-native limiter would add
+// nothing: the limiter deliberately ignores any transaction a caller has
+// attached, since a failure recorded inside the request's transaction would
+// roll back with the request, so it needs only the pool, never the stores'
+// transaction resolution, and running it through gorm would only expose its
+// bound keys to gorm's logger and callbacks.
+//
 // # Errors
 //
 // Refusals return the owning package's sentinels. Database failures are

@@ -1773,3 +1773,84 @@ func TestPostgresServerKeepsSerializableConflicts(t *testing.T) {
 	require.ErrorAs(t, err, &pgErr, "write skew must be refused under SERIALIZABLE")
 	assert.Equal(t, "40001", pgErr.Code)
 }
+
+func TestRunTestPostgres_StopStart(t *testing.T) {
+	t.Parallel()
+
+	conn := RunTestPostgres(t, WithTestPostgresOwnServer())
+	ctx := t.Context()
+	_, err := conn.DB.ExecContext(ctx, `CREATE TABLE restart_probe (v int); INSERT INTO restart_probe VALUES (7)`)
+	require.NoError(t, err)
+
+	conn.Stop(t)
+	stopped, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.Error(t, conn.DB.PingContext(stopped), "the server answers after Stop")
+
+	conn.Start(t)
+	var v int
+	require.NoError(t, conn.DB.QueryRowContext(ctx, `SELECT v FROM restart_probe`).Scan(&v),
+		"DB must reach the restarted server, and the data must survive the restart")
+	assert.Equal(t, 7, v)
+}
+
+func TestRunTestPostgres_Refusals(t *testing.T) {
+	t.Parallel()
+
+	// Stop and Start end the test with t.Fatal on a shared server, which a
+	// test cannot observe on its own *testing.T, so the check behind them is
+	// exercised directly, as TestRunTestRedis_Refusals does.
+	_, err := PostgresConn{}.own()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WithTestPostgresOwnServer")
+}
+
+func TestRunTestPostgresStandby(t *testing.T) {
+	t.Parallel()
+
+	s := RunTestPostgresStandby(t)
+	ctx := t.Context()
+
+	var inRecovery bool
+	require.NoError(t, s.Standby.DB.QueryRowContext(ctx, `SELECT pg_is_in_recovery()`).Scan(&inRecovery))
+	assert.True(t, inRecovery, "the standby is not in recovery")
+	require.NoError(t, s.Primary.DB.QueryRowContext(ctx, `SELECT pg_is_in_recovery()`).Scan(&inRecovery))
+	assert.False(t, inRecovery, "the primary is in recovery")
+
+	_, err := s.Primary.DB.ExecContext(ctx, `CREATE TABLE standby_probe (v int); INSERT INTO standby_probe VALUES (1)`)
+	require.NoError(t, err)
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		var v int
+		assert.NoError(c, s.Standby.DB.QueryRowContext(ctx, `SELECT v FROM standby_probe`).Scan(&v))
+	}, 30*time.Second, 200*time.Millisecond)
+
+	// A standby refuses writes.
+	_, err = s.Standby.DB.ExecContext(ctx, `INSERT INTO standby_probe VALUES (2)`)
+	require.Error(t, err)
+
+	// Both are own servers, so each can be stopped and restarted.
+	s.Standby.Stop(t)
+	s.Standby.Start(t)
+}
+
+func TestRunTestPostgresStandby_Migrations(t *testing.T) {
+	t.Parallel()
+
+	fsys := fstest.MapFS{"m/00001_t.sql": {Data: []byte("-- +goose Up\nCREATE TABLE standby_migrated (v int);\n-- +goose Down\nDROP TABLE standby_migrated;\n")}}
+	s := RunTestPostgresStandby(t, WithTestPostgresMigrations(fsys, "m", "standby_mig_version"))
+	ctx := t.Context()
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		var n int
+		assert.NoError(c, s.Standby.DB.QueryRowContext(ctx, `SELECT count(*) FROM standby_migrated`).Scan(&n))
+	}, 30*time.Second, 200*time.Millisecond, "the primary's migration never reached the standby")
+}
+
+// A test that leaves its own server stopped must still clean up: terminating
+// the container removes the database, so neither the drop nor the migration
+// rollback may run against a server that is down.
+func TestRunTestPostgres_StopLeftStopped(t *testing.T) {
+	t.Parallel()
+
+	conn := RunTestPostgres(t, WithTestPostgresOwnServer())
+	conn.Stop(t)
+}

@@ -310,7 +310,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 
 		require.NoError(t, l.RecordFailure(t.Context(), "k"))
 		clock.Advance(testWindow / 2)
-		l.Prune()
+		_, _ = l.Prune(t.Context())
 
 		exceeded, err := l.Exceeded(t.Context(), "k")
 		require.NoError(t, err)
@@ -330,7 +330,7 @@ func TestTheLimiterBoundsItsMemoryWithoutDisarmingLimits(t *testing.T) {
 		clock.Advance(50 * time.Second)
 		require.NoError(t, l.RecordFailure(t.Context(), "k"))
 		clock.Advance(20 * time.Second) // 12:01:10: the first stamp has expired, the second has not
-		l.Prune()
+		_, _ = l.Prune(t.Context())
 
 		assert.Equal(t, 1, l.StampsFor("k"), "the key was dropped although it still counts one failure")
 		exceeded, err := l.Exceeded(t.Context(), "k")
@@ -495,7 +495,7 @@ func TestMemoryLimiter_SweepResumesAfterClockSteppedBack(t *testing.T) {
 	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow, ratelimit.WithMemoryLimiterClock(clk))
 	require.NoError(t, err)
 
-	l.Prune()
+	_, _ = l.Prune(t.Context())
 	clk.Set(epoch.Add(-time.Hour))
 
 	keys := slash64Keys(1000)
@@ -569,7 +569,7 @@ func TestMemoryLimiter_CompactionKeepsLiveKeys(t *testing.T) {
 		require.NoError(t, l.RecordFailure(t.Context(), k))
 	}
 	clk.Advance(20 * time.Second) // the first stamps have expired; the live keys' second stamps have not
-	l.Prune()
+	_, _ = l.Prune(t.Context())
 
 	for _, k := range live {
 		assert.Equal(t, 2, l.StampsFor(k), "key %s lost stamps when its shard was compacted", k)
@@ -625,13 +625,13 @@ func TestMemoryLimiter_ConcurrentSweepsKeepLiveKeys(t *testing.T) {
 			for i := len(live) + w; i < len(keys); i += workers {
 				_, _ = l.Exceeded(t.Context(), keys[i])
 				if i%10_000 < workers {
-					l.Prune()
+					_, _ = l.Prune(t.Context())
 				}
 			}
 		}()
 	}
 	wg.Wait()
-	l.Prune()
+	_, _ = l.Prune(t.Context())
 
 	assert.Zero(t, lost.Load(), "a failure the window still counts vanished while shards were swept")
 	for _, k := range live {

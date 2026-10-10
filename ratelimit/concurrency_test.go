@@ -59,7 +59,7 @@ func TestTheLimiterIsSafeUnderConcurrentUse(t *testing.T) {
 					}
 					_ = l.RecordFailure(t.Context(), key)
 					l.StampsFor(key)
-					l.Prune()
+					_, _ = l.Prune(t.Context())
 				}
 			}()
 		}

@@ -11,8 +11,8 @@ The system SHALL provide an expiry task for each of the following, and each task
 - expired sessions;
 - magic-link tokens that are past both their expiry and their issuance window;
 - one-time tokens of any other single purpose, on the same rule;
-- login attempts older than the lockout window;
-- idle keys held by the in-memory rate limiter;
+- login attempts older than the lockout window, and, with a lockout cap, consecutive failure counts inactive past the cap retention, never a hold;
+- idle keys held by a rate limiter that can prune: the in-memory limiter, and the PostgreSQL limiter's table across all its namespaces;
 - expired OIDC flows;
 - spent or expired OIDC handoffs;
 - expired one-time state the library keeps on its own behalf: passkey ceremony challenges, MFA challenges, and account-recovery issued codes and hold tokens, each through the component that owns it.
@@ -52,6 +52,11 @@ API keys, OIDC links, MFA enrolments, passkey credentials (pending or active), a
 #### Scenario: Consumer renames a built-in task
 - **WHEN** a consumer schedules two in-memory rate limiters and renames one task `ratelimit:apikey`
 - **THEN** both tasks run and are reported under their own names
+
+#### Scenario: One task prunes the PostgreSQL limiter table
+- **WHEN** a PostgreSQL limiter factory has built limiters for several namespaces, idle keys exist in each, and its rate-limiter task runs
+- **THEN** the idle keys of every namespace are removed
+- **AND** a key whose newest failure is inside the longest window recorded for it is kept
 
 ### Requirement: A sweep never frees rate-limit or lockout quota
 No expiry task and no runner or scheduler setting SHALL accept a retention window or cutoff. Each built-in task SHALL derive its cutoff from the owning component's own configured window. Running any task SHALL NOT change a count that a rate limiter, an issuance limit or an account lockout uses for a decision. When the owning component's store cannot purge, the task SHALL fail with a purge-unsupported error that is recognisable in the same way for every task, and SHALL NOT report zero removed.

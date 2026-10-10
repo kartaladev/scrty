@@ -333,6 +333,50 @@ type PostgresConn struct {
 	// pgxpool.New or gorm.Open. The drop at cleanup ends any session still
 	// connected, so a handle left open does not block it.
 	DSN string
+
+	ctr *postgres.PostgresContainer // nil on a shared server
+}
+
+// own returns the container behind an own-server connection, and an error on
+// a shared server.
+func (c PostgresConn) own() (*postgres.PostgresContainer, error) {
+	if c.ctr == nil {
+		return nil, errors.New("Stop and Start need WithTestPostgresOwnServer: this is a shared server other tests are using")
+	}
+	return c.ctr, nil
+}
+
+// Stop stops an own server's container, so the next call fails as in an
+// outage. It fails the test on a shared server, which other tests are using.
+// The server keeps its data while stopped.
+func (c PostgresConn) Stop(t *testing.T) {
+	t.Helper()
+
+	ctr, err := c.own()
+	require.NoError(t, err)
+	timeout := 2 * time.Second
+	ctx, cancel := context.WithTimeout(t.Context(), postgresReadyTimeout)
+	defer cancel()
+	require.NoError(t, ctr.Stop(ctx, &timeout), "failed to stop the PostgreSQL container")
+}
+
+// Start starts an own server stopped by Stop, and returns once DB reaches it
+// again. It fails the test on a shared server. Docker may map the restarted
+// container to another host port: DB follows it, but DSN keeps the port it
+// was created with, so a handle opened on DSN after Start may not connect.
+// Open further handles before Stop, or build the address from the container.
+func (c PostgresConn) Start(t *testing.T) {
+	t.Helper()
+
+	ctr, err := c.own()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(t.Context(), postgresReadyTimeout)
+	defer cancel()
+	require.NoError(t, ctr.Start(ctx), "failed to start the PostgreSQL container")
+	// The readiness lines of the first start are still in the container's
+	// log, so the container is up before the server listens again.
+	require.Eventually(t, func() bool { return c.DB.PingContext(ctx) == nil },
+		postgresReadyTimeout, 50*time.Millisecond, "the restarted server never answered")
 }
 
 // postgresImage is the PostgreSQL server every RunTestPostgres caller gets by
@@ -629,6 +673,12 @@ func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) Postg
 	// after both, on a database nothing in this call still uses; and after an
 	// own server's Terminate, so it runs before it.
 	tb.Cleanup(func() {
+		// An own server is terminated with the test, which removes the
+		// database; and a test may have left it stopped, where a drop could
+		// only fail.
+		if srv.resolve {
+			return
+		}
 		// Not tb.Context(): it is already cancelled by the time cleanup runs.
 		ctx, cancel := context.WithTimeout(context.Background(), postgresTeardownBudget)
 		defer cancel()
@@ -641,7 +691,7 @@ func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) Postg
 	if err != nil {
 		tb.Fatalf("%v", err)
 	}
-	db, err := sql.Open("pgx", dsn)
+	db, err := openPostgresDB(dsn, srv.ctr, srv.resolve)
 	if err != nil {
 		tb.Fatalf("open the PostgreSQL database %s: %v", name, err)
 	}
@@ -654,9 +704,20 @@ func postgresProvision(tb cleanupTB, srv *postgresServer, cfg *testConfig) Postg
 	if err != nil {
 		tb.Fatalf("%v", err)
 	}
-	postgresRegisterTeardown(tb, db, cfg, sets)
+	tb.Cleanup(func() {
+		// A test may have left its own server stopped: the rollback could
+		// only fail, and terminating the container removes the data anyway.
+		if srv.resolve && !srv.running() {
+			return
+		}
+		postgresTeardown(tb, db, cfg, sets)
+	})
 
-	return PostgresConn{DB: db, DSN: dsn}
+	conn := PostgresConn{DB: db, DSN: dsn}
+	if srv.resolve {
+		conn.ctr = srv.ctr
+	}
+	return conn
 }
 
 // postgresPort is the port the PostgreSQL server listens on inside its
@@ -681,10 +742,10 @@ const postgresStartAttempts = 3
 // startTestPostgres starts a PostgreSQL server of t's own, the one
 // WithTestPostgresOwnServer asks for, and terminates it when t ends. A
 // failure to start stops the test.
-func startTestPostgres(t *testing.T, image string) *postgresServer {
+func startTestPostgres(t *testing.T, image string, extra ...testcontainers.ContainerCustomizer) *postgresServer {
 	t.Helper()
 
-	ctr, err := startPostgresContainer(t.Context(), image)
+	ctr, err := startPostgresContainerWith(t.Context(), image, false, extra...)
 	require.NoError(t, err, "failed to start PostgreSQL test container")
 	t.Cleanup(func() {
 		// Not t.Context(): it is already cancelled by the time cleanup runs,
@@ -696,7 +757,7 @@ func startTestPostgres(t *testing.T, image string) *postgresServer {
 		}
 	})
 
-	srv, err := newPostgresServer(t.Context(), image, ctr)
+	srv, err := newOwnPostgresServer(t.Context(), image, ctr)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.admin.Close() })
 	return srv
@@ -838,13 +899,6 @@ func postgresProviders(db *sql.DB, migrations []postgresMigrations) ([]postgresA
 		sets = append(sets, postgresAppliedSet{dir: m.dir, provider: p})
 	}
 	return sets, nil
-}
-
-// postgresRegisterTeardown registers the migration teardown of a call whose
-// database already carries sets: see postgresTeardown.
-func postgresRegisterTeardown(tb cleanupTB, db *sql.DB, cfg *testConfig, sets []postgresAppliedSet) {
-	tb.Helper()
-	tb.Cleanup(func() { postgresTeardown(tb, db, cfg, sets) })
 }
 
 // postgresTeardown rolls every one of sets back to version zero, last first,

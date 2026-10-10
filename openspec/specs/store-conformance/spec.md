@@ -91,7 +91,7 @@ For stores with single-use consumption or unique inserts, a race suite SHALL rel
 - **THEN** it passes only if every user holds exactly one handle and every caller received it
 
 ### Requirement: The ambient-transaction suite proves transaction participation
-Every durable store scrty ships SHALL pass an ambient-transaction suite. The suite SHALL show that:
+Every durable store scrty ships SHALL pass an ambient-transaction suite. The shared PostgreSQL rate limiter SHALL NOT run it, because it ignores the caller's transaction by design; the suite's documentation SHALL state that exclusion. The suite SHALL show that:
 - work performed inside a caller-owned transaction is rolled back and committed with it;
 - a refusal inside the transaction leaves it usable;
 - a configured transaction resolver is honoured;
@@ -108,6 +108,10 @@ Every durable store scrty ships SHALL pass an ambient-transaction suite. The sui
 #### Scenario: Resolver honoured
 - **WHEN** the suite configures the store with a resolver that returns the caller's transaction, without attaching it to the context, and rolls back after a write
 - **THEN** the suite asserts that the write is absent
+
+#### Scenario: Rate limiter excluded and the exclusion stated
+- **WHEN** a reader looks for the shared PostgreSQL rate limiter among the ambient-transaction suite's runs
+- **THEN** it is absent, and the suite's documentation names it as excluded and why
 
 ### Requirement: The sealed-column suite proves secrets are unusable at rest
 Every durable store with sealed columns SHALL pass a sealed-column suite. Using out-of-band database access, the suite SHALL show that:

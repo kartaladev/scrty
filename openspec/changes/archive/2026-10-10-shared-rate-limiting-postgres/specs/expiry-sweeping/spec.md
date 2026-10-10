@@ -5,7 +5,7 @@ The system SHALL provide an expiry task for each of the following, and each task
 - expired sessions;
 - magic-link tokens that are past both their expiry and their issuance window;
 - one-time tokens of any other single purpose, on the same rule;
-- login attempts older than the lockout window;
+- login attempts older than the lockout window, and, with a lockout cap, consecutive failure counts inactive past the cap retention, never a hold;
 - idle keys held by a rate limiter that can prune: the in-memory limiter, and the PostgreSQL limiter's table across all its namespaces;
 - expired OIDC flows;
 - spent or expired OIDC handoffs;

@@ -178,7 +178,7 @@ func TestMemoryLimiter_Full(t *testing.T) {
 				clk.Advance(2 * time.Minute)
 			},
 			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, clk *clockwork.FakeClock) {
-				l.Prune() // at 12:02:00
+				_, _ = l.Prune(t.Context()) // at 12:02:00
 				clk.Advance(30 * time.Second)
 				require.NoError(t, l.RecordFailure(t.Context(), "c")) // at 12:02:30
 				assert.Equal(t, 1, l.StampsFor("c"), "c was not held after expired keys were pruned")
@@ -235,8 +235,8 @@ func TestMemoryLimiter_Full(t *testing.T) {
 				clk.Advance(2*testWindow + time.Second)
 			},
 			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, _ *clockwork.FakeClock) {
-				l.Prune()
-				l.Prune() // a second prune finds nothing, and must give back nothing
+				_, _ = l.Prune(t.Context())
+				_, _ = l.Prune(t.Context()) // a second prune finds nothing, and must give back nothing
 				refillsExactly(t, l, 100)
 			},
 		},
@@ -258,7 +258,7 @@ func TestMemoryLimiter_Full(t *testing.T) {
 					require.NoError(t, err)
 					require.False(t, exceeded)
 				}
-				l.Prune() // everything is already swept, so this must give back nothing
+				_, _ = l.Prune(t.Context()) // everything is already swept, so this must give back nothing
 				refillsExactly(t, l, 100)
 			},
 		},
@@ -277,7 +277,7 @@ func TestMemoryLimiter_Full(t *testing.T) {
 				clk.Advance(testWindow/2 + time.Second) // the old keys have expired, the live ones not
 			},
 			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, _ *clockwork.FakeClock) {
-				l.Prune()
+				_, _ = l.Prune(t.Context())
 				for _, key := range numbered("live", 1_000) {
 					require.Equal(t, 1, l.StampsFor(key), "a live key was lost to compaction")
 				}
