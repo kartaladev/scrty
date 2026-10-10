@@ -176,6 +176,34 @@ func (e *Engine) UnwiredFederatedAssurance() []string {
 	return names
 }
 
+// RequiredAttemptViews reports every registered policy that requires failures
+// to be recorded through its own view, with that view, in registration order,
+// one entry per registration.
+//
+// It is how a component that records failures, such as an HTTP security chain
+// with form login or Basic authentication, checks its wiring before it serves:
+// a capped lockout policy whose view is bypassed reads like a cap at every call
+// site and never holds anyone. The answer is drawn from the optional
+// AttemptViewRequirer interface, and a policy that does not implement it
+// requires nothing. A policy registered for no phase is never asked anything,
+// so it is never reported.
+//
+// It returns a fresh slice, nil when nothing is required, and is meant for
+// wiring time, alongside Add, rather than for the request path.
+func (e *Engine) RequiredAttemptViews() []RequiredAttemptView {
+	var views []RequiredAttemptView
+
+	for _, p := range e.asked {
+		if r, ok := p.(AttemptViewRequirer); ok {
+			if view, required := r.RequiredAttemptView(); required {
+				views = append(views, RequiredAttemptView{Policy: p.Name(), View: view})
+			}
+		}
+	}
+
+	return views
+}
+
 // FlushRefusalLogs asks every registered policy that keeps a refusal-log
 // sampler to report what it has suppressed. It walks e.asked, so a policy
 // registered for several phases is flushed once, not once per phase; a

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
@@ -128,6 +129,7 @@ func TestMiddleware(t *testing.T) {
 
 				h := newAuthHarness(t)
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 
 				chain, err := httpsec.New(
 					httpsec.WithLogger(h.logger()),

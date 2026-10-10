@@ -3,6 +3,8 @@ package httpsec_test
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -57,6 +59,7 @@ func TestBasicAuth(t *testing.T) {
 			engine: noEngine,
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 				// No expectation on the session store: Basic mints nothing.
 			},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
@@ -193,6 +196,7 @@ func TestBasicAuth(t *testing.T) {
 			},
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 			},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
 			assert: func(t *testing.T, s served) {
@@ -244,6 +248,7 @@ func TestBasicAuth(t *testing.T) {
 			},
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 			},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
 			assert: func(t *testing.T, s served) {
@@ -263,6 +268,7 @@ func TestBasicAuth(t *testing.T) {
 			},
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectAuthenticated(testPrincipal())
+				h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 				// No expectation on the session store or the generator.
 			},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
@@ -300,6 +306,94 @@ func TestBasicAuth(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, serve(t, chain, tc.request(t.Context())))
+		})
+	}
+}
+
+// errorRecords is what the harness's logger captured at error level, leaving
+// out the warnings construction writes.
+func errorRecords(h *authHarness) []slog.Record {
+	var out []slog.Record
+
+	for _, r := range h.logs.records() {
+		if r.Level >= slog.LevelError {
+			out = append(out, r)
+		}
+	}
+
+	return out
+}
+
+// TestBasicSuccessClearsFailures pins that a proven Basic password supersedes
+// the failures before it, as at the login form, and that a store which cannot
+// clear them is reported without refusing the caller.
+func TestBasicSuccessClearsFailures(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		resets error
+		assert func(t *testing.T, h *authHarness, s served)
+	}
+
+	cases := []testCase{
+		{
+			name: "success clears the failures",
+			assert: func(t *testing.T, h *authHarness, s served) {
+				require.NoError(t, s.err)
+				assert.True(t, s.handlerRan)
+				assert.Equal(t, http.StatusOK, s.rec.Code)
+				assert.Empty(t, errorRecords(h), "a clearing that worked writes no error")
+			},
+		},
+		{
+			// Bookkeeping that failed: reported once with the store's error
+			// type, never its text or the username, and the caller still gets in.
+			name:   "a clearing that fails is logged and the request succeeds",
+			resets: errors.New("db: column secret_hint=hunter2"),
+			assert: func(t *testing.T, h *authHarness, s served) {
+				require.NoError(t, s.err)
+				assert.True(t, s.handlerRan, "a clearing that failed must not refuse a proven password")
+				assert.Equal(t, http.StatusOK, s.rec.Code)
+
+				auth, ok := authenticate.AuthenticationFromContext(s.handled.Context())
+				require.True(t, ok)
+				assert.Equal(t, identity.UserID("u-1"), auth.Principal.ID)
+
+				recs := errorRecords(h)
+				require.Len(t, recs, 1, "one error record names the failed clearing")
+				assert.Equal(t, slog.LevelError, recs[0].Level)
+				assert.Equal(t, "httpsec: failed login attempts could not be cleared", recs[0].Message)
+
+				errType, ok := attrValue(recs[0], "error_type")
+				require.True(t, ok, "the record names the store's error type")
+				assert.Equal(t, "*errors.errorString", errType.String())
+
+				recs[0].Attrs(func(a slog.Attr) bool {
+					assert.NotContains(t, a.Value.String(), "hunter2", "a store's error text reached the log")
+					assert.NotContains(t, a.Value.String(), "ada", "the username reached the log")
+
+					return true
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAuthHarness(t)
+			h.expectAuthenticated(testPrincipal())
+			h.attempts.EXPECT().Reset(gomock.Any(), "ada").Return(tc.resets).Times(1)
+
+			chain, err := httpsec.New(
+				httpsec.WithLogger(h.logger()),
+				httpsec.EnableBasicAuth(h.basicAuthDeps()),
+			)
+			require.NoError(t, err)
+
+			tc.assert(t, h, serve(t, chain, basicRequest(t.Context(), "ada", "s3cret")))
 		})
 	}
 }

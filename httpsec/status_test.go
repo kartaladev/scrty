@@ -96,6 +96,7 @@ func TestStatusForError(t *testing.T) {
 		},
 		{name: "password history unavailable is a dependency failure", err: password.ErrHistoryUnavailable, want: 500},
 		{name: "account locked", err: policy.ErrAccountLocked, want: 429},
+		{name: "account held", err: policy.ErrAccountHeld, want: 429},
 		{
 			name: "concealed account lock answers as the authentication failure",
 			err:  errors.Join(authenticate.ErrAuthenticationFailed, policy.ErrAccountLocked),
@@ -323,6 +324,7 @@ var sentinelRegistry = map[string]map[string]error{
 	},
 	"github.com/kartaladev/scrty/policy": {
 		"policy.ErrAccountLocked":               policy.ErrAccountLocked,
+		"policy.ErrAccountHeld":                 policy.ErrAccountHeld,
 		"policy.ErrConfig":                      policy.ErrConfig,
 		"policy.ErrFederatedAssuranceNotMet":    policy.ErrFederatedAssuranceNotMet,
 		"policy.ErrMFAEnrollmentRequired":       policy.ErrMFAEnrollmentRequired,

@@ -92,6 +92,31 @@ func AttemptAmbient[S interface {
 	}
 }
 
+// FailureStreakAmbient is the ambient suite's view of the streak half of a
+// login-attempt store: record i is a streak of its own user. The contract
+// refuses nothing by an add of a storable identifier, so the refusal is the
+// purge's refusal of a zero cutoff.
+func FailureStreakAmbient[S policy.FailureStreakStore]() storetest.Ambient[S] {
+	user := func(i int) string { return fmt.Sprintf("ambient-streak-%d", i) }
+
+	return storetest.Ambient[S]{
+		Write: func(ctx context.Context, s S, i int) error {
+			now := time.Now()
+			_, _, err := s.AddStreakFailure(ctx, user(i), now, now.Add(-time.Hour), 100)
+			return err
+		},
+		Present: func(t *testing.T, raw *sql.DB, i int) bool {
+			return Exists(t, raw, `SELECT EXISTS (SELECT 1 FROM login_failure_streaks WHERE username = $1)`, user(i))
+		},
+		Refuse: func(ctx context.Context, s S) error {
+			// Refused before any statement runs, as the attempt purge is.
+			_, err := s.DeleteStreaksBefore(ctx, time.Time{})
+			return err
+		},
+		Refusal: policy.ErrRetainSinceRequired,
+	}
+}
+
 // SigningKeyAmbient is the ambient suite's view of the signing-key store:
 // record i is a key. The contract refuses nothing by a write, so the refusal
 // is a load that fails closed: foreign builds a store over the same database

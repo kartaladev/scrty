@@ -7,6 +7,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/policy"
 )
@@ -41,7 +42,195 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 		assert.Nil(t, p, "a refused configuration handed back a policy anyway")
 	}
 
+	// refusedNaming is a refusal whose error contains fragment, which names the
+	// option at fault so a consumer reading it knows which line of wiring to
+	// change. A cap fragment carries the words after the name, so that an error
+	// naming WithLockoutCapRetention does not satisfy it.
+	refusedNaming := func(fragment string) func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+		return func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+			t.Helper()
+
+			refused(t, p, err)
+			assert.ErrorContains(t, err, fragment)
+		}
+	}
+
+	// streaklessStore is an attempt store that keeps no consecutive failures:
+	// it implements AttemptStore and nothing else. No call is expected on it,
+	// since a cap over it must be refused before any traffic.
+	streaklessStore := NewMockAttemptStore(gomock.NewController(t))
+
 	cases := []testCase{
+		{
+			name: "no cap by default",
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Zero(t, p.Cap(), "a policy with default options holds identifiers")
+			},
+		},
+		{
+			name: "a cap takes the default retention of thirty days",
+			opts: []policy.LockoutOption{policy.WithLockoutCap(policy.NISTLockoutCap)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 100, p.Cap())
+				assert.Equal(t, 30*24*time.Hour, p.CapRetention())
+			},
+		},
+		{
+			name: "a consumer retention replaces the default",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithLockoutCapRetention(7 * 24 * time.Hour),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 7*24*time.Hour, p.CapRetention())
+			},
+		},
+		{
+			name: "a retention given before the cap is accepted",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCapRetention(7 * 24 * time.Hour),
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 7*24*time.Hour, p.CapRetention())
+			},
+		},
+		{
+			name: "a retention shorter than the window is refused whatever the option order",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCapRetention(time.Hour),
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+			},
+			assert: refusedNaming("WithLockoutCapRetention"),
+		},
+		{
+			name: "a store that keeps streaks given after the cap is accepted",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithAttemptStore(policy.NewMemoryAttemptStore()),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 100, p.Cap())
+			},
+		},
+		{
+			name: "a store that keeps no streaks given after the cap is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithAttemptStore(streaklessStore),
+			},
+			assert: refusedNaming("WithLockoutCap needs"),
+		},
+		{
+			// NIST's 100 is an upper bound; a higher cap is the consumer's
+			// documented departure, not a wiring mistake.
+			name: "a cap above NIST's limit is accepted",
+			opts: []policy.LockoutOption{policy.WithLockoutCap(150)},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 150, p.Cap())
+			},
+		},
+		{
+			name: "a consumer cap just above a consumer threshold is accepted",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutThreshold(3),
+				policy.WithLockoutCap(4),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 4, p.Cap())
+			},
+		},
+		{
+			// Spec: "Store without consecutive counts".
+			name: "a cap with a store that keeps no streaks is refused",
+			opts: []policy.LockoutOption{
+				policy.WithAttemptStore(streaklessStore),
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+			},
+			assert: refusedNaming("WithLockoutCap needs"),
+		},
+		{
+			// Spec: "Cap at the threshold": the first lock would already be a
+			// hold.
+			name:   "a cap at the threshold is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutCap(5)},
+			assert: refusedNaming("WithLockoutCap must be above"),
+		},
+		{
+			name: "a cap below a consumer threshold is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutThreshold(10),
+				policy.WithLockoutCap(8),
+			},
+			assert: refusedNaming("WithLockoutCap must be above"),
+		},
+		{
+			name:   "a cap of zero is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutCap(0)},
+			assert: refusedNaming("WithLockoutCap must be positive"),
+		},
+		{
+			name:   "a negative cap is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutCap(-1)},
+			assert: refusedNaming("WithLockoutCap must be positive"),
+		},
+		{
+			// Spec: "Retention without a cap".
+			name:   "a retention without a cap is refused",
+			opts:   []policy.LockoutOption{policy.WithLockoutCapRetention(30 * 24 * time.Hour)},
+			assert: refusedNaming("WithLockoutCapRetention"),
+		},
+		{
+			name: "a retention of zero is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithLockoutCapRetention(0),
+			},
+			assert: refusedNaming("WithLockoutCapRetention"),
+		},
+		{
+			name: "a negative retention is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithLockoutCapRetention(-time.Hour),
+			},
+			assert: refusedNaming("WithLockoutCapRetention"),
+		},
+		{
+			// A count would expire while the window still counts its failures.
+			name: "a retention shorter than the window is refused",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithLockoutCapRetention(time.Hour),
+			},
+			assert: refusedNaming("WithLockoutCapRetention"),
+		},
+		{
+			name: "a retention equal to the window is accepted",
+			opts: []policy.LockoutOption{
+				policy.WithLockoutCap(policy.NISTLockoutCap),
+				policy.WithLockoutCapRetention(24 * time.Hour),
+			},
+			assert: func(t *testing.T, p *policy.AccountLockoutPolicy, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, p)
+				assert.Equal(t, 24*time.Hour, p.CapRetention())
+			},
+		},
 		{
 			name:   "a nil lockout observer is refused",
 			opts:   []policy.LockoutOption{policy.WithLockoutObserver(nil)},

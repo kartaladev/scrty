@@ -49,6 +49,15 @@ func TestMemoryAttemptStore(t *testing.T) {
 	})
 }
 
+// The in-memory attempt store also keeps consecutive-failure streaks.
+func TestMemoryFailureStreak(t *testing.T) {
+	t.Parallel()
+
+	newStore := func(*testing.T) storetest.StreakStore { return policy.NewMemoryAttemptStore() }
+	storetest.RunFailureStreakSuite(t, newStore)
+	storetest.RunFailureStreakRace(t, newStore)
+}
+
 func TestMemorySigningKeyStore(t *testing.T) {
 	t.Parallel()
 

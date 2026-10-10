@@ -297,3 +297,117 @@ func TestExpiryTasks(t *testing.T) {
 		})
 	}
 }
+
+// TestExpiryLockoutStreaks runs the lockout task through a runner over the
+// sqlstore attempt store, with a consecutive-failure cap, and checks which
+// streaks the sweep keeps: a hold always, a recent count, and not an
+// inactive count. Every case gets a database of its own.
+func TestExpiryLockoutStreaks(t *testing.T) {
+	t.Parallel()
+
+	const (
+		capLimit = 100
+		holdName = "ada"
+		day      = 24 * time.Hour
+		// retention is the policy's default retention for a count below the cap.
+		retention = 30 * day
+	)
+
+	type env struct {
+		db      *sql.DB
+		lockout *policy.AccountLockoutPolicy
+		streaks policy.FailureStreakStore
+		clk     *clockwork.FakeClock
+	}
+
+	type testCase struct {
+		name string
+		// failures is how many consecutive failures are seeded, the newest of
+		// them newestAge before the sweep.
+		failures  int
+		newestAge time.Duration
+		assert    func(t *testing.T, e env)
+	}
+
+	cases := []testCase{
+		{
+			name:      "a hold survives every sweep",
+			failures:  capLimit,
+			newestAge: 90 * day,
+			assert: func(t *testing.T, e env) {
+				s, err := e.streaks.FailureStreak(t.Context(), holdName, e.clk.Now().Add(-retention))
+				require.NoError(t, err)
+				assert.True(t, s.Held(), "the streak is still held")
+				assert.Equal(t, capLimit, s.Failures)
+
+				d := e.lockout.Evaluate(t.Context(), &policy.Input{Username: holdName, Now: e.clk.Now()})
+				assert.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, policy.ErrAccountHeld)
+				assert.Equal(t, 1, countRows(t, e.db, "login_failure_streaks", "held_at IS NOT NULL"))
+			},
+		},
+		{
+			name:      "a recent consecutive count survives",
+			failures:  10,
+			newestAge: 29 * day,
+			assert: func(t *testing.T, e env) {
+				s, err := e.streaks.FailureStreak(t.Context(), holdName, e.clk.Now().Add(-retention))
+				require.NoError(t, err)
+				assert.Equal(t, 10, s.Failures)
+				assert.False(t, s.Held())
+			},
+		},
+		{
+			name:      "an inactive consecutive count is deleted",
+			failures:  10,
+			newestAge: 31 * day,
+			assert: func(t *testing.T, e env) {
+				assert.Equal(t, 0, countRows(t, e.db, "login_failure_streaks", ""), "the streak row is gone")
+
+				require.NoError(t, e.lockout.Attempts().RecordFailure(t.Context(), holdName, e.clk.Now()))
+				s, err := e.streaks.FailureStreak(t.Context(), holdName, e.clk.Now().Add(-retention))
+				require.NoError(t, err)
+				assert.Equal(t, 1, s.Failures, "the next failure starts a new count")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			set := migrate.SecurityState()
+			conn := test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
+
+			now := time.Date(2030, 6, 1, 10, 0, 0, 0, time.UTC)
+			// The clock starts at the newest failure's instant, so every add
+			// is judged against the cutoff of its own instant.
+			clk := clockwork.NewFakeClockAt(now.Add(-tc.newestAge))
+
+			store, err := sqlstore.NewAttemptStore(conn.DB)
+			require.NoError(t, err)
+			lockout, err := policy.NewAccountLockoutPolicy(
+				policy.WithAttemptStore(store),
+				policy.WithLockoutClock(clk),
+				policy.WithLockoutCap(capLimit),
+			)
+			require.NoError(t, err)
+
+			for range tc.failures {
+				require.NoError(t, lockout.Attempts().RecordFailure(ctx, holdName, clk.Now()))
+			}
+			clk.Advance(tc.newestAge)
+			require.Equal(t, now, clk.Now())
+
+			runner, err := expiry.NewRunner([]expiry.Task{policy.LockoutExpiryTask(lockout)})
+			require.NoError(t, err)
+			report, err := runner.RunOnce(ctx)
+			require.NoError(t, err)
+			require.Len(t, report.Results, 1)
+			require.NoError(t, report.Results[0].Err)
+
+			tc.assert(t, env{db: conn.DB, lockout: lockout, streaks: store, clk: clk})
+		})
+	}
+}

@@ -47,6 +47,26 @@ func TestAttemptStore(t *testing.T) {
 	})
 }
 
+// The durable login-attempt store keeps consecutive-failure streaks too.
+var _ policy.FailureStreakStore = (*gormstore.AttemptStore)(nil)
+
+// TestFailureStreakStore runs the streak conformance suite and its race
+// against the store, each case on emptied attempt and streak tables.
+func TestFailureStreakStore(t *testing.T) {
+	t.Parallel()
+
+	d := migratedDB(t)
+	newStore := func(t *testing.T) storetest.StreakStore {
+		emptied(t, d, "login_attempts")
+		return newAttemptStore(t, emptied(t, d, "login_failure_streaks"))
+	}
+
+	t.Run("gorm", func(t *testing.T) {
+		storetest.RunFailureStreakSuite(t, newStore)
+		storetest.RunFailureStreakRace(t, newStore)
+	})
+}
+
 func TestAttemptStore_IDs(t *testing.T) {
 	t.Parallel()
 

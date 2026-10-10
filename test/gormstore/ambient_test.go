@@ -43,6 +43,7 @@ func TestAmbientTx(t *testing.T) {
 	}, storefix.SessionAmbient()))
 	t.Run("one-time tokens", runAmbient(d, newOneTimeStore, storefix.OneTimeAmbient[*gormstore.OneTimeStore]()))
 	t.Run("login attempts", runAmbient(d, newAttemptStore, storefix.AttemptAmbient[*gormstore.AttemptStore]()))
+	t.Run("login failure streaks", runAmbient(d, newAttemptStore, storefix.FailureStreakAmbient[*gormstore.AttemptStore]()))
 	t.Run("signing keys", runAmbient(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) signingkey.KeyStore {
 		return newSigningKeyStore(t, db, c, opts...)
 	}, storefix.SigningKeyAmbient(func() (signingkey.KeyStore, error) {

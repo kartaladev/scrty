@@ -548,3 +548,132 @@ func TestEngineDeclaredChallenges(t *testing.T) {
 		})
 	}
 }
+
+// viewRequirerStub is a consumer's own policy requiring its own view, so the
+// engine is shown to ask the interface rather than the lockout type.
+type viewRequirerStub struct {
+	stubPolicy
+	view     policy.AttemptStore
+	required bool
+}
+
+func (s viewRequirerStub) RequiredAttemptView() (policy.AttemptStore, bool) {
+	return s.view, s.required
+}
+
+// TestRequiredAttemptViews pins the wiring-time question a chain asks before
+// it lets a password login record failures: which registered policies only
+// count failures recorded through their own view, and which view that is.
+func TestRequiredAttemptViews(t *testing.T) {
+	t.Parallel()
+
+	newLockout := func(t *testing.T, opts ...policy.LockoutOption) *policy.AccountLockoutPolicy {
+		t.Helper()
+
+		p, err := policy.NewAccountLockoutPolicy(opts...)
+		require.NoError(t, err)
+
+		return p
+	}
+
+	pre := []policy.Phase{policy.PreAuthentication}
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView)
+		assert func(t *testing.T, want, got []policy.RequiredAttemptView)
+	}
+
+	sameViews := func(t *testing.T, want, got []policy.RequiredAttemptView) {
+		t.Helper()
+
+		require.Len(t, got, len(want))
+
+		for i := range want {
+			assert.Equal(t, want[i].Policy, got[i].Policy, "entry %d", i)
+			assert.Same(t, want[i].View, got[i].View, "entry %d", i)
+		}
+	}
+
+	none := func(t *testing.T, _, got []policy.RequiredAttemptView) {
+		t.Helper()
+
+		assert.Nil(t, got)
+	}
+
+	cases := []testCase{
+		{
+			name: "a capped lockout policy requires its view",
+			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
+				p := newLockout(t, policy.WithLockoutCap(20))
+
+				return []policy.Policy{p}, []policy.RequiredAttemptView{{Policy: p.Name(), View: p.Attempts()}}
+			},
+			assert: sameViews,
+		},
+		{
+			name: "an uncapped lockout policy requires nothing",
+			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
+				return []policy.Policy{newLockout(t)}, nil
+			},
+			assert: none,
+		},
+		{
+			name: "an engine with no lockout policy requires nothing",
+			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
+				return []policy.Policy{stubPolicy{phases: pre}}, nil
+			},
+			assert: none,
+		},
+		{
+			name: "every requirer, in registration order",
+			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
+				own := viewRequirerStub{
+					stubPolicy: stubPolicy{name: "own", phases: pre},
+					view:       policy.NewMemoryAttemptStore(),
+					required:   true,
+				}
+				p := newLockout(t, policy.WithLockoutCap(20))
+
+				return []policy.Policy{own, newLockout(t), p}, []policy.RequiredAttemptView{
+					{Policy: "own", View: own.view},
+					{Policy: p.Name(), View: p.Attempts()},
+				}
+			},
+			assert: sameViews,
+		},
+		{
+			name: "a requirer that does not require is left out",
+			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
+				return []policy.Policy{viewRequirerStub{
+					stubPolicy: stubPolicy{phases: pre},
+					view:       policy.NewMemoryAttemptStore(),
+				}}, nil
+			},
+			assert: none,
+		},
+		{
+			name: "a requirer asked in no phase is never reported",
+			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
+				return []policy.Policy{viewRequirerStub{
+					view:     policy.NewMemoryAttemptStore(),
+					required: true,
+				}}, nil
+			},
+			assert: none,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			policies, want := tc.build(t)
+
+			e, err := policy.NewEngine(policies...)
+			require.NoError(t, err)
+
+			tc.assert(t, want, e.RequiredAttemptViews())
+		})
+	}
+}

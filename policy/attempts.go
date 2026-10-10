@@ -88,6 +88,78 @@ type AttemptReaper interface {
 	DeleteAttemptsBefore(ctx context.Context, retainSince time.Time) (int, error)
 }
 
+// FailureStreakStore is the optional half of AttemptStore that keeps each
+// identifier's consecutive failures, for a policy configured with
+// WithLockoutCap.
+//
+// A store that implements it must clear the streak, hold included, in Reset,
+// atomically with the failures Reset already clears: one transaction for a SQL
+// store. No reader may ever see the failure log cleared and the hold kept, or
+// the reverse, so that every path that clears an identifier's failures also
+// lifts its hold.
+//
+// Identifiers are matched exactly, as AttemptStore matches them. Every instant
+// is the caller's, never the store's clock.
+//
+// An identifier the store cannot hold, such as one with a NUL byte in a
+// PostgreSQL text column, is refused by AddStreakFailure with an error whose
+// text does not contain the identifier, and reads from FailureStreak as the
+// zero FailureStreak with a nil error. The policy denies on a read error, so
+// an unstorable identifier must read as no streak rather than fail the read,
+// exactly as FailureCount treats it.
+//
+// The lockout policy always passes a non-zero since that is before the instant
+// of the failure, and a limit of at least 2. A store need not validate them,
+// and its behaviour outside them is unspecified.
+//
+// An implementation is called on the request path, once per failed login, so
+// it must be safe for concurrent use.
+type FailureStreakStore interface {
+	// AddStreakFailure adds one failure at at to username's streak, in one
+	// atomic write, and returns the streak after it.
+	//
+	// A streak that is not held and whose newest failure is at or before since
+	// restarts: the cutoff is inclusive, so a newest failure exactly at since
+	// is inactive. A restarted streak is {Failures: 1, Newest: at}. The write
+	// that brings the count to limit or above, on a streak not yet held, sets
+	// HeldAt to at and reports setHold true; no later write moves HeldAt, and
+	// no other write reports setHold. A limit lowered below a streak's count is
+	// therefore reached by that streak's next write.
+	//
+	// On a streak that continues, Newest never moves backwards: an at earlier
+	// than the stored newest failure still counts, but leaves Newest where it
+	// is. The restart is judged against the stored newest failure, never
+	// against at.
+	//
+	// The caller passes a non-zero since that is before at, and a limit of at
+	// least 2. A store need not validate them, and its behaviour outside them
+	// is unspecified.
+	//
+	// An identifier the store cannot hold is refused with an error whose text
+	// does not contain it.
+	AddStreakFailure(
+		ctx context.Context, username string, at, since time.Time, limit int,
+	) (streak FailureStreak, setHold bool, err error)
+
+	// FailureStreak reads username's streak. One that is not held and whose
+	// newest failure is at or before since reads as the zero FailureStreak.
+	// An identifier with no streak reads as the zero FailureStreak, and is
+	// not an error. So is an identifier the store cannot hold: it reads as the
+	// zero FailureStreak with a nil error.
+	//
+	// The caller passes a non-zero since. A store need not validate it, and its
+	// behaviour for a zero since is unspecified.
+	FailureStreak(ctx context.Context, username string, since time.Time) (FailureStreak, error)
+
+	// DeleteStreaksBefore removes every streak that is not held and whose
+	// newest failure is strictly before retainSince, and reports how many
+	// went. A held streak is never removed.
+	//
+	// A zero retainSince is refused with ErrRetainSinceRequired and nothing is
+	// deleted.
+	DeleteStreaksBefore(ctx context.Context, retainSince time.Time) (int, error)
+}
+
 // MemoryAttemptStore keeps failed attempts in process memory. It is the
 // default store and it is safe for concurrent use.
 //
@@ -104,17 +176,24 @@ type AttemptReaper interface {
 //     released only when a successful authentication resets that identifier,
 //     so what the store holds grows with the number of distinct identifiers
 //     that have ever failed against this replica.
+//   - It keeps consecutive-failure streaks (FailureStreakStore) and can delete
+//     the inactive ones through DeleteStreaksBefore, but that does not make it
+//     an AttemptReaper: the failures above are still never purged.
 //
 // A deployment that needs any of those supplies its own store through
 // WithAttemptStore.
 type MemoryAttemptStore struct {
 	mu       sync.Mutex
 	failures map[string][]time.Time
+	streaks  map[string]FailureStreak
 }
 
 // NewMemoryAttemptStore returns the default attempt store, holding nothing.
 func NewMemoryAttemptStore() *MemoryAttemptStore {
-	return &MemoryAttemptStore{failures: make(map[string][]time.Time)}
+	return &MemoryAttemptStore{
+		failures: make(map[string][]time.Time),
+		streaks:  make(map[string]FailureStreak),
+	}
 }
 
 // RecordFailure records one failed attempt for username at the instant at.
@@ -131,13 +210,15 @@ func (s *MemoryAttemptStore) RecordFailure(_ context.Context, username string, a
 	return nil
 }
 
-// Reset clears username's recorded failures, and is not an error for an
-// identifier that has none.
+// Reset clears username's recorded failures and its consecutive-failure
+// streak, hold included, and is not an error for an identifier that has
+// neither.
 func (s *MemoryAttemptStore) Reset(_ context.Context, username string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	delete(s.failures, username)
+	delete(s.streaks, username)
 
 	return nil
 }
@@ -163,3 +244,73 @@ func (s *MemoryAttemptStore) FailureCount(_ context.Context, username string, si
 }
 
 var _ AttemptStore = (*MemoryAttemptStore)(nil)
+
+// AddStreakFailure adds one failure at at to username's streak and returns
+// the streak after it, under the store's lock, so concurrent adds each see the
+// previous one's result. It follows FailureStreakStore's contract: an inactive
+// streak that is not held restarts at one with Newest at at, the add that
+// brings the count to limit or above sets the hold and is the only one to
+// report it, and on a continuing streak Newest never moves backwards. It holds
+// any identifier, so it never refuses one.
+func (s *MemoryAttemptStore) AddStreakFailure(
+	_ context.Context, username string, at, since time.Time, limit int,
+) (FailureStreak, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur := s.streaks[username]
+	if !cur.Held() && !cur.Newest.After(since) {
+		cur = FailureStreak{}
+	}
+	cur.Failures++
+	if at.After(cur.Newest) {
+		cur.Newest = at
+	}
+	setHold := false
+	if !cur.Held() && cur.Failures >= limit {
+		cur.HeldAt, setHold = at, true
+	}
+	s.streaks[username] = cur
+
+	return cur, setHold, nil
+}
+
+// FailureStreak reads username's streak. One that is not held and whose
+// newest failure is at or before since reads as the zero FailureStreak, as
+// does an identifier with no streak.
+func (s *MemoryAttemptStore) FailureStreak(_ context.Context, username string, since time.Time) (FailureStreak, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cur := s.streaks[username]
+	if !cur.Held() && !cur.Newest.After(since) {
+		return FailureStreak{}, nil
+	}
+
+	return cur, nil
+}
+
+// DeleteStreaksBefore removes every streak that is not held and whose newest
+// failure is strictly before retainSince, and reports how many went. A held
+// streak is kept whatever its age. A zero retainSince is refused with
+// ErrRetainSinceRequired and nothing is deleted.
+func (s *MemoryAttemptStore) DeleteStreaksBefore(_ context.Context, retainSince time.Time) (int, error) {
+	if retainSince.IsZero() {
+		return 0, ErrRetainSinceRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var n int
+	for username, cur := range s.streaks {
+		if !cur.Held() && cur.Newest.Before(retainSince) {
+			delete(s.streaks, username)
+			n++
+		}
+	}
+
+	return n, nil
+}
+
+var _ FailureStreakStore = (*MemoryAttemptStore)(nil)
