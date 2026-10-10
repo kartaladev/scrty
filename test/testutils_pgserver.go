@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -28,6 +31,10 @@ type postgresServer struct {
 	admin    *sql.DB
 
 	ctr *postgres.PostgresContainer
+
+	// resolve is set on an own server, which Stop and Start may restart under
+	// a new host port: its pools look the address up on every dial.
+	resolve bool
 
 	// applies counts the migration sets this server has applied to
 	// templates, so this package's own tests can see a set applied once.
@@ -59,12 +66,52 @@ func newPostgresServer(ctx context.Context, image string, ctr *postgres.Postgres
 // openPostgresServer opens the admin pool on dsn. ctr is nil for a server
 // another process started.
 func openPostgresServer(image, dsn string, ctr *postgres.PostgresContainer) (*postgresServer, error) {
-	admin, err := sql.Open("pgx", dsn)
+	return openPostgresServerResolving(image, dsn, ctr, false)
+}
+
+// newOwnPostgresServer wraps the container of an own server: its pools
+// resolve the address on every dial, so they survive a restart that moves the
+// host port.
+func newOwnPostgresServer(ctx context.Context, image string, ctr *postgres.PostgresContainer) (*postgresServer, error) {
+	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		return nil, fmt.Errorf("read the PostgreSQL %s connection string: %w", image, err)
+	}
+	return openPostgresServerResolving(image, dsn, ctr, true)
+}
+
+func openPostgresServerResolving(image, dsn string, ctr *postgres.PostgresContainer, resolve bool) (*postgresServer, error) {
+	admin, err := openPostgresDB(dsn, ctr, resolve)
 	if err != nil {
 		return nil, fmt.Errorf("open the PostgreSQL %s admin pool: %w", image, err)
 	}
 	admin.SetMaxOpenConns(postgresAdminMaxOpenConns)
-	return &postgresServer{image: image, adminDSN: dsn, admin: admin, ctr: ctr}, nil
+	return &postgresServer{image: image, adminDSN: dsn, admin: admin, ctr: ctr, resolve: resolve}, nil
+}
+
+// postgresDialTimeout bounds one dial of an own server's pool.
+const postgresDialTimeout = 5 * time.Second
+
+// openPostgresDB opens a database/sql handle on dsn. With resolve it asks ctr
+// for the host port on every dial instead of trusting the one in dsn, because
+// Docker maps a restarted container to a new host port.
+func openPostgresDB(dsn string, ctr *postgres.PostgresContainer, resolve bool) (*sql.DB, error) {
+	if !resolve {
+		return sql.Open("pgx", dsn)
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	cfg.DialFunc = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		current, err := ctr.PortEndpoint(ctx, postgresPort, "")
+		if err != nil {
+			return nil, fmt.Errorf("resolve the PostgreSQL endpoint: %w", err)
+		}
+		d := net.Dialer{Timeout: postgresDialTimeout}
+		return d.DialContext(ctx, network, current)
+	}
+	return sql.OpenDB(stdlib.GetConnector(*cfg)), nil
 }
 
 // postgresEntry is one image's slot in a postgresRegistry: the server started
@@ -311,15 +358,22 @@ const postgresTmpfsSize = "2g"
 // failure leaves nothing behind; the container it returns is the caller's to
 // terminate.
 func startPostgresContainer(ctx context.Context, image string) (*postgres.PostgresContainer, error) {
+	return startPostgresContainerWith(ctx, image, true)
+}
+
+// startPostgresContainerWith is startPostgresContainer with a choice of where
+// the data lives, and further customizers. An in-memory data directory
+// (inMemory) is lost when the container stops, so an own server, which Stop
+// and Start may restart, keeps its data on the container's disk instead.
+func startPostgresContainerWith(ctx context.Context, image string, inMemory bool, extra ...testcontainers.ContainerCustomizer) (*postgres.PostgresContainer, error) {
 	for attempt := 1; ; attempt++ {
-		ctr, err := postgres.Run(ctx, image,
+		opts := []testcontainers.ContainerCustomizer{
 			postgres.WithDatabase(postgresDatabase),
 			postgres.WithUsername(postgresUsername),
 			postgres.WithPassword(postgresPassword),
 			// The module's own command is "postgres -c fsync=off", so these
 			// are appended to it, never a replacement for it.
 			testcontainers.WithCmdArgs(postgresTuning()...),
-			testcontainers.WithTmpfs(postgresTmpfs),
 			testcontainers.WithEnv(map[string]string{"PGDATA": postgresDataDir}),
 			// WithWaitStrategy would impose a 60-second deadline of its own
 			// on the two waits together, so the deadline is given here as
@@ -337,7 +391,11 @@ func startPostgresContainer(ctx context.Context, image string) (*postgres.Postgr
 				wait.ForMappedPort(postgresPort).
 					WithStartupTimeout(postgresPortTimeout),
 			),
-		)
+		}
+		if inMemory {
+			opts = append(opts, testcontainers.WithTmpfs(postgresTmpfs))
+		}
+		ctr, err := postgres.Run(ctx, image, append(opts, extra...)...)
 		if ctr != nil {
 			postgresContainerStarts.Add(1)
 		}
