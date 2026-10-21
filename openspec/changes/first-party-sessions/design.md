@@ -246,6 +246,11 @@ See `proposal.md` for the motivation. This section covers only the state of the 
   - the successor's lifetime, `WithRenewalLifetime` (decision 13);
   - the path, `WithRenewalPath`;
   - the responder, `WithRenewalResponder`.
+- **Order of work.** The endpoint reloads the user before rotating, so a removed user gets no successor written.
+- **A late session reaching the endpoint through recovery** is checked before rotating, because the core published nothing and the gates never saw it: a session owing a second factor, confined to enrolment or recovery, or owing a password change is refused, and the per-request policy phase runs without marking anything (a deny keeps its reason, a challenge is `ErrAuthenticationRequired`). Otherwise recovery would be a way around confinement.
+- **The endpoint's session manager.** `SessionRenewalDeps.Sessions` is optional and defaults to the bearer's manager. Given explicitly, it must be that same manager: a different one is a configuration error from `New`, because two managers that disagree on unused-successor recovery would let the bearer pass a late renewal through that the endpoint then judges as reuse, or the reverse, silently losing recovery (reproduced in review).
+- **Consumer interceptors and the late path.** A renewal reaching the endpoint through recovery is anonymous to every interceptor between the bearer and the endpoint, because nothing is published. A consumer gate that judges the authenticated caller does not judge it; the godoc says so.
+- **Wiring.** A renewal path equal to the logout path is a configuration error. The endpoint sits inside every gate (recovery, enrolment, second factor, password change) and outside logout and activity recording.
 - **Credential.** In the opaque mode the credential is the session reference (decision 10). In signed-token mode it is minted by the endpoint's token generator, which is then required at assembly.
 
 ### 10. An opaque session-reference bearer, built on a shared resolution core

@@ -144,6 +144,11 @@ type config struct {
 	// generator.
 	sessionBearer bool
 
+	// renewal is the renewal endpoint EnableSessionRenewal registered, and nil
+	// while it is off. The bearers' resolution core reads it to let a late
+	// renewal through to it alone (sessionResolver.renewal).
+	renewal *sessionRenewal
+
 	// authorizer is what the authorization stage publishes for the guards
 	// behind it, and what the last EnableAuthorization call named: a chain
 	// judges by one authorizer, so a second call replacing the first is the
@@ -1439,6 +1444,9 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 
 		c.useSessions(d.Sessions)
 		c.wire(b.wire)
+		// The renewal endpoint may be enabled after this option, so it is
+		// handed to the core once every option has been applied.
+		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
 		c.register(b, OrderBearerToken)
 
 		return nil

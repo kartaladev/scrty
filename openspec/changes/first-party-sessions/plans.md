@@ -87,7 +87,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `type SessionBearerDeps struct{ Sessions *session.Manager; Users identity.UserLoader }`;
     - `WithSessionBearerScheme(string) SessionBearerOption`;
     - `EnableSessionRenewal(SessionRenewalDeps, ...SessionRenewalOption) Option`;
-    - `type SessionRenewalDeps struct{ Sessions *session.Manager; Users identity.UserLoader; Tokens token.Generator }`;
+    - `type SessionRenewalDeps struct{ Sessions *session.Manager; Users identity.UserLoader; Tokens token.Generator }` (`Sessions` optional, defaulting to the bearer's manager; a different manager is a configuration error, decided after the review of tasks 7.1–7.2);
     - `WithRenewalPath(string)`, `WithRenewalGrace(time.Duration)`, `WithRenewalResponder(RenewalResponder)` and `WithRenewalLifetime(func(*Exchange, *session.Session) time.Duration)`;
     - `type RenewalResponder func(ex *Exchange, r RenewalResult) error`;
     - `type RenewalResult struct{ Credential string; Session *session.Session; User *identity.Details; Kind session.RenewalKind }`;

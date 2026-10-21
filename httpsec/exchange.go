@@ -116,6 +116,13 @@ type Exchange struct {
 	// exchange runs through, and nil on one run through none.
 	perRequest *perRequestPhase
 
+	// renewal is the identifier of a session the resolution core let through
+	// to the renewal endpoint without publishing it: one presented after its
+	// grace window under unused-successor recovery, on a request that is the
+	// renewal endpoint's. Only the core sets it and only that endpoint reads
+	// it; it authenticates nothing.
+	renewal string
+
 	ctx context.Context
 }
 

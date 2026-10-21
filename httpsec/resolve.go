@@ -32,6 +32,11 @@ type sessionResolver struct {
 	// phase is the per-request phase the core runs, over the authenticator's
 	// own session manager and the chain's engine and enforcer set.
 	phase perRequestPhase
+
+	// renewal is the chain's renewal endpoint, handed over at assembly, and
+	// nil while it is off. A late session the manager says must be renewed is
+	// let through to it, and to nothing else.
+	renewal *sessionRenewal
 }
 
 // userLookup says how the core reloads the session's user.
@@ -81,6 +86,20 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 			// row it could not read.
 			r.log.LogAttrs(ctx, slog.LevelError, msgSessionUnreadable,
 				diag.Failure("session-store", err)...)
+		}
+
+		// A superseded identifier presented after its window, under
+		// unused-successor recovery: nothing was revoked, and only a renewal
+		// may judge it. On the renewal endpoint's own request it goes on with
+		// nothing published, no caller and no session, so nothing on the way
+		// and no handler sees it authenticated; the endpoint, which always
+		// answers its own requests, loads it for renewal. Every other request
+		// is refused as for any ended session.
+		if errors.Is(err, session.ErrSessionRenewalRequired) &&
+			r.renewal != nil && r.renewal.answers(ex.Request) {
+			ex.renewal = id
+
+			return nil
 		}
 
 		// A superseded identifier presented after its window: the manager has

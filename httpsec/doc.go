@@ -70,6 +70,13 @@
 // giving a credential-issuing endpoint a token generator in the
 // session-reference mode, is a configuration error from New.
 //
+// The renewal endpoint (EnableSessionRenewal) issues in either mode too: it
+// rotates the request's session with a grace window and answers with the
+// successor's credential. Under the manager's unused-successor recovery, a
+// renewed credential presented after its window is refused on every request
+// but a renewal, which alone the core lets through to that endpoint, with
+// nothing published on the way.
+//
 // # A credential field reads the body, and only the body
 //
 // Form login, the MFA verify endpoint and the MFA enrolment endpoints each

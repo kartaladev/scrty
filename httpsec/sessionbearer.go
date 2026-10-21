@@ -170,6 +170,9 @@ func EnableSessionBearer(d SessionBearerDeps, opts ...SessionBearerOption) Optio
 
 		c.useSessions(d.Sessions)
 		c.wire(b.wire)
+		// The renewal endpoint may be enabled after this option, so it is
+		// handed to the core once every option has been applied.
+		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
 		c.register(b, OrderBearerToken)
 
 		return nil
