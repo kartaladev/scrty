@@ -2,7 +2,6 @@ package gorm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -96,11 +95,7 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		return sessionRow{}, failed(op, err)
 	}
 
-	data := sess.Data
-	if data == nil {
-		data = map[string]string{}
-	}
-	encoded, err := json.Marshal(data)
+	encoded, err := storekit.EncodeSessionData(sess.Data)
 	if err != nil {
 		return sessionRow{}, failed(op, err)
 	}
@@ -124,7 +119,7 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		ExternalIssuer:        sess.ExternalIssuer,
 		ExternalSessionID:     sess.ExternalSessionID,
 		ExternalIDToken:       sess.ExternalIDToken,
-		Data:                  string(encoded),
+		Data:                  encoded,
 		// NULL when the session is not marked, or has begun no enrolment.
 		EnrolmentOriginDeadline: nullTs(sess.EnrolmentOriginDeadline),
 		EnrolmentGeneration:     nullID(sess.EnrolmentGeneration),
@@ -140,22 +135,11 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		FamilyCreatedAt:  storekit.Time(sess.FamilyCreatedAt),
 		SupersededAt:     nullTs(sess.SupersededAt),
 		AcceptUntil:      nullTs(sess.AcceptUntil),
-		SuccessorDigest:  digestArg(sess.SuccessorDigest),
+		SuccessorDigest:  storekit.OptionalDigest(sess.SuccessorDigest),
 		FirstPresentedAt: nullTs(sess.FirstPresentedAt),
 		// Written on Create only: Save omits the column.
 		AuthenticatedAt: storekit.Time(sess.AuthenticatedAt),
 	}, nil
-}
-
-// digestArg is a successor digest as stored in its nullable column, or
-// compared with it: nil, NULL, for none, an empty one included, since the
-// contract reads an empty digest as none.
-func digestArg(b []byte) []byte {
-	if len(b) == 0 {
-		return nil
-	}
-
-	return b
 }
 
 // Create inserts sess, refusing an identifier already stored: one INSERT …
@@ -337,11 +321,8 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, failed(op, err)
 	}
 	sess.FederatedACR = row.FederatedACR
-	if err := json.Unmarshal([]byte(row.Data), &sess.Data); err != nil {
+	if sess.Data, err = storekit.DecodeSessionData([]byte(row.Data)); err != nil {
 		return nil, failed(op, err)
-	}
-	if sess.Data == nil {
-		sess.Data = map[string]string{}
 	}
 
 	return &sess, nil
@@ -458,7 +439,7 @@ func (s *sessionStore) RecordActivity(
 		return failed(op, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return notFoundUnless(stored(q, op, digest))
+		return storekit.NotFoundUnless(stored(q, op, digest))
 	}
 
 	return nil
@@ -474,18 +455,6 @@ func stored(q *gormdb.DB, op string, digest []byte) (bool, error) {
 	}
 
 	return exists, nil
-}
-
-// notFoundUnless is nil when exists, and session.ErrSessionNotFound when not.
-func notFoundUnless(exists bool, err error) error {
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return session.ErrSessionNotFound
-	}
-
-	return nil
 }
 
 // Supersede marks op.Old superseded by op.Successor, supersedes Old's previous
@@ -557,11 +526,11 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 	return s.atomically(ctx, name, func(q *gormdb.DB) error {
 		if res := q.Exec(pgschema.SessionLockSupersession, oldDigest,
-			digestArg(op.ObservedSuccessor)); res.Error != nil {
+			storekit.OptionalDigest(op.ObservedSuccessor)); res.Error != nil {
 			return failed(name, res.Error)
 		}
 
-		res := q.Exec(pgschema.SessionSupersedeOld, oldDigest, digestArg(op.ObservedSuccessor),
+		res := q.Exec(pgschema.SessionSupersedeOld, oldDigest, storekit.OptionalDigest(op.ObservedSuccessor),
 			storekit.Time(op.Now), storekit.Time(op.AcceptUntil), storekit.SessionDigest(op.Successor.ID),
 			storekit.Time(op.RetainUntil))
 		if res.Error != nil {
@@ -572,13 +541,8 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 			if err := q.Raw(pgschema.SessionSupersedeRefusal, oldDigest).Scan(&cause).Error; err != nil {
 				return failed(name, err)
 			}
-			switch cause {
-			case pgschema.SupersedeRefusalMissing:
-				return session.ErrSessionNotFound
-			case pgschema.SupersedeRefusalNoFamily:
-				return errors.New("gorm: supersede session: a session with no family cannot be superseded")
-			}
-			return session.ErrSessionRenewalConflict
+			return storekit.SupersedeRefusal(cause,
+				errors.New("gorm: supersede session: a session with no family cannot be superseded"))
 		}
 
 		if len(op.ObservedSuccessor) > 0 {
@@ -775,25 +739,10 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 			return failed(op, err)
 		}
 
-		return presentationRefusal(exists, superseded)
+		return storekit.PresentationRefusal(exists, superseded, nil)
 	}
 
 	return nil
-}
-
-// presentationRefusal is the outcome of a first-presentation mark that
-// changed no row: session.ErrSessionNotFound when the session is not stored,
-// session.ErrSessionSuperseded when it is superseded, and nil when its first
-// presentation is recorded already.
-func presentationRefusal(exists, superseded bool) error {
-	switch {
-	case !exists:
-		return session.ErrSessionNotFound
-	case superseded:
-		return session.ErrSessionSuperseded
-	default:
-		return nil
-	}
 }
 
 var _ session.Store = (*sessionStore)(nil)

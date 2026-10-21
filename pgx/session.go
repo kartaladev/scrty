@@ -2,7 +2,6 @@ package pgx
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -100,11 +99,7 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 
 	// The marshalled text is sent as a string, which pgx passes to jsonb as is
 	// rather than marshalling it again.
-	data := sess.Data
-	if data == nil {
-		data = map[string]string{}
-	}
-	encoded, err := json.Marshal(data)
+	encoded, err := storekit.EncodeSessionData(sess.Data)
 	if err != nil {
 		return nil, failed(op, err)
 	}
@@ -119,7 +114,7 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		storekit.Time(sess.IdleExpiresAt), storekit.Time(sess.AbsoluteExpiresAt), string(sess.FirstFactor),
 		int64(sess.MFA), nullTs(sess.MFASatisfiedAt),
 		sess.PasswordChangePending, sess.ExternalProvider, sess.ExternalIssuer, sess.ExternalSessionID,
-		sess.ExternalIDToken, string(encoded),
+		sess.ExternalIDToken, encoded,
 		nullTs(sess.EnrolmentOriginDeadline), nullID(sess.EnrolmentGeneration),
 		nullTs(sess.RecoveredAt), amr, sess.FederatedACR,
 	}, nil
@@ -168,19 +163,8 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 	args := append([]any{uuidArg(rowID), storekit.SessionDigest(sess.ID)}, cols...)
 
 	return append(args, sess.MFAAtFirstFactor, uuidArg(sess.FamilyID), storekit.Time(sess.FamilyCreatedAt),
-		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), digestArg(sess.SuccessorDigest),
+		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
 		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt)), nil
-}
-
-// digestArg is a successor digest as stored in its nullable column, or
-// compared with it: NULL for none, an empty one included, since the contract
-// reads an empty digest as none.
-func digestArg(b []byte) any {
-	if len(b) == 0 {
-		return nil
-	}
-
-	return b
 }
 
 // Save replaces the stored session whole, except for MFAAtFirstFactor and the
@@ -246,11 +230,8 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, session.ErrSessionExpired
 	}
 
-	if err := json.Unmarshal(encoded, &sess.Data); err != nil {
+	if sess.Data, err = storekit.DecodeSessionData(encoded); err != nil {
 		return nil, failed(op, err)
-	}
-	if sess.Data == nil {
-		sess.Data = map[string]string{}
 	}
 	if sess.FederatedAMR, err = storekit.DecodeAMR(amr); err != nil {
 		return nil, failed(op, err)
@@ -385,7 +366,7 @@ func (s *sessionStore) RecordActivity(
 		return err
 	}
 	if n == 0 {
-		return notFoundUnless(s.stored(ctx, op, digest))
+		return storekit.NotFoundUnless(s.stored(ctx, op, digest))
 	}
 
 	return nil
@@ -400,18 +381,6 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 	err := s.c.queryRow(ctx, op, pgschema.SessionExists, []any{digest}, &exists)
 
 	return exists, err
-}
-
-// notFoundUnless is nil when exists, and session.ErrSessionNotFound when not.
-func notFoundUnless(exists bool, err error) error {
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return session.ErrSessionNotFound
-	}
-
-	return nil
 }
 
 // Supersede marks op.Old superseded by op.Successor, supersedes Old's previous
@@ -483,13 +452,13 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 	return s.atomically(ctx, name, func(q DBTX) error {
 		if _, err := q.Exec(ctx, pgschema.SessionLockSupersession, oldDigest,
-			digestArg(op.ObservedSuccessor)); err != nil {
+			storekit.OptionalDigestArg(op.ObservedSuccessor)); err != nil {
 			return failed(name, err)
 		}
 
-		tag, err := q.Exec(ctx, pgschema.SessionSupersedeOld, oldDigest, digestArg(op.ObservedSuccessor),
-			storekit.Time(op.Now), storekit.Time(op.AcceptUntil), storekit.SessionDigest(op.Successor.ID),
-			storekit.Time(op.RetainUntil))
+		tag, err := q.Exec(ctx, pgschema.SessionSupersedeOld, oldDigest,
+			storekit.OptionalDigestArg(op.ObservedSuccessor), storekit.Time(op.Now), storekit.Time(op.AcceptUntil),
+			storekit.SessionDigest(op.Successor.ID), storekit.Time(op.RetainUntil))
 		if err != nil {
 			return failed(name, err)
 		}
@@ -498,13 +467,8 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 			if err := q.QueryRow(ctx, pgschema.SessionSupersedeRefusal, oldDigest).Scan(&cause); err != nil {
 				return failed(name, err)
 			}
-			switch cause {
-			case pgschema.SupersedeRefusalMissing:
-				return session.ErrSessionNotFound
-			case pgschema.SupersedeRefusalNoFamily:
-				return errors.New("pgx: supersede session: a session with no family cannot be superseded")
-			}
-			return session.ErrSessionRenewalConflict
+			return storekit.SupersedeRefusal(cause,
+				errors.New("pgx: supersede session: a session with no family cannot be superseded"))
 		}
 
 		if len(op.ObservedSuccessor) > 0 {
@@ -689,27 +653,10 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 		var exists, superseded bool
 		err := s.c.queryRow(ctx, op, pgschema.SessionPresentationRefusal, []any{digest}, &exists, &superseded)
 
-		return presentationRefusal(exists, superseded, err)
+		return storekit.PresentationRefusal(exists, superseded, err)
 	}
 
 	return nil
-}
-
-// presentationRefusal is the outcome of a first-presentation mark that
-// changed no row: session.ErrSessionNotFound when the session is not stored,
-// session.ErrSessionSuperseded when it is superseded, and nil when its first
-// presentation is recorded already.
-func presentationRefusal(exists, superseded bool, err error) error {
-	switch {
-	case err != nil:
-		return err
-	case !exists:
-		return session.ErrSessionNotFound
-	case superseded:
-		return session.ErrSessionSuperseded
-	default:
-		return nil
-	}
 }
 
 var _ session.Store = (*sessionStore)(nil)
