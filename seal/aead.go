@@ -100,7 +100,7 @@ func (c *aeadCipher) Seal(plaintext, aad []byte) ([]byte, error) {
 	// the caller's aad, so a rewritten key id fails the tag.
 	header := encodeHeader(id, len(plaintext))
 
-	return aead.Seal(header, nil, plaintext, additionalData(header, aad)), nil
+	return aead.Seal(header, nil, plaintext, additionalData(header, aad)), nil //nolint:gosec // G407: NewGCMWithRandomNonce generates the nonce, so Seal takes none
 }
 
 // Open decrypts an envelope, reporting the id of the key that opened it.
