@@ -19,8 +19,9 @@ import (
 const DefaultSessionRenewalPath = "/session/renewal"
 
 // defaultRenewalGrace is how long a renewed credential keeps working after its
-// renewal when the consumer chooses no grace (WithRenewalGrace).
-const defaultRenewalGrace = 30 * time.Second
+// renewal when the consumer chooses no grace (WithRenewalGrace): the session
+// package's default, so the two cannot drift apart.
+const defaultRenewalGrace = session.DefaultRenewalGrace
 
 const (
 	// sessionRenewalFlow names the limiter the chain builds for renewals.
@@ -480,9 +481,10 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 					"renew the session it meant to end", option, r.path)
 			}
 
-			limiter, err := c.enrolmentLimiter(r.limiter, sessionRenewalFlow, defaultRenewalLimit, defaultRenewalWindow)
+			limiter, err := c.flowLimiter(option, r.limiter, sessionRenewalFlow, defaultRenewalLimit,
+				defaultRenewalWindow)
 			if err != nil {
-				return newConfigError("%s could not build its renewal limiter: %s", option, err)
+				return err
 			}
 
 			r.limiter = limiter

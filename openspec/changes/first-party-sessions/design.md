@@ -413,7 +413,7 @@ The review also noted a behaviour the design chose: a second tab renewing the ol
   - Mitigation: the godoc tells clients to switch to the successor as soon as renewal returns, and to retry queued requests with it.
   - The consumer sizes the grace window for its clients. A consumer with an offline outbox might choose 60 s.
 - **Superseded records accumulate until their family's absolute deadline,** at one row per renewal.
-  - Each supersession also locks every row of the family, and an extending renewal rewrites every superseded row's deadlines, so a renewal costs O(N) row locks and writes, where N is bounded by the family lifetime divided by the renewal interval.
+  - A renewal locks and writes only the record it supersedes, its previous successor if any, and the inserted successor, so its cost does not grow with the family (finding 8). The retained rows cost storage only, until the family's retention deadline passes and the sweep removes them.
   - Mitigation: renewals are explicit calls, not per-request.
   - The sweep still bounds the table, and the index on `family_id` keeps revocation cheap.
 - **With unused-successor recovery on, a thief holding an old identifier is detected only when the real client next appears, not at the window's end.**

@@ -316,6 +316,33 @@ func TestSessionRenewalThrottle_NilLimiterIsRefused(t *testing.T) {
 	}
 }
 
+// TestSessionRenewalThrottle_FactoryErrorNamesTheEndpoint pins that a renewal
+// limiter the factory cannot build is reported against EnableSessionRenewal,
+// in its own namespace with its own defaults, and names no other endpoint.
+func TestSessionRenewalThrottle_FactoryErrorNamesTheEndpoint(t *testing.T) {
+	t.Parallel()
+
+	memory := ratelimit.MemoryLimiterFactory()
+	factory := NewMockLimiterFactory(gomock.NewController(t))
+
+	factory.EXPECT().NewLimiter("session-renewal", 10, 10*time.Minute).
+		Return(nil, errors.New("backend down"))
+	factory.EXPECT().NewLimiter(gomock.Not("session-renewal"), gomock.Any(), gomock.Any()).
+		AnyTimes().DoAndReturn(memory.NewLimiter)
+
+	h := newAuthHarness(t)
+
+	_, err := httpsec.New(
+		httpsec.WithRateLimiterFactory(factory),
+		httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users}),
+	)
+
+	require.ErrorIs(t, err, httpsec.ErrConfig)
+	assert.Contains(t, err.Error(), "EnableSessionRenewal")
+	assert.NotContains(t, err.Error(), "EnableMFAEnrolment")
+}
+
 // TestSessionRenewalThrottle_RemovedUserIsNotCharged pins that a renewal
 // refused because its user is gone neither asks nor charges the limiter.
 func TestSessionRenewalThrottle_RemovedUserIsNotCharged(t *testing.T) {

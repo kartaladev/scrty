@@ -160,7 +160,7 @@ Every task here starts with its first test from the design. If that test passes 
 - [x] 9.8 Move the durable stores' shared digest, not-found and supersession-refusal helpers into `internal/storekit`, leaving driver-specific transaction code in each store. Verify the session, race and ambient suites pass unchanged on every store, and `golangci-lint` is clean.
 - [x] 9.9 Red: one source presenting 100 well-formed unknown references in a minute is refused on the next request without a store lookup (a mocked store expects none); 1,000 requests with a live reference are never refused; a policy refusal is not recorded; a consumer limiter receives the failures; a shared factory builds it in the `session-reference` namespace. Verify they fail, add the guard and `WithSessionBearerLimiter`, and verify they pass with the bearer tests and the gin and fiber cases. Document the shared-address limit in the godoc.
 - [x] 9.10 Red: an 11th renewal of one family within 10 minutes is refused with `ErrRenewalThrottled`, which maps to 429, and rotates nothing; another family of the same user still renews; a consumer limiter is used; lost-response retries inside the default limit succeed. Verify they fail, add the per-family limit and `WithRenewalLimiter`, and verify they pass. Add the multi-tab serialisation advice to the `EnableSessionRenewal` godoc and the recommended interval to the `WithTouchInterval` godoc.
-- [ ] 9.11 Run a whole-branch review of the group's changes against the requirements they touch, and `make check`. Verify both are clean.
+- [x] 9.11 Run a whole-branch review of the group's changes against the requirements they touch, and `make check`. Verify both are clean.
 
 ## Workflow follow-up
 

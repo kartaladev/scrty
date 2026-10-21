@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	pkgid "github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 )
@@ -25,9 +26,12 @@ func federated(id, token string) *session.Session {
 		LastAccessedAt:    now,
 		IdleExpiresAt:     now.Add(30 * time.Minute),
 		AbsoluteExpiresAt: now.Add(12 * time.Hour),
-		ExternalProvider:  "okta",
-		ExternalIssuer:    "https://issuer.example",
-		ExternalIDToken:   token,
+		// Every stored session belongs to a family; the stores refuse one with none.
+		FamilyID:         pkgid.MustParse("01926a4e-0000-7000-8000-0000000000f1"),
+		FamilyCreatedAt:  now,
+		ExternalProvider: "okta",
+		ExternalIssuer:   "https://issuer.example",
+		ExternalIDToken:  token,
 	}
 }
 

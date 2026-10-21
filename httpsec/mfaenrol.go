@@ -239,13 +239,13 @@ func (c *config) wireMFAEnrolment() error {
 				"the deadline it already has", i.lifetime, limit)
 		}
 
-		beginLimiter, err := c.enrolmentLimiter(i.beginLimiter, namespaceEnrolmentBegin,
+		beginLimiter, err := c.flowLimiter("EnableMFAEnrolment", i.beginLimiter, namespaceEnrolmentBegin,
 			defaultEnrolmentBeginLimit, defaultEnrolmentBeginWindow)
 		if err != nil {
 			return err
 		}
 
-		confirmLimiter, err := c.enrolmentLimiter(i.confirmLimiter, namespaceEnrolmentConfirm,
+		confirmLimiter, err := c.flowLimiter("EnableMFAEnrolment", i.confirmLimiter, namespaceEnrolmentConfirm,
 			defaultEnrolmentConfirmLimit, defaultEnrolmentConfirmWindow)
 		if err != nil {
 			return err
@@ -397,10 +397,12 @@ func enrollable(m mfa.Method) (mfa.Enroller, string) {
 	return e, ""
 }
 
-// enrolmentLimiter is l, or else one the chain's factory builds under
-// namespace with the documented limit and window (rateLimiterFactory).
-func (c *config) enrolmentLimiter(
-	l ratelimit.Limiter, namespace string, limit int, window time.Duration,
+// flowLimiter is l, or else one the chain's factory builds under namespace
+// with the documented limit and window (rateLimiterFactory). A limiter the
+// factory cannot build is a configuration error naming option, the endpoint
+// that needed it.
+func (c *config) flowLimiter(
+	option string, l ratelimit.Limiter, namespace string, limit int, window time.Duration,
 ) (ratelimit.Limiter, error) {
 	if l != nil {
 		return l, nil
@@ -408,8 +410,8 @@ func (c *config) enrolmentLimiter(
 
 	built, err := c.rateLimiterFactory().NewLimiter(namespace, limit, window)
 	if err != nil {
-		return nil, newConfigError("EnableMFAEnrolment could not build its limiter for namespace %q: %s",
-			namespace, err)
+		return nil, newConfigError("%s could not build its limiter for namespace %q: %s",
+			option, namespace, err)
 	}
 
 	return built, nil
