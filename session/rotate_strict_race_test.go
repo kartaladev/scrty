@@ -1,7 +1,9 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -73,7 +75,8 @@ type rotations struct {
 // sharing a store. Whichever supersedes second is refused by the store's
 // condition with ErrSessionRenewalConflict and stores nothing; a grace
 // rotation that reads the session only after the strict one superseded it
-// finds a window that has already ended, which is reuse.
+// finds it inside the in-flight window and re-rotates it, which knocks the
+// strict successor out.
 func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 	t.Parallel()
 
@@ -134,6 +137,9 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 			},
 		},
 		{
+			// The strict rotation's in-flight window is open, so the grace
+			// rotation is a re-rotation: it knocks the strict successor out,
+			// and the family keeps one live head.
 			name: "grace read after strict superseded, before its delete",
 			gates: func(s *gatedStore) {
 				s.delete = newGate()
@@ -145,11 +151,11 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 				close(s.delete.open)
 				<-strictDone
 			},
-			live: 0,
+			live: 1,
 			assert: func(t *testing.T, r rotations) {
 				require.NoError(t, r.strictErr)
-				require.ErrorIs(t, r.graceErr, session.ErrSessionReused)
-				assert.Nil(t, r.grace)
+				require.NoError(t, r.graceErr)
+				require.NotNil(t, r.grace)
 			},
 		},
 	}
@@ -216,57 +222,130 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 	}
 }
 
-// failingDeleteStore refuses every Delete, which is the last write a strict
-// rotation makes.
-type failingDeleteStore struct {
+// inFlightStore stands between a strict rotation's two writes: once armed,
+// the first Supersede signals and waits on afterSupersede after it has
+// written, and failDelete refuses every Delete, the rotation's last write.
+type inFlightStore struct {
 	*session.MemoryStore
+
+	afterSupersede *gate
+	failDelete     bool
 }
 
-func (failingDeleteStore) Delete(context.Context, string) error { return errStoreWrite }
+func (s *inFlightStore) Supersede(ctx context.Context, op session.Supersession) error {
+	err := s.MemoryStore.Supersede(ctx, op)
+	if s.afterSupersede != nil {
+		s.afterSupersede.pass()
+	}
 
-// TestRotate_FailedDeleteLeavesTheOldHandleReused pins that a strict rotation
-// whose final delete fails still fails safe: the old record is left
-// superseded with a window that has already ended, so presenting the
-// pre-rotation handle is reuse and revokes the family, rather than a second
-// live head beside the successor.
-func TestRotate_FailedDeleteLeavesTheOldHandleReused(t *testing.T) {
+	return err
+}
+
+func (s *inFlightStore) Delete(ctx context.Context, id string) error {
+	if s.failDelete {
+		return errStoreWrite
+	}
+
+	return s.MemoryStore.Delete(ctx, id)
+}
+
+// inFlightFixture is a session still owing its second factor, the copy the
+// verification endpoint rotates once the factor is satisfied, and what they
+// run on.
+type inFlightFixture struct {
+	clk   *clockwork.FakeClock
+	inner *session.MemoryStore
+	store *inFlightStore
+	m     *session.Manager
+	logs  *bytes.Buffer
+
+	// pending is the stored session; satisfied is the caller's copy with the
+	// second factor met, which is what Rotate is given.
+	pending, satisfied *session.Session
+}
+
+// TestRotate_OldIdentifierInFlight pins that rotation at second-factor
+// verification serves the old identifier only in flight: a request that
+// loads it between the supersession and the delete gets the old session as it
+// was, not a reuse verdict, and a delete that fails does not fail the
+// rotation. In both, the old identifier stops answering once the in-flight
+// window, session.DefaultRenewalGrace, ends.
+func TestRotate_OldIdentifierInFlight(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name    string
-		options []session.ManagerOption
-		// present presents the old handle after the failed rotation.
-		present func(t *testing.T, m *session.Manager, old *session.Session) error
+		name  string
+		store func(inner *session.MemoryStore) *inFlightStore
+		run   func(t *testing.T, f *inFlightFixture)
 	}
 
 	cases := []testCase{
 		{
-			name: "loading it",
-			present: func(t *testing.T, m *session.Manager, old *session.Session) error {
-				_, err := m.Load(t.Context(), old.ID)
-
-				return err
+			name: "a load between the writes returns the old session",
+			store: func(inner *session.MemoryStore) *inFlightStore {
+				return &inFlightStore{MemoryStore: inner, afterSupersede: newGate()}
 			},
-		},
-		{
-			name: "renewing it",
-			present: func(t *testing.T, m *session.Manager, old *session.Session) error {
-				_, _, err := m.RotateWithGrace(t.Context(), old, 30*time.Second)
-
-				return err
-			},
-		},
-		{
-			name:    "renewing it with unused-successor recovery on",
-			options: []session.ManagerOption{session.WithUnusedSuccessorRecovery()},
-			present: func(t *testing.T, m *session.Manager, old *session.Session) error {
-				loaded, err := m.LoadForRenewal(t.Context(), old.ID)
-				if err != nil {
-					return err
+			run: func(t *testing.T, f *inFlightFixture) {
+				type result struct {
+					s   *session.Session
+					err error
 				}
-				_, _, err = m.RotateWithGrace(t.Context(), loaded, 30*time.Second)
+				done := make(chan result, 1)
+				go func() {
+					rotated, err := f.m.Rotate(t.Context(), f.satisfied)
+					done <- result{rotated, err}
+				}()
+				<-f.store.afterSupersede.arrived
 
-				return err
+				got, err := f.m.Load(t.Context(), f.pending.ID)
+				require.NoError(t, err, "a request in flight between the writes is not reuse")
+				assert.Equal(t, testUser, got.UserID)
+				assert.Equal(t, session.MFAPending, got.MFA, "the old session still owes its second factor")
+				assert.Equal(t, 2, f.inner.Len(), "the family was not revoked")
+
+				close(f.store.afterSupersede.open)
+				r := <-done
+				require.NoError(t, r.err)
+				require.NotNil(t, r.s)
+
+				next, err := f.m.Load(t.Context(), r.s.ID)
+				require.NoError(t, err, "the successor loads after the rotation")
+				assert.Equal(t, session.MFASatisfied, next.MFA)
+
+				_, err = f.m.Load(t.Context(), f.pending.ID)
+				require.ErrorIs(t, err, session.ErrSessionNotFound, "once deleted the old identifier is not found")
+			},
+		},
+		{
+			name: "a failed delete does not fail the rotation",
+			store: func(inner *session.MemoryStore) *inFlightStore {
+				return &inFlightStore{MemoryStore: inner, failDelete: true}
+			},
+			run: func(t *testing.T, f *inFlightFixture) {
+				rotated, err := f.m.Rotate(t.Context(), f.satisfied)
+				require.NoError(t, err, "the successor is stored, so the rotation succeeded")
+				require.NotNil(t, rotated)
+				assert.Equal(t, session.MFASatisfied, rotated.MFA)
+
+				logged := f.logs.String()
+				assert.Contains(t, logged, "level=ERROR")
+				assert.Contains(t, logged, "the session rotated from could not be deleted")
+				assert.Contains(t, logged, f.pending.FamilyID.String(), "the log names the family")
+				assert.NotContains(t, logged, f.pending.ID, "the log never carries the old identifier")
+				assert.NotContains(t, logged, rotated.ID, "the log never carries the successor's identifier")
+
+				next, err := f.m.Load(t.Context(), rotated.ID)
+				require.NoError(t, err)
+				assert.Equal(t, session.MFASatisfied, next.MFA)
+
+				f.clk.Advance(10 * time.Second)
+				old, err := f.m.Load(t.Context(), f.pending.ID)
+				require.NoError(t, err, "inside the in-flight window the old identifier still loads")
+				assert.Equal(t, session.MFAPending, old.MFA)
+
+				f.clk.Advance(session.DefaultRenewalGrace + time.Second - 10*time.Second)
+				_, err = f.m.Load(t.Context(), f.pending.ID)
+				require.ErrorIs(t, err, session.ErrSessionReused, "after the window the old identifier is reuse")
 			},
 		},
 	}
@@ -275,28 +354,24 @@ func TestRotate_FailedDeleteLeavesTheOldHandleReused(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			clk := clockwork.NewFakeClockAt(createdAt)
-			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
-			opts := append([]session.ManagerOption{
-				session.WithStore(failingDeleteStore{MemoryStore: inner}),
-				session.WithClock(clk),
-			}, tc.options...)
-			m := managerFor(t, opts...)
-			old, err := m.Create(t.Context(), testUser)
+			f := &inFlightFixture{clk: clockwork.NewFakeClockAt(createdAt), logs: &bytes.Buffer{}}
+			f.inner = session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))
+			f.store = tc.store(f.inner)
+			f.m = managerFor(t, session.WithStore(f.store), session.WithClock(f.clk),
+				session.WithSessionLogger(slog.New(slog.NewTextHandler(f.logs, nil))))
+
+			var err error
+			f.pending, err = f.m.Create(t.Context(), testUser)
 			require.NoError(t, err)
+			f.pending.MFA = session.MFAPending
+			require.NoError(t, f.m.Save(t.Context(), f.pending))
 
-			rotated, err := m.Rotate(t.Context(), old)
-			require.ErrorIs(t, err, errStoreWrite)
-			assert.Nil(t, rotated)
+			satisfied := *f.pending
+			satisfied.MFA = session.MFASatisfied
+			satisfied.MFASatisfiedAt = f.clk.Now()
+			f.satisfied = &satisfied
 
-			stored, err := inner.Load(t.Context(), old.ID)
-			require.NoError(t, err)
-			assert.False(t, stored.SupersededAt.IsZero(), "the old record must be superseded")
-			assert.True(t, stored.AcceptUntil.Equal(clk.Now()), "the old record's window must already have ended")
-
-			clk.Advance(time.Second)
-			require.ErrorIs(t, tc.present(t, m, old), session.ErrSessionReused)
-			assert.Zero(t, inner.Len(), "reuse must revoke the whole family, the successor included")
+			tc.run(t, f)
 		})
 	}
 }

@@ -248,7 +248,15 @@ func TestSessionBearerFiber(t *testing.T) {
 
 			var seen string
 
-			app := fiber.New(fiber.Config{ErrorHandler: fibersec.ErrorHandler})
+			// The throttle needs an attributable client address, which the
+			// in-memory transport only has through a trusted forwarding header.
+			app := fiber.New(fiber.Config{
+				ErrorHandler:       fibersec.ErrorHandler,
+				TrustProxy:         true,
+				TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
+				ProxyHeader:        fiber.HeaderXForwardedFor,
+				EnableIPValidation: true,
+			})
 			app.Use(fibersec.Middleware(f.chain))
 			app.Get("/orders", func(fc fiber.Ctx) error {
 				if s, ok := httpsec.SessionFromContext(fc.Context()); ok {
@@ -259,6 +267,8 @@ func TestSessionBearerFiber(t *testing.T) {
 			})
 
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+			req.RemoteAddr = ""
+			req.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.7")
 			req.Header.Set("Authorization", "Bearer "+tc.reference(f))
 
 			out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
@@ -268,4 +278,43 @@ func TestSessionBearerFiber(t *testing.T) {
 			tc.assert(t, f, out.StatusCode, seen)
 		})
 	}
+}
+
+// TestSessionBearerFloodedSourceFiber runs the per-source throttle through the
+// fiber integration: a source that presented 100 unknown references is refused
+// even with a live one, and a source that did not is served.
+func TestSessionBearerFloodedSourceFiber(t *testing.T) {
+	t.Parallel()
+
+	f := newSessionReferenceFixture(t)
+
+	app := fiber.New(fiber.Config{
+		ErrorHandler:       fibersec.ErrorHandler,
+		TrustProxy:         true,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
+		ProxyHeader:        fiber.HeaderXForwardedFor,
+		EnableIPValidation: true,
+	})
+	app.Use(fibersec.Middleware(f.chain))
+	app.Get("/orders", func(fc fiber.Ctx) error { return fc.SendStatus(http.StatusOK) })
+
+	send := func(source, reference string) int {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+		req.RemoteAddr = ""
+		req.Header.Set(fiber.HeaderXForwardedFor, source)
+		req.Header.Set("Authorization", "Bearer "+reference)
+
+		out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		require.NoError(t, err)
+		require.NoError(t, out.Body.Close())
+
+		return out.StatusCode
+	}
+
+	for i := range 100 {
+		require.Equal(t, http.StatusUnauthorized, send("203.0.113.7", referenceUnknownTo(i)))
+	}
+
+	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
+	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
 }

@@ -225,3 +225,22 @@ func TestMemoryStoreClock(t *testing.T) {
 		})
 	}
 }
+
+// TestMemoryStoreSaveKeepsTheAuthenticationTime pins that Save cannot move
+// when the user authenticated: a stale or edited copy saved back leaves the
+// stored time as Create wrote it.
+func TestMemoryStoreSaveKeepsTheAuthenticationTime(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	m, store := managerOnClock(t, clk)
+	s, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+
+	s.AuthenticatedAt = createdAt.Add(time.Hour)
+	require.NoError(t, store.Save(t.Context(), s))
+
+	stored, err := store.Load(t.Context(), s.ID)
+	require.NoError(t, err)
+	assert.True(t, stored.AuthenticatedAt.Equal(createdAt), "Save moved the authentication time to %s", stored.AuthenticatedAt)
+}

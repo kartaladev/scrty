@@ -217,8 +217,9 @@ func (s *MemoryStore) deleteLocked(id string) {
 	delete(s.byDigest, string(sessionDigest(id)))
 }
 
-// Save updates the stored session, whole except for MFAAtFirstFactor and the
-// family, supersession and presentation fields, and never inserts. Those are
+// Save updates the stored session, whole except for MFAAtFirstFactor,
+// AuthenticatedAt and the family, supersession and presentation fields, and
+// never inserts. Those are
 // kept as Create, Supersede and MarkPresented wrote them, whatever the saved
 // session says. A superseded record also keeps both of its deadlines.
 //
@@ -236,6 +237,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	}
 	rec := sess.clone()
 	rec.MFAAtFirstFactor = stored.MFAAtFirstFactor
+	rec.AuthenticatedAt = stored.AuthenticatedAt
 	rec.FamilyID = stored.FamilyID
 	rec.FamilyCreatedAt = stored.FamilyCreatedAt
 	rec.SupersededAt = stored.SupersededAt

@@ -86,6 +86,10 @@ var statusTable = []statusRow{
 	// the chain joined with ErrAuthenticationRequired, answered 401 above.
 	{session.ErrSessionRenewalConflict, http.StatusConflict},
 
+	// A family that renewed too often in the window, or a renewal limiter that
+	// could not answer: the client backs off, as for any other 429.
+	{ErrRenewalThrottled, http.StatusTooManyRequests},
+
 	// A federated-login path segment naming no registered provider, and a
 	// second-factor path segment naming no configured method. Which providers
 	// and methods exist is configuration, not a secret.

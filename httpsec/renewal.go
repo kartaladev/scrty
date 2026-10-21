@@ -3,11 +3,13 @@ package httpsec
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -19,6 +21,18 @@ const DefaultSessionRenewalPath = "/session/renewal"
 // defaultRenewalGrace is how long a renewed credential keeps working after its
 // renewal when the consumer chooses no grace (WithRenewalGrace).
 const defaultRenewalGrace = 30 * time.Second
+
+const (
+	// sessionRenewalFlow names the limiter the chain builds for renewals.
+	sessionRenewalFlow = "session-renewal"
+
+	// defaultRenewalLimit is how many renewals one session family may make in
+	// defaultRenewalWindow before further ones are refused.
+	defaultRenewalLimit = 10
+
+	// defaultRenewalWindow is the sliding window defaultRenewalLimit counts in.
+	defaultRenewalWindow = 10 * time.Minute
+)
 
 // orderSessionRenewal is the renewal endpoint's slot: inside bearer
 // authentication, which resolves the session it renews, and inside every gate
@@ -109,6 +123,11 @@ type sessionRenewal struct {
 
 	now func() time.Time
 
+	// limiter counts renewals per session family, from the consumer
+	// (WithRenewalLimiter) or built from the chain's factory at assembly.
+	limiter ratelimit.Limiter
+	logger  *slog.Logger
+
 	path    string
 	grace   time.Duration
 	respond RenewalResponder
@@ -153,6 +172,14 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		}
 	}
 
+	// The limit is asked after the session is known, so a recovery pass-through
+	// is counted like any renewal, and before anything is rotated, so a refusal
+	// writes nothing.
+	key := "family:" + s.FamilyID.String()
+	if err := r.admit(ctx, key); err != nil {
+		return err
+	}
+
 	successor, kind, err := r.sessions.RotateWithGrace(ctx, s, r.grace, r.rotateOptions(ex, s)...)
 	if err != nil {
 		return renewalRefusal(err)
@@ -164,6 +191,29 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 	}
 
 	return r.respond(ex, RenewalResult{Credential: credential, Session: successor, User: details, Kind: kind})
+}
+
+// admit refuses a renewal of a family that is over its limit, and fails closed
+// when the limiter cannot answer. Every attempt that goes on to rotation is
+// then charged, success or refusal, so retries and re-rotations count. The
+// charge outlives a client that hangs up.
+func (r *sessionRenewal) admit(ctx context.Context, key string) error {
+	exceeded, err := r.limiter.Exceeded(ctx, key)
+	if err != nil {
+		r.logger.WarnContext(ctx, "the renewal limiter could not answer; the renewal is refused")
+
+		return ErrRenewalThrottled
+	}
+
+	if exceeded {
+		return ErrRenewalThrottled
+	}
+
+	if err := r.limiter.RecordFailure(context.WithoutCancel(ctx), key); err != nil {
+		r.logger.WarnContext(ctx, "the renewal limiter could not record a renewal")
+	}
+
+	return nil
 }
 
 // rotateOptions are the rotation options the consumer's lifetime function asks
@@ -358,6 +408,22 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // authenticated caller does not see it; the endpoint's own checks above are
 // what stand in for it.
 //
+// # Renewal limit
+//
+// Renewals are counted per session family, not per source or per user: a
+// family may renew 10 times in a sliding 10 minutes, and the eleventh is
+// refused with ErrRenewalThrottled, a 429, with nothing rotated. The count is
+// of renewals, not of failures: every attempt that reaches rotation is
+// charged, re-rotations and refused attempts included. Keyed by family, it
+// cannot throttle another user, or the same user's other sign-ins. A limiter
+// that cannot answer refuses the renewal. WithRenewalLimiter replaces the
+// limiter and with it the limit and the window.
+//
+// Clients that share one credential across tabs should serialise their
+// renewals. A second renewal inside the grace window re-rotates, which
+// knocks out the successor the first tab already holds, and that tab's next
+// request is then reuse.
+//
 // # Clients
 //
 // A client switches to the successor's credential as soon as the renewal
@@ -414,6 +480,13 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 					"renew the session it meant to end", option, r.path)
 			}
 
+			limiter, err := c.enrolmentLimiter(r.limiter, sessionRenewalFlow, defaultRenewalLimit, defaultRenewalWindow)
+			if err != nil {
+				return newConfigError("%s could not build its renewal limiter: %s", option, err)
+			}
+
+			r.limiter = limiter
+
 			return checkTokenGenerator(c, option, "SessionRenewalDeps.Tokens", d.Tokens)
 		})
 
@@ -423,6 +496,7 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 		c.wire(func(ch *Chain) {
 			r.issue = c.credentialIssuer(r.tokens)
 			r.engine = ch.engine
+			r.logger = c.logger
 		})
 		c.register(r, orderSessionRenewal)
 
@@ -479,6 +553,30 @@ func (r *sessionRenewal) resolveSessions(c *config, option string, given *sessio
 	r.sessions = given
 
 	return nil
+}
+
+// WithRenewalLimiter replaces the limiter that counts renewals per session
+// family.
+//
+// Default: a limiter the chain builds from its rate-limiter factory
+// (WithRateLimiterFactory, in memory when none is given) under the flow name
+// "session-renewal", allowing 10 renewals per family in a sliding 10 minutes.
+// A consumer supplies its own to share the count across replicas or to choose
+// another limit; the chain keys it by "family:" followed by the family
+// identifier, asks it before every renewal, and charges it once per attempt
+// that goes on to rotation. A limiter that returns an error refuses the
+// renewal with ErrRenewalThrottled rather than lifting the limit. A nil
+// limiter is refused when the chain is built.
+func WithRenewalLimiter(l ratelimit.Limiter) SessionRenewalOption {
+	return func(r *sessionRenewal) error {
+		if err := requireDep("WithRenewalLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		r.limiter = l
+
+		return nil
+	}
 }
 
 // WithRenewalPath answers renewals on path instead.

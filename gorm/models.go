@@ -70,6 +70,9 @@ type sessionRow struct {
 	AcceptUntil      *time.Time `gorm:"column:accept_until;type:timestamptz"`
 	SuccessorDigest  []byte     `gorm:"column:successor_digest;type:bytea"`
 	FirstPresentedAt *time.Time `gorm:"column:first_presented_at;type:timestamptz"`
+	// AuthenticatedAt is when the user last proved who they are, written by
+	// the insert only; the update omits it.
+	AuthenticatedAt time.Time `gorm:"column:authenticated_at;type:timestamptz"`
 }
 
 // TableName is the table the migration creates for sessions.

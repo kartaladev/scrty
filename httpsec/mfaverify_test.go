@@ -906,7 +906,9 @@ func TestMFAVerifySuccess(t *testing.T) {
 
 	s := h.pendingSession(t, factor.Password)
 	previous := s.ID
+	signedIn := s.AuthenticatedAt
 
+	h.clock.Advance(5 * time.Minute)
 	out := serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath))
 
 	require.NoError(t, out.err)
@@ -922,6 +924,18 @@ func TestMFAVerifySuccess(t *testing.T) {
 	rotated := h.stored(t, h.resolved.ID)
 	assert.Equal(t, session.MFASatisfied, rotated.MFA)
 	assert.False(t, rotated.MFASatisfiedAt.IsZero(), "the satisfied time is recorded")
+	// This chain reads the system clock, which is past the harness's
+	// minute-truncated sign-in time, so the two are told apart.
+	assert.True(t, rotated.AuthenticatedAt.Equal(rotated.MFASatisfiedAt),
+		"satisfying the second factor refreshes the authentication time: got %s, satisfied %s",
+		rotated.AuthenticatedAt, rotated.MFASatisfiedAt)
+	assert.True(t, rotated.AuthenticatedAt.After(signedIn), "the authentication time moved on from the sign-in's")
+	// The successor is a record written at the rotation: its creation time
+	// is the rotation's, while the sign-in's time lives in AuthenticatedAt
+	// (refreshed above) and MFASatisfiedAt.
+	assert.True(t, rotated.CreatedAt.Equal(h.clock.Now()),
+		"the successor's creation time is when it was written: got %s, rotated at %s", rotated.CreatedAt, h.clock.Now())
+	assert.True(t, rotated.CreatedAt.After(s.CreatedAt), "the successor is a newer record than the one it replaced")
 	assert.Equal(t, testMFAUser, rotated.UserID, "everything else is carried over")
 	assert.Equal(t, factor.Password, rotated.FirstFactor)
 }
@@ -1374,7 +1388,14 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 
 			h.clock.Advance(tc.after)
 
+			was := *s
 			tc.assert(t, serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath)))
+
+			// A refused rotation leaves the session the caller holds as it
+			// was: the second factor is not recorded on it.
+			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
+			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
+			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
 		})
 	}
 }

@@ -87,6 +87,14 @@ func WithAbsoluteTimeout(d time.Duration) ManagerOption {
 // d must be at least 0 and less than the idle timeout; anything else is a
 // configuration error from NewManager, because an interval as long as the
 // idle timeout would let a session expire while in constant use.
+//
+// Deployments with busy clients should set one, for example a minute. The
+// bound it costs is the one above: idle expiry up to one interval early.
+//
+// An httpsec chain refuses, with a configuration error from httpsec.New, a
+// touch interval at least as long as any idle timeout its policy engine
+// enforces (policy.IdleTimeoutPolicy), because the stored last access can be
+// up to one interval stale.
 func WithTouchInterval(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.touchInterval = d }
 }

@@ -158,7 +158,7 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 
 	return append(args, sess.MFAAtFirstFactor, sess.FamilyID, storekit.Time(sess.FamilyCreatedAt),
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), digestArg(sess.SuccessorDigest),
-		nullTs(sess.FirstPresentedAt)), nil
+		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt)), nil
 }
 
 // digestArg is a successor digest as stored in its nullable column, or
@@ -211,6 +211,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		generation    sql.Null[id.ID]
 		recovered     sql.NullTime
 		familyCreated time.Time
+		authenticated time.Time
 		superseded    sql.NullTime
 		acceptUntil   sql.NullTime
 		presented     sql.NullTime
@@ -220,7 +221,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
 		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
 		&amr, &sess.FederatedACR, &sess.FamilyID, &familyCreated, &superseded, &acceptUntil,
-		&sess.SuccessorDigest, &presented)
+		&sess.SuccessorDigest, &presented, &authenticated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -249,6 +250,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	sess.EnrolmentOriginDeadline, sess.EnrolmentGeneration = fromNull(origin), generation.V
 	sess.RecoveredAt = fromNull(recovered)
 	sess.FamilyCreatedAt = familyCreated.UTC()
+	sess.AuthenticatedAt = authenticated.UTC()
 	sess.SupersededAt, sess.AcceptUntil = fromNull(superseded), fromNull(acceptUntil)
 	sess.FirstPresentedAt = fromNull(presented)
 	sess.CreatedAt, sess.LastAccessedAt = created.UTC(), last.UTC()

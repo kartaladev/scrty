@@ -1,11 +1,15 @@
 package httpsec
 
 import (
+	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/logsample"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -27,6 +31,19 @@ type SessionBearerDeps struct {
 	Users identity.UserLoader
 }
 
+// sessionReferenceFlow names this flow's rate-limit buckets and sampler keys,
+// so a source that exhausts its allowance of unknown references still has its
+// own at every other endpoint.
+const sessionReferenceFlow = "session-reference"
+
+// The allowance a source gets before presented references stop being looked
+// up. A live session spends nothing, and a client holding a stale reference
+// retries a few times, so the count is generous and the window short.
+const (
+	defaultSessionReferenceFailureLimit  = 100
+	defaultSessionReferenceFailureWindow = time.Minute
+)
+
 // SessionBearerOption configures session-reference authentication.
 type SessionBearerOption func(*sessionBearer) error
 
@@ -45,11 +62,41 @@ type sessionBearer struct {
 	now func() time.Time
 
 	scheme string
+
+	limiter ratelimit.Limiter
+	guard   sourceGuard
+	sampler *logsample.Sampler
+	log     *slog.Logger
+}
+
+// wireSessionBearer settles the limiter and the source guard against the
+// assembled configuration, once every option has been applied.
+func (c *config) wireSessionBearer() error {
+	return eachInterceptor(c, func(b *sessionBearer) error {
+		guard, err := c.resolveSourceGuard("EnableSessionBearer", sessionReferenceFlow, b.limiter,
+			defaultSessionReferenceFailureLimit, defaultSessionReferenceFailureWindow, c.refusalInterval)
+		if err != nil {
+			return err
+		}
+
+		b.guard = guard
+
+		return nil
+	})
+}
+
+// flushRefusalLogs reports what the source guard is holding back.
+func (b *sessionBearer) flushRefusalLogs() {
+	if b.guard != nil {
+		b.guard.Flush()
+	}
 }
 
 // wire takes the settings the chain resolved, once every option has been
 // applied.
 func (b *sessionBearer) wire(c *Chain) {
+	b.sampler = c.sampler
+	b.log = c.logger
 	b.resolver = sessionResolver{
 		sessions: b.sessions,
 		users:    b.users,
@@ -67,8 +114,13 @@ func (b *sessionBearer) wire(c *Chain) {
 // Intercept authenticates a session reference against a live session and a
 // live user.
 //
-// A value that cannot be a session identifier is refused before the store is
-// asked, so a stream of junk credentials costs no lookup. Everything after
+// The source is checked first, before the value is even parsed, so a throttled
+// scanner costs one bucket read. A value that cannot be a session identifier is
+// then refused before the store is asked, so a stream of junk credentials costs
+// no lookup. Every refusal of the presented reference (format, load, user
+// reload) is recorded against the source; a policy decision about a valid
+// session is not. A request with no claimed Authorization header never reaches
+// the limiter. Everything after
 // extraction is the resolution core the signed bearer also runs, so the two
 // modes refuse identically.
 func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
@@ -77,11 +129,30 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
+	ctx := ex.Context()
+
+	src, err := sourceThrottled(ctx, b.guard, ex.Request.ClientIP(), sessionReferenceFlow,
+		b.sampler, b.log, b.now())
+	if err != nil {
+		return ErrAuthenticationRequired
+	}
+
 	if !session.ValidIdentifier(presented) {
+		recordSourceFailure(ctx, b.guard, src)
+
 		return ErrAuthenticationRequired
 	}
 
 	if err := b.resolver.resolve(ex, presented, lookupBySessionUser()); err != nil {
+		// Only a refusal of the reference itself is a failed guess. Once the
+		// session and its user are resolved the caller is published, so an
+		// error after that point is a policy decision about a valid session,
+		// and counting it would let a policy misconfiguration lock out the
+		// very clients it governs.
+		if ex.Authentication == nil && errors.Is(err, ErrAuthenticationRequired) {
+			recordSourceFailure(ctx, b.guard, src)
+		}
+
 		return err
 	}
 
@@ -100,6 +171,14 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 // session's identifier, and giving any of them a token generator is
 // a configuration error from New too: a token it minted would not be accepted
 // here.
+//
+// Unknown references are throttled per source: each refused reference counts
+// against the client address, and a source past its allowance (by default 100
+// per minute) is refused with ErrAuthenticationRequired before any lookup.
+// WithSessionBearerLimiter replaces the limiter. A limiter that cannot answer
+// refuses the request (fail closed), and behind a shared address every client
+// counts against one allowance, so configure the framework's trusted-proxy
+// setting so the real client address is used.
 //
 // Default: off; the signed-token bearer is the library's default mode. When
 // enabled, the scheme is DefaultBearerScheme, matched without regard to case,
@@ -222,4 +301,44 @@ func checkTokenGenerator(c *config, option, field string, g token.Generator) err
 	}
 
 	return nil
+}
+
+// WithSessionBearerLimiter counts the unknown session references each source
+// presents in l.
+//
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "session-reference", or else an in-memory limiter of 100 failures
+// per source per minute, used by this flow alone. A deployment running more
+// than one replica supplies a factory or a limiter its replicas share, or the
+// limit is per process and a scanner simply spreads its guesses.
+//
+// A source over its limit is refused with ErrAuthenticationRequired before the
+// reference is parsed or looked up, so a throttled scanner costs one bucket
+// read. A limiter that cannot answer, or a client address that cannot be
+// attributed, refuses the request as well (fail closed): admitting it would
+// lift every limit exactly when something is wrong.
+//
+// It counts refused references and nothing else: a malformed value, an unknown,
+// expired or reused session, or a missing user. A live session spends nothing,
+// a policy refusal of a valid session is not recorded, and a request carrying
+// no claimed Authorization header never reaches the limiter.
+//
+// The source is the client address the adapter reports, so behind a shared
+// address (a proxy or NAT) every client counts against one allowance. Configure
+// the framework's trusted-proxy setting (gin's SetTrustedProxies, fiber's
+// TrustedProxies) so the real client address is the one used. The flow's IPv6
+// aggregate (WithIPv6Aggregate) is sized from l when l reports its policy
+// (ratelimit.PolicyReporter), as for WithAPIKeyLimiter.
+//
+// A nil limiter, including an interface holding a nil pointer, is refused.
+func WithSessionBearerLimiter(l ratelimit.Limiter) SessionBearerOption {
+	return func(b *sessionBearer) error {
+		if err := requireDep("WithSessionBearerLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		b.limiter = l
+
+		return nil
+	}
 }

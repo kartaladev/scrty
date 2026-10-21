@@ -20,22 +20,22 @@ const (
 	// the nil family), $24 family_created_at, $25 superseded_at (NULL when not
 	// superseded), $26 accept_until (NULL when not superseded),
 	// $27 successor_digest (NULL for none), $28 first_presented_at (NULL when
-	// never presented). Zero rows affected means the digest is already
-	// stored.
+	// never presented), $29 authenticated_at. Zero rows affected means the
+	// digest is already stored.
 	SessionInsert = `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
   password_change_pending, external_provider, external_issuer, external_session_id,
   external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
   federated_amr, federated_acr, mfa_at_first_factor, family_id, family_created_at,
-  superseded_at, accept_until, successor_digest, first_presented_at)
+  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-  $23, $24, $25, $26, $27, $28)
+  $23, $24, $25, $26, $27, $28, $29)
 ON CONFLICT (id_digest) DO NOTHING`
 
 	// SessionUpdate replaces every field of the session with digest $1, in
 	// SessionInsert's order from $2 user_id to $20 federated_acr. It leaves
-	// mfa_at_first_factor and the family, supersession and presentation
-	// columns out: only the insert, the supersession and the first
+	// mfa_at_first_factor, authenticated_at and the family, supersession and
+	// presentation columns out: only the insert, the supersession and the first
 	// presentation write them, so no later save can undo them. On a
 	// superseded row (superseded_at set) it also leaves both deadlines as the
 	// supersession set them, so a copy loaded before the supersession cannot
@@ -58,7 +58,7 @@ WHERE id_digest = $1`
   external_provider, external_issuer, external_session_id, external_id_token, data,
   enrolment_origin_deadline, enrolment_generation, recovered_at,
   mfa_at_first_factor, federated_amr, federated_acr, family_id, family_created_at,
-  superseded_at, accept_until, successor_digest, first_presented_at
+  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at
 FROM sessions WHERE id_digest = $1`
 
 	// SessionExists reports whether a session with digest $1 is stored,

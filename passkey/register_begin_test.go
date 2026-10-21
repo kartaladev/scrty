@@ -103,6 +103,7 @@ func TestBeginRegistration(t *testing.T) {
 			session: func() *session.Session {
 				s := full()
 				s.MFA, s.MFASatisfiedAt = session.MFASatisfied, regStart.Add(20*time.Minute)
+				s.AuthenticatedAt = s.MFASatisfiedAt
 
 				return s
 			},
@@ -277,6 +278,7 @@ func TestBeginRegistration(t *testing.T) {
 
 				f.clock.Advance(24 * time.Hour)
 				s.CreatedAt = f.clock.Now()
+				s.AuthenticatedAt = s.CreatedAt
 			},
 			assert: func(t *testing.T, f *fixture, _ json.RawMessage, err error) {
 				t.Helper()

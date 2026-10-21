@@ -379,6 +379,34 @@ func New(opts ...Option) (*Chain, error) {
 	return c.build()
 }
 
+// checkTouchInterval refuses a chain whose session manager coalesces activity
+// writes over an interval that an idle-timeout policy in the engine does not
+// exceed. The stored last-access time can be up to one interval stale, so such
+// a policy could refuse a session that is in constant use. A manager that
+// writes on every touch (interval zero), a chain with no manager, and an engine
+// with no idle policy are all accepted. Only policies registered in the engine
+// before New runs are checked.
+func (c *config) checkTouchInterval() error {
+	if c.sessions == nil || c.engine == nil {
+		return nil
+	}
+
+	interval := c.sessions.TouchInterval()
+	if interval <= 0 {
+		return nil
+	}
+
+	for _, idle := range c.engine.IdleTimeouts() {
+		if idle <= interval {
+			return newConfigError("the session manager coalesces activity over %s, but a policy enforces an idle timeout of %s: "+
+				"the stored last access can be up to one interval stale, so the idle timeout must be longer than the interval",
+				interval, idle)
+		}
+	}
+
+	return nil
+}
+
 // build freezes the validated configuration into the chain that serves it.
 func (c *config) build() (*Chain, error) {
 	// Before anything is built: a challenge nothing enforces is the one wiring
@@ -413,6 +441,13 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// An interval that coalesces activity writes leaves the stored last-access
+	// time up to one interval stale, which an idle policy no longer than that
+	// would read as an idle session.
+	if err := c.checkTouchInterval(); err != nil {
+		return nil, err
+	}
+
 	// The enrolment path takes the enrollable methods EnableMFA was given and the
 	// chain's sessions and logout path, any of which an option applied after
 	// EnableMFAEnrolment may still have set.
@@ -436,6 +471,10 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	if err := c.wireAPIKey(); err != nil {
+		return nil, err
+	}
+
+	if err := c.wireSessionBearer(); err != nil {
 		return nil, err
 	}
 

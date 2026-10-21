@@ -166,12 +166,13 @@ var securityStateColumns = map[string][]column{
 		defaulted("mfa_at_first_factor", colBoolean, "false"),
 		defaulted("federated_amr", colJSONB, defEmptyArray),
 		defaulted("federated_acr", colText, defEmptyText),
-		required("family_id", colUUID),
-		required("family_created_at", colTimestamptz),
+		defaulted("family_id", colUUID, "gen_random_uuid()"),
+		defaulted("family_created_at", colTimestamptz, "now()"),
 		optional("superseded_at", colTimestamptz),
 		optional("accept_until", colTimestamptz),
 		optional("successor_digest", colBytea),
 		optional("first_presented_at", colTimestamptz),
+		defaulted("authenticated_at", colTimestamptz, "now()"),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -711,8 +712,9 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 
 				got := sessionColumnsAndIndexes(t, db)
 				for _, want := range []string{
-					"col family_id uuid NOT NULL",
-					"col family_created_at timestamp with time zone NOT NULL",
+					"col family_id uuid NOT NULL DEFAULT gen_random_uuid()",
+					"col family_created_at timestamp with time zone NOT NULL DEFAULT now()",
+					"col authenticated_at timestamp with time zone NOT NULL DEFAULT now()",
 					"col superseded_at timestamp with time zone NULL",
 					"col accept_until timestamp with time zone NULL",
 					"col successor_digest bytea NULL",
@@ -768,6 +770,54 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 				}
 				require.NoError(t, rows.Err())
 				assert.Equal(t, len(ids), n)
+			},
+		},
+		{
+			name: "an older writer's insert succeeds",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				// Names neither family column nor authenticated_at.
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000d1', '\x07', 'u', now(), now(), now(), now())`)
+				require.NoError(t, err)
+
+				var ok bool
+				require.NoError(t, db.QueryRowContext(t.Context(),
+					`SELECT family_id IS NOT NULL AND family_created_at IS NOT NULL AND authenticated_at IS NOT NULL
+					   FROM sessions`).Scan(&ok))
+				assert.True(t, ok, "the three columns take their defaults")
+			},
+		},
+		{
+			name: "existing rows get their authentication time",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSecurityState)
+				require.NoError(t, err)
+
+				signedIn := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+				second := signedIn.Add(20 * time.Minute)
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, mfa_satisfied_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000e1', '\x01', 'u', $1, $1, $2, $2, $3),
+					       ('0192f000-0000-7000-8000-0000000000e2', '\x02', 'u', $1, $1, $2, $2, NULL)`,
+					signedIn, signedIn.Add(time.Hour), second)
+				require.NoError(t, err)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				for id, want := range map[string]time.Time{
+					"0192f000-0000-7000-8000-0000000000e1": second,
+					"0192f000-0000-7000-8000-0000000000e2": signedIn,
+				} {
+					var got time.Time
+					require.NoError(t, db.QueryRowContext(t.Context(),
+						`SELECT authenticated_at FROM sessions WHERE id = $1`, id).Scan(&got))
+					assert.True(t, want.Equal(got), "session %s: authenticated_at %s, want %s", id, got, want)
+				}
 			},
 		},
 		{

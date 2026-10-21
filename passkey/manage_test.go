@@ -641,6 +641,7 @@ func TestManageRemove(t *testing.T) {
 			session: func(*manageEnv) *session.Session {
 				s := fullSession("sess-1", "u-1")
 				s.MFA, s.MFASatisfiedAt = session.MFASatisfied, regStart.Add(15*time.Minute)
+				s.AuthenticatedAt = s.MFASatisfiedAt
 
 				return s
 			},

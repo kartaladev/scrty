@@ -163,7 +163,7 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 
 	return append(args, sess.MFAAtFirstFactor, uuidArg(sess.FamilyID), storekit.Time(sess.FamilyCreatedAt),
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), digestArg(sess.SuccessorDigest),
-		nullTs(sess.FirstPresentedAt)), nil
+		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt)), nil
 }
 
 // digestArg is a successor digest as stored in its nullable column, or
@@ -217,6 +217,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		idle, abs     time.Time
 		family        pgtype.UUID
 		familyCreated time.Time
+		authenticated time.Time
 		superseded    pgtype.Timestamptz
 		acceptUntil   pgtype.Timestamptz
 		presented     pgtype.Timestamptz
@@ -226,7 +227,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
 		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
 		&amr, &sess.FederatedACR, &family, &familyCreated, &superseded, &acceptUntil,
-		&sess.SuccessorDigest, &presented)
+		&sess.SuccessorDigest, &presented, &authenticated)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -265,6 +266,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, failed(op, err)
 	}
 	sess.FamilyCreatedAt = familyCreated.UTC()
+	sess.AuthenticatedAt = authenticated.UTC()
 	if sess.SupersededAt, err = fromNull(superseded); err != nil {
 		return nil, failed(op, err)
 	}

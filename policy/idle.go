@@ -166,3 +166,7 @@ func (p *IdleTimeoutPolicy) Thresholds(createdAt, now time.Time) (idle, absolute
 
 	return idle, absolute
 }
+
+// IdleTimeout reports how long a session may go unused before this policy
+// refuses the next request, which is what WithIdlePolicyTimeout configured.
+func (p *IdleTimeoutPolicy) IdleTimeout() time.Duration { return p.idle }

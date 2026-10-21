@@ -313,7 +313,7 @@ func (f *fixture) mockRevoker() *MockSessionRevoker {
 
 // fullSession is a full password session of user created at regStart.
 func fullSession(sid string, user identity.UserID) *session.Session {
-	return &session.Session{ID: sid, UserID: user, CreatedAt: regStart, FirstFactor: factor.Password}
+	return &session.Session{ID: sid, UserID: user, CreatedAt: regStart, AuthenticatedAt: regStart, FirstFactor: factor.Password}
 }
 
 // synchronousSender is a sender that does not report notify.NonBlocking.

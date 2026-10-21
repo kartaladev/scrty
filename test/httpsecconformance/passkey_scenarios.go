@@ -229,6 +229,7 @@ func (pf *PasskeyFixture) confirmedSession(t *testing.T, sessions *session.Manag
 	if satisfied {
 		s.MFA = session.MFASatisfied
 		s.MFASatisfiedAt = pf.Base.Clock.Now()
+		s.AuthenticatedAt = s.MFASatisfiedAt
 	}
 
 	require.NoError(t, sessions.Save(t.Context(), s))

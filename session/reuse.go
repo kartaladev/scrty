@@ -49,6 +49,12 @@ var ErrSessionRenewalRequired = fmt.Errorf("session: a superseded session must b
 // mobile network several times over.
 const MaxRenewalGrace = 5 * time.Minute
 
+// DefaultRenewalGrace is the grace window a renewal endpoint uses when its
+// consumer chooses none, and the in-flight window Rotate gives the identifier
+// it rotates from: long enough for a request already sent with the old
+// identifier to land, short enough that a stolen one is little use.
+const DefaultRenewalGrace = 30 * time.Second
+
 // reuseLogReason is the fixed text of the warning written on every detected
 // reuse. It names what happened and carries no identifier.
 const reuseLogReason = "session: a superseded session was presented after its window; its family was revoked"

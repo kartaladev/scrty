@@ -269,6 +269,9 @@ func (m *Manager) newIdentifier() (string, error) {
 // ErrConfig and nothing is stored. The idle deadline is capped at the
 // absolute one.
 //
+// The session records the sign-in as its authentication time
+// (AuthenticatedAt is CreatedAt), before the options run.
+//
 // Every create option is applied before the one store write, so a crash cannot
 // leave a live session that has forgotten which factor established it or which
 // provider it came from. Options run after the creation time and deadlines are
@@ -297,6 +300,9 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 		AbsoluteExpiresAt: now.Add(m.absoluteTimeout),
 		FamilyID:          family,
 		FamilyCreatedAt:   now,
+		// A sign-in is an authentication. Set before the options, so a
+		// consumer's option may still choose another time.
+		AuthenticatedAt: now,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -569,13 +575,18 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // the consumer's own data.
 //
 // The old entry is superseded by the new one, through the store's
-// conditional Store.Supersede with a window that ends at once, and then
-// deleted, so the old identifier is not found afterwards. A failure of the
-// supersession writes nothing and leaves the old handle working, so a caller
-// that refuses on the error has lost nothing. A failure of the delete is
-// returned too; the old entry is then left superseded with its window
-// already ended, so presenting it is reuse (see ErrSessionReused), which
-// fails safe.
+// conditional Store.Supersede with a short in-flight window
+// (DefaultRenewalGrace, never past the absolute deadline), and then deleted,
+// so the old identifier is not found afterwards. A request that loads the old
+// identifier between the two writes gets the old session as it was — still
+// owing the second factor, which every gate confines — and is not judged as
+// reuse. A failure of the supersession writes nothing and leaves the old
+// handle working, so a caller that refuses on the error has lost nothing. A
+// failure of the delete does not fail the rotation: the successor is stored,
+// so it is returned, and the failure is logged at error with the family and
+// never an identifier. The old entry is then left superseded; it loads until
+// its in-flight window ends, and presenting it after that is reuse (see
+// ErrSessionReused).
 //
 // A session the store no longer holds, or that is past either deadline, is
 // refused with the store's sentinel, as itself, and nothing is written:
@@ -589,8 +600,10 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // same session, or a Rotate on another manager over the same store — are
 // settled by the store's condition: exactly one produces a successor, and the
 // one that supersedes second is refused with ErrSessionRenewalConflict and
-// stores nothing. One that reads the old entry only after this rotation
-// superseded it finds an ended window, which is reuse.
+// stores nothing. A grace rotation that reads the old entry only after this
+// rotation superseded it finds it inside the in-flight window, and is a
+// re-rotation (see RotateWithGrace): this rotation's successor is knocked out,
+// so the family still has one live head.
 //
 // Rotate never extends the session: the absolute deadline is carried over
 // whatever WithMaxFamilyLifetime allows, because a privilege change must not
@@ -636,6 +649,10 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	}
 
 	rotated := successorOf(s, id)
+	// The successor is a record written now, so its creation time is now.
+	// AuthenticatedAt stays as s carries it: that is the sign-in's, or the
+	// refresh second-factor verification wrote onto s before rotating.
+	rotated.CreatedAt = now
 	// The successor goes straight back to the caller that is using it, so it
 	// is recorded as presented now. That is also what keeps a recovery
 	// (WithUnusedSuccessorRecovery) from renewing the old identifier into a
@@ -645,11 +662,13 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	// The store's conditional supersession, not the lock above, is what
 	// stops a grace rotation of the same session — through this manager or
 	// another sharing the store — from producing a second successor beside
-	// this one. A window ending now means the old record never answers again.
+	// this one. The short in-flight window lets a request already sent with
+	// the old identifier land as the session it was, still owing whatever
+	// the rotation changed, rather than as reuse.
 	err = m.store.Supersede(ctx, Supersession{
 		Old:               stored.ID,
 		ObservedSuccessor: stored.SuccessorDigest,
-		AcceptUntil:       now,
+		AcceptUntil:       minTime(now.Add(DefaultRenewalGrace), stored.AbsoluteExpiresAt),
 		Successor:         rotated,
 		Now:               now,
 	})
@@ -657,12 +676,21 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 		return nil, storeFailed(err, "session: the rotated session could not be created")
 	}
 
+	// The successor is stored, so the rotation has happened: failing it now
+	// would leave the caller holding the old identifier, whose next request
+	// after the window would be reuse. The old record stays superseded and
+	// stops answering when its window ends.
 	if err := m.store.Delete(ctx, s.ID); err != nil {
-		return nil, storeFailed(err, "session: the session rotated from could not be deleted")
+		m.logger.LogAttrs(ctx, slog.LevelError, rotateDeleteLogReason,
+			append(diag.Failure("delete", err), slog.String("family", stored.FamilyID.String()))...)
 	}
 
 	return rotated, nil
 }
+
+// rotateDeleteLogReason is the fixed text logged when the delete after a
+// strict rotation fails. It carries no identifier.
+const rotateDeleteLogReason = "session: the session rotated from could not be deleted; it stops answering when its in-flight window ends"
 
 // timedClock adapts the manager's clock to the clock.Timed that
 // NewMemoryStore takes, so the default store's time checks follow the

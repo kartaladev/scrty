@@ -246,7 +246,9 @@ func TestSessionReturnedErrors(t *testing.T) {
 			assert: isBare(session.ErrSessionRenewalConflict),
 		},
 		{
-			name: "manager rotate: delete of the old entry",
+			// The successor is stored, so a failed delete is logged by type,
+			// never returned: there is no store text to hide.
+			name: "manager rotate: delete of the old entry is not returned",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
 				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(nil)
@@ -254,7 +256,10 @@ func TestSessionReturnedErrors(t *testing.T) {
 				_, err := manager(t, d).Rotate(ctx, returnedErrorsSession(""))
 				return err
 			},
-			assert: hidesStoreText(),
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
 		},
 		{
 			name: "manager rotate with grace: load of the old entry",

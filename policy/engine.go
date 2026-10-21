@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
@@ -202,6 +203,31 @@ func (e *Engine) RequiredAttemptViews() []RequiredAttemptView {
 	}
 
 	return views
+}
+
+// IdleTimeouts reports the idle timeout of every registered policy that
+// enforces one, in registration order, one entry per registration.
+//
+// It is how a component that coalesces session activity writes, such as an HTTP
+// security chain, checks its wiring before it serves: a stored last-access time
+// can be up to one coalescing interval stale, so an idle timeout no longer than
+// that interval would refuse live sessions. The answer is drawn from an
+// optional IdleTimeout() time.Duration method, which IdleTimeoutPolicy has, and
+// a policy without one is taken to enforce no idle timeout. A policy registered
+// for no phase is never asked anything, so it is never reported.
+//
+// It returns a fresh slice, nil when nothing is enforced, and is meant for
+// wiring time, alongside Add, rather than for the request path.
+func (e *Engine) IdleTimeouts() []time.Duration {
+	var timeouts []time.Duration
+
+	for _, p := range e.asked {
+		if r, ok := p.(interface{ IdleTimeout() time.Duration }); ok {
+			timeouts = append(timeouts, r.IdleTimeout())
+		}
+	}
+
+	return timeouts
 }
 
 // FlushRefusalLogs asks every registered policy that keeps a refusal-log

@@ -493,3 +493,63 @@ func TestReuseObserver_RevocationOrder(t *testing.T) {
 		})
 	}
 }
+
+// TestRenewal_AuthenticationTime pins that no renewal refreshes when the user
+// authenticated: a successor is a record written at the renewal, so its
+// CreatedAt is the renewal time, while its AuthenticatedAt is the sign-in's.
+func TestRenewal_AuthenticationTime(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		rotate func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error)
+		// createdAt is the successor's expected CreatedAt.
+		createdAt time.Time
+	}
+
+	renewedAt := createdAt.Add(6 * time.Hour) // 15:00
+
+	cases := []testCase{
+		{
+			name: "a renewal carries the authentication time over",
+			rotate: func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+				next, _, err := m.RotateWithGrace(ctx, s, 30*time.Second)
+
+				return next, err
+			},
+			createdAt: renewedAt,
+		},
+		{
+			name: "a rotation at second-factor verification carries the authentication time over",
+			rotate: func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+				return m.Rotate(ctx, s)
+			},
+			createdAt: renewedAt,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			// An idle timeout long enough that the session is still live at
+			// the renewal, six hours later.
+			m, store := managerOnClock(t, clk, session.WithIdleTimeout(7*time.Hour))
+			s, err := m.Create(t.Context(), testUser)
+			require.NoError(t, err)
+
+			clk.Advance(renewedAt.Sub(createdAt))
+
+			next, err := tc.rotate(t.Context(), m, s)
+			require.NoError(t, err)
+			assert.Equal(t, createdAt, next.AuthenticatedAt, "the successor keeps the sign-in's authentication time")
+			assert.Equal(t, tc.createdAt, next.CreatedAt)
+
+			stored, err := store.Load(t.Context(), next.ID)
+			require.NoError(t, err)
+			assert.True(t, stored.AuthenticatedAt.Equal(createdAt), "the stored successor keeps it too")
+			assert.True(t, stored.CreatedAt.Equal(tc.createdAt), "the stored successor's CreatedAt is when it was written: got %s", stored.CreatedAt)
+		})
+	}
+}

@@ -71,7 +71,7 @@ func TestManagerRotate(t *testing.T) {
 				assert.Equal(t, old.UserID, got.UserID)
 				assert.Equal(t, old.FirstFactor, got.FirstFactor)
 				assert.Equal(t, old.Data, got.Data)
-				assert.True(t, got.CreatedAt.Equal(old.CreatedAt))
+				assert.True(t, got.AuthenticatedAt.Equal(old.AuthenticatedAt), "the authentication time is carried over")
 				assert.True(t, got.AbsoluteExpiresAt.Equal(old.AbsoluteExpiresAt))
 
 				_, loadErr := m.Load(t.Context(), old.ID)

@@ -113,6 +113,7 @@ func TestStatusForError(t *testing.T) {
 			err:  fmt.Errorf("rotating: %w", session.ErrSessionRenewalConflict),
 			want: 409,
 		},
+		{name: "renewal throttled", err: fmt.Errorf("renewing: %w", httpsec.ErrRenewalThrottled), want: 429},
 		{
 			name: "reused session joined with authentication required",
 			err:  errors.Join(httpsec.ErrAuthenticationRequired, session.ErrSessionReused),
@@ -380,6 +381,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrMalformedRequest":       httpsec.ErrMalformedRequest,
 		"httpsec.ErrMFAMethodNotUsable":     httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":  httpsec.ErrNoMFAChallengePending,
+		"httpsec.ErrRenewalThrottled":       httpsec.ErrRenewalThrottled,
 		"httpsec.ErrRequestTooLarge":        httpsec.ErrRequestTooLarge,
 		"httpsec.ErrSessionRenewalConflict": httpsec.ErrSessionRenewalConflict,
 		"httpsec.ErrUnknownMFAMethod":       httpsec.ErrUnknownMFAMethod,

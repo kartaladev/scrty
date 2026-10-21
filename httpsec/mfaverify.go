@@ -435,13 +435,17 @@ func (i *mfaInterceptor) usable(ctx context.Context, method mfa.Method, s *sessi
 func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	was := *s
 	rollback := func() {
-		s.MFA, s.MFASatisfiedAt = was.MFA, was.MFASatisfiedAt
+		s.MFA, s.MFASatisfiedAt, s.AuthenticatedAt = was.MFA, was.MFASatisfiedAt, was.AuthenticatedAt
 		s.AbsoluteExpiresAt, s.IdleExpiresAt = was.AbsoluteExpiresAt, was.IdleExpiresAt
 		s.EnrolmentOriginDeadline, s.EnrolmentGeneration = was.EnrolmentOriginDeadline, was.EnrolmentGeneration
 	}
 
 	s.MFA = session.MFASatisfied
+	// Satisfying the second factor is an authentication, so it refreshes the
+	// time freshness checks read. The rotation below carries both into the
+	// successor's creating write.
 	s.MFASatisfiedAt = i.now()
+	s.AuthenticatedAt = s.MFASatisfiedAt
 
 	if err := i.sessions.RestoreEnrolmentDeadlines(s); err != nil {
 		rollback()

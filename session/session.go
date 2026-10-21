@@ -115,6 +115,22 @@ type Session struct {
 	// recorded and not something a consumer key can claim.
 	MFASatisfiedAt time.Time
 
+	// AuthenticatedAt is when the user last proved who they are, read from
+	// the manager's clock: the time the authentication occurred, as the
+	// OpenID Connect auth_time claim means it. Manager.Create sets it to
+	// CreatedAt, before the create options run, so a CreateOption may still
+	// set another time; it is refreshed when a second factor is satisfied.
+	// No renewal moves it: RotateWithGrace carries the stored value over,
+	// and Rotate writes the value from the session it is given, which is how
+	// second-factor verification records its refresh. Either way a
+	// successor's CreatedAt is its renewal time while its AuthenticatedAt
+	// stays the sign-in's, unless the caller refreshed it. Every freshness check that asks
+	// how recently the user authenticated reads this field alone, never
+	// CreatedAt. Library-owned: Save keeps the stored value, so changing it
+	// here and saving changes nothing, and a consumer cannot set it through
+	// Data.
+	AuthenticatedAt time.Time
+
 	// MFAAtFirstFactor marks that the second factor was met at the first
 	// factor of the login that created this session, as a user-verified
 	// passkey login does, rather than by answering a challenge afterwards.

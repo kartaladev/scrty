@@ -7,6 +7,16 @@ ALTER TABLE sessions ADD COLUMN family_created_at timestamptz;
 UPDATE sessions SET family_id = id, family_created_at = created_at;
 ALTER TABLE sessions ALTER COLUMN family_id SET NOT NULL;
 ALTER TABLE sessions ALTER COLUMN family_created_at SET NOT NULL;
+-- An insert that names neither column (a writer from before this migration,
+-- during a rolling upgrade) gets a family of its own.
+ALTER TABLE sessions ALTER COLUMN family_id SET DEFAULT gen_random_uuid();
+ALTER TABLE sessions ALTER COLUMN family_created_at SET DEFAULT now();
+-- When the user last proved who they are: the later of the sign-in and the
+-- second factor. Existing rows take it from what they already record.
+ALTER TABLE sessions ADD COLUMN authenticated_at timestamptz;
+UPDATE sessions SET authenticated_at = greatest(created_at, coalesce(mfa_satisfied_at, created_at));
+ALTER TABLE sessions ALTER COLUMN authenticated_at SET NOT NULL;
+ALTER TABLE sessions ALTER COLUMN authenticated_at SET DEFAULT now();
 -- Supersession state of a renewed session; NULL = never superseded.
 ALTER TABLE sessions ADD COLUMN superseded_at timestamptz NULL;
 ALTER TABLE sessions ADD COLUMN accept_until timestamptz NULL;
@@ -22,5 +32,6 @@ ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS first_presented_at;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS successor_digest;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS accept_until;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS superseded_at;
+ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS authenticated_at;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS family_created_at;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS family_id;

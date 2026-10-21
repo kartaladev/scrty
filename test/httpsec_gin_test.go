@@ -2,6 +2,8 @@ package test_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -266,4 +268,44 @@ func TestSessionBearerGin(t *testing.T) {
 			tc.assert(t, f, rec, seen)
 		})
 	}
+}
+
+// referenceUnknownTo is the n-th well-formed session identifier no session
+// answers to.
+func referenceUnknownTo(n int) string {
+	raw := make([]byte, 32)
+	binary.BigEndian.PutUint32(raw, uint32(n)) //nolint:gosec // n is a small non-negative loop index
+
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// TestSessionBearerFloodedSourceGin runs the per-source throttle through the
+// gin integration: a source that presented 100 unknown references is refused
+// even with a live one, and a source that did not is served.
+func TestSessionBearerFloodedSourceGin(t *testing.T) {
+	t.Parallel()
+
+	f := newSessionReferenceFixture(t)
+
+	engine := gin.New()
+	engine.Use(ginsec.Middleware(f.chain))
+	engine.GET("/orders", func(gc *gin.Context) { gc.Status(http.StatusOK) })
+
+	send := func(remote, reference string) int {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+		req.RemoteAddr = remote + ":51000"
+		req.Header.Set("Authorization", "Bearer "+reference)
+
+		rec := httptest.NewRecorder()
+		engine.ServeHTTP(rec, req)
+
+		return rec.Code
+	}
+
+	for i := range 100 {
+		require.Equal(t, http.StatusUnauthorized, send("203.0.113.7", referenceUnknownTo(i)))
+	}
+
+	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
+	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
 }

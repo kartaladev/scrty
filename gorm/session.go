@@ -142,6 +142,8 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		AcceptUntil:      nullTs(sess.AcceptUntil),
 		SuccessorDigest:  digestArg(sess.SuccessorDigest),
 		FirstPresentedAt: nullTs(sess.FirstPresentedAt),
+		// Written on Create only: Save omits the column.
+		AuthenticatedAt: storekit.Time(sess.AuthenticatedAt),
 	}, nil
 }
 
@@ -214,6 +216,7 @@ func insertSession(q *gormdb.DB, op string, row *sessionRow) (bool, error) {
 var savedColumnsOmitted = []string{
 	"id", "id_digest", "mfa_at_first_factor",
 	"family_id", "family_created_at", "superseded_at", "accept_until", "successor_digest", "first_presented_at",
+	"authenticated_at",
 }
 
 // Save replaces the stored session whole, and never inserts: one UPDATE of
@@ -319,6 +322,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		AcceptUntil:             fromNull(row.AcceptUntil),
 		SuccessorDigest:         row.SuccessorDigest,
 		FirstPresentedAt:        fromNull(row.FirstPresentedAt),
+		AuthenticatedAt:         row.AuthenticatedAt.UTC(),
 	}
 	if row.EnrolmentGeneration != nil {
 		sess.EnrolmentGeneration = *row.EnrolmentGeneration

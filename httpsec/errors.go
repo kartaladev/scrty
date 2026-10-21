@@ -67,6 +67,14 @@ var (
 	// identity reaches both. Its text carries no session identifier.
 	ErrSessionRenewalConflict = fmt.Errorf("httpsec: the session was renewed concurrently: %w",
 		session.ErrSessionRenewalConflict)
+
+	// ErrRenewalThrottled refuses a renewal of a session family that has
+	// renewed too often in the window, or whose renewal limiter could not
+	// answer (the endpoint fails closed). Nothing was rotated. It maps to 429,
+	// so the client backs off and retries with the credential it holds.
+	//
+	// Its text names neither the family nor the limiter's failure.
+	ErrRenewalThrottled = errors.New("httpsec: too many renewals of this session family")
 )
 
 // ChallengeError refuses a request that must satisfy a challenge before it

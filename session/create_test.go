@@ -77,6 +77,54 @@ func TestCreateWritesEverythingInOneWrite(t *testing.T) {
 	})
 }
 
+// TestCreate_AuthenticationTime pins that a sign-in records when the user
+// authenticated, and that a consumer's create option may still choose it.
+func TestCreate_AuthenticationTime(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []session.CreateOption
+		assert func(t *testing.T, created, loaded *session.Session)
+	}
+
+	cases := []testCase{
+		{
+			name: "a sign-in records its authentication time",
+			assert: func(t *testing.T, created, loaded *session.Session) {
+				assert.Equal(t, createdAt, created.AuthenticatedAt)
+				assert.True(t, loaded.AuthenticatedAt.Equal(createdAt), "the store holds the authentication time")
+			},
+		},
+		{
+			name: "a consumer create option may set another authentication time",
+			opts: []session.CreateOption{func(s *session.Session) {
+				s.AuthenticatedAt = createdAt.Add(-5 * time.Minute)
+			}},
+			assert: func(t *testing.T, created, loaded *session.Session) {
+				assert.Equal(t, createdAt.Add(-5*time.Minute), created.AuthenticatedAt)
+				assert.True(t, loaded.AuthenticatedAt.Equal(createdAt.Add(-5*time.Minute)))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			m, _ := managerOnClock(t, clk)
+
+			s, err := m.Create(t.Context(), testUser, tc.opts...)
+			require.NoError(t, err)
+
+			loaded, err := m.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			tc.assert(t, s, loaded)
+		})
+	}
+}
+
 func TestCreate_AbsoluteLifetime(t *testing.T) {
 	t.Parallel()
 

@@ -71,6 +71,56 @@ func (h *recoveryHarness) elapse(t *testing.T, s *session.Session, d time.Durati
 	}
 }
 
+// verifySecondFactor satisfies s's pending second factor with code through
+// the TOTP verification endpoint, and returns the session it rotated into.
+func (h *recoveryHarness) verifySecondFactor(t *testing.T, s *session.Session, code string) *session.Session {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost,
+		httpsec.DefaultMFAVerifyPrefix+"/"+h.totp.Name(), strings.NewReader("code="+code))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+mfaTokenFor(s.ID))
+
+	return h.sessionIssued(t, serve(t, h.chain, req))
+}
+
+// renew renews s through the renewal endpoint, and returns its successor.
+func (h *recoveryHarness) renew(t *testing.T, s *session.Session) *session.Session {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+	req.Header.Set("Authorization", "Bearer "+mfaTokenFor(s.ID))
+
+	return h.sessionIssued(t, serve(t, h.chain, req))
+}
+
+// sessionIssued loads the session named by the token a successful response
+// carries, whichever field of the default document carries it.
+func (h *recoveryHarness) sessionIssued(t *testing.T, out served) *session.Session {
+	t.Helper()
+
+	require.NoError(t, out.err)
+	require.Equal(t, http.StatusOK, out.rec.Code)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &doc))
+
+	for _, v := range doc {
+		if tok, ok := v.(string); ok {
+			if sid, found := strings.CutPrefix(tok, mfaTokenPrefix); found {
+				next, err := h.sessions.Load(t.Context(), sid)
+				require.NoError(t, err)
+
+				return next
+			}
+		}
+	}
+
+	require.FailNow(t, "the response carried no token", "body: %s", out.rec.Body.String())
+
+	return nil
+}
+
 // codes sends method to the saved-code path, carrying a bearer token for s
 // when s is not nil.
 func (h *recoveryHarness) codesRequest(t *testing.T, method string, s *session.Session) served {
@@ -179,20 +229,49 @@ func TestRecoveryCodes(t *testing.T) {
 		},
 		{
 			name: "a second factor satisfied at 09:15 is fresh at 09:20",
+			arrange: func(_ *testing.T, h *recoveryHarness) {
+				h.chainOpts = append(h.chainOpts,
+					httpsec.EnableMFA([]mfa.Method{h.totp}, httpsec.WithMFATokens(h.tokens)))
+			},
 			act: func(t *testing.T, h *recoveryHarness) served {
+				h.enrolTOTP(t)
 				s := h.fullSession(t) // 09:00
+				s.MFA = session.MFAPending
+				h.save(t, s)
 				h.elapse(t, s, 15*time.Minute)
 
-				s.MFA = session.MFASatisfied
-				s.MFASatisfiedAt = h.clock.Now() // 09:15
-				h.save(t, s)
-
+				// Satisfied through the verification endpoint, at 09:15 and
+				// the TOTP step totpCode moves on.
+				s = h.verifySecondFactor(t, s, h.totpCode(t))
 				h.elapse(t, s, 5*time.Minute)
 
 				return h.codesRequest(t, http.MethodPost, s) // 09:20
 			},
 			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
 				regenerated(t, h, out, first)
+			},
+		},
+		{
+			name: "regeneration after a renewal still needs reauthentication",
+			arrange: func(_ *testing.T, h *recoveryHarness) {
+				h.chainOpts = append(h.chainOpts, httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{
+					Sessions: h.sessions, Users: h.users, Tokens: h.tokens,
+				}))
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				s := h.fullSession(t) // 09:00
+				h.elapse(t, s, 6*time.Hour)
+
+				s = h.renew(t, s) // 15:00
+				h.elapse(t, s, time.Minute)
+
+				return h.codesRequest(t, http.MethodPost, s) // 15:01
+			},
+			assert: func(t *testing.T, h *recoveryHarness, first string, out served) {
+				require.ErrorIs(t, out.err, recovery.ErrReauthenticationRequired,
+					"a renewal is not an authentication, so the sign-in at 09:00 is stale")
+				assert.False(t, out.handlerRan)
+				setUnchanged(t, h, first)
 			},
 		},
 		{
