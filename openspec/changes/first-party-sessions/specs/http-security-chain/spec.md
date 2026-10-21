@@ -227,3 +227,32 @@ An endpoint that requires a recent authentication SHALL judge it by the session'
 #### Scenario: Recovery codes after a renewal
 - **WHEN** a session signed in at 09:00 is renewed at 15:00, and at 15:01 it asks to regenerate recovery codes under a 15-minute freshness window
 - **THEN** the request is refused as needing reauthentication
+
+### Requirement: Unknown session references are throttled per source
+The session-reference bearer SHALL, by default, refuse a request before any store lookup when its source has recorded too many refused references within the window, and SHALL record a failure for the source whenever it refuses a presented reference: malformed, unknown, expired, reused, or whose user is gone. A policy refusal of a valid session SHALL NOT be recorded. The default SHALL be 100 failures per source per minute, in its own limiter namespace.
+
+#### Scenario: Flood of unknown references
+- **WHEN** one source presents 100 well-formed unknown references within a minute, and then a live one
+- **THEN** the 101st request is refused without a store lookup
+
+#### Scenario: Valid sessions spend nothing
+- **WHEN** one source makes 1,000 requests with a live reference
+- **THEN** none is refused by the guard
+
+### Requirement: The session-reference guard's limiter is replaceable
+A consumer SHALL be able to supply the session-reference bearer's limiter, and a shared limiter factory SHALL build it as it builds every guarded flow's.
+
+#### Scenario: Consumer limiter
+- **WHEN** the consumer gives the session-reference bearer its own limiter
+- **THEN** the bearer's failures are recorded on that limiter
+
+### Requirement: Renewals are throttled per family
+The renewal endpoint SHALL, by default, count every renewal of a family and refuse a renewal with the renewal-throttled error, rotating nothing, when the family has renewed 10 times within 10 minutes. A consumer SHALL be able to supply its own limiter.
+
+#### Scenario: Renewal loop
+- **WHEN** a session's family renews 10 times within 10 minutes, and renews again
+- **THEN** the 11th renewal is refused with the renewal-throttled error, and nothing is rotated
+
+#### Scenario: Another family unaffected
+- **WHEN** one family has reached the limit and another family of the same user renews
+- **THEN** that renewal succeeds

@@ -21,6 +21,7 @@ The library SHALL expose distinguishable public refusal errors for at least thes
 - a passkey registration or removal from a session below the account's assurance or outside the freshness window;
 - a passkey identifier that names no passkey of the session's user;
 - a session renewal that lost a concurrent renewal of the same session;
+- a session renewal refused because its family has renewed too often;
 - a session identifier presented after its supersession window, which SHALL also be identifiable as the session-expired refusal of the session capability.
 
 A refused recovery SHALL be identifiable as the authentication-failed refusal, so it reads to the client like a failed login. A refused passkey ceremony (an invalid, spent or mismatched challenge, a missing ceremony cookie, an unknown credential, a user-handle mismatch or a signature that does not verify) SHALL be identifiable as the authentication-failed refusal without a sentinel of its own. As a second factor it SHALL be the invalid second-factor code refusal.
@@ -84,7 +85,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found | 404 |
 | request too large | 413 |
 | new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
-| account locked, too many sessions | 429 |
+| account locked, too many sessions, session renewal throttled for its family | 429 |
 | held recovery presented before its hold ends | 409 |
 | session renewal that lost a concurrent renewal | 409 |
 | any other error | 500 |
@@ -96,6 +97,10 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Renewal conflict
 - **WHEN** an error wraps the renewal-conflict refusal
 - **THEN** the mapping returns 409
+
+#### Scenario: Renewal throttled
+- **WHEN** an error wraps the renewal-throttled refusal
+- **THEN** the mapping returns 429
 
 #### Scenario: Reused session
 - **WHEN** an error is the reused-session refusal joined with the authentication-required refusal

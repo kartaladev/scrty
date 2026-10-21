@@ -105,6 +105,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `session.ErrSessionSuperseded`: `Store.MarkPresented` on a superseded record writes nothing and returns it;
     - `(*session.Manager).TouchInterval() time.Duration`, beside `IdleTimeout()` and `AbsoluteTimeout()`;
     - `(*policy.IdleTimeoutPolicy).IdleTimeout() time.Duration` and `(*policy.Engine).IdleTimeouts() []time.Duration`, the idle timeouts the engine's policies enforce;
+    - decision 14 (throttling, 2026-10-22): `httpsec.WithSessionBearerLimiter(ratelimit.Limiter) SessionBearerOption` (default: the chain's factory builds `session-reference`, 100 failures per source per minute); `httpsec.WithRenewalLimiter(ratelimit.Limiter) SessionRenewalOption` (default: the factory builds `session-renewal`, 10 renewals per family per 10 minutes, keyed `family:<FamilyID>`); `httpsec.ErrRenewalThrottled`, mapped to 429; a nil limiter is a configuration error for both;
     - removed: the store's family-wide pre-lock and the raise of superseded members' deadlines (`SessionLockFamily`, `SessionExtendSuperseded`, `extendSupersededLocked`).
   - `session.ValidIdentifier(string) bool`: reports whether a string has the exact encoded length and alphabet of a session identifier. It is used by the session-reference bearer to refuse before any lookup.
 - **Verification commands**, run from the repository root unless stated:
@@ -150,13 +151,15 @@ Read the design and the spec deltas your task names before starting it. Plan tas
 | 7 (after C3) | C4 | 7.3–7.5 | `httpsec/renewal.go`, `httpsec/login.go`, `httpsec/logincomplete.go`, and their tests | Sonnet: option plumbing to a stated contract |
 | 8 | main | 8.1–8.2 | — | Opus reviewer for 8.1 |
 | 9a (parallel) | S1 | 9.1, 9.2 | `session/session.go` (field), `session/reuse.go`, `session/manager.go`, `session/memory.go` and `session/encrypted.go` (carry the field), `session/*_test.go` for them, `httpsec/recoverycodes.go` and its test | Opus: an authentication-time rule and rotation races, security-critical |
-| 9b (parallel) | H1 | 9.5 | new `session/interval.go`, `policy/idle.go`, `policy/engine.go`, `httpsec/options.go`, the `EnableSessionRenewal` godoc in `httpsec/renewal.go`, and their tests | Sonnet: a construction check across stated seams |
+| 9b (parallel) | H1 | 9.5 | new `session/interval.go`, `policy/idle.go`, `policy/engine.go`, `httpsec/options.go`, and their tests | Sonnet: a construction check across stated seams |
+| 9b' (parallel) | T1 | 9.9 | `httpsec/sessionbearer.go`, `httpsec/sessionbearer_test.go`, `test/httpsec_gin_test.go`, `test/httpsec_fiber_test.go` | Sonnet: the API-key guard's pattern applied to a second flow |
+| 9b'' (parallel) | T2 | 9.10 | `httpsec/renewal.go`, `httpsec/renewal_test.go`, `httpsec/errors.go`, `httpsec/status.go`, `httpsec/status_test.go`, the `WithTouchInterval` godoc in `session/options.go` (godoc lines only) | Sonnet: a limiter and a status row against a stated contract |
 | 9c (after S1) | D1 | 9.4 | `migrate/securitystate/20261021000000_session_families.sql`, `test/migrate_securitystate_test.go`, `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go`, `test/testutils_postgres_test.go` | Sonnet: column defaults, a new column and its plumbing |
 | 9d (after S1, parallel with D1) | S2 | 9.3 and 9.6, memory side | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/reuse.go`, `session/manager.go`, `httpsec/logout.go` and its tests, every test fixture creating a family-less session, `test/storetest/session_suite.go`, `broken_session_test.go`, `broken_test.go` | Opus: a port change other lanes compile against |
 | 9e (after D1, S2) | D2 | 9.3 and 9.6, durable side | `internal/pgschema/sessions.go`, the three durable session files, `test/storetest/ambient.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go` | Opus: conditional writes and lock order |
 | 9f (after D2) | S3 | 9.7 | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/manager.go`, the four durable files, the suite files | Opus: an atomic store condition replacing a race guard |
 | 9g (after S3) | D3 | 9.8 | `internal/storekit/`, the three durable session files | Opus: a refactor that must keep behaviour |
-| 9h | main | 9.9 | — | Opus reviewer |
+| 9h | main | 9.11 | — | Opus reviewer |
 
 After each dispatch, the main session runs that dispatch's verification commands, and a fresh reviewer checks the diff against the decisions and requirements it covers. The reviewer is Opus for Opus dispatches and Sonnet otherwise. A2 stubs the durable stores' new methods to return `errors.New("not implemented")`, so the workspace compiles while B2 is pending. B2 then owns those files exclusively.
 
@@ -586,7 +589,7 @@ Design: "Pull request review (2026-10-21)", findings 1–3 (finding 1 as decided
 - Test: `session/renewal_test.go`, `session/create_test.go`, `session/rotate_strict_race_test.go`, `httpsec/recoverycodes_test.go`
 
 **Interfaces:**
-- Produces: `Session.AuthenticatedAt`; `DefaultRenewalGrace` (30 s, exported beside `MaxRenewalGrace` if it does not exist; the renewal endpoint's default grace refers to it).
+- Produces: `Session.AuthenticatedAt`; `session.DefaultRenewalGrace` (30 s, exported beside `MaxRenewalGrace` if it does not exist). The renewal endpoint is not touched here: `httpsec/renewal.go` belongs to dispatch T2.
 - Consumes: `RotateWithGrace`, `Rotate`, `Store.Supersede`, `Store.Delete`, the second-factor satisfaction path (find it with gopls: the code that sets `MFASatisfiedAt`).
 
 - [ ] **Step 1 (9.1 red):** add the field and stub it unset. Tests:
@@ -648,8 +651,7 @@ Design finding 6. Spec: `http-security-chain` requirement "A coalescing interval
 
 - [ ] **Step 1 (red):** in `httpsec`, a construction table: manager `WithTouchInterval(10*time.Minute)` and engine `NewIdleTimeoutPolicy(WithIdlePolicyTimeout(5*time.Minute))` → `New` returns an error wrapping `ErrConfig` that names the interval and the idle timeout; with a 15-minute idle timeout it builds; with interval 0 (the default) and a 5-minute idle timeout it builds. Stub the three accessors to return zero values first. Expected: FAIL (the refused case builds).
 - [ ] **Step 2 (green):** implement the accessors and the check: refuse when `interval > 0` and any `idle <= interval`. Godoc on each accessor names what it reports; the `WithTouchInterval` godoc names the new construction rule. Run `go test -race -count=1 ./session/... ./policy/... ./httpsec/...`.
-- [ ] **Step 3 (godoc):** in `httpsec/renewal.go`, add to the `EnableSessionRenewal` godoc: clients sharing one credential across tabs should serialise renewals, because a second renewal inside the window re-rotates and knocks out the successor the first tab already holds, and that tab's next request is then reuse.
-- [ ] **Step 4: commit** `feat(httpsec): refuse a touch interval an idle policy cannot tolerate`.
+- [ ] **Step 3: commit** `feat(httpsec): refuse a touch interval an idle policy cannot tolerate`.
 
 ---
 
@@ -701,7 +703,63 @@ Design finding 10. No behaviour change.
 
 ---
 
-### Task 9.9: Gate for group 9 (main session)
+### Task 9.9: Unknown session references throttled per source
 
-- [ ] Dispatch a fresh Opus reviewer that edits nothing, over the group's commits, against every requirement named in Tasks 9.1–9.8 and the design section "Pull request review (2026-10-21)". Findings go back to a fresh dispatch of the owning lane.
+Design decision 14. Specs: `http-security-chain` requirements "Unknown session references are throttled per source" and "The session-reference guard's limiter is replaceable".
+
+**Files:**
+- Modify: `httpsec/sessionbearer.go` (a `guard sourceGuard` built in the bearer's enable step with `c.resolveSourceGuard("EnableSessionBearer", sessionReferenceFlow, b.limiter, defaultSessionReferenceFailureLimit, defaultSessionReferenceFailureWindow, c.refusalInterval)`; constants `sessionReferenceFlow = "session-reference"`, `defaultSessionReferenceFailureLimit = 100`, `defaultSessionReferenceFailureWindow = time.Minute`; `WithSessionBearerLimiter`)
+- Test: `httpsec/sessionbearer_test.go`; `test/httpsec_gin_test.go`, `test/httpsec_fiber_test.go` (one flooded-source case each)
+
+**Interfaces:**
+- Consumes: `sourceThrottled(ctx, g, clientAddr, flow, sampler, log, now)`, `recordSourceFailure(ctx, g, src)` and `resolveSourceGuard` in `httpsec/throttle.go`, exactly as `httpsec/apikey.go` uses them.
+- Produces: `WithSessionBearerLimiter(l ratelimit.Limiter) SessionBearerOption`.
+
+- [ ] **Step 1 (red):** a `TestSessionBearerThrottle` table on a fake clock, with a mocked `ratelimit.Limiter` where counting matters and the memory limiter where flow matters:
+  - "a flooded source is refused before any lookup": 100 well-formed unknown references from `203.0.113.7`, then a live one; the 101st request is refused with the bearer's refusal, and the mocked session store expects no `Load` for it;
+  - "malformed values count": 100 malformed values from one source, then a live reference, is refused;
+  - "live sessions spend nothing": 1,000 requests with a live reference are all served;
+  - "a policy refusal is not recorded": a valid session the per-request policy denies 200 times leaves the source unthrottled;
+  - "a consumer limiter receives the failures": `WithSessionBearerLimiter(mock)` expects `RecordFailure` once per refused reference with the source key;
+  - "the shared factory builds the flow": a `ratelimit.LimiterFactory` mock expects `NewLimiter("session-reference", 100, time.Minute)`;
+  - "nil limiter": `WithSessionBearerLimiter(nil)` fails `New` with the configuration error.
+  Run `go test -count=1 -run 'TestSessionBearerThrottle' ./httpsec/`. Expected: FAIL (no guard; nothing refused, no factory call).
+- [ ] **Step 2 (green):** add the guard in the order `apikey.go` uses: claim the header, `sourceThrottled` before the format check, `recordSourceFailure` on every refusal of the presented reference (format, load, user reload), never on a policy decision. Godoc on `EnableSessionBearer` and `WithSessionBearerLimiter`: the default, the override, fail-closed on backend outage, and the shared-address limit (configure the client address: gin's and fiber's trusted-proxy settings). Run `go test -race -count=1 ./httpsec/...` and `(cd test && go test -count=1 -run 'SessionBearer' .)`.
+- [ ] **Step 3: commit** `feat(httpsec): throttle unknown session references per source`.
+
+---
+
+### Task 9.10: Renewals throttled per family
+
+Design decision 14. Specs: `http-security-chain` requirement "Renewals are throttled per family"; `http-error-propagation` (renewal throttled → 429).
+
+**Files:**
+- Modify: `httpsec/renewal.go` (a `limiter ratelimit.Limiter` built in the enable step from `c.rateLimiterFactory().NewLimiter(sessionRenewalFlow, defaultRenewalLimit, defaultRenewalWindow)` unless `WithRenewalLimiter` gave one; constants `sessionRenewalFlow = "session-renewal"`, `defaultRenewalLimit = 10`, `defaultRenewalWindow = 10 * time.Minute`; the key `"family:" + s.FamilyID.String()`), `httpsec/errors.go` (`ErrRenewalThrottled`), `httpsec/status.go` (row → 429), `session/options.go` (`WithTouchInterval` godoc only)
+- Test: `httpsec/renewal_test.go`, `httpsec/status_test.go`, `httpsec/errors_test.go`
+
+**Interfaces:**
+- Consumes: `ratelimit.Limiter` (`Exceeded(ctx, key) (bool, error)`, `RecordFailure(ctx, key) error`), the chain's limiter factory.
+- Produces: `WithRenewalLimiter(l ratelimit.Limiter) SessionRenewalOption`, `ErrRenewalThrottled`.
+
+- [ ] **Step 1 (red):** in `renewal_test.go`, a `TestSessionRenewalThrottle` table on a fake clock:
+  - "an eleventh renewal of a family is refused": ten renewals of one family 30 s apart succeed; the eleventh returns an error matching `ErrRenewalThrottled`, the presented session is not superseded, and nothing new is stored;
+  - "another family is unaffected": the same user's second sign-in renews successfully while the first family is at the limit;
+  - "the window slides": after 10 minutes the family renews again;
+  - "retries count but fit": a renewal and two re-rotations inside the grace window, then normal renewals, stay under the limit;
+  - "a limiter outage refuses the renewal": a limiter whose `Exceeded` returns an error refuses with `ErrRenewalThrottled` and rotates nothing (fail closed);
+  - "a consumer limiter is used": `WithRenewalLimiter(mock)` expects `Exceeded` and `RecordFailure` with key `family:<id>`;
+  - "nil limiter": `WithRenewalLimiter(nil)` fails `New` with the configuration error.
+  In `status_test.go`, `ErrRenewalThrottled` → 429, and it is registered among the public refusals. Run `go test -count=1 -run 'TestSessionRenewalThrottle|TestStatusFor' ./httpsec/`. Expected: FAIL.
+- [ ] **Step 2 (green):** in `Intercept`, after the session is known (including the recovery pass-through's `LoadForRenewal` result) and before `RotateWithGrace`: `exceeded, err := r.limiter.Exceeded(ctx, key)`; if `exceeded || err != nil`, return `ErrRenewalThrottled` (log a limiter error at warning, behind fixed text); then `r.limiter.RecordFailure(context.WithoutCancel(ctx), key)` for every attempt that reaches rotation, success or refusal, logging an error at warning. Add the status row. Run `go test -race -count=1 ./httpsec/...`.
+- [ ] **Step 3 (godoc):**
+  - `EnableSessionRenewal`: the per-family limit, its default and override, that it counts renewals rather than failures and is keyed by family so it cannot throttle other users; and the multi-tab advice: clients sharing one credential across tabs should serialise renewals, because a second renewal inside the window re-rotates and knocks out the successor the first tab already holds, and that tab's next request is then reuse.
+  - `WithTouchInterval` (`session/options.go`): recommend an interval, for example one minute, for deployments with busy clients, and restate the bound it costs (idle expiry up to one interval early).
+  Run `go doc ./httpsec EnableSessionRenewal` and `go doc ./session WithTouchInterval`.
+- [ ] **Step 4: commit** `feat(httpsec): throttle renewals per family`.
+
+---
+
+### Task 9.11: Gate for group 9 (main session)
+
+- [ ] Dispatch a fresh Opus reviewer that edits nothing, over the group's commits, against every requirement named in Tasks 9.1–9.10, design decision 14 and the design section "Pull request review (2026-10-21)". Findings go back to a fresh dispatch of the owning lane.
 - [ ] Run `make check` on go1.27.3 or later, and `openspec validate first-party-sessions --strict`. Keep both outputs; push the branch to update the pull request.

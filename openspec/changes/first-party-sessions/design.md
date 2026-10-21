@@ -348,6 +348,21 @@ See `proposal.md` for the motivation. This section covers only the state of the 
     - the second-factor state: expected enrolment-pending, actual none.
   - **Fix.** The test is task 3.1's red step, and decision 2's narrow activity write makes it pass.
 
+### 14. The session-reference bearer and the renewal endpoint are throttled (chosen 2026-10-22)
+
+- **Unknown references, per source.**
+  - The session-reference bearer checks its source before any work and records a failure for every reference it refuses: malformed, unknown, expired, reused, or whose user is gone. A policy refusal of a valid session is not recorded. This is the API-key flow's model, because both are high-entropy credentials checked on every request.
+  - **Default:** on, 100 failures per source per minute, in the `session-reference` namespace, built by the chain's limiter factory. Guessing a 256-bit reference is hopeless at any rate, so the guard bounds store reads rather than guesses, and can be more generous than the API-key guard's 20: legitimate clients present expired references in bursts, for example an office behind one address at the start of a shift.
+  - **Override:** `WithSessionBearerLimiter(l)`; `WithRateLimiterFactory` makes it shared across replicas. Like every guard it fails closed when its backend is unavailable.
+  - **The signed-token bearer is not guarded:** a forged token fails verification without reaching the store, and a guard would add a limiter call to every request in the default mode.
+  - **Trade-off:** see Risks, "A guard on a shared client address throttles everyone behind it".
+- **Renewals, per family.**
+  - The renewal endpoint counts every renewal of a family, successful or not, and refuses one more than the limit with a new `ErrRenewalThrottled` before rotating anything. It answers 429, not the 401 source guards give: the caller holds a valid session, and a 401 would make a well-behaved client discard it.
+  - **Default:** 10 renewals per family per 10 minutes, in the `session-renewal` namespace. A client renewing every few minutes, with a few lost-response retries, stays well inside it; a loop is held to about one row a minute.
+  - **Override:** `WithRenewalLimiter(l)`.
+  - **Departure:** this limiter counts events rather than failures, unlike the source guards. It is keyed by family, never by source, so it cannot be used to throttle other users.
+- **Activity writes.** The `WithTouchInterval` godoc recommends an interval for deployments with busy clients; the default stays a write on every request.
+
 ## Pull request review (2026-10-21)
 
 A code review of the pull request raised ten findings. Each is `UNREPRODUCED` until its first task's test fails; if a test passes instead, the claim is wrong and its decision is withdrawn.
@@ -406,8 +421,8 @@ The review also noted a behaviour the design chose: a second tab renewing the ol
   - Nothing is tagged, so this is recorded and not versioned.
 - **Multi-row deletes outside a family's lock order.** Deletes by user and the expiry sweep still lock rows in scan order, so in principle they can deadlock with a supersession whose id order differs, as the old-record-then-previous-successor order already could before this change. A row a third transaction supersedes after the family pre-lock's snapshot could also be locked later, outside id order. `UNREPRODUCED`: both need a crafted interleaving.
   - Mitigation: PostgreSQL aborts one side with a deadlock error, so the operation fails loudly instead of missing a row, and a reused-session refusal still stands.
-- **The session-reference bearer and the renewal endpoint are not throttled.** A well-formed random reference costs one indexed store read per request, and the source guards count no misses on the bearer path. A holder of a valid session can call the renewal endpoint in a loop, each call a supersession that adds a retained row. `UNREPRODUCED`: this is a capacity limit, not a correctness defect.
-  - Mitigation for now: deploy both behind infrastructure rate limits, and use `WithTouchInterval` to bound activity writes. A follow-up change adds a per-source guard on unknown references (after `trusted-proxy-client-ip`, so the source is the real client) and a minimum interval between renewals of one family.
+- **A guard on a shared client address throttles everyone behind it.** Without trusted-proxy configuration, every client behind a load balancer shares its address, so one source flooding unknown session references throttles every user's session-reference requests for the window. Every built-in guard has this property; for this one the cost is service, not only login.
+  - Mitigation: the godoc of `EnableSessionBearer` and `WithSessionBearerLimiter` tells consumers to resolve the real client address (gin's and fiber's trusted-proxy settings, or `trusted-proxy-client-ip` when it lands) and how to replace the guard.
 - **Opaque mode costs one store read per request.**
   - This is the same as the signed-token bearer, which already loads the session. It is not a regression.
 
