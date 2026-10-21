@@ -75,7 +75,7 @@ See `proposal.md` for the motivation. This section covers only the state of the 
   - It never touches any other field.
 - **Why narrow.**
   - Today the activity interceptor saves the whole record after the handler returns. It writes back the copy the request loaded, so it can overwrite a change another request made to the same session in the meantime. One example is the enrolment-only state's lowered deadlines.
-  - That lost update is a hypothesis (see "Defect claims"). The narrow write removes it either way, and is also the only form in which decision 1's conditional write can be expressed.
+  - That lost update is reproduced (see "Defect claims"). The narrow write removes it, and is also the only form in which decision 1's conditional write can be expressed.
 - **Default:** used by `Touch` whatever the interval.
 - **Override:** a consumer-written store implements the method. There is no option to fall back to a full save: it would reintroduce the race this decision closes.
 - **Alternatives considered:**
@@ -129,6 +129,11 @@ See `proposal.md` for the motivation. This section covers only the state of the 
   - A superseded record keeps its family's absolute deadline, and its idle deadline is set to that absolute deadline. The sweep therefore deletes it only when the family as a whole could no longer be live.
   - Keeping it is what makes a late presentation detectable: a record deleted at the end of its grace window would read as "not found", indistinguishable from a forged identifier.
   - A consumer who emulates grace by shortening the old record's deadline, as a consumer might today, loses exactly that.
+- **Saving a superseded record.** `Save` keeps the six library-only fields as stored and, on a superseded record, both deadlines too. A request that loaded the session before the supersession and saves after it, the normal case for concurrent requests inside the grace window, would otherwise put a short idle deadline back, and the sweep would delete the record before a late presentation could be judged as reuse.
+- **The family identifier.**
+  - **Default:** `id.NewV7Generator` on the manager's clock, like every other library-owned record identifier.
+  - **Override:** `session.WithFamilyIDGenerator(g)`. Nil is a configuration error from `NewManager`. A generator that returns `id.Nil` or an error makes `Create` fail and store nothing, because a nil family could not be revoked. The option is named for the family because session identifiers themselves come from `crypto/rand`, not from an `id.Generator`.
+- **A nil family is refused.** A family revocation naming `id.Nil` is an error and deletes nothing. Sessions written straight to a store with no family would all share the nil identifier, so revoking it would delete unrelated users' sessions.
 - **Existing rows.** A family revocation operation deletes every record of one family. The migration gives existing rows `family_id = id` (their own row id), so every existing session is the sole member of its own family.
 - **No override.** The family and supersession model is how the guarantee is kept, and a store that skipped it could not detect reuse.
 
@@ -302,10 +307,13 @@ See `proposal.md` for the motivation. This section covers only the state of the 
 
 ## Defect claims
 
-- **Stale activity write overwrites a concurrent session change.** `UNREPRODUCED`: no test yet.
+- **Stale activity write overwrites a concurrent session change.** `REPRODUCED` (2026-10-21).
   - **Claim.** Request A loads a session. Request B, on the same session, saves a change to a library-only field: for example, entering the enrolment-only state lowers its absolute deadline. A then finishes, and its activity write saves A's stale copy, restoring the higher deadline.
-  - **First task.** A red test against the memory store that interleaves the two requests deterministically and asserts the lowered deadline survives A's activity write.
-  - **If the test passes on the current code,** the claim is wrong. Decision 2 then rests on decision 1 alone, and this entry is removed.
+  - **Test.** `TestTouch_KeepsAConcurrentlyLoweredDeadline` in `session/touch_race_test.go`, run with `go test -count=1 -run TestTouch_KeepsAConcurrentlyLoweredDeadline ./session/`, against the memory store. It fails on all three fields B changed:
+    - the absolute deadline: expected 09:15, actual 21:00, so A restored the higher deadline;
+    - the enrolment-origin marker: expected 21:00, actual the zero time, so the marker was lost;
+    - the second-factor state: expected enrolment-pending, actual none.
+  - **Fix.** The test is task 3.1's red step, and decision 2's narrow activity write makes it pass.
 
 ## Risks / Trade-offs
 

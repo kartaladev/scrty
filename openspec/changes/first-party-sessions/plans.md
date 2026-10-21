@@ -63,6 +63,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `WithMaxFamilyLifetime(time.Duration) ManagerOption`;
     - `WithUnusedSuccessorRecovery() ManagerOption`;
     - `WithReuseObserver(ReuseObserver) ManagerOption`;
+    - `WithFamilyIDGenerator(id.Generator) ManagerOption` (default `id.NewV7Generator` on the manager clock; nil is a configuration error), added after the review of tasks 2.1–2.5;
     - `WithAbsoluteLifetime(time.Duration) CreateOption`;
     - `(*Manager).RotateWithGrace(ctx, s *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error)`;
     - `WithSuccessorLifetime(time.Duration) RotateOption`;
@@ -425,7 +426,8 @@ DELETE FROM sessions WHERE family_id = $1
 UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL
 ```
 
-  - Add the new columns to `SessionInsert` and `SessionSelect`. `SessionUpdate` stays without them.
+  - Add the new columns to `SessionInsert` and `SessionSelect`. `SessionUpdate` stays without them, and leaves both deadlines unchanged on a row whose `superseded_at` is set (the suite's "save leaves supersession state unchanged" case pins this).
+  - `DeleteFamily` refuses `id.Nil` with an error before running any statement.
   - `Supersede` runs `SupersedeOld`, then `SupersedePrevious` with `ObservedSuccessor` when it is non-nil, then `SessionInsert`, all in one transaction: the attached one if present, otherwise one it opens and commits.
   - If `SupersedeOld` affects zero rows, distinguish a missing record (not-found) from a lost race (renewal conflict) by `SessionExists`.
   - Run `(cd test && go test -count=1 -run 'TestSQLStore.*Session|TestSQLStore.*Race' ./sqlstore/)`, and expect PASS, with the broken variants caught.

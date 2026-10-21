@@ -87,6 +87,7 @@ var portableVariants = []brokenVariant{
 		"a saved session's user reference holding a NUL byte is refused or round-trips, never altered"),
 	sessionVariant(sessionSaveRefusesTextAfterPartialWrite,
 		"a saved session's data holding a NUL byte is refused or round-trips, never altered"),
+	sessionVariant(sessionWholeRecordActivity, "activity write leaves other fields"),
 	{
 		name: "session-" + string(sessionCreateRefusesEchoing),
 		run: func(t *testing.T) {

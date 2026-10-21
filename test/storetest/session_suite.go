@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"testing"
 	"time"
@@ -123,6 +124,49 @@ func idleExpiredSession(sessionID string, user identity.UserID) *session.Session
 	return s
 }
 
+// familySession returns sessionRecord's session as a member of family, which
+// started at the session's creation.
+func familySession(sessionID string, user identity.UserID, family id.ID) *session.Session {
+	s := sessionRecord(sessionID, user)
+	s.FamilyID = family
+	s.FamilyCreatedAt = s.CreatedAt
+	return s
+}
+
+// successorOf returns the session a rotation at at would insert in place of
+// old: a new identifier in old's family, with old's family start and
+// absolute deadline, created and last accessed at at.
+func successorOf(old *session.Session, sessionID string, at time.Time) *session.Session {
+	s := sessionRecord(sessionID, old.UserID)
+	s.FamilyID = old.FamilyID
+	s.FamilyCreatedAt = old.FamilyCreatedAt
+	s.CreatedAt = at
+	s.LastAccessedAt = at
+	s.IdleExpiresAt = at.Add(sessionIdle)
+	s.AbsoluteExpiresAt = old.AbsoluteExpiresAt
+	return s
+}
+
+// sessionDigest is the digest a store records as a superseded session's
+// successor: the SHA-256 of the successor's identifier.
+func sessionDigest(sessionID string) []byte {
+	sum := sha256.Sum256([]byte(sessionID))
+	return sum[:]
+}
+
+// supersededAs returns old as a store must hold it once superseded at now,
+// with its window ending at acceptUntil and successor as its current
+// successor: both deadlines become its absolute deadline, and nothing else
+// changes.
+func supersededAs(old *session.Session, successor string, now, acceptUntil time.Time) *session.Session {
+	s := *old
+	s.SupersededAt = now
+	s.AcceptUntil = acceptUntil
+	s.SuccessorDigest = sessionDigest(successor)
+	s.IdleExpiresAt = old.AbsoluteExpiresAt
+	return &s
+}
+
 // assertSession compares a loaded session with the one stored, field by
 // field. A Data map with no entries, nil or empty, must load as one with no
 // entries.
@@ -150,6 +194,16 @@ func assertSession(t *testing.T, want, got *session.Session) {
 		assert.Equal(t, want.FederatedAMR, got.FederatedAMR, "the asserted amr must round-trip in order")
 	}
 	assert.Equal(t, want.FederatedACR, got.FederatedACR, "the asserted acr must round-trip unchanged")
+	assert.Equal(t, want.FamilyID, got.FamilyID, "FamilyID")
+	assertTimeEqual(t, want.FamilyCreatedAt, got.FamilyCreatedAt, "FamilyCreatedAt")
+	assertTimeEqual(t, want.SupersededAt, got.SupersededAt, "SupersededAt")
+	assertTimeEqual(t, want.AcceptUntil, got.AcceptUntil, "AcceptUntil")
+	assertTimeEqual(t, want.FirstPresentedAt, got.FirstPresentedAt, "FirstPresentedAt")
+	if len(want.SuccessorDigest) == 0 {
+		assert.Empty(t, got.SuccessorDigest, "a session never superseded must load with no successor")
+	} else {
+		assert.Equal(t, want.SuccessorDigest, got.SuccessorDigest, "SuccessorDigest")
+	}
 	assert.Equal(t, want.ExternalProvider, got.ExternalProvider)
 	assert.Equal(t, want.ExternalIssuer, got.ExternalIssuer)
 	assert.Equal(t, want.ExternalSessionID, got.ExternalSessionID)
@@ -1004,5 +1058,409 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 		},
 	}
 
+	cases = append(cases, sessionActivityCases()...)
+	cases = append(cases, sessionFamilyCases()...)
+
 	runSuite(t, cases, newStore)
+}
+
+// sessionActivityCases are the cases of the narrow activity write.
+func sessionActivityCases() []suiteCase[session.Store] {
+	return []suiteCase[session.Store]{
+		{
+			name: "activity write leaves a fresher record unchanged",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				fresh := sessionRecord("sess-a", "u-1")
+				fresh.LastAccessedAt = suiteStart.Add(19*time.Minute + 30*time.Second)
+				require.NoError(t, s.Create(ctx, fresh))
+
+				require.NoError(t, s.RecordActivity(ctx, "sess-a",
+					suiteStart.Add(20*time.Minute), suiteStart.Add(50*time.Minute), suiteStart.Add(19*time.Minute)))
+				assertSessionsLoad(ctx, t, s, fresh)
+
+				// A record last accessed exactly at the threshold is not older
+				// than it.
+				require.NoError(t, s.RecordActivity(ctx, "sess-a",
+					suiteStart.Add(20*time.Minute), suiteStart.Add(50*time.Minute), fresh.LastAccessedAt))
+				assertSessionsLoad(ctx, t, s, fresh)
+			},
+		},
+		{
+			name: "activity write leaves other fields",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, sessionRecord("sess-a", "u-1")))
+
+				first, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				second, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				second.Data = map[string]string{"tenant": "changed by another request"}
+				second.PasswordChangePending = false
+				require.NoError(t, s.Save(ctx, second))
+
+				lastAccessed, idle := first.LastAccessedAt.Add(4*time.Minute), first.IdleExpiresAt.Add(4*time.Minute)
+				require.NoError(t, s.RecordActivity(ctx, first.ID, lastAccessed, idle, lastAccessed.Add(-time.Minute)))
+
+				want := *second
+				want.LastAccessedAt, want.IdleExpiresAt = lastAccessed, idle
+				assertSessionsLoad(ctx, t, s, &want)
+			},
+		},
+		{
+			name: "activity write on a deleted session is not found and inserts nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, sessionRecord("sess-a", "u-1")))
+				require.NoError(t, s.Delete(ctx, "sess-a"))
+
+				for _, sessionID := range []string{"sess-a", "sess-never"} {
+					err := s.RecordActivity(ctx, sessionID,
+						suiteStart.Add(5*time.Minute), suiteStart.Add(35*time.Minute), suiteStart.Add(4*time.Minute))
+					require.ErrorIs(t, err, session.ErrSessionNotFound, "session %s", sessionID)
+				}
+				assertSessionsGone(ctx, t, s, "sess-a", "sess-never")
+			},
+		},
+		{
+			name: "activity write on a superseded session changes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-b", suiteStart)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(time.Minute), Successor: successor, Now: suiteStart,
+				}))
+				superseded := supersededAs(old, successor.ID, suiteStart, suiteStart.Add(time.Minute))
+
+				// The stored last access, 10:01, is older than the threshold, so
+				// only the supersession can leave the record unchanged.
+				require.NoError(t, s.RecordActivity(ctx, old.ID,
+					suiteStart.Add(5*time.Minute), suiteStart.Add(35*time.Minute), suiteStart.Add(5*time.Minute)))
+
+				assertSessionsLoad(ctx, t, s, superseded)
+			},
+		},
+	}
+}
+
+// sessionFamilyCases are the cases of supersession, family revocation and
+// first presentation.
+func sessionFamilyCases() []suiteCase[session.Store] {
+	// rotate supersedes old by a successor named successorID at at, with a
+	// thirty-second window, having observed observed, and returns the
+	// successor.
+	rotate := func(ctx context.Context, t *testing.T, s session.Store,
+		old *session.Session, successorID string, observed []byte, at time.Time,
+	) *session.Session {
+		t.Helper()
+
+		successor := successorOf(old, successorID, at)
+		require.NoError(t, s.Supersede(ctx, session.Supersession{
+			Old: old.ID, ObservedSuccessor: observed, AcceptUntil: at.Add(30 * time.Second),
+			Successor: successor, Now: at,
+		}))
+		return successor
+	}
+
+	return []suiteCase[session.Store]{
+		{
+			name: "successor stored in the family with its start time",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.FamilyCreatedAt = suiteStart.Add(-time.Hour)
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(5 * time.Minute)
+
+				successor := rotate(ctx, t, s, old, "sess-b", nil, at)
+
+				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
+				got, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, old.FamilyID, got.FamilyID, "the successor is in the old session's family")
+				assertTimeEqual(t, old.FamilyCreatedAt, got.FamilyCreatedAt, "the successor's FamilyCreatedAt")
+			},
+		},
+		{
+			name: "stale observation is refused and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+
+				late := successorOf(old, "sess-c", suiteStart.Add(time.Minute))
+				for _, observed := range [][]byte{nil, sessionDigest("sess-other")} {
+					err := s.Supersede(ctx, session.Supersession{
+						Old: old.ID, ObservedSuccessor: observed, AcceptUntil: suiteStart.Add(2 * time.Minute),
+						Successor: late, Now: suiteStart.Add(time.Minute),
+					})
+					require.ErrorIs(t, err, session.ErrSessionRenewalConflict, "observed %x", observed)
+				}
+
+				assertSessionsGone(ctx, t, s, late.ID)
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, first.ID, suiteStart, suiteStart.Add(30*time.Second)), first)
+			},
+		},
+		{
+			name: "re-rotation supersedes the previous successor with a window that has ended",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				again := suiteStart.Add(10 * time.Second)
+
+				second := rotate(ctx, t, s, old, "sess-c", sessionDigest(first.ID), again)
+
+				previous := *first
+				previous.SupersededAt, previous.AcceptUntil = again, again
+				previous.IdleExpiresAt = first.AbsoluteExpiresAt
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, second.ID, again, again.Add(30*time.Second)), &previous, second)
+			},
+		},
+		{
+			name: "re-rotation succeeds after the previous successor was deleted",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				require.NoError(t, s.Delete(ctx, first.ID))
+				again := suiteStart.Add(10 * time.Second)
+
+				second := rotate(ctx, t, s, old, "sess-c", sessionDigest(first.ID), again)
+
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, second.ID, again, again.Add(30*time.Second)), second)
+				assertSessionsGone(ctx, t, s, first.ID)
+			},
+		},
+		{
+			name: "load returns a superseded record past its window",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				successor := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+
+				// Past the window, and past the idle deadline the session held
+				// before it was superseded.
+				clk.Advance(2 * time.Hour)
+
+				got, err := s.Load(ctx, old.ID)
+				require.NoError(t, err, "a superseded session is returned until its absolute deadline")
+				assertSession(t, supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second)), got)
+			},
+		},
+		{
+			name: "sweep keeps a superseded record until the family's absolute deadline",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-b", suiteStart)
+				successor.IdleExpiresAt = old.AbsoluteExpiresAt
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), Successor: successor, Now: suiteStart,
+				}))
+
+				clk.Advance(2 * time.Hour)
+				n, err := s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Zero(t, n, "nothing of the family is expired before its absolute deadline")
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second)), successor)
+
+				clk.Advance(old.AbsoluteExpiresAt.Sub(clk.Now()))
+				n, err = s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Equal(t, 2, n, "the family is swept at its absolute deadline")
+			},
+		},
+		{
+			name: "family delete counts one family",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				other := familySession("sess-z", "u-1", suiteID(2))
+				createSessions(ctx, t, s, old, other)
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				second := rotate(ctx, t, s, old, "sess-c", sessionDigest(first.ID), suiteStart.Add(time.Second))
+
+				n, err := s.DeleteFamily(ctx, suiteID(1))
+				require.NoError(t, err)
+
+				assert.Equal(t, 3, n, "the superseded session and both successors")
+				assertSessionsGone(ctx, t, s, old.ID, first.ID, second.ID)
+				assertSessionsLoad(ctx, t, s, other)
+
+				n, err = s.DeleteFamily(ctx, suiteID(3))
+				require.NoError(t, err)
+				assert.Zero(t, n, "a family with no sessions removes nothing")
+			},
+		},
+		{
+			name: "family delete removes expired members",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				expired := familySession("sess-a", "u-1", suiteID(1))
+				expired.IdleExpiresAt = suiteStart.Add(time.Minute)
+				createSessions(ctx, t, s, expired, familySession("sess-b", "u-1", suiteID(1)))
+				clk.Advance(2 * time.Minute)
+
+				n, err := s.DeleteFamily(ctx, suiteID(1))
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n)
+				clk.Advance(suiteStart.Sub(clk.Now()))
+				assertSessionsGone(ctx, t, s, "sess-a", "sess-b")
+			},
+		},
+		{
+			name: "first presentation keeps the first time",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, sess))
+
+				require.NoError(t, s.MarkPresented(ctx, sess.ID, suiteStart))
+				require.NoError(t, s.MarkPresented(ctx, sess.ID, suiteStart.Add(5*time.Minute)))
+
+				want := *sess
+				want.FirstPresentedAt = suiteStart
+				assertSessionsLoad(ctx, t, s, &want)
+			},
+		},
+		{
+			name: "first presentation of a missing session is not found and inserts nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				require.ErrorIs(t, s.MarkPresented(ctx, "sess-never", suiteStart), session.ErrSessionNotFound)
+				assertSessionsGone(ctx, t, s, "sess-never")
+			},
+		},
+		{
+			name: "family and supersession values round-trip at microsecond precision",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.FamilyCreatedAt = preciseStart.Add(-time.Hour)
+				require.NoError(t, s.Create(ctx, old))
+				at := preciseStart.Add(time.Minute)
+				successor := successorOf(old, "sess-b", at)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), Successor: successor, Now: at,
+				}))
+				presented := preciseStart.Add(2 * time.Minute)
+				require.NoError(t, s.MarkPresented(ctx, successor.ID, presented))
+
+				gotOld, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.Equal(t, old.FamilyID, gotOld.FamilyID)
+				assertTimeMicro(t, old.FamilyCreatedAt, gotOld.FamilyCreatedAt, "old FamilyCreatedAt")
+				assertTimeMicro(t, at, gotOld.SupersededAt, "old SupersededAt")
+				assertTimeMicro(t, at.Add(30*time.Second), gotOld.AcceptUntil, "old AcceptUntil")
+				assert.Equal(t, sessionDigest(successor.ID), gotOld.SuccessorDigest, "old SuccessorDigest")
+				assert.True(t, gotOld.FirstPresentedAt.IsZero(), "a session never presented reports none")
+
+				gotNew, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, old.FamilyID, gotNew.FamilyID)
+				assertTimeMicro(t, old.FamilyCreatedAt, gotNew.FamilyCreatedAt, "successor FamilyCreatedAt")
+				assertTimeMicro(t, presented, gotNew.FirstPresentedAt, "successor FirstPresentedAt")
+				assert.True(t, gotNew.SupersededAt.IsZero(), "a session never superseded reports no supersession")
+				assert.True(t, gotNew.AcceptUntil.IsZero(), "a session never superseded reports no window")
+				assert.Empty(t, gotNew.SuccessorDigest, "a session never superseded reports no successor")
+			},
+		},
+		{
+			// Save keeps the family, supersession and presentation state
+			// whatever the saved copy says: a copy loaded before the
+			// supersession, saved after it, must not undo it.
+			name: "save leaves supersession state unchanged",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				require.NoError(t, s.MarkPresented(ctx, old.ID, suiteStart))
+				stale, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				successor := rotate(ctx, t, s, old, "sess-b", nil, suiteStart.Add(time.Minute))
+
+				loaded, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				want := *loaded
+				loaded.Data = map[string]string{"tenant": "saved after supersession"}
+				require.NoError(t, s.Save(ctx, loaded))
+				want.Data = loaded.Data
+				assertSessionsLoad(ctx, t, s, &want)
+
+				stale.Data = map[string]string{"tenant": "saved from before"}
+				stale.FamilyID = suiteID(9)
+				stale.FamilyCreatedAt = time.Time{}
+				stale.FirstPresentedAt = time.Time{}
+				stale.IdleExpiresAt = suiteStart.Add(5 * time.Minute)
+				stale.AbsoluteExpiresAt = suiteStart.Add(time.Hour)
+				require.NoError(t, s.Save(ctx, stale))
+				got, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assertTimeEqual(t, old.AbsoluteExpiresAt, got.IdleExpiresAt, "IdleExpiresAt of a superseded record after a save")
+				assertTimeEqual(t, old.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "AbsoluteExpiresAt of a superseded record after a save")
+				assert.Equal(t, old.FamilyID, got.FamilyID, "a save must not move the family")
+				assertTimeEqual(t, old.FamilyCreatedAt, got.FamilyCreatedAt, "FamilyCreatedAt after a save")
+				assertTimeEqual(t, suiteStart, got.FirstPresentedAt, "FirstPresentedAt after a save")
+				assertTimeEqual(t, suiteStart.Add(time.Minute), got.SupersededAt, "SupersededAt after a save")
+				assertTimeEqual(t, suiteStart.Add(time.Minute+30*time.Second), got.AcceptUntil,
+					"AcceptUntil after a save")
+				assert.Equal(t, sessionDigest(successor.ID), got.SuccessorDigest, "SuccessorDigest after a save")
+			},
+		},
+		{
+			// The previous successor a re-rotation supersedes is a superseded
+			// record too, and a copy loaded before it keeps its deadlines.
+			name: "save keeps the deadlines of a successor superseded by a re-rotation",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				stale, err := s.Load(ctx, first.ID)
+				require.NoError(t, err)
+				rotate(ctx, t, s, old, "sess-c", sessionDigest(first.ID), suiteStart.Add(10*time.Second))
+
+				stale.IdleExpiresAt = suiteStart.Add(5 * time.Minute)
+				stale.AbsoluteExpiresAt = suiteStart.Add(time.Hour)
+				require.NoError(t, s.Save(ctx, stale))
+
+				got, err := s.Load(ctx, first.ID)
+				require.NoError(t, err)
+				assertTimeEqual(t, first.AbsoluteExpiresAt, got.IdleExpiresAt, "IdleExpiresAt after a stale save")
+				assertTimeEqual(t, first.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "AbsoluteExpiresAt after a stale save")
+				assertTimeEqual(t, suiteStart.Add(10*time.Second), got.SupersededAt, "SupersededAt after a stale save")
+			},
+		},
+		{
+			name: "family delete of the nil family is refused and deletes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				a, b := sessionRecord("sess-a", "u-1"), sessionRecord("sess-b", "u-2")
+				createSessions(ctx, t, s, a, b)
+
+				n, err := s.DeleteFamily(ctx, id.Nil)
+
+				require.Error(t, err, "the nil family names no family, and must not match sessions created without one")
+				assert.Zero(t, n)
+				assertSessionsLoad(ctx, t, s, a, b)
+			},
+		},
+		{
+			name: "supersede after family revocation is not found and inserts nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				observed, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				n, err := s.DeleteFamily(ctx, old.FamilyID)
+				require.NoError(t, err)
+				require.Equal(t, 1, n)
+
+				successor := successorOf(old, "sess-b", suiteStart)
+				err = s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: observed.SuccessorDigest,
+					AcceptUntil: suiteStart.Add(30 * time.Second), Successor: successor, Now: suiteStart,
+				})
+
+				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				assertSessionsGone(ctx, t, s, old.ID, successor.ID)
+			},
+		},
+	}
 }

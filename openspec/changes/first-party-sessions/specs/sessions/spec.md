@@ -150,6 +150,17 @@ Every session SHALL belong to a family, identified by a library-generated, non-s
 - **THEN** loading either identifier returns the not-found error
 - **AND** the user's sessions in other families are unaffected
 
+### Requirement: Family identifiers come from a replaceable generator
+By default a family identifier SHALL come from the library's time-ordered identifier generator on the manager's clock. A consumer MAY supply its own generator. Supplying a nil generator SHALL be a configuration error at construction.
+
+#### Scenario: Consumer family identifier generator
+- **WHEN** the manager is configured with a consumer generator, and a session is created
+- **THEN** the session's family identifier is the one that generator returned
+
+#### Scenario: Nil family identifier generator
+- **WHEN** the manager is configured with a nil family identifier generator
+- **THEN** construction fails with a configuration error
+
 ### Requirement: Rotation with a grace window keeps the old identifier usable until the window ends
 The manager SHALL rotate a session with a grace window: it SHALL create a successor in the same family and mark the old session superseded, usable until the earlier of now plus the grace and its absolute deadline. Until then, loading the old identifier SHALL succeed. A grace that is negative or longer than 5 minutes SHALL be refused with a configuration error. Rotation without a grace window SHALL keep deleting the old identifier at once.
 

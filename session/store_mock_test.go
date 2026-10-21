@@ -12,8 +12,10 @@ package session_test
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	identity "github.com/kartaladev/scrty/identity"
+	id "github.com/kartaladev/scrty/pkg/id"
 	session "github.com/kartaladev/scrty/session"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -120,17 +122,17 @@ func (c *MockStoreCreateCall) DoAndReturn(f func(context.Context, *session.Sessi
 }
 
 // Delete mocks base method.
-func (m *MockStore) Delete(ctx context.Context, id string) error {
+func (m *MockStore) Delete(ctx context.Context, arg1 string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Delete", ctx, id)
+	ret := m.ctrl.Call(m, "Delete", ctx, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Delete indicates an expected call of Delete.
-func (mr *MockStoreMockRecorder) Delete(ctx, id any) *MockStoreDeleteCall {
+func (mr *MockStoreMockRecorder) Delete(ctx, arg1 any) *MockStoreDeleteCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockStore)(nil).Delete), ctx, id)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Delete", reflect.TypeOf((*MockStore)(nil).Delete), ctx, arg1)
 	return &MockStoreDeleteCall{Call: call}
 }
 
@@ -351,19 +353,58 @@ func (c *MockStoreDeleteExpiredCall) DoAndReturn(f func(context.Context) (int, e
 	return c
 }
 
-// Load mocks base method.
-func (m *MockStore) Load(ctx context.Context, id string) (*session.Session, error) {
+// DeleteFamily mocks base method.
+func (m *MockStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Load", ctx, id)
+	ret := m.ctrl.Call(m, "DeleteFamily", ctx, family)
+	ret0, _ := ret[0].(int)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteFamily indicates an expected call of DeleteFamily.
+func (mr *MockStoreMockRecorder) DeleteFamily(ctx, family any) *MockStoreDeleteFamilyCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteFamily", reflect.TypeOf((*MockStore)(nil).DeleteFamily), ctx, family)
+	return &MockStoreDeleteFamilyCall{Call: call}
+}
+
+// MockStoreDeleteFamilyCall wrap *gomock.Call
+type MockStoreDeleteFamilyCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreDeleteFamilyCall) Return(arg0 int, arg1 error) *MockStoreDeleteFamilyCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreDeleteFamilyCall) Do(f func(context.Context, id.ID) (int, error)) *MockStoreDeleteFamilyCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreDeleteFamilyCall) DoAndReturn(f func(context.Context, id.ID) (int, error)) *MockStoreDeleteFamilyCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// Load mocks base method.
+func (m *MockStore) Load(ctx context.Context, arg1 string) (*session.Session, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Load", ctx, arg1)
 	ret0, _ := ret[0].(*session.Session)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Load indicates an expected call of Load.
-func (mr *MockStoreMockRecorder) Load(ctx, id any) *MockStoreLoadCall {
+func (mr *MockStoreMockRecorder) Load(ctx, arg1 any) *MockStoreLoadCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Load", reflect.TypeOf((*MockStore)(nil).Load), ctx, id)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Load", reflect.TypeOf((*MockStore)(nil).Load), ctx, arg1)
 	return &MockStoreLoadCall{Call: call}
 }
 
@@ -386,6 +427,82 @@ func (c *MockStoreLoadCall) Do(f func(context.Context, string) (*session.Session
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockStoreLoadCall) DoAndReturn(f func(context.Context, string) (*session.Session, error)) *MockStoreLoadCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// MarkPresented mocks base method.
+func (m *MockStore) MarkPresented(ctx context.Context, arg1 string, at time.Time) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkPresented", ctx, arg1, at)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkPresented indicates an expected call of MarkPresented.
+func (mr *MockStoreMockRecorder) MarkPresented(ctx, arg1, at any) *MockStoreMarkPresentedCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkPresented", reflect.TypeOf((*MockStore)(nil).MarkPresented), ctx, arg1, at)
+	return &MockStoreMarkPresentedCall{Call: call}
+}
+
+// MockStoreMarkPresentedCall wrap *gomock.Call
+type MockStoreMarkPresentedCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreMarkPresentedCall) Return(arg0 error) *MockStoreMarkPresentedCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreMarkPresentedCall) Do(f func(context.Context, string, time.Time) error) *MockStoreMarkPresentedCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreMarkPresentedCall) DoAndReturn(f func(context.Context, string, time.Time) error) *MockStoreMarkPresentedCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// RecordActivity mocks base method.
+func (m *MockStore) RecordActivity(ctx context.Context, arg1 string, lastAccessed, idleExpires, olderThan time.Time) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RecordActivity", ctx, arg1, lastAccessed, idleExpires, olderThan)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RecordActivity indicates an expected call of RecordActivity.
+func (mr *MockStoreMockRecorder) RecordActivity(ctx, arg1, lastAccessed, idleExpires, olderThan any) *MockStoreRecordActivityCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RecordActivity", reflect.TypeOf((*MockStore)(nil).RecordActivity), ctx, arg1, lastAccessed, idleExpires, olderThan)
+	return &MockStoreRecordActivityCall{Call: call}
+}
+
+// MockStoreRecordActivityCall wrap *gomock.Call
+type MockStoreRecordActivityCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreRecordActivityCall) Return(arg0 error) *MockStoreRecordActivityCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreRecordActivityCall) Do(f func(context.Context, string, time.Time, time.Time, time.Time) error) *MockStoreRecordActivityCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreRecordActivityCall) DoAndReturn(f func(context.Context, string, time.Time, time.Time, time.Time) error) *MockStoreRecordActivityCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -424,6 +541,44 @@ func (c *MockStoreSaveCall) Do(f func(context.Context, *session.Session) error) 
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
 func (c *MockStoreSaveCall) DoAndReturn(f func(context.Context, *session.Session) error) *MockStoreSaveCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
+// Supersede mocks base method.
+func (m *MockStore) Supersede(ctx context.Context, op session.Supersession) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Supersede", ctx, op)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Supersede indicates an expected call of Supersede.
+func (mr *MockStoreMockRecorder) Supersede(ctx, op any) *MockStoreSupersedeCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Supersede", reflect.TypeOf((*MockStore)(nil).Supersede), ctx, op)
+	return &MockStoreSupersedeCall{Call: call}
+}
+
+// MockStoreSupersedeCall wrap *gomock.Call
+type MockStoreSupersedeCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreSupersedeCall) Return(arg0 error) *MockStoreSupersedeCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreSupersedeCall) Do(f func(context.Context, session.Supersession) error) *MockStoreSupersedeCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreSupersedeCall) DoAndReturn(f func(context.Context, session.Supersession) error) *MockStoreSupersedeCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

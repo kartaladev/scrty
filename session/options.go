@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // ErrConfig is wrapped by every error NewManager and NewEncryptedStore return
@@ -84,6 +85,23 @@ func WithAbsoluteTimeout(d time.Duration) ManagerOption {
 // back to the wall clock would make a test whose clock never advances look
 // like one that does.
 func WithClock(clk clock.Clock) ManagerOption { return func(m *Manager) { m.clock = clk } }
+
+// WithFamilyIDGenerator replaces the generator of the family identifier each
+// Create starts. The default is id.NewV7Generator on the manager's clock (see
+// WithClock), whichever order the two options are given in.
+//
+// A family identifier is not a secret: it groups the sessions one sign-in
+// goes on to issue, and needs uniqueness, not the entropy a session
+// identifier draws from WithRandom. A consumer replaces it to mint
+// identifiers their own records can be correlated with. A generator should
+// not return id.Nil, which names no family. A nil generator, typed nil
+// included, is a configuration error.
+func WithFamilyIDGenerator(g id.Generator) ManagerOption {
+	return func(m *Manager) {
+		m.families = g
+		m.familiesSupplied = true
+	}
+}
 
 // WithSessionLogger replaces the logger. The default is slog.Default().
 //

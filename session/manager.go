@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // Manager mints sessions, holds them in a Store and enforces their two
@@ -43,6 +44,16 @@ type Manager struct {
 	clock           clock.Clock
 	logger          *slog.Logger
 	random          io.Reader
+
+	// families generates the family identifier every Create starts. It is the
+	// pkg/id default generator on the manager's clock: a family identifier is
+	// not a secret, so it needs ordering and uniqueness, not the entropy a
+	// session identifier draws from random.
+	families id.Generator
+
+	// familiesSupplied records that WithFamilyIDGenerator was given, so a nil
+	// generator is told apart from the default.
+	familiesSupplied bool
 
 	// storeSupplied records that WithStore replaced the default, so the
 	// per-process warning below is written only where it is true.
@@ -161,6 +172,13 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
 	}
 
+	if m.familiesSupplied && nilcheck.IsNil(m.families) {
+		return nil, fmt.Errorf("%w: family identifier generator must not be nil", ErrConfig)
+	}
+	if !m.familiesSupplied {
+		m.families = id.NewV7Generator(id.WithClock(m.clock))
+	}
+
 	if !m.storeSupplied {
 		// The default store judges expiry itself, so it reads the manager's
 		// clock: otherwise a manager on a fake or shifted clock would sweep
@@ -194,7 +212,8 @@ func (m *Manager) newIdentifier() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-// Create mints a session for user and stores it.
+// Create mints a session for user and stores it. The session starts a family
+// of its own: a new FamilyID, with FamilyCreatedAt its creation time.
 //
 // Every create option is applied before the one store write, so a crash cannot
 // leave a live session that has forgotten which factor established it or which
@@ -206,6 +225,11 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 		return nil, err
 	}
 
+	family, err := m.families.NewID()
+	if err != nil {
+		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
+	}
+
 	now := m.clock.Now()
 	s := &Session{
 		ID:                id,
@@ -214,6 +238,8 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 		LastAccessedAt:    now,
 		IdleExpiresAt:     now.Add(m.idleTimeout),
 		AbsoluteExpiresAt: now.Add(m.absoluteTimeout),
+		FamilyID:          family,
+		FamilyCreatedAt:   now,
 	}
 	for _, opt := range opts {
 		if opt != nil {

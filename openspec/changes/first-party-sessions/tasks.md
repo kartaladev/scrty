@@ -4,25 +4,25 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
 
 ## 1. Reproduce the stale activity write (design: Defect claims)
 
-- [ ] 1.1 Red: in `session`, add a test against the memory store in which request A loads a session, request B marks the same session enrolment-pending (lowering its absolute deadline) and saves it, and A then calls `Touch`. Assert the stored session keeps B's lowered deadline and enrolment-origin marker. Run it and record the output. If it fails on the restored deadline, the claim is `REPRODUCED`: keep the test as the red step for 3.1. If it passes, the claim is wrong: report it, so the main session removes the "Defect claims" entry and decision 2's lost-update motivation before group 3 starts.
+- [x] 1.1 Red: in `session`, add a test against the memory store in which request A loads a session, request B marks the same session enrolment-pending (lowering its absolute deadline) and saves it, and A then calls `Touch`. Assert the stored session keeps B's lowered deadline and enrolment-origin marker. Run it and record the output. If it fails on the restored deadline, the claim is `REPRODUCED`: keep the test as the red step for 3.1. If it passes, the claim is wrong: report it, so the main session removes the "Defect claims" entry and decision 2's lost-update motivation before group 3 starts.
 
 ## 2. Session model, store port and memory store (decisions 2, 5, 7; sessions and security-state-stores requirements)
 
-- [ ] 2.1 Red: extend `test/storetest/session_suite.go` with the activity-write cases:
+- [x] 2.1 Red: extend `test/storetest/session_suite.go` with the activity-write cases:
   - a fresher record is left unchanged without error;
   - other fields survive;
   - a missing record is not-found and is never inserted;
   - a superseded record is left unchanged.
   Add a broken memory-store variant whose activity write saves the whole record. Verify the new cases fail against the memory store because the port method is a stub that returns an error, not because of a compile error.
-- [ ] 2.2 Add the library-only session fields (family identifier, family start, supersession time, window end, successor digest, first presentation). Add the store port methods: the narrow activity write, supersession, family revocation, first-presentation recording. Implement them in the memory store and delegate them in the encrypted store wrapper. Regenerate the `session.Store` mock per `use-mockgen`. `Create` starts a family. Verify 2.1 passes, `make generate-check` is clean, the broken variant is caught by the other-fields case, and `go test ./session/...` passes.
-- [ ] 2.3 Red: add suite cases for supersession:
+- [x] 2.2 Add the library-only session fields (family identifier, family start, supersession time, window end, successor digest, first presentation). Add the store port methods: the narrow activity write, supersession, family revocation, first-presentation recording. Implement them in the memory store and delegate them in the encrypted store wrapper. Regenerate the `session.Store` mock per `use-mockgen`. `Create` starts a family. Verify 2.1 passes, `make generate-check` is clean, the broken variant is caught by the other-fields case, and `go test ./session/...` passes.
+- [x] 2.3 Red: add suite cases for supersession:
   - a stale observation is refused with the renewal-conflict error and nothing is written;
   - the successor is stored in the family with its start time;
   - load returns a superseded record past its window;
   - the sweep keeps a superseded record until the family's absolute deadline.
   Add cases for family revocation (it counts exactly one family) and first presentation (the first time is kept), plus the round trip of every new value and "save leaves them unchanged". Add a case that a supersession attempted after its family was revoked is not-found and inserts nothing. Verify each fails against the memory store for the stated reason, then implement until the memory runner (`test/storetest/memory_test.go`) passes.
-- [ ] 2.4 Red: add the session supersession race to the race suite (8 racers × 50 sessions, exactly one successor each, the rest renewal-conflict), with its read-then-write broken variant. Verify against the memory store that the broken variant is caught and the real store passes.
-- [ ] 2.5 Document the new port methods' contracts in `session/store.go` godoc: superseded records are returned by `Load`, the activity write never inserts, and what supersession is conditional on. Verify `go doc ./session Store` shows them and `go vet ./...` is clean.
+- [x] 2.4 Red: add the session supersession race to the race suite (8 racers × 50 sessions, exactly one successor each, the rest renewal-conflict), with its read-then-write broken variant. Verify against the memory store that the broken variant is caught and the real store passes.
+- [x] 2.5 Document the new port methods' contracts in `session/store.go` godoc: superseded records are returned by `Load`, the activity write never inserts, and what supersession is conditional on. Verify `go doc ./session Store` shows them and `go vet ./...` is clean.
 
 ## 3. Manager behaviour (decisions 1, 3, 6, 7, 8, 13; sessions requirements)
 

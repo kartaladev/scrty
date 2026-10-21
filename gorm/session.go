@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -12,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/storekit"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 )
@@ -332,6 +334,26 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 
 	return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions from issuer",
 		"user_id = ? AND external_issuer = ? AND external_issuer <> ''", string(user), issuer)
+}
+
+// RecordActivity is not implemented yet.
+func (s *sessionStore) RecordActivity(_ context.Context, _ string, _, _, _ time.Time) error {
+	return errors.New("not implemented")
+}
+
+// Supersede is not implemented yet.
+func (s *sessionStore) Supersede(_ context.Context, _ session.Supersession) error {
+	return errors.New("not implemented")
+}
+
+// DeleteFamily is not implemented yet.
+func (s *sessionStore) DeleteFamily(_ context.Context, _ id.ID) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
+// MarkPresented is not implemented yet.
+func (s *sessionStore) MarkPresented(_ context.Context, _ string, _ time.Time) error {
+	return errors.New("not implemented")
 }
 
 var _ session.Store = (*sessionStore)(nil)

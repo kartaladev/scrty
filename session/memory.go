@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // MemoryStore keeps sessions in process memory. It is the default store, and
@@ -42,6 +44,12 @@ type MemoryStore struct {
 	interval time.Duration
 	records  map[string]*Session
 
+	// byDigest maps the digest of each stored identifier to that identifier,
+	// so finding the record a successor digest names is a lookup rather than
+	// a scan that hashes every key. It holds exactly the keys of records, and
+	// is written wherever records is.
+	byDigest map[string]string
+
 	// lifecycle guards the housekeeping run below. It is separate from mu so
 	// that Stop can wait for a sweep to finish while that sweep takes mu.
 	lifecycle sync.Mutex
@@ -56,6 +64,7 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		clock:    clock.System(),
 		interval: defaultHousekeepingInterval,
 		records:  make(map[string]*Session),
+		byDigest: make(map[string]string),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -189,14 +198,29 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 	if _, exists := s.records[sess.ID]; exists {
 		return errors.New("session: a session with this identifier is already stored")
 	}
-	s.records[sess.ID] = sess.clone()
+	s.putLocked(sess.clone())
 
 	return nil
 }
 
-// Save updates the stored session, whole except for MFAAtFirstFactor, and
-// never inserts. The stored marker is kept as Create wrote it, whatever the
-// saved session says.
+// putLocked stores rec under its identifier and indexes its digest. Callers
+// hold s.mu.
+func (s *MemoryStore) putLocked(rec *Session) {
+	s.records[rec.ID] = rec
+	s.byDigest[string(sessionDigest(rec.ID))] = rec.ID
+}
+
+// deleteLocked removes the record with this identifier and its index entry.
+// Callers hold s.mu.
+func (s *MemoryStore) deleteLocked(id string) {
+	delete(s.records, id)
+	delete(s.byDigest, string(sessionDigest(id)))
+}
+
+// Save updates the stored session, whole except for MFAAtFirstFactor and the
+// family, supersession and presentation fields, and never inserts. Those are
+// kept as Create, Supersede and MarkPresented wrote them, whatever the saved
+// session says. A superseded record also keeps both of its deadlines.
 //
 // A session that is no longer stored is ErrSessionNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
@@ -212,6 +236,16 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	}
 	rec := sess.clone()
 	rec.MFAAtFirstFactor = stored.MFAAtFirstFactor
+	rec.FamilyID = stored.FamilyID
+	rec.FamilyCreatedAt = stored.FamilyCreatedAt
+	rec.SupersededAt = stored.SupersededAt
+	rec.AcceptUntil = stored.AcceptUntil
+	rec.SuccessorDigest = stored.SuccessorDigest
+	rec.FirstPresentedAt = stored.FirstPresentedAt
+	if !stored.SupersededAt.IsZero() {
+		rec.IdleExpiresAt = stored.IdleExpiresAt
+		rec.AbsoluteExpiresAt = stored.AbsoluteExpiresAt
+	}
 	s.records[sess.ID] = rec
 
 	return nil
@@ -243,7 +277,7 @@ func (s *MemoryStore) removeWhere(match func(*Session) bool) int {
 		if !match(rec) {
 			continue
 		}
-		delete(s.records, id)
+		s.deleteLocked(id)
 		removed++
 	}
 
@@ -337,7 +371,120 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	delete(s.records, id)
+	s.deleteLocked(id)
+
+	return nil
+}
+
+// RecordActivity writes lastAccessed and idleExpires to the stored session,
+// and nothing else, when its stored last access is before olderThan and it is
+// not superseded. A fresher or superseded session is left unchanged. A
+// session that is not stored is ErrSessionNotFound, and nothing is inserted.
+//
+// It changes the stored record in place under the store's lock, so a change
+// another caller saved in the meantime survives it.
+func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[id]
+	if !found {
+		return ErrSessionNotFound
+	}
+	if !rec.SupersededAt.IsZero() || !rec.LastAccessedAt.Before(olderThan) {
+		return nil
+	}
+	rec.LastAccessedAt = lastAccessed
+	rec.IdleExpiresAt = idleExpires
+
+	return nil
+}
+
+// Supersede marks op.Old superseded by op.Successor, supersedes Old's previous
+// successor with a window ending at op.Now, and inserts op.Successor, all
+// under the store's lock, provided Old's successor is still
+// op.ObservedSuccessor. A stale observation writes nothing and is
+// ErrSessionRenewalConflict; an Old that is not stored is ErrSessionNotFound;
+// a nil Successor is an error.
+//
+// A superseded record keeps its absolute deadline as both deadlines, so
+// housekeeping removes it only when its family could no longer be live.
+func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
+	if op.Successor == nil {
+		return errors.New("session: a supersession needs a successor")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old, found := s.records[op.Old]
+	if !found {
+		return ErrSessionNotFound
+	}
+	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) {
+		return ErrSessionRenewalConflict
+	}
+	if _, exists := s.records[op.Successor.ID]; exists {
+		return errors.New("session: a session with this identifier is already stored")
+	}
+
+	if previous := s.successorLocked(old); previous != nil {
+		previous.SupersededAt = op.Now
+		previous.AcceptUntil = op.Now
+		previous.IdleExpiresAt = previous.AbsoluteExpiresAt
+	}
+	old.SupersededAt = op.Now
+	old.AcceptUntil = op.AcceptUntil
+	old.SuccessorDigest = sessionDigest(op.Successor.ID)
+	old.IdleExpiresAt = old.AbsoluteExpiresAt
+	s.putLocked(op.Successor.clone())
+
+	return nil
+}
+
+// successorLocked returns the stored record whose identifier old's successor
+// digest names, or nil when old has no successor or it is no longer stored.
+// Callers hold s.mu.
+func (s *MemoryStore) successorLocked(old *Session) *Session {
+	if len(old.SuccessorDigest) == 0 {
+		return nil
+	}
+
+	id, ok := s.byDigest[string(old.SuccessorDigest)]
+	if !ok {
+		return nil
+	}
+
+	return s.records[id]
+}
+
+// DeleteFamily removes every session of this family, superseded or not and
+// expired or not, and reports how many went.
+//
+// The nil family is refused with an error and nothing is deleted: sessions
+// created with no family all carry it, so honouring it would delete unrelated
+// users' sessions.
+func (s *MemoryStore) DeleteFamily(_ context.Context, family id.ID) (int, error) {
+	if family.IsZero() {
+		return 0, errors.New("session: the nil family names no family")
+	}
+
+	return s.removeWhere(func(rec *Session) bool { return rec.FamilyID == family }), nil
+}
+
+// MarkPresented records at as the session's first presentation, only when
+// none is recorded. A session that is not stored is ErrSessionNotFound.
+func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[id]
+	if !found {
+		return ErrSessionNotFound
+	}
+	if rec.FirstPresentedAt.IsZero() {
+		rec.FirstPresentedAt = at
+	}
 
 	return nil
 }

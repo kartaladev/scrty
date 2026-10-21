@@ -3,9 +3,11 @@ package session
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // ErrSessionNotFound is what a store reports when there is no session to act
@@ -30,6 +32,40 @@ var ErrSessionExpired = errors.New("session: session expired")
 // missing session would hide it behind a perfectly ordinary-looking login
 // prompt.
 var ErrSessionUnreadable = errors.New("session: session cannot be read")
+
+// ErrSessionRenewalConflict is what a store reports when a supersession lost
+// to another: the session's current successor is no longer the one the caller
+// observed, because a concurrent renewal superseded it first. Nothing was
+// written. The caller that sees it did not produce a successor, and another
+// caller did.
+var ErrSessionRenewalConflict = errors.New("session: the session was renewed concurrently")
+
+// Supersession is one atomic supersession: Store.Supersede marks Old
+// superseded by Successor and inserts Successor, provided Old's current
+// successor is still the one the caller observed.
+type Supersession struct {
+	// Old is the identifier of the session being superseded.
+	Old string
+
+	// ObservedSuccessor is the SuccessorDigest the caller read on Old before
+	// deciding to supersede it. It is nil for a first rotation, when Old has
+	// no successor yet. The supersession happens only while Old's stored
+	// successor digest still equals it, byte for byte.
+	ObservedSuccessor []byte
+
+	// AcceptUntil is the end of Old's grace window, which the store records
+	// on Old unchanged.
+	AcceptUntil time.Time
+
+	// Successor is the session inserted in Old's place. It is inserted as
+	// given, as Create would insert it.
+	Successor *Session
+
+	// Now is the time of the supersession, read from the caller's clock. It
+	// is Old's SupersededAt, and both the time a previous successor is
+	// superseded at and the end of that previous successor's window.
+	Now time.Time
+}
 
 // Store persists sessions.
 //
@@ -64,8 +100,22 @@ type Store interface {
 	Create(ctx context.Context, s *Session) error
 
 	// Save updates the stored session with this identifier, whole except for
-	// MFAAtFirstFactor, and reports ErrSessionNotFound when there is no longer
-	// one to update. It never inserts.
+	// MFAAtFirstFactor and the family, supersession and presentation fields,
+	// and reports ErrSessionNotFound when there is no longer one to update. It
+	// never inserts.
+	//
+	// The family, supersession and presentation fields (FamilyID,
+	// FamilyCreatedAt, SupersededAt, AcceptUntil, SuccessorDigest,
+	// FirstPresentedAt) are written by Create, Supersede and MarkPresented
+	// only: Save keeps the stored values whatever the session handed to it
+	// says, so saving a copy loaded before a concurrent supersession cannot
+	// undo it.
+	//
+	// A stored session that is superseded (SupersededAt set) also keeps its
+	// IdleExpiresAt and AbsoluteExpiresAt: Supersede set both to the family's
+	// absolute deadline, and a copy loaded before the supersession would
+	// otherwise shorten them and let housekeeping remove the record early.
+	// This holds for a previous successor superseded by a re-rotation too.
 	//
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
 	// whatever the session handed to it says, so no later save can set or
@@ -74,7 +124,66 @@ type Store interface {
 
 	// Load returns the session with this identifier, ErrSessionNotFound when
 	// there is none, and ErrSessionExpired when it is past either deadline.
+	//
+	// A superseded session is returned like any other, with its supersession
+	// state (SupersededAt, AcceptUntil, SuccessorDigest) set, whether or not
+	// its grace window has ended: the store enforces the two deadlines only,
+	// and the Manager judges the window with its own clock. A consumer calling
+	// Load directly therefore sees superseded sessions, and must not treat
+	// one as live without that judgement.
 	Load(ctx context.Context, id string) (*Session, error)
+
+	// RecordActivity writes lastAccessed and idleExpires to the session with
+	// this identifier, and nothing else, provided its stored LastAccessedAt is
+	// before olderThan and it is not superseded. A session that is fresher,
+	// or superseded, is left unchanged, and that is not an error.
+	//
+	// It reports ErrSessionNotFound only when there is no session with this
+	// identifier, and it never inserts. It never touches any other field, so
+	// a change another request saved to the same session in the meantime
+	// survives it: a whole-record save in its place would write back the
+	// copy this request loaded. In SQL it is one conditional UPDATE of those
+	// two columns.
+	RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error
+
+	// Supersede performs op as one atomic operation. A nil op.Successor is
+	// refused with an error and nothing is written:
+	//
+	//   - it marks op.Old superseded at op.Now, with op.AcceptUntil as its
+	//     window end and the digest of op.Successor's identifier as its
+	//     successor, and sets both of its deadlines to its absolute deadline;
+	//   - it marks Old's previous successor, if it had one, superseded at
+	//     op.Now with a window ending at op.Now, and sets both of that
+	//     successor's deadlines to its absolute deadline;
+	//   - it inserts op.Successor.
+	//
+	// It is conditional on op.ObservedSuccessor: it happens only while Old's
+	// stored SuccessorDigest equals it byte for byte, nil meaning none. When
+	// it does not, Supersede writes nothing and reports
+	// ErrSessionRenewalConflict, so concurrent renewals of one session produce
+	// exactly one successor. An Old that is not stored, as after its family
+	// was revoked, is ErrSessionNotFound, and nothing is inserted.
+	//
+	// The condition must hold across processes, not only within one: a lock
+	// held by one instance does not stop another replica. In SQL it is one
+	// transaction whose conditional UPDATE of Old decides the outcome, joining
+	// a caller's transaction when one is attached.
+	Supersede(ctx context.Context, op Supersession) error
+
+	// DeleteFamily removes every session of this family, superseded or not,
+	// expired or not, and reports how many went. Sessions of other families,
+	// the same user's included, are untouched.
+	//
+	// The nil family, id.Nil, is refused with an error and nothing is
+	// deleted: a session written straight to a store with no family carries
+	// it, so honouring it would delete unrelated users' sessions.
+	DeleteFamily(ctx context.Context, family id.ID) (int, error)
+
+	// MarkPresented records at as the session's FirstPresentedAt, only when
+	// none is recorded: a later call leaves the first time unchanged and is
+	// not an error. A session that is not stored is ErrSessionNotFound. It
+	// never inserts and never touches any other field.
+	MarkPresented(ctx context.Context, id string, at time.Time) error
 
 	// Delete removes the session with this identifier. Deleting one that is
 	// not there is not an error: the caller asked for it to be gone, and it
@@ -122,13 +231,14 @@ type Store interface {
 // matching it, or a sentinel it wraps, still does.
 //
 // A sentinel of this package that the store returned bare — ErrSessionNotFound,
-// ErrSessionExpired or ErrSessionUnreadable — carries no store text and comes
-// back as itself, so nothing that matches on it changes. The sentinels are not
+// ErrSessionExpired, ErrSessionUnreadable or ErrSessionRenewalConflict —
+// carries no store text and comes back as itself, so nothing that matches on it changes. The sentinels are not
 // passed to diag.Wrap as kinds: a fault matches its kinds, and every other
 // store failure would then read as a missing or expired session.
 func storeFailed(err error, text string) error {
 	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text
-	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable {
+	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable ||
+		err == ErrSessionRenewalConflict {
 		return err
 	}
 

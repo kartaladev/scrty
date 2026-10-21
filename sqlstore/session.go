@@ -293,4 +293,24 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	return int(n), err
 }
 
+// RecordActivity is not implemented yet.
+func (s *sessionStore) RecordActivity(_ context.Context, _ string, _, _, _ time.Time) error {
+	return errors.New("not implemented")
+}
+
+// Supersede is not implemented yet.
+func (s *sessionStore) Supersede(_ context.Context, _ session.Supersession) error {
+	return errors.New("not implemented")
+}
+
+// DeleteFamily is not implemented yet.
+func (s *sessionStore) DeleteFamily(_ context.Context, _ id.ID) (int, error) {
+	return 0, errors.New("not implemented")
+}
+
+// MarkPresented is not implemented yet.
+func (s *sessionStore) MarkPresented(_ context.Context, _ string, _ time.Time) error {
+	return errors.New("not implemented")
+}
+
 var _ session.Store = (*sessionStore)(nil)

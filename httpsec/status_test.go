@@ -369,10 +369,11 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrUnknownMFAMethod":       httpsec.ErrUnknownMFAMethod,
 	},
 	"github.com/kartaladev/scrty/session": {
-		"session.ErrConfig":            session.ErrConfig,
-		"session.ErrSessionExpired":    session.ErrSessionExpired,
-		"session.ErrSessionNotFound":   session.ErrSessionNotFound,
-		"session.ErrSessionUnreadable": session.ErrSessionUnreadable,
+		"session.ErrConfig":                 session.ErrConfig,
+		"session.ErrSessionExpired":         session.ErrSessionExpired,
+		"session.ErrSessionNotFound":        session.ErrSessionNotFound,
+		"session.ErrSessionUnreadable":      session.ErrSessionUnreadable,
+		"session.ErrSessionRenewalConflict": session.ErrSessionRenewalConflict,
 	},
 }
 
@@ -397,7 +398,9 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"session.ErrSessionNotFound":              "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrSessionExpired":               "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrSessionUnreadable":            "converted to ErrAuthenticationRequired before it leaves the chain",
-		"ratelimit.ErrConfig":                     "a wiring fault, refused at construction",
+		"session.ErrSessionRenewalConflict": "returned only by Store.Supersede, which nothing in the chain calls yet; " +
+			"the renewal path that does maps it",
+		"ratelimit.ErrConfig": "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
 		"ratelimit.ErrLimiterFull": "returned by a full in-memory limiter, never by a flow: every built-in caller " +

@@ -1,10 +1,13 @@
 package storetest_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -96,6 +99,14 @@ const (
 	// not carry it, and otherwise keeps the stored one: a save clears it,
 	// never sets it.
 	sessionSaveClearsMarker sessionDefect = "save-clears-second-factor-marker"
+	// RecordActivity saves the whole copy the last Load handed out, with the
+	// two activity fields set, as an activity interceptor saving the record
+	// its request loaded would: a change saved in the meantime is lost.
+	sessionWholeRecordActivity sessionDefect = "whole-record-activity"
+	// Supersede checks the observed successor under the lock, releases it,
+	// and then writes unconditionally, as a store reading the old record
+	// before an unconditional UPDATE would.
+	sessionReadThenWriteSupersede sessionDefect = "read-then-write-supersede"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -154,18 +165,40 @@ type sessionStore struct {
 
 	mu      sync.Mutex
 	records map[string]*session.Session
+	// loaded is the copy the last Load handed out per identifier, which only
+	// sessionWholeRecordActivity reads.
+	loaded map[string]*session.Session
 }
 
 var _ session.Store = (*sessionStore)(nil)
 
 func newSessionStore(defect sessionDefect, clk clock.Clock) *sessionStore {
-	return &sessionStore{defect: defect, clock: clk, records: make(map[string]*session.Session)}
+	return &sessionStore{
+		defect:  defect,
+		clock:   clk,
+		records: make(map[string]*session.Session),
+		loaded:  make(map[string]*session.Session),
+	}
 }
 
 func cloneSession(sess *session.Session) *session.Session {
 	out := *sess
 	out.Data = maps.Clone(sess.Data)
+	out.SuccessorDigest = slices.Clone(sess.SuccessorDigest)
 	return &out
+}
+
+// keepLibraryState copies onto sess the family, supersession and presentation
+// fields stored holds, which only Create, Supersede and MarkPresented write,
+// and both deadlines of a superseded record.
+func keepLibraryState(sess, stored *session.Session) {
+	sess.FamilyID, sess.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
+	sess.SupersededAt, sess.AcceptUntil = stored.SupersededAt, stored.AcceptUntil
+	sess.SuccessorDigest = slices.Clone(stored.SuccessorDigest)
+	sess.FirstPresentedAt = stored.FirstPresentedAt
+	if !stored.SupersededAt.IsZero() {
+		sess.IdleExpiresAt, sess.AbsoluteExpiresAt = stored.IdleExpiresAt, stored.AbsoluteExpiresAt
+	}
 }
 
 func expiredSession(sess *session.Session, now time.Time) bool {
@@ -216,6 +249,7 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	}
 	kept := cloneSession(sess)
 	kept.MFAAtFirstFactor = marker
+	keepLibraryState(kept, stored)
 	sess = kept
 	if s.defect == sessionSaveRefusesTextAfterPartialWrite {
 		stored.LastAccessedAt = sess.LastAccessedAt
@@ -303,6 +337,7 @@ func (s *sessionStore) Load(_ context.Context, sessionID string) (*session.Sessi
 		return nil, session.ErrSessionExpired
 	}
 	out := cloneSession(stored)
+	s.loaded[sessionID] = cloneSession(stored)
 	switch s.defect {
 	case sessionLoadSharesData:
 		out.Data = stored.Data
@@ -401,4 +436,108 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	return s.removeWhere(func(sess *session.Session) bool {
 		return sess.UserID == user && sess.ExternalIssuer == issuer
 	}), nil
+}
+
+func (s *sessionStore) RecordActivity(
+	ctx context.Context, sessionID string, lastAccessed, idleExpires, olderThan time.Time,
+) error {
+	s.mu.Lock()
+	stored, exists := s.records[sessionID]
+	if !exists {
+		s.mu.Unlock()
+		return session.ErrSessionNotFound
+	}
+	if s.defect == sessionWholeRecordActivity {
+		whole := cloneSession(stored)
+		if loaded, ok := s.loaded[sessionID]; ok {
+			whole = cloneSession(loaded)
+		}
+		s.mu.Unlock()
+		whole.LastAccessedAt, whole.IdleExpiresAt = lastAccessed, idleExpires
+		return s.Save(ctx, whole)
+	}
+	defer s.mu.Unlock()
+
+	if !stored.SupersededAt.IsZero() || !stored.LastAccessedAt.Before(olderThan) {
+		return nil
+	}
+	stored.LastAccessedAt, stored.IdleExpiresAt = lastAccessed, idleExpires
+	return nil
+}
+
+func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	old, exists := s.records[op.Old]
+	if !exists {
+		return session.ErrSessionNotFound
+	}
+	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) {
+		return session.ErrSessionRenewalConflict
+	}
+	if s.defect == sessionReadThenWriteSupersede {
+		// The window between the read and the write that a real store's
+		// round trips open.
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		s.mu.Lock()
+		old, exists = s.records[op.Old]
+		if !exists {
+			return session.ErrSessionNotFound
+		}
+	}
+	if _, taken := s.records[op.Successor.ID]; taken {
+		return errors.New("identifier already stored")
+	}
+	if previous := s.successorOf(old); previous != nil {
+		previous.SupersededAt, previous.AcceptUntil = op.Now, op.Now
+		previous.IdleExpiresAt = previous.AbsoluteExpiresAt
+	}
+	old.SupersededAt, old.AcceptUntil = op.Now, op.AcceptUntil
+	old.SuccessorDigest = digestOf(op.Successor.ID)
+	old.IdleExpiresAt = old.AbsoluteExpiresAt
+	s.records[op.Successor.ID] = cloneSession(op.Successor)
+	return nil
+}
+
+// successorOf returns the stored record old's successor digest names, or nil.
+// Callers hold s.mu.
+func (s *sessionStore) successorOf(old *session.Session) *session.Session {
+	if len(old.SuccessorDigest) == 0 {
+		return nil
+	}
+	for key, rec := range s.records {
+		if bytes.Equal(digestOf(key), old.SuccessorDigest) {
+			return rec
+		}
+	}
+	return nil
+}
+
+// digestOf is the SHA-256 of a session identifier.
+func digestOf(sessionID string) []byte {
+	sum := sha256.Sum256([]byte(sessionID))
+	return sum[:]
+}
+
+func (s *sessionStore) DeleteFamily(_ context.Context, family id.ID) (int, error) {
+	if family.IsZero() {
+		return 0, errors.New("the nil family names no family")
+	}
+	return s.removeWhere(func(sess *session.Session) bool { return sess.FamilyID == family }), nil
+}
+
+func (s *sessionStore) MarkPresented(_ context.Context, sessionID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stored, exists := s.records[sessionID]
+	if !exists {
+		return session.ErrSessionNotFound
+	}
+	if stored.FirstPresentedAt.IsZero() {
+		stored.FirstPresentedAt = at
+	}
+	return nil
 }

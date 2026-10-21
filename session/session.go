@@ -171,6 +171,41 @@ type Session struct {
 	// Library-owned: a consumer cannot set it through Data.
 	RecoveredAt time.Time
 
+	// FamilyID identifies the family this session belongs to: the chain of
+	// sessions one sign-in started, linked by rotation. Manager.Create starts
+	// a new family from the manager's identifier generator, and every
+	// rotation keeps it, so revoking the family ends every session the
+	// sign-in produced. It is not a secret and is never a bearer credential.
+	// Library-owned: a consumer cannot set it through Data.
+	FamilyID id.ID
+
+	// FamilyCreatedAt is when the family started: the CreatedAt of the
+	// session that began it. Every rotation keeps it. Library-owned.
+	FamilyCreatedAt time.Time
+
+	// SupersededAt is when a rotation with a grace window replaced this
+	// session with a successor, and is zero for a session never superseded.
+	// Only Store.Supersede sets it. Library-owned.
+	SupersededAt time.Time
+
+	// AcceptUntil is the end of a superseded session's grace window: the
+	// first instant at which presenting it is reuse rather than a late
+	// retry. It is zero for a session never superseded. Only Store.Supersede
+	// sets it. Library-owned.
+	AcceptUntil time.Time
+
+	// FirstPresentedAt is when the session was first loaded successfully,
+	// and is zero until then. Only Store.MarkPresented sets it, and only
+	// once. Library-owned.
+	FirstPresentedAt time.Time
+
+	// SuccessorDigest is the SHA-256 digest of the identifier of this
+	// session's current successor, and is nil for a session never
+	// superseded. It is a digest and never the identifier itself, so the
+	// stored record cannot be used to reach the successor. Only
+	// Store.Supersede sets it. Library-owned.
+	SuccessorDigest []byte
+
 	// ExternalProvider names the identity provider a federated login came
 	// from, as the consumer configured it.
 	ExternalProvider string
@@ -211,6 +246,7 @@ func (s *Session) clone() *Session {
 
 	out := *s
 	out.FederatedAMR = slices.Clone(s.FederatedAMR)
+	out.SuccessorDigest = slices.Clone(s.SuccessorDigest)
 	if s.Data != nil {
 		out.Data = make(map[string]string, len(s.Data))
 		for k, v := range s.Data {

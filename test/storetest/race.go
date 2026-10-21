@@ -1,15 +1,19 @@
 package storetest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/session"
 )
 
 // The race suites' defaults. Many records, not one: a single contended row
@@ -189,6 +193,98 @@ func RunVerifyChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 	runRace(t, h, r, verifyChargeRule)
 }
 
+// RunSessionSupersessionRace holds a session store to deciding supersession
+// by the write: Racers callers supersede the same session at once, each
+// having observed no successor and each with a successor of its own, for each
+// of Records independent sessions, and exactly one supersession of each must
+// succeed while every other caller receives session.ErrSessionRenewalConflict.
+// Once the race is over, exactly one racer's successor must be stored, and it
+// must be the one the superseded session names.
+//
+// The race is the suite's own: h supplies only the store. Its inputs are
+// checked as RunConsumeRace checks them, so h.PoolSize must be at least 8.
+func RunSessionSupersessionRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	runRace(t, h, sessionSupersessionRace[S](defaultRaceRacers), supersedeRule)
+}
+
+// raceSessionPrefix starts the identifier of every session the supersession
+// race seeds; the record's number follows it.
+const raceSessionPrefix = "supersede-race-"
+
+// raceSession is the session record key of the supersession race starts as:
+// a family of its own, numbered from 1000 so it meets no suite family.
+func raceSession(key string) *session.Session {
+	i, _ := strconv.Atoi(strings.TrimPrefix(key, raceSessionPrefix))
+	return familySession(key, identity.UserID(key+"-user"), suiteID(1000+i))
+}
+
+// raceSuccessorID is the identifier of racer's successor to key.
+func raceSuccessorID(key string, racer int) string {
+	return key + "-successor-" + strconv.Itoa(racer)
+}
+
+// sessionSupersessionRace is the race RunSessionSupersessionRace runs with
+// racers racers per session: Seed creates session i, every racer supersedes
+// it by a successor of its own having observed none, and the renewal-conflict
+// error is the refusal. Check requires exactly one racer's successor stored,
+// and named by the superseded session.
+func sessionSupersessionRace[S session.Store](racers int) Race[S] {
+	return Race[S]{
+		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
+			key := raceSessionPrefix + strconv.Itoa(i)
+			if err := s.Create(ctx, raceSession(key)); err != nil {
+				t.Fatalf("seeding session %s: %v", key, err)
+			}
+			return key
+		},
+		Attempt: func(ctx context.Context, s S, key string, racer int) (bool, error) {
+			old := raceSession(key)
+			err := s.Supersede(ctx, session.Supersession{
+				Old:         key,
+				AcceptUntil: suiteStart.Add(30 * time.Second),
+				Successor:   successorOf(old, raceSuccessorID(key, racer), suiteStart),
+				Now:         suiteStart,
+			})
+			switch {
+			case err == nil:
+				return true, nil
+			case errors.Is(err, session.ErrSessionRenewalConflict):
+				return false, nil
+			default:
+				return false, err
+			}
+		},
+		Check: func(ctx context.Context, t *testing.T, s S, key string) {
+			t.Helper()
+
+			old, err := s.Load(ctx, key)
+			if err != nil {
+				t.Errorf("session %s: the superseded session must still load: %v", key, err)
+				return
+			}
+			var stored []string
+			for racer := range racers {
+				successor := raceSuccessorID(key, racer)
+				_, err := s.Load(ctx, successor)
+				switch {
+				case err == nil:
+					stored = append(stored, successor)
+					if !bytes.Equal(old.SuccessorDigest, sessionDigest(successor)) {
+						t.Errorf("session %s: a stored successor is not the one the superseded session names", key)
+					}
+				case !errors.Is(err, session.ErrSessionNotFound):
+					t.Errorf("session %s: loading a successor: %v", key, err)
+				}
+			}
+			if len(stored) != 1 {
+				t.Errorf("session %s: %d successors stored after the race, want exactly one", key, len(stored))
+			}
+		},
+	}
+}
+
 // raceRule is what one race suite requires of each record: the subtest name
 // it reports under, the noun its failures call the operation, how many
 // racers of a record must win (zero means one), and the racer count a zero
@@ -201,11 +297,12 @@ type raceRule struct {
 
 // The rules of the race suites.
 var (
-	consumeRule  = raceRule{name: "exactly one consumption wins per record", noun: "consumption"}
-	insertRule   = raceRule{name: "exactly one insert wins per record", noun: "insert"}
-	stepRule     = raceRule{name: "exactly one acceptance of a step wins per record", noun: "acceptance of a step"}
-	completeRule = raceRule{name: "exactly one completion wins per record", noun: "completion"}
-	chargeRule   = raceRule{
+	consumeRule   = raceRule{name: "exactly one consumption wins per record", noun: "consumption"}
+	insertRule    = raceRule{name: "exactly one insert wins per record", noun: "insert"}
+	stepRule      = raceRule{name: "exactly one acceptance of a step wins per record", noun: "acceptance of a step"}
+	completeRule  = raceRule{name: "exactly one completion wins per record", noun: "completion"}
+	supersedeRule = raceRule{name: "exactly one supersession wins per session", noun: "supersession"}
+	chargeRule    = raceRule{
 		name:   "exactly the allowed number of charges win per code",
 		noun:   "charge",
 		wins:   mfa.MaxEmailCodeFailures,

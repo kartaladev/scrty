@@ -28,7 +28,11 @@ Durable session stores SHALL supersede a session in one atomic operation: mark t
 - **THEN** the old record loads as superseded with its window end, and the successor loads in the same family with the same family start time
 
 ### Requirement: Superseded sessions are returned by load and kept by the sweep
-Loading a superseded session SHALL return it with its supersession state, whether or not its window has ended, while its idle and absolute deadlines are unexpired. A superseded session SHALL keep its family's absolute deadline as both of its deadlines, so the expiry sweep deletes it only when that deadline passes.
+Loading a superseded session SHALL return it with its supersession state, whether or not its window has ended, while its idle and absolute deadlines are unexpired. A superseded session SHALL keep its family's absolute deadline as both of its deadlines, so the expiry sweep deletes it only when that deadline passes. Saving a superseded session SHALL NOT change either deadline, so a copy loaded before the supersession cannot shorten them.
+
+#### Scenario: Stale save keeps the deadlines
+- **WHEN** a copy of a session is loaded, the session is then superseded with its absolute deadline 21:00, and the earlier copy, with an idle deadline of 09:30, is saved
+- **THEN** the stored session still reports 21:00 as both its idle and absolute deadline
 
 #### Scenario: Load past the window
 - **WHEN** a session superseded at 09:00 with a window ending at 09:00:30 is loaded at 12:00 through the store
@@ -39,7 +43,12 @@ Loading a superseded session SHALL return it with its supersession state, whethe
 - **THEN** the superseded session is not deleted
 
 ### Requirement: A family is revoked by one delete
-Durable session stores SHALL delete every session of one family in one operation, superseded or not, expired or not, and SHALL return how many were removed. Sessions of other families, including other families of the same user, SHALL be unaffected.
+Durable session stores SHALL delete every session of one family in one operation, superseded or not, expired or not, and SHALL return how many were removed. Sessions of other families, including other families of the same user, SHALL be unaffected. A revocation that names no family (the nil identifier) SHALL be refused with an error and SHALL delete nothing.
+
+#### Scenario: Nil family refused
+- **WHEN** two users each hold a session, and a revocation names the nil family
+- **THEN** it fails with an error
+- **AND** both sessions still load
 
 #### Scenario: Family revoked
 - **WHEN** a family holds a superseded session and two successors, and the user has a session in another family, and the family is revoked
