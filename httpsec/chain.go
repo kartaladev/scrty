@@ -46,6 +46,12 @@ type Chain struct {
 	// at runtime that nothing enforces is refused rather than marked and served.
 	enforced map[policy.ChallengeKind]bool
 
+	// perRequest is the per-request phase every exchange run through this
+	// chain carries, so EvaluatePerRequest reaches the chain's engine,
+	// enforcer set, enrolment lifetime, session manager and clock. It is built
+	// once, at construction.
+	perRequest *perRequestPhase
+
 	// mfa is the MFA interceptor EnableMFA registered, and nil without one.
 	// Every second-factor challenge the chain returns carries the methods it
 	// looks up (challengeMethods).
@@ -149,7 +155,17 @@ func (c *Chain) Assemble(terminal Next) Next {
 		interceptor := c.registrations[i].interceptor
 		next = func(ex *Exchange) error { return interceptor.Intercept(ex, inner) }
 	}
-	return next
+
+	// The exchange is handed the chain's per-request phase before the first
+	// interceptor runs, so a consumer interceptor's EvaluatePerRequest judges
+	// it as the built-ins do.
+	chain := next
+
+	return func(ex *Exchange) error {
+		ex.perRequest = c.perRequest
+
+		return chain(ex)
+	}
 }
 
 // builtInEnforcer names the library's own gate for a challenge kind: the

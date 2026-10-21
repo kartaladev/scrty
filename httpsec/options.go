@@ -134,6 +134,10 @@ type config struct {
 	// and a chain that resolves no session has nothing to record.
 	sessions *session.Manager
 
+	// sessionsExplicit records that WithSessionManager set sessions, which no
+	// built-in's manager then replaces.
+	sessionsExplicit bool
+
 	// authorizer is what the authorization stage publishes for the guards
 	// behind it, and what the last EnableAuthorization call named: a chain
 	// judges by one authorizer, so a second call replacing the first is the
@@ -225,12 +229,39 @@ func (c *config) wire(fn func(*Chain)) {
 // the chain's own activity write-back has one without the consumer declaring it
 // twice.
 //
-// The first one wins and a nil one is ignored: a deployment has one session
+// The first one wins, unless WithSessionManager set one, and a nil one is ignored: a deployment has one session
 // store, and the built-in whose dependency is missing is refused by its own
 // check rather than by this one.
 func (c *config) useSessions(m *session.Manager) {
-	if c.sessions == nil && m != nil {
+	if c.sessions == nil && !c.sessionsExplicit && m != nil {
 		c.sessions = m
+	}
+}
+
+// WithSessionManager sets the session manager the chain itself uses: the one
+// that records a session's activity after the handler, and the one a mark from
+// Exchange.EvaluatePerRequest is stored through.
+//
+// It is what a chain needs when its only session-resolving interceptor is the
+// consumer's own, published through Exchange.PublishSession, and no built-in
+// was wired to a manager. It takes precedence over the manager of any built-in
+// whatever the order of the options; the built-ins keep using the manager they
+// were given.
+//
+// A nil manager is refused with a configuration error, since it would read as
+// "activity is recorded" while nothing was.
+//
+// Default: the manager of the first enabled built-in that was wired to one.
+// A chain with none records no activity and refuses to store an enrolment mark.
+func WithSessionManager(m *session.Manager) Option {
+	return func(c *config) error {
+		if err := requireDep("WithSessionManager", "session manager", m); err != nil {
+			return err
+		}
+
+		c.sessions = m
+		c.sessionsExplicit = true
+		return nil
 	}
 }
 
@@ -455,6 +486,14 @@ func (c *config) build() (*Chain, error) {
 	// reporter writes through the chain's logger and there is no chain until
 	// every option has been applied.
 	chain.sampler = logsample.New(c.refusalInterval, logsample.WithReporter(chain.reportRefusals))
+
+	chain.perRequest = &perRequestPhase{
+		engine:            c.engine,
+		sessions:          c.sessions,
+		enrolmentLifetime: c.enrolmentLifetime,
+		enforced:          chain.enforced,
+		now:               c.now,
+	}
 
 	// The built-ins are wired last, because each of them reads settings — the
 	// engine, the logger — that an option applied after its own Enable may

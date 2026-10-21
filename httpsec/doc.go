@@ -39,6 +39,21 @@
 // refuses a caller that has just been authenticated, indistinguishably from a
 // missing credential.
 //
+// An interceptor that authenticates on a session publishes the result and the
+// session together with Exchange.PublishSession. SessionFromContext then
+// returns the session to the handler, and the session-touch step records its
+// activity after the handler, through the session manager the chain was wired
+// with: the first enabled built-in's, or the one WithSessionManager names,
+// which a chain whose only authenticator is the consumer's own needs. The
+// interceptor then calls Exchange.EvaluatePerRequest, which runs the
+// per-request policy phase with the challenge handling the built-ins apply: a
+// denial is returned, and a challenge is marked where its gate reads it, a
+// session entering the enrolment-only state being stored before the request
+// goes on. It refuses, running no policy, anything but the pair PublishSession
+// published. The built-in bearer authenticator resolves its session through
+// PublishSession and the same per-request handling, so a consumer's
+// interceptor refuses and marks exactly as it does.
+//
 // # A credential field reads the body, and only the body
 //
 // Form login, the MFA verify endpoint and the MFA enrolment endpoints each

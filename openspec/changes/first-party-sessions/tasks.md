@@ -101,14 +101,14 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
 
 ## 5. Shared resolution core and exported publication (decisions 10, 11; http-security-chain requirements)
 
-- [ ] 5.1 Record a green baseline before the refactor: run the `httpsec` bearer, MFA, password-change and session-touch tests and keep the output. Verify it is green.
-- [ ] 5.2 Red: add tests for the two `Exchange` methods:
+- [x] 5.1 Record a green baseline before the refactor: run the `httpsec` bearer, MFA, password-change and session-touch tests and keep the output. Verify it is green.
+- [x] 5.2 Red: add tests for the two `Exchange` methods:
   - a published session is readable through `SessionFromContext` and touched after the handler;
   - running the per-request phase for an enrolment challenge saves the session enrolment-pending and lets the enrolment gate refuse, as for a bearer request.
   Verify they fail because the methods are stubs.
-- [ ] 5.3 Extract the signed bearer's steps after verification into the unexported core, built on the two `Exchange` methods. Behaviour must be unchanged. Verify 5.2 passes and the 5.1 suites pass unchanged.
+- [x] 5.3 Extract the signed bearer's steps after verification into the unexported core, built on the two `Exchange` methods. Behaviour must be unchanged. Verify 5.2 passes and the 5.1 suites pass unchanged.
 - [ ] 5.4 Red: add a bearer test in which a token names a superseded session past its window. It is refused with an error matching both `ErrAuthenticationRequired` and `ErrSessionReused`, and the family is revoked. Verify it fails, implement it in the core, and verify it passes.
-- [ ] 5.5 Update the `httpsec` package documentation's consumer-interceptor section to name the two methods. Verify `go doc ./httpsec` shows them, and that the doc's promise ("everything a built-in has") matches the code.
+- [x] 5.5 Update the `httpsec` package documentation's consumer-interceptor section to name the two methods. Verify `go doc ./httpsec` shows them, and that the doc's promise ("everything a built-in has") matches the code.
 
 ## 6. Session-reference bearer and credential issuance (decisions 10; http-security-chain and http-error-propagation requirements)
 
