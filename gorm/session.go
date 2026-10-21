@@ -370,7 +370,8 @@ func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.Use
 		"user_id = ? AND id_digest <> ?", string(user), storekit.SessionDigest(keep))
 }
 
-// CountActiveByUser counts user's sessions unexpired by the store's clock.
+// CountActiveByUser counts user's sessions unexpired by the store's clock and
+// not superseded.
 func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	const op = "count user's active sessions"
 
@@ -385,7 +386,7 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	now := storekit.Time(s.c.clock.Now())
 	var n int64
 	err = q.Model(&sessionRow{}).
-		Where("user_id = ? AND idle_expires_at > ? AND absolute_expires_at > ?", string(user), now, now).
+		Where("user_id = ? AND idle_expires_at > ? AND absolute_expires_at > ? AND superseded_at IS NULL", string(user), now, now).
 		Count(&n).Error
 	if err != nil {
 		return 0, failed(op, err)
@@ -426,11 +427,11 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 		"user_id = ? AND external_issuer = ? AND external_issuer <> ''", string(user), issuer)
 }
 
-// RecordActivity writes lastAccessed and idleExpires, and nothing else, to a
-// session last accessed before olderThan and not superseded: one conditional
-// UPDATE of those two columns. A session that is fresher or superseded is left
-// unchanged and is not an error; one that is not stored is
-// session.ErrSessionNotFound.
+// RecordActivity writes lastAccessed and idleExpires, the latter capped at the
+// stored absolute deadline, and nothing else, to a session last accessed
+// not later than olderThan and not superseded: one conditional UPDATE of those two
+// columns. A session that is fresher or superseded is left unchanged and is
+// not an error; one that is not stored is session.ErrSessionNotFound.
 func (s *sessionStore) RecordActivity(
 	ctx context.Context, sessionID string, lastAccessed, idleExpires, olderThan time.Time,
 ) error {

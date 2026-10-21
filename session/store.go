@@ -157,7 +157,10 @@ type Store interface {
 
 	// RecordActivity writes lastAccessed and idleExpires to the session with
 	// this identifier, and nothing else, provided its stored LastAccessedAt is
-	// before olderThan and it is not superseded. A session that is fresher,
+	// not later than olderThan and it is not superseded. The idle deadline written is
+	// the lesser of idleExpires and the stored AbsoluteExpiresAt, so an
+	// absolute deadline another request lowered after this one loaded its copy
+	// is never outlasted by the idle deadline. A session that is fresher,
 	// or superseded, is left unchanged, and that is not an error.
 	//
 	// It reports ErrSessionNotFound only when there is no session with this
@@ -255,7 +258,9 @@ type Store interface {
 
 	// CountActiveByUser counts this user's unexpired sessions. Expired ones
 	// are excluded whether or not anything has swept them, because a session
-	// that will never be served again is not one the user is holding.
+	// that will never be served again is not one the user is holding. A
+	// superseded session is excluded too, whether or not its grace window has
+	// ended: the sign-in it belonged to is counted once, by its current head.
 	CountActiveByUser(ctx context.Context, user identity.UserID) (int, error)
 
 	// DeleteExpired removes every expired session and reports how many went.

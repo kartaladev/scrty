@@ -292,7 +292,8 @@ func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.Use
 	return int(n), err
 }
 
-// CountActiveByUser counts user's sessions unexpired by the store's clock.
+// CountActiveByUser counts user's sessions unexpired by the store's clock and
+// not superseded.
 func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
@@ -337,7 +338,7 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 }
 
 // RecordActivity writes lastAccessed and idleExpires, and nothing else, to a
-// session last accessed before olderThan and not superseded: one conditional
+// session last accessed not later than olderThan and not superseded: one conditional
 // UPDATE of those two columns. A session that is fresher or superseded is left
 // unchanged and is not an error; one that is not stored is
 // session.ErrSessionNotFound.

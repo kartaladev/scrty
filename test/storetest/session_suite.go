@@ -1078,11 +1078,29 @@ func sessionActivityCases() []suiteCase[session.Store] {
 					suiteStart.Add(20*time.Minute), suiteStart.Add(50*time.Minute), suiteStart.Add(19*time.Minute)))
 				assertSessionsLoad(ctx, t, s, fresh)
 
-				// A record last accessed exactly at the threshold is not older
-				// than it.
+				// A record last accessed one second after the threshold is
+				// still fresher than it.
 				require.NoError(t, s.RecordActivity(ctx, "sess-a",
-					suiteStart.Add(20*time.Minute), suiteStart.Add(50*time.Minute), fresh.LastAccessedAt))
+					suiteStart.Add(20*time.Minute), suiteStart.Add(50*time.Minute),
+					fresh.LastAccessedAt.Add(-time.Second)))
 				assertSessionsLoad(ctx, t, s, fresh)
+			},
+		},
+		{
+			name: "activity write at the threshold is written",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				stored := sessionRecord("sess-a", "u-1")
+				stored.LastAccessedAt = suiteStart.Add(19 * time.Minute)
+				require.NoError(t, s.Create(ctx, stored))
+
+				// The threshold is the stored last access itself: not later
+				// than it, so the write applies.
+				lastAccessed, idle := suiteStart.Add(20*time.Minute), suiteStart.Add(50*time.Minute)
+				require.NoError(t, s.RecordActivity(ctx, "sess-a", lastAccessed, idle, stored.LastAccessedAt))
+
+				want := *stored
+				want.LastAccessedAt, want.IdleExpiresAt = lastAccessed, idle
+				assertSessionsLoad(ctx, t, s, &want)
 			},
 		},
 		{
@@ -1118,6 +1136,28 @@ func sessionActivityCases() []suiteCase[session.Store] {
 					require.ErrorIs(t, err, session.ErrSessionNotFound, "session %s", sessionID)
 				}
 				assertSessionsGone(ctx, t, s, "sess-a", "sess-never")
+			},
+		},
+		{
+			name: "activity write never stores an idle deadline past the stored absolute deadline",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				require.NoError(t, s.Create(ctx, sessionRecord("sess-a", "u-1")))
+
+				// Another request lowers the absolute deadline after this
+				// request loaded its copy, whose idle deadline is still later.
+				lowered, err := s.Load(ctx, "sess-a")
+				require.NoError(t, err)
+				lowered.AbsoluteExpiresAt = suiteStart.Add(15 * time.Minute)
+				lowered.IdleExpiresAt = suiteStart.Add(15 * time.Minute)
+				require.NoError(t, s.Save(ctx, lowered))
+
+				lastAccessed := suiteStart.Add(2 * time.Minute)
+				require.NoError(t, s.RecordActivity(ctx, "sess-a",
+					lastAccessed, suiteStart.Add(31*time.Minute), lastAccessed))
+
+				want := *lowered
+				want.LastAccessedAt = lastAccessed
+				assertSessionsLoad(ctx, t, s, &want)
 			},
 		},
 		{
@@ -1177,6 +1217,28 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, err)
 				assert.Equal(t, old.FamilyID, got.FamilyID, "the successor is in the old session's family")
 				assertTimeEqual(t, old.FamilyCreatedAt, got.FamilyCreatedAt, "the successor's FamilyCreatedAt")
+			},
+		},
+		{
+			name: "renewed sign-in counts once",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clock *clockwork.FakeClock) {
+				head := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, head))
+				for i, successorID := range []string{"sess-b", "sess-c", "sess-d"} {
+					head = rotate(ctx, t, s, head, successorID, nil, suiteStart.Add(time.Duration(i+1)*time.Minute))
+				}
+				require.NoError(t, s.Create(ctx, sessionRecord("sess-other", "u-2")))
+
+				// Every superseded window has ended, yet each superseded
+				// record's deadlines are still ahead.
+				clock.Advance(suiteStart.Add(10 * time.Minute).Sub(clock.Now()))
+
+				n, err := s.CountActiveByUser(ctx, "u-1")
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "one sign-in renewed three times holds one live session")
+				n, err = s.CountActiveByUser(ctx, "u-2")
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "another user's session still counts")
 			},
 		},
 		{

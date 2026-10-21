@@ -99,6 +99,15 @@ const (
 	// not carry it, and otherwise keeps the stored one: a save clears it,
 	// never sets it.
 	sessionSaveClearsMarker sessionDefect = "save-clears-second-factor-marker"
+	// CountActiveByUser counts a user's superseded records too, so a renewed
+	// sign-in counts once for every session it has held.
+	sessionCountSuperseded sessionDefect = "count-superseded"
+	// RecordActivity writes the idle deadline it is given, whatever absolute
+	// deadline is stored.
+	sessionActivityPastAbsolute sessionDefect = "activity-past-absolute"
+	// RecordActivity applies only when the stored last access is strictly
+	// before the threshold, so a write at exactly the threshold is dropped.
+	sessionActivityStrict sessionDefect = "activity-strict-threshold"
 	// RecordActivity saves the whole copy the last Load handed out, with the
 	// two activity fields set, as an activity interceptor saving the record
 	// its request loaded would: a change saved in the meantime is lost.
@@ -450,6 +459,9 @@ func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID
 		if s.defect == sessionCountIdleOnly {
 			expired = !now.Before(sess.IdleExpiresAt)
 		}
+		if s.defect != sessionCountSuperseded && !sess.SupersededAt.IsZero() {
+			continue
+		}
 		if sess.UserID == user && !expired {
 			n++
 		}
@@ -502,8 +514,13 @@ func (s *sessionStore) RecordActivity(
 	}
 	defer s.mu.Unlock()
 
-	if !stored.SupersededAt.IsZero() || !stored.LastAccessedAt.Before(olderThan) {
+	tooFresh := stored.LastAccessedAt.After(olderThan) ||
+		s.defect == sessionActivityStrict && stored.LastAccessedAt.Equal(olderThan)
+	if !stored.SupersededAt.IsZero() || tooFresh {
 		return nil
+	}
+	if s.defect != sessionActivityPastAbsolute && idleExpires.After(stored.AbsoluteExpiresAt) {
+		idleExpires = stored.AbsoluteExpiresAt
 	}
 	stored.LastAccessedAt, stored.IdleExpiresAt = lastAccessed, idleExpires
 	return nil

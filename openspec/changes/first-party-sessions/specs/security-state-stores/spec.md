@@ -1,11 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: Session activity is recorded by a narrow, conditional write
-Durable session stores SHALL record activity by writing only the last-access time and idle deadline of the session with the given identifier, and only when the stored last-access time is older than the threshold the caller gives and the session is not superseded. A record that is fresher or superseded SHALL be left unchanged without error. A missing record SHALL be the not-found error. Recording activity SHALL never insert a record.
+Durable session stores SHALL record activity by writing only the last-access time and idle deadline of the session with the given identifier, and only when the stored last-access time is not later than the threshold the caller gives and the session is not superseded. A record that is fresher or superseded SHALL be left unchanged without error. A missing record SHALL be the not-found error. Recording activity SHALL never insert a record.
 
 #### Scenario: Fresher record left unchanged
 - **WHEN** a stored session was last accessed at 09:19:30 and activity is recorded with a threshold of 09:19
 - **THEN** no error is returned and the stored session is unchanged
+
+#### Scenario: Record at the threshold written
+- **WHEN** a stored session was last accessed at 09:19 and activity is recorded at 09:20 with a threshold of 09:19
+- **THEN** the stored last-access time is 09:20
 
 #### Scenario: Other fields untouched
 - **WHEN** a session is loaded, its consumer data is changed and saved through a second copy, and activity is then recorded through the first copy
@@ -101,3 +105,17 @@ Durable session stores SHALL persist and return a session's family identifier, f
 #### Scenario: Save leaves them unchanged
 - **WHEN** a superseded session's loaded copy has its consumer data changed and is saved
 - **THEN** its supersession state reads back unchanged
+
+### Requirement: Superseded sessions do not count as active
+Counting a user's active sessions SHALL count only unexpired sessions that are not superseded, so one sign-in counts once however often it is renewed.
+
+#### Scenario: Renewed sign-in counts once
+- **WHEN** a session is renewed three times with a 30-second grace, and the user's active sessions are counted after every window has ended
+- **THEN** the count is 1
+
+### Requirement: Recording activity never stores an idle deadline past the stored absolute deadline
+Recording activity SHALL store an idle deadline no later than the absolute deadline the record holds when it is written, even when the caller computed it from an older copy.
+
+#### Scenario: Absolute deadline lowered by another request
+- **WHEN** a session's stored absolute deadline is lowered to 09:15 after a request loaded it, and that request then records activity with an idle deadline of 09:31
+- **THEN** the stored idle deadline is 09:15

@@ -39,6 +39,10 @@ type SessionCounter interface {
 	// them: a session that will never be served again is not one the user is
 	// holding, and counting it would refuse a login on the strength of a row
 	// nobody can use.
+	//
+	// Superseded sessions must not be counted either: a renewal keeps its
+	// predecessor only to judge a late presentation as reuse, so a renewed
+	// sign-in counts once however often it is renewed.
 	CountActiveByUser(ctx context.Context, user identity.UserID) (int, error)
 }
 

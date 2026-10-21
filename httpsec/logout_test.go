@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -41,6 +42,17 @@ func statelessAuthentication() httpsec.Option {
 			return next(ex)
 		}),
 		httpsec.Before(httpsec.OrderLogout))
+}
+
+// testFamily is the family a signed-in session belongs to in these cases.
+var testFamily = id.ID{0x01}
+
+// familiedSession is touchableSession as a sign-in's family records it.
+func familiedSession() *session.Session {
+	s := touchableSession()
+	s.FamilyID = testFamily
+
+	return s
 }
 
 // TestLogout pins what ends a session, what it answers, and what it refuses.
@@ -107,6 +119,40 @@ func TestLogout(t *testing.T) {
 			},
 			request: authorizedLogout,
 			assert:  endedCleanly,
+		},
+		{
+			name: "a session of a family is ended by revoking the family",
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(2, nil).Times(1)
+			},
+			request: authorizedLogout,
+			assert:  endedCleanly,
+		},
+		{
+			name: "a family already gone is also 200",
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(0, nil).Times(1)
+			},
+			request: authorizedLogout,
+			assert:  endedCleanly,
+		},
+		{
+			name: "a family the store could not revoke is refused",
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.acceptsActivityWriteBack()
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(0, errFixtureFailure)
+			},
+			request: authorizedLogout,
+			assert: func(t *testing.T, _ *httpsec.Chain, s served) {
+				require.ErrorIs(t, s.err, errFixtureFailure)
+				assert.False(t, s.handlerRan)
+			},
 		},
 		{
 			name: "an anonymous POST is refused",

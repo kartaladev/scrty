@@ -485,7 +485,8 @@ func (m *Manager) DeleteByUserExcept(ctx context.Context, user identity.UserID, 
 }
 
 // CountActiveByUser counts this user's unexpired sessions, which is what a
-// concurrent-session limit is written against.
+// concurrent-session limit is written against. A superseded session is not
+// counted, so a renewed sign-in counts once however often it is renewed.
 func (m *Manager) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := m.store.CountActiveByUser(ctx, user)
 	if err != nil {

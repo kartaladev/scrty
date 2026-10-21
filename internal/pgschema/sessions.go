@@ -67,11 +67,12 @@ FROM sessions WHERE id_digest = $1`
 	SessionExists = `SELECT EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1)`
 
 	// SessionRecordActivity writes $2 last_accessed_at and $3 idle_expires_at,
-	// and nothing else, to the session with digest $1, provided its stored
-	// last access is before $4 and it is not superseded. Zero rows affected
-	// means it is fresher, superseded or missing; SessionExists tells which.
-	SessionRecordActivity = `UPDATE sessions SET last_accessed_at = $2, idle_expires_at = $3
-WHERE id_digest = $1 AND last_accessed_at < $4 AND superseded_at IS NULL`
+	// the latter capped at the stored absolute deadline, and nothing else, to
+	// the session with digest $1, provided its stored last access is before $4
+	// and it is not superseded. Zero rows affected means it is fresher,
+	// superseded or missing; SessionExists tells which.
+	SessionRecordActivity = `UPDATE sessions SET last_accessed_at = $2, idle_expires_at = LEAST($3, absolute_expires_at)
+WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 
 	// SessionSupersedeOld marks the session with digest $1 superseded at $3,
 	// with its window ending at $4 and $5 as its successor's digest, and sets
@@ -178,9 +179,10 @@ DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
 	SessionDeleteByUserExcept = `DELETE FROM sessions WHERE user_id = $1 AND id_digest <> $2`
 
 	// SessionCountActive counts user $1's sessions unexpired at $2: both
-	// deadlines strictly after it.
+	// deadlines strictly after it, and not superseded.
 	SessionCountActive = `SELECT count(*) FROM sessions
-WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $2`
+WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $2
+  AND superseded_at IS NULL`
 
 	// SessionDeleteExpired removes every session past either deadline at $1.
 	SessionDeleteExpired = `DELETE FROM sessions WHERE idle_expires_at <= $1 OR absolute_expires_at <= $1`

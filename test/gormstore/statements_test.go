@@ -207,7 +207,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`DELETE FROM "sessions" WHERE user_id = $1`)},
 		{name: "session count", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.CountActiveByUser(ctx, "stmt-user"))
-		}), assert: one(`SELECT count(*) FROM "sessions" WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $3`)},
+		}), assert: one(`SELECT count(*) FROM "sessions" WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $3 AND superseded_at IS NULL`)},
 		{name: "session purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteExpired(ctx))
 		}), assert: one(`DELETE FROM "sessions" WHERE idle_expires_at <= $1 OR absolute_expires_at <= $2`)},

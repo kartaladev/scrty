@@ -36,7 +36,8 @@ type EndSessionBuilder interface {
 	EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error)
 }
 
-// logout ends the session the request was authenticated with.
+// logout ends the sign-in the request was authenticated with: every session of
+// the authenticating session's family, or that one session when it has none.
 type logout struct {
 	sessions *session.Manager
 
@@ -61,7 +62,11 @@ func (l *logout) wire(c *Chain) {
 	l.log = c.logger
 }
 
-// Intercept ends the caller's session and answers the request itself.
+// Intercept ends the caller's sign-in and answers the request itself.
+//
+// The sign-in is the session's whole family (Manager.RevokeFamily), so a
+// logout bearing an identifier that was renewed inside its window also ends
+// its successor. A family already gone is not an error.
 //
 // Only POST, and only on the configured path: ending a session is a change,
 // and a logout a link could trigger is one another site can trigger for a
@@ -86,8 +91,7 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 	// delete: the caller simply stops presenting its credential. Guessing at an
 	// identifier to delete would end a session this request never named.
 	if ex.Session != nil {
-		if err := l.sessions.Delete(ex.Context(), ex.Session.ID); err != nil &&
-			!errors.Is(err, session.ErrSessionNotFound) {
+		if err := l.end(ex.Context(), ex.Session); err != nil {
 			return err
 		}
 
@@ -111,6 +115,28 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 	// or a page, is the consumer's decision, and writing one here would be one
 	// they cannot take back.
 	ex.Writer.WriteHeader(http.StatusOK)
+
+	return nil
+}
+
+// end ends the sign-in s belongs to. A session of a family takes the whole
+// family with it, the superseded predecessor and the successor a renewal
+// issued included, so logging out with an identifier inside its renewal
+// window does not leave the successor live. A session with no family, such as
+// one a store was handed directly, is deleted alone. Nothing left to end is
+// not an error.
+func (l *logout) end(ctx context.Context, s *session.Session) error {
+	var err error
+
+	if s.FamilyID.IsZero() {
+		err = l.sessions.Delete(ctx, s.ID)
+	} else {
+		_, err = l.sessions.RevokeFamily(ctx, s.FamilyID)
+	}
+
+	if err != nil && !errors.Is(err, session.ErrSessionNotFound) {
+		return err
+	}
 
 	return nil
 }

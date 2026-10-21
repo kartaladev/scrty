@@ -308,7 +308,8 @@ func (s *MemoryStore) DeleteByUserExcept(_ context.Context, user identity.UserID
 	return s.removeWhere(func(rec *Session) bool { return rec.UserID == user && rec.ID != keep }), nil
 }
 
-// CountActiveByUser counts this user's unexpired sessions.
+// CountActiveByUser counts this user's unexpired sessions that are not
+// superseded: a renewed sign-in counts once, however often it was renewed.
 //
 // Expired records are excluded whether or not housekeeping has reached them,
 // so a concurrent-session limit written against this count does not depend on
@@ -321,7 +322,7 @@ func (s *MemoryStore) CountActiveByUser(_ context.Context, user identity.UserID)
 
 	var n int
 	for _, rec := range s.records {
-		if rec.UserID == user && !rec.expired(now) {
+		if rec.UserID == user && rec.SupersededAt.IsZero() && !rec.expired(now) {
 			n++
 		}
 	}
@@ -377,9 +378,10 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 }
 
 // RecordActivity writes lastAccessed and idleExpires to the stored session,
-// and nothing else, when its stored last access is before olderThan and it is
-// not superseded. A fresher or superseded session is left unchanged. A
-// session that is not stored is ErrSessionNotFound, and nothing is inserted.
+// and nothing else, idleExpires capped at the stored absolute deadline, when
+// its stored last access is not later than olderThan and it is not superseded. A fresher or superseded session is left unchanged.
+// A session that is not stored is ErrSessionNotFound, and nothing is
+// inserted.
 //
 // It changes the stored record in place under the store's lock, so a change
 // another caller saved in the meantime survives it.
@@ -391,10 +393,13 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 	if !found {
 		return ErrSessionNotFound
 	}
-	if !rec.SupersededAt.IsZero() || !rec.LastAccessedAt.Before(olderThan) {
+	if !rec.SupersededAt.IsZero() || rec.LastAccessedAt.After(olderThan) {
 		return nil
 	}
 	rec.LastAccessedAt = lastAccessed
+	if idleExpires.After(rec.AbsoluteExpiresAt) {
+		idleExpires = rec.AbsoluteExpiresAt
+	}
 	rec.IdleExpiresAt = idleExpires
 
 	return nil

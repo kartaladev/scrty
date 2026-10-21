@@ -202,3 +202,10 @@ By default the chain records activity, and marks per-request challenges, through
 #### Scenario: Nil session manager
 - **WHEN** the chain is given a nil session manager
 - **THEN** construction fails with a configuration error
+
+### Requirement: Logout ends the whole sign-in
+When logout deletes a session, it SHALL revoke every session of that session's family, so logging out with an identifier inside its renewal window also ends the successor. A session that was never renewed is the only member of its family, so logout behaves exactly as before for it.
+
+#### Scenario: Logout with the predecessor inside its window
+- **WHEN** session O is renewed into S1 with a 30-second grace, and a request bearing O posts to the logout path inside the window
+- **THEN** logout answers 200, and a later request bearing S1 is refused
