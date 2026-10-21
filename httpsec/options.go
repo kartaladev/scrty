@@ -138,6 +138,12 @@ type config struct {
 	// built-in's manager then replaces.
 	sessionsExplicit bool
 
+	// sessionBearer records that EnableSessionBearer is on: the chain's bearer
+	// mode is the session reference, so every credential-issuing endpoint
+	// issues the session's identifier and none may be given a token
+	// generator.
+	sessionBearer bool
+
 	// authorizer is what the authorization stage publishes for the guards
 	// behind it, and what the last EnableAuthorization call named: a chain
 	// judges by one authorizer, so a second call replacing the first is the
@@ -907,8 +913,10 @@ func WithLockDisclosure() Option {
 
 // FormLoginDeps are the collaborators form login is wired to.
 //
-// Every one is required, and a missing or typed-nil field is refused when the
-// chain is built. There is no useful default for any of them: scrty ships no
+// Every one is required, except Tokens in the session-reference mode
+// (EnableSessionBearer), where it must be absent, and a missing or typed-nil
+// field is refused when the chain is built. There is no useful default for any
+// of them: scrty ships no
 // user store to authenticate against, no durable session store, no signing key
 // to issue a token with, and an attempt store of its own here would be one the
 // lockout policy never reads, which is worse than none.
@@ -923,6 +931,11 @@ type FormLoginDeps struct {
 	// Tokens issues the access token the response carries. The session
 	// identifier is the token's jti, which is how a later bearer request finds
 	// the session the token was issued for.
+	//
+	// With EnableSessionBearer on, it must be left nil, and the response
+	// carries the session's own identifier instead: a token would not be
+	// accepted by that chain, so a generator here is a configuration error
+	// from New.
 	Tokens token.Generator
 
 	// Attempts is where a failed login is recorded and a successful one clears
@@ -1044,7 +1057,7 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 			if err := requireDep(option, "session manager", d.Sessions); err != nil {
 				return err
 			}
-			if err := requireDep(option, "token generator", d.Tokens); err != nil {
+			if err := checkTokenGenerator(c, option, "FormLoginDeps.Tokens", d.Tokens); err != nil {
 				return err
 			}
 
@@ -1053,6 +1066,9 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 
 		c.useSessions(d.Sessions)
 		c.wire(l.wire)
+		// The bearer mode may be enabled after form login, so the issuer is
+		// chosen once every option has been applied.
+		c.wire(func(*Chain) { l.issue = c.credentialIssuer(l.tokens) })
 		c.register(l, OrderFormLogin)
 
 		return nil
@@ -1630,6 +1646,10 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 					"and none of the built-ins enabled on this chain was wired to one", option)
 			}
 
+			if c.sessionBearer {
+				return checkTokenGenerator(c, option, "WithMFATokens", i.tokens)
+			}
+
 			if i.tokens == nil {
 				return newConfigError("%s needs a token generator: rotating the handle ends the "+
 					"credential the caller arrived with, so the response has to hand back one "+
@@ -1706,10 +1726,13 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 
 // WithMFATokens issues the rotated session's access token through g.
 //
-// There is no default, and it is required: rotation deletes the handle the
-// caller arrived with, and the session identifier is the token's jti, so
-// without a generator a caller who passed their second factor would hold a
-// credential naming a session that no longer exists. It is the same generator
+// There is no default, and it is required in the signed-token mode: rotation
+// deletes the handle the caller arrived with, and the session identifier is
+// the token's jti, so without a generator a caller who passed their second
+// factor would hold a credential naming a session that no longer exists. With
+// EnableSessionBearer on, it must not be given: the endpoint hands back the
+// rotated session's identifier instead, and a generator is a configuration
+// error from New. It is the same generator
 // the first factors issue through, so a token from a login and one from a
 // second factor are indistinguishable to whatever verifies them.
 func WithMFATokens(g token.Generator) MFAOption {
@@ -2120,6 +2143,11 @@ func WithMagicLinkSessions(m *session.Manager) MagicLinkOption {
 // generator is the same one the other first factors issue through, so a token
 // from a link and a token from a password are indistinguishable to whatever
 // verifies them.
+//
+// With EnableSessionBearer on, it must not be given: the credential is the
+// opened session's identifier (MagicLinkResult.Token), and a generator is a
+// configuration error from New, since a token it minted would not be accepted
+// by that chain.
 func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		if err := requireDep("WithMagicLinkTokens", "token generator", g); err != nil {

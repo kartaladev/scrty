@@ -107,25 +107,25 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   - running the per-request phase for an enrolment challenge saves the session enrolment-pending and lets the enrolment gate refuse, as for a bearer request.
   Verify they fail because the methods are stubs.
 - [x] 5.3 Extract the signed bearer's steps after verification into the unexported core, built on the two `Exchange` methods. Behaviour must be unchanged. Verify 5.2 passes and the 5.1 suites pass unchanged.
-- [ ] 5.4 Red: add a bearer test in which a token names a superseded session past its window. It is refused with an error matching both `ErrAuthenticationRequired` and `ErrSessionReused`, and the family is revoked. Verify it fails, implement it in the core, and verify it passes.
+- [x] 5.4 Red: add a bearer test in which a token names a superseded session past its window. It is refused with an error matching both `ErrAuthenticationRequired` and `ErrSessionReused`, and the family is revoked. Verify it fails, implement it in the core, and verify it passes.
 - [x] 5.5 Update the `httpsec` package documentation's consumer-interceptor section to name the two methods. Verify `go doc ./httpsec` shows them, and that the doc's promise ("everything a built-in has") matches the code.
 
 ## 6. Session-reference bearer and credential issuance (decisions 10; http-security-chain and http-error-propagation requirements)
 
-- [ ] 6.1 Red: add table tests for `EnableSessionBearer`:
+- [x] 6.1 Red: add table tests for `EnableSessionBearer`:
   - a live reference authenticates;
   - a malformed value is refused with no store call (a mocked store via `use-mockgen` expects none);
   - the user is reloaded by `UserID` (a renamed user, whose old username belongs to someone else, authenticates as itself);
   - a reused reference gives the double-identity refusal;
   - a consumer scheme works.
   Verify they fail, implement on the core, and verify they pass.
-- [ ] 6.2 Red: add construction tests:
+- [x] 6.2 Red: add construction tests:
   - both bearer modes is a configuration error;
   - a token generator on a credential-issuing endpoint while the reference mode is on is a configuration error.
   Verify they fail, implement, and verify they pass.
-- [ ] 6.3 Red: add tests that, with the reference mode on, password login, second-factor verification and recovery completion hand their responders the session identifier, and a request bearing it authenticates. Verify they fail, route credential issuance through the mode, and verify they pass along with the existing login, MFA and recovery tests.
-- [ ] 6.4 Red: add mapping-table cases (renewal conflict → 409; reused joined with authentication-required → 401) and the "reuse refusal is distinguishable" case, whose text carries no identifier. Add `ErrSessionRenewalConflict` to the public refusal set. Verify they fail, implement, and verify they pass.
-- [ ] 6.5 Run the session-reference chain through `ginsec` and `fibersec` once each: a live reference authenticates and a reused one is refused. Verify both adapters pass with no adapter code change.
+- [x] 6.3 Red: add tests that, with the reference mode on, password login, second-factor verification and recovery completion hand their responders the session identifier, and a request bearing it authenticates. Verify they fail, route credential issuance through the mode, and verify they pass along with the existing login, MFA and recovery tests.
+- [x] 6.4 Red: add mapping-table cases (renewal conflict → 409; reused joined with authentication-required → 401) and the "reuse refusal is distinguishable" case, whose text carries no identifier. Add `ErrSessionRenewalConflict` to the public refusal set. Verify they fail, implement, and verify they pass.
+- [x] 6.5 Run the session-reference chain through `ginsec` and `fibersec` once each: a live reference authenticates and a reused one is refused. Verify both adapters pass with no adapter code change.
 
 ## 7. Renewal endpoint and login lifetime (decisions 4, 9, 13; http-security-chain requirements)
 

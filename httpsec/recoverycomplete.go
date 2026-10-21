@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -50,6 +49,10 @@ type recoveryInterceptor struct {
 	deps     RecoveryDeps
 	coreOpts []recovery.Option
 	tokens   token.Generator
+
+	// issueCredential issues the recovered session's credential as the
+	// chain's bearer mode decides, settled at assembly (resolve).
+	issueCredential credentialIssuer
 
 	// recoverer is built at assembly (resolve), from deps, coreOpts and the
 	// chain's form login.
@@ -110,6 +113,10 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 			"EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA, or a "+
 			"password-change resolve endpoint (WithChangePasswordEndpoint), or a "+
 			"recovery-pending session could never become a full one", option)
+	}
+
+	if c.sessionBearer {
+		return checkTokenGenerator(c, option, "WithRecoveryTokens", i.tokens)
 	}
 
 	if i.tokens == nil && c.formLogin() == nil {
@@ -222,6 +229,8 @@ func (i *recoveryInterceptor) resolve(c *config) error {
 	if i.tokens == nil && login != nil {
 		i.tokens = login.tokens
 	}
+
+	i.issueCredential = c.credentialIssuer(i.tokens)
 
 	// The chain's logger, clock and limiter factory first, so a
 	// recovery.WithLogger, recovery.WithClock or limiter option the consumer
@@ -435,22 +444,18 @@ func (i *recoveryInterceptor) answer(ex *Exchange, res *recovery.Result) error {
 	return i.respond(ex, RecoveryResult{Token: tok, Recovery: res})
 }
 
-// issue issues the access token for the recovery-pending session a recovery
-// produced. The token names a principal, minted from the user details the
-// recovery itself loaded (recovery.Result.Details), never by loading the user
-// again: a second lookup could fail after the saved codes were replaced, and
-// the new codes would be lost with the response.
+// issue issues the credential for the recovery-pending session a recovery
+// produced, as the chain's bearer mode decides: an access token, or the
+// session's own identifier. A token names a principal, minted from the user
+// details the recovery itself loaded (recovery.Result.Details), never by
+// loading the user again: a second lookup could fail after the saved codes
+// were replaced, and the new codes would be lost with the response.
 func (i *recoveryInterceptor) issue(ctx context.Context, res *recovery.Result) (string, error) {
 	if res.Details == nil {
 		return "", errRecoveredUserMissing
 	}
 
-	tok, err := i.tokens.Generate(ctx, res.Session.ID, identity.PrincipalFromDetails(res.Details))
-	if err != nil {
-		return "", diag.Wrap(err, msgTokenNotIssued)
-	}
-
-	return tok, nil
+	return i.issueCredential(ctx, res.Session, identity.PrincipalFromDetails(res.Details))
 }
 
 // countsAgainstRecoverySource decides whether a failed recovery is recorded

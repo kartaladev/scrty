@@ -37,18 +37,28 @@ type sessionResolver struct {
 // userLookup says how the core reloads the session's user.
 //
 // The signed bearer reloads by the username its token names, which is what
-// lookupByUsername builds. It is a value rather than a function so a further
-// mode, such as one keyed on the session's own user, is added here without
-// changing the core's shape.
+// lookupByUsername builds. The session-reference bearer has no token to name
+// anyone, and reloads by the user reference the session itself records, which
+// is what lookupBySessionUser builds.
 type userLookup struct {
-	username string
+	username      string
+	bySessionUser bool
 }
 
 // lookupByUsername reloads the user by username.
 func lookupByUsername(username string) userLookup { return userLookup{username: username} }
 
+// lookupBySessionUser reloads the user by the reference the session records,
+// never by username: a username is a reusable handle, and one reissued to
+// another person would otherwise authenticate them on the first one's session.
+func lookupBySessionUser() userLookup { return userLookup{bySessionUser: true} }
+
 // load reloads the user the lookup names for s.
-func (l userLookup) load(ctx context.Context, users identity.UserLoader, _ *session.Session) (*identity.Details, error) {
+func (l userLookup) load(ctx context.Context, users identity.UserLoader, s *session.Session) (*identity.Details, error) {
+	if l.bySessionUser {
+		return users.LoadByUserID(ctx, s.UserID)
+	}
+
 	return users.LoadByUsername(ctx, l.username)
 }
 
@@ -71,6 +81,16 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 			// row it could not read.
 			r.log.LogAttrs(ctx, slog.LevelError, msgSessionUnreadable,
 				diag.Failure("session-store", err)...)
+		}
+
+		// A superseded identifier presented after its window: the manager has
+		// revoked the family by now. The caller is answered as for any ended
+		// session, and the reuse stays identifiable, so a consumer that rolls
+		// its request transaction back on a refusal can tell this is the one
+		// refusal it must commit, or it would roll the revocation back too.
+		// The manager's error names no identifier.
+		if errors.Is(err, session.ErrSessionReused) {
+			return errors.Join(ErrAuthenticationRequired, err)
 		}
 
 		// Missing, expired and unreadable are the same answer: telling them

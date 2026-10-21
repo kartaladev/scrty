@@ -3,12 +3,17 @@ package test_test
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/fibersec"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 )
 
@@ -200,3 +205,67 @@ var (
 	_ httpsecconformance.Adapter = ginAdapter{}
 	_ httpsecconformance.Adapter = fiberAdapter{}
 )
+
+// TestSessionBearerFiber runs the session-reference bearer through the fiber
+// integration: a live reference reaches the route with its session, and a
+// reused one is refused 401. The integration needs no change for the mode.
+func TestSessionBearerFiber(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		reference func(f sessionReferenceFixture) string
+		assert    func(t *testing.T, f sessionReferenceFixture, status int, seen string)
+	}
+
+	cases := []testCase{
+		{
+			name:      "a live reference authenticates",
+			reference: func(f sessionReferenceFixture) string { return f.live },
+			assert: func(t *testing.T, f sessionReferenceFixture, status int, seen string) {
+				assert.Equal(t, http.StatusOK, status)
+				assert.Equal(t, f.live, seen, "the route sees the referenced session")
+			},
+		},
+		{
+			name:      "a reused reference is refused",
+			reference: func(f sessionReferenceFixture) string { return f.reused },
+			assert: func(t *testing.T, f sessionReferenceFixture, status int, seen string) {
+				assert.Equal(t, http.StatusUnauthorized, status)
+				assert.Empty(t, seen, "the route never ran")
+
+				_, err := f.sessions.Load(t.Context(), f.successor)
+				require.ErrorIs(t, err, session.ErrSessionNotFound, "the family was revoked, successor included")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSessionReferenceFixture(t)
+
+			var seen string
+
+			app := fiber.New(fiber.Config{ErrorHandler: fibersec.ErrorHandler})
+			app.Use(fibersec.Middleware(f.chain))
+			app.Get("/orders", func(fc fiber.Ctx) error {
+				if s, ok := httpsec.SessionFromContext(fc.Context()); ok {
+					seen = s.ID
+				}
+
+				return fc.SendStatus(http.StatusOK)
+			})
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.reference(f))
+
+			out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+			require.NoError(t, err)
+			require.NoError(t, out.Body.Close())
+
+			tc.assert(t, f, out.StatusCode, seen)
+		})
+	}
+}

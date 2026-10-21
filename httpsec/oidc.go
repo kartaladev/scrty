@@ -145,6 +145,10 @@ type oidcInterceptor struct {
 	sessions *session.Manager
 	tokens   token.Generator
 
+	// issue issues a redeemed handoff's credential as the chain's bearer
+	// mode decides, settled once every option has been applied.
+	issue credentialIssuer
+
 	engine  *policy.Engine
 	log     *slog.Logger
 	sampler *logsample.Sampler

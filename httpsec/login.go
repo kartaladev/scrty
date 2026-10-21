@@ -73,7 +73,9 @@ const (
 // LoginResult is what a successful login produced, handed to whatever writes
 // the response.
 type LoginResult struct {
-	// Token is the access token issued for the new session.
+	// Token is the credential issued for the new session: an access token
+	// from FormLoginDeps.Tokens, or, with EnableSessionBearer on, the
+	// session's own identifier.
 	Token string
 
 	// Session is the session the login opened.
@@ -98,6 +100,10 @@ type formLogin struct {
 	sessions *session.Manager
 	tokens   token.Generator
 	attempts policy.AttemptStore
+
+	// issue issues the login's credential as the chain's bearer mode decides,
+	// handed over at assembly.
+	issue credentialIssuer
 
 	// engine and log are handed over once the chain exists, because an option
 	// applied after EnableFormLogin may still replace either.
@@ -348,6 +354,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		engine:            l.engine,
 		sessions:          l.sessions,
 		tokens:            l.tokens,
+		issue:             l.issue,
 		enrolmentLifetime: l.enrolmentLifetime,
 		enforced:          l.enforced,
 		challengeMethods:  l.challengeMethods,

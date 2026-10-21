@@ -989,3 +989,41 @@ func TestBearerRecordsConsumerChallenge(t *testing.T) {
 		})
 	}
 }
+
+// TestBearerRefusesReusedSession pins what a token naming a session superseded
+// by a renewal is refused with once that renewal's window has ended: an error
+// both the authentication-required and the reused-session refusal, after the
+// manager has revoked the session's whole family.
+func TestBearerRefusesReusedSession(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+	ctrl := gomock.NewController(t)
+	verifier := NewMockVerifier(ctrl)
+	users := NewMockUserLoader(ctrl)
+
+	successor, _, err := f.sessions.RotateWithGrace(t.Context(), f.session, 30*time.Second)
+	require.NoError(t, err)
+
+	f.clk.Advance(31 * time.Second)
+
+	verifier.EXPECT().Verify(gomock.Any(), gomock.Any()).
+		Return(token.NewClaims(testSubject, f.session.ID), nil)
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.WithClock(f.clk),
+		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: verifier, Sessions: f.sessions, Users: users}),
+	)
+	require.NoError(t, err)
+
+	s := serve(t, chain, bearerRequest(t.Context(), "Bearer abc.def.ghi"))
+
+	require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+	require.ErrorIs(t, s.err, session.ErrSessionReused)
+	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
+	assert.False(t, s.handlerRan)
+
+	_, err = f.sessions.Load(t.Context(), successor.ID)
+	require.ErrorIs(t, err, session.ErrSessionNotFound, "the family is revoked, its live successor with it")
+}

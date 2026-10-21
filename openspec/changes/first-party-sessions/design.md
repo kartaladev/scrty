@@ -263,7 +263,7 @@ See `proposal.md` for the motivation. This section covers only the state of the 
   - run the per-request policy phase with challenge marking;
   - leave activity to the activity interceptor.
   - `bff-resource-server`'s cookie mode will call the same core with a cookie extractor. The existing signed-token bearer keeps its own verification step and then joins the same core, so all three modes refuse identically.
-- **Credentials issued.** With the opaque mode on the chain, every endpoint that issues a credential (login completion, second-factor verification, recovery completion, renewal) issues the session reference.
+- **Credentials issued.** With the opaque mode on the chain, every endpoint that issues a credential (login completion, second-factor verification, recovery completion, renewal) issues the session reference. Login completion includes every first factor that completes through it: form login, magic link, the OIDC handoff redemption and passwordless passkey login. None of them requires a token generator in this mode, and giving one is a configuration error.
 - **Wiring mistakes** (errors from `New`):
   - enabling both `EnableSessionBearer` and `EnableBearerToken`;
   - giving such an endpoint a token generator while the opaque mode is on. The token it minted would not be accepted by this chain.

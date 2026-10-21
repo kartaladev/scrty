@@ -1302,3 +1302,79 @@ func TestMFAVerifyThrottleAcrossMethods(t *testing.T) {
 	require.ErrorIs(t, out.err, mfa.ErrVerifyThrottled)
 	assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
 }
+
+// TestMFAVerifyRotationRefusals pins what a second factor verified on a
+// session that a renewal has already superseded is answered with. Inside the
+// renewal's window the strict rotation refuses it as a lost renewal race, a
+// 409 the client retries with the credential it now holds; after the window
+// it is reuse, a 401. A session that vanished from the store between the
+// endpoint's load and the rotation, its family revoked in between, is a
+// session the caller no longer holds: a 401 too. None is a server fault.
+func TestMFAVerifyRotationRefusals(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name  string
+		after time.Duration
+
+		// vanishes deletes the session from the store once the endpoint holds
+		// it, before the rotation.
+		vanishes bool
+		assert   func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:     "the session vanished before the rotation",
+			vanishes: true,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out.err, session.ErrSessionNotFound)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			name:  "inside the renewal's window",
+			after: 10 * time.Second,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrSessionRenewalConflict)
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			name:  "after the renewal's window",
+			after: 31 * time.Second,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out.err, session.ErrSessionReused)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+
+			s := h.pendingSession(t, factor.Password)
+
+			// A renewal of the same session, racing the verification: the
+			// verification still holds the session as it was before.
+			if tc.vanishes {
+				require.NoError(t, h.sessions.Delete(t.Context(), s.ID))
+			} else {
+				racing := *s
+				_, _, err := h.sessions.RotateWithGrace(t.Context(), &racing, 30*time.Second)
+				require.NoError(t, err)
+			}
+
+			h.clock.Advance(tc.after)
+
+			tc.assert(t, serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath)))
+		})
+	}
+}

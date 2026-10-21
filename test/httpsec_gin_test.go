@@ -2,14 +2,24 @@ package test_test
 
 import (
 	"context"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/ginsec"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
+	identitytest "github.com/kartaladev/scrty/test/identity"
 )
 
 // TestMain puts gin in test mode, so the output of a failing row is the row's
@@ -142,4 +152,118 @@ func TestConformanceGin(t *testing.T) {
 	t.Parallel()
 
 	httpsecconformance.Run(t, ginAdapter{})
+}
+
+// sessionReferenceFixture is a chain in the session-reference bearer mode over
+// the memory session store and the in-memory identity store, holding two
+// session references of one user: one live, and one superseded by a renewal
+// whose window has ended. Each is in a family of its own, so presenting the
+// reused one revokes nothing the live one depends on.
+type sessionReferenceFixture struct {
+	chain    *httpsec.Chain
+	sessions *session.Manager
+	live     string
+	reused   string
+	// successor is the identifier the rotation of the reused session issued;
+	// refusing reuse revokes its family, so it stops loading too.
+	successor string
+}
+
+func newSessionReferenceFixture(t *testing.T) sessionReferenceFixture {
+	t.Helper()
+
+	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+
+	sessions, err := session.NewManager(session.WithClock(clk),
+		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
+	require.NoError(t, err)
+
+	users := identitytest.NewInMemoryStore()
+	user, err := users.Provision(t.Context(), "ada")
+	require.NoError(t, err)
+
+	live, err := sessions.Create(t.Context(), user.ID, session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	reused, err := sessions.Create(t.Context(), user.ID, session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	successor, _, err := sessions.RotateWithGrace(t.Context(), reused, 30*time.Second)
+	require.NoError(t, err)
+
+	clk.Advance(31 * time.Second)
+
+	chain, err := httpsec.New(
+		httpsec.WithClock(clk),
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+	)
+	require.NoError(t, err)
+
+	return sessionReferenceFixture{
+		chain: chain, sessions: sessions, live: live.ID, reused: reused.ID, successor: successor.ID,
+	}
+}
+
+// TestSessionBearerGin runs the session-reference bearer through the gin
+// integration: a live reference reaches the route with its session, and a
+// reused one is refused 401. The integration needs no change for the mode.
+func TestSessionBearerGin(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		reference func(f sessionReferenceFixture) string
+		assert    func(t *testing.T, f sessionReferenceFixture, rec *httptest.ResponseRecorder, seen string)
+	}
+
+	cases := []testCase{
+		{
+			name:      "a live reference authenticates",
+			reference: func(f sessionReferenceFixture) string { return f.live },
+			assert: func(t *testing.T, f sessionReferenceFixture, rec *httptest.ResponseRecorder, seen string) {
+				assert.Equal(t, http.StatusOK, rec.Code)
+				assert.Equal(t, f.live, seen, "the route sees the referenced session")
+			},
+		},
+		{
+			name:      "a reused reference is refused",
+			reference: func(f sessionReferenceFixture) string { return f.reused },
+			assert: func(t *testing.T, f sessionReferenceFixture, rec *httptest.ResponseRecorder, seen string) {
+				assert.Equal(t, http.StatusUnauthorized, rec.Code)
+				assert.Empty(t, seen, "the route never ran")
+
+				_, err := f.sessions.Load(t.Context(), f.successor)
+				require.ErrorIs(t, err, session.ErrSessionNotFound, "the family was revoked, successor included")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSessionReferenceFixture(t)
+
+			var seen string
+
+			engine := gin.New()
+			engine.Use(ginsec.Middleware(f.chain))
+			engine.GET("/orders", func(gc *gin.Context) {
+				if s, ok := httpsec.SessionFromContext(gc.Request.Context()); ok {
+					seen = s.ID
+				}
+
+				gc.Status(http.StatusOK)
+			})
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+			req.Header.Set("Authorization", "Bearer "+tc.reference(f))
+
+			rec := httptest.NewRecorder()
+			engine.ServeHTTP(rec, req)
+
+			tc.assert(t, f, rec, seen)
+		})
+	}
 }

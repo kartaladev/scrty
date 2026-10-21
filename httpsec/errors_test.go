@@ -1,12 +1,18 @@
 package httpsec_test
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
@@ -125,5 +131,55 @@ func TestRefusalSentinelsAreDistinct(t *testing.T) {
 				assert.False(t, errors.Is(err, o), "%s must not match %s", name, other)
 			}
 		})
+	}
+}
+
+// TestSessionRenewalConflictIsTheSessionCoresRefusal pins that the chain's
+// renewal-conflict refusal wraps the session core's, so a consumer matching
+// either identity reaches both.
+func TestSessionRenewalConflictIsTheSessionCoresRefusal(t *testing.T) {
+	t.Parallel()
+
+	require.ErrorIs(t, httpsec.ErrSessionRenewalConflict, session.ErrSessionRenewalConflict)
+	assert.Contains(t, httpsec.ErrSessionRenewalConflict.Error(), "httpsec: ")
+}
+
+// TestReuseRefusalIsDistinguishable pins the refusal a superseded session
+// presented after its window is answered with: identifiable as the
+// reused-session, the authentication-required and the session-expired
+// refusal, and carrying no session identifier, the presented one or its
+// successor's, in its text.
+func TestReuseRefusalIsDistinguishable(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+	users := NewMockUserLoader(gomock.NewController(t))
+
+	successor, _, err := f.sessions.RotateWithGrace(t.Context(), f.session, 30*time.Second)
+	require.NoError(t, err)
+
+	f.clk.Advance(31 * time.Second)
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.WithClock(f.clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
+	)
+	require.NoError(t, err)
+
+	out := serve(t, chain, bearerRequest(t.Context(), "Bearer "+f.session.ID))
+
+	require.ErrorIs(t, out.err, session.ErrSessionReused)
+	require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+	require.ErrorIs(t, out.err, session.ErrSessionExpired)
+
+	text := out.err.Error()
+	assert.NotContains(t, text, f.session.ID)
+	assert.NotContains(t, text, successor.ID)
+
+	for _, id := range []string{f.session.ID, successor.ID} {
+		digest := sha256.Sum256([]byte(id))
+		assert.NotContains(t, text, hex.EncodeToString(digest[:]))
+		assert.NotContains(t, text, base64.RawURLEncoding.EncodeToString(digest[:]))
 	}
 }

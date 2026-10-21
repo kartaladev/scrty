@@ -106,7 +106,9 @@ type RecoveryDeps recovery.Deps
 // RecoveryResult is what a completed recovery produced, handed to whatever
 // writes the response.
 type RecoveryResult struct {
-	// Token is the access token issued for the recovery-pending session.
+	// Token is the access token issued for the recovery-pending session. With
+	// EnableSessionBearer on it is the session's identifier, the session
+	// reference, rather than a signed token.
 	Token string
 
 	// Recovery is what the recovery produced: the recovery-pending session,
@@ -471,6 +473,11 @@ func WithRecoveryCountRefusals(count bool) RecoveryOption {
 // A chain without form login must supply one, or New refuses it: a recovery
 // that produced a session the caller holds no credential for would spend both
 // proofs for nothing. A nil generator is refused.
+//
+// With EnableSessionBearer on, it must not be given: the credential is the
+// recovered session's identifier, a generator is a configuration error from
+// New (a token it minted would not be accepted by that chain), and form
+// login's generator is not used either.
 func WithRecoveryTokens(g token.Generator) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if err := requireDep("WithRecoveryTokens", "token generator", g); err != nil {

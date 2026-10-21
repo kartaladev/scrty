@@ -50,9 +50,25 @@
 // denial is returned, and a challenge is marked where its gate reads it, a
 // session entering the enrolment-only state being stored before the request
 // goes on. It refuses, running no policy, anything but the pair PublishSession
-// published. The built-in bearer authenticator resolves its session through
+// published. The built-in bearer authenticators resolve their sessions through
 // PublishSession and the same per-request handling, so a consumer's
-// interceptor refuses and marks exactly as it does.
+// interceptor refuses and marks exactly as they do.
+//
+// # Bearer modes
+//
+// A chain runs one bearer mode. The default is the signed token
+// (EnableBearerToken): every credential-issuing endpoint mints a token through
+// the consumer's generator, naming its session through the token's jti. The
+// opt-in alternative is the session reference (EnableSessionBearer): the
+// session's own identifier is the credential, and form login, magic link,
+// federated login redemption, passwordless passkey login, second-factor
+// verification and recovery completion issue it in place of a token. Both
+// modes run the same resolution core after extraction, so they refuse
+// identically, including a superseded session presented after its renewal
+// window, which is refused with ErrAuthenticationRequired joined to
+// session.ErrSessionReused once its family is revoked. Enabling both modes, or
+// giving a credential-issuing endpoint a token generator in the
+// session-reference mode, is a configuration error from New.
 //
 // # A credential field reads the body, and only the body
 //

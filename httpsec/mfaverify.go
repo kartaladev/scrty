@@ -20,7 +20,9 @@ import (
 // MFAResult is what a successful second factor produced, handed to whatever
 // writes the response.
 type MFAResult struct {
-	// Token is the access token issued for the rotated session.
+	// Token is the credential issued for the rotated session: an access
+	// token from WithMFATokens, or, with EnableSessionBearer on, the rotated
+	// session's own identifier.
 	Token string
 
 	// Session is the session, carrying its new handle.
@@ -59,6 +61,10 @@ type mfaInterceptor struct {
 	sessions *session.Manager
 	tokens   token.Generator
 	throttle *mfa.VerifyThrottle
+
+	// issue issues the rotated session's credential as the chain's bearer
+	// mode decides, settled at assembly (wireMFA).
+	issue credentialIssuer
 
 	// respond writes the response a successful verification answers with.
 	respond MFAResponder
@@ -161,6 +167,7 @@ func (c *config) wireMFA() error {
 
 		i.throttle = throttle
 		i.sessions = c.sessions
+		i.issue = c.credentialIssuer(i.tokens)
 		i.logoutPath = c.logoutPath
 
 		// The chain's sampler is built after every option has been applied,
@@ -448,7 +455,7 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	if err != nil {
 		rollback()
 
-		return err
+		return rotationRefusal(err)
 	}
 
 	// Published on the exchange and on the context, so a consumer's error
@@ -457,16 +464,37 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 	ex.Session = rotated
 	ex.SetContext(withSession(ex.Context(), rotated))
 
-	// Issued after the rotation, against the new identifier. The session
-	// identifier is the token's jti, so a token minted before the rotation
-	// would name the session that is about to be deleted — which is exactly
-	// how completing a second factor came to sign a caller out.
-	tok, err := i.tokens.Generate(ex.Context(), rotated.ID, ex.Authentication.Principal)
+	// Issued after the rotation, against the new identifier. A signed token
+	// names its session through its jti, and a session reference is the
+	// identifier itself, so a credential issued before the rotation would name
+	// the session that is about to be deleted — which is exactly how
+	// completing a second factor came to sign a caller out.
+	tok, err := i.issue(ex.Context(), rotated, ex.Authentication.Principal)
 	if err != nil {
-		return diag.Wrap(err, msgTokenNotIssued)
+		return err
 	}
 
 	return i.respond(ex, MFAResult{Token: tok, Session: rotated})
+}
+
+// rotationRefusal is what a failed strict rotation is refused with at the
+// endpoint. A session a concurrent renewal superseded inside its window is a
+// lost race, refused with ErrSessionRenewalConflict (409) so the client
+// retries with the credential it now holds. One presented after the window
+// has ended, as reuse or as needing renewal, and one that has vanished from
+// the store since the endpoint loaded it (its family revoked meanwhile), are
+// sessions the caller no longer holds, refused with ErrAuthenticationRequired
+// (401); the manager's error stays reachable, so reuse remains identifiable.
+// Anything else, a store failure, comes back as the manager worded it.
+func rotationRefusal(err error) error {
+	switch {
+	case errors.Is(err, session.ErrSessionRenewalConflict):
+		return ErrSessionRenewalConflict
+	case errors.Is(err, session.ErrSessionExpired), errors.Is(err, session.ErrSessionNotFound):
+		return errors.Join(ErrAuthenticationRequired, err)
+	default:
+		return err
+	}
 }
 
 // writeMFAResult is the response a second factor succeeds with when the

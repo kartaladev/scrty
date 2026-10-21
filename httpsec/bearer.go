@@ -105,30 +105,38 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 
 // presented reports the token an Authorization header carries, and whether this
 // interceptor claims the header at all.
+func (b *bearerToken) presented(header string) (string, bool) {
+	return presentedCredential(header, b.scheme, b.allowEmptyScheme)
+}
+
+// presentedCredential reports the credential an Authorization header carries
+// under scheme, and whether the header is claimed at all. Both bearer modes
+// extract through it, so they claim exactly the same headers.
 //
 // The scheme is compared without regard to case, as RFC 7235 requires, which is
 // deliberately unlike the exact match Basic authentication makes: a bearer
-// token's scheme is the one this chain issues tokens under, whereas "Basic"
-// names a scheme whose neighbours share the header.
-func (b *bearerToken) presented(header string) (string, bool) {
+// credential's scheme is the one this chain issues credentials under, whereas
+// "Basic" names a scheme whose neighbours share the header. A header naming the
+// scheme with nothing after it is not claimed.
+func presentedCredential(header, scheme string, allowEmptyScheme bool) (string, bool) {
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return "", false
 	}
 
-	scheme, rest, found := strings.Cut(header, " ")
+	got, rest, found := strings.Cut(header, " ")
 	if !found {
 		// A bare credential is indistinguishable from another scheme's opaque
 		// token, so it is claimed only where the consumer said this header
 		// carries nothing else.
-		if b.allowEmptyScheme {
+		if allowEmptyScheme {
 			return header, true
 		}
 
 		return "", false
 	}
 
-	if !strings.EqualFold(scheme, b.scheme) {
+	if !strings.EqualFold(got, scheme) {
 		return "", false
 	}
 
