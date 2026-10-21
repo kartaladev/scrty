@@ -222,7 +222,7 @@ A chain whose session manager coalesces activity writes SHALL fail construction 
 - **THEN** the chain builds
 
 ### Requirement: A renewal does not refresh authentication for freshness checks
-An endpoint that requires a recent authentication SHALL judge it by when the sign-in authenticated or a second factor was last satisfied, never by when the session was last renewed.
+An endpoint that requires a recent authentication SHALL judge it by the session's authentication time, never by when the session was created or last renewed.
 
 #### Scenario: Recovery codes after a renewal
 - **WHEN** a session signed in at 09:00 is renewed at 15:00, and at 15:01 it asks to regenerate recovery codes under a 15-minute freshness window

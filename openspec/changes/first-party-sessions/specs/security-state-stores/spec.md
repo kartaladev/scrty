@@ -126,3 +126,10 @@ Recording activity SHALL store an idle deadline no later than the absolute deadl
 #### Scenario: Absolute deadline lowered by another request
 - **WHEN** a session's stored absolute deadline is lowered to 09:15 after a request loaded it, and that request then records activity with an idle deadline of 09:31
 - **THEN** the stored idle deadline is 09:15
+
+### Requirement: Every stored session belongs to a family
+Creating a session in a store SHALL be refused with an error, and nothing SHALL be written, when the session belongs to no family (the nil family identifier).
+
+#### Scenario: Session with no family refused at creation
+- **WHEN** a session whose family is the nil identifier is created through the store
+- **THEN** the creation fails with an error and the session does not load

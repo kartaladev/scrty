@@ -99,6 +99,8 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `WithSessionManager(*session.Manager) Option` (the chain's manager for activity and per-request marking; takes precedence over built-ins' managers; nil is a configuration error), added after the review of tasks 5.1–5.3;
     - `ErrSessionRenewalConflict`, re-exported from `session` by wrapping, as existing session sentinels are mapped.
   - Added for group 9 (design "Pull request review (2026-10-21)"):
+    - `session.Session.AuthenticatedAt time.Time`: when the user last authenticated; set at `Create`, refreshed when a second factor is satisfied, carried over by every renewal; the only time freshness checks read (decided 2026-10-22). `CreatedAt` is when the record was written;
+    - every `Store.Create` refuses a session whose `FamilyID` is `id.Nil`, writing nothing (decided 2026-10-22);
     - `session.Supersession.RetainUntil time.Time`: the retention deadline the manager computes (`FamilyCreatedAt` plus the family maximum), written as both deadlines of every record the supersession supersedes;
     - `session.ErrSessionSuperseded`: `Store.MarkPresented` on a superseded record writes nothing and returns it;
     - `(*session.Manager).TouchInterval() time.Duration`, beside `IdleTimeout()` and `AbsoluteTimeout()`;
@@ -147,12 +149,12 @@ Read the design and the spec deltas your task names before starting it. Plan tas
 | 6 (after C2) | C3 | 7.1–7.2 | a new `httpsec/renewal.go` and `httpsec/renewal_test.go` | Opus: a security endpoint and its races |
 | 7 (after C3) | C4 | 7.3–7.5 | `httpsec/renewal.go`, `httpsec/login.go`, `httpsec/logincomplete.go`, and their tests | Sonnet: option plumbing to a stated contract |
 | 8 | main | 8.1–8.2 | — | Opus reviewer for 8.1 |
-| 9a (parallel) | S1 | 9.1–9.3 | `session/reuse.go`, `session/manager.go`, `session/*_test.go` for them, `httpsec/recoverycodes_test.go` (test only) | Opus: rotation races and an authentication-time rule, security-critical |
-| 9b (parallel) | D1 | 9.4 | `migrate/securitystate/20261021000000_session_families.sql`, `test/migrate_securitystate_test.go` | Sonnet: two column defaults and their test |
-| 9c (parallel) | H1 | 9.5 | new `session/interval.go`, `policy/idle.go`, `policy/engine.go`, `httpsec/options.go`, the `EnableSessionRenewal` godoc in `httpsec/renewal.go`, and their tests | Sonnet: a construction check across stated seams |
-| 9d (after S1) | S2 | 9.6, memory side | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/reuse.go`, `session/manager.go`, `test/storetest/session_suite.go`, `broken_session_test.go`, `broken_test.go` | Opus: a port change other lanes compile against |
-| 9e (after S2) | D2 | 9.6, durable side | `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `test/storetest/ambient.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go` | Opus: conditional writes and lock order |
-| 9f (after D2) | S3 | 9.7 | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/manager.go`, the four durable files above, the suite files | Opus: an atomic store condition replacing a race guard |
+| 9a (parallel) | S1 | 9.1, 9.2 | `session/session.go` (field), `session/reuse.go`, `session/manager.go`, `session/memory.go` and `session/encrypted.go` (carry the field), `session/*_test.go` for them, `httpsec/recoverycodes.go` and its test | Opus: an authentication-time rule and rotation races, security-critical |
+| 9b (parallel) | H1 | 9.5 | new `session/interval.go`, `policy/idle.go`, `policy/engine.go`, `httpsec/options.go`, the `EnableSessionRenewal` godoc in `httpsec/renewal.go`, and their tests | Sonnet: a construction check across stated seams |
+| 9c (after S1) | D1 | 9.4 | `migrate/securitystate/20261021000000_session_families.sql`, `test/migrate_securitystate_test.go`, `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go`, `test/testutils_postgres_test.go` | Sonnet: column defaults, a new column and its plumbing |
+| 9d (after S1, parallel with D1) | S2 | 9.3 and 9.6, memory side | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/reuse.go`, `session/manager.go`, `httpsec/logout.go` and its tests, every test fixture creating a family-less session, `test/storetest/session_suite.go`, `broken_session_test.go`, `broken_test.go` | Opus: a port change other lanes compile against |
+| 9e (after D1, S2) | D2 | 9.3 and 9.6, durable side | `internal/pgschema/sessions.go`, the three durable session files, `test/storetest/ambient.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go` | Opus: conditional writes and lock order |
+| 9f (after D2) | S3 | 9.7 | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/manager.go`, the four durable files, the suite files | Opus: an atomic store condition replacing a race guard |
 | 9g (after S3) | D3 | 9.8 | `internal/storekit/`, the three durable session files | Opus: a refactor that must keep behaviour |
 | 9h | main | 9.9 | — | Opus reviewer |
 
@@ -575,39 +577,63 @@ UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_prese
 
 ---
 
-### Tasks 9.1–9.3: Renewal is not an authentication, and second-factor rotation in flight
+### Tasks 9.1–9.2: The authentication time, and second-factor rotation in flight
 
-Design: "Pull request review (2026-10-21)", findings 1–4. Specs: `sessions` requirements "A renewal is not an authentication", "Rotation at second-factor verification keeps the old identifier only in flight", "A failed delete does not fail a second-factor rotation", "A session with no family is rotated without supersession"; `http-security-chain` "A renewal does not refresh authentication for freshness checks". Every claim is `UNREPRODUCED` until its first test fails; a test that passes on the current code is reported, and the main session withdraws the decision.
+Design: "Pull request review (2026-10-21)", findings 1–3 (finding 1 as decided 2026-10-22). Specs: `sessions` requirements "A session records when the user last authenticated", "Rotation at second-factor verification keeps the old identifier only in flight", "A failed delete does not fail a second-factor rotation"; `http-security-chain` "A renewal does not refresh authentication for freshness checks". Every claim is `UNREPRODUCED` until its first test fails; a test that passes on the current code is reported, and the main session withdraws the decision.
 
 **Files:**
-- Modify: `session/reuse.go` (`RotateWithGrace`: successor creation), `session/manager.go` (`Rotate`)
-- Test: `session/renewal_test.go`, `session/rotate_strict_race_test.go`, `session/family_manager_test.go`, `httpsec/recoverycodes_test.go`
+- Modify: `session/session.go` (`AuthenticatedAt time.Time` beside `MFASatisfiedAt`, copied by `clone`), `session/manager.go` (`Create` sets it; second-factor satisfaction refreshes it; `Rotate`), `session/reuse.go` (`RotateWithGrace` carries it over and sets the successor's `CreatedAt` to the renewal time), `session/memory.go` (the six library-only fields that `Save` preserves gain `AuthenticatedAt`, so a stale copy cannot move it), `session/encrypted.go` (nothing to seal; confirm it passes through), `httpsec/recoverycodes.go` (freshness reads `s.AuthenticatedAt` only)
+- Test: `session/renewal_test.go`, `session/create_test.go`, `session/rotate_strict_race_test.go`, `httpsec/recoverycodes_test.go`
 
 **Interfaces:**
-- Consumes: `RotateWithGrace`, `Rotate`, `Store.Supersede`, `Store.Delete`, `DefaultRenewalGrace` (30 s; add it as an exported constant beside `MaxRenewalGrace` if it does not exist, and make the renewal endpoint's default grace refer to it).
-- Produces: no new API.
+- Produces: `Session.AuthenticatedAt`; `DefaultRenewalGrace` (30 s, exported beside `MaxRenewalGrace` if it does not exist; the renewal endpoint's default grace refers to it).
+- Consumes: `RotateWithGrace`, `Rotate`, `Store.Supersede`, `Store.Delete`, the second-factor satisfaction path (find it with gopls: the code that sets `MFASatisfiedAt`).
 
-- [ ] **Step 1 (9.1 red):** in `session/renewal_test.go`, a case "a renewal keeps the creation time": create at 09:00, `RotateWithGrace` at 15:00, assert `successor.CreatedAt == 09:00`. In `httpsec/recoverycodes_test.go`, a case "regeneration after a renewal still needs reauthentication": sign in at 09:00, renew at 15:00 through `EnableSessionRenewal`, regenerate at 15:01 under the default 15-minute freshness, expect `recovery.ErrReauthenticationRequired` and no new codes. Run `go test -count=1 -run 'Renewal|Recovery' ./session/ ./httpsec/`. Expected: FAIL (`CreatedAt` is 15:00; regeneration succeeds).
-- [ ] **Step 2 (9.1 green):** in `RotateWithGrace`, drop `next.CreatedAt = now`; the successor keeps `old.CreatedAt`. `LastAccessedAt` stays `now`. Update the `RotateWithGrace` godoc: "a renewal is not an authentication; the successor keeps the time its sign-in authenticated". Run both packages. Expected: PASS.
-- [ ] **Step 3 (9.2 red):** in `session/rotate_strict_race_test.go`, a store wrapper whose `Supersede` signals and then waits on a channel before returning lets a `Load` of the old identifier run between the strict rotation's `Supersede` and its `Delete`. Case "a load between the writes returns the old session": the load returns the old session (same `UserID`, MFA still pending) and nothing is revoked (the successor loads afterwards). Case "a failed delete does not fail the rotation": a store whose `Delete` returns an error; `Rotate` returns the successor with nil error, the old identifier loads at +10 s, and at +31 s it is reuse. Run `go test -count=1 -race -run 'TestRotate' ./session/`. Expected: FAIL (reuse revokes the family; `Rotate` returns the delete error).
-- [ ] **Step 4 (9.2 green):** in `Rotate`, supersede with `AcceptUntil: now.Add(DefaultRenewalGrace)` (capped at the old absolute deadline as `RotateWithGrace` does), then delete; on a delete error, log it at error with the fixed reason and the family id (no identifier) and return the successor. Keep the per-identifier lock and the existing two-live-heads tests green. Update the godoc. Run `go test -count=1 -race ./session/...` and `go test -race -count=50 -run 'Race|Racing|Concurrent' ./session/`.
-- [ ] **Step 5 (9.3 red):** in `session/family_manager_test.go`, a session created directly with `store.Create` and a zero `FamilyID`: `Rotate` returns a successor whose `FamilyID` is not nil and the old identifier is not found; `RotateWithGrace` of such a session returns an error matching `ErrSessionExpired` and stores nothing. Expected: FAIL (`Rotate` fails with "a session with no family cannot be superseded").
-- [ ] **Step 6 (9.3 green):** in `Rotate`, when `old.FamilyID.IsZero()`, create the successor with a new family from the manager's family generator (`FamilyCreatedAt = now`) through `store.Create`, then delete the old record. In `RotateWithGrace`, refuse a zero family before any write with an error wrapping `ErrSessionExpired`. Godoc on both. Run the session suite.
-- [ ] **Step 7: commit** `fix(session): a renewal keeps the sign-in's authentication time, and second-factor rotation tolerates requests in flight`.
+- [ ] **Step 1 (9.1 red):** add the field and stub it unset. Tests:
+  - `create_test.go`, "a sign-in records its authentication time": created at 09:00 → `AuthenticatedAt == 09:00`.
+  - `renewal_test.go`, "a renewal carries the authentication time over": created 09:00, `RotateWithGrace` at 15:00 → successor `AuthenticatedAt == 09:00`, `CreatedAt == 15:00`.
+  - a second-factor case: signed in 09:00, satisfied at 09:20 → `AuthenticatedAt == 09:20`.
+  - `httpsec/recoverycodes_test.go`, "regeneration after a renewal still needs reauthentication": sign in 09:00, renew 15:00 through `EnableSessionRenewal`, regenerate 15:01 under the default 15-minute freshness → `recovery.ErrReauthenticationRequired`, no new codes.
+  Run `go test -count=1 -run 'Create|Renewal|Recovery|Satisf' ./session/ ./httpsec/`. Expected: FAIL (zero field; regeneration allowed because the successor's `CreatedAt` is 15:00).
+- [ ] **Step 2 (9.1 green):** set it in `Create` (`s.AuthenticatedAt = s.CreatedAt` before options run, so a consumer `CreateOption` may still override it), refresh it wherever `MFASatisfiedAt` is set, carry it over in `RotateWithGrace` and `Rotate` (the successor is a clone), keep it in `Save`'s preserved fields, and change `regenerate` to `if i.now().Sub(s.AuthenticatedAt) > i.freshness`. Godoc on the field: what sets it, that renewal never does, that freshness checks read it. Run both packages and the memory conformance runner. Durable runners do not round-trip the field until 9.4: confirm they compile.
+- [ ] **Step 3 (9.2 red):** in `session/rotate_strict_race_test.go`, a store wrapper whose `Supersede` signals and waits on a channel lets a `Load` of the old identifier run between the strict rotation's `Supersede` and `Delete`. Case "a load between the writes returns the old session": the old session comes back (same `UserID`, second factor still pending) and the successor loads afterwards. Case "a failed delete does not fail the rotation": a store whose `Delete` errors; `Rotate` returns the successor with nil error; the old identifier loads at +10 s and is reuse at +31 s. Run `go test -count=1 -race -run 'TestRotate' ./session/`. Expected: FAIL (reuse revokes the family; `Rotate` returns the delete error).
+- [ ] **Step 4 (9.2 green):** supersede with `AcceptUntil: minTime(now.Add(DefaultRenewalGrace), s.AbsoluteExpiresAt)`, then delete; on a delete error, log at error with the fixed reason and the family id, never an identifier, and return the successor. Keep the per-identifier lock; the two-live-heads tests stay green. Run `go test -count=1 -race ./session/...` and `go test -race -count=50 -run 'Race|Racing|Concurrent' ./session/`.
+- [ ] **Step 5: commit** `fix(session): record when the user last authenticated, and let second-factor rotation tolerate requests in flight`.
 
 ---
 
-### Task 9.4: Migration defaults for older writers
+### Task 9.3: Every stored session belongs to a family
 
-Design finding 5. Spec: `schema-migrations` scenario "An older writer's insert".
+Design finding 4, decided 2026-10-22. Spec: `security-state-stores` requirement "Every stored session belongs to a family". Done by S2 (memory store, suite, removal of the tolerant paths) and D2 (durable `Create`).
 
 **Files:**
-- Modify: `migrate/securitystate/20261021000000_session_families.sql` (unreleased)
-- Test: `test/migrate_securitystate_test.go`
+- Modify (S2): `session/memory.go` (`Create` refuses `id.Nil` before writing), `session/encrypted.go` (passes the refusal through), `httpsec/logout.go` (drop the family-less fallback delete: logout always revokes the family), `session/store.go` (`Create` godoc states the rule)
+- Modify (D2): `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go` (`Create` refuses `id.Nil` before any statement)
+- Test: `test/storetest/session_suite.go` ("creating a session with no family is refused and stores nothing"), `broken_session_test.go` and `broken_test.go` (a variant that accepts it), and every fixture that creates a session without a family (find them by running the suites after the refusal: `session/*_test.go`, `httpsec/*_test.go`, `test/storetest/*`), each given a family with `id.MustParse` or the suite's family helper
 
-- [ ] **Step 1 (red):** a `TestSecurityStateMigrations_SessionFamilies` subtest "an older writer's insert succeeds": after applying, `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at) VALUES (...)` succeeds, and the row's `family_id` is non-null and `family_created_at` is non-null. Run on PostgreSQL 18 and 15 (`SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`). Expected: FAIL with SQLSTATE 23502.
-- [ ] **Step 2 (green):** after the backfill and `SET NOT NULL`, add `ALTER TABLE sessions ALTER COLUMN family_id SET DEFAULT gen_random_uuid();` and `ALTER TABLE sessions ALTER COLUMN family_created_at SET DEFAULT now();`, one statement per line as the file's style requires. The Down step drops the columns, so it needs no change; confirm the rollback snapshot test still passes. Update the pinned column strings in the schema test if they include defaults.
-- [ ] **Step 3: commit** `fix(migrate): session family columns default for older writers`.
+- [ ] **Step 1 (red, S2):** the suite case and its broken variant. Run `(cd test && go test -count=1 -run 'TestMemory|TestSuitesCatchBrokenStores' ./storetest/)`. Expected: FAIL (the memory store accepts a family-less session).
+- [ ] **Step 2 (green, S2):** add the refusal; give every failing fixture a family (a fixture fix, never a weakened assertion; list them in the report); remove logout's fallback and its family-less test case. Run `go test -race -count=1 ./session/... ./httpsec/...` and the memory runner.
+- [ ] **Step 3 (red then green, D2):** the durable runners fail the new case; add the refusal in each `Create`, before any statement. Run the durable session suites on PostgreSQL 18 and 15.
+- [ ] **Step 4: commit** (with 9.6) `fix(session): every stored session belongs to a family`.
+
+---
+
+### Task 9.4: Migration defaults and the authentication time column
+
+Design findings 1 and 5. Specs: `schema-migrations` scenario "An older writer's insert" and requirement "The security-state set adds the session authentication time".
+
+**Files:**
+- Modify: `migrate/securitystate/20261021000000_session_families.sql` (unreleased): add `authenticated_at timestamptz`, backfill `UPDATE sessions SET authenticated_at = greatest(created_at, coalesce(mfa_satisfied_at, created_at))`, then `SET NOT NULL` and `SET DEFAULT now()`; add `SET DEFAULT gen_random_uuid()` on `family_id` and `SET DEFAULT now()` on `family_created_at`; the Down step drops `authenticated_at` too (`IF EXISTS`, one statement per line as the file's style requires)
+- Modify: `internal/pgschema/sessions.go` (insert and select name `authenticated_at`; `SessionUpdate` leaves it alone, like the other library-only columns), `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go` (map the column; `Save`'s omit list gains it), `test/gormstore/statements_test.go` (pinned statement text)
+- Test: `test/migrate_securitystate_test.go`; the existing raw `INSERT INTO sessions` in `test/testutils_postgres_test.go` must still pass without naming the new column (that is the older-writer case)
+
+- [ ] **Step 1 (red):** in `TestSecurityStateMigrations_SessionFamilies`:
+  - "an older writer's insert succeeds": after applying, an insert naming neither family column nor `authenticated_at` succeeds, and all three are non-null;
+  - "existing rows get their authentication time": a row created at 09:00 with `mfa_satisfied_at` 09:20 before the migration reads 09:20 after it, and one with no second factor reads 09:00;
+  - the column snapshot and rollback cases include `authenticated_at`.
+  And the session suite's round-trip case asserts `AuthenticatedAt` (S1 already added it to `assertSession`; if not, add it). Run on PostgreSQL 18 and 15 (`SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`). Expected: FAIL (SQLSTATE 23502; missing column; zero `AuthenticatedAt` from the durable stores).
+- [ ] **Step 2 (green):** write the migration and the store plumbing as listed. Run the migration suite and the durable session suites on both versions.
+- [ ] **Step 3: commit** `fix(migrate): default the session family columns and add the authentication time`.
 
 ---
 

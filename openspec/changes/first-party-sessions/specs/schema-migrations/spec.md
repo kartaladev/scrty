@@ -19,3 +19,10 @@ A new security-state migration SHALL add to the sessions table: a non-null uuid 
 #### Scenario: An older writer's insert
 - **WHEN** after the migration a session is inserted by a statement that names neither family column
 - **THEN** the insert succeeds, and the row has a family identifier and a family start time
+
+### Requirement: The security-state set adds the session authentication time
+The same migration SHALL add a non-null authentication time to the sessions table, defaulting to the insert time, and SHALL backfill each existing row with the later of its creation time and its second-factor satisfaction time. Rolling it back SHALL remove the column.
+
+#### Scenario: Existing session backfilled
+- **WHEN** the migration is applied to a session created at 09:00 whose second factor was satisfied at 09:20
+- **THEN** the session reports 09:20 as its authentication time

@@ -228,12 +228,16 @@ With unused-successor recovery enabled, loading a superseded identifier after it
 - **THEN** the load fails with the renewal-required error, which matches the expired-session error
 - **AND** S1 still loads
 
-### Requirement: A renewal is not an authentication
-A successor SHALL keep its predecessor's creation time, the time the sign-in authenticated. Only a sign-in or a satisfied second factor SHALL count as authenticating.
+### Requirement: A session records when the user last authenticated
+Every session SHALL record the time the user last authenticated: the sign-in time at creation, refreshed when a second factor is satisfied. A renewal SHALL carry it over unchanged, because a renewal is not an authentication. A session's creation time SHALL be when that record was written.
 
-#### Scenario: Renewal keeps the creation time
+#### Scenario: Renewal keeps the authentication time
 - **WHEN** a session created at 09:00 is renewed at 15:00
-- **THEN** the successor reports its creation time as 09:00
+- **THEN** the successor reports 09:00 as its authentication time and 15:00 as its creation time
+
+#### Scenario: A second factor refreshes the authentication time
+- **WHEN** a session signed in at 09:00 satisfies a second factor at 09:20
+- **THEN** it reports 09:20 as its authentication time
 
 ### Requirement: Rotation at second-factor verification keeps the old identifier only in flight
 Rotating without a grace window SHALL supersede the old session with a short in-flight window and then delete it. A load of the old identifier between the two writes SHALL return the old session as it was, and SHALL NOT be judged as reuse.
@@ -248,13 +252,6 @@ When the delete after a rotation without a grace window fails, the rotation SHAL
 #### Scenario: Delete fails
 - **WHEN** the delete after a strict rotation fails
 - **THEN** the rotation returns the successor, and the old identifier loads until its in-flight window ends
-
-### Requirement: A session with no family is rotated without supersession
-Rotating without a grace window a session that belongs to no family SHALL create the successor in a new family and delete the old session. Rotating such a session with a grace window SHALL fail with the expired-session error.
-
-#### Scenario: Session with no family
-- **WHEN** a session stored with no family is rotated at second-factor verification
-- **THEN** the successor is returned and belongs to a family
 
 ### Requirement: Rotation at second-factor verification refuses a superseded session
 Rotating without a grace window a session that is superseded and still inside its window SHALL fail with the renewal-conflict error and SHALL write nothing, so the client retries with its current credential and the family keeps one live head. Past its window it SHALL be answered as loading it would be.
