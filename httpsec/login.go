@@ -150,6 +150,10 @@ type formLogin struct {
 	passwordParam string
 	bodyLimit     int64
 	respond       LoginResponder
+
+	// lifetime chooses the session's absolute lifetime, and nil keeps the
+	// manager's absolute timeout.
+	lifetime func(*Exchange, LoginFields) time.Duration
 }
 
 // wire takes the settings the chain resolved. It runs once, after every option
@@ -310,7 +314,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		return next(ex)
 	}
 
-	username, password, err := l.bind(ex.Request)
+	username, password, fields, err := l.bind(ex.Request)
 	if err != nil {
 		return err
 	}
@@ -350,6 +354,14 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 
 	ex.Authentication = auth
 
+	var create []session.CreateOption
+
+	if l.lifetime != nil {
+		if d := l.lifetime(ex, fields); d > 0 {
+			create = append(create, session.WithAbsoluteLifetime(d))
+		}
+	}
+
 	tok, err := completeLogin(ex, loginTailDeps{
 		engine:            l.engine,
 		sessions:          l.sessions,
@@ -360,7 +372,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 		challengeMethods:  l.challengeMethods,
 		cancelHeld:        l.cancelHeld,
 	}, postAuthenticationInput(
-		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now))
+		auth.Principal, factor.Password, username, auth.PasswordChangedAt, now), create...)
 	if err != nil {
 		return err
 	}
@@ -450,38 +462,55 @@ func (l *formLogin) checkPassword(ctx context.Context, username string, password
 	return err
 }
 
-// bind reads the submitted identifier and password out of the request.
+// bind reads the submitted identifier and password out of the request, and
+// the other fields it carried, without the password.
 //
 // The body is read under the bound first, because everything after it parses
 // what was read: an unauthenticated endpoint that parses before it bounds has
 // already spent the memory the bound exists to cap.
-func (l *formLogin) bind(r Request) (string, []byte, error) {
+func (l *formLogin) bind(r Request) (string, []byte, LoginFields, error) {
 	body, err := r.Body(l.bodyLimit)
 	if err != nil {
-		return "", nil, err
+		return "", nil, LoginFields{}, err
 	}
 
-	username, password := l.bindForm(r, body)
+	fields := l.bindForm(r, body)
+	username, password := l.credentials(fields)
 
 	// The JSON body is read only when the form yielded neither field, so a
 	// form login is never re-read as JSON and a client that sent both is not
 	// silently judged on the one it did not mean.
 	if username == "" && password == "" {
-		username, password, err = l.bindJSON(r, body)
+		fields, err = l.bindJSON(r, body)
 		if err != nil {
-			return "", nil, err
+			return "", nil, LoginFields{}, err
 		}
+
+		username, password = l.credentials(fields)
 	}
 
 	if username == "" || password == "" {
-		return "", nil, ErrCredentialsMissing
+		return "", nil, LoginFields{}, ErrCredentialsMissing
 	}
 
-	return username, []byte(password), nil
+	// The password is taken out of what the lifetime function may read, so
+	// that function can never see, log or echo it.
+	delete(fields, l.passwordParam)
+
+	return username, []byte(password), LoginFields{values: fields}, nil
 }
 
-// bindForm reads the credentials out of the parsed POST body, and only out of
-// it.
+// credentials reads the identifier and the password from the submitted fields;
+// a member that is absent or not a string is empty.
+func (l *formLogin) credentials(fields map[string]any) (string, string) {
+	username, _ := fields[l.usernameParam].(string)
+	password, _ := fields[l.passwordParam].(string)
+
+	return username, password
+}
+
+// bindForm reads the submitted fields out of the parsed POST body, and only
+// out of it. A field sent more than once is read as its first value.
 //
 // Request.FormValue looks in the posted form first and falls back to the URL
 // query, on every adapter. A credential accepted from a query string is a
@@ -494,40 +523,42 @@ func (l *formLogin) bind(r Request) (string, []byte, error) {
 // A body that does not declare itself a form is left to bindJSON, and one that
 // does not parse yields no credential rather than half of one: a pair the
 // client did not send is not a pair this endpoint invents.
-func (l *formLogin) bindForm(r Request, body []byte) (string, string) {
+func (l *formLogin) bindForm(r Request, body []byte) map[string]any {
 	if !declaresForm(r.Header("Content-Type")) {
-		return "", ""
+		return nil
 	}
 
 	values, err := url.ParseQuery(string(body))
 	if err != nil {
-		return "", ""
+		return nil
 	}
 
-	return values.Get(l.usernameParam), values.Get(l.passwordParam)
+	fields := make(map[string]any, len(values))
+	for name := range values {
+		fields[name] = values.Get(name)
+	}
+
+	return fields
 }
 
-// bindJSON reads the credentials from a body that declares itself JSON.
+// bindJSON reads the submitted members from a body that declares itself JSON.
 //
 // A body that declares another media type is not read as JSON even when it
 // would parse: what a body is, is what the request says it is, and guessing
 // would let a client reach this path without saying so.
-func (l *formLogin) bindJSON(r Request, body []byte) (string, string, error) {
+func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 	if len(body) == 0 || !declaresJSON(r.Header("Content-Type")) {
-		return "", "", nil
+		return nil, nil
 	}
 
 	var fields map[string]any
 	if err := json.Unmarshal(body, &fields); err != nil {
 		// The client's mistake, and reported as one: it says nothing about the
 		// account, because no account has been looked at yet.
-		return "", "", ErrCredentialsMissing
+		return nil, ErrCredentialsMissing
 	}
 
-	username, _ := fields[l.usernameParam].(string)
-	password, _ := fields[l.passwordParam].(string)
-
-	return username, password, nil
+	return fields, nil
 }
 
 // declaresJSON reports whether a content type names JSON, ignoring parameters
@@ -659,3 +690,20 @@ type loginDocument struct {
 	RefreshToken string    `json:"refresh_token"`
 	ValidUntil   time.Time `json:"valid_until"`
 }
+
+// LoginFields are the fields a login request carried, as WithLoginLifetime's
+// function reads them: the form values (each as its string) or the members of
+// the JSON object (each as decoded), by name.
+//
+// The configured password parameter (WithLoginParams, default
+// DefaultLoginPasswordParam) is dropped before the fields are built, so
+// Value never reports it, whatever the request sent. The library does not
+// interpret the rest: a consumer-defined field such as "remember" is returned
+// as submitted, a string from a form and a decoded value from JSON, and its
+// meaning belongs to the consumer. The zero value carries no fields.
+type LoginFields struct{ values map[string]any }
+
+// Value returns the field called name and whether the request carried it. The
+// password parameter is never carried. The result must be treated as
+// read-only.
+func (f LoginFields) Value(name string) (any, bool) { v, ok := f.values[name]; return v, ok }

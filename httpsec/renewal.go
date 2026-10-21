@@ -112,6 +112,10 @@ type sessionRenewal struct {
 	path    string
 	grace   time.Duration
 	respond RenewalResponder
+
+	// lifetime chooses the successor's absolute lifetime, and nil carries the
+	// predecessor's deadline over.
+	lifetime func(*Exchange, *session.Session) time.Duration
 }
 
 // answers reports whether r is a renewal: POST on exactly the endpoint's path.
@@ -149,7 +153,7 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 		}
 	}
 
-	successor, kind, err := r.sessions.RotateWithGrace(ctx, s, r.grace)
+	successor, kind, err := r.sessions.RotateWithGrace(ctx, s, r.grace, r.rotateOptions(ex, s)...)
 	if err != nil {
 		return renewalRefusal(err)
 	}
@@ -160,6 +164,21 @@ func (r *sessionRenewal) Intercept(ex *Exchange, next Next) error {
 	}
 
 	return r.respond(ex, RenewalResult{Credential: credential, Session: successor, User: details, Kind: kind})
+}
+
+// rotateOptions are the rotation options the consumer's lifetime function asks
+// for: none when there is no function or it returns zero or less, which
+// carries the deadline over.
+func (r *sessionRenewal) rotateOptions(ex *Exchange, s *session.Session) []session.RotateOption {
+	if r.lifetime == nil {
+		return nil
+	}
+
+	if d := r.lifetime(ex, s); d > 0 {
+		return []session.RotateOption{session.WithSuccessorLifetime(d)}
+	}
+
+	return nil
 }
 
 // renewing is the session this request renews: the one the chain resolved
@@ -291,7 +310,9 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // document carrying the successor's credential, with 200 and
 // Cache-Control: no-store (WithRenewalResponder). Every other request,
 // including any other method on the path, passes through untouched. The
-// successor carries its predecessor's absolute deadline over.
+// successor carries its predecessor's absolute deadline over, unless
+// WithRenewalLifetime chooses a new lifetime, which the manager's lifetime and
+// family maxima bound.
 //
 // For a renewal it:
 //
@@ -463,7 +484,8 @@ func (r *sessionRenewal) resolveSessions(c *config, option string, given *sessio
 // WithRenewalPath answers renewals on path instead.
 //
 // Default: DefaultSessionRenewalPath. An empty path is refused, because it
-// would answer nothing; so is the logout path, when the chain is built.
+// would answer nothing; so is the logout path, when the chain is built. A
+// client that renews posts to the path chosen here, so change it on both sides.
 func WithRenewalPath(path string) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
 		if path == "" {
@@ -485,6 +507,13 @@ func WithRenewalPath(path string) SessionRenewalOption {
 // in which a stolen credential works as well as the real one, so it is
 // bounded: a d below 0 or above session.MaxRenewalGrace (inclusive) is
 // refused with a configuration error. A d of 0 ends the window at once.
+//
+// A renewed credential presented after its window is reuse: the manager
+// revokes the session's whole family. That revocation is a store write, so a
+// consumer that rolls its request transaction back on a refusal must commit
+// when errors.Is(err, session.ErrSessionReused) (see EnableSessionRenewal).
+// Clients should switch to the successor as soon as renewal returns, and retry
+// the requests they queued with it, so they rarely need the window at all.
 func WithRenewalGrace(d time.Duration) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
 		if d < 0 || d > session.MaxRenewalGrace {
@@ -504,7 +533,9 @@ func WithRenewalGrace(d time.Duration) SessionRenewalOption {
 // successor's credential and validity, with 200 and Cache-Control: no-store.
 // A consumer renders its own envelope here, and may write an audit record
 // inside its own transaction. A responder that writes the credential should
-// forbid caching it too. A nil function is refused.
+// forbid caching it too. A nil function is refused. The result carries the
+// successor's credential, never the renewed one, and a client should switch to
+// it as soon as the response arrives.
 func WithRenewalResponder(fn RenewalResponder) SessionRenewalOption {
 	return func(r *sessionRenewal) error {
 		if fn == nil {
@@ -513,6 +544,37 @@ func WithRenewalResponder(fn RenewalResponder) SessionRenewalOption {
 		}
 
 		r.respond = fn
+
+		return nil
+	}
+}
+
+// WithRenewalLifetime lets fn choose the absolute lifetime of the successor
+// each renewal writes, given the exchange and the session being renewed.
+//
+// Default: with no option, or when fn returns zero or less, the successor
+// carries its predecessor's absolute deadline over, so renewing extends only
+// the idle deadline and a session never outlives the lifetime it was created
+// with. A positive d gives the successor a deadline of now plus d
+// (session.WithSuccessorLifetime), which is how a consumer lets an active
+// client stay signed in for longer than the original lifetime.
+//
+// The manager holds the answer to its maxima. A d above the manager's lifetime
+// maximum (session.WithMaxAbsoluteLifetime) is a wiring mistake: the renewal
+// is refused with session.ErrConfig, a 500, and nothing is stored, so the
+// client still holds a working credential. A deadline that would pass the
+// family maximum (session.WithMaxFamilyLifetime) is cut to end exactly there:
+// the family has run out, and the client signs in again. fn runs after the
+// user is reloaded and before anything is rotated, and it must not block. A
+// nil fn is refused when the chain is built.
+func WithRenewalLifetime(fn func(*Exchange, *session.Session) time.Duration) SessionRenewalOption {
+	return func(r *sessionRenewal) error {
+		if fn == nil {
+			return newConfigError("WithRenewalLifetime was given no function; omit the option " +
+				"to carry the deadline over")
+		}
+
+		r.lifetime = fn
 
 		return nil
 	}

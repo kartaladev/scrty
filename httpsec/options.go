@@ -2544,3 +2544,34 @@ func WithErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err error)
 		return nil
 	}
 }
+
+// WithLoginLifetime lets fn choose the absolute lifetime of the session a
+// login opens, from the fields the request carried (LoginFields), for example
+// a longer one when the user ticked "remember me".
+//
+// Default: with no option, or when fn returns zero or less, the session lives
+// for the manager's absolute timeout (session.WithAbsoluteTimeout). A positive
+// d is given to the new session (session.WithAbsoluteLifetime). fn runs once
+// the password is verified, before the policy phase and the session creation,
+// so it does not run for a failed credential check, but it does run for a
+// login the policy phase then refuses.
+//
+// fn never sees the password: the configured password parameter is not among
+// the fields. The manager holds d to its lifetime maximum
+// (session.WithMaxAbsoluteLifetime): a larger d is a wiring mistake, so the
+// login is refused with session.ErrConfig, a 500, and no session is created,
+// rather than silently shortened. Renewals of the session are held to the
+// family maximum (session.WithMaxFamilyLifetime) as for any session. fn must
+// not block. A nil fn is refused when the chain is built.
+func WithLoginLifetime(fn func(*Exchange, LoginFields) time.Duration) LoginOption {
+	return func(l *formLogin) error {
+		if fn == nil {
+			return newConfigError("WithLoginLifetime was given no function; omit the option " +
+				"to keep the absolute timeout")
+		}
+
+		l.lifetime = fn
+
+		return nil
+	}
+}
