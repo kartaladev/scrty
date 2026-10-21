@@ -84,6 +84,7 @@ func TestLogout(t *testing.T) {
 					h.store.EXPECT().Load(gomock.Any(), testJTI).
 						Return(nil, session.ErrSessionNotFound).AnyTimes(),
 				)
+				h.acceptsFirstPresentation()
 				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil).Times(1)
 			},
 			request: authorizedLogout,

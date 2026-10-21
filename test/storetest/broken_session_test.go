@@ -107,6 +107,50 @@ const (
 	// and then writes unconditionally, as a store reading the old record
 	// before an unconditional UPDATE would.
 	sessionReadThenWriteSupersede sessionDefect = "read-then-write-supersede"
+	// Supersede does not check whether the observed successor has itself
+	// been superseded, as an UPDATE of the old row alone would not.
+	sessionSupersedeIgnoresSupersededSuccessor sessionDefect = "supersede-ignores-superseded-successor"
+	// Supersede does not check that the observed successor is still stored,
+	// as an UPDATE of the previous successor matching no row would not.
+	sessionSupersedeIgnoresGoneSuccessor sessionDefect = "supersede-ignores-gone-successor"
+	// Supersede ignores RequireUnpresentedSuccessor.
+	sessionSupersedeIgnoresPresentation sessionDefect = "supersede-ignores-presentation"
+	// Supersede refuses every supersession that requires an unpresented
+	// successor, presented or not.
+	sessionSupersedeRefusesRequired sessionDefect = "supersede-refuses-required-unpresented"
+	// Supersede judges the stored successor before the observation, so a
+	// stale observation of a successor that moved on reads as advanced rather
+	// than as a lost race.
+	sessionSupersedeAdvancedBeforeConflict sessionDefect = "supersede-advanced-before-conflict"
+	// Supersede supersedes a superseded session observing no successor, as a
+	// conditional UPDATE that tests the observed successor alone would, so a
+	// knocked-out successor is renewed as if it were a fresh head.
+	sessionSupersedeKnockedOut sessionDefect = "supersede-knocked-out-successor"
+	// Supersede accepts a session in no family, writing to the nil family
+	// every family-less session shares.
+	sessionSupersedeNoFamily sessionDefect = "supersede-accepts-nil-family"
+	// Supersede leaves every superseded session's deadlines as they were when
+	// a successor extends the family, as an UPDATE of the old row's window
+	// alone would.
+	sessionSupersedeKeepsMemberDeadlines sessionDefect = "supersede-keeps-member-deadlines"
+	// Supersede raises the deadlines of Old alone when a successor extends
+	// the family, leaving sessions superseded earlier in the chain to expire
+	// at their own.
+	sessionSupersedeExtendsOldOnly sessionDefect = "supersede-extends-old-only"
+	// Supersede refuses a presented observed successor whether or not the
+	// supersession requires an unpresented one, as a conditional UPDATE that
+	// always tests first_presented_at would.
+	sessionSupersedeAlwaysRequiresUnpresented sessionDefect = "supersede-always-requires-unpresented"
+	// Supersede raises superseded sessions of every family, as an UPDATE
+	// missing its family_id condition would.
+	sessionSupersedeRaisesEveryFamily sessionDefect = "supersede-raises-every-family"
+	// Supersede raises every member of the family, superseded or not, as an
+	// UPDATE missing its superseded_at condition would.
+	sessionSupersedeRaisesUnsuperseded sessionDefect = "supersede-raises-unsuperseded"
+	// Supersede sets every superseded member's deadlines to the successor's,
+	// lowering those that end later, as an UPDATE missing its
+	// absolute_expires_at condition would.
+	sessionSupersedeSetsMemberDeadlines sessionDefect = "supersede-sets-member-deadlines"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -473,8 +517,22 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	if !exists {
 		return session.ErrSessionNotFound
 	}
+	if old.FamilyID.IsZero() && s.defect != sessionSupersedeNoFamily {
+		return errors.New("a session with no family cannot be superseded")
+	}
+	if s.defect != sessionSupersedeKnockedOut && len(op.ObservedSuccessor) == 0 && !old.SupersededAt.IsZero() {
+		return session.ErrSessionRenewalConflict
+	}
+	if s.defect == sessionSupersedeAdvancedBeforeConflict && len(old.SuccessorDigest) > 0 {
+		if current := s.successorOf(old); current == nil || !current.SupersededAt.IsZero() {
+			return session.ErrSuccessorAdvanced
+		}
+	}
 	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) {
 		return session.ErrSessionRenewalConflict
+	}
+	if err := s.successorAdvanced(old, op); err != nil {
+		return err
 	}
 	if s.defect == sessionReadThenWriteSupersede {
 		// The window between the read and the write that a real store's
@@ -497,7 +555,57 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	old.SupersededAt, old.AcceptUntil = op.Now, op.AcceptUntil
 	old.SuccessorDigest = digestOf(op.Successor.ID)
 	old.IdleExpiresAt = old.AbsoluteExpiresAt
+	s.extendSuperseded(old, op.Successor.AbsoluteExpiresAt)
 	s.records[op.Successor.ID] = cloneSession(op.Successor)
+	return nil
+}
+
+// extendSuperseded raises both deadlines of every superseded session of old's
+// family that ends before until to until, as the contract requires, unless a
+// defect skips or narrows it. Callers hold s.mu.
+func (s *sessionStore) extendSuperseded(old *session.Session, until time.Time) {
+	if s.defect == sessionSupersedeKeepsMemberDeadlines {
+		return
+	}
+	for _, rec := range s.records {
+		if s.defect == sessionSupersedeExtendsOldOnly && rec != old {
+			continue
+		}
+		sameFamily := rec.FamilyID == old.FamilyID || s.defect == sessionSupersedeRaisesEveryFamily
+		superseded := !rec.SupersededAt.IsZero() || s.defect == sessionSupersedeRaisesUnsuperseded
+		raises := rec.AbsoluteExpiresAt.Before(until) || s.defect == sessionSupersedeSetsMemberDeadlines
+		if sameFamily && superseded && raises {
+			rec.IdleExpiresAt, rec.AbsoluteExpiresAt = until, until
+		}
+	}
+}
+
+// successorAdvanced reports ErrSuccessorAdvanced when op observed a successor
+// that has moved on, as the contract requires, unless a defect skips the
+// check. Callers hold s.mu.
+func (s *sessionStore) successorAdvanced(old *session.Session, op session.Supersession) error {
+	if len(op.ObservedSuccessor) == 0 {
+		return nil
+	}
+	if op.RequireUnpresentedSuccessor && s.defect == sessionSupersedeRefusesRequired {
+		return session.ErrSuccessorAdvanced
+	}
+	current := s.successorOf(old)
+	switch {
+	case current == nil:
+		if s.defect != sessionSupersedeIgnoresGoneSuccessor {
+			return session.ErrSuccessorAdvanced
+		}
+	case !current.SupersededAt.IsZero():
+		if s.defect != sessionSupersedeIgnoresSupersededSuccessor {
+			return session.ErrSuccessorAdvanced
+		}
+	case (op.RequireUnpresentedSuccessor || s.defect == sessionSupersedeAlwaysRequiresUnpresented) &&
+		!current.FirstPresentedAt.IsZero():
+		if s.defect != sessionSupersedeIgnoresPresentation {
+			return session.ErrSuccessorAdvanced
+		}
+	}
 	return nil
 }
 

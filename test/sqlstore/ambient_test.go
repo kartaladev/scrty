@@ -244,3 +244,56 @@ func assertConsumerOwnedIdentity(ctx context.Context, t *testing.T, db *sql.DB, 
 	_, err = handoffs.DeleteExpired(ctx, storefix.OIDCStart.Add(time.Hour))
 	require.NoError(t, err)
 }
+
+func TestSessionFamilyAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
+}
+
+func TestSessionFamilyRevocationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionFamilyRevocationRace(t, h) })
+}
+
+func TestSessionSuccessorAdvanceRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
+}
+
+func TestSessionExtendingRenewalLockOrder(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+	// Row ids that sort against insertion order, so a store that locks a
+	// family in scan order rather than id order meets the reverse order.
+	ids := storetest.DescendingIDs()
+	descending := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, append(opts, sqlstore.WithIDGenerator(ids))...)
+	})
+
+	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionExtendingRenewalLockOrder(t, h) })
+	t.Run("sqlstore with descending row ids", func(t *testing.T) {
+		storetest.RunSessionExtendingRenewalLockOrder(t, descending)
+	})
+}

@@ -1218,7 +1218,31 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
-			name: "re-rotation succeeds after the previous successor was deleted",
+			name: "re-rotation observing a successor already superseded is refused and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				// The first successor rotates on its own before old does again.
+				rotatedAt := suiteStart.Add(5 * time.Second)
+				onward := rotate(ctx, t, s, first, "sess-c", nil, rotatedAt)
+				again := suiteStart.Add(10 * time.Second)
+
+				late := successorOf(old, "sess-d", again)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID),
+					AcceptUntil: again.Add(30 * time.Second), Successor: late, Now: again,
+				})
+
+				require.ErrorIs(t, err, session.ErrSuccessorAdvanced)
+				assertSessionsGone(ctx, t, s, late.ID)
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, first.ID, suiteStart, suiteStart.Add(30*time.Second)),
+					supersededAs(first, onward.ID, rotatedAt, rotatedAt.Add(30*time.Second)), onward)
+			},
+		},
+		{
+			name: "a stale observation is a renewal conflict even when the successor moved on",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))
 				require.NoError(t, s.Create(ctx, old))
@@ -1226,11 +1250,80 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, s.Delete(ctx, first.ID))
 				again := suiteStart.Add(10 * time.Second)
 
-				second := rotate(ctx, t, s, old, "sess-c", sessionDigest(first.ID), again)
+				late := successorOf(old, "sess-c", again)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest("sess-other"), RequireUnpresentedSuccessor: true,
+					AcceptUntil: again.Add(30 * time.Second), Successor: late, Now: again,
+				})
 
+				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				assertSessionsGone(ctx, t, s, late.ID)
+			},
+		},
+		{
+			name: "re-rotation observing a successor no longer stored is refused and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				require.NoError(t, s.Delete(ctx, first.ID))
+				again := suiteStart.Add(10 * time.Second)
+
+				late := successorOf(old, "sess-c", again)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID),
+					AcceptUntil: again.Add(30 * time.Second), Successor: late, Now: again,
+				})
+
+				require.ErrorIs(t, err, session.ErrSuccessorAdvanced)
+				assertSessionsGone(ctx, t, s, late.ID, first.ID)
 				assertSessionsLoad(ctx, t, s,
-					supersededAs(old, second.ID, again, again.Add(30*time.Second)), second)
-				assertSessionsGone(ctx, t, s, first.ID)
+					supersededAs(old, first.ID, suiteStart, suiteStart.Add(30*time.Second)))
+			},
+		},
+		{
+			name: "supersession requiring an unpresented successor is refused once it was presented",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				presentedAt := suiteStart.Add(5 * time.Second)
+				require.NoError(t, s.MarkPresented(ctx, first.ID, presentedAt))
+				later := suiteStart.Add(time.Hour)
+
+				late := successorOf(old, "sess-c", later)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), RequireUnpresentedSuccessor: true,
+					AcceptUntil: suiteStart.Add(30 * time.Second), Successor: late, Now: later,
+				})
+
+				require.ErrorIs(t, err, session.ErrSuccessorAdvanced)
+				assertSessionsGone(ctx, t, s, late.ID)
+				presented := *first
+				presented.FirstPresentedAt = presentedAt
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, first.ID, suiteStart, suiteStart.Add(30*time.Second)), &presented)
+			},
+		},
+		{
+			name: "supersession requiring an unpresented successor supersedes one never presented",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				later := suiteStart.Add(time.Hour)
+
+				second := successorOf(old, "sess-c", later)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), RequireUnpresentedSuccessor: true,
+					AcceptUntil: suiteStart.Add(30 * time.Second), Successor: second, Now: later,
+				}))
+
+				previous := *first
+				previous.SupersededAt, previous.AcceptUntil = later, later
+				previous.IdleExpiresAt = first.AbsoluteExpiresAt
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, second.ID, later, suiteStart.Add(30*time.Second)), &previous, second)
 			},
 		},
 		{
@@ -1271,6 +1364,152 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				n, err = s.DeleteExpired(ctx)
 				require.NoError(t, err)
 				assert.Equal(t, 2, n, "the family is swept at its absolute deadline")
+			},
+		},
+		{
+			// O's own deadline is 21:00. Renewed at 15:00 with a lifetime
+			// ending 03:00 the next day, the family lives to 03:00, and O,
+			// presented at 22:00, must still be judged as superseded.
+			name: "extended family keeps its superseded sessions",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.AbsoluteExpiresAt = suiteStart.Add(11 * time.Hour)
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(5 * time.Hour)
+				extended := suiteStart.Add(17 * time.Hour)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.AbsoluteExpiresAt = extended
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), Successor: successor, Now: at,
+				}))
+
+				clk.Advance(suiteStart.Add(12 * time.Hour).Sub(clk.Now()))
+				want := supersededAs(old, successor.ID, at, at.Add(30*time.Second))
+				want.IdleExpiresAt, want.AbsoluteExpiresAt = extended, extended
+				assertSessionsLoad(ctx, t, s, want)
+			},
+		},
+		{
+			// O (own deadline 18:00) renewed at 15:00 into S1 to 03:00, and
+			// S1 at 16:00 into S2 to 04:00: both O and S1 are raised to
+			// 04:00, so both are still judged as superseded at 03:30.
+			name: "a chain of extending renewals raises every superseded session",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				firstAt, secondAt := suiteStart.Add(5*time.Hour), suiteStart.Add(6*time.Hour)
+
+				first := successorOf(old, "sess-b", firstAt)
+				first.AbsoluteExpiresAt = suiteStart.Add(17 * time.Hour)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: firstAt.Add(30 * time.Second), Successor: first, Now: firstAt,
+				}))
+				second := successorOf(first, "sess-c", secondAt)
+				second.AbsoluteExpiresAt = suiteStart.Add(18 * time.Hour)
+				second.IdleExpiresAt = second.AbsoluteExpiresAt
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: first.ID, AcceptUntil: secondAt.Add(30 * time.Second), Successor: second, Now: secondAt,
+				}))
+
+				clk.Advance(suiteStart.Add(17*time.Hour + 30*time.Minute).Sub(clk.Now()))
+				wantOld := supersededAs(old, first.ID, firstAt, firstAt.Add(30*time.Second))
+				wantFirst := supersededAs(first, second.ID, secondAt, secondAt.Add(30*time.Second))
+				for _, want := range []*session.Session{wantOld, wantFirst} {
+					want.IdleExpiresAt, want.AbsoluteExpiresAt = second.AbsoluteExpiresAt, second.AbsoluteExpiresAt
+				}
+				assertSessionsLoad(ctx, t, s, wantOld, wantFirst, second)
+			},
+		},
+		{
+			// O's successor S1 was presented, and O is renewed again
+			// observing S1 without requiring an unpresented successor, as a
+			// re-rotation inside O's window does: S1 is superseded with its
+			// window ending at once, its presentation kept.
+			name: "re-rotation not requiring an unpresented successor supersedes one presented",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				presentedAt := suiteStart.Add(5 * time.Second)
+				require.NoError(t, s.MarkPresented(ctx, first.ID, presentedAt))
+				again := suiteStart.Add(10 * time.Second)
+
+				second := successorOf(old, "sess-c", again)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), RequireUnpresentedSuccessor: false,
+					AcceptUntil: again.Add(30 * time.Second), Successor: second, Now: again,
+				}))
+
+				previous := *first
+				previous.FirstPresentedAt = presentedAt
+				previous.SupersededAt, previous.AcceptUntil = again, again
+				previous.IdleExpiresAt = first.AbsoluteExpiresAt
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, second.ID, again, again.Add(30*time.Second)), &previous, second)
+			},
+		},
+		{
+			// Family B's superseded session ends at 18:00. Family A's
+			// renewal extends A to 03:00 the next day; B's session keeps
+			// 18:00.
+			name: "another family's superseded session is left unchanged by a raise",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				other := familySession("sess-z", "u-1", suiteID(2))
+				require.NoError(t, s.Create(ctx, other))
+				otherSuccessor := rotate(ctx, t, s, other, "sess-y", nil, suiteStart)
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Hour)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.AbsoluteExpiresAt = suiteStart.Add(17 * time.Hour)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), Successor: successor, Now: at,
+				}))
+
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(other, otherSuccessor.ID, suiteStart, suiteStart.Add(30*time.Second)),
+					otherSuccessor)
+			},
+		},
+		{
+			// M is a member of O's family that was never superseded. O's
+			// renewal extends the family; M keeps its own deadlines.
+			name: "an extending renewal leaves an unsuperseded member of the family unchanged",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				member := familySession("sess-m", "u-1", suiteID(1))
+				createSessions(ctx, t, s, old, member)
+				at := suiteStart.Add(time.Hour)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.AbsoluteExpiresAt = suiteStart.Add(17 * time.Hour)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), Successor: successor, Now: at,
+				}))
+
+				want := supersededAs(old, successor.ID, at, at.Add(30*time.Second))
+				want.IdleExpiresAt, want.AbsoluteExpiresAt = successor.AbsoluteExpiresAt, successor.AbsoluteExpiresAt
+				assertSessionsLoad(ctx, t, s, member, want, successor)
+			},
+		},
+		{
+			// O ends at 18:00 and is renewed into S1 ending at 17:00: O
+			// keeps 18:00 as both deadlines.
+			name: "a renewal whose successor ends earlier lowers nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Hour)
+
+				successor := successorOf(old, "sess-b", at)
+				successor.AbsoluteExpiresAt = old.AbsoluteExpiresAt.Add(-time.Hour)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), Successor: successor, Now: at,
+				}))
+
+				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
 			},
 		},
 		{
@@ -1460,6 +1699,60 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 
 				require.ErrorIs(t, err, session.ErrSessionNotFound)
 				assertSessionsGone(ctx, t, s, old.ID, successor.ID)
+			},
+		},
+		{
+			// O's successor S1 was knocked out: O was superseded again,
+			// observing S1, so S1 is superseded with no successor. Renewing
+			// S1 as if it were a fresh head, observing none, would give the
+			// family a second live head beside O's newest successor.
+			name: "knocked-out successor renewed as if fresh is a renewal conflict and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				again := suiteStart.Add(10 * time.Second)
+				second := successorOf(old, "sess-c", again)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID),
+					AcceptUntil: again.Add(30 * time.Second), Successor: second, Now: again,
+				}))
+				knockedOut := *first
+				knockedOut.SupersededAt, knockedOut.AcceptUntil = again, again
+				knockedOut.IdleExpiresAt = first.AbsoluteExpiresAt
+				require.Empty(t, knockedOut.SuccessorDigest)
+
+				late := suiteStart.Add(20 * time.Second)
+				renewal := successorOf(first, "sess-d", late)
+				err := s.Supersede(ctx, session.Supersession{
+					Old: first.ID, AcceptUntil: late.Add(30 * time.Second), Successor: renewal, Now: late,
+				})
+
+				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				assertSessionsGone(ctx, t, s, renewal.ID)
+				assertSessionsLoad(ctx, t, s, &knockedOut,
+					supersededAs(old, second.ID, again, again.Add(30*time.Second)), second)
+			},
+		},
+		{
+			// Sessions created with no family all carry the nil family, so
+			// superseding one would raise the deadlines of every unrelated
+			// session in it, as DeleteFamily would delete them.
+			name: "session with no family is refused by supersession and nothing is written",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, other := sessionRecord("sess-a", "u-1"), sessionRecord("sess-z", "u-2")
+				createSessions(ctx, t, s, old, other)
+				successor := successorOf(old, "sess-b", suiteStart)
+				successor.AbsoluteExpiresAt = old.AbsoluteExpiresAt.Add(time.Hour)
+
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), Successor: successor, Now: suiteStart,
+				})
+
+				require.Error(t, err, "a session with no family cannot be superseded")
+				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assertSessionsGone(ctx, t, s, successor.ID)
+				assertSessionsLoad(ctx, t, s, old, other)
 			},
 		},
 	}

@@ -20,8 +20,8 @@ import (
 var errStoreWrite = errors.New("store refused the write")
 
 // failingWriteStore is a real store that takes the first insert — the case's
-// own fixture — and refuses every later one, which is the write a rotation
-// makes before it deletes anything.
+// own fixture — and refuses every later one, along with every supersession,
+// which is the write a rotation makes before it deletes anything.
 type failingWriteStore struct {
 	session.Store
 
@@ -33,6 +33,10 @@ func (s *failingWriteStore) Create(ctx context.Context, sess *session.Session) e
 		return s.Store.Create(ctx, sess)
 	}
 
+	return errStoreWrite
+}
+
+func (*failingWriteStore) Supersede(context.Context, session.Supersession) error {
 	return errStoreWrite
 }
 

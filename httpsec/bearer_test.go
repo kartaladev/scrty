@@ -334,6 +334,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
 					Return(nil, identity.ErrUserNotFound)
 			},
@@ -344,6 +345,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
 					Return(nil, errors.New("users: connection refused"))
 			},
@@ -878,6 +880,7 @@ func TestBearerMarksEnrolmentSaveFails(t *testing.T) {
 	h := newAuthHarness(t)
 	h.expectVerified()
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+	h.acceptsFirstPresentation()
 	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
 	h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errStore).AnyTimes()
 

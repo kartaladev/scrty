@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
@@ -174,4 +176,185 @@ var ambientVariants = []brokenVariant{
 		failsWith: "storetest: DurableHarness.Raw, Ambient.Write, Ambient.Present, Ambient.Refuse, " +
 			"Ambient.Refusal are required",
 	},
+}
+
+// familyDB is an in-process model of a database of sessions with
+// transactions. Its committed state is a memory store, and the log of every
+// write committed to it; a transaction works on a memory store of its own,
+// rebuilt from that log when it begins, and its writes reach the committed
+// store only on commit, replayed in order.
+type familyDB struct {
+	mu    sync.Mutex
+	store *session.MemoryStore
+	log   []familyWrite
+}
+
+// familyWrite is one write, replayed on a commit and on every later begin.
+// Its error is the write's verdict when it first ran, and is ignored on
+// replay, where the write meets the same state again.
+type familyWrite func(s session.Store) error
+
+// familyTx is a transaction of familyDB. A transaction aborted by a failed
+// statement refuses every later write, and its commit discards its writes.
+type familyTx struct {
+	db      *familyDB
+	store   *session.MemoryStore
+	writes  []familyWrite
+	aborted bool
+}
+
+func newFamilyDB() *familyDB { return &familyDB{store: session.NewMemoryStore()} }
+
+func (db *familyDB) begin() *familyTx {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx := &familyTx{db: db, store: session.NewMemoryStore()}
+	for _, w := range db.log {
+		_ = w(tx.store)
+	}
+	return tx
+}
+
+func (tx *familyTx) commit() error {
+	tx.db.mu.Lock()
+	defer tx.db.mu.Unlock()
+
+	if tx.aborted {
+		return errTxAborted
+	}
+	for _, w := range tx.writes {
+		_ = w(tx.db.store)
+		tx.db.log = append(tx.db.log, w)
+	}
+	tx.writes = nil
+	return nil
+}
+
+func (tx *familyTx) rollback() error {
+	tx.writes = nil
+	return nil
+}
+
+type familyDefect string
+
+const (
+	familyConforming          familyDefect = "conforming"
+	familySupersedeOwnTx      familyDefect = "supersede-opens-own-tx"
+	familyDeleteOwnTx         familyDefect = "delete-family-opens-own-tx"
+	familyConflictAborts      familyDefect = "conflict-aborts-tx"
+	familySupersedePartWrites familyDefect = "supersede-keeps-partial-write"
+)
+
+// familyStore is a session store over familyDB that resolves its
+// transaction as a durable adapter does, from its own context attachment.
+// It implements the operations RunSessionFamilyAmbientTx calls; the embedded
+// Store is nil, so any other call panics.
+type familyStore struct {
+	session.Store
+
+	db     *familyDB
+	defect familyDefect
+}
+
+// tx is the transaction ctx carries, unless ownTx: a store that opens its
+// own transaction for the operation ignores the caller's.
+func (s *familyStore) tx(ctx context.Context, ownTx bool) (*familyTx, bool) {
+	if ownTx {
+		return nil, false
+	}
+	tx, ok := ctx.Value(txKey{}).(*familyTx)
+	return tx, ok
+}
+
+// write runs w in the caller's transaction, or commits it at once outside
+// one.
+func (s *familyStore) write(ctx context.Context, ownTx bool, w familyWrite) error {
+	if tx, ok := s.tx(ctx, ownTx); ok {
+		if tx.aborted {
+			return errTxAborted
+		}
+		err := w(tx.store)
+		tx.writes = append(tx.writes, w)
+		return err
+	}
+
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
+	err := w(s.db.store)
+	s.db.log = append(s.db.log, w)
+	return err
+}
+
+func (s *familyStore) Create(ctx context.Context, sess *session.Session) error {
+	return s.write(ctx, false, func(st session.Store) error { return st.Create(ctx, sess) })
+}
+
+func (s *familyStore) Load(ctx context.Context, sid string) (*session.Session, error) {
+	if tx, ok := s.tx(ctx, false); ok {
+		return tx.store.Load(ctx, sid)
+	}
+	s.db.mu.Lock()
+	defer s.db.mu.Unlock()
+	return s.db.store.Load(ctx, sid)
+}
+
+func (s *familyStore) Supersede(ctx context.Context, op session.Supersession) error {
+	tx, inTx := s.tx(ctx, false)
+	if inTx && s.defect == familySupersedePartWrites && op.Successor != nil {
+		if _, err := tx.store.Load(ctx, op.Successor.ID); err == nil {
+			// The old session's update runs before the insert that fails,
+			// and is kept: no savepoint undoes it.
+			stray := *op.Successor
+			stray.ID += "-partial"
+			partial := op
+			partial.Successor = &stray
+			_ = s.write(ctx, false, func(st session.Store) error { return st.Supersede(ctx, partial) })
+			return errors.New("the successor's identifier is already in use")
+		}
+	}
+
+	err := s.write(ctx, s.defect == familySupersedeOwnTx, func(st session.Store) error {
+		return st.Supersede(ctx, op)
+	})
+	if inTx && s.defect == familyConflictAborts && errors.Is(err, session.ErrSessionRenewalConflict) {
+		tx.aborted = true
+	}
+	return err
+}
+
+func (s *familyStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	var n int
+	err := s.write(ctx, s.defect == familyDeleteOwnTx, func(st session.Store) error {
+		var err error
+		n, err = st.DeleteFamily(ctx, family)
+		return err
+	})
+	return n, err
+}
+
+func familyAmbientVariant(d familyDefect, failsCase string) brokenVariant {
+	return brokenVariant{
+		name: "session-family-ambient-" + string(d),
+		run: func(t *testing.T) {
+			db := newFamilyDB()
+			h := fakeHarness(func(*testing.T) session.Store { return &familyStore{db: db, defect: d} })
+			h.Begin = func(t *testing.T) (context.Context, func() error, func() error) {
+				tx := db.begin()
+				return context.WithValue(t.Context(), txKey{}, tx), tx.commit, tx.rollback
+			}
+
+			storetest.RunSessionFamilyAmbientTx(t, h)
+		},
+		failsCase: failsCase,
+	}
+}
+
+var familyAmbientVariants = []brokenVariant{
+	familyAmbientVariant(familyConforming, ""),
+	familyAmbientVariant(familySupersedeOwnTx, "a supersession inside a rolled back transaction is discarded"),
+	familyAmbientVariant(familyDeleteOwnTx, "a family revocation inside a rolled back transaction is discarded"),
+	familyAmbientVariant(familyConflictAborts, "a supersession refused as a conflict leaves the transaction usable"),
+	familyAmbientVariant(familySupersedePartWrites,
+		"a supersession refused after its first write leaves nothing of it in the transaction"),
 }

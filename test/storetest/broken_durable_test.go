@@ -16,7 +16,7 @@ import (
 
 // durableVariants are the durable suites' variants, run by the same
 // re-execution guard as the portable suites'.
-var durableVariants = slices.Concat(raceVariants, ambientVariants, sealedVariants)
+var durableVariants = slices.Concat(raceVariants, ambientVariants, familyAmbientVariants, sealedVariants)
 
 // fakeHarness is a durable harness over an in-process fake. New and
 // NewReplica both call newStore, so a fake whose instances share state gets

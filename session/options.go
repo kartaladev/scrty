@@ -96,7 +96,13 @@ func WithTouchInterval(d time.Duration) ManagerOption {
 // (see WithAbsoluteTimeout), so with no option no session can outlive it.
 //
 // A maximum below the absolute timeout is a configuration error from
-// NewManager: the default lifetime would already exceed it.
+// NewManager: the default lifetime would already exceed it. The same maximum
+// bounds a renewal's new lifetime (see WithSuccessorLifetime).
+//
+// The library does not know the assurance level a consumer targets, so it
+// enforces no figure of its own. For reference, NIST SP 800-63B-4 sets the
+// overall reauthentication timeout at no more than 30 days at AAL1 and 24
+// hours at AAL2; see WithMaxFamilyLifetime for the limit renewals keep.
 func WithMaxAbsoluteLifetime(limit time.Duration) ManagerOption {
 	return func(m *Manager) { m.maxLifetime = limit; m.maxLifetimeSupplied = true }
 }
@@ -284,4 +290,92 @@ func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {
 			s.clock = clk
 		}
 	}
+}
+
+// WithMaxFamilyLifetime sets how long after a family's start (its first
+// session's creation, FamilyCreatedAt) a renewal may carry the family. A
+// renewal that chose a new lifetime (WithSuccessorLifetime) whose deadline
+// would pass it is cut to end exactly there, so the family maximum is the
+// session's overall reauthentication limit: past it, the user signs in
+// again, however often the session was renewed.
+//
+// The default is the lifetime maximum (see WithMaxAbsoluteLifetime), so with
+// no option no renewal extends a family past where its first session could
+// have ended. A maximum below the lifetime maximum is a configuration error
+// from NewManager. There is no unlimited value: a finite family maximum is
+// what makes the limit a limit.
+//
+// The library does not know the assurance level a consumer targets, so it
+// enforces no figure of its own. For reference, NIST SP 800-63B-4 sets the
+// overall reauthentication timeout at no more than 30 days at AAL1 and 24
+// hours at AAL2.
+func WithMaxFamilyLifetime(limit time.Duration) ManagerOption {
+	return func(m *Manager) {
+		m.maxFamilyLifetime = limit
+		m.maxFamilyLifetimeSupplied = true
+	}
+}
+
+// WithReuseObserver sets a function told about each detected reuse (see
+// ErrSessionReused). The default is none: reuse is still refused, the family
+// still revoked, and a warning still logged with a fixed reason and the
+// family identifier.
+//
+// The observer runs synchronously, after the family has been revoked, with
+// the context of the request that presented the reused session, so it can
+// write an audit record in the request's transaction. Its report carries the
+// user, the family and the two times, and never a session identifier. It
+// returns nothing: it cannot fail the request or undo the revocation. It is
+// not called when the revocation itself failed.
+//
+// The revocation joins a transaction the consumer attached to the context. A
+// consumer that does so must commit when errors.Is(err, ErrSessionReused),
+// or the rollback takes the revocation with it, and must write the
+// observer's audit record inside a savepoint, because a failed statement
+// aborts a PostgreSQL transaction and the revocation in it.
+//
+// A nil observer is a configuration error from NewManager.
+func WithReuseObserver(fn ReuseObserver) ManagerOption {
+	return func(m *Manager) {
+		m.reuseObserver = fn
+		m.reuseObserverSupplied = true
+	}
+}
+
+// WithUnusedSuccessorRecovery lets a renewal recover a superseded identifier
+// presented after its grace window, while its current successor has never
+// been presented: the identifier is rotated again as inside the window, the
+// unused successor is superseded at once and a fresh one is issued
+// (RenewalRecovery). It is for clients on poor networks, whose renewal
+// response can be lost and retried hours later, when a fresh sign-in may not
+// be possible.
+//
+// The default is off: a superseded identifier presented after its window is
+// always reuse, and its family is revoked (see ErrSessionReused).
+//
+// With it on:
+//
+//   - Load of such an identifier, for an ordinary request, refuses it with
+//     ErrSessionRenewalRequired and revokes nothing, because a client sends
+//     its queued requests before it renews.
+//   - Only a renewal judges it: LoadForRenewal returns it, and RotateWithGrace
+//     recovers it when its successor is still unused, decided atomically by
+//     the store (Supersession.RequireUnpresentedSuccessor). A successor that
+//     was presented, renewed or removed makes the renewal reuse.
+//   - A successor knocked out by a recovery or a re-rotation has no successor
+//     of its own to recover into, so presenting it is reuse as before.
+//
+// The trade-off: theft is still detected, but later. A stale identifier
+// replayed only on ordinary requests is refused, not detected, until someone
+// renews with it. Whoever presents a stale credential second is caught: a
+// thief who recovers first is caught by the real client's next use of its
+// own successor, and a real client that recovered first catches the thief's.
+// The exposure lasts until that second presentation instead of ending with
+// the window.
+//
+// Every manager over one store should agree on this option: the guarantee
+// that a first presentation racing a recovery leaves one live head is kept by
+// managers that have it on.
+func WithUnusedSuccessorRecovery() ManagerOption {
+	return func(m *Manager) { m.unusedSuccessorRecovery = true }
 }

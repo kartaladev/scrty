@@ -26,8 +26,9 @@ import (
 // and the TOTP method, to at.
 func moveTo(h *enrolHarness, at time.Time) { h.clock.Advance(at.Sub(h.clock.Now())) }
 
-// failingCreates is a session store whose Create answers errStoreLeaky once
-// failing is set, and behaves as the store it wraps otherwise.
+// failingCreates is a session store whose inserts, Create and Supersede,
+// answer errStoreLeaky once failing is set, and which behaves as the store it
+// wraps otherwise.
 type failingCreates struct {
 	session.Store
 
@@ -42,6 +43,14 @@ func (s failingCreates) Create(ctx context.Context, sess *session.Session) error
 	return s.Store.Create(ctx, sess)
 }
 
+func (s failingCreates) Supersede(ctx context.Context, op session.Supersession) error {
+	if s.failing.Load() {
+		return errStoreLeaky
+	}
+
+	return s.Store.Supersede(ctx, op)
+}
+
 // upgradeDay is the morning the enrolment timelines run on.
 var upgradeDay = time.Date(2026, time.September, 28, 0, 0, 0, 0, time.UTC)
 
@@ -52,8 +61,8 @@ func clockAt(hh, mm int) time.Time {
 
 // onTimeline rebuilds the harness's session manager and TOTP method on one
 // shared clock, starting at 09:00, with a 12-hour absolute timeout. Inserts
-// into the session store, which is how a rotation writes, fail while failing is
-// set.
+// into the session store, Create and the Supersede a rotation writes through,
+// fail while failing is set.
 func onTimeline(t *testing.T, h *enrolHarness, failing *atomic.Bool) {
 	t.Helper()
 

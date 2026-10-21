@@ -207,6 +207,106 @@ var brokenVariants = []storefix.BrokenVariant{
 		FailsCase: "a write inside a rolled back transaction is discarded",
 		FailsWith: "the store did not write in it",
 	},
+	{
+		// Every operation runs outside the caller's transaction, Supersede in
+		// a transaction of the store's own.
+		Name: "session-family-opens-its-own-transaction",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, _ ...gormstore.Option) session.Store {
+				return newSessionStore(t, db, c, gormstore.WithTxResolver(noTransaction))
+			})
+			t.Run("gorm", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
+		},
+		FailsCase: "a supersession inside a rolled back transaction is discarded",
+		FailsWith: "the store did not supersede in it",
+	},
+	{
+		Name: "session-family-deletes-in-one-pass",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			d := migratedDB(t)
+			h := durableHarness(d, func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+				return singlePassFamilyDelete{Store: newSessionStore(t, db, c, opts...), db: db}
+			})
+			h.Begin = beginTracked(d.db)
+			t.Run("gorm", func(t *testing.T) { storetest.RunSessionFamilyRevocationRace(t, h) })
+		},
+		FailsCase: "a family revocation waiting on a supersession removes its successor",
+		FailsWith: "the revocation did not see the successor",
+	},
+	{
+		Name: "session-supersede-reads-the-successor-before-locking-it",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+				return readThenSupersede{Store: newSessionStore(t, db, c, opts...), db: db}
+			})
+			t.Run("gorm", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
+		},
+		FailsCase: "a supersession requiring an unpresented successor that waited on its presentation is refused",
+		FailsWith: "it judged the successor before locking it",
+	},
+}
+
+// attachedTxKey is the context key beginTracked attaches its transaction
+// under, beside gormstore.WithTx, so a broken variant can write in it as the
+// store does: gormstore does not export its own lookup.
+type attachedTxKey struct{}
+
+// beginTracked is a harness Begin that begins a transaction of db and
+// attaches it with gormstore.WithTx and under attachedTxKey.
+func beginTracked(db *gormdb.DB) func(t *testing.T) (context.Context, func() error, func() error) {
+	return func(t *testing.T) (context.Context, func() error, func() error) {
+		t.Helper()
+		tx := beginGorm(t.Context(), t, db)
+		ctx := context.WithValue(gormstore.WithTx(t.Context(), tx), attachedTxKey{}, tx)
+		return ctx, func() error { return tx.Commit().Error }, func() error { return tx.Rollback().Error }
+	}
+}
+
+// readThenSupersede judges whether a supersession's observed successor was
+// presented by reading it first, without a lock, and then supersedes without
+// the store's own check: a presentation that commits while the supersession
+// waits for the successor's row goes unnoticed.
+type readThenSupersede struct {
+	session.Store
+	db *gormdb.DB
+}
+
+func (s readThenSupersede) Supersede(ctx context.Context, op session.Supersession) error {
+	if op.RequireUnpresentedSuccessor && len(op.ObservedSuccessor) > 0 {
+		var presented bool
+		if err := s.db.WithContext(ctx).Raw(
+			`SELECT first_presented_at IS NOT NULL FROM sessions WHERE id_digest = ?`, op.ObservedSuccessor,
+		).Scan(&presented).Error; err != nil {
+			return err
+		}
+		if presented {
+			return session.ErrSuccessorAdvanced
+		}
+	}
+	op.RequireUnpresentedSuccessor = false
+	return s.Store.Supersede(ctx, op)
+}
+
+// singlePassFamilyDelete revokes a family with one DELETE, as the store did
+// before it repeated the delete: a delete that waited on an in-flight
+// supersession cannot see the successor that supersession inserted. It runs
+// in the transaction beginTracked attached, when there is one, as the store
+// would.
+type singlePassFamilyDelete struct {
+	session.Store
+	db *gormdb.DB
+}
+
+func (s singlePassFamilyDelete) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	q := s.db
+	if tx, ok := ctx.Value(attachedTxKey{}).(*gormdb.DB); ok {
+		q = tx
+	}
+	res := q.WithContext(ctx).Exec(`DELETE FROM sessions WHERE family_id = ?`, family.String())
+	return int(res.RowsAffected), res.Error
 }
 
 // savedSession is the part of a sessions row gormSaveStore writes: enough for

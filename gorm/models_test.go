@@ -32,9 +32,20 @@ func migratedColumns(t *testing.T, set migrate.Set) map[string]map[string]string
 
 		var table string
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	lines:
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			switch {
+			case strings.HasPrefix(line, "-- +goose Down"):
+				// What the down migration drops is not the schema the
+				// models run against.
+				break lines
+			case strings.HasPrefix(line, "ALTER TABLE ") && strings.Contains(line, " ADD COLUMN "):
+				// ALTER TABLE <table> ADD COLUMN <column> <type> ...;
+				f := strings.Fields(line)
+				require.GreaterOrEqual(t, len(f), 7, "cannot read column line %q", line)
+				require.Contains(t, tables, f[2], "column added to table %s, which no migration creates", f[2])
+				tables[f[2]][f[5]] = strings.TrimSuffix(f[6], ";")
 			case strings.HasPrefix(line, "CREATE TABLE "):
 				table = strings.Fields(line)[2]
 				tables[table] = map[string]string{}

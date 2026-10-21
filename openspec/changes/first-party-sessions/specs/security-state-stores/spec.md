@@ -27,6 +27,28 @@ Durable session stores SHALL supersede a session in one atomic operation: mark t
 - **WHEN** a session is superseded
 - **THEN** the old record loads as superseded with its window end, and the successor loads in the same family with the same family start time
 
+### Requirement: A superseded session is superseded again only through its observed successor
+A session that is already superseded SHALL be superseded again only by a caller that observed its current successor; a caller that observed none SHALL get the renewal-conflict error with nothing written. A supersession of a session that belongs to no family (the nil identifier) SHALL be refused with an error and SHALL write nothing.
+
+#### Scenario: Knocked-out successor renewed as if fresh
+- **WHEN** session O is superseded by S1, O is superseded again observing S1 (so S1 is superseded with no successor), and S1 is then superseded by a caller that observed no successor
+- **THEN** the renewal-conflict error is returned and nothing is written
+
+#### Scenario: Session with no family
+- **WHEN** a session stored with no family is superseded
+- **THEN** the supersession fails with an error and nothing is written
+
+### Requirement: Supersession refuses a successor that has moved on
+When the caller observed a successor that has since been superseded or is no longer stored, or required an unpresented successor that has been presented, the store SHALL write nothing and SHALL return the successor-advanced error.
+
+#### Scenario: Observed successor already superseded
+- **WHEN** session O's successor S1 has itself been superseded, and O is superseded again observing S1
+- **THEN** the store refuses with the successor-advanced error and writes nothing
+
+#### Scenario: Unpresented successor required
+- **WHEN** session O's successor S1 has been presented, and O is superseded again observing S1 and requiring an unpresented successor
+- **THEN** the store refuses with the successor-advanced error and writes nothing
+
 ### Requirement: Superseded sessions are returned by load and kept by the sweep
 Loading a superseded session SHALL return it with its supersession state, whether or not its window has ended, while its idle and absolute deadlines are unexpired. A superseded session SHALL keep its family's absolute deadline as both of its deadlines, so the expiry sweep deletes it only when that deadline passes. Saving a superseded session SHALL NOT change either deadline, so a copy loaded before the supersession cannot shorten them.
 
@@ -41,6 +63,13 @@ Loading a superseded session SHALL return it with its supersession state, whethe
 #### Scenario: Sweep keeps a superseded session
 - **WHEN** a session whose absolute deadline is 21:00 is superseded at 09:00, and expired sessions are swept at 12:00
 - **THEN** the superseded session is not deleted
+
+### Requirement: A renewal that extends the family extends its superseded sessions
+When a supersession gives its successor a later absolute deadline, the store SHALL raise both deadlines of every superseded session of the family to it, in the same operation.
+
+#### Scenario: Extended family keeps its superseded sessions
+- **WHEN** session O with absolute deadline 21:00 is superseded at 15:00 by S1 with absolute deadline 03:00 the next day, and O is loaded at 22:00
+- **THEN** the store returns O as superseded, with 03:00 as both deadlines
 
 ### Requirement: A family is revoked by one delete
 Durable session stores SHALL delete every session of one family in one operation, superseded or not, expired or not, and SHALL return how many were removed. Sessions of other families, including other families of the same user, SHALL be unaffected. A revocation that names no family (the nil identifier) SHALL be refused with an error and SHALL delete nothing.

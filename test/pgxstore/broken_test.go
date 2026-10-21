@@ -2,11 +2,13 @@ package pgxstore_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
@@ -205,6 +207,110 @@ var brokenVariants = []storefix.BrokenVariant{
 		FailsCase: "a write inside a rolled back transaction is discarded",
 		FailsWith: "the store did not write in it",
 	},
+	{
+		// Every operation runs outside the caller's transaction, Supersede in
+		// a transaction of the store's own.
+		Name: "session-family-opens-its-own-transaction",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, _ ...pgxstore.Option) session.Store {
+				return newSessionStore(t, pool, c, pgxstore.WithTxResolver(noTransaction))
+			})
+			t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
+		},
+		FailsCase: "a supersession inside a rolled back transaction is discarded",
+		FailsWith: "the store did not supersede in it",
+	},
+	{
+		Name: "session-family-deletes-in-one-pass",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			db := migrated(t)
+			h := durableHarness(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+				return singlePassFamilyDelete{Store: newSessionStore(t, pool, c, opts...), pool: pool}
+			})
+			h.Begin = beginTracked(db.Pool)
+			t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyRevocationRace(t, h) })
+		},
+		FailsCase: "a family revocation waiting on a supersession removes its successor",
+		FailsWith: "the revocation did not see the successor",
+	},
+	{
+		Name: "session-supersede-reads-the-successor-before-locking-it",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+				return readThenSupersede{Store: newSessionStore(t, pool, c, opts...), pool: pool}
+			})
+			t.Run("pgx", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
+		},
+		FailsCase: "a supersession requiring an unpresented successor that waited on its presentation is refused",
+		FailsWith: "it judged the successor before locking it",
+	},
+}
+
+// attachedTxKey is the context key beginTracked attaches its transaction
+// under, beside pgxstore.WithTx, so a broken variant can write in it as the
+// store does: pgxstore does not export its own lookup.
+type attachedTxKey struct{}
+
+// beginTracked is a harness Begin that begins a transaction of pool and
+// attaches it with pgxstore.WithTx and under attachedTxKey. Its commit and
+// rollback may run at cleanup, when t.Context() is already done.
+func beginTracked(pool *pgxpool.Pool) func(t *testing.T) (context.Context, func() error, func() error) {
+	return func(t *testing.T) (context.Context, func() error, func() error) {
+		t.Helper()
+		tx, err := pool.Begin(t.Context())
+		require.NoError(t, err)
+		end := context.WithoutCancel(t.Context())
+		ctx := context.WithValue(pgxstore.WithTx(t.Context(), tx), attachedTxKey{}, tx)
+		return ctx, func() error { return tx.Commit(end) }, func() error { return tx.Rollback(end) }
+	}
+}
+
+// readThenSupersede judges whether a supersession's observed successor was
+// presented by reading it first, without a lock, and then supersedes without
+// the store's own check: a presentation that commits while the supersession
+// waits for the successor's row goes unnoticed.
+type readThenSupersede struct {
+	session.Store
+	pool *pgxpool.Pool
+}
+
+func (s readThenSupersede) Supersede(ctx context.Context, op session.Supersession) error {
+	if op.RequireUnpresentedSuccessor && len(op.ObservedSuccessor) > 0 {
+		var presented bool
+		err := s.pool.QueryRow(ctx, `SELECT first_presented_at IS NOT NULL FROM sessions WHERE id_digest = $1`,
+			op.ObservedSuccessor).Scan(&presented)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if presented {
+			return session.ErrSuccessorAdvanced
+		}
+	}
+	op.RequireUnpresentedSuccessor = false
+	return s.Store.Supersede(ctx, op)
+}
+
+// singlePassFamilyDelete revokes a family with one DELETE, as the store did
+// before it repeated the delete: a delete that waited on an in-flight
+// supersession cannot see the successor that supersession inserted. It runs
+// in the transaction beginTracked attached, when there is one, as the store
+// would.
+type singlePassFamilyDelete struct {
+	session.Store
+	pool *pgxpool.Pool
+}
+
+func (s singlePassFamilyDelete) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	const del = `DELETE FROM sessions WHERE family_id = $1`
+	if tx, ok := ctx.Value(attachedTxKey{}).(pgx.Tx); ok {
+		tag, err := tx.Exec(ctx, del, family.String())
+		return int(tag.RowsAffected()), err
+	}
+	tag, err := s.pool.Exec(ctx, del, family.String())
+	return int(tag.RowsAffected()), err
 }
 
 // upsertLinkInsert inserts a link or, when the external identity is linked

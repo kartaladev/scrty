@@ -81,6 +81,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `DeleteFamily(ctx context.Context, family id.ID) (int, error)`;
     - `MarkPresented(ctx context.Context, id string, at time.Time) error`.
   - `type Supersession struct{ Old string; ObservedSuccessor []byte; AcceptUntil time.Time; Successor *Session; Now time.Time }`. Its godoc states `ObservedSuccessor` is nil for a first rotation.
+  - Added 2026-10-21 (recovery decision): `Supersession.RequireUnpresentedSuccessor bool`; `session.ErrSuccessorAdvanced` (store refusal: the observed successor was presented when required unpresented, has been superseded, or is gone; writes nothing); `session.ErrSessionRenewalRequired` (`errors.Is` `ErrSessionExpired`; `Load` with recovery on, past the window, no revocation); `(*Manager).LoadForRenewal(ctx, id string) (*Session, error)`. Strict `Rotate` refuses a superseded session with `ErrSessionRenewalConflict`.
   - `httpsec`:
     - `EnableSessionBearer(SessionBearerDeps, ...SessionBearerOption) Option`;
     - `type SessionBearerDeps struct{ Sessions *session.Manager; Users identity.UserLoader }`;
@@ -108,7 +109,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
 ## Review Focus
 
 1. **A superseded identifier presented to an endpoint other than the bearer.** Logout, the MFA endpoints and the password-change gate all reach sessions through `Manager.Load`, so reuse must be judged there and not only in the bearer.
-   - Expected: any `Load` past the window revokes and returns `ErrSessionReused`.
+   - Expected: any `Load` past the window revokes and returns `ErrSessionReused`; with unused-successor recovery on, it returns `ErrSessionRenewalRequired` and revokes nothing (decision 6, chosen 2026-10-21).
    - Test: added to task 3.4 as a logout-path case in `session` (`Load` then `Delete` sees not-found).
 2. **Clock skew between replicas around `AcceptUntil`.** The window end is stored as an absolute time, and judged by the reading manager's clock.
    - Expected: a replica whose clock is ahead refuses earlier, never later than `AcceptUntil` by its own reading.
@@ -418,10 +419,13 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 
 -- SessionSupersedePrevious: $1 previous digest, $2 now
 UPDATE sessions SET superseded_at = $2, accept_until = $2, idle_expires_at = absolute_expires_at
-WHERE id_digest = $1 AND superseded_at IS NULL
+WHERE id_digest = $1
+-- unconditional on superseded_at, as the memory store and the spec require; successor_digest is left alone
 
 -- SessionDeleteFamily: $1 family_id
 DELETE FROM sessions WHERE family_id = $1
+-- repeated until it affects zero rows: under READ COMMITTED a delete blocked by an
+-- in-flight Supersede cannot see the successor that transaction inserts
 
 -- SessionMarkPresented: $1 id_digest, $2 at
 UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL

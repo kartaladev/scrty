@@ -43,7 +43,7 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   - `Rotate` and its successors keep the family and start time;
   - revoking a family leaves the user's other families.
   Verify they fail, implement, and verify they pass along with the existing rotation and MFA-verify tests.
-- [ ] 3.4 Red: add tests for `RotateWithGrace`:
+- [x] 3.4 Red: add tests for `RotateWithGrace`:
   - inside the window the old identifier loads;
   - the window is capped at the absolute deadline;
   - a grace below 0 or above 5 minutes is a configuration error;
@@ -55,8 +55,8 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   - after reuse, the logout path's `Delete` of the old identifier finds the family gone;
   - two managers on clocks either side of `AcceptUntil` judge it as inside the window and as reuse respectively.
   Verify each fails for its stated reason, then implement.
-- [ ] 3.5 Red: add a barrier test in which two managers share one store and rotate one identifier concurrently. Exactly one succeeds and the other gets the renewal-conflict error, with one live successor. Run it with `-race`. Verify it fails against a deliberately unconditional rotation, and passes once rotation uses the store's supersession.
-- [ ] 3.6 Red: add tests for `WithUnusedSuccessorRecovery`:
+- [x] 3.5 Red: add a barrier test in which two managers share one store and rotate one identifier concurrently. Exactly one succeeds and the other gets the renewal-conflict error, with one live successor. Run it with `-race`. Verify it fails against a deliberately unconditional rotation, and passes once rotation uses the store's supersession.
+- [x] 3.6 Red: add tests for `WithUnusedSuccessorRecovery`:
   - by default, a next-day retry with the old identifier is reuse;
   - with the option on, an unused successor is re-rotated;
   - with the option on, a used successor keeps the reuse verdict.
@@ -73,7 +73,7 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   - nil is a configuration error.
   - the formatted report contains no session identifier.
   Verify they fail, implement, and verify they pass.
-- [ ] 3.7 Write godoc for every new manager option and method, stating:
+- [x] 3.7 Write godoc for every new manager option and method, stating:
   - the default and the override;
   - the reuse trade-off of `WithUnusedSuccessorRecovery`;
   - the transaction rule on `ErrSessionReused` and the observer: commit on reuse, and audit inside a savepoint;
@@ -88,16 +88,16 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   - rollback restores the exact prior columns and indexes.
   Verify they fail because the migration does not exist.
 - [x] 4.2 Add the migration under `migrate/securitystate/`, with its down step. Verify 4.1 passes on PostgreSQL 15 and 18, along with the existing migration suite.
-- [ ] 4.3 Add the statements to `internal/pgschema/sessions.go`:
+- [x] 4.3 Add the statements to `internal/pgschema/sessions.go`:
   - the activity update, conditional on threshold and not superseded;
   - supersession as conditional updates plus the insert, run in one transaction that joins an attached one;
   - family delete;
   - first presentation `WHERE first_presented_at IS NULL`;
   - the new columns in insert and select. `SessionUpdate` must not write them.
   Implement the port methods in `sqlstore`. Verify the session suite and the race suite pass on the `sqlstore` runner (`test/sqlstore`), with the broken variants caught.
-- [ ] 4.4 Implement the port methods in `pgx`. Verify the session suite, the race suite and the ambient-transaction suite pass on the `pgx` runner.
-- [ ] 4.5 Map the new columns on `gorm/models.go`'s row type, and implement the port methods in `gorm`. Verify the session, race and ambient-transaction suites pass on the `gorm` runner.
-- [ ] 4.6 Verify the stores join a caller's transaction for supersession and family revocation: a rolled-back caller transaction leaves neither a successor nor a revocation. This needs an ambient-transaction suite case per backend, written red first against a variant that opens its own transaction.
+- [x] 4.4 Implement the port methods in `pgx`. Verify the session suite, the race suite and the ambient-transaction suite pass on the `pgx` runner.
+- [x] 4.5 Map the new columns on `gorm/models.go`'s row type, and implement the port methods in `gorm`. Verify the session, race and ambient-transaction suites pass on the `gorm` runner.
+- [x] 4.6 Verify the stores join a caller's transaction for supersession and family revocation: a rolled-back caller transaction leaves neither a successor nor a revocation. This needs an ambient-transaction suite case per backend, written red first against a variant that opens its own transaction.
 
 ## 5. Shared resolution core and exported publication (decisions 10, 11; http-security-chain requirements)
 

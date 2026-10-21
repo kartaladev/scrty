@@ -79,6 +79,7 @@ func TestConsumerStoreServesEveryOperation(t *testing.T) {
 	live := storedSession("consumer-store")
 	store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 	store.EXPECT().Load(gomock.Any(), "consumer-store").Return(live, nil).Times(1)
+	store.EXPECT().MarkPresented(gomock.Any(), "consumer-store", createdAt).Return(nil).Times(1)
 	store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 	store.EXPECT().Delete(gomock.Any(), "consumer-store").Return(nil).Times(1)
 	store.EXPECT().DeleteByUser(gomock.Any(), testUser).Return(nil).Times(1)

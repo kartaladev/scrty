@@ -310,3 +310,14 @@ func TestSessionStore_Durable(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionStore_SupersessionRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSupersessionRace(t, h) })
+}

@@ -181,12 +181,16 @@ The manager SHALL rotate a session with a grace window: it SHALL create a succes
 - **THEN** loading the old identifier returns the not-found error
 
 ### Requirement: Renewing a superseded identifier inside its window re-rotates
-Rotating with a grace window an identifier that is already superseded and still inside its window SHALL issue a fresh successor in the same family, and SHALL supersede the previous successor with a window that has already ended. Any later presentation of that previous successor SHALL then be reuse.
+Rotating with a grace window an identifier that is already superseded and still inside its window SHALL issue a fresh successor in the same family, and SHALL supersede the previous successor with a window that has already ended. Any later presentation of that previous successor SHALL then be reuse. If the previous successor has itself been superseded, or is no longer stored, the re-rotation SHALL be reuse instead, so a family never holds two live heads.
 
 #### Scenario: Lost response recovered inside the window
 - **WHEN** session O is rotated at 09:00 with a 30-second grace into S1, and O is rotated again at 09:00:10
 - **THEN** a fresh successor S2 is returned
 - **AND** loading S1 afterwards is treated as reuse
+
+#### Scenario: Re-rotation after the successor was renewed
+- **WHEN** session O is rotated at 09:00 with a 30-second grace into S1, S1 is rotated into T at 09:00:05, and O is rotated again at 09:00:10
+- **THEN** the rotation fails with the reused-session error and the family is revoked
 
 ### Requirement: A superseded identifier presented after its window revokes its family
 Loading a superseded identifier at or after the end of its window SHALL be treated as reuse: the manager SHALL revoke the identifier's whole family and SHALL fail with a reused-session error that also matches the expired-session error. Superseded sessions SHALL be kept until their family's absolute deadline, so a late presentation is detected rather than reported as not found.
@@ -201,20 +205,36 @@ Loading a superseded identifier at or after the end of its window SHALL be treat
 - **THEN** the load fails with the reused-session error
 
 ### Requirement: Recovery while the successor is unused is opt-in
-The manager SHALL record when a session is first loaded successfully. By default a superseded identifier presented after its window SHALL be reuse. With unused-successor recovery enabled, such an identifier whose current successor has never been loaded SHALL instead be rotated again as inside the window; a successor that has been loaded keeps the reuse verdict.
+The manager SHALL record when a session is first loaded successfully. By default a superseded identifier presented after its window SHALL be reuse. With unused-successor recovery enabled, renewing such an identifier SHALL rotate it again as inside the window when its current successor has never been loaded and has not been superseded, decided atomically by the store; otherwise the renewal SHALL be reuse.
 
 #### Scenario: Default treats a late retry as reuse
 - **WHEN** session O is rotated at 09:00 with a 30-second grace into S1, S1 is never presented, and O is rotated again the next day
 - **THEN** the rotation fails with the reused-session error and the family is revoked
 
 #### Scenario: Consumer recovery re-rotates an unused successor
-- **WHEN** a manager with unused-successor recovery enabled rotates O at 09:00 with a 30-second grace into S1, S1 is never presented, and O is rotated again the next day
+- **WHEN** a manager with unused-successor recovery enabled rotates O at 09:00 with a 30-second grace into S1, S1 is never presented, and O is renewed the next day
 - **THEN** a fresh successor S2 is returned
 - **AND** loading S1 afterwards is treated as reuse
 
 #### Scenario: Recovery refuses once the successor was used
-- **WHEN** a manager with unused-successor recovery enabled rotates O into S1, S1 is loaded, and O is presented after its window
-- **THEN** the load fails with the reused-session error and the family is revoked
+- **WHEN** a manager with unused-successor recovery enabled rotates O into S1, S1 is loaded, and O is renewed after its window
+- **THEN** the renewal fails with the reused-session error and the family is revoked
+
+### Requirement: Under recovery an ordinary late request is refused without revoking
+With unused-successor recovery enabled, loading a superseded identifier after its window for anything but a renewal SHALL fail with a renewal-required error that matches the expired-session error, and SHALL NOT revoke the family.
+
+#### Scenario: Consumer recovery refuses an ordinary late request without revoking
+- **WHEN** a manager with unused-successor recovery enabled rotates O at 09:00 with a 30-second grace into S1, and O is loaded the next day
+- **THEN** the load fails with the renewal-required error, which matches the expired-session error
+- **AND** S1 still loads
+
+### Requirement: Rotation at second-factor verification refuses a superseded session
+Rotating without a grace window a session that is superseded and still inside its window SHALL fail with the renewal-conflict error and SHALL write nothing, so the client retries with its current credential and the family keeps one live head. Past its window it SHALL be answered as loading it would be.
+
+#### Scenario: Superseded session inside its window
+- **WHEN** session O is rotated at 09:00 with a 30-second grace into S1, and O is rotated without grace at 09:00:10
+- **THEN** the rotation fails with the renewal-conflict error
+- **AND** S1 still loads
 
 ### Requirement: Renewal carries the absolute deadline over unless a new lifetime is chosen, under a family maximum
 By default a successor SHALL keep its predecessor's absolute deadline. A caller MAY choose a new lifetime when rotating with a grace window; the successor's absolute deadline SHALL then be now plus that lifetime, bounded by the family maximum. A lifetime above the lifetime maximum SHALL fail with a configuration error and store nothing.

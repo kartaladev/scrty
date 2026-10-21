@@ -49,7 +49,9 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 		{
 			name: "supersede seals the successor's ID token, bound to the successor, and leaves the caller's plaintext",
 			assert: func(t *testing.T, ctx context.Context, sealing session.Store, inner *session.MemoryStore) {
-				require.NoError(t, sealing.Create(ctx, federatedSession("old")))
+				oldSession := federatedSession("old")
+				oldSession.FamilyID = family
+				require.NoError(t, sealing.Create(ctx, oldSession))
 				successor := federatedSession("new")
 				successor.FamilyID = family
 
@@ -70,7 +72,7 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 		{
 			name: "a lost supersession keeps the renewal-conflict error, and a missing one the not-found error",
 			assert: func(t *testing.T, ctx context.Context, sealing session.Store, _ *session.MemoryStore) {
-				require.NoError(t, sealing.Create(ctx, storedSession("old")))
+				require.NoError(t, sealing.Create(ctx, familyOf("old", family)))
 				require.NoError(t, sealing.Supersede(ctx, firstRotation("old", storedSession("first"))))
 
 				err := sealing.Supersede(ctx, firstRotation("old", storedSession("second")))
@@ -189,7 +191,7 @@ func TestSupersedeRefusesANilSuccessor(t *testing.T) {
 	check := func(t *testing.T, ctx context.Context, store session.Store, inner *session.MemoryStore) {
 		t.Helper()
 
-		require.NoError(t, store.Create(ctx, storedSession("old")))
+		require.NoError(t, store.Create(ctx, familyOf("old", id.MustParse("01926a4e-0000-7000-8000-000000000001"))))
 
 		err := store.Supersede(ctx, nilSuccessor)
 
@@ -242,7 +244,7 @@ func TestMemoryStoreSupersession(t *testing.T) {
 			// digest the memory store records reads the same in any store.
 			name: "the successor digest is the durable stores' session digest",
 			assert: func(t *testing.T, ctx context.Context, store *session.MemoryStore) {
-				require.NoError(t, store.Create(ctx, storedSession("old")))
+				require.NoError(t, store.Create(ctx, familyOf("old", id.MustParse("01926a4e-0000-7000-8000-000000000001"))))
 				require.NoError(t, store.Supersede(ctx, firstRotation("old", storedSession("new"))))
 
 				old, err := store.Load(ctx, "old")
@@ -253,7 +255,7 @@ func TestMemoryStoreSupersession(t *testing.T) {
 		{
 			name: "a loaded successor digest is the caller's own copy",
 			assert: func(t *testing.T, ctx context.Context, store *session.MemoryStore) {
-				require.NoError(t, store.Create(ctx, storedSession("old")))
+				require.NoError(t, store.Create(ctx, familyOf("old", id.MustParse("01926a4e-0000-7000-8000-000000000001"))))
 				require.NoError(t, store.Supersede(ctx, firstRotation("old", storedSession("new"))))
 
 				loaded, err := store.Load(ctx, "old")
@@ -299,14 +301,15 @@ func TestCreateStartsAFamily(t *testing.T) {
 
 // TestMemoryStoreReRotationIgnoresAnUnindexedSuccessor pins that a successor
 // digest the store no longer indexes names no record, even one stored under
-// the empty identifier.
+// the empty identifier: the successor is gone, so the re-rotation is refused
+// as advanced and the unrelated record is left alone.
 func TestMemoryStoreReRotationIgnoresAnUnindexedSuccessor(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
 	s := session.NewMemoryStore(session.WithMemoryStoreClock(clockwork.NewFakeClockAt(createdAt)))
 	require.NoError(t, s.Create(ctx, storedSession("")))
-	require.NoError(t, s.Create(ctx, storedSession("old")))
+	require.NoError(t, s.Create(ctx, familyOf("old", id.MustParse("01926a4e-0000-7000-8000-000000000001"))))
 	require.NoError(t, s.Supersede(ctx, firstRotation("old", storedSession("n1"))))
 	require.NoError(t, s.Delete(ctx, "n1"))
 
@@ -315,7 +318,7 @@ func TestMemoryStoreReRotationIgnoresAnUnindexedSuccessor(t *testing.T) {
 
 	op := firstRotation("old", storedSession("n2"))
 	op.ObservedSuccessor = old.SuccessorDigest
-	require.NoError(t, s.Supersede(ctx, op))
+	require.ErrorIs(t, s.Supersede(ctx, op), session.ErrSuccessorAdvanced)
 
 	unrelated, err := s.Load(ctx, "")
 	require.NoError(t, err)

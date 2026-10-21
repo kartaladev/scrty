@@ -69,6 +69,15 @@ func (s *savedSessions) all() []session.Session {
 func (h *authHarness) expectResolvedSession(s *session.Session) {
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(s, nil)
 	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
+	h.acceptsFirstPresentation()
+}
+
+// acceptsFirstPresentation lets the store take the first-presentation mark the
+// manager makes on the first load of a never-presented session. It is incidental
+// to the tests that use it: its failure never changes what a load answers.
+func (h *authHarness) acceptsFirstPresentation() {
+	h.store.EXPECT().MarkPresented(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).AnyTimes()
 }
 
 // expectSaved wires the store to accept the activity write-back, recording
@@ -129,6 +138,7 @@ func (h *authHarness) expectActivity(writes *activityWrites, err error) {
 func (h *authHarness) acceptsActivityWriteBack() {
 	h.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(nil).AnyTimes()
+	h.acceptsFirstPresentation()
 }
 
 // TestSessionTouch pins the activity write-back: it runs after everything

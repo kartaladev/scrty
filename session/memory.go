@@ -405,10 +405,22 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 // under the store's lock, provided Old's successor is still
 // op.ObservedSuccessor. A stale observation writes nothing and is
 // ErrSessionRenewalConflict; an Old that is not stored is ErrSessionNotFound;
-// a nil Successor is an error.
+// a nil Successor is an error, and so is an Old with no family (the nil
+// family), which is refused before anything is written. An Old that is
+// superseded already is superseded again only through its observed successor:
+// observing none, as for a fresh head, is ErrSessionRenewalConflict, since the
+// session was knocked out of the chain and renewing it would give the family a
+// second live head. An observed successor that is superseded or no
+// longer stored, or presented when op.RequireUnpresentedSuccessor is set,
+// writes nothing and is ErrSuccessorAdvanced.
 //
 // A superseded record keeps its absolute deadline as both deadlines, so
-// housekeeping removes it only when its family could no longer be live.
+// housekeeping removes it only when its family could no longer be live. When
+// op.Successor's absolute deadline is later than a superseded member's of the
+// same family, Old included, that member's two deadlines are raised to it in
+// the same locked step, so a renewal that extends the family keeps every
+// superseded identifier judged as superseded, not expired, while the family
+// is live.
 func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	if op.Successor == nil {
 		return errors.New("session: a supersession needs a successor")
@@ -421,14 +433,23 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	if !found {
 		return ErrSessionNotFound
 	}
-	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) {
+	if old.FamilyID.IsZero() {
+		return errors.New("session: a session with no family cannot be superseded")
+	}
+	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) ||
+		len(op.ObservedSuccessor) == 0 && !old.SupersededAt.IsZero() {
 		return ErrSessionRenewalConflict
+	}
+	previous := s.successorLocked(old)
+	if len(op.ObservedSuccessor) > 0 && (previous == nil || !previous.SupersededAt.IsZero() ||
+		op.RequireUnpresentedSuccessor && !previous.FirstPresentedAt.IsZero()) {
+		return ErrSuccessorAdvanced
 	}
 	if _, exists := s.records[op.Successor.ID]; exists {
 		return errors.New("session: a session with this identifier is already stored")
 	}
 
-	if previous := s.successorLocked(old); previous != nil {
+	if previous != nil {
 		previous.SupersededAt = op.Now
 		previous.AcceptUntil = op.Now
 		previous.IdleExpiresAt = previous.AbsoluteExpiresAt
@@ -437,9 +458,23 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	old.AcceptUntil = op.AcceptUntil
 	old.SuccessorDigest = sessionDigest(op.Successor.ID)
 	old.IdleExpiresAt = old.AbsoluteExpiresAt
+	s.extendSupersededLocked(old.FamilyID, op.Successor.AbsoluteExpiresAt)
 	s.putLocked(op.Successor.clone())
 
 	return nil
+}
+
+// extendSupersededLocked raises both deadlines of every superseded record of
+// family whose absolute deadline is before until to until. A superseded
+// record never authenticates past its window, so the raise grants nothing; it
+// keeps the record until the family's own deadline, so presenting it is still
+// judged. Callers hold s.mu for writing.
+func (s *MemoryStore) extendSupersededLocked(family id.ID, until time.Time) {
+	for _, rec := range s.records {
+		if rec.FamilyID == family && !rec.SupersededAt.IsZero() && rec.AbsoluteExpiresAt.Before(until) {
+			rec.IdleExpiresAt, rec.AbsoluteExpiresAt = until, until
+		}
+	}
 }
 
 // successorLocked returns the stored record whose identifier old's successor

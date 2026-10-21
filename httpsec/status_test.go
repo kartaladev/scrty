@@ -371,9 +371,12 @@ var sentinelRegistry = map[string]map[string]error{
 	"github.com/kartaladev/scrty/session": {
 		"session.ErrConfig":                 session.ErrConfig,
 		"session.ErrSessionExpired":         session.ErrSessionExpired,
+		"session.ErrSessionReused":          session.ErrSessionReused,
 		"session.ErrSessionNotFound":        session.ErrSessionNotFound,
 		"session.ErrSessionUnreadable":      session.ErrSessionUnreadable,
 		"session.ErrSessionRenewalConflict": session.ErrSessionRenewalConflict,
+		"session.ErrSessionRenewalRequired": session.ErrSessionRenewalRequired,
+		"session.ErrSuccessorAdvanced":      session.ErrSuccessorAdvanced,
 	},
 }
 
@@ -397,7 +400,11 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"session.ErrConfig":                       "a wiring fault, refused at construction",
 		"session.ErrSessionNotFound":              "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrSessionExpired":               "converted to ErrAuthenticationRequired before it leaves the chain",
-		"session.ErrSessionUnreadable":            "converted to ErrAuthenticationRequired before it leaves the chain",
+		"session.ErrSessionReused":                "converted to ErrAuthenticationRequired before it leaves the chain",
+		"session.ErrSessionRenewalRequired":       "converted to ErrAuthenticationRequired before it leaves the chain",
+		"session.ErrSuccessorAdvanced": "returned only by Store.Supersede and never leaves the session manager, " +
+			"which turns it into ErrSessionReused",
+		"session.ErrSessionUnreadable": "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrSessionRenewalConflict": "returned only by Store.Supersede, which nothing in the chain calls yet; " +
 			"the renewal path that does maps it",
 		"ratelimit.ErrConfig": "a wiring fault, refused at construction",

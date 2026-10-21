@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -61,6 +62,21 @@ type Manager struct {
 	maxLifetime         time.Duration
 	maxLifetimeSupplied bool
 
+	// maxFamilyLifetime bounds how far a renewal with a new lifetime may
+	// carry a family past its start. It is maxLifetime unless
+	// WithMaxFamilyLifetime said otherwise.
+	maxFamilyLifetime         time.Duration
+	maxFamilyLifetimeSupplied bool
+
+	// reuseObserver is told about each detected reuse; nil tells no one.
+	reuseObserver         ReuseObserver
+	reuseObserverSupplied bool
+
+	// unusedSuccessorRecovery is WithUnusedSuccessorRecovery: a superseded
+	// identifier past its window may be renewed while its successor is
+	// unused, and an ordinary request with it is refused without revoking.
+	unusedSuccessorRecovery bool
+
 	// familiesSupplied records that WithFamilyIDGenerator was given, so a nil
 	// generator is told apart from the default.
 	familiesSupplied bool
@@ -69,15 +85,16 @@ type Manager struct {
 	// per-process warning below is written only where it is true.
 	storeSupplied bool
 
-	// rotating serialises Rotate, one identifier at a time. Rotation is a
-	// read of the old entry followed by two writes, and the Store contract
-	// offers no way to do those three as one step, so without a lock two
-	// rotations of one session both see it present and both leave a live
-	// handle behind — which is the whole thing rotation exists to prevent.
-	// The lock follows the session rather than the manager, so two users
-	// completing a second factor at the same moment do not take turns across
-	// three store round-trips. See Rotate for what this does and does not
-	// cover.
+	// rotating serialises Rotate, one identifier at a time. The store's
+	// conditional Supersede is what keeps a family to one successor, across
+	// replicas too; the lock settles two strict rotations of one session in
+	// this process more gently. Without it the second could read the old
+	// record between the first's supersession and its delete, find a window
+	// that has already ended, and revoke the family as reuse; with it, the
+	// second finds the record deleted and is refused with
+	// ErrSessionNotFound. The lock follows the session rather than the
+	// manager, so two users completing a second factor at the same moment do
+	// not take turns.
 	rotating keyedMutex
 }
 
@@ -182,6 +199,16 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	if m.maxLifetime < m.absoluteTimeout {
 		return nil, fmt.Errorf("%w: maximum absolute lifetime %s is below the absolute timeout %s",
 			ErrConfig, m.maxLifetime, m.absoluteTimeout)
+	}
+	if !m.maxFamilyLifetimeSupplied {
+		m.maxFamilyLifetime = m.maxLifetime
+	}
+	if m.maxFamilyLifetime < m.maxLifetime {
+		return nil, fmt.Errorf("%w: maximum family lifetime %s is below the maximum absolute lifetime %s",
+			ErrConfig, m.maxFamilyLifetime, m.maxLifetime)
+	}
+	if m.reuseObserverSupplied && m.reuseObserver == nil {
+		return nil, fmt.Errorf("%w: reuse observer must not be nil", ErrConfig)
 	}
 	if m.storeSupplied && nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
@@ -296,13 +323,89 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 }
 
 // Load returns the session with this identifier.
+//
+// A session superseded by RotateWithGrace loads until its grace window ends.
+// Presenting it at or after that is reuse: Load revokes its whole family and
+// returns ErrSessionReused (see there for what a consumer's transaction must
+// do with it). Every endpoint that reaches a session through Load — logout
+// included — therefore gives the same verdict.
+//
+// With WithUnusedSuccessorRecovery on, a superseded session past its window
+// that names a successor is refused with ErrSessionRenewalRequired instead,
+// and nothing is revoked: only a renewal (LoadForRenewal, then
+// RotateWithGrace) judges it. A superseded session with no successor of its
+// own, knocked out by a re-rotation or a recovery, is reuse either way, and
+// whatever this manager's clock says: the knock-out ended its window, even
+// when the manager that wrote it reads a later time than this one.
+//
+// The first time a session that is not superseded loads, Load records it as
+// presented (Store.MarkPresented), which is what tells an unused successor
+// from a used one. A failure to record it is logged at debug and does not
+// fail the load. With recovery on, Load then reads the session once more, so
+// a recovery that superseded it between the read and the mark makes this load
+// reuse rather than leaving two live sessions in the family.
 func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
+	return m.load(ctx, id, forRequest)
+}
+
+// load is Load and LoadForRenewal, which differ only in p.
+func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, error) {
 	s, err := m.store.Load(ctx, id)
 	if err != nil {
 		return nil, storeFailed(err, "session: the session could not be loaded")
 	}
 
+	now := m.clock.Now()
+	if err := m.judge(ctx, s, now, p); err != nil {
+		return nil, err
+	}
+	if !s.superseded() && s.FirstPresentedAt.IsZero() {
+		m.markPresented(ctx, s, now)
+		if m.unusedSuccessorRecovery {
+			if err := m.recheckAfterMark(ctx, id); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	return s, nil
+}
+
+// recheckAfterMark reads a session again after its first presentation was
+// recorded, and refuses it if it was superseded in between.
+//
+// A recovery supersedes a successor only while it is unpresented, so a
+// recovery committed between this load's read and its mark would otherwise
+// leave this request authenticated by the successor it just superseded, and
+// the family with two live heads. Read after the mark, the session either is
+// still unsuperseded, and any later recovery will see the mark and be reuse,
+// or was superseded by the recovery and is judged here, which is reuse: a
+// successor knocked out that way names no successor of its own.
+//
+// The re-read is judged at a time read after it, not at the time the first
+// read was judged: a recovery committed in between supersedes with a window
+// ending at its own, later, time, which the earlier time would read as still
+// open.
+func (m *Manager) recheckAfterMark(ctx context.Context, id string) error {
+	again, err := m.store.Load(ctx, id)
+	if err != nil {
+		return storeFailed(err, "session: the session could not be loaded")
+	}
+
+	return m.judge(ctx, again, m.clock.Now(), forRequest)
+}
+
+// markPresented records s's first presentation at now, and on success sets it
+// on s too. A failure only costs the record, so it is logged and not
+// returned, with the store's text left out.
+func (m *Manager) markPresented(ctx context.Context, s *Session, now time.Time) {
+	if err := m.store.MarkPresented(ctx, s.ID, now); err != nil {
+		m.logger.LogAttrs(ctx, slog.LevelDebug, "session: the session's first presentation could not be recorded",
+			diag.Failure("mark_presented", err)...)
+
+		return
+	}
+	s.FirstPresentedAt = now
 }
 
 // Touch records activity on s: it moves the last-access time to now and the
@@ -314,8 +417,9 @@ func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
 //
 // With WithTouchInterval set, a Touch that finds the last recorded activity
 // younger than the interval writes nothing and leaves s as it is. The default
-// interval is 0: every Touch writes. A session that has been superseded takes
-// no activity; the store leaves it unchanged.
+// interval is 0: every Touch writes. A session that has been superseded
+// takes no activity and Touch writes nothing for it, so a grace window is
+// never extended by use.
 //
 // The cap is what keeps the absolute deadline absolute. Without it a session
 // in constant use pushes its idle deadline past the hour it was always going
@@ -330,7 +434,7 @@ func (m *Manager) Touch(ctx context.Context, s *Session) error {
 		return ErrSessionExpired
 	}
 
-	if m.touchInterval > 0 && now.Sub(s.LastAccessedAt) < m.touchInterval {
+	if s.superseded() || m.touchInterval > 0 && now.Sub(s.LastAccessedAt) < m.touchInterval {
 		return nil
 	}
 
@@ -427,6 +531,24 @@ func (m *Manager) DeleteByUserAndExternalIssuer(ctx context.Context, user identi
 	return n, nil
 }
 
+// RevokeFamily ends every session of one family, superseded ones included,
+// and reports how many went. A family is the sessions one sign-in went on to
+// issue through rotation and renewal, so this ends that sign-in without
+// touching the user's sessions from other sign-ins. An unknown family ends
+// nothing and is not an error.
+func (m *Manager) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
+	if family.IsZero() {
+		return 0, errors.New("session: the nil family names no sessions to revoke")
+	}
+
+	n, err := m.store.DeleteFamily(ctx, family)
+	if err != nil {
+		return n, storeFailed(err, "session: the family's sessions could not be deleted")
+	}
+
+	return n, nil
+}
+
 // IdleTimeout reports how long a session survives with no activity, which is
 // what WithIdleTimeout configured.
 func (m *Manager) IdleTimeout() time.Duration { return m.idleTimeout }
@@ -445,26 +567,46 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // FamilyCreatedAt), the federated assurance and
 // the consumer's own data.
 //
-// The new entry is written before the old one is deleted. A failure of the
-// write leaves the old handle working and returns the error, so a caller that
-// refuses on the error has lost nothing. A failure of the delete is returned
-// too, and the old entry then expires on its own deadline rather than living
-// forever.
+// The old entry is superseded by the new one, through the store's
+// conditional Store.Supersede with a window that ends at once, and then
+// deleted, so the old identifier is not found afterwards. A failure of the
+// supersession writes nothing and leaves the old handle working, so a caller
+// that refuses on the error has lost nothing. A failure of the delete is
+// returned too; the old entry is then left superseded with its window
+// already ended, so presenting it is reuse (see ErrSessionReused), which
+// fails safe.
 //
 // A session the store no longer holds, or that is past either deadline, is
 // refused with the store's sentinel, as itself, and nothing is written:
 // rotation is a move, not a way to bring a revoked session back under a fresh
-// handle. That is also what settles a race between two rotations of the same
-// handle. They are serialised on that identifier, so the second one finds the
-// old entry already gone and is refused with ErrSessionNotFound rather than
-// minting a second live handle for a session that has already moved.
-// Rotations of different sessions do not wait for each other.
+// handle. Two rotations of one handle through one manager are serialised on
+// that identifier, so the second finds the old entry already gone and is
+// refused with ErrSessionNotFound. Rotations of different sessions do not
+// wait for each other.
 //
-// The limit of that guarantee is this process. The lock is a Manager's own,
-// so two managers over one shared durable store — two replicas, say — can
-// still rotate the same handle at the same time and leave two live ones. A
-// consumer who needs the guarantee across replicas enforces it in the store,
-// in the Delete of the old identifier.
+// Racing rotations that the lock does not see — a RotateWithGrace of the
+// same session, or a Rotate on another manager over the same store — are
+// settled by the store's condition: exactly one produces a successor, and the
+// one that supersedes second is refused with ErrSessionRenewalConflict and
+// stores nothing. One that reads the old entry only after this rotation
+// superseded it finds an ended window, which is reuse.
+//
+// Rotate never extends the session: the absolute deadline is carried over
+// whatever WithMaxFamilyLifetime allows, because a privilege change must not
+// lengthen it. The successor stays in s's family, and none of s's
+// supersession or presentation state is carried over: the successor is
+// recorded as presented at the rotation (FirstPresentedAt), since it goes
+// straight to the caller using it, so WithUnusedSuccessorRecovery can never
+// renew the old identifier into a second successor.
+//
+// A session superseded by RotateWithGrace is refused. Inside its window the
+// refusal is ErrSessionRenewalConflict and nothing is written, so the client
+// retries with its current credential and the family keeps one live head.
+// Past its window it is judged as Load judges it: reuse (see
+// ErrSessionReused), or ErrSessionRenewalRequired with
+// WithUnusedSuccessorRecovery on. A successor knocked out by a re-rotation or
+// a recovery has no window left, whatever this manager's clock says, and is
+// reuse.
 //
 // s is not modified. The returned session is the one to use.
 func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
@@ -475,8 +617,16 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	unlock := m.rotating.lock(s.ID)
 	defer unlock()
 
-	if _, err := m.store.Load(ctx, s.ID); err != nil {
+	stored, err := m.store.Load(ctx, s.ID)
+	if err != nil {
 		return nil, storeFailed(err, "session: the session to rotate could not be loaded")
+	}
+	now := m.clock.Now()
+	if stored.superseded() && stored.insideWindow(now) {
+		return nil, ErrSessionRenewalConflict
+	}
+	if err := m.judge(ctx, stored, now, forRequest); err != nil {
+		return nil, err
 	}
 
 	id, err := m.newIdentifier()
@@ -484,10 +634,25 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 		return nil, err
 	}
 
-	rotated := s.clone()
-	rotated.ID = id
+	rotated := successorOf(s, id)
+	// The successor goes straight back to the caller that is using it, so it
+	// is recorded as presented now. That is also what keeps a recovery
+	// (WithUnusedSuccessorRecovery) from renewing the old identifier into a
+	// second successor if the delete below fails and leaves it superseded.
+	rotated.FirstPresentedAt = now
 
-	if err := m.store.Create(ctx, rotated); err != nil {
+	// The store's conditional supersession, not the lock above, is what
+	// stops a grace rotation of the same session — through this manager or
+	// another sharing the store — from producing a second successor beside
+	// this one. A window ending now means the old record never answers again.
+	err = m.store.Supersede(ctx, Supersession{
+		Old:               stored.ID,
+		ObservedSuccessor: stored.SuccessorDigest,
+		AcceptUntil:       now,
+		Successor:         rotated,
+		Now:               now,
+	})
+	if err != nil {
 		return nil, storeFailed(err, "session: the rotated session could not be created")
 	}
 
@@ -517,21 +682,3 @@ type nowOnly struct {
 }
 
 func (c nowOnly) After(d time.Duration) <-chan time.Time { return c.waiter.After(d) }
-
-// RevokeFamily ends every session of one family, superseded ones included,
-// and reports how many went. A family is the sessions one sign-in went on to
-// issue through rotation and renewal, so this ends that sign-in without
-// touching the user's sessions from other sign-ins. An unknown family ends
-// nothing and is not an error.
-func (m *Manager) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
-	if family.IsZero() {
-		return 0, errors.New("session: the nil family names no sessions to revoke")
-	}
-
-	n, err := m.store.DeleteFamily(ctx, family)
-	if err != nil {
-		return n, storeFailed(err, "session: the family's sessions could not be deleted")
-	}
-
-	return n, nil
-}

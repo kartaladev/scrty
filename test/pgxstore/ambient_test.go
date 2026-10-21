@@ -243,3 +243,56 @@ func assertConsumerOwnedIdentity(ctx context.Context, t *testing.T, pool *pgxpoo
 	_, err = handoffs.DeleteExpired(ctx, storefix.OIDCStart.Add(time.Hour))
 	require.NoError(t, err)
 }
+
+func TestSessionFamilyAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
+}
+
+func TestSessionFamilyRevocationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyRevocationRace(t, h) })
+}
+
+func TestSessionSuccessorAdvanceRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
+}
+
+func TestSessionExtendingRenewalLockOrder(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+	// Row ids that sort against insertion order, so a store that locks a
+	// family in scan order rather than id order meets the reverse order.
+	ids := storetest.DescendingIDs()
+	descending := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, append(opts, pgxstore.WithIDGenerator(ids))...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionExtendingRenewalLockOrder(t, h) })
+	t.Run("pgx with descending row ids", func(t *testing.T) {
+		storetest.RunSessionExtendingRenewalLockOrder(t, descending)
+	})
+}

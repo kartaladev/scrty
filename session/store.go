@@ -40,6 +40,19 @@ var ErrSessionUnreadable = errors.New("session: session cannot be read")
 // caller did.
 var ErrSessionRenewalConflict = errors.New("session: the session was renewed concurrently")
 
+// ErrSuccessorAdvanced is what a store reports when a supersession names a
+// successor that has moved on, and nothing was written. Supersede returns it
+// when op.ObservedSuccessor is set and that successor has itself been
+// superseded or is no longer stored, or when op.RequireUnpresentedSuccessor
+// is set and that successor has been presented (its FirstPresentedAt is
+// recorded). It is judged in the same atomic step as the rest of the
+// supersession, so a presentation or a rotation of the successor racing it
+// either happens first and refuses it, or happens after it.
+//
+// The Manager reads it as reuse: renewing an identifier whose successor has
+// moved on would leave the family with two live heads.
+var ErrSuccessorAdvanced = errors.New("session: the session's successor has moved on")
+
 // Supersession is one atomic supersession: Store.Supersede marks Old
 // superseded by Successor and inserts Successor, provided Old's current
 // successor is still the one the caller observed.
@@ -65,6 +78,14 @@ type Supersession struct {
 	// is Old's SupersededAt, and both the time a previous successor is
 	// superseded at and the end of that previous successor's window.
 	Now time.Time
+
+	// RequireUnpresentedSuccessor, when set, makes the supersession also
+	// conditional on the observed successor never having been presented: one
+	// whose FirstPresentedAt is recorded refuses it with ErrSuccessorAdvanced.
+	// The Manager sets it when it recovers an identifier past its window
+	// (WithUnusedSuccessorRecovery). It has no effect when ObservedSuccessor
+	// is nil.
+	RequireUnpresentedSuccessor bool
 }
 
 // Store persists sessions.
@@ -113,8 +134,9 @@ type Store interface {
 	//
 	// A stored session that is superseded (SupersededAt set) also keeps its
 	// IdleExpiresAt and AbsoluteExpiresAt: Supersede set both to the family's
-	// absolute deadline, and a copy loaded before the supersession would
-	// otherwise shorten them and let housekeeping remove the record early.
+	// absolute deadline, and raises them when a later renewal extends the
+	// family. A copy loaded before either would otherwise shorten them and let
+	// housekeeping remove the record early.
 	// This holds for a previous successor superseded by a re-rotation too.
 	//
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
@@ -155,7 +177,19 @@ type Store interface {
 	//   - it marks Old's previous successor, if it had one, superseded at
 	//     op.Now with a window ending at op.Now, and sets both of that
 	//     successor's deadlines to its absolute deadline;
+	//   - when op.Successor's absolute deadline is later than that of a
+	//     superseded session of the same family, Old and the previous
+	//     successor included, it raises both of that session's deadlines to
+	//     op.Successor's absolute deadline;
 	//   - it inserts op.Successor.
+	//
+	// The raise is what lets a renewal that extends the family (see
+	// WithSuccessorLifetime) keep detecting reuse: a superseded identifier
+	// presented after its own original deadline, while the family is still
+	// live, must load as superseded so the Manager judges it as reuse, not
+	// read as an ordinary expiry that leaves the family alive. A superseded
+	// session never authenticates past its window, so the raise grants
+	// nothing. A deadline is only ever raised, never lowered.
 	//
 	// It is conditional on op.ObservedSuccessor: it happens only while Old's
 	// stored SuccessorDigest equals it byte for byte, nil meaning none. When
@@ -163,6 +197,24 @@ type Store interface {
 	// ErrSessionRenewalConflict, so concurrent renewals of one session produce
 	// exactly one successor. An Old that is not stored, as after its family
 	// was revoked, is ErrSessionNotFound, and nothing is inserted.
+	//
+	// When the observation holds, a non-nil op.ObservedSuccessor must still
+	// name a stored successor that is not superseded, and, with
+	// op.RequireUnpresentedSuccessor, one never presented. Otherwise
+	// Supersede writes nothing and reports ErrSuccessorAdvanced, so a family
+	// never holds two live heads. The checks are made in this order: Old
+	// missing, then Old's family, then the observation and the rule below
+	// for a superseded Old, then the successor.
+	//
+	// Two rules refuse a supersession whatever it observed. An Old with no
+	// family, the nil family, is refused with an error and nothing is written,
+	// as DeleteFamily refuses it: every family-less session carries it, so
+	// honouring it would touch unrelated sessions. An Old that is superseded
+	// already is superseded again only through its observed successor: with
+	// none observed, as for a fresh head, it is ErrSessionRenewalConflict,
+	// because a superseded session with no successor was knocked out of its
+	// chain by a later supersession, and renewing it would give the family a
+	// second live head.
 	//
 	// The condition must hold across processes, not only within one: a lock
 	// held by one instance does not stop another replica. In SQL it is one
@@ -231,14 +283,15 @@ type Store interface {
 // matching it, or a sentinel it wraps, still does.
 //
 // A sentinel of this package that the store returned bare — ErrSessionNotFound,
-// ErrSessionExpired, ErrSessionUnreadable or ErrSessionRenewalConflict —
-// carries no store text and comes back as itself, so nothing that matches on it changes. The sentinels are not
+// ErrSessionExpired, ErrSessionUnreadable, ErrSessionRenewalConflict or
+// ErrSuccessorAdvanced — carries no store text and comes back as itself, so
+// nothing that matches on it changes. The sentinels are not
 // passed to diag.Wrap as kinds: a fault matches its kinds, and every other
 // store failure would then read as a missing or expired session.
 func storeFailed(err error, text string) error {
 	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text
 	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable ||
-		err == ErrSessionRenewalConflict {
+		err == ErrSessionRenewalConflict || err == ErrSuccessorAdvanced {
 		return err
 	}
 
