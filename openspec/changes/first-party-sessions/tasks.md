@@ -144,7 +144,7 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
 ## 8. Integration gate
 
 - [x] 8.1 Run the whole-branch review against every requirement in this change's specs, with a fresh Opus reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
-- [ ] 8.2 Run `make check` (fmt-check, vet, lint, test, vuln, generate-check) and `openspec validate first-party-sessions --strict`. Verify both are clean, and keep the output.
+- [x] 8.2 Run `make check` (fmt-check, vet, lint, test, vuln, generate-check) and `openspec validate first-party-sessions --strict`. Verify both are clean, and keep the output.
 
 ## Workflow follow-up
 

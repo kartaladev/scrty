@@ -61,7 +61,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
 - **No library code changes,** and no API change.
 - **Tags:** `v0.1.0` and eight prefixed `v0.1.0` tags, pushed by the maintainer, not by tooling.
 - **Related changes:**
-  - `first-party-sessions` changes the session store port after this release, which is allowed under v0 and recorded in the changelog;
+  - `first-party-sessions` is implemented first, so its session store port, its security-state migration and its session features ship in `v0.1.0` and are summarised in that entry;
   - `bff-resource-server` and `trusted-proxy-client-ip` are unaffected.
 - **Dependencies:** `golang.org/x/exp/cmd/gorelease` is added to the `tools` module for the API report.
 
