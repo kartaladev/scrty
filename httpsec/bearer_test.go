@@ -729,8 +729,9 @@ func TestBearerMarksEnrolment(t *testing.T) {
 		// the request.
 		pending bool
 
-		// saves is how many times the request stored the session.
-		assert func(t *testing.T, out served, saves int32)
+		// saves is how many times the request stored the session, and
+		// activity how many times it recorded activity on it.
+		assert func(t *testing.T, out served, saves, activity int32)
 	}
 
 	cases := []testCase{
@@ -740,7 +741,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
 				passThroughAt(httpsec.OrderMFAEnrolment),
 			},
-			assert: func(t *testing.T, out served, _ int32) {
+			assert: func(t *testing.T, out served, _, _ int32) {
 				t.Helper()
 
 				require.NoError(t, out.err)
@@ -754,7 +755,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
 				httpsec.RegisterInterceptor(confining, httpsec.OrderMFAEnrolment),
 			},
-			assert: func(t *testing.T, out served, _ int32) {
+			assert: func(t *testing.T, out served, _, _ int32) {
 				t.Helper()
 
 				var ch *httpsec.ChallengeError
@@ -770,13 +771,15 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				passThroughAt(httpsec.OrderMFAEnrolment),
 			},
 			pending: true,
-			assert: func(t *testing.T, out served, saves int32) {
+			assert: func(t *testing.T, out served, saves, activity int32) {
 				t.Helper()
 
 				require.NoError(t, out.err)
 				require.True(t, out.handlerRan)
-				assert.Equal(t, int32(1), saves,
-					"only the session touch stores it: marking it again changes nothing")
+				assert.Equal(t, int32(0), saves,
+					"marking it again changes nothing, so the bearer stores nothing")
+				assert.Equal(t, int32(1), activity,
+					"only the session touch writes, and it writes the activity alone")
 			},
 		},
 	}
@@ -809,6 +812,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			}
 
 			store.saves.Store(0)
+			store.activity.Store(0)
 
 			ctrl := gomock.NewController(t)
 			verifier := NewMockVerifier(ctrl)
@@ -827,7 +831,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			require.NoError(t, err)
 
 			out := serve(t, chain, bearerRequest(t.Context(), "Bearer abc.def.ghi"))
-			tc.assert(t, out, store.saves.Load())
+			tc.assert(t, out, store.saves.Load(), store.activity.Load())
 
 			stored, err := sessions.Load(t.Context(), s.ID)
 			require.NoError(t, err)
@@ -841,12 +845,20 @@ func TestBearerMarksEnrolment(t *testing.T) {
 	}
 }
 
-// countingSaves counts the saves that reach the store it wraps, so a test can
-// pin how many times a request stored a session.
+// countingSaves counts the saves and the activity writes that reach the store
+// it wraps, so a test can pin how many times a request stored a session and
+// how many times it only recorded activity on one.
 type countingSaves struct {
 	session.Store
 
-	saves atomic.Int32
+	saves    atomic.Int32
+	activity atomic.Int32
+}
+
+func (c *countingSaves) RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
+	c.activity.Add(1)
+
+	return c.Store.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan)
 }
 
 func (c *countingSaves) Save(ctx context.Context, s *session.Session) error {

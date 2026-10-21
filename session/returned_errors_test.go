@@ -134,7 +134,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "manager touch",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-				d.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errStoreQuotes)
+				d.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(errStoreQuotes)
 				return manager(t, d).Touch(ctx, returnedErrorsSession(""))
 			},
 			assert: hidesStoreText(),
@@ -444,7 +444,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 			testCase{
 				name: "bare " + sentinel.Error() + ": manager touch",
 				call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-					d.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(sentinel)
+					d.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(sentinel)
 					return manager(t, d).Touch(ctx, returnedErrorsSession(""))
 				},
 				assert: isBare(sentinel),

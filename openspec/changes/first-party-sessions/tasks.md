@@ -26,19 +26,19 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
 
 ## 3. Manager behaviour (decisions 1, 3, 6, 7, 8, 13; sessions requirements)
 
-- [ ] 3.1 Red: add table tests for `WithTouchInterval`:
+- [x] 3.1 Red: add table tests for `WithTouchInterval`:
   - the default 0 writes every time;
   - a 1-minute interval skips a write 30 s after the last access and writes one 60 s after it;
   - a skipped write only brings expiry earlier;
   - construction refuses a negative interval and one at or above the idle timeout.
   Together with 1.1, verify they fail. Then route `Touch` through the narrow activity write and add the option. Verify 3.1 and 1.1 pass.
-- [ ] 3.2 Red: add tests for `WithAbsoluteLifetime` and `WithMaxAbsoluteLifetime`:
+- [x] 3.2 Red: add tests for `WithAbsoluteLifetime` and `WithMaxAbsoluteLifetime`:
   - the default maximum refuses 30 days and stores nothing;
   - a 30-day maximum admits 30 days;
   - no lifetime gives the absolute timeout;
   - construction refuses a maximum below the absolute timeout.
   Add a test that `RestoreEnrolmentDeadlines` restores a chosen 30-day lifetime exactly. Verify they fail, implement, and verify they pass along with the existing enrolment and recovery tests.
-- [ ] 3.3 Red: add tests for families through rotation:
+- [x] 3.3 Red: add tests for families through rotation:
   - two sign-ins get different families;
   - `Rotate` and its successors keep the family and start time;
   - revoking a family leaves the user's other families.

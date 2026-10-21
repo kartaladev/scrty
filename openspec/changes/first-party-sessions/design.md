@@ -89,6 +89,7 @@ See `proposal.md` for the motivation. This section covers only the state of the 
 - **Refusal.**
   - `Create` refuses d ≤ 0 or d > max with a configuration error and stores nothing. It never shortens the lifetime silently (library-design rule 4).
   - The value comes from the consumer's wiring (for example, "remember" maps to 30 days), so an out-of-range value is a wiring mistake.
+  - `Create` judges the lifetime the options produced, `AbsoluteExpiresAt - CreatedAt`, after every option has run. A consumer's own `CreateOption` that sets the absolute deadline directly is therefore bounded by the same maximum, so no option can lengthen a session past it unnoticed.
 - **Defaults:**
   - max equals the absolute timeout, so no session outlives 12 h unless the consumer raises the maximum explicitly;
   - with no `WithAbsoluteLifetime`, a session gets the absolute timeout, as today.
@@ -264,6 +265,10 @@ See `proposal.md` for the motivation. This section covers only the state of the 
   - one that runs the per-request policy phase with the challenge handling the built-ins use, and returns their refusal or nil.
 - **Why on `Exchange`.** The exchange already carries the chain's policy engine and session manager, so neither has to be passed again.
 - **Implementation.** The built-in core of decision 10 is implemented on the same two methods, so "a consumer interceptor has everything a built-in has" (the `httpsec` package documentation) is true by construction.
+- **Fail closed.** The per-request method refuses with `ErrAuthenticationRequired`, and runs no policy, unless the exchange's published result names this principal and its published session is this session. Otherwise a consumer that skipped publication would have its policies judged on a missing password-change time.
+- **The chain's session manager.**
+  - **Default:** the manager of the first enabled built-in that has one, as today. A chain whose only session authenticator is a consumer interceptor therefore had none, so its published sessions were never touched (reproduced in review).
+  - **Override:** `httpsec.WithSessionManager(m)`, which takes precedence over any built-in's manager whatever the option order. Nil is a configuration error from `New`. Built-ins keep using their own manager, so behaviour where both are wired is unchanged.
 - **Default:** unused.
 - **Override:** it is itself the consumer's extension point.
 

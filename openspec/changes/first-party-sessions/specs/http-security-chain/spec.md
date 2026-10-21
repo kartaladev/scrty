@@ -178,12 +178,27 @@ Password login SHALL accept a consumer function of the request and its parsed lo
 - **THEN** the login fails with a configuration error, mapping to 500, and no session is created
 
 ### Requirement: Consumer interceptors publish sessions and run the per-request phase as built-ins do
-The chain SHALL let a consumer interceptor publish an authentication result together with its session, after which the session SHALL be readable from the request context and its activity SHALL be recorded as for a built-in. It SHALL also let the interceptor run the per-request policy phase with the same refusal and challenge handling bearer authentication applies.
+The chain SHALL let a consumer interceptor publish an authentication result together with its session, after which the session SHALL be readable from the request context and its activity SHALL be recorded as for a built-in. It SHALL also let the interceptor run the per-request policy phase with the same refusal and challenge handling bearer authentication applies, and SHALL refuse that phase unless the session and principal are the ones published.
 
 #### Scenario: Published session is visible and touched
 - **WHEN** a consumer interceptor publishes an authentication result and a live session, and the handler reads the session from the context
 - **THEN** the handler receives that session, and its activity is recorded after the handler
 
+#### Scenario: Per-request phase without matching publication
+- **WHEN** a consumer interceptor runs the per-request phase for a session and principal it has not published
+- **THEN** the phase refuses with the authentication-required error and runs no policy
+
 #### Scenario: Per-request challenge handled as built-in
 - **WHEN** a consumer interceptor runs the per-request phase for a session the policy challenges for enrolment
 - **THEN** the session is saved enrolment-pending and the enrolment gate refuses the request, as for a bearer-authenticated request
+
+### Requirement: The chain's session manager can be given explicitly
+By default the chain records activity, and marks per-request challenges, through the session manager of the first enabled built-in that has one. A consumer MAY give the chain its session manager explicitly, which then takes precedence whatever the option order. A nil session manager SHALL be a configuration error.
+
+#### Scenario: Consumer-only chain with its session manager
+- **WHEN** the chain is given a session manager explicitly, its only authenticator is a consumer interceptor, and that interceptor publishes a live session
+- **THEN** the session's activity is recorded after the handler
+
+#### Scenario: Nil session manager
+- **WHEN** the chain is given a nil session manager
+- **THEN** construction fails with a configuration error

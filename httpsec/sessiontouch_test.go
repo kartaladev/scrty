@@ -82,12 +82,53 @@ func (h *authHarness) expectSaved(saved *savedSessions, err error) {
 		}).AnyTimes()
 }
 
+// activityWrite is one RecordActivity call as the store received it.
+type activityWrite struct {
+	id           string
+	lastAccessed time.Time
+	idleExpires  time.Time
+	olderThan    time.Time
+}
+
+// activityWrites records the activity writes the store was asked to make, in
+// the order they arrived.
+type activityWrites struct {
+	mu      sync.Mutex
+	records []activityWrite
+}
+
+func (a *activityWrites) record(w activityWrite) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	a.records = append(a.records, w)
+}
+
+func (a *activityWrites) all() []activityWrite {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	return append([]activityWrite(nil), a.records...)
+}
+
+// expectActivity wires the store to take the activity write-back, recording
+// what it was handed, and to fail with err when one is given.
+func (h *authHarness) expectActivity(writes *activityWrites, err error) {
+	h.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
+			writes.record(activityWrite{id, lastAccessed, idleExpires, olderThan})
+
+			return err
+		}).AnyTimes()
+}
+
 // acceptsActivityWriteBack lets the store take the activity write-back the
 // chain performs after every request that carried a session through to the
 // handler. The write-back is always active, so a test pinning something else
 // about such a request still performs one.
 func (h *authHarness) acceptsActivityWriteBack() {
-	h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	h.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil).AnyTimes()
 }
 
 // TestSessionTouch pins the activity write-back: it runs after everything
@@ -98,37 +139,40 @@ func TestSessionTouch(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		wire    func(t *testing.T, h *authHarness, saved *savedSessions)
+		wire    func(t *testing.T, h *authHarness, saved *activityWrites)
 		inner   []httpsec.Option
 		request func(ctx context.Context) *http.Request
-		assert  func(t *testing.T, s served, saved *savedSessions)
+		assert  func(t *testing.T, s served, saved *activityWrites)
 	}
 
 	authenticated := func(ctx context.Context) *http.Request {
 		return bearerRequest(ctx, "Bearer a-token")
 	}
 
-	advanced := func(t *testing.T, saved *savedSessions) {
+	advanced := func(t *testing.T, saved *activityWrites) {
 		t.Helper()
 
 		records := saved.all()
 		require.Len(t, records, 1, "activity is recorded once per request")
-		assert.True(t, records[0].IdleExpiresAt.After(time.Now().Add(20*time.Minute)),
+		assert.Equal(t, testJTI, records[0].id, "the activity is recorded on the request's session")
+		assert.True(t, records[0].idleExpires.After(time.Now().Add(20*time.Minute)),
 			"the idle deadline was moved to now plus the manager's idle timeout")
-		assert.True(t, records[0].LastAccessedAt.After(time.Now().Add(-time.Minute)),
+		assert.True(t, records[0].lastAccessed.After(time.Now().Add(-time.Minute)),
 			"the last-access time was moved to now")
+		assert.True(t, records[0].olderThan.Equal(records[0].lastAccessed),
+			"with no touch interval the write is conditional on nothing newer than now")
 	}
 
 	cases := []testCase{
 		{
 			name: "a completed request advances the idle deadline",
-			wire: func(_ *testing.T, h *authHarness, saved *savedSessions) {
+			wire: func(_ *testing.T, h *authHarness, saved *activityWrites) {
 				h.expectVerified()
 				h.expectResolvedSession(touchableSession())
-				h.expectSaved(saved, nil)
+				h.expectActivity(saved, nil)
 			},
 			request: authenticated,
-			assert: func(t *testing.T, s served, saved *savedSessions) {
+			assert: func(t *testing.T, s served, saved *activityWrites) {
 				require.NoError(t, s.err)
 				require.True(t, s.handlerRan)
 				advanced(t, saved)
@@ -136,10 +180,10 @@ func TestSessionTouch(t *testing.T) {
 		},
 		{
 			name: "a request refused by a guard still advances it",
-			wire: func(_ *testing.T, h *authHarness, saved *savedSessions) {
+			wire: func(_ *testing.T, h *authHarness, saved *activityWrites) {
 				h.expectVerified()
 				h.expectResolvedSession(touchableSession())
-				h.expectSaved(saved, nil)
+				h.expectActivity(saved, nil)
 			},
 			inner: []httpsec.Option{
 				httpsec.RegisterInterceptor(
@@ -149,7 +193,7 @@ func TestSessionTouch(t *testing.T) {
 					httpsec.OrderAuthorizer),
 			},
 			request: authenticated,
-			assert: func(t *testing.T, s served, saved *savedSessions) {
+			assert: func(t *testing.T, s served, saved *activityWrites) {
 				require.ErrorIs(t, s.err, errGuardRefused)
 				assert.False(t, s.handlerRan)
 				advanced(t, saved)
@@ -157,10 +201,10 @@ func TestSessionTouch(t *testing.T) {
 		},
 		{
 			name: "a touch failure after a 200 changes neither the response nor the error",
-			wire: func(_ *testing.T, h *authHarness, saved *savedSessions) {
+			wire: func(_ *testing.T, h *authHarness, saved *activityWrites) {
 				h.expectVerified()
 				h.expectResolvedSession(touchableSession())
-				h.expectSaved(saved, errStoreUnreachable)
+				h.expectActivity(saved, errStoreUnreachable)
 			},
 			inner: []httpsec.Option{
 				httpsec.RegisterInterceptor(
@@ -172,7 +216,7 @@ func TestSessionTouch(t *testing.T) {
 					httpsec.OrderAuthorizer),
 			},
 			request: authenticated,
-			assert: func(t *testing.T, s served, saved *savedSessions) {
+			assert: func(t *testing.T, s served, saved *activityWrites) {
 				require.NoError(t, s.err,
 					"bookkeeping that could not be written must not turn a served request into a fault")
 				assert.Equal(t, http.StatusOK, s.rec.Code)
@@ -182,11 +226,11 @@ func TestSessionTouch(t *testing.T) {
 		{
 			name: "a request with no session touches nothing",
 			// No expectation on the store at all: any write fails the case.
-			wire: func(*testing.T, *authHarness, *savedSessions) {},
+			wire: func(*testing.T, *authHarness, *activityWrites) {},
 			request: func(ctx context.Context) *http.Request {
 				return bearerRequest(ctx, "")
 			},
-			assert: func(t *testing.T, s served, saved *savedSessions) {
+			assert: func(t *testing.T, s served, saved *activityWrites) {
 				require.NoError(t, s.err)
 				assert.True(t, s.handlerRan)
 				assert.Empty(t, saved.all())
@@ -199,7 +243,7 @@ func TestSessionTouch(t *testing.T) {
 			t.Parallel()
 
 			h := newAuthHarness(t)
-			saved := &savedSessions{}
+			saved := &activityWrites{}
 			tc.wire(t, h, saved)
 
 			opts := append([]httpsec.Option{

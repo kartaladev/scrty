@@ -94,7 +94,8 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `WithLoginLifetime(func(*Exchange, LoginFields) time.Duration) LoginOption`;
     - `type LoginFields struct{ /* unexported */ }` with `(LoginFields).Value(name string) (any, bool)`;
     - `(*Exchange).PublishSession(a *authenticate.Authentication, s *session.Session)`;
-    - `(*Exchange).EvaluatePerRequest(s *session.Session, p *identity.Principal) error`;
+    - `(*Exchange).EvaluatePerRequest(s *session.Session, p *identity.Principal) error`, refusing with `ErrAuthenticationRequired` unless `s` and `p` are the published ones;
+    - `WithSessionManager(*session.Manager) Option` (the chain's manager for activity and per-request marking; takes precedence over built-ins' managers; nil is a configuration error), added after the review of tasks 5.1–5.3;
     - `ErrSessionRenewalConflict`, re-exported from `session` by wrapping, as existing session sentinels are mapped.
   - `session.ValidIdentifier(string) bool`: reports whether a string has the exact encoded length and alphabet of a session identifier. It is used by the session-reference bearer to refuse before any lookup.
 - **Verification commands**, run from the repository root unless stated:

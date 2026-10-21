@@ -261,7 +261,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				h := newAuthHarness(t)
 				h.expectVerified()
 				h.expectResolvedSession(touchableSession())
-				h.expectSaved(&savedSessions{}, errFixtureFailure)
+				h.expectActivity(&activityWrites{}, errFixtureFailure)
 
 				chain, err := httpsec.New(
 					httpsec.WithLogger(h.logger()),

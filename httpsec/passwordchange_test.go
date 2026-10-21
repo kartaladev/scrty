@@ -189,6 +189,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 		h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
 			Return(storedUser(), nil).AnyTimes()
 		h.expectSaved(saved, nil)
+		h.acceptsActivityWriteBack()
 	}
 
 	cases := []testCase{
@@ -224,6 +225,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
 					Return(storedUser(), nil).AnyTimes()
 				h.expectSaved(saved, nil)
+				h.acceptsActivityWriteBack()
 			},
 			request: func(ctx context.Context) *http.Request {
 				return changePasswordRequest(ctx, http.MethodPost, true)
@@ -913,6 +915,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 			h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
 			h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(user, nil).AnyTimes()
 			h.expectSaved(&savedSessions{}, tc.saveErr)
+			h.acceptsActivityWriteBack()
 
 			other := NewMockAttemptStore(gomock.NewController(t))
 			tc.expect(h, other)
@@ -1005,6 +1008,7 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(owingPasswordChange(), nil).AnyTimes()
 	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil).AnyTimes()
 	h.expectSaved(&savedSessions{}, nil)
+	h.acceptsActivityWriteBack()
 	h.expectAuthenticated(testPrincipal())
 	h.expectSessionOpened("a-new-token")
 

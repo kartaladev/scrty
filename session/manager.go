@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -50,6 +51,15 @@ type Manager struct {
 	// not a secret, so it needs ordering and uniqueness, not the entropy a
 	// session identifier draws from random.
 	families id.Generator
+
+	// touchInterval is how stale recorded activity may be before Touch writes
+	// it again; 0 writes every time.
+	touchInterval time.Duration
+
+	// maxLifetime is the longest absolute lifetime a Create may ask for. It
+	// is the absolute timeout unless WithMaxAbsoluteLifetime said otherwise.
+	maxLifetime         time.Duration
+	maxLifetimeSupplied bool
 
 	// familiesSupplied records that WithFamilyIDGenerator was given, so a nil
 	// generator is told apart from the default.
@@ -162,6 +172,17 @@ func NewManager(opts ...ManagerOption) (*Manager, error) {
 	if m.absoluteTimeout <= 0 {
 		return nil, fmt.Errorf("%w: absolute timeout must be positive, got %s", ErrConfig, m.absoluteTimeout)
 	}
+	if m.touchInterval < 0 || m.touchInterval >= m.idleTimeout {
+		return nil, fmt.Errorf("%w: touch interval must be at least 0 and less than the idle timeout %s, got %s",
+			ErrConfig, m.idleTimeout, m.touchInterval)
+	}
+	if !m.maxLifetimeSupplied {
+		m.maxLifetime = m.absoluteTimeout
+	}
+	if m.maxLifetime < m.absoluteTimeout {
+		return nil, fmt.Errorf("%w: maximum absolute lifetime %s is below the absolute timeout %s",
+			ErrConfig, m.maxLifetime, m.absoluteTimeout)
+	}
 	if m.storeSupplied && nilcheck.IsNil(m.store) {
 		return nil, fmt.Errorf("%w: store must not be nil", ErrConfig)
 	}
@@ -215,6 +236,12 @@ func (m *Manager) newIdentifier() (string, error) {
 // Create mints a session for user and stores it. The session starts a family
 // of its own: a new FamilyID, with FamilyCreatedAt its creation time.
 //
+// The absolute deadline is CreatedAt plus the manager's absolute timeout
+// unless WithAbsoluteLifetime chose another; a lifetime that is not positive
+// or exceeds the manager's maximum (WithMaxAbsoluteLifetime) is refused with
+// ErrConfig and nothing is stored. The idle deadline is capped at the
+// absolute one.
+//
 // Every create option is applied before the one store write, so a crash cannot
 // leave a live session that has forgotten which factor established it or which
 // provider it came from. Options run after the creation time and deadlines are
@@ -228,6 +255,9 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 	family, err := m.families.NewID()
 	if err != nil {
 		return nil, fmt.Errorf("session: generating a family identifier: %w", err)
+	}
+	if family.IsZero() {
+		return nil, fmt.Errorf("%w: the family identifier generator returned the nil identifier", ErrConfig)
 	}
 
 	now := m.clock.Now()
@@ -245,6 +275,17 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 		if opt != nil {
 			opt(s)
 		}
+	}
+
+	// The lifetime is read back from the deadline the options left, so a
+	// WithAbsoluteLifetime and any consumer option that sets the deadline are
+	// judged the same way, before anything is stored.
+	if lifetime := s.AbsoluteExpiresAt.Sub(s.CreatedAt); lifetime <= 0 || lifetime > m.maxLifetime {
+		return nil, fmt.Errorf("%w: absolute lifetime %s is outside 0 to the maximum %s",
+			ErrConfig, lifetime, m.maxLifetime)
+	}
+	if s.IdleExpiresAt.After(s.AbsoluteExpiresAt) {
+		s.IdleExpiresAt = s.AbsoluteExpiresAt
 	}
 
 	if err := m.store.Create(ctx, s); err != nil {
@@ -266,7 +307,15 @@ func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
 
 // Touch records activity on s: it moves the last-access time to now and the
 // idle deadline to now plus the idle timeout, capped at the absolute deadline,
-// and persists both.
+// and persists both through Store.RecordActivity, which writes those two
+// fields and nothing else, so a change another request saved to the same
+// session is not undone. s is updated in memory only once the store has
+// accepted the write.
+//
+// With WithTouchInterval set, a Touch that finds the last recorded activity
+// younger than the interval writes nothing and leaves s as it is. The default
+// interval is 0: every Touch writes. A session that has been superseded takes
+// no activity; the store leaves it unchanged.
 //
 // The cap is what keeps the absolute deadline absolute. Without it a session
 // in constant use pushes its idle deadline past the hour it was always going
@@ -281,14 +330,21 @@ func (m *Manager) Touch(ctx context.Context, s *Session) error {
 		return ErrSessionExpired
 	}
 
+	if m.touchInterval > 0 && now.Sub(s.LastAccessedAt) < m.touchInterval {
+		return nil
+	}
+
 	idle := now.Add(m.idleTimeout)
 	if idle.After(s.AbsoluteExpiresAt) {
 		idle = s.AbsoluteExpiresAt
 	}
+	if err := m.store.RecordActivity(ctx, s.ID, now, idle, now.Add(-m.touchInterval)); err != nil {
+		return storeFailed(err, "session: the session's activity could not be saved")
+	}
 	s.LastAccessedAt = now
 	s.IdleExpiresAt = idle
 
-	return storeFailed(m.store.Save(ctx, s), "session: the session's activity could not be saved")
+	return nil
 }
 
 // Save persists changes made to s, and never re-creates a session that has
@@ -385,7 +441,8 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // accepted, a step-up completed — because a handle someone obtained before
 // that change must not still answer requests after it. Everything except the
 // identifier is carried over: the user, the first factor, both deadlines, the
-// challenge state (including MFAAtFirstFactor), the federated assurance and
+// challenge state (including MFAAtFirstFactor), the family (FamilyID and
+// FamilyCreatedAt), the federated assurance and
 // the consumer's own data.
 //
 // The new entry is written before the old one is deleted. A failure of the
@@ -460,3 +517,21 @@ type nowOnly struct {
 }
 
 func (c nowOnly) After(d time.Duration) <-chan time.Time { return c.waiter.After(d) }
+
+// RevokeFamily ends every session of one family, superseded ones included,
+// and reports how many went. A family is the sessions one sign-in went on to
+// issue through rotation and renewal, so this ends that sign-in without
+// touching the user's sessions from other sign-ins. An unknown family ends
+// nothing and is not an error.
+func (m *Manager) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
+	if family.IsZero() {
+		return 0, errors.New("session: the nil family names no sessions to revoke")
+	}
+
+	n, err := m.store.DeleteFamily(ctx, family)
+	if err != nil {
+		return n, storeFailed(err, "session: the family's sessions could not be deleted")
+	}
+
+	return n, nil
+}

@@ -556,3 +556,26 @@ func TestEnrolmentSessionCountsUntilExpiry(t *testing.T) {
 		})
 	}
 }
+
+// A session created with a lifetime longer than the absolute timeout gets
+// that lifetime back on restore, not CreatedAt plus the timeout.
+func TestRestoreEnrolmentDeadlines_RestoresALongLifetimeSession(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	const thirtyDays = 30 * 24 * time.Hour
+
+	clk := clockwork.NewFakeClockAt(at(9, 0))
+	m, _ := managerOnClock(t, clk, session.WithMaxAbsoluteLifetime(thirtyDays))
+	s, err := m.Create(ctx, testUser, session.WithAbsoluteLifetime(thirtyDays))
+	require.NoError(t, err)
+
+	m.MarkEnrolmentPending(s, enrolmentLifetime)
+	require.NoError(t, m.Save(ctx, s))
+
+	clk.Advance(5 * time.Minute)
+	require.NoError(t, m.RestoreEnrolmentDeadlines(s))
+
+	assert.Equal(t, at(9, 0).Add(thirtyDays), s.AbsoluteExpiresAt)
+	assert.Equal(t, at(9, 35), s.IdleExpiresAt)
+}

@@ -76,3 +76,108 @@ func TestCreateWritesEverythingInOneWrite(t *testing.T) {
 		assert.Equal(t, createdAt.Add(12*time.Hour), s.AbsoluteExpiresAt)
 	})
 }
+
+func TestCreate_AbsoluteLifetime(t *testing.T) {
+	t.Parallel()
+
+	const thirtyDays = 30 * 24 * time.Hour
+
+	type testCase struct {
+		name   string
+		opts   []session.ManagerOption
+		create []session.CreateOption
+		assert func(t *testing.T, s *session.Session, err error, stored int)
+	}
+
+	cases := []testCase{
+		{
+			name: "no option keeps the absolute timeout",
+			assert: func(t *testing.T, s *session.Session, err error, _ int) {
+				require.NoError(t, err)
+				assert.Equal(t, createdAt.Add(12*time.Hour), s.AbsoluteExpiresAt)
+			},
+		},
+		{
+			name:   "the default maximum refuses a longer lifetime and stores nothing",
+			create: []session.CreateOption{session.WithAbsoluteLifetime(thirtyDays)},
+			assert: func(t *testing.T, s *session.Session, err error, stored int) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, s)
+				assert.Zero(t, stored, "a refused lifetime still reached the store")
+			},
+		},
+		{
+			name:   "a lifetime up to the maximum is honoured",
+			opts:   []session.ManagerOption{session.WithMaxAbsoluteLifetime(thirtyDays)},
+			create: []session.CreateOption{session.WithAbsoluteLifetime(thirtyDays)},
+			assert: func(t *testing.T, s *session.Session, err error, stored int) {
+				require.NoError(t, err)
+				assert.Equal(t, createdAt.Add(thirtyDays), s.AbsoluteExpiresAt)
+				assert.Equal(t, createdAt.Add(30*time.Minute), s.IdleExpiresAt)
+				assert.Equal(t, 1, stored)
+			},
+		},
+		{
+			name:   "a lifetime above the maximum is refused, not shortened",
+			opts:   []session.ManagerOption{session.WithMaxAbsoluteLifetime(thirtyDays)},
+			create: []session.CreateOption{session.WithAbsoluteLifetime(thirtyDays + time.Second)},
+			assert: func(t *testing.T, s *session.Session, err error, stored int) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, s)
+				assert.Zero(t, stored)
+			},
+		},
+		{
+			name:   "a zero lifetime is refused",
+			create: []session.CreateOption{session.WithAbsoluteLifetime(0)},
+			assert: func(t *testing.T, _ *session.Session, err error, stored int) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Zero(t, stored)
+			},
+		},
+		{
+			name:   "a negative lifetime is refused",
+			create: []session.CreateOption{session.WithAbsoluteLifetime(-time.Hour)},
+			assert: func(t *testing.T, _ *session.Session, err error, stored int) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Zero(t, stored)
+			},
+		},
+		{
+			name:   "a lifetime shorter than the idle timeout caps the idle deadline",
+			create: []session.CreateOption{session.WithAbsoluteLifetime(10 * time.Minute)},
+			assert: func(t *testing.T, s *session.Session, err error, _ int) {
+				require.NoError(t, err)
+				assert.Equal(t, createdAt.Add(10*time.Minute), s.AbsoluteExpiresAt)
+				assert.Equal(t, createdAt.Add(10*time.Minute), s.IdleExpiresAt)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			var stored int
+			store.EXPECT().Create(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(context.Context, *session.Session) error { stored++; return nil }).
+				AnyTimes()
+			m := managerFor(t, append([]session.ManagerOption{session.WithStore(store), session.WithClock(clk)}, tc.opts...)...)
+
+			s, err := m.Create(t.Context(), testUser, tc.create...)
+
+			tc.assert(t, s, err, stored)
+		})
+	}
+}
+
+func TestNewManager_MaxAbsoluteLifetimeBelowTheTimeoutIsRefused(t *testing.T) {
+	t.Parallel()
+
+	_, err := session.NewManager(session.WithMaxAbsoluteLifetime(time.Hour))
+
+	require.ErrorIs(t, err, session.ErrConfig)
+}

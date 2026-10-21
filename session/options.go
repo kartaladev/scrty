@@ -74,6 +74,44 @@ func WithAbsoluteTimeout(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.absoluteTimeout = d }
 }
 
+// WithTouchInterval sets how stale a session's recorded activity may be
+// before Touch writes it again. The default is 0: every Touch writes.
+//
+// With an interval d, a Touch that finds the last recorded activity less
+// than d old writes nothing, so a busy session costs one store write per
+// interval rather than one per request. The cost is that a skipped touch
+// leaves the stored idle deadline up to d earlier than it would have been:
+// expiry can only come sooner, never later, and a session is never kept
+// alive by a write that did not happen.
+//
+// d must be at least 0 and less than the idle timeout; anything else is a
+// configuration error from NewManager, because an interval as long as the
+// idle timeout would let a session expire while in constant use.
+func WithTouchInterval(d time.Duration) ManagerOption {
+	return func(m *Manager) { m.touchInterval = d }
+}
+
+// WithMaxAbsoluteLifetime sets the longest absolute lifetime a Create may
+// ask for through WithAbsoluteLifetime. The default is the absolute timeout
+// (see WithAbsoluteTimeout), so with no option no session can outlive it.
+//
+// A maximum below the absolute timeout is a configuration error from
+// NewManager: the default lifetime would already exceed it.
+func WithMaxAbsoluteLifetime(limit time.Duration) ManagerOption {
+	return func(m *Manager) { m.maxLifetime = limit; m.maxLifetimeSupplied = true }
+}
+
+// WithAbsoluteLifetime gives the session being created an absolute lifetime
+// of d in place of the manager's absolute timeout. The default, with no
+// option, is that timeout. The idle deadline is capped at the result.
+//
+// Create refuses a d of zero or less, or one above the manager's maximum
+// (see WithMaxAbsoluteLifetime), with ErrConfig and stores nothing: a
+// requested lifetime is never silently shortened.
+func WithAbsoluteLifetime(d time.Duration) CreateOption {
+	return func(s *Session) { s.AbsoluteExpiresAt = s.CreatedAt.Add(d) }
+}
+
 // WithClock replaces the time source. The default is clock.System().
 //
 // The default in-memory store reads this same clock, so a manager given a fake
