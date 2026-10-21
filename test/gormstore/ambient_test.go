@@ -281,22 +281,34 @@ func TestSessionSuccessorAdvanceRace(t *testing.T) {
 	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
 }
 
-func TestSessionExtendingRenewalLockOrder(t *testing.T) {
+func TestSessionSupersessionLockOrder(t *testing.T) {
 	t.Parallel()
 
 	c := storefix.TestCipher(t)
 	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
 		return newSessionStore(t, db, c, opts...)
 	})
-	// Row ids that sort against insertion order, so a store that locks a
-	// family in scan order rather than id order meets the reverse order.
+	// Row ids that sort against insertion order, so a store that locks the
+	// rows it writes in statement order rather than id order meets the
+	// reverse order.
 	ids := storetest.DescendingIDs()
 	descending := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
 		return newSessionStore(t, db, c, append(opts, gormstore.WithIDGenerator(ids))...)
 	})
 
-	t.Run("gorm", func(t *testing.T) { storetest.RunSessionExtendingRenewalLockOrder(t, h) })
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSupersessionLockOrder(t, h) })
 	t.Run("gorm with descending row ids", func(t *testing.T) {
-		storetest.RunSessionExtendingRenewalLockOrder(t, descending)
+		storetest.RunSessionSupersessionLockOrder(t, descending)
 	})
+}
+
+func TestSessionSupersedeRefusesNilFamily(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSupersedeRefusesNilFamily(t, h) })
 }

@@ -83,7 +83,7 @@ func TestLogout(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "an authenticated POST deletes the session and answers 200 empty",
+			name: "an authenticated POST revokes the session's family and answers 200 empty",
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
@@ -92,12 +92,12 @@ func TestLogout(t *testing.T) {
 				// The session is there for the logout and gone afterwards, so
 				// the token the caller still holds names nothing.
 				gomock.InOrder(
-					h.store.EXPECT().Load(gomock.Any(), testJTI).Return(touchableSession(), nil),
+					h.store.EXPECT().Load(gomock.Any(), testJTI).Return(familiedSession(), nil),
 					h.store.EXPECT().Load(gomock.Any(), testJTI).
 						Return(nil, session.ErrSessionNotFound).AnyTimes(),
 				)
 				h.acceptsFirstPresentation()
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil).Times(1)
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil).Times(1)
 			},
 			request: authorizedLogout,
 			assert: func(t *testing.T, chain *httpsec.Chain, s served) {
@@ -110,15 +110,20 @@ func TestLogout(t *testing.T) {
 			},
 		},
 		{
-			name: "a second logout for an already-deleted session is also 200",
+			// Every stored session belongs to a family, so one with none
+			// reaching logout is a store fault. It is refused rather than
+			// deleted alone, which would leave a renewal's successor live.
+			name: "a session with no family is refused, and not deleted alone",
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.expectResolvedSession(touchableSession())
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).
-					Return(session.ErrSessionNotFound)
+				h.acceptsActivityWriteBack()
 			},
 			request: authorizedLogout,
-			assert:  endedCleanly,
+			assert: func(t *testing.T, _ *httpsec.Chain, s served) {
+				require.Error(t, s.err, "a session with no family names no sign-in to end")
+				assert.False(t, s.handlerRan)
+			},
 		},
 		{
 			name: "a session of a family is ended by revoking the family",
@@ -199,8 +204,8 @@ func TestLogout(t *testing.T) {
 			opts: []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/session/end")},
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
-				h.expectResolvedSession(touchableSession())
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil)
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil)
 			},
 			request: func(ctx context.Context) *http.Request {
 				return logoutRequest(ctx, http.MethodPost, "/session/end", true)

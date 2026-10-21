@@ -19,13 +19,14 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
-// federatedSession is touchableSession as a federated login would have created
+// federatedSession is familiedSession as a federated login would have created
 // it: it records the identity provider the login came through.
 func federatedSession() *session.Session {
-	s := touchableSession()
+	s := familiedSession()
 	s.ExternalProvider = "corp"
 	s.ExternalIssuer = "https://idp.example"
 	s.ExternalSessionID = "sid-9"
@@ -115,7 +116,7 @@ func TestLogoutEndSession(t *testing.T) {
 				assert.Equal(t, "application/json", s.rec.Header().Get("Content-Type"))
 				assert.JSONEq(t, `{"end_session_url":"https://idp.example/logout?state=s-1"}`,
 					s.rec.Body.String())
-				assert.Equal(t, []string{"Delete", "EndSessionURL"}, calls,
+				assert.Equal(t, []string{"DeleteFamily", "EndSessionURL"}, calls,
 					"the session is deleted before the provider is asked for anything")
 				assert.False(t, s.handlerRan)
 			},
@@ -134,17 +135,17 @@ func TestLogoutEndSession(t *testing.T) {
 			assert: func(t *testing.T, h *authHarness, s served, calls []string) {
 				endedCleanly(t, h, s, calls)
 				assert.Empty(t, s.rec.Header().Get("Cache-Control"))
-				assert.Equal(t, []string{"Delete", "EndSessionURL"}, calls)
+				assert.Equal(t, []string{"DeleteFamily", "EndSessionURL"}, calls)
 			},
 		},
 		{
 			name:    "a password session never calls the end-session step",
-			session: touchableSession,
+			session: familiedSession,
 			// No expectation on the builder: any call to it fails the test.
 			endSession: func(*testing.T, *MockEndSessionBuilder, *callLog) {},
 			assert: func(t *testing.T, h *authHarness, s served, calls []string) {
 				endedCleanly(t, h, s, calls)
-				assert.Equal(t, []string{"Delete"}, calls)
+				assert.Equal(t, []string{"DeleteFamily"}, calls)
 			},
 		},
 		{
@@ -160,7 +161,7 @@ func TestLogoutEndSession(t *testing.T) {
 			},
 			assert: func(t *testing.T, h *authHarness, s served, calls []string) {
 				endedCleanly(t, h, s, calls)
-				assert.Equal(t, []string{"Delete", "EndSessionURL"}, calls)
+				assert.Equal(t, []string{"DeleteFamily", "EndSessionURL"}, calls)
 
 				var logged bool
 				for _, r := range h.logs.records() {
@@ -184,7 +185,7 @@ func TestLogoutEndSession(t *testing.T) {
 				endedCleanly(t, h, s, calls)
 				assert.Empty(t, s.rec.Header().Get("Cache-Control"),
 					"no step ran to have anything not to cache")
-				assert.Equal(t, []string{"Delete"}, calls)
+				assert.Equal(t, []string{"DeleteFamily"}, calls)
 			},
 		},
 		{
@@ -203,7 +204,7 @@ func TestLogoutEndSession(t *testing.T) {
 			},
 			assert: func(t *testing.T, h *authHarness, s served, calls []string) {
 				endedCleanly(t, h, s, calls)
-				assert.Equal(t, []string{"Delete", "EndSessionURL"}, calls,
+				assert.Equal(t, []string{"DeleteFamily", "EndSessionURL"}, calls,
 					"logoutState never parses a JSON body, so the step still runs with no state")
 			},
 		},
@@ -223,7 +224,7 @@ func TestLogoutEndSession(t *testing.T) {
 			},
 			assert: func(t *testing.T, h *authHarness, s served, calls []string) {
 				endedCleanly(t, h, s, calls)
-				assert.Equal(t, []string{"Delete", "EndSessionURL"}, calls,
+				assert.Equal(t, []string{"DeleteFamily", "EndSessionURL"}, calls,
 					"a body over the bound is refused unread, so the step still runs with no state")
 			},
 		},
@@ -243,7 +244,7 @@ func TestLogoutEndSession(t *testing.T) {
 			},
 			assert: func(t *testing.T, h *authHarness, s served, calls []string) {
 				endedCleanly(t, h, s, calls)
-				assert.Equal(t, []string{"Delete", "EndSessionURL"}, calls,
+				assert.Equal(t, []string{"DeleteFamily", "EndSessionURL"}, calls,
 					"a missing field reads as \"\", not as a reason to skip the step")
 			},
 		},
@@ -257,11 +258,11 @@ func TestLogoutEndSession(t *testing.T) {
 			h := newAuthHarness(t)
 			h.expectVerified()
 			h.expectResolvedSession(tc.session())
-			h.store.EXPECT().Delete(gomock.Any(), testJTI).
-				DoAndReturn(func(context.Context, string) error {
-					log.add("Delete")
+			h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).
+				DoAndReturn(func(context.Context, id.ID) (int, error) {
+					log.add("DeleteFamily")
 
-					return nil
+					return 1, nil
 				})
 
 			deps := httpsec.LogoutDeps{Sessions: h.sessions}

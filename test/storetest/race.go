@@ -244,6 +244,7 @@ func sessionSupersessionRace[S session.Store](racers int) Race[S] {
 			err := s.Supersede(ctx, session.Supersession{
 				Old:         key,
 				AcceptUntil: suiteStart.Add(30 * time.Second),
+				RetainUntil: sessionRetainUntil,
 				Successor:   successorOf(old, raceSuccessorID(key, racer), suiteStart),
 				Now:         suiteStart,
 			})

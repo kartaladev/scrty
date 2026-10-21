@@ -221,6 +221,14 @@ func (m *Manager) RotateWithGrace(ctx context.Context, s *Session, grace time.Du
 		acceptUntil = minTime(acceptUntil, old.AcceptUntil)
 	}
 
+	// The family maximum bounds every renewal, so a family already past its
+	// end under this manager's maximum cannot be renewed, whatever deadline
+	// the record itself still carries.
+	familyEnd := m.familyEnd(old)
+	if !now.Before(familyEnd) {
+		return nil, 0, ErrSessionExpired
+	}
+
 	id, err := m.newIdentifier()
 	if err != nil {
 		return nil, 0, err
@@ -229,14 +237,16 @@ func (m *Manager) RotateWithGrace(ctx context.Context, s *Session, grace time.Du
 	next.CreatedAt = now
 	next.LastAccessedAt = now
 	if r.lifetimeSet {
-		next.AbsoluteExpiresAt = minTime(now.Add(r.lifetime), old.FamilyCreatedAt.Add(m.maxFamilyLifetime))
+		next.AbsoluteExpiresAt = now.Add(r.lifetime)
 	}
+	next.AbsoluteExpiresAt = minTime(next.AbsoluteExpiresAt, familyEnd)
 	next.IdleExpiresAt = minTime(now.Add(m.idleTimeout), next.AbsoluteExpiresAt)
 
 	err = m.store.Supersede(ctx, Supersession{
 		Old:                         old.ID,
 		ObservedSuccessor:           old.SuccessorDigest,
 		AcceptUntil:                 acceptUntil,
+		RetainUntil:                 m.retainUntil(old, acceptUntil),
 		Successor:                   next,
 		Now:                         now,
 		RequireUnpresentedSuccessor: kind == RenewalRecovery,

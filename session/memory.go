@@ -50,6 +50,11 @@ type MemoryStore struct {
 	// is written wherever records is.
 	byDigest map[string]string
 
+	// byFamily maps each family to the identifiers of its stored records, so
+	// revoking a family touches its own records rather than scanning the
+	// store. Like byDigest it is written wherever records is.
+	byFamily map[id.ID]map[string]struct{}
+
 	// lifecycle guards the housekeeping run below. It is separate from mu so
 	// that Stop can wait for a sweep to finish while that sweep takes mu.
 	lifecycle sync.Mutex
@@ -65,6 +70,7 @@ func NewMemoryStore(opts ...MemoryStoreOption) *MemoryStore {
 		interval: defaultHousekeepingInterval,
 		records:  make(map[string]*Session),
 		byDigest: make(map[string]string),
+		byFamily: make(map[id.ID]map[string]struct{}),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -190,8 +196,13 @@ func (s *MemoryStore) Stop() error {
 
 // Create inserts sess. An identifier that is already stored is refused rather
 // than overwritten: replacing it would silently end the session already
-// holding that identifier.
+// holding that identifier. A session with no family, the nil family, is
+// refused with an error before anything is written.
 func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
+	if sess.FamilyID.IsZero() {
+		return errors.New("session: a session with no family cannot be stored")
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -203,18 +214,34 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 	return nil
 }
 
-// putLocked stores rec under its identifier and indexes its digest. Callers
-// hold s.mu.
+// putLocked stores rec, a record not stored yet, under its identifier and
+// indexes its digest and family. Callers hold s.mu.
 func (s *MemoryStore) putLocked(rec *Session) {
 	s.records[rec.ID] = rec
 	s.byDigest[string(sessionDigest(rec.ID))] = rec.ID
+	members, ok := s.byFamily[rec.FamilyID]
+	if !ok {
+		members = make(map[string]struct{})
+		s.byFamily[rec.FamilyID] = members
+	}
+	members[rec.ID] = struct{}{}
 }
 
-// deleteLocked removes the record with this identifier and its index entry.
-// Callers hold s.mu.
-func (s *MemoryStore) deleteLocked(id string) {
-	delete(s.records, id)
-	delete(s.byDigest, string(sessionDigest(id)))
+// deleteLocked removes the record with this identifier and its index
+// entries. Callers hold s.mu.
+func (s *MemoryStore) deleteLocked(sessionID string) {
+	rec, found := s.records[sessionID]
+	if !found {
+		return
+	}
+	delete(s.records, sessionID)
+	delete(s.byDigest, string(sessionDigest(sessionID)))
+	if members := s.byFamily[rec.FamilyID]; members != nil {
+		delete(members, sessionID)
+		if len(members) == 0 {
+			delete(s.byFamily, rec.FamilyID)
+		}
+	}
 }
 
 // Save updates the stored session, whole except for MFAAtFirstFactor,
@@ -421,16 +448,23 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 // longer stored, or presented when op.RequireUnpresentedSuccessor is set,
 // writes nothing and is ErrSuccessorAdvanced.
 //
-// A superseded record keeps its absolute deadline as both deadlines, so
-// housekeeping removes it only when its family could no longer be live. When
-// op.Successor's absolute deadline is later than a superseded member's of the
-// same family, Old included, that member's two deadlines are raised to it in
-// the same locked step, so a renewal that extends the family keeps every
-// superseded identifier judged as superseded, not expired, while the family
-// is live.
+// A successor with no family, or a RetainUntil before AcceptUntil, is
+// refused with an error before anything is written. Old and its previous
+// successor take the later of each current deadline and op.RetainUntil, so
+// housekeeping removes them only when their family could no longer be live,
+// and no supersession lowers a deadline.
+//
+// Nothing else is written: no other record of the family is touched, however
+// many renewals came before.
 func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	if op.Successor == nil {
 		return errors.New("session: a supersession needs a successor")
+	}
+	if op.Successor.FamilyID.IsZero() {
+		return errors.New("session: a supersession's successor needs a family")
+	}
+	if op.RetainUntil.Before(op.AcceptUntil) {
+		return errors.New("session: a supersession's retention deadline is before the end of its window")
 	}
 
 	s.mu.Lock()
@@ -459,29 +493,23 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	if previous != nil {
 		previous.SupersededAt = op.Now
 		previous.AcceptUntil = op.Now
-		previous.IdleExpiresAt = previous.AbsoluteExpiresAt
+		retain(previous, op.RetainUntil)
 	}
 	old.SupersededAt = op.Now
 	old.AcceptUntil = op.AcceptUntil
 	old.SuccessorDigest = sessionDigest(op.Successor.ID)
-	old.IdleExpiresAt = old.AbsoluteExpiresAt
-	s.extendSupersededLocked(old.FamilyID, op.Successor.AbsoluteExpiresAt)
+	retain(old, op.RetainUntil)
 	s.putLocked(op.Successor.clone())
 
 	return nil
 }
 
-// extendSupersededLocked raises both deadlines of every superseded record of
-// family whose absolute deadline is before until to until. A superseded
-// record never authenticates past its window, so the raise grants nothing; it
-// keeps the record until the family's own deadline, so presenting it is still
-// judged. Callers hold s.mu for writing.
-func (s *MemoryStore) extendSupersededLocked(family id.ID, until time.Time) {
-	for _, rec := range s.records {
-		if rec.FamilyID == family && !rec.SupersededAt.IsZero() && rec.AbsoluteExpiresAt.Before(until) {
-			rec.IdleExpiresAt, rec.AbsoluteExpiresAt = until, until
-		}
-	}
+// retain holds a superseded record to one deadline: the later of its absolute
+// deadline and until, as both of its deadlines. It never lowers one: a record
+// that already outlives the retention keeps its own absolute deadline.
+func retain(rec *Session, until time.Time) {
+	rec.AbsoluteExpiresAt = laterTime(rec.AbsoluteExpiresAt, until)
+	rec.IdleExpiresAt = rec.AbsoluteExpiresAt
 }
 
 // successorLocked returns the stored record whose identifier old's successor
@@ -501,17 +529,26 @@ func (s *MemoryStore) successorLocked(old *Session) *Session {
 }
 
 // DeleteFamily removes every session of this family, superseded or not and
-// expired or not, and reports how many went.
+// expired or not, and reports how many went. It reads the family's records
+// from an index, so its cost is the family's size, not the store's.
 //
-// The nil family is refused with an error and nothing is deleted: sessions
-// created with no family all carry it, so honouring it would delete unrelated
-// users' sessions.
+// The nil family is refused with an error and nothing is deleted: it names no
+// family, as Create refuses to store a session in it.
 func (s *MemoryStore) DeleteFamily(_ context.Context, family id.ID) (int, error) {
 	if family.IsZero() {
 		return 0, errors.New("session: the nil family names no family")
 	}
 
-	return s.removeWhere(func(rec *Session) bool { return rec.FamilyID == family }), nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	members := s.byFamily[family]
+	n := len(members)
+	for sessionID := range members {
+		s.deleteLocked(sessionID)
+	}
+
+	return n, nil
 }
 
 // MarkPresented records at as the session's first presentation, only when

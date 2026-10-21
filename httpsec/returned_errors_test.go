@@ -508,9 +508,9 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			act: func(t *testing.T) *errorSink {
 				h := newAuthHarness(t)
 				h.expectVerified()
-				h.expectResolvedSession(touchableSession())
+				h.expectResolvedSession(familiedSession())
 				h.acceptsActivityWriteBack()
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(errFixtureFailure)
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(0, errFixtureFailure)
 
 				return refusedBy(t, logoutFormRequest(t.Context(), nil),
 					httpsec.WithLogger(h.logger()),

@@ -32,15 +32,11 @@ Durable session stores SHALL supersede a session in one atomic operation: mark t
 - **THEN** the old record loads as superseded with its window end, and the successor loads in the same family with the same family start time
 
 ### Requirement: A superseded session is superseded again only through its observed successor
-A session that is already superseded SHALL be superseded again only by a caller that observed its current successor; a caller that observed none SHALL get the renewal-conflict error with nothing written. A supersession of a session that belongs to no family (the nil identifier) SHALL be refused with an error and SHALL write nothing.
+A session that is already superseded SHALL be superseded again only by a caller that observed its current successor; a caller that observed none SHALL get the renewal-conflict error with nothing written.
 
 #### Scenario: Knocked-out successor renewed as if fresh
 - **WHEN** session O is superseded by S1, O is superseded again observing S1 (so S1 is superseded with no successor), and S1 is then superseded by a caller that observed no successor
 - **THEN** the renewal-conflict error is returned and nothing is written
-
-#### Scenario: Session with no family
-- **WHEN** a session stored with no family is superseded
-- **THEN** the supersession fails with an error and nothing is written
 
 ### Requirement: Supersession refuses a successor that has moved on
 When the caller observed a successor that has since been superseded or is no longer stored, or required an unpresented successor that has been presented, the store SHALL write nothing and SHALL return the successor-advanced error.
@@ -128,8 +124,19 @@ Recording activity SHALL store an idle deadline no later than the absolute deadl
 - **THEN** the stored idle deadline is 09:15
 
 ### Requirement: Every stored session belongs to a family
-Creating a session in a store SHALL be refused with an error, and nothing SHALL be written, when the session belongs to no family (the nil family identifier).
+Creating a session in a store, or inserting a supersession's successor, SHALL be refused with an error, and nothing SHALL be written, when the session belongs to no family (the nil family identifier).
 
 #### Scenario: Session with no family refused at creation
 - **WHEN** a session whose family is the nil identifier is created through the store
 - **THEN** the creation fails with an error and the session does not load
+
+### Requirement: A supersession never lowers a deadline
+A supersession SHALL NOT set a superseded session's deadlines earlier than they were, and SHALL be refused with an error, writing nothing, when the retention deadline it gives is before its window's end.
+
+#### Scenario: Retention below the stored deadline
+- **WHEN** a session whose absolute deadline is 21:00 is superseded at 16:00 with a retention deadline of 15:00 and a window ending at 16:00:30
+- **THEN** the supersession is refused and nothing is written
+
+#### Scenario: Retention below a stored deadline but after the window
+- **WHEN** a session whose absolute deadline is 21:00 is superseded at 16:00 with a retention deadline of 18:00 and a window ending at 16:00:30
+- **THEN** the superseded session keeps 21:00 as both deadlines

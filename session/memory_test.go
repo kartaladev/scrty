@@ -9,14 +9,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
 // storedSession is one record as a store would receive it from a manager.
-func storedSession(id string) *session.Session {
+// storedFamily is the family storedSession gives every session, since a store
+// holds no session without one.
+var storedFamily = id.MustParse("01926a4e-0000-7000-8000-0000000000ff")
+
+func storedSession(sessionID string) *session.Session {
 	return &session.Session{
-		ID:                id,
+		ID:                sessionID,
 		UserID:            testUser,
+		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		CreatedAt:         createdAt,
 		LastAccessedAt:    createdAt,
 		IdleExpiresAt:     createdAt.Add(30 * time.Minute),
@@ -189,11 +196,11 @@ func TestMemoryStoreClock(t *testing.T) {
 
 		now := time.Now()
 		require.NoError(t, store.Create(t.Context(), &session.Session{
-			ID: "expired", UserID: testUser, CreatedAt: now.Add(-time.Hour),
+			ID: "expired", UserID: testUser, FamilyID: storedFamily, CreatedAt: now.Add(-time.Hour),
 			IdleExpiresAt: now.Add(-time.Second), AbsoluteExpiresAt: now.Add(time.Hour),
 		}))
 		require.NoError(t, store.Create(t.Context(), &session.Session{
-			ID: "live", UserID: testUser, CreatedAt: now,
+			ID: "live", UserID: testUser, FamilyID: storedFamily, CreatedAt: now,
 			IdleExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(2 * time.Hour),
 		}))
 

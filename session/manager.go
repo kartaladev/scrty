@@ -556,6 +556,32 @@ func (m *Manager) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
 	return n, nil
 }
 
+// familyEnd is the latest time s's family could still be live under this
+// manager: its start plus the family maximum.
+func (m *Manager) familyEnd(s *Session) time.Time {
+	return s.FamilyCreatedAt.Add(m.maxFamilyLifetime)
+}
+
+// retainUntil is the retention deadline of a supersession of s whose window
+// ends at acceptUntil: the latest of the family's end, s's own absolute
+// deadline and the window's end. The family's end is the point no renewal
+// extends the family past, so every superseded record kept until then is
+// still judged as superseded, not expired, while the family lives. The other
+// two keep a family maximum lowered by a deploy from shortening a record
+// issued under the old one, inside its own window included.
+func (m *Manager) retainUntil(s *Session, acceptUntil time.Time) time.Time {
+	return laterTime(laterTime(m.familyEnd(s), s.AbsoluteExpiresAt), acceptUntil)
+}
+
+// laterTime returns the later of a and b.
+func laterTime(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+
+	return a
+}
+
 // IdleTimeout reports how long a session survives with no activity, which is
 // what WithIdleTimeout configured.
 func (m *Manager) IdleTimeout() time.Duration { return m.idleTimeout }
@@ -649,6 +675,10 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	}
 
 	rotated := successorOf(s, id)
+	// The family is the stored record's, never the caller's copy's: a copy
+	// with the family cleared or altered must not move the successor out of
+	// the family the store holds.
+	rotated.FamilyID, rotated.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
 	// The successor is a record written now, so its creation time is now.
 	// AuthenticatedAt stays as s carries it: that is the sign-in's, or the
 	// refresh second-factor verification wrote onto s before rotating.
@@ -665,10 +695,12 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	// this one. The short in-flight window lets a request already sent with
 	// the old identifier land as the session it was, still owing whatever
 	// the rotation changed, rather than as reuse.
+	acceptUntil := minTime(now.Add(DefaultRenewalGrace), stored.AbsoluteExpiresAt)
 	err = m.store.Supersede(ctx, Supersession{
 		Old:               stored.ID,
 		ObservedSuccessor: stored.SuccessorDigest,
-		AcceptUntil:       minTime(now.Add(DefaultRenewalGrace), stored.AbsoluteExpiresAt),
+		AcceptUntil:       acceptUntil,
+		RetainUntil:       m.retainUntil(stored, acceptUntil),
 		Successor:         rotated,
 		Now:               now,
 	})

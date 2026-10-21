@@ -135,31 +135,53 @@ const (
 	// conditional UPDATE that tests the observed successor alone would, so a
 	// knocked-out successor is renewed as if it were a fresh head.
 	sessionSupersedeKnockedOut sessionDefect = "supersede-knocked-out-successor"
-	// Supersede accepts a session in no family, writing to the nil family
-	// every family-less session shares.
-	sessionSupersedeNoFamily sessionDefect = "supersede-accepts-nil-family"
-	// Supersede leaves every superseded session's deadlines as they were when
-	// a successor extends the family, as an UPDATE of the old row's window
-	// alone would.
-	sessionSupersedeKeepsMemberDeadlines sessionDefect = "supersede-keeps-member-deadlines"
-	// Supersede raises the deadlines of Old alone when a successor extends
-	// the family, leaving sessions superseded earlier in the chain to expire
-	// at their own.
-	sessionSupersedeExtendsOldOnly sessionDefect = "supersede-extends-old-only"
+	// Create accepts a session in no family, so every such session shares
+	// the nil family.
+	sessionCreateAcceptsNoFamily sessionDefect = "create-accepts-nil-family"
+	// Supersede keeps Old's and the previous successor's own absolute
+	// deadline as both deadlines rather than the retention deadline, as an
+	// UPDATE setting idle_expires_at = absolute_expires_at would.
+	sessionSupersedeKeepsOwnDeadline sessionDefect = "supersede-keeps-own-deadline"
+	// Supersede writes the successor's absolute deadline as Old's and the
+	// previous successor's deadlines rather than the retention deadline.
+	sessionSupersedeUsesSuccessorDeadline sessionDefect = "supersede-uses-successor-deadline"
+	// Supersede writes the retention deadline to Old only, leaving the
+	// previous successor it supersedes with its own deadlines.
+	sessionSupersedePreviousKeepsOwnDeadline sessionDefect = "supersede-previous-keeps-own-deadline"
+	// Supersede also writes the retention deadline to every superseded
+	// member of the family, as the family-wide raise it replaces did.
+	sessionSupersedeRewritesFamily sessionDefect = "supersede-rewrites-superseded-family"
 	// Supersede refuses a presented observed successor whether or not the
 	// supersession requires an unpresented one, as a conditional UPDATE that
 	// always tests first_presented_at would.
 	sessionSupersedeAlwaysRequiresUnpresented sessionDefect = "supersede-always-requires-unpresented"
-	// Supersede raises superseded sessions of every family, as an UPDATE
-	// missing its family_id condition would.
-	sessionSupersedeRaisesEveryFamily sessionDefect = "supersede-raises-every-family"
-	// Supersede raises every member of the family, superseded or not, as an
-	// UPDATE missing its superseded_at condition would.
-	sessionSupersedeRaisesUnsuperseded sessionDefect = "supersede-raises-unsuperseded"
-	// Supersede sets every superseded member's deadlines to the successor's,
-	// lowering those that end later, as an UPDATE missing its
-	// absolute_expires_at condition would.
-	sessionSupersedeSetsMemberDeadlines sessionDefect = "supersede-sets-member-deadlines"
+	// Supersede writes the retention deadline to the superseded sessions of
+	// every family, as a family-wide UPDATE missing its family_id condition
+	// would.
+	sessionSupersedeRetainsEveryFamily sessionDefect = "supersede-retains-every-family"
+	// Supersede writes the retention deadline to every member of the family,
+	// superseded or not, as one missing its superseded_at condition would.
+	sessionSupersedeRetainsUnsuperseded sessionDefect = "supersede-retains-unsuperseded"
+	// Save writes the caller's authentication time rather than keeping the
+	// one Create stored.
+	sessionSaveMovesAuthenticatedAt sessionDefect = "save-moves-authenticated-at"
+	// Supersede writes the retention deadline whatever the record holds, so a
+	// retention below a stored deadline lowers it.
+	sessionSupersedeLowersDeadline sessionDefect = "supersede-lowers-deadline"
+	// Supersede raises each deadline to the retention separately, so a record
+	// whose idle deadline is below it and whose absolute deadline is above it
+	// keeps two deadlines.
+	sessionSupersedeRaisesEachDeadline sessionDefect = "supersede-raises-each-deadline"
+	// Supersede lowers the previous successor's deadlines to the retention
+	// deadline, though it never lowers the superseded record's own.
+	sessionSupersedePreviousLowers sessionDefect = "supersede-previous-lowers-deadline"
+	// Supersede accepts a retention deadline before the window's end.
+	sessionSupersedeAcceptsEarlyRetention sessionDefect = "supersede-accepts-early-retention"
+	// Supersede inserts a successor in no family.
+	sessionSupersedeAcceptsNoFamilySuccessor sessionDefect = "supersede-accepts-nil-family-successor"
+	// Delete leaves the session counted in its family, as a family member
+	// count kept apart from the records would.
+	sessionDeleteKeepsFamilyMember sessionDefect = "delete-keeps-family-member"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -221,6 +243,9 @@ type sessionStore struct {
 	// loaded is the copy the last Load handed out per identifier, which only
 	// sessionWholeRecordActivity reads.
 	loaded map[string]*session.Session
+	// strayMembers counts, per family, the sessions Delete removed, which
+	// only sessionDeleteKeepsFamilyMember keeps counting.
+	strayMembers map[id.ID]int
 }
 
 var _ session.Store = (*sessionStore)(nil)
@@ -241,10 +266,12 @@ func cloneSession(sess *session.Session) *session.Session {
 	return &out
 }
 
-// keepLibraryState copies onto sess the family, supersession and presentation
-// fields stored holds, which only Create, Supersede and MarkPresented write,
-// and both deadlines of a superseded record.
+// keepLibraryState copies onto sess the authentication time and the family,
+// supersession and presentation fields stored holds, which only Create,
+// Supersede and MarkPresented write, and both deadlines of a superseded
+// record.
 func keepLibraryState(sess, stored *session.Session) {
+	sess.AuthenticatedAt = stored.AuthenticatedAt
 	sess.FamilyID, sess.FamilyCreatedAt = stored.FamilyID, stored.FamilyCreatedAt
 	sess.SupersededAt, sess.AcceptUntil = stored.SupersededAt, stored.AcceptUntil
 	sess.SuccessorDigest = slices.Clone(stored.SuccessorDigest)
@@ -262,6 +289,9 @@ func (s *sessionStore) Create(_ context.Context, sess *session.Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if sess.FamilyID.IsZero() && s.defect != sessionCreateAcceptsNoFamily {
+		return errors.New("a session with no family cannot be stored")
+	}
 	if _, exists := s.records[sess.ID]; exists {
 		return errors.New("identifier already stored")
 	}
@@ -303,6 +333,9 @@ func (s *sessionStore) Save(_ context.Context, sess *session.Session) error {
 	kept := cloneSession(sess)
 	kept.MFAAtFirstFactor = marker
 	keepLibraryState(kept, stored)
+	if s.defect == sessionSaveMovesAuthenticatedAt {
+		kept.AuthenticatedAt = sess.AuthenticatedAt
+	}
 	sess = kept
 	if s.defect == sessionSaveRefusesTextAfterPartialWrite {
 		stored.LastAccessedAt = sess.LastAccessedAt
@@ -432,6 +465,16 @@ func (s *sessionStore) removeWhere(match func(*session.Session) bool) int {
 }
 
 func (s *sessionStore) Delete(_ context.Context, sessionID string) error {
+	if s.defect == sessionDeleteKeepsFamilyMember {
+		s.mu.Lock()
+		if rec, found := s.records[sessionID]; found {
+			if s.strayMembers == nil {
+				s.strayMembers = make(map[id.ID]int)
+			}
+			s.strayMembers[rec.FamilyID]++
+		}
+		s.mu.Unlock()
+	}
 	s.removeWhere(func(sess *session.Session) bool { return sess.ID == sessionID })
 	return nil
 }
@@ -530,11 +573,17 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if op.Successor.FamilyID.IsZero() && s.defect != sessionSupersedeAcceptsNoFamilySuccessor {
+		return errors.New("a successor with no family cannot be stored")
+	}
+	if op.RetainUntil.Before(op.AcceptUntil) && s.defect != sessionSupersedeAcceptsEarlyRetention {
+		return errors.New("a retention deadline cannot be before the window's end")
+	}
 	old, exists := s.records[op.Old]
 	if !exists {
 		return session.ErrSessionNotFound
 	}
-	if old.FamilyID.IsZero() && s.defect != sessionSupersedeNoFamily {
+	if old.FamilyID.IsZero() {
 		return errors.New("a session with no family cannot be superseded")
 	}
 	if s.defect != sessionSupersedeKnockedOut && len(op.ObservedSuccessor) == 0 && !old.SupersededAt.IsZero() {
@@ -565,33 +614,66 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 	if _, taken := s.records[op.Successor.ID]; taken {
 		return errors.New("identifier already stored")
 	}
+	s.retainOthers(old, op.RetainUntil)
 	if previous := s.successorOf(old); previous != nil {
 		previous.SupersededAt, previous.AcceptUntil = op.Now, op.Now
-		previous.IdleExpiresAt = previous.AbsoluteExpiresAt
+		switch s.defect {
+		case sessionSupersedePreviousKeepsOwnDeadline:
+		case sessionSupersedePreviousLowers:
+			previous.IdleExpiresAt, previous.AbsoluteExpiresAt = op.RetainUntil, op.RetainUntil
+		default:
+			s.retain(previous, op)
+		}
 	}
 	old.SupersededAt, old.AcceptUntil = op.Now, op.AcceptUntil
 	old.SuccessorDigest = digestOf(op.Successor.ID)
-	old.IdleExpiresAt = old.AbsoluteExpiresAt
-	s.extendSuperseded(old, op.Successor.AbsoluteExpiresAt)
+	s.retain(old, op)
 	s.records[op.Successor.ID] = cloneSession(op.Successor)
 	return nil
 }
 
-// extendSuperseded raises both deadlines of every superseded session of old's
-// family that ends before until to until, as the contract requires, unless a
-// defect skips or narrows it. Callers hold s.mu.
-func (s *sessionStore) extendSuperseded(old *session.Session, until time.Time) {
-	if s.defect == sessionSupersedeKeepsMemberDeadlines {
+// retain writes the deadline a supersession gives rec as both of rec's
+// deadlines: op.RetainUntil, as the contract requires, unless a defect picks
+// another. Callers hold s.mu.
+func (s *sessionStore) retain(rec *session.Session, op session.Supersession) {
+	until := op.RetainUntil
+	switch s.defect {
+	case sessionSupersedeKeepsOwnDeadline:
+		until = rec.AbsoluteExpiresAt
+	case sessionSupersedeUsesSuccessorDeadline:
+		until = op.Successor.AbsoluteExpiresAt
+	}
+	if s.defect == sessionSupersedeLowersDeadline {
+		rec.IdleExpiresAt, rec.AbsoluteExpiresAt = until, until
 		return
 	}
-	for _, rec := range s.records {
-		if s.defect == sessionSupersedeExtendsOldOnly && rec != old {
-			continue
+	if s.defect == sessionSupersedeRaisesEachDeadline {
+		if until.After(rec.IdleExpiresAt) {
+			rec.IdleExpiresAt = until
 		}
-		sameFamily := rec.FamilyID == old.FamilyID || s.defect == sessionSupersedeRaisesEveryFamily
-		superseded := !rec.SupersededAt.IsZero() || s.defect == sessionSupersedeRaisesUnsuperseded
-		raises := rec.AbsoluteExpiresAt.Before(until) || s.defect == sessionSupersedeSetsMemberDeadlines
-		if sameFamily && superseded && raises {
+		if until.After(rec.AbsoluteExpiresAt) {
+			rec.AbsoluteExpiresAt = until
+		}
+		return
+	}
+	// A conforming store never lowers a deadline, and holds a superseded
+	// record to one: the later of its absolute deadline and the retention.
+	if until.After(rec.AbsoluteExpiresAt) {
+		rec.AbsoluteExpiresAt = until
+	}
+	rec.IdleExpiresAt = rec.AbsoluteExpiresAt
+}
+
+// retainOthers writes until to records the supersession of old does not
+// supersede, as the defects that widen the write do. A conforming store
+// writes none. Callers hold s.mu.
+func (s *sessionStore) retainOthers(old *session.Session, until time.Time) {
+	for _, rec := range s.records {
+		sameFamily := rec.FamilyID == old.FamilyID
+		superseded := !rec.SupersededAt.IsZero()
+		if s.defect == sessionSupersedeRewritesFamily && sameFamily && superseded ||
+			s.defect == sessionSupersedeRetainsEveryFamily && superseded ||
+			s.defect == sessionSupersedeRetainsUnsuperseded && sameFamily {
 			rec.IdleExpiresAt, rec.AbsoluteExpiresAt = until, until
 		}
 	}
@@ -650,7 +732,14 @@ func (s *sessionStore) DeleteFamily(_ context.Context, family id.ID) (int, error
 	if family.IsZero() {
 		return 0, errors.New("the nil family names no family")
 	}
-	return s.removeWhere(func(sess *session.Session) bool { return sess.FamilyID == family }), nil
+	n := s.removeWhere(func(sess *session.Session) bool { return sess.FamilyID == family })
+	if s.defect == sessionDeleteKeepsFamilyMember {
+		s.mu.Lock()
+		n += s.strayMembers[family]
+		delete(s.strayMembers, family)
+		s.mu.Unlock()
+	}
+	return n, nil
 }
 
 func (s *sessionStore) MarkPresented(_ context.Context, sessionID string, at time.Time) error {

@@ -25,11 +25,13 @@ func familyOf(sessionID string, family id.ID) *session.Session {
 }
 
 // firstRotation supersedes old by successor at createdAt with a one-minute
-// window, as a first rotation observes no successor.
+// window and a retention deadline at storedSession's absolute deadline, as a
+// first rotation observes no successor.
 func firstRotation(old string, successor *session.Session) session.Supersession {
 	return session.Supersession{
 		Old:         old,
 		AcceptUntil: createdAt.Add(time.Minute),
+		RetainUntil: createdAt.Add(12 * time.Hour),
 		Successor:   successor,
 		Now:         createdAt,
 	}
@@ -323,4 +325,125 @@ func TestMemoryStoreReRotationIgnoresAnUnindexedSuccessor(t *testing.T) {
 	unrelated, err := s.Load(ctx, "")
 	require.NoError(t, err)
 	assert.True(t, unrelated.SupersededAt.IsZero(), "an unrelated record was superseded")
+}
+
+// TestSupersedeRefusals pins the supersessions a store refuses with a plain
+// error and writes nothing for, through the memory store and the sealing
+// store over it: a successor with no family, and a retention deadline before
+// the window's end.
+func TestSupersedeRefusals(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		op     func() session.Supersession
+		assert func(t *testing.T, err error, store *session.MemoryStore, old *session.Session)
+	}
+
+	refusedWithNothingWritten := func(t *testing.T, err error, store *session.MemoryStore, old *session.Session) {
+		t.Helper()
+
+		require.Error(t, err)
+		require.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
+		require.NotErrorIs(t, err, session.ErrSessionNotFound)
+		require.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
+		assert.Equal(t, 1, store.Len(), "a refused supersession inserted something")
+		stored, err := store.Load(t.Context(), old.ID)
+		require.NoError(t, err)
+		assert.True(t, stored.SupersededAt.IsZero(), "a refused supersession marked the session")
+		assert.Equal(t, old.AbsoluteExpiresAt, stored.AbsoluteExpiresAt)
+	}
+
+	cases := []testCase{
+		{
+			name: "a successor with no family",
+			op: func() session.Supersession {
+				successor := storedSession("new")
+				successor.FamilyID = id.Nil
+
+				return firstRotation("old", successor)
+			},
+			assert: refusedWithNothingWritten,
+		},
+		{
+			name: "a retention deadline before the window's end",
+			op: func() session.Supersession {
+				op := firstRotation("old", storedSession("new"))
+				op.RetainUntil = op.AcceptUntil.Add(-time.Second)
+
+				return op
+			},
+			assert: refusedWithNothingWritten,
+		},
+	}
+
+	for _, tc := range cases {
+		for _, sealed := range []bool{false, true} {
+			name := tc.name + " on the memory store"
+			if sealed {
+				name = tc.name + " on the sealing store"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				var store session.Store
+				sealing, inner := sealingStore(t, 0x2a)
+				store = inner
+				if sealed {
+					store = sealing
+				}
+				old := storedSession("old")
+				require.NoError(t, store.Create(t.Context(), old))
+
+				err := store.Supersede(t.Context(), tc.op())
+
+				tc.assert(t, err, inner, old)
+			})
+		}
+	}
+}
+
+// TestMemoryStoreSupersessionNeverLowersADeadline pins that a retention
+// deadline below the absolute deadline a record already holds leaves it as it
+// was, and the idle deadline becomes that same deadline, for Old and for Old's
+// previous successor alike.
+func TestMemoryStoreSupersessionNeverLowersADeadline(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
+	require.NoError(t, store.Create(t.Context(), storedSession("old")))
+
+	first := firstRotation("old", storedSession("n1"))
+	first.RetainUntil = createdAt.Add(2 * time.Hour) // below the absolute deadline, 12 hours
+	require.NoError(t, store.Supersede(t.Context(), first))
+
+	second := firstRotation("old", storedSession("n2"))
+	second.ObservedSuccessor = storekit.SessionDigest("n1")
+	second.RetainUntil = createdAt.Add(2 * time.Hour)
+	require.NoError(t, store.Supersede(t.Context(), second))
+
+	for _, sessionID := range []string{"old", "n1"} {
+		got, err := store.Load(t.Context(), sessionID)
+		require.NoError(t, err)
+		assert.Equal(t, createdAt.Add(12*time.Hour), got.AbsoluteExpiresAt, "%s: absolute deadline lowered", sessionID)
+		assert.Equal(t, createdAt.Add(12*time.Hour), got.IdleExpiresAt, "%s: a superseded record keeps one deadline, its absolute", sessionID)
+	}
+}
+
+// TestEncryptedStoreCreatePassesOnTheNilFamilyRefusal pins that the sealing
+// store neither hides nor works around the inner store's refusal of a
+// session in no family: the error comes back and nothing is stored.
+func TestEncryptedStoreCreatePassesOnTheNilFamilyRefusal(t *testing.T) {
+	t.Parallel()
+
+	sealing, inner := sealingStore(t, 0x2a)
+	orphan := storedSession("orphan")
+	orphan.FamilyID = id.Nil
+
+	err := sealing.Create(t.Context(), orphan)
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+	assert.Zero(t, inner.Len(), "a refused session was stored")
 }

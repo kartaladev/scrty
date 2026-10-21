@@ -2,6 +2,7 @@ package pgxstore_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"testing"
 	"time"
@@ -247,6 +248,8 @@ var brokenVariants = []storefix.BrokenVariant{
 		FailsCase: "a supersession requiring an unpresented successor that waited on its presentation is refused",
 		FailsWith: "it judged the successor before locking it",
 	},
+	lockOrderVariant("session-supersede-locks-the-successor-first", false),
+	lockOrderVariant("session-supersede-locks-in-statement-order", true),
 }
 
 // attachedTxKey is the context key beginTracked attaches its transaction
@@ -387,4 +390,71 @@ func TestSuitesCatchBrokenPgxStores(t *testing.T) {
 	// The children each want PostgreSQL: start the one server they will share.
 	test.EnsureTestPostgresServer(t)
 	storefix.CatchBrokenVariants(t, brokenVar, "TestBrokenPgxStore", "pgx", brokenVariants)
+}
+
+// lockOrderVariant is a store whose re-rotation first locks the two rows it
+// writes in an order of its own, through lockOutOfOrder, run through
+// RunSessionSupersessionLockOrder on the harness whose row ids make that
+// order the reverse of id order: locking the observed successor first on the
+// default harness, and locking the old session first, the order the store's
+// updates reach the rows in, on one with descending row ids (descending).
+// Either deadlocks with the family revocation the case races it against.
+func lockOrderVariant(name string, descending bool) storefix.BrokenVariant {
+	return storefix.BrokenVariant{
+		Name: name,
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			var ids []pgxstore.Option
+			if descending {
+				ids = append(ids, pgxstore.WithIDGenerator(storetest.DescendingIDs()))
+			}
+			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+				store := newSessionStore(t, pool, c, append(opts, ids...)...)
+				return lockOutOfOrder{Store: store, pool: pool, successorFirst: !descending}
+			})
+			t.Run("pgx", func(t *testing.T) { storetest.RunSessionSupersessionLockOrder(t, h) })
+		},
+		FailsCase: "a re-rotation and a family revocation over the same rows do not deadlock",
+		FailsWith: "one side of a deadlock",
+	}
+}
+
+// lockOutOfOrder supersedes through the store, but a re-rotation first locks
+// Old and its observed successor, one statement each, in a transaction of
+// its own that it attaches to the store: the successor first when
+// successorFirst is set, Old first otherwise. The store's own id-ordered lock
+// then finds both rows held already, so the order is the variant's.
+type lockOutOfOrder struct {
+	session.Store
+	pool           *pgxpool.Pool
+	successorFirst bool
+}
+
+// rows returns the digests of the rows op writes, in the variant's order.
+func (s lockOutOfOrder) rows(op session.Supersession) [][]byte {
+	old := sha256.Sum256([]byte(op.Old))
+	if s.successorFirst {
+		return [][]byte{op.ObservedSuccessor, old[:]}
+	}
+	return [][]byte{old[:], op.ObservedSuccessor}
+}
+
+func (s lockOutOfOrder) Supersede(ctx context.Context, op session.Supersession) error {
+	if len(op.ObservedSuccessor) == 0 {
+		return s.Store.Supersede(ctx, op)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	for _, digest := range s.rows(op) {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM sessions WHERE id_digest = $1 FOR UPDATE`, digest); err != nil {
+			return err
+		}
+	}
+	if err := s.Store.Supersede(pgxstore.WithTx(ctx, tx), op); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

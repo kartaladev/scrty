@@ -199,7 +199,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 	sid := func(name string) string { return "ambient-family-" + name }
 	rotation := func(old *session.Session, successorID string) session.Supersession {
 		return session.Supersession{
-			Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second),
+			Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
 			Successor: successorOf(old, successorID, suiteStart), Now: suiteStart,
 		}
 	}
@@ -402,7 +402,8 @@ func RunSessionFamilyRevocationRace[S session.Store](t *testing.T, h DurableHarn
 			superseding, commitSupersession := begin(t)
 			successor := successorOf(old, name+"-successor", suiteStart)
 			require.NoError(t, s.Supersede(superseding, session.Supersession{
-				Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), Successor: successor, Now: suiteStart,
+				Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+				Successor: successor, Now: suiteStart,
 			}))
 
 			type outcome struct {
@@ -545,7 +546,7 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 			advance: func(ctx context.Context, t *testing.T, s S, first *session.Session) {
 				at := suiteStart.Add(5 * time.Second)
 				require.NoError(t, s.Supersede(ctx, session.Supersession{
-					Old: first.ID, AcceptUntil: at.Add(30 * time.Second),
+					Old: first.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
 					Successor: successorOf(first, first.ID+"-onward", at), Now: at,
 				}))
 			},
@@ -568,7 +569,8 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 			require.NoError(t, s.Create(t.Context(), old))
 			first := successorOf(old, name+"-first", suiteStart)
 			require.NoError(t, s.Supersede(t.Context(), session.Supersession{
-				Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), Successor: first, Now: suiteStart,
+				Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+				Successor: first, Now: suiteStart,
 			}))
 
 			// The successor moving on: written, not yet committed.
@@ -585,7 +587,8 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 				done <- superseder.Supersede(ctx, session.Supersession{
 					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID),
 					RequireUnpresentedSuccessor: tc.requireUnpresented,
-					AcceptUntil:                 later.Add(30 * time.Second), Successor: late, Now: later,
+					AcceptUntil:                 later.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: late, Now: later,
 				})
 			}()
 
@@ -648,145 +651,164 @@ func awaitLockWaiters(t *testing.T, raw *sql.DB, n int, none string) {
 	}
 }
 
-// RunSessionExtendingRenewalLockOrder holds a durable session store to taking
-// the row locks of a supersession that extends its family in an order no
-// concurrent writer of the same family can meet in reverse.
+// RunSessionSupersessionLockOrder holds a durable session store to taking the
+// row locks of a supersession in an order a concurrent family revocation
+// cannot meet in reverse.
 //
-// A supersession that gives its successor a later absolute deadline locks the
-// session it supersedes and then every superseded member of the family it
-// raises. Each case rotates a family member O into S1, committed, so that O is
-// superseded and S1 is the family's head, and then holds S1's row in a
+// A re-rotation of a superseded member O, observing its successor S1, writes
+// two rows, O and S1, and a family revocation locks every member of the
+// family, O and S1 among them, in row id order. The case rotates O into S1,
+// committed, then holds whichever of the two rows sorts first by row id in a
 // transaction opened through h.Raw. Behind that lock, in this order, it
-// queues a supersession of S1 extending the family, through the store
-// h.New returns, and a competitor through a store h.NewReplica returns: a
-// re-rotation of O observing S1, or a revocation of the family. Once both
-// wait it releases S1, so the extending supersession takes S1 first and the
-// competitor already holds or reaches for O.
+// queues a revocation of the family through a store h.NewReplica returns, and
+// a re-rotation of O observing S1 through the store h.New returns. Once both
+// wait it releases the row, so the revocation takes it first and reaches for
+// the other row next.
 //
-// Both must return without a deadlock: the extending supersession succeeds,
-// and the competitor is refused with session.ErrSuccessorAdvanced (the
-// re-rotation) or removes the whole family, S1's new successor included (the
-// revocation). A store that locks S1 and then O, while the competitor locks
-// O and then S1, deadlocks, and PostgreSQL aborts one side.
+// Both must return without a deadlock: the revocation removes the whole
+// family, and the re-rotation either finds the family gone
+// (session.ErrSessionNotFound) or, had it won the row, supersedes O and has
+// its successor removed by the revocation's next pass. A store that locks the
+// row sorting second before the row sorting first holds it while the
+// revocation holds the other, and PostgreSQL aborts one side.
+//
+// Which row sorts first depends on the harness's id generator. Run on a
+// harness built on DescendingIDs as well as on the default one, the case
+// holds a store to locking both rows in id order, rather than in the order
+// its statements happen to reach them.
 //
 // It detects waiting statements through h.Raw, from PostgreSQL's
 // pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
 // every missing input, when h is missing one.
-func RunSessionExtendingRenewalLockOrder[S session.Store](t *testing.T, h DurableHarness[S]) {
+func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHarness[S]) {
 	t.Helper()
 
 	h.Require(t)
 	requirePool(t, h.PoolSize, 2)
 
-	type testCase struct {
-		name string
-		// family numbers the case's family apart from every other case's.
-		family int
-		// compete runs the competitor through s, a replica, once the
-		// extending supersession waits on S1, and returns its error.
-		compete func(ctx context.Context, s S, old, first *session.Session) error
-		// assert checks the competitor's error and what is stored after
-		// both returned; extended is S1's successor.
-		assert func(t *testing.T, s S, err error, old, first, extended *session.Session)
-	}
+	t.Run("a re-rotation and a family revocation over the same rows do not deadlock", func(t *testing.T) {
+		s := h.New(t)
+		revoker := h.NewReplica(t)
+		family := suiteID(2301)
+		name := "lock-order-2301"
+		old := familySession(name, identity.UserID(name+"-user"), family)
+		require.NoError(t, s.Create(t.Context(), old))
+		first := successorOf(old, name+"-first", suiteStart)
+		require.NoError(t, s.Supersede(t.Context(), session.Supersession{
+			Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+			Successor: first, Now: suiteStart,
+		}))
 
-	extendedAt := suiteStart.Add(time.Hour)
-	cases := []testCase{
-		{
-			name:   "a re-rotation of a superseded member waiting behind an extending renewal does not deadlock",
-			family: 2301,
-			compete: func(ctx context.Context, s S, old, first *session.Session) error {
-				late := successorOf(old, old.ID+"-late", extendedAt)
-				late.AbsoluteExpiresAt = suiteStart.Add(30 * time.Hour)
-				return s.Supersede(ctx, session.Supersession{
-					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID),
-					AcceptUntil: extendedAt.Add(30 * time.Second), Successor: late, Now: extendedAt,
-				})
-			},
-			assert: func(t *testing.T, s S, err error, old, _, extended *session.Session) {
-				require.ErrorIs(t, err, session.ErrSuccessorAdvanced,
-					"the re-rotation of the superseded member did not end in a refusal")
-				_, err = s.Load(t.Context(), old.ID+"-late")
-				assert.ErrorIs(t, err, session.ErrSessionNotFound, "the refused re-rotation stored its successor")
-				got, err := s.Load(t.Context(), extended.ID)
-				require.NoError(t, err, "the extending renewal's successor is not stored")
-				assertTimeEqual(t, extended.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "the successor's deadline")
-			},
-		},
-		{
-			name:   "a family revocation waiting behind an extending renewal does not deadlock",
-			family: 2302,
-			compete: func(ctx context.Context, s S, _, _ *session.Session) error {
-				_, err := s.DeleteFamily(ctx, suiteID(2302))
-				return err
-			},
-			assert: func(t *testing.T, s S, err error, old, first, extended *session.Session) {
-				require.NoError(t, err, "the family revocation failed")
-				for _, sessionID := range []string{old.ID, first.ID, extended.ID} {
-					_, err := s.Load(t.Context(), sessionID)
-					assert.ErrorIs(t, err, session.ErrSessionNotFound,
-						"%s is still stored after its family was revoked", sessionID)
-				}
-			},
-		},
-	}
+		// Hold the row that sorts first, so the racers queue behind it in a
+		// known order.
+		holder, err := h.Raw.BeginTx(t.Context(), nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = holder.Rollback() })
+		_, err = holder.ExecContext(t.Context(),
+			`SELECT id FROM sessions WHERE id_digest IN ($1, $2) ORDER BY id LIMIT 1 FOR UPDATE`,
+			sessionDigest(old.ID), sessionDigest(first.ID))
+		require.NoError(t, err)
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := h.New(t)
-			competitor := h.NewReplica(t)
-			name := fmt.Sprintf("lock-order-%d", tc.family)
-			old := familySession(name, identity.UserID(name+"-user"), suiteID(tc.family))
-			require.NoError(t, s.Create(t.Context(), old))
-			first := successorOf(old, name+"-first", suiteStart)
-			require.NoError(t, s.Supersede(t.Context(), session.Supersession{
-				Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), Successor: first, Now: suiteStart,
-			}))
+		ctx, cancel := context.WithTimeout(t.Context(), revocationWait)
+		defer cancel()
 
-			// Hold S1, so the racers queue behind it in a known order.
-			holder, err := h.Raw.BeginTx(t.Context(), nil)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = holder.Rollback() })
-			_, err = holder.ExecContext(t.Context(), `SELECT 1 FROM sessions WHERE id_digest = $1 FOR UPDATE`,
-				sessionDigest(first.ID))
-			require.NoError(t, err)
+		type outcome struct {
+			n   int
+			err error
+		}
+		revoked := make(chan outcome, 1)
+		go func() {
+			n, err := revoker.DeleteFamily(ctx, family)
+			revoked <- outcome{n, err}
+		}()
+		awaitLockWaiters(t, h.Raw, 1, "the family revocation did not wait on the held row")
 
-			ctx, cancel := context.WithTimeout(t.Context(), revocationWait)
-			defer cancel()
+		later := suiteStart.Add(time.Hour)
+		late := successorOf(old, name+"-late", later)
+		rotated := make(chan error, 1)
+		go func() {
+			rotated <- s.Supersede(ctx, session.Supersession{
+				Old: old.ID, ObservedSuccessor: sessionDigest(first.ID),
+				AcceptUntil: later.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+				Successor: late, Now: later,
+			})
+		}()
+		awaitLockWaiters(t, h.Raw, 2, "the re-rotation did not wait behind the family revocation")
 
-			extended := successorOf(first, name+"-extended", extendedAt)
-			extended.AbsoluteExpiresAt = suiteStart.Add(20 * time.Hour)
-			renewed := make(chan error, 1)
-			go func() {
-				renewed <- s.Supersede(ctx, session.Supersession{
-					Old: first.ID, AcceptUntil: extendedAt.Add(30 * time.Second), Successor: extended, Now: extendedAt,
-				})
-			}()
-			awaitLockWaiters(t, h.Raw, 1, "the extending renewal did not wait on the held successor")
+		require.NoError(t, holder.Rollback())
 
-			competed := make(chan error, 1)
-			go func() { competed <- tc.compete(ctx, competitor, old, first) }()
-			awaitLockWaiters(t, h.Raw, 2, "the competitor did not wait behind the extending renewal")
-
-			require.NoError(t, holder.Rollback())
-
-			var renewErr, competeErr error
-			for range 2 {
-				select {
-				case renewErr = <-renewed:
-				case competeErr = <-competed:
-				case <-time.After(revocationWait):
-					t.Fatal("the racers did not return after the held successor was released")
-				}
+		var revocation outcome
+		var rotateErr error
+		for range 2 {
+			select {
+			case revocation = <-revoked:
+			case rotateErr = <-rotated:
+			case <-time.After(revocationWait):
+				t.Fatal("the racers did not return after the held row was released")
 			}
-			require.False(t, deadlocked(renewErr),
-				"PostgreSQL aborted the extending renewal as one side of a deadlock: %v", renewErr)
-			require.False(t, deadlocked(competeErr),
-				"PostgreSQL aborted the competitor as one side of a deadlock: %v", competeErr)
-			require.NoError(t, renewErr, "the extending renewal failed")
-			tc.assert(t, competitor, competeErr, old, first, extended)
+		}
+		require.False(t, deadlocked(revocation.err),
+			"PostgreSQL aborted the family revocation as one side of a deadlock: %v", revocation.err)
+		require.False(t, deadlocked(rotateErr),
+			"PostgreSQL aborted the re-rotation as one side of a deadlock: %v", rotateErr)
+		require.NoError(t, revocation.err, "the family revocation failed")
+		if rotateErr != nil {
+			require.ErrorIs(t, rotateErr, session.ErrSessionNotFound,
+				"the re-rotation that lost the race to the revocation did not find the family gone")
+		}
+		for _, sessionID := range []string{old.ID, first.ID, late.ID} {
+			_, err := s.Load(t.Context(), sessionID)
+			assert.ErrorIs(t, err, session.ErrSessionNotFound,
+				"%s is still stored after its family was revoked", sessionID)
+		}
+	})
+}
+
+// RunSessionSupersedeRefusesNilFamily checks that a store refuses to supersede
+// a stored session that sits in no family, a row only an out-of-band write can
+// leave, and writes nothing.
+//
+// The case creates a session in a family, moves its row to the all-zero
+// family through h.Raw, bypassing Create's refusal, then supersedes it. The
+// supersession must fail with an error that is neither a renewal conflict, a
+// missing session nor an advanced successor, the successor must not be stored,
+// and the old row must load as it did before the attempt.
+//
+// It fails at once, naming every missing input, when h is missing one.
+func RunSessionSupersedeRefusesNilFamily[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	h.Require(t)
+
+	t.Run("a session in no family is not superseded and nothing is written", func(t *testing.T) {
+		s := h.New(t)
+		name := "nil-family-2401"
+		old := familySession(name, identity.UserID(name+"-user"), suiteID(2401))
+		require.NoError(t, s.Create(t.Context(), old))
+		_, err := h.Raw.ExecContext(t.Context(),
+			`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
+			sessionDigest(old.ID))
+		require.NoError(t, err)
+		before, err := s.Load(t.Context(), old.ID)
+		require.NoError(t, err)
+		successor := successorOf(old, name+"-successor", suiteStart)
+		successor.FamilyID = suiteID(2401)
+
+		err = s.Supersede(t.Context(), session.Supersession{
+			Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+			Successor: successor, Now: suiteStart,
 		})
-	}
+
+		require.Error(t, err, "a session in no family must not be superseded")
+		assert.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
+		assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+		assert.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
+		_, err = s.Load(t.Context(), successor.ID)
+		assert.ErrorIs(t, err, session.ErrSessionNotFound, "the refused supersession stored its successor")
+		after, err := s.Load(t.Context(), old.ID)
+		require.NoError(t, err)
+		assertSession(t, before, after)
+	})
 }
 
 // deadlocked reports whether err carries PostgreSQL's deadlock_detected
@@ -801,9 +823,9 @@ func deadlocked(err error) bool {
 // harness built on it stores each row with an id lower than every earlier
 // row's, so the rows' id order is the reverse of the order they were
 // inserted in, and of the order a scan of a family usually meets them in.
-// RunSessionExtendingRenewalLockOrder run on such a harness holds a store to
-// locking a family in id order on every path, rather than in whatever order
-// a statement scans it. One generator is shared by every store of the
+// RunSessionSupersessionLockOrder run on such a harness as well as on the
+// default one holds a store to locking the rows it writes in id order,
+// rather than in whatever order its statements reach them. One generator is shared by every store of the
 // harness, as one id sequence is shared by every replica.
 func DescendingIDs() id.Generator {
 	return &descendingIDs{}

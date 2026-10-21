@@ -433,7 +433,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				h := newAuthHarness(t)
 				h.expectVerified()
 				h.expectResolvedSession(federatedSession())
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil)
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil)
 
 				b := NewMockEndSessionBuilder(gomock.NewController(t))
 				b.EXPECT().EndSessionURL(gomock.Any(), gomock.Any(), gomock.Any()).

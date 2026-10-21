@@ -100,12 +100,21 @@ func Digest(sid string) []byte {
 	return sum[:]
 }
 
+// SessionFamily is the family DurableSession puts session sid in: one of its
+// own, derived from sid, since a store holds no session without a family.
+func SessionFamily(sid string) id.ID {
+	sum := sha256.Sum256([]byte("family:" + sid))
+	return id.ID(sum[:16])
+}
+
 // DurableSession returns a federated session with identifier sid, holding a
 // provider ID token, valid from now for an hour.
 func DurableSession(sid string, now time.Time) *session.Session {
 	return &session.Session{
 		ID:                sid,
 		UserID:            identity.UserID("u-" + sid),
+		FamilyID:          SessionFamily(sid),
+		FamilyCreatedAt:   now,
 		CreatedAt:         now,
 		LastAccessedAt:    now,
 		IdleExpiresAt:     now.Add(5 * time.Minute),

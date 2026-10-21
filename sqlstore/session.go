@@ -120,9 +120,15 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 	}, nil
 }
 
-// Create inserts sess, refusing an identifier already stored.
+// Create inserts sess, refusing an identifier already stored. A session with
+// no family, the nil family, is refused with an error before any statement
+// runs: every stored session belongs to a family.
 func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error {
 	const op = "create session"
+
+	if sess.FamilyID.IsZero() {
+		return errors.New("sqlstore: create session: a session with no family cannot be stored")
+	}
 
 	args, err := s.insertArgs(op, sess)
 	if err != nil {
@@ -392,18 +398,19 @@ func notFoundUnless(exists bool, err error) error {
 // no row, nothing is written, and the store reports
 // session.ErrSessionRenewalConflict when Old is stored and
 // session.ErrSessionNotFound when it is not. A successor whose identifier is
-// already stored is an error, and nothing is written.
+// already stored is an error, and nothing is written. A nil Successor, a
+// Successor with no family (the nil family), and an op.RetainUntil before
+// op.AcceptUntil are errors too, refused before any statement runs.
 //
 // When Old is updated, its observed previous successor, if any, is updated
 // next under the same transaction, conditional on it not being superseded
 // and, with op.RequireUnpresentedSuccessor, never presented. When that update
 // changes no row, the successor has moved on or is no longer stored: nothing
-// is written and the store reports session.ErrSuccessorAdvanced. Then every
-// superseded session of Old's family whose absolute deadline is before
-// op.Successor's has both deadlines raised to it, so a renewal that extends
-// the family keeps each superseded identifier judged as superseded, not
-// expired, while the family is live; nothing is ever lowered, and the
-// family's unsuperseded sessions are left alone.
+// is written and the store reports session.ErrSuccessorAdvanced. Old and its
+// previous successor have each deadline raised to op.RetainUntil when it is
+// earlier, and never lowered, so the sweep removes them only once their
+// family could no longer be live. No other session of the family is read or
+// written, however many renewals came before.
 //
 // Two rules refuse a supersession whatever it observed. A session in no
 // family, the nil family, is refused with an error, since every family-less
@@ -413,11 +420,12 @@ func notFoundUnless(exists bool, err error) error {
 // session.ErrSessionRenewalConflict, as it was knocked out of its chain and
 // renewing it would give the family a second live head.
 //
-// Locking: the transaction first locks every session of Old's family in row
-// id order, and only then updates any of them, so it takes every row it
-// writes in the one order DeleteFamily also takes them in. Two supersessions
-// of one family, or a supersession and a family revocation, therefore wait
-// for each other instead of deadlocking, whichever member each starts from.
+// Locking: the transaction first locks the rows it updates, Old and the
+// observed previous successor (Old alone on a first rotation), in row id
+// order, and only then updates either, so it takes them in the order
+// DeleteFamily takes the whole family in. Two supersessions of one family, or
+// a supersession and a family revocation, therefore wait for each other
+// instead of deadlocking, whichever of the two rows sorts first.
 // A presentation, rotation or removal of the observed successor either
 // commits first and refuses the supersession, or waits for it.
 //
@@ -438,6 +446,12 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 	if op.Successor == nil {
 		return errors.New("sqlstore: supersede session: a supersession needs a successor")
 	}
+	if op.Successor.FamilyID.IsZero() {
+		return errors.New("sqlstore: supersede session: a successor with no family cannot be stored")
+	}
+	if op.RetainUntil.Before(op.AcceptUntil) {
+		return errors.New("sqlstore: supersede session: the retention deadline is before the end of the window")
+	}
 	args, err := s.insertArgs(name, op.Successor)
 	if err != nil {
 		return err
@@ -445,12 +459,14 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 	oldDigest := storekit.SessionDigest(op.Old)
 
 	return s.atomically(ctx, name, func(q DBTX) error {
-		if _, err := q.ExecContext(ctx, pgschema.SessionLockFamily, oldDigest); err != nil {
+		if _, err := q.ExecContext(ctx, pgschema.SessionLockSupersession, oldDigest,
+			digestArg(op.ObservedSuccessor)); err != nil {
 			return failed(name, err)
 		}
 
 		res, err := q.ExecContext(ctx, pgschema.SessionSupersedeOld, oldDigest, digestArg(op.ObservedSuccessor),
-			storekit.Time(op.Now), storekit.Time(op.AcceptUntil), storekit.SessionDigest(op.Successor.ID))
+			storekit.Time(op.Now), storekit.Time(op.AcceptUntil), storekit.SessionDigest(op.Successor.ID),
+			storekit.Time(op.RetainUntil))
 		if err != nil {
 			return failed(name, err)
 		}
@@ -472,7 +488,7 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 		if len(op.ObservedSuccessor) > 0 {
 			res, err := q.ExecContext(ctx, pgschema.SessionSupersedePrevious, op.ObservedSuccessor,
-				storekit.Time(op.Now), op.RequireUnpresentedSuccessor)
+				storekit.Time(op.Now), op.RequireUnpresentedSuccessor, storekit.Time(op.RetainUntil))
 			if err != nil {
 				return failed(name, err)
 			}
@@ -481,11 +497,6 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 			} else if n == 0 {
 				return session.ErrSuccessorAdvanced
 			}
-		}
-
-		if _, err := q.ExecContext(ctx, pgschema.SessionExtendSuperseded, oldDigest,
-			storekit.Time(op.Successor.AbsoluteExpiresAt)); err != nil {
-			return failed(name, err)
 		}
 
 		res, err = q.ExecContext(ctx, pgschema.SessionInsert, args...)

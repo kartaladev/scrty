@@ -119,21 +119,13 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 	return nil
 }
 
-// end ends the sign-in s belongs to. A session of a family takes the whole
-// family with it, the superseded predecessor and the successor a renewal
-// issued included, so logging out with an identifier inside its renewal
-// window does not leave the successor live. A session with no family, such as
-// one a store was handed directly, is deleted alone. Nothing left to end is
-// not an error.
+// end ends the sign-in s belongs to by revoking its family, the superseded
+// predecessor and the successor a renewal issued included, so logging out
+// with an identifier inside its renewal window does not leave the successor
+// live. Every stored session belongs to a family; one with none is refused by
+// the manager rather than deleted alone. Nothing left to end is not an error.
 func (l *logout) end(ctx context.Context, s *session.Session) error {
-	var err error
-
-	if s.FamilyID.IsZero() {
-		err = l.sessions.Delete(ctx, s.ID)
-	} else {
-		_, err = l.sessions.RevokeFamily(ctx, s.FamilyID)
-	}
-
+	_, err := l.sessions.RevokeFamily(ctx, s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrSessionNotFound) {
 		return err
 	}

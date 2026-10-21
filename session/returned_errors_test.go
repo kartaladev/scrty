@@ -40,6 +40,8 @@ func returnedErrorsSession(idToken string) *session.Session {
 	return &session.Session{
 		ID:                returnedErrorsID,
 		UserID:            testUser,
+		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		CreatedAt:         createdAt,
 		LastAccessedAt:    createdAt,
 		IdleExpiresAt:     createdAt.Add(time.Hour),

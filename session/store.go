@@ -70,6 +70,15 @@ type Supersession struct {
 	// on Old unchanged.
 	AcceptUntil time.Time
 
+	// RetainUntil is the retention deadline: the latest time Old's family
+	// could still be live, its FamilyCreatedAt plus the family maximum
+	// (WithMaxFamilyLifetime), and never before AcceptUntil or Old's own
+	// absolute deadline. The store raises both deadlines of every record the
+	// supersession supersedes, Old and Old's previous successor, to it, and
+	// never lowers one, so a superseded identifier is kept, and judged as superseded rather
+	// than expired, for as long as any member of its family could be.
+	RetainUntil time.Time
+
 	// Successor is the session inserted in Old's place. It is inserted as
 	// given, as Create would insert it.
 	Successor *Session
@@ -118,6 +127,13 @@ type Store interface {
 	// Create inserts s. An identifier that is already stored is an error
 	// rather than a replacement: overwriting would silently end the session
 	// already holding it.
+	//
+	// Every stored session belongs to a family. A session whose FamilyID is
+	// the nil family, id.Nil, is refused with an error and nothing is
+	// written: sessions with no family would all share it, so a family
+	// revocation or a supersession naming it could reach unrelated users'
+	// sessions. The Manager always gives a session a family; a consumer
+	// writing to a store directly must too.
 	Create(ctx context.Context, s *Session) error
 
 	// Save updates the stored session with this identifier, whole except for
@@ -133,11 +149,14 @@ type Store interface {
 	// undo it.
 	//
 	// A stored session that is superseded (SupersededAt set) also keeps its
-	// IdleExpiresAt and AbsoluteExpiresAt: Supersede set both to the family's
-	// absolute deadline, and raises them when a later renewal extends the
-	// family. A copy loaded before either would otherwise shorten them and let
-	// housekeeping remove the record early.
-	// This holds for a previous successor superseded by a re-rotation too.
+	// IdleExpiresAt and AbsoluteExpiresAt: Supersede set both to the
+	// supersession's retention deadline (Supersession.RetainUntil). A copy
+	// loaded before the supersession would otherwise shorten them and let
+	// housekeeping remove the record early. This holds for a previous
+	// successor superseded by a re-rotation too.
+	//
+	// AuthenticatedAt is written by Create only, as the sign-in's time: Save
+	// keeps the stored value whatever the session handed to it says.
 	//
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
 	// whatever the session handed to it says, so no later save can set or
@@ -171,28 +190,34 @@ type Store interface {
 	// two columns.
 	RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error
 
-	// Supersede performs op as one atomic operation. A nil op.Successor is
-	// refused with an error and nothing is written:
+	// Supersede performs op as one atomic operation. Three rules refuse it with
+	// an error, before anything is written, whatever the observation: a nil
+	// op.Successor; a successor with no family (the nil family), as Create
+	// refuses such a session; and a RetainUntil before AcceptUntil, since a
+	// record cannot be retained for less than its window. A supersession also
+	// never lowers a deadline: each record it supersedes takes the later of
+	// its current deadline and RetainUntil. Otherwise:
 	//
 	//   - it marks op.Old superseded at op.Now, with op.AcceptUntil as its
 	//     window end and the digest of op.Successor's identifier as its
-	//     successor, and sets both of its deadlines to its absolute deadline;
+	//     successor, and raises both of its deadlines to op.RetainUntil;
 	//   - it marks Old's previous successor, if it had one, superseded at
-	//     op.Now with a window ending at op.Now, and sets both of that
-	//     successor's deadlines to its absolute deadline;
-	//   - when op.Successor's absolute deadline is later than that of a
-	//     superseded session of the same family, Old and the previous
-	//     successor included, it raises both of that session's deadlines to
-	//     op.Successor's absolute deadline;
+	//     op.Now with a window ending at op.Now, and raises both of that
+	//     successor's deadlines to op.RetainUntil;
 	//   - it inserts op.Successor.
 	//
-	// The raise is what lets a renewal that extends the family (see
-	// WithSuccessorLifetime) keep detecting reuse: a superseded identifier
-	// presented after its own original deadline, while the family is still
-	// live, must load as superseded so the Manager judges it as reuse, not
-	// read as an ordinary expiry that leaves the family alive. A superseded
-	// session never authenticates past its window, so the raise grants
-	// nothing. A deadline is only ever raised, never lowered.
+	// It writes those records and no other: no earlier superseded session of
+	// the family, and no session of another family, so its cost does not
+	// grow with the number of earlier renewals.
+	//
+	// The retention deadline is what lets a renewal that extends the family
+	// (see WithSuccessorLifetime) keep detecting reuse: a superseded
+	// identifier presented after its own original deadline, while the family
+	// is still live, must load as superseded so the Manager judges it as
+	// reuse, not read as an ordinary expiry that leaves the family alive. No
+	// renewal extends a family past it, so a record superseded earlier never
+	// needs rewriting. A superseded session never authenticates past its
+	// window, so keeping it grants nothing.
 	//
 	// It is conditional on op.ObservedSuccessor: it happens only while Old's
 	// stored SuccessorDigest equals it byte for byte, nil meaning none. When
@@ -211,8 +236,8 @@ type Store interface {
 	//
 	// Two rules refuse a supersession whatever it observed. An Old with no
 	// family, the nil family, is refused with an error and nothing is written,
-	// as DeleteFamily refuses it: every family-less session carries it, so
-	// honouring it would touch unrelated sessions. An Old that is superseded
+	// as DeleteFamily refuses it; Create stores no such session, so this
+	// guards only a record written some other way. An Old that is superseded
 	// already is superseded again only through its observed successor: with
 	// none observed, as for a fresh head, it is ErrSessionRenewalConflict,
 	// because a superseded session with no successor was knocked out of its
@@ -230,8 +255,7 @@ type Store interface {
 	// the same user's included, are untouched.
 	//
 	// The nil family, id.Nil, is refused with an error and nothing is
-	// deleted: a session written straight to a store with no family carries
-	// it, so honouring it would delete unrelated users' sessions.
+	// deleted: it names no family, and Create stores no session in it.
 	DeleteFamily(ctx context.Context, family id.ID) (int, error)
 
 	// MarkPresented records at as the session's FirstPresentedAt, only when

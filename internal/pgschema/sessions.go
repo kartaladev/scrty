@@ -74,20 +74,36 @@ FROM sessions WHERE id_digest = $1`
 	SessionRecordActivity = `UPDATE sessions SET last_accessed_at = $2, idle_expires_at = LEAST($3, absolute_expires_at)
 WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 
+	// SessionLockSupersession locks the rows a supersession writes before it
+	// writes any of them: the old session with digest $1 and, when $2 is not
+	// NULL, the observed previous successor with digest $2, in id order, and
+	// returns nothing the caller reads. A first rotation passes NULL as $2 and
+	// locks the old row alone. SessionDeleteFamily locks the whole family in
+	// the same id order, and the other writers of a session lock that one row,
+	// so a supersession and a family revocation, or two supersessions, wait
+	// for each other instead of deadlocking, whichever row id sorts first. The
+	// successor it then inserts is a new row no other writer can hold. The
+	// deletes by user and the expiry sweep lock their rows in scan order, not
+	// id order, and are not covered by this ordering.
+	SessionLockSupersession = `SELECT id FROM sessions WHERE id_digest IN ($1, $2) ORDER BY id FOR UPDATE`
+
 	// SessionSupersedeOld marks the session with digest $1 superseded at $3,
-	// with its window ending at $4 and $5 as its successor's digest, and sets
-	// its idle deadline to its absolute one, provided it is in a family, its
-	// stored successor digest is still $2 (NULL for none), and, when $2 is
-	// NULL, it is not superseded already: a superseded session is superseded
-	// again only through its observed successor, and one with no successor was
-	// knocked out of its chain, so renewing it as a fresh head would give the
-	// family a second live head. Zero rows affected means it is missing, in no
+	// with its window ending at $4 and $5 as its successor's digest, and
+	// holds it to one deadline, the later of its absolute deadline and $6,
+	// the retention deadline, as both its deadlines (a later absolute
+	// deadline is kept, never lowered; the SET expressions read the row as it
+	// was, so the idle deadline repeats the GREATEST), provided it
+	// is in a family, its stored successor digest is still $2 (NULL for none), and,
+	// when $2 is NULL, it is not superseded already: a superseded session is
+	// superseded again only through its observed successor, and one with no
+	// successor was knocked out of its chain, so renewing it as a fresh head
+	// would give the family a second live head. Zero rows affected means it is missing, in no
 	// family, or its successor is not the one observed; SessionSupersedeRefusal
 	// tells which. This conditional update is what decides concurrent
-	// supersessions: a second one waits on the family's row locks, in
-	// SessionLockFamily, and then finds the successor changed.
+	// supersessions: a second one waits on the row locks the first took, in
+	// SessionLockSupersession, and then finds the successor changed.
 	SessionSupersedeOld = `UPDATE sessions SET superseded_at = $3, accept_until = $4, successor_digest = $5,
-  idle_expires_at = absolute_expires_at
+  absolute_expires_at = GREATEST(absolute_expires_at, $6), idle_expires_at = GREATEST(absolute_expires_at, $6)
 WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
   AND ($2::bytea IS NOT NULL OR superseded_at IS NULL)
   AND family_id <> '00000000-0000-0000-0000-000000000000'`
@@ -101,36 +117,21 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 
 	// SessionSupersedePrevious marks the session with digest $1, the previous
 	// successor of a session superseded again, superseded at $2 with a window
-	// ending at $2, and sets its idle deadline to its absolute one, provided
-	// it is not superseded already and, when $3 is true, has never been
-	// presented. Zero rows affected means that successor has moved on: it is
+	// ending at $2, and holds it to one deadline, the later of its absolute
+	// deadline and $4, the retention deadline, as both its deadlines, never lowering the absolute one, provided it is not superseded already and, when $3 is true,
+	// has never been presented. Zero rows affected means that successor has moved on: it is
 	// superseded, presented when $3 requires it not to be, or no longer
 	// stored; the supersession is refused and rolled back.
 	//
-	// It runs after SessionLockFamily and SessionSupersedeOld. Under READ
+	// It runs after SessionLockSupersession and SessionSupersedeOld. Under READ
 	// COMMITTED a supersession that waited on the successor's row lock, in
-	// SessionLockFamily, runs this update on a snapshot taken after that lock
+	// SessionLockSupersession, runs this update on a snapshot taken after that lock
 	// was released, so a presentation, a rotation or a removal of the
 	// successor that held the lock first refuses the supersession, and one
 	// that came after it waits for it.
 	SessionSupersedePrevious = `UPDATE sessions SET superseded_at = $2, accept_until = $2,
-  idle_expires_at = absolute_expires_at
+  absolute_expires_at = GREATEST(absolute_expires_at, $4), idle_expires_at = GREATEST(absolute_expires_at, $4)
 WHERE id_digest = $1 AND superseded_at IS NULL AND (NOT $3::boolean OR first_presented_at IS NULL)`
-
-	// SessionExtendSuperseded raises both deadlines of every superseded
-	// session in the family of the session with digest $1 whose absolute
-	// deadline is before $2 to $2, and touches no other row: live heads, and
-	// superseded sessions already at or past $2, are left alone. A
-	// supersession runs it after SessionSupersedeOld and
-	// SessionSupersedePrevious, with $2 its successor's absolute deadline, so
-	// a renewal that extends the family keeps every superseded member judged
-	// as superseded, not expired, while the family is live. A superseded
-	// session never authenticates past its window, so the raise grants
-	// nothing. The rows it locks are already held, in id order, by the
-	// SessionLockFamily the supersession began with.
-	SessionExtendSuperseded = `UPDATE sessions SET idle_expires_at = $2, absolute_expires_at = $2
-WHERE family_id = (SELECT family_id FROM sessions WHERE id_digest = $1)
-  AND superseded_at IS NOT NULL AND absolute_expires_at < $2`
 
 	// SessionMarkPresented records $2 as the first presentation of the
 	// session with digest $1, only when none is recorded. Zero rows affected
@@ -139,25 +140,9 @@ WHERE family_id = (SELECT family_id FROM sessions WHERE id_digest = $1)
 	SessionMarkPresented = `UPDATE sessions SET first_presented_at = $2
 WHERE id_digest = $1 AND first_presented_at IS NULL`
 
-	// SessionLockFamily locks every session in the family of the session
-	// with digest $1, in id order, and none when that family is the nil one,
-	// and returns nothing the caller reads. A supersession runs it first, so it takes every family row it later
-	// updates (the old session, its previous successor and the superseded
-	// members SessionExtendSuperseded raises) in the one order
-	// SessionDeleteFamily also takes them in. Two writers that each lock
-	// several rows of one family then wait for each other instead of
-	// deadlocking: without it, a supersession of the family's head locks the
-	// head and then the older superseded members it raises, while a
-	// re-rotation of an older member, or a family delete scanning the older
-	// members first, takes them in the reverse order.
-	SessionLockFamily = `SELECT id FROM sessions
-WHERE family_id = (SELECT family_id FROM sessions WHERE id_digest = $1)
-  AND family_id <> '00000000-0000-0000-0000-000000000000'
-ORDER BY id FOR UPDATE`
-
 	// SessionDeleteFamily removes every session of family $1, superseded or
 	// not, expired or not, after locking them in id order, the order
-	// SessionLockFamily takes them in. The caller refuses the nil family
+	// SessionLockSupersession takes the rows it locks in. The caller refuses the nil family
 	// before running it, and repeats it until it affects no row: under READ
 	// COMMITTED a delete that waited on a row an uncommitted supersession
 	// holds sees that row once the supersession commits, but not the

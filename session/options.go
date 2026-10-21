@@ -107,6 +107,19 @@ func WithTouchInterval(d time.Duration) ManagerOption {
 // NewManager: the default lifetime would already exceed it. The same maximum
 // bounds a renewal's new lifetime (see WithSuccessorLifetime).
 //
+// A renewal whose family is already past its end under this maximum is
+// refused with ErrSessionExpired, and a carried-over deadline later than the
+// end is cut to it.
+//
+// Changing the maximum between deploys is safe to lower and has one limit
+// when raised. Lowering it never shortens a superseded record already
+// issued: it keeps the later of its own deadline and the new retention. A
+// record superseded before the maximum was raised keeps the retention it was
+// given, so presented after that while its family, extended under the new
+// maximum, is still live, it is refused as expired and not as reuse: the
+// family is not revoked. Rewriting every member on each renewal would restore
+// that detection at a per-renewal cost, so the library accepts the limit.
+//
 // The library does not know the assurance level a consumer targets, so it
 // enforces no figure of its own. For reference, NIST SP 800-63B-4 sets the
 // overall reauthentication timeout at no more than 30 days at AAL1 and 24
@@ -312,6 +325,19 @@ func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {
 // have ended. A maximum below the lifetime maximum is a configuration error
 // from NewManager. There is no unlimited value: a finite family maximum is
 // what makes the limit a limit.
+//
+// A renewal whose family is already past its end under this maximum is
+// refused with ErrSessionExpired, and a carried-over deadline later than the
+// end is cut to it.
+//
+// Changing the maximum between deploys is safe to lower and has one limit
+// when raised. Lowering it never shortens a superseded record already
+// issued: it keeps the later of its own deadline and the new retention. A
+// record superseded before the maximum was raised keeps the retention it was
+// given, so presented after that while its family, extended under the new
+// maximum, is still live, it is refused as expired and not as reuse: the
+// family is not revoked. Rewriting every member on each renewal would restore
+// that detection at a per-renewal cost, so the library accepts the limit.
 //
 // The library does not know the assurance level a consumer targets, so it
 // enforces no figure of its own. For reference, NIST SP 800-63B-4 sets the

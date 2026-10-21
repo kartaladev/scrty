@@ -194,7 +194,8 @@ func TestTouch_SupersededSessionWritesNothing(t *testing.T) {
 	successor := *s
 	successor.ID = "successor-id"
 	require.NoError(t, store.Supersede(t.Context(), session.Supersession{
-		Old: s.ID, AcceptUntil: createdAt.Add(30 * time.Second), Successor: &successor, Now: createdAt,
+		Old: s.ID, AcceptUntil: createdAt.Add(30 * time.Second), RetainUntil: s.AbsoluteExpiresAt,
+		Successor: &successor, Now: createdAt,
 	}))
 	before, err := store.Load(t.Context(), s.ID)
 	require.NoError(t, err)
