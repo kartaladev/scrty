@@ -209,3 +209,21 @@ When logout deletes a session, it SHALL revoke every session of that session's f
 #### Scenario: Logout with the predecessor inside its window
 - **WHEN** session O is renewed into S1 with a 30-second grace, and a request bearing O posts to the logout path inside the window
 - **THEN** logout answers 200, and a later request bearing S1 is refused
+
+### Requirement: A coalescing interval must be shorter than every idle timeout the policy enforces
+A chain whose session manager coalesces activity writes SHALL fail construction with a configuration error when its policy engine enforces an idle timeout no longer than that interval, because the stored last-access time can be up to one interval stale.
+
+#### Scenario: Idle policy shorter than the interval
+- **WHEN** the chain's session manager coalesces activity over 10 minutes and its engine holds an idle-timeout policy of 5 minutes
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Idle policy longer than the interval
+- **WHEN** the same chain's idle-timeout policy is 15 minutes
+- **THEN** the chain builds
+
+### Requirement: A renewal does not refresh authentication for freshness checks
+An endpoint that requires a recent authentication SHALL judge it by when the sign-in authenticated or a second factor was last satisfied, never by when the session was last renewed.
+
+#### Scenario: Recovery codes after a renewal
+- **WHEN** a session signed in at 09:00 is renewed at 15:00, and at 15:01 it asks to regenerate recovery codes under a 15-minute freshness window
+- **THEN** the request is refused as needing reauthentication

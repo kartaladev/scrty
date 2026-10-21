@@ -98,6 +98,12 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - `(*Exchange).EvaluatePerRequest(s *session.Session, p *identity.Principal) error`, refusing with `ErrAuthenticationRequired` unless `s` and `p` are the published ones;
     - `WithSessionManager(*session.Manager) Option` (the chain's manager for activity and per-request marking; takes precedence over built-ins' managers; nil is a configuration error), added after the review of tasks 5.1–5.3;
     - `ErrSessionRenewalConflict`, re-exported from `session` by wrapping, as existing session sentinels are mapped.
+  - Added for group 9 (design "Pull request review (2026-10-21)"):
+    - `session.Supersession.RetainUntil time.Time`: the retention deadline the manager computes (`FamilyCreatedAt` plus the family maximum), written as both deadlines of every record the supersession supersedes;
+    - `session.ErrSessionSuperseded`: `Store.MarkPresented` on a superseded record writes nothing and returns it;
+    - `(*session.Manager).TouchInterval() time.Duration`, beside `IdleTimeout()` and `AbsoluteTimeout()`;
+    - `(*policy.IdleTimeoutPolicy).IdleTimeout() time.Duration` and `(*policy.Engine).IdleTimeouts() []time.Duration`, the idle timeouts the engine's policies enforce;
+    - removed: the store's family-wide pre-lock and the raise of superseded members' deadlines (`SessionLockFamily`, `SessionExtendSuperseded`, `extendSupersededLocked`).
   - `session.ValidIdentifier(string) bool`: reports whether a string has the exact encoded length and alphabet of a session identifier. It is used by the session-reference bearer to refuse before any lookup.
 - **Verification commands**, run from the repository root unless stated:
   - core module: `go test -race -count=1 ./session/... ./httpsec/... ./internal/... ./sqlstore/...`;
@@ -141,6 +147,14 @@ Read the design and the spec deltas your task names before starting it. Plan tas
 | 6 (after C2) | C3 | 7.1–7.2 | a new `httpsec/renewal.go` and `httpsec/renewal_test.go` | Opus: a security endpoint and its races |
 | 7 (after C3) | C4 | 7.3–7.5 | `httpsec/renewal.go`, `httpsec/login.go`, `httpsec/logincomplete.go`, and their tests | Sonnet: option plumbing to a stated contract |
 | 8 | main | 8.1–8.2 | — | Opus reviewer for 8.1 |
+| 9a (parallel) | S1 | 9.1–9.3 | `session/reuse.go`, `session/manager.go`, `session/*_test.go` for them, `httpsec/recoverycodes_test.go` (test only) | Opus: rotation races and an authentication-time rule, security-critical |
+| 9b (parallel) | D1 | 9.4 | `migrate/securitystate/20261021000000_session_families.sql`, `test/migrate_securitystate_test.go` | Sonnet: two column defaults and their test |
+| 9c (parallel) | H1 | 9.5 | new `session/interval.go`, `policy/idle.go`, `policy/engine.go`, `httpsec/options.go`, the `EnableSessionRenewal` godoc in `httpsec/renewal.go`, and their tests | Sonnet: a construction check across stated seams |
+| 9d (after S1) | S2 | 9.6, memory side | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/reuse.go`, `session/manager.go`, `test/storetest/session_suite.go`, `broken_session_test.go`, `broken_test.go` | Opus: a port change other lanes compile against |
+| 9e (after S2) | D2 | 9.6, durable side | `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `test/storetest/ambient.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go` | Opus: conditional writes and lock order |
+| 9f (after D2) | S3 | 9.7 | `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/manager.go`, the four durable files above, the suite files | Opus: an atomic store condition replacing a race guard |
+| 9g (after S3) | D3 | 9.8 | `internal/storekit/`, the three durable session files | Opus: a refactor that must keep behaviour |
+| 9h | main | 9.9 | — | Opus reviewer |
 
 After each dispatch, the main session runs that dispatch's verification commands, and a fresh reviewer checks the diff against the decisions and requirements it covers. The reviewer is Opus for Opus dispatches and Sonnet otherwise. A2 stubs the durable stores' new methods to return `errors.New("not implemented")`, so the workspace compiles while B2 is pending. B2 then owns those files exclusively.
 
@@ -557,3 +571,111 @@ UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_prese
 
 - [ ] **8.1:** dispatch a fresh Opus reviewer that edits nothing. It gets every spec delta, the design decisions, and `git diff main...HEAD`, and reports each finding as `REPRODUCED` (with a failing test) or `UNREPRODUCED`. Findings go back to a fresh dispatch of the owning lane.
 - [ ] **8.2:** run `make check` and `openspec validate first-party-sessions --strict`, and keep both outputs in the closing report.
+
+
+---
+
+### Tasks 9.1–9.3: Renewal is not an authentication, and second-factor rotation in flight
+
+Design: "Pull request review (2026-10-21)", findings 1–4. Specs: `sessions` requirements "A renewal is not an authentication", "Rotation at second-factor verification keeps the old identifier only in flight", "A failed delete does not fail a second-factor rotation", "A session with no family is rotated without supersession"; `http-security-chain` "A renewal does not refresh authentication for freshness checks". Every claim is `UNREPRODUCED` until its first test fails; a test that passes on the current code is reported, and the main session withdraws the decision.
+
+**Files:**
+- Modify: `session/reuse.go` (`RotateWithGrace`: successor creation), `session/manager.go` (`Rotate`)
+- Test: `session/renewal_test.go`, `session/rotate_strict_race_test.go`, `session/family_manager_test.go`, `httpsec/recoverycodes_test.go`
+
+**Interfaces:**
+- Consumes: `RotateWithGrace`, `Rotate`, `Store.Supersede`, `Store.Delete`, `DefaultRenewalGrace` (30 s; add it as an exported constant beside `MaxRenewalGrace` if it does not exist, and make the renewal endpoint's default grace refer to it).
+- Produces: no new API.
+
+- [ ] **Step 1 (9.1 red):** in `session/renewal_test.go`, a case "a renewal keeps the creation time": create at 09:00, `RotateWithGrace` at 15:00, assert `successor.CreatedAt == 09:00`. In `httpsec/recoverycodes_test.go`, a case "regeneration after a renewal still needs reauthentication": sign in at 09:00, renew at 15:00 through `EnableSessionRenewal`, regenerate at 15:01 under the default 15-minute freshness, expect `recovery.ErrReauthenticationRequired` and no new codes. Run `go test -count=1 -run 'Renewal|Recovery' ./session/ ./httpsec/`. Expected: FAIL (`CreatedAt` is 15:00; regeneration succeeds).
+- [ ] **Step 2 (9.1 green):** in `RotateWithGrace`, drop `next.CreatedAt = now`; the successor keeps `old.CreatedAt`. `LastAccessedAt` stays `now`. Update the `RotateWithGrace` godoc: "a renewal is not an authentication; the successor keeps the time its sign-in authenticated". Run both packages. Expected: PASS.
+- [ ] **Step 3 (9.2 red):** in `session/rotate_strict_race_test.go`, a store wrapper whose `Supersede` signals and then waits on a channel before returning lets a `Load` of the old identifier run between the strict rotation's `Supersede` and its `Delete`. Case "a load between the writes returns the old session": the load returns the old session (same `UserID`, MFA still pending) and nothing is revoked (the successor loads afterwards). Case "a failed delete does not fail the rotation": a store whose `Delete` returns an error; `Rotate` returns the successor with nil error, the old identifier loads at +10 s, and at +31 s it is reuse. Run `go test -count=1 -race -run 'TestRotate' ./session/`. Expected: FAIL (reuse revokes the family; `Rotate` returns the delete error).
+- [ ] **Step 4 (9.2 green):** in `Rotate`, supersede with `AcceptUntil: now.Add(DefaultRenewalGrace)` (capped at the old absolute deadline as `RotateWithGrace` does), then delete; on a delete error, log it at error with the fixed reason and the family id (no identifier) and return the successor. Keep the per-identifier lock and the existing two-live-heads tests green. Update the godoc. Run `go test -count=1 -race ./session/...` and `go test -race -count=50 -run 'Race|Racing|Concurrent' ./session/`.
+- [ ] **Step 5 (9.3 red):** in `session/family_manager_test.go`, a session created directly with `store.Create` and a zero `FamilyID`: `Rotate` returns a successor whose `FamilyID` is not nil and the old identifier is not found; `RotateWithGrace` of such a session returns an error matching `ErrSessionExpired` and stores nothing. Expected: FAIL (`Rotate` fails with "a session with no family cannot be superseded").
+- [ ] **Step 6 (9.3 green):** in `Rotate`, when `old.FamilyID.IsZero()`, create the successor with a new family from the manager's family generator (`FamilyCreatedAt = now`) through `store.Create`, then delete the old record. In `RotateWithGrace`, refuse a zero family before any write with an error wrapping `ErrSessionExpired`. Godoc on both. Run the session suite.
+- [ ] **Step 7: commit** `fix(session): a renewal keeps the sign-in's authentication time, and second-factor rotation tolerates requests in flight`.
+
+---
+
+### Task 9.4: Migration defaults for older writers
+
+Design finding 5. Spec: `schema-migrations` scenario "An older writer's insert".
+
+**Files:**
+- Modify: `migrate/securitystate/20261021000000_session_families.sql` (unreleased)
+- Test: `test/migrate_securitystate_test.go`
+
+- [ ] **Step 1 (red):** a `TestSecurityStateMigrations_SessionFamilies` subtest "an older writer's insert succeeds": after applying, `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at) VALUES (...)` succeeds, and the row's `family_id` is non-null and `family_created_at` is non-null. Run on PostgreSQL 18 and 15 (`SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine`). Expected: FAIL with SQLSTATE 23502.
+- [ ] **Step 2 (green):** after the backfill and `SET NOT NULL`, add `ALTER TABLE sessions ALTER COLUMN family_id SET DEFAULT gen_random_uuid();` and `ALTER TABLE sessions ALTER COLUMN family_created_at SET DEFAULT now();`, one statement per line as the file's style requires. The Down step drops the columns, so it needs no change; confirm the rollback snapshot test still passes. Update the pinned column strings in the schema test if they include defaults.
+- [ ] **Step 3: commit** `fix(migrate): session family columns default for older writers`.
+
+---
+
+### Task 9.5: A coalescing interval shorter than every enforced idle timeout
+
+Design finding 6. Spec: `http-security-chain` requirement "A coalescing interval must be shorter than every idle timeout the policy enforces".
+
+**Files:**
+- Create: `session/interval.go` (`(*Manager).TouchInterval() time.Duration`, kept out of `manager.go`, which another dispatch holds)
+- Modify: `policy/idle.go` (`(*IdleTimeoutPolicy).IdleTimeout() time.Duration`), `policy/engine.go` (`(*Engine).IdleTimeouts() []time.Duration`, collecting from every policy that has an `IdleTimeout() time.Duration` method, as `UnwiredFederatedAssurance` collects its facts), `httpsec/options.go` (the check in `New`, beside the other engine-introspection checks)
+- Test: `session/interval_test.go`, `policy/engine_test.go`, `httpsec/` construction test
+
+- [ ] **Step 1 (red):** in `httpsec`, a construction table: manager `WithTouchInterval(10*time.Minute)` and engine `NewIdleTimeoutPolicy(WithIdlePolicyTimeout(5*time.Minute))` → `New` returns an error wrapping `ErrConfig` that names the interval and the idle timeout; with a 15-minute idle timeout it builds; with interval 0 (the default) and a 5-minute idle timeout it builds. Stub the three accessors to return zero values first. Expected: FAIL (the refused case builds).
+- [ ] **Step 2 (green):** implement the accessors and the check: refuse when `interval > 0` and any `idle <= interval`. Godoc on each accessor names what it reports; the `WithTouchInterval` godoc names the new construction rule. Run `go test -race -count=1 ./session/... ./policy/... ./httpsec/...`.
+- [ ] **Step 3 (godoc):** in `httpsec/renewal.go`, add to the `EnableSessionRenewal` godoc: clients sharing one credential across tabs should serialise renewals, because a second renewal inside the window re-rotates and knocks out the successor the first tab already holds, and that tab's next request is then reuse.
+- [ ] **Step 4: commit** `feat(httpsec): refuse a touch interval an idle policy cannot tolerate`.
+
+---
+
+### Task 9.6: Supersession writes only what it supersedes
+
+Design findings 7 and 8. Spec: `security-state-stores` requirements "Superseded sessions are returned by load and kept by the sweep" (retention deadline), "A supersession writes only the sessions it supersedes". This task replaces two earlier review fixes recorded in the design: "The family's deadline grows with renewal" and "Durable stores lock a family in id order". Their conformance cases ("extended family keeps its superseded sessions", "a chain of extending renewals raises every superseded session", the three raise-limit cases) and broken variants are rewritten to the retention rule, and `TestSessionExtendingRenewalLockOrder` is replaced by a lock-order case for the rows a supersession still locks.
+
+**Files (memory side, dispatch S2):**
+- Modify: `session/store.go` (`Supersession.RetainUntil` and the `Supersede` godoc), `session/memory.go` (remove `extendSupersededLocked`; set superseded records' deadlines to `RetainUntil`; add a family index used by `DeleteFamily`), `session/encrypted.go` (delegate), `session/reuse.go` and `session/manager.go` (compute `RetainUntil = FamilyCreatedAt + maxFamilyLifetime` for every supersession)
+- Test: `test/storetest/session_suite.go`, `broken_session_test.go`, `broken_test.go`, `session/renewal_test.go` (`TestRenewalLifetime_ExtendedFamilyStillDetectsReuse` must still pass: the retention deadline now covers it)
+
+**Files (durable side, dispatch D2):**
+- Modify: `internal/pgschema/sessions.go` (remove `SessionExtendSuperseded` and `SessionLockFamily`; add a statement locking the old row and the observed previous successor `ORDER BY id FOR UPDATE`; old-row and previous-successor updates set both deadlines to `RetainUntil`), `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`
+- Test: `test/storetest/ambient.go` (replace `RunSessionExtendingRenewalLockOrder` with a case in which a re-rotation and a family revocation race over the two locked rows under descending row ids, expecting no deadlock), `test/{sqlstore,pgxstore,gormstore}/ambient_test.go`, `test/gormstore/statements_test.go`
+
+- [ ] **Step 1 (red, S2):** suite case "earlier superseded sessions are untouched by later supersessions" (O→S1→S2→S3; O's stored deadlines and supersession fields equal what S1's supersession wrote) and "a superseded record keeps the retention deadline" (`RetainUntil` 21:00 written as both deadlines). Broken variant: a store that rewrites every superseded family member. Expected: the first case FAILS against the current memory store (the raise rewrites O on S3's supersession when it extends), and the variant is caught.
+- [ ] **Step 2 (green, S2):** add `RetainUntil`, compute it in the manager, write it in the memory store, remove the raise, add the family index (`map[id.ID]map[string]struct{}` maintained in `putLocked` and `deleteLocked`). Rewrite the superseded raise cases to the retention rule. Run `go test -race -count=1 ./session/...` and `(cd test && go test -count=1 -race -run 'TestMemory|TestSuitesCatchBrokenStores' ./storetest/)`. Durable runners fail the new cases until D2: confirm they compile.
+- [ ] **Step 3 (red, D2):** run the durable session runners; record the failing new cases.
+- [ ] **Step 4 (green, D2):** implement as listed under Files. Run the session, race, ambient and broken suites on every backend on PostgreSQL 18 and 15, and the new lock-order case `-count=10 -race`.
+- [ ] **Step 5: commit** `refactor(session): a supersession writes only what it supersedes`.
+
+---
+
+### Task 9.7: First presentation decided by the store
+
+Design finding 9. Spec: `security-state-stores` scenario "Superseded session not marked".
+
+**Files:**
+- Modify: `session/store.go` (`ErrSessionSuperseded`; `MarkPresented` godoc), `session/memory.go`, `session/encrypted.go` (return the sentinel bare), `session/manager.go` (replace `recheckAfterMark`: on `ErrSessionSuperseded`, re-load and judge; otherwise no second read), `internal/pgschema/sessions.go` (`SessionMarkPresented ... WHERE first_presented_at IS NULL AND superseded_at IS NULL`; zero rows then distinguishes missing, superseded and already presented), the three durable session files
+- Test: `test/storetest/session_suite.go`, `broken_session_test.go`, `broken_test.go`, `session/unused_successor_test.go`, `session/unused_successor_race_test.go`
+
+- [ ] **Step 1 (red):** suite case "marking a superseded session's first presentation returns the superseded-session error and writes nothing", with a broken variant that marks it anyway. Manager test "a first presentation under recovery makes one load and one mark" with a counting store wrapper. Stub the sentinel first. Expected: FAIL (the store marks it; the manager loads twice).
+- [ ] **Step 2 (green):** implement in every store and the manager. `TestUnusedSuccessorRecovery_FirstPresentationRacingRecovery` (every forced order, including the advancing-clock case) must stay green at `-race -count=50`. Run the suites on every backend, PostgreSQL 18 and 15.
+- [ ] **Step 3: commit** `refactor(session): the store decides a first presentation of a superseded session`.
+
+---
+
+### Task 9.8: Shared durable-store helpers
+
+Design finding 10. No behaviour change.
+
+**Files:**
+- Modify: `internal/storekit/` (new helpers beside `SessionDigest`: the digest argument for a nil-or-digest observation, the not-found-unless-exists check, the mapping from a supersession refusal cause to its sentinel), `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`
+- Test: `internal/storekit` unit tests for each helper (table form); the existing suites unchanged
+
+- [ ] **Step 1 (red):** unit tests for the three helpers against stubs that return zero values. Expected: FAIL.
+- [ ] **Step 2 (green):** implement, then switch the three stores to them, leaving transaction and savepoint code per driver. Run the session, race and ambient suites on every backend, `golangci-lint run` in root, `pgx`, `gorm`, and `go vet ./...` in each.
+- [ ] **Step 3: commit** `refactor(stores): share the session stores' driver-agnostic helpers`.
+
+---
+
+### Task 9.9: Gate for group 9 (main session)
+
+- [ ] Dispatch a fresh Opus reviewer that edits nothing, over the group's commits, against every requirement named in Tasks 9.1–9.8 and the design section "Pull request review (2026-10-21)". Findings go back to a fresh dispatch of the owning lane.
+- [ ] Run `make check` on go1.27.3 or later, and `openspec validate first-party-sessions --strict`. Keep both outputs; push the branch to update the pull request.

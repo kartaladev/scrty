@@ -54,26 +54,29 @@ When the caller observed a successor that has since been superseded or is no lon
 - **THEN** the store refuses with the successor-advanced error and writes nothing
 
 ### Requirement: Superseded sessions are returned by load and kept by the sweep
-Loading a superseded session SHALL return it with its supersession state, whether or not its window has ended, while its idle and absolute deadlines are unexpired. A superseded session SHALL keep its family's absolute deadline as both of its deadlines, so the expiry sweep deletes it only when that deadline passes. Saving a superseded session SHALL NOT change either deadline, so a copy loaded before the supersession cannot shorten them.
-
-#### Scenario: Stale save keeps the deadlines
-- **WHEN** a copy of a session is loaded, the session is then superseded with its absolute deadline 21:00, and the earlier copy, with an idle deadline of 09:30, is saved
-- **THEN** the stored session still reports 21:00 as both its idle and absolute deadline
+Loading a superseded session SHALL return it with its supersession state, whether or not its window has ended, while its idle and absolute deadlines are unexpired. A superseded session SHALL keep, as both of its deadlines, the retention deadline its supersession gave, the latest time its family could still be live, so the expiry sweep deletes it only when that deadline passes.
 
 #### Scenario: Load past the window
 - **WHEN** a session superseded at 09:00 with a window ending at 09:00:30 is loaded at 12:00 through the store
 - **THEN** the store returns it, reporting it superseded at 09:00 with window end 09:00:30
 
 #### Scenario: Sweep keeps a superseded session
-- **WHEN** a session whose absolute deadline is 21:00 is superseded at 09:00, and expired sessions are swept at 12:00
+- **WHEN** a session is superseded at 09:00 with a retention deadline of 21:00, and expired sessions are swept at 12:00
 - **THEN** the superseded session is not deleted
 
-### Requirement: A renewal that extends the family extends its superseded sessions
-When a supersession gives its successor a later absolute deadline, the store SHALL raise both deadlines of every superseded session of the family to it, in the same operation.
+### Requirement: Saving a superseded session keeps its deadlines
+Saving a superseded session SHALL NOT change either of its deadlines, so a copy loaded before the supersession cannot shorten them.
 
-#### Scenario: Extended family keeps its superseded sessions
-- **WHEN** session O with absolute deadline 21:00 is superseded at 15:00 by S1 with absolute deadline 03:00 the next day, and O is loaded at 22:00
-- **THEN** the store returns O as superseded, with 03:00 as both deadlines
+#### Scenario: Stale save keeps the deadlines
+- **WHEN** a copy of a session is loaded, the session is then superseded with a retention deadline of 21:00, and the earlier copy, with an idle deadline of 09:30, is saved
+- **THEN** the stored session still reports 21:00 as both its idle and absolute deadline
+
+### Requirement: A supersession writes only the sessions it supersedes
+A supersession SHALL write only the session it supersedes, its previous successor if there is one, and the new successor. It SHALL NOT rewrite any other session of the family, so its cost does not grow with the number of earlier renewals.
+
+#### Scenario: Earlier superseded sessions untouched
+- **WHEN** session O is superseded by S1, S1 by S2, and S2 by S3
+- **THEN** O's stored deadlines and supersession state are exactly as S1's supersession left them
 
 ### Requirement: A family is revoked by one delete
 Durable session stores SHALL delete every session of one family in one operation, superseded or not, expired or not, and SHALL return how many were removed. Sessions of other families, including other families of the same user, SHALL be unaffected. A revocation that names no family (the nil identifier) SHALL be refused with an error and SHALL delete nothing.
@@ -89,11 +92,15 @@ Durable session stores SHALL delete every session of one family in one operation
 - **AND** the user's other session still loads
 
 ### Requirement: A session's first presentation is recorded once
-Durable session stores SHALL record when a session was first loaded successfully, in a write that sets the time only when none is recorded. A later recording SHALL leave the first time unchanged.
+Durable session stores SHALL record when a session was first loaded successfully, in a write that sets the time only when none is recorded. A later recording SHALL leave the first time unchanged. Recording the first presentation of a superseded session SHALL write nothing and SHALL return the superseded-session error.
 
 #### Scenario: First time kept
 - **WHEN** a session's first presentation is recorded at 09:00 and again at 09:05
 - **THEN** the session reports its first presentation at 09:00
+
+#### Scenario: Superseded session not marked
+- **WHEN** a session is superseded, and its first presentation is then recorded
+- **THEN** the superseded-session error is returned and no presentation time is stored
 
 ### Requirement: Session family and supersession state survive a durable store
 Durable session stores SHALL persist and return a session's family identifier, family start time, supersession time, window end, successor and first-presentation time exactly as written, at microsecond precision. A session that was never superseded or presented SHALL report none. Saving a session SHALL NOT change any of them.

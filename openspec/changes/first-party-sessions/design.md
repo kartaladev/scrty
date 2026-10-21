@@ -348,6 +348,40 @@ See `proposal.md` for the motivation. This section covers only the state of the 
     - the second-factor state: expected enrolment-pending, actual none.
   - **Fix.** The test is task 3.1's red step, and decision 2's narrow activity write makes it pass.
 
+## Pull request review (2026-10-21)
+
+A code review of the pull request raised ten findings. Each is `UNREPRODUCED` until its first task's test fails; if a test passes instead, the claim is wrong and its decision is withdrawn.
+
+1. **A renewal looked like a fresh authentication.** `RotateWithGrace` set the successor's `CreatedAt` to the renewal time, and recovery-code regeneration reads `max(CreatedAt, MFASatisfiedAt)` as the time the user last authenticated. A held credential could be renewed and the user's recovery codes regenerated at once.
+   - **Decision:** a successor keeps its predecessor's `CreatedAt`. `CreatedAt` is when the sign-in authenticated; only a sign-in or a satisfied second factor refreshes authentication, and a renewal is neither.
+   - **First test:** a session created at 09:00 is renewed at 15:00, then regenerates recovery codes at 15:01 under the 15-minute freshness window, and is refused with the reauthentication-required error.
+2. **An ordinary request racing second-factor rotation was judged as theft.** Strict `Rotate` superseded the old record with a window ending at once and then deleted it; a request loading the old identifier between the two writes found it superseded past its window and revoked the family.
+   - **Decision:** strict rotation supersedes with a short in-flight window (`session.DefaultRenewalGrace`, 30 s) and then deletes the old record. Between the writes the old identifier is served as what it was, a session still owing its second factor, which every gate already confines. Once deleted it is not found, as before this change.
+   - **First test:** a load of the old identifier interleaved between the strict rotation's two store writes returns the old session, and the family is not revoked.
+3. **A failed delete turned the next request into reuse.** When the delete after a strict rotation failed, `Rotate` returned the error although the successor was stored, so the client kept the old credential and its next request revoked the family.
+   - **Decision:** a failed delete does not fail the rotation. The successor is returned and the failure is logged; the old identifier stays superseded and expires as a superseded record when its in-flight window ends.
+   - **First test:** a store whose delete fails; `Rotate` returns the successor, the old identifier loads inside the window, and nothing is revoked.
+4. **A session with no family could not complete a second factor.** Supersession refuses the nil family, so `Rotate` of a session written straight to a store failed with a server error.
+   - **Decision:** strict `Rotate` of a session with no family falls back to creating the successor in a new family and deleting the old record, without the store-decided guarantee, which needs a family. `RotateWithGrace` of such a session fails with the expired-session error, so the client signs in again and gets a family. The godoc states both.
+   - **First test:** a session created directly through the store with no family completes `Rotate`, and its successor has a family.
+5. **The migration broke replicas still running the previous release.** `family_id` and `family_created_at` became `NOT NULL` with no default, so an insert from code that does not name them failed.
+   - **Decision:** the columns keep `NOT NULL` and gain defaults, a generated `uuid` and the insert time, so an older writer's session is the sole member of its own family. The migration has not been released, so the unreleased migration file itself changes.
+   - **First test:** after the migration, an insert that names neither column succeeds, and the row has a family and a family start time.
+6. **A coalescing interval could defeat a shorter idle-timeout policy.** With `WithTouchInterval(d)`, the stored last-access time can be up to `d` stale, so a `policy.IdleTimeoutPolicy` whose timeout is not longer than `d` would refuse sessions in constant use.
+   - **Decision:** `httpsec.New` refuses, as a configuration error, a chain whose session manager coalesces activity writes over an interval at least as long as any idle timeout its policy engine reports. The manager exposes its interval for the check.
+   - **First test:** a chain with a 10-minute touch interval and a 5-minute idle policy fails `New` with the configuration error; with a 15-minute idle policy it builds.
+7. **The memory store scanned every record on each supersession.** It raised superseded members' deadlines with a scan of the whole store under its lock.
+   - **Decision:** this goes with 8; the memory store also keeps a family index, so revoking a family touches only its members.
+8. **Every renewal locked, and could rewrite, every row of the family.** The raise of superseded members' deadlines, and the family-wide lock it needed, cost O(N) per renewal, where N grows with every renewal of a long-lived family.
+   - **Decision:** the raise is replaced. A supersession gives every record it supersedes a retention deadline the manager computes, the latest time the family could still be live (`FamilyCreatedAt` plus the family maximum), as both deadlines, through a new `Supersession.RetainUntil`. No later renewal needs to touch it. A supersession then writes only the rows it supersedes and inserts the successor, and locks only those rows, in row-id order. A superseded record never authenticates past its window, so keeping it longer grants nothing; the sweep still removes it once the family cannot be live. This supersedes "The family's deadline grows with renewal" and "Durable stores lock a family in id order" above.
+   - **First test:** in a family renewed three times, the last supersession writes no row other than the one it supersedes and its successor.
+9. **First presentation needed a second read.** `recheckAfterMark` re-read the session after marking it presented, to catch a recovery committed in between.
+   - **Decision:** the store decides it. `MarkPresented` on a superseded record writes nothing and returns a new `ErrSessionSuperseded`; only then does the manager re-load and judge the record. A live session's first presentation costs one write and no extra read.
+   - **First test:** with unused-successor recovery on, a first presentation of a live session makes exactly one `Load` and one `MarkPresented`.
+10. **Durable-store helpers were copied three times.** The digest argument, the not-found check and the supersession refusal mapping are moved into `internal/storekit` beside `SessionDigest`. Driver-specific transaction and savepoint code stays in each store. Behaviour is unchanged; the existing suites are its test.
+
+The review also noted a behaviour the design chose: a second tab renewing the old credential inside its window knocks out the successor the first tab already holds, and the first tab's next request then revokes the family (decision 6's re-rotation). It stays as designed; the godoc on `EnableSessionRenewal` advises clients to serialise renewals across tabs.
+
 ## Risks / Trade-offs
 
 - **A stolen identifier also works inside the grace window.**

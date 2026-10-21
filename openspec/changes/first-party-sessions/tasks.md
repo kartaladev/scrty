@@ -146,6 +146,20 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
 - [x] 8.1 Run the whole-branch review against every requirement in this change's specs, with a fresh Opus reviewer that edits nothing. Verify every finding is fixed or explicitly declined in the design.
 - [x] 8.2 Run `make check` (fmt-check, vet, lint, test, vuln, generate-check) and `openspec validate first-party-sessions --strict`. Verify both are clean, and keep the output.
 
+## 9. Pull request review (design: "Pull request review (2026-10-21)")
+
+Every task here starts with its first test from the design. If that test passes on the current code, the claim is wrong: report it, and the main session withdraws the decision.
+
+- [ ] 9.1 Red: a renewed session keeps its predecessor's creation time, and regenerating recovery codes a minute after a renewal of a session signed in six hours earlier is refused as needing reauthentication. Verify both fail, then carry `CreatedAt` over in `RotateWithGrace`, and verify they pass with the session and `httpsec` suites.
+- [ ] 9.2 Red: a load of the old identifier between a strict rotation's supersession and its delete returns the old session and revokes nothing; a strict rotation whose delete fails returns the successor, and the old identifier loads inside its in-flight window. Verify both fail, then give strict rotation the in-flight window and stop a failed delete failing the rotation. Verify they pass with the rotation race tests.
+- [ ] 9.3 Red: a session created directly through a store with no family completes `Rotate`, and its successor has a family; `RotateWithGrace` of it fails with the expired-session error. Verify both fail, implement the fallback, and verify they pass.
+- [ ] 9.4 Red: after the session-families migration, an insert that names neither family column succeeds and the row has a family and a family start time. Verify it fails on PostgreSQL 15 and 18, add the defaults to the unreleased migration, and verify it passes with the migration suite.
+- [ ] 9.5 Red: `httpsec.New` refuses a chain whose session manager coalesces activity over 10 minutes and whose engine enforces a 5-minute idle timeout, and builds one with a 15-minute idle timeout. Verify it fails, expose the manager's interval and the engine's idle timeouts, add the check, and verify it passes. Add to the `EnableSessionRenewal` godoc that clients sharing one credential across tabs should serialise renewals, because a second renewal inside the window knocks out the first tab's successor.
+- [ ] 9.6 Red: a conformance case in which O is superseded by S1, S1 by S2 and S2 by S3, and O's stored deadlines and supersession state are unchanged by the later supersessions; a broken variant that rewrites earlier members is caught. Verify it fails on every store, then replace the deadline raise with `Supersession.RetainUntil`, lock only the rows a supersession writes in row-id order, give the memory store a family index, and remove the raise and its family-wide lock. Verify the session, race, lock-order and ambient suites pass on every store, on PostgreSQL 15 and 18.
+- [ ] 9.7 Red: a conformance case in which marking a superseded session's first presentation returns the superseded-session error and writes nothing, and a manager test in which a live session's first presentation under recovery makes exactly one load and one mark. Verify they fail, add `ErrSessionSuperseded` and the conditional mark in every store, replace the re-read, and verify the recovery race tests pass.
+- [ ] 9.8 Move the durable stores' shared digest, not-found and supersession-refusal helpers into `internal/storekit`, leaving driver-specific transaction code in each store. Verify the session, race and ambient suites pass unchanged on every store, and `golangci-lint` is clean.
+- [ ] 9.9 Run a whole-branch review of the group's changes against the requirements they touch, and `make check`. Verify both are clean.
+
 ## Workflow follow-up
 
 - Tell the `bff-resource-server` change to rebase its cookie mode on the shared resolution core from group 5.

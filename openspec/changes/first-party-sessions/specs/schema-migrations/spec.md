@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: The security-state set adds session family and supersession columns
-A new security-state migration SHALL add to the sessions table: a non-null uuid family identifier, indexed; a non-null family start time; nullable supersession time, window end, successor digest and first-presentation time, with no default. Existing rows SHALL be backfilled with their own primary key as family identifier and their creation time as family start. Rolling it back SHALL remove exactly those columns and the index.
+A new security-state migration SHALL add to the sessions table: a non-null uuid family identifier, indexed, defaulting to a generated identifier; a non-null family start time, defaulting to the insert time; nullable supersession time, window end, successor digest and first-presentation time, with no default. Existing rows SHALL be backfilled with their own primary key as family identifier and their creation time as family start. Rolling it back SHALL remove exactly those columns and the index.
 
 #### Scenario: Columns after applying
 - **WHEN** the set has been applied
@@ -15,3 +15,7 @@ A new security-state migration SHALL add to the sessions table: a non-null uuid 
 #### Scenario: Rolled back
 - **WHEN** the migration is rolled back
 - **THEN** the sessions table has exactly the columns and indexes it had before it
+
+#### Scenario: An older writer's insert
+- **WHEN** after the migration a session is inserted by a statement that names neither family column
+- **THEN** the insert succeeds, and the row has a family identifier and a family start time
