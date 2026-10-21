@@ -206,7 +206,7 @@ The manager SHALL record when a session is first loaded successfully. By default
 - **THEN** the load fails with the reused-session error and the family is revoked
 
 ### Requirement: Renewal carries the absolute deadline over unless a new lifetime is chosen, under a family maximum
-By default a successor SHALL keep its predecessor's absolute deadline. A caller MAY choose a new lifetime when rotating with a grace window; the successor's absolute deadline SHALL then be now plus that lifetime. A lifetime above the lifetime maximum, or ending after the family start plus the family maximum, SHALL fail with a configuration error. The family maximum SHALL default to the lifetime maximum and SHALL be finite; construction SHALL fail when it is below the lifetime maximum.
+By default a successor SHALL keep its predecessor's absolute deadline. A caller MAY choose a new lifetime when rotating with a grace window; the successor's absolute deadline SHALL then be now plus that lifetime, bounded by the family maximum. A lifetime above the lifetime maximum SHALL fail with a configuration error and store nothing.
 
 #### Scenario: Default carries over
 - **WHEN** a session whose absolute deadline is 21:00 is rotated with a grace window at 15:00
@@ -216,13 +216,28 @@ By default a successor SHALL keep its predecessor's absolute deadline. A caller 
 - **WHEN** a manager with a 30-day lifetime maximum and a 90-day family maximum rotates, on day 20 of a family, a session with a chosen 30-day lifetime
 - **THEN** the successor's absolute deadline is now plus 30 days
 
-#### Scenario: Family maximum is the overall limit
-- **WHEN** the same manager rotates, on day 80 of the family, a session with a chosen 30-day lifetime
+#### Scenario: Lifetime above the lifetime maximum
+- **WHEN** a manager with a 30-day lifetime maximum rotates a session with a chosen 45-day lifetime
 - **THEN** the rotation fails with a configuration error and nothing is stored
 
 #### Scenario: Rotation at second-factor verification never extends
 - **WHEN** a session whose absolute deadline is 21:00 is rotated at second-factor verification
 - **THEN** the successor's absolute deadline is 21:00
+
+### Requirement: The family maximum bounds every renewal
+A renewed successor's absolute deadline SHALL never be later than its family start plus the family maximum; a deadline that would pass it SHALL be cut to end exactly there. The family maximum SHALL default to the lifetime maximum and SHALL be finite. Construction SHALL fail when it is below the lifetime maximum.
+
+#### Scenario: Family maximum is the overall limit
+- **WHEN** the same manager rotates, on day 80 of the family, a session with a chosen 30-day lifetime
+- **THEN** the successor's absolute deadline is the family start plus 90 days
+
+#### Scenario: Default family maximum allows no extension
+- **WHEN** a manager with a 12-hour lifetime maximum and no family maximum renews, at 15:00, a session created at 09:00 with a chosen 12-hour lifetime
+- **THEN** the successor's absolute deadline is 21:00
+
+#### Scenario: Family maximum below the lifetime maximum
+- **WHEN** a manager is constructed with a 30-day lifetime maximum and a 7-day family maximum
+- **THEN** construction fails with a configuration error
 
 ### Requirement: Concurrent renewals of one identifier produce one successor
 When two callers rotate the same identifier with a grace window at the same time, through one manager or through managers sharing one store, exactly one rotation SHALL succeed. The other SHALL fail with a renewal-conflict error and SHALL store nothing.

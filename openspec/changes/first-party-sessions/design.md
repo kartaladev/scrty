@@ -281,7 +281,9 @@ See `proposal.md` for the motivation. This section covers only the state of the 
 - **Bounds on a new lifetime.** It sets the successor's absolute deadline to `now + d`, capped twice:
   - by `WithMaxAbsoluteLifetime` (decision 3);
   - by a new family maximum, `session.WithMaxFamilyLifetime(max)`, counted from `FamilyCreatedAt`, the time of the sign-in that started the family. Every rotation copies `FamilyCreatedAt`, and nothing can reset it short of a new sign-in.
-- **Refusal.** A requested lifetime beyond either cap is refused with the configuration error from decision 3. Reaching the family maximum is different: the last renewal ends exactly at it, and later renewals cannot extend further. The godoc states that the family maximum is the overall reauthentication limit.
+- **Refusal and cutting.**
+  - A requested lifetime above the lifetime maximum is a fixed wiring choice, so it is refused with the configuration error from decision 3.
+  - Reaching the family maximum is runtime state, not a wiring mistake: a deadline that would pass it is cut to end exactly at it, so the last renewal ends there and later renewals cannot extend further. The successor, and the responder, carry the deadline actually stored. The godoc states that the family maximum is the overall reauthentication limit.
 - **Defaults:**
   - carry-over;
   - the family maximum equals the lifetime maximum, so no renewal can extend a family past where its first session would have ended, unless the consumer raises it.

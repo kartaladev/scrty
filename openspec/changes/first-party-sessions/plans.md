@@ -323,7 +323,7 @@ func TestTouch_KeepsAConcurrentlyLoweredDeadline(t *testing.T) {
     - validate the grace;
     - use the internal load;
     - mint the identifier and clone with the same family;
-    - set the successor's deadline (carry-over, or `WithSuccessorLifetime` bounded by the maximum and by `FamilyCreatedAt + maxFamily`, else a configuration error);
+    - set the successor's deadline (carry-over, or `WithSuccessorLifetime`: above the lifetime maximum is a configuration error, and a deadline past `FamilyCreatedAt + maxFamily` is cut to it);
     - call `store.Supersede` with `ObservedSuccessor` equal to the loaded `SuccessorDigest`;
     - return the kind.
   - Run it.
@@ -339,7 +339,8 @@ func TestTouch_KeepsAConcurrentlyLoweredDeadline(t *testing.T) {
   - `TestRenewalLifetime`:
     - carry-over gives 21:00;
     - 30 d on day 20 of a 90 d family gives now + 30 d;
-    - day 80 gives a configuration error and nothing stored;
+    - day 80 gives family start + 90 d;
+    - 45 d under a 30 d lifetime maximum gives a configuration error and nothing stored;
     - `Rotate` (second-factor verification) never extends;
     - `NewManager` refuses a family maximum below the lifetime maximum.
   - `TestReuseObserver`:
@@ -523,7 +524,8 @@ UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_prese
 - [ ] **Step 1 (7.3 red):**
   - with no `WithRenewalLifetime`, 21:00 is carried over;
   - a function returning 30 d under a 30 d maximum and a 90 d family, on day 10, gives now + 30 d;
-  - on day 80, a configuration error, a 500, and nothing stored.
+  - on day 80, the responder's `RenewalResult.Session.AbsoluteExpiresAt` is family start + 90 d;
+  - 45 d under a 30 d lifetime maximum gives a configuration error, a 500, and nothing stored.
   - Implement by passing `session.WithSuccessorLifetime(fn(ex, s))` when fn returns more than 0.
 - [ ] **Step 2 (7.4 red):**
   - the default gives 12 h;

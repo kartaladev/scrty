@@ -148,7 +148,7 @@ When enabled, the renewal endpoint SHALL answer `POST` on its path, `/session/re
 - **THEN** construction fails with a configuration error
 
 ### Requirement: The renewal endpoint can give the successor a new lifetime
-By default a renewed successor SHALL keep its predecessor's absolute deadline. The consumer SHALL be able to supply a function of the request and the renewed session that chooses the successor's lifetime, bounded as the session capability's family maximum requires. A choice beyond those bounds SHALL fail the renewal with a configuration error and store nothing.
+By default a renewed successor SHALL keep its predecessor's absolute deadline. The consumer SHALL be able to supply a function of the request and the renewed session that chooses the successor's lifetime, bounded as the session capability requires: a choice above the lifetime maximum SHALL fail the renewal with a configuration error and store nothing, and a deadline past the family maximum SHALL be cut to it. The responder SHALL receive the successor with the deadline actually stored.
 
 #### Scenario: Default carries over
 - **WHEN** a session whose absolute deadline is 21:00 is renewed at 15:00 with no lifetime function
@@ -157,6 +157,10 @@ By default a renewed successor SHALL keep its predecessor's absolute deadline. T
 #### Scenario: Consumer lifetime
 - **WHEN** the consumer's lifetime function returns 30 days, under a 30-day lifetime maximum and a 90-day family maximum, for a family started 10 days ago
 - **THEN** the successor's absolute deadline is now plus 30 days
+
+#### Scenario: Last renewal cut to the family maximum
+- **WHEN** the same function returns 30 days for a family started 80 days ago under a 90-day family maximum
+- **THEN** the responder receives a successor whose absolute deadline is the family start plus 90 days
 
 ### Requirement: Login can choose the session's lifetime
 Password login SHALL accept a consumer function of the request and its parsed login parameters that returns the lifetime to give the new session, or none for the absolute timeout. With no function, every login SHALL receive the absolute timeout. A returned lifetime above the session manager's maximum SHALL fail the login with a configuration error, map to 500, and create no session.

@@ -63,7 +63,8 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   Add tests for renewal lifetime:
   - the default carries the deadline over;
   - a chosen 30 days under a 90-day family maximum extends;
-  - day 80 of a 90-day family is refused and stores nothing;
+  - day 80 of a 90-day family is cut to end at the family maximum;
+  - a chosen lifetime above the lifetime maximum is refused and stores nothing;
   - second-factor rotation never extends;
   - construction refuses a family maximum below the lifetime maximum.
   Add tests for `WithReuseObserver`:
@@ -136,7 +137,7 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
   - no log record holds either credential.
   Cover the consumer options: the path, a 60-second grace and a responder receiving the successor, the user and the kind `fresh`. Verify they fail, implement, and verify they pass.
 - [ ] 7.2 Red: add tests for re-rotation inside the window (kind `re-rotation`), unused-successor recovery (kind `recovery`, with the manager option on), the lost race (409), a grace above the ceiling, and signed-token mode without a generator (both at construction). Also test that an enrolment-pending session posting to the renewal path is refused by the enrolment gate. Verify they fail, implement, and verify they pass.
-- [ ] 7.3 Red: add tests for `WithRenewalLifetime`. The default carries the deadline over. A 30-day choice under a 90-day family maximum extends it. A choice beyond the family maximum fails with a configuration error and stores nothing. Verify they fail, implement, and verify they pass.
+- [ ] 7.3 Red: add tests for `WithRenewalLifetime`. The default carries the deadline over. A 30-day choice under a 90-day family maximum extends it. A choice whose deadline passes the family maximum is cut to it, and the responder sees the stored deadline. A choice above the lifetime maximum fails with a configuration error and stores nothing. Verify they fail, implement, and verify they pass.
 - [ ] 7.4 Red: add tests for the login lifetime option. The default is the absolute timeout. A function returning 30 days for `remember: true` under a 30-day maximum gives a 30-day deadline. A lifetime above the maximum fails the login with a configuration error mapping to 500, and creates no session. Verify they fail, thread the choice through `completeLogin` into `WithAbsoluteLifetime`, and verify they pass.
 - [ ] 7.5 Write godoc for the renewal endpoint and the login option: the defaults, the overrides, the commit-on-reuse transaction rule, and the client guidance to switch to the successor at once. Run `/simplify` over the touched `httpsec` files. Verify `go test -race ./httpsec/...` passes and `go doc` shows each default.
 
