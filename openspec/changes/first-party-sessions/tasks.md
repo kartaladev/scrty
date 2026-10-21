@@ -82,12 +82,12 @@ Every task is test-first: write the failing test, run it, and confirm it fails f
 
 ## 4. Schema and durable stores (decisions 5, 12; schema-migrations, security-state-stores and store-conformance requirements)
 
-- [ ] 4.1 Red: in the `test` module, add migration tests:
+- [x] 4.1 Red: in the `test` module, add migration tests:
   - the new columns, their nullability and the family index exist after applying;
   - a database populated before the migration backfills each session as the sole member of its own family, started at its creation time;
   - rollback restores the exact prior columns and indexes.
   Verify they fail because the migration does not exist.
-- [ ] 4.2 Add the migration under `migrate/securitystate/`, with its down step. Verify 4.1 passes on PostgreSQL 15 and 18, along with the existing migration suite.
+- [x] 4.2 Add the migration under `migrate/securitystate/`, with its down step. Verify 4.1 passes on PostgreSQL 15 and 18, along with the existing migration suite.
 - [ ] 4.3 Add the statements to `internal/pgschema/sessions.go`:
   - the activity update, conditional on threshold and not superseded;
   - supersession as conditional updates plus the insert, run in one transaction that joins an attached one;
