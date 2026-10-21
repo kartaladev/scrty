@@ -422,15 +422,87 @@ func TestLoad_FirstPresentation(t *testing.T) {
 			},
 		},
 		{
-			name:   "a failing mark does not fail the load",
+			name:   "a failing mark re-loads the session, and one still live is returned, unmarked",
 			stored: func() *session.Session { return liveUnpresented(sid) },
 			expect: func(store *MockStore) {
 				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(errStoreQuotes).Times(1)
+				store.EXPECT().Load(gomock.Any(), sid).Return(liveUnpresented(sid), nil).Times(1)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, got)
 				assert.True(t, got.FirstPresentedAt.IsZero(), "the session claims a mark the store refused")
+			},
+		},
+		{
+			name:   "a failing mark whose re-load fails too fails the load closed",
+			stored: func() *session.Session { return liveUnpresented(sid) },
+			expect: func(store *MockStore) {
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(errStoreQuotes).Times(1)
+				store.EXPECT().Load(gomock.Any(), sid).Return(nil, errStoreQuotes).Times(1)
+			},
+			assert: func(t *testing.T, got *session.Session, err error) {
+				require.ErrorIs(t, err, errStoreQuotes)
+				assert.NotContains(t, err.Error(), "alice@example.com")
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name:   "a mark refused as superseded re-loads the session, and a knocked-out one is reuse",
+			stored: func() *session.Session { return liveUnpresented(sid) },
+			expect: func(store *MockStore) {
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionSuperseded).Times(1)
+				knockedOut := liveUnpresented(sid)
+				knockedOut.SupersededAt = createdAt
+				knockedOut.AcceptUntil = createdAt
+				store.EXPECT().Load(gomock.Any(), sid).Return(knockedOut, nil).Times(1)
+				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).Return(1, nil).Times(1)
+			},
+			assert: func(t *testing.T, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrSessionReused)
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name:   "a mark refused as superseded inside the window returns the re-loaded session, unmarked",
+			stored: func() *session.Session { return liveUnpresented(sid) },
+			expect: func(store *MockStore) {
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionSuperseded).Times(1)
+				renewed := liveUnpresented(sid)
+				renewed.SupersededAt = createdAt
+				renewed.AcceptUntil = createdAt.Add(30 * time.Second)
+				renewed.SuccessorDigest = []byte("digest")
+				store.EXPECT().Load(gomock.Any(), sid).Return(renewed, nil).Times(1)
+			},
+			assert: func(t *testing.T, got *session.Session, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				assert.Equal(t, createdAt, got.SupersededAt, "the load returned the copy read before the supersession")
+				assert.True(t, got.FirstPresentedAt.IsZero())
+			},
+		},
+		{
+			name:   "a mark refused as superseded whose re-load fails is a store failure",
+			stored: func() *session.Session { return liveUnpresented(sid) },
+			expect: func(store *MockStore) {
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionSuperseded).Times(1)
+				store.EXPECT().Load(gomock.Any(), sid).Return(nil, errStoreQuotes).Times(1)
+			},
+			assert: func(t *testing.T, got *session.Session, err error) {
+				require.ErrorIs(t, err, errStoreQuotes)
+				assert.NotContains(t, err.Error(), "alice@example.com")
+				assert.Nil(t, got)
+			},
+		},
+		{
+			name:   "a mark refused as not found is not found",
+			stored: func() *session.Session { return liveUnpresented(sid) },
+			expect: func(store *MockStore) {
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionNotFound).Times(1)
+			},
+			assert: func(t *testing.T, got *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				assert.Nil(t, got)
 			},
 		},
 		{

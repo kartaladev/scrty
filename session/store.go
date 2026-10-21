@@ -53,6 +53,15 @@ var ErrSessionRenewalConflict = errors.New("session: the session was renewed con
 // moved on would leave the family with two live heads.
 var ErrSuccessorAdvanced = errors.New("session: the session's successor has moved on")
 
+// ErrSessionSuperseded is what a store reports when Store.MarkPresented is
+// asked to record the first presentation of a session that has been
+// superseded, and nothing was written. A superseded session is never marked
+// presented: its presentation state is its successor's to record.
+//
+// The Manager never returns it: it re-loads the session and judges it, which
+// is how a recovery committed between a load and its mark is caught.
+var ErrSessionSuperseded = errors.New("session: the session has been superseded")
+
 // Supersession is one atomic supersession: Store.Supersede marks Old
 // superseded by Successor and inserts Successor, provided Old's current
 // successor is still the one the caller observed.
@@ -259,9 +268,13 @@ type Store interface {
 	DeleteFamily(ctx context.Context, family id.ID) (int, error)
 
 	// MarkPresented records at as the session's FirstPresentedAt, only when
-	// none is recorded: a later call leaves the first time unchanged and is
-	// not an error. A session that is not stored is ErrSessionNotFound. It
-	// never inserts and never touches any other field.
+	// none is recorded and the session is not superseded, in one atomic
+	// conditional write: a later call leaves the first time unchanged and is
+	// not an error. A session that is not stored is ErrSessionNotFound. A
+	// superseded one is ErrSessionSuperseded, and nothing is written, so a
+	// supersession racing the mark either happens first and refuses it, or
+	// happens after it and sees it. It never inserts and never touches any
+	// other field.
 	MarkPresented(ctx context.Context, id string, at time.Time) error
 
 	// Delete removes the session with this identifier. Deleting one that is
@@ -320,7 +333,7 @@ type Store interface {
 func storeFailed(err error, text string) error {
 	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text
 	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable ||
-		err == ErrSessionRenewalConflict || err == ErrSuccessorAdvanced {
+		err == ErrSessionRenewalConflict || err == ErrSuccessorAdvanced || err == ErrSessionSuperseded {
 		return err
 	}
 

@@ -182,6 +182,9 @@ const (
 	// Delete leaves the session counted in its family, as a family member
 	// count kept apart from the records would.
 	sessionDeleteKeepsFamilyMember sessionDefect = "delete-keeps-family-member"
+	// MarkPresented records the first presentation of a superseded session,
+	// as an UPDATE testing first_presented_at alone would.
+	sessionMarkPresentedSuperseded sessionDefect = "mark-presented-superseded"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -750,8 +753,12 @@ func (s *sessionStore) MarkPresented(_ context.Context, sessionID string, at tim
 	if !exists {
 		return session.ErrSessionNotFound
 	}
-	if stored.FirstPresentedAt.IsZero() {
-		stored.FirstPresentedAt = at
+	if !stored.SupersededAt.IsZero() && s.defect != sessionMarkPresentedSuperseded {
+		return session.ErrSessionSuperseded
 	}
+	if !stored.FirstPresentedAt.IsZero() {
+		return nil
+	}
+	stored.FirstPresentedAt = at
 	return nil
 }

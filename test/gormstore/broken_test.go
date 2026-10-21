@@ -248,6 +248,18 @@ var brokenVariants = []storefix.BrokenVariant{
 		FailsCase: "a supersession requiring an unpresented successor that waited on its presentation is refused",
 		FailsWith: "it judged the successor before locking it",
 	},
+	{
+		Name: "session-mark-presented-reads-supersession-before-locking",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+				return readThenMark{Store: newSessionStore(t, db, c, opts...), db: db}
+			})
+			t.Run("gorm", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
+		},
+		FailsCase: "a first presentation that waited on its session's supersession is refused",
+		FailsWith: "it judged the session before locking it",
+	},
 	lockOrderVariant("session-supersede-locks-the-successor-first", false),
 	lockOrderVariant("session-supersede-locks-in-statement-order", true),
 }
@@ -505,4 +517,28 @@ func (s lockOutOfOrder) Supersede(ctx context.Context, op session.Supersession) 
 		return err
 	}
 	return tx.Commit().Error
+}
+
+// readThenMark records a first presentation by reading whether the session is
+// superseded first, without a lock, and then running the update without the
+// supersession condition: a supersession that commits while the mark waits
+// for the session's row goes unnoticed, and the superseded session is marked.
+type readThenMark struct {
+	session.Store
+	db *gormdb.DB
+}
+
+func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
+	digest := sha256.Sum256([]byte(sessionID))
+	var superseded bool
+	if err := s.db.WithContext(ctx).Raw(`SELECT superseded_at IS NOT NULL FROM sessions WHERE id_digest = ?`,
+		digest[:]).Scan(&superseded).Error; err != nil {
+		return err
+	}
+	if superseded {
+		return session.ErrSessionSuperseded
+	}
+	return s.db.WithContext(ctx).Exec(
+		`UPDATE sessions SET first_presented_at = ? WHERE id_digest = ? AND first_presented_at IS NULL`,
+		at, digest[:]).Error
 }

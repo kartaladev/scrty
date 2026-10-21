@@ -134,11 +134,20 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 WHERE id_digest = $1 AND superseded_at IS NULL AND (NOT $3::boolean OR first_presented_at IS NULL)`
 
 	// SessionMarkPresented records $2 as the first presentation of the
-	// session with digest $1, only when none is recorded. Zero rows affected
-	// means one is recorded already, or the session is missing; SessionExists
-	// tells which.
+	// session with digest $1, only when none is recorded and the session is
+	// not superseded. Zero rows affected means the session is missing,
+	// superseded, or presented already; SessionPresentationRefusal tells
+	// which.
 	SessionMarkPresented = `UPDATE sessions SET first_presented_at = $2
-WHERE id_digest = $1 AND first_presented_at IS NULL`
+WHERE id_digest = $1 AND first_presented_at IS NULL AND superseded_at IS NULL`
+
+	// SessionPresentationRefusal reports, in one row, whether a session with
+	// digest $1 is stored, and whether it is superseded. A SessionMarkPresented
+	// that changed no row runs it: not stored is a missing session, superseded
+	// is a refused mark, and otherwise the first presentation is recorded
+	// already.
+	SessionPresentationRefusal = `SELECT EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1),
+  EXISTS (SELECT 1 FROM sessions WHERE id_digest = $1 AND superseded_at IS NOT NULL)`
 
 	// SessionDeleteFamily removes every session of family $1, superseded or
 	// not, expired or not, after locking them in id order, the order

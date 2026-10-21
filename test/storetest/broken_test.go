@@ -127,6 +127,8 @@ var portableVariants = []brokenVariant{
 	sessionVariant(sessionSupersedeAcceptsNoFamilySuccessor,
 		"a successor with no family is refused and writes nothing"),
 	sessionVariant(sessionDeleteKeepsFamilyMember, "deleting a session removes it from its family"),
+	sessionVariant(sessionMarkPresentedSuperseded,
+		"marking a superseded session's first presentation returns the superseded-session error and writes nothing"),
 	{
 		name: "session-" + string(sessionCreateRefusesEchoing),
 		run: func(t *testing.T) {

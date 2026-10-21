@@ -552,18 +552,25 @@ func (s *MemoryStore) DeleteFamily(_ context.Context, family id.ID) (int, error)
 }
 
 // MarkPresented records at as the session's first presentation, only when
-// none is recorded. A session that is not stored is ErrSessionNotFound.
+// none is recorded and the session is not superseded, under the store's lock,
+// so a supersession either happens first and refuses the mark, or after it. A
+// session that is not stored is ErrSessionNotFound; a superseded one is
+// ErrSessionSuperseded, whether presented or not, and nothing is written; an
+// unsuperseded one already presented is not an error.
 func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rec, found := s.records[id]
-	if !found {
+	switch {
+	case !found:
 		return ErrSessionNotFound
+	case !rec.SupersededAt.IsZero():
+		return ErrSessionSuperseded
+	case !rec.FirstPresentedAt.IsZero():
+		return nil
 	}
-	if rec.FirstPresentedAt.IsZero() {
-		rec.FirstPresentedAt = at
-	}
+	rec.FirstPresentedAt = at
 
 	return nil
 }

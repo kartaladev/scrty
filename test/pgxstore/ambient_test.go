@@ -277,6 +277,17 @@ func TestSessionSuccessorAdvanceRace(t *testing.T) {
 	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
 }
 
+func TestSessionPresentationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
+}
+
 func TestSessionSupersessionLockOrder(t *testing.T) {
 	t.Parallel()
 

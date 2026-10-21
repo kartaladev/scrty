@@ -346,10 +346,16 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 //
 // The first time a session that is not superseded loads, Load records it as
 // presented (Store.MarkPresented), which is what tells an unused successor
-// from a used one. A failure to record it is logged at debug and does not
-// fail the load. With recovery on, Load then reads the session once more, so
-// a recovery that superseded it between the read and the mark makes this load
-// reuse rather than leaving two live sessions in the family.
+// from a used one. The store refuses the mark of a session superseded since
+// it was read (ErrSessionSuperseded), and only then does Load read it again
+// and judge it at a time read after the re-read: a recovery that superseded
+// it between the read and the mark makes this load reuse, rather than
+// leaving two live sessions in the family. A live session's first
+// presentation therefore costs one read and one write. A session gone by the
+// time of the mark is ErrSessionNotFound. Any other failure to record the
+// mark is logged at debug and the session is read again and judged the same
+// way, since the mark may have lost the race before the failure was
+// reported; if that read fails too, the load fails.
 func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
 	return m.load(ctx, id, forRequest)
 }
@@ -366,52 +372,71 @@ func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, err
 		return nil, err
 	}
 	if !s.superseded() && s.FirstPresentedAt.IsZero() {
-		m.markPresented(ctx, s, now)
-		if m.unusedSuccessorRecovery {
-			if err := m.recheckAfterMark(ctx, id); err != nil {
-				return nil, err
-			}
+		if err := m.markPresented(ctx, s, now); err != nil {
+			return m.reloadSuperseded(ctx, id, p, err)
 		}
 	}
 
 	return s, nil
 }
 
-// recheckAfterMark reads a session again after its first presentation was
-// recorded, and refuses it if it was superseded in between.
+// reloadSuperseded answers a load whose mark failed with err:
+// ErrSessionNotFound when the session is gone, and for any other failure,
+// ErrSessionSuperseded included, the verdict on the session read again. A
+// failure that is not a refusal is read again too, because the mark may have
+// reached the store and lost the race to a recovery before the failure was
+// reported; serving the session unmarked would leave this request
+// authenticated by a successor the recovery just superseded. If the read
+// again fails, so does the load (ErrStore, as for the first read): the
+// session cannot be shown to be live, and the load fails closed.
 //
 // A recovery supersedes a successor only while it is unpresented, so a
 // recovery committed between this load's read and its mark would otherwise
 // leave this request authenticated by the successor it just superseded, and
-// the family with two live heads. Read after the mark, the session either is
-// still unsuperseded, and any later recovery will see the mark and be reuse,
-// or was superseded by the recovery and is judged here, which is reuse: a
-// successor knocked out that way names no successor of its own.
+// the family with two live heads. Read again, the session is judged as it now
+// stands: one knocked out by the recovery names no successor of its own and
+// is reuse; one superseded by an ordinary renewal inside its window is
+// returned, unmarked.
 //
 // The re-read is judged at a time read after it, not at the time the first
 // read was judged: a recovery committed in between supersedes with a window
 // ending at its own, later, time, which the earlier time would read as still
 // open.
-func (m *Manager) recheckAfterMark(ctx context.Context, id string) error {
-	again, err := m.store.Load(ctx, id)
-	if err != nil {
-		return storeFailed(err, "session: the session could not be loaded")
+func (m *Manager) reloadSuperseded(ctx context.Context, id string, p purpose, err error) (*Session, error) {
+	if errors.Is(err, ErrSessionNotFound) {
+		return nil, ErrSessionNotFound
 	}
 
-	return m.judge(ctx, again, m.clock.Now(), forRequest)
+	again, err := m.store.Load(ctx, id)
+	if err != nil {
+		return nil, storeFailed(err, "session: the session could not be loaded")
+	}
+	if err := m.judge(ctx, again, m.clock.Now(), p); err != nil {
+		return nil, err
+	}
+
+	return again, nil
 }
 
 // markPresented records s's first presentation at now, and on success sets it
-// on s too. A failure only costs the record, so it is logged and not
-// returned, with the store's text left out.
-func (m *Manager) markPresented(ctx context.Context, s *Session, now time.Time) {
-	if err := m.store.MarkPresented(ctx, s.ID, now); err != nil {
+// on s too. It returns the store's failure, which the load answers by reading
+// the session again (reloadSuperseded). A failure other than
+// ErrSessionSuperseded and ErrSessionNotFound is logged first at debug, with
+// the store's text left out.
+func (m *Manager) markPresented(ctx context.Context, s *Session, now time.Time) error {
+	err := m.store.MarkPresented(ctx, s.ID, now)
+	switch {
+	case err == nil:
+		s.FirstPresentedAt = now
+	case errors.Is(err, ErrSessionSuperseded), errors.Is(err, ErrSessionNotFound):
+		return err
+	default:
 		m.logger.LogAttrs(ctx, slog.LevelDebug, "session: the session's first presentation could not be recorded",
 			diag.Failure("mark_presented", err)...)
-
-		return
+		return err
 	}
-	s.FirstPresentedAt = now
+
+	return nil
 }
 
 // Touch records activity on s: it moves the last-access time to now and the

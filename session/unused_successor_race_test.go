@@ -24,8 +24,9 @@ const (
 	// lets the two run as they will.
 	raceFree raceOrder = iota
 	// raceRenewalFirst reads S1 first, then lets the recovery commit before
-	// S1's presentation is recorded: the interleaving in which only a
-	// re-check after the mark can refuse S1.
+	// S1's presentation is recorded: the interleaving in which only the
+	// store's refusal of the mark of a superseded session (and the load's
+	// re-read after it) can refuse S1.
 	raceRenewalFirst
 	// racePresentationFirst lets S1's load finish before the recovery
 	// supersedes.
@@ -173,15 +174,15 @@ func TestUnusedSuccessorRecovery_FirstPresentationRacingRecovery(t *testing.T) {
 			},
 		},
 		{
-			// Unforced, a third order is also safe: S1 is marked, the
-			// renewal is refused and revokes the family before S1's load
-			// re-reads it, and S1's load then finds it gone.
+			// Unforced, either side may win, and nothing else can happen: a
+			// renewal is refused only once S1 is marked, and S1's load
+			// re-reads only when its mark is refused as superseded, which
+			// means the renewal won. S1's load therefore never finds its
+			// family revoked, and ErrSessionNotFound is not an outcome.
 			name:  "both read, then run freely",
 			order: raceFree,
 			assert: func(t *testing.T, s1Err, renewErr error) {
-				revokedUnderS1 := errors.Is(renewErr, session.ErrSessionReused) &&
-					errors.Is(s1Err, session.ErrSessionNotFound)
-				assert.True(t, presentationWon(s1Err, renewErr) || renewalWon(s1Err, renewErr) || revokedUnderS1,
+				assert.True(t, presentationWon(s1Err, renewErr) || renewalWon(s1Err, renewErr),
 					"S1: %v, renewal: %v", s1Err, renewErr)
 			},
 		},

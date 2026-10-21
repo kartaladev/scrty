@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -380,4 +381,45 @@ func TestKnockedOutSuccessor_IsReuseWhateverTheReaderClock(t *testing.T) {
 			tc.assert(t, f, tc.act(t.Context(), t, f))
 		})
 	}
+}
+
+// countingStore counts the Load and MarkPresented calls that reach a memory
+// store.
+type countingStore struct {
+	*session.MemoryStore
+
+	loads, marks atomic.Int32
+}
+
+func (s *countingStore) Load(ctx context.Context, id string) (*session.Session, error) {
+	s.loads.Add(1)
+
+	return s.MemoryStore.Load(ctx, id)
+}
+
+func (s *countingStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
+	s.marks.Add(1)
+
+	return s.MemoryStore.MarkPresented(ctx, id, at)
+}
+
+// TestUnusedSuccessorRecovery_FirstPresentationCost pins that with recovery
+// on, the first presentation of a live session costs one read and one write:
+// the store, not a second read, tells the manager whether a recovery
+// superseded it in between.
+func TestUnusedSuccessorRecovery_FirstPresentationCost(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	store := &countingStore{MemoryStore: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+	m := recoveryManager(t, store, clk)
+	s, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+
+	got, err := m.Load(t.Context(), s.ID)
+
+	require.NoError(t, err)
+	assert.Equal(t, createdAt, got.FirstPresentedAt)
+	assert.Equal(t, int32(1), store.loads.Load(), "a first presentation under recovery makes exactly one load")
+	assert.Equal(t, int32(1), store.marks.Load(), "a first presentation under recovery makes exactly one mark")
 }

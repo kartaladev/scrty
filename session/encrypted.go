@@ -246,6 +246,8 @@ func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, e
 	return n, storeFailed(err, "session: the inner store could not delete the session family")
 }
 
+// MarkPresented passes the mark on. The inner store's ErrSessionNotFound and
+// ErrSessionSuperseded come back bare, as Supersede's refusals do.
 func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
 	return storeFailed(s.inner.MarkPresented(ctx, id, at),
 		"session: the inner store could not record the session's first presentation")

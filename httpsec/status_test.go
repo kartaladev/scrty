@@ -394,6 +394,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"session.ErrSessionUnreadable":      session.ErrSessionUnreadable,
 		"session.ErrSessionRenewalConflict": session.ErrSessionRenewalConflict,
 		"session.ErrSessionRenewalRequired": session.ErrSessionRenewalRequired,
+		"session.ErrSessionSuperseded":      session.ErrSessionSuperseded,
 		"session.ErrSuccessorAdvanced":      session.ErrSuccessorAdvanced,
 	},
 }
@@ -426,6 +427,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 			"which answers it 401",
 		"session.ErrSuccessorAdvanced": "returned only by Store.Supersede and never leaves the session manager, " +
 			"which turns it into ErrSessionReused",
+		"session.ErrSessionSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
+			"which re-loads the session and returns its verdict instead",
 		"session.ErrSessionUnreadable": "converted to ErrAuthenticationRequired before it leaves the chain",
 		"ratelimit.ErrConfig":          "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +

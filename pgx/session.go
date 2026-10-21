@@ -670,8 +670,13 @@ func (s *sessionStore) DeleteFamily(ctx context.Context, family id.ID) (int, err
 }
 
 // MarkPresented records at as the session's first presentation, only when
-// none is recorded: one conditional UPDATE of that column. A session that is
-// not stored is session.ErrSessionNotFound.
+// none is recorded and the session is not superseded: one conditional UPDATE
+// of that column, so a supersession racing it either commits first and
+// refuses it, or waits on the row and sees it. Only when it changes no row
+// does one read tell why: a session that is not stored is
+// session.ErrSessionNotFound, a superseded one is
+// session.ErrSessionSuperseded, with nothing written, and one already
+// presented is not an error.
 func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
 	const op = "mark session presented"
 
@@ -681,10 +686,30 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 		return err
 	}
 	if n == 0 {
-		return notFoundUnless(s.stored(ctx, op, digest))
+		var exists, superseded bool
+		err := s.c.queryRow(ctx, op, pgschema.SessionPresentationRefusal, []any{digest}, &exists, &superseded)
+
+		return presentationRefusal(exists, superseded, err)
 	}
 
 	return nil
+}
+
+// presentationRefusal is the outcome of a first-presentation mark that
+// changed no row: session.ErrSessionNotFound when the session is not stored,
+// session.ErrSessionSuperseded when it is superseded, and nil when its first
+// presentation is recorded already.
+func presentationRefusal(exists, superseded bool, err error) error {
+	switch {
+	case err != nil:
+		return err
+	case !exists:
+		return session.ErrSessionNotFound
+	case superseded:
+		return session.ErrSessionSuperseded
+	default:
+		return nil
+	}
 }
 
 var _ session.Store = (*sessionStore)(nil)

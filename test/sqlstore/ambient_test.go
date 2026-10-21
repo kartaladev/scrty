@@ -278,6 +278,17 @@ func TestSessionSuccessorAdvanceRace(t *testing.T) {
 	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
 }
 
+func TestSessionPresentationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
+}
+
 func TestSessionSupersessionLockOrder(t *testing.T) {
 	t.Parallel()
 

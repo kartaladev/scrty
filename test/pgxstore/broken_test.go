@@ -248,6 +248,18 @@ var brokenVariants = []storefix.BrokenVariant{
 		FailsCase: "a supersession requiring an unpresented successor that waited on its presentation is refused",
 		FailsWith: "it judged the successor before locking it",
 	},
+	{
+		Name: "session-mark-presented-reads-supersession-before-locking",
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+				return readThenMark{Store: newSessionStore(t, pool, c, opts...), pool: pool}
+			})
+			t.Run("pgx", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
+		},
+		FailsCase: "a first presentation that waited on its session's supersession is refused",
+		FailsWith: "it judged the session before locking it",
+	},
 	lockOrderVariant("session-supersede-locks-the-successor-first", false),
 	lockOrderVariant("session-supersede-locks-in-statement-order", true),
 }
@@ -457,4 +469,29 @@ func (s lockOutOfOrder) Supersede(ctx context.Context, op session.Supersession) 
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// readThenMark records a first presentation by reading whether the session is
+// superseded first, without a lock, and then running the update without the
+// supersession condition: a supersession that commits while the mark waits
+// for the session's row goes unnoticed, and the superseded session is marked.
+type readThenMark struct {
+	session.Store
+	pool *pgxpool.Pool
+}
+
+func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
+	digest := sha256.Sum256([]byte(sessionID))
+	var superseded bool
+	if err := s.pool.QueryRow(ctx, `SELECT superseded_at IS NOT NULL FROM sessions WHERE id_digest = $1`,
+		digest[:]).Scan(&superseded); err != nil {
+		return err
+	}
+	if superseded {
+		return session.ErrSessionSuperseded
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL`,
+		digest[:], at)
+	return err
 }

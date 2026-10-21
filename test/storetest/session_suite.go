@@ -1684,6 +1684,23 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			name: "marking a superseded session's first presentation returns the superseded-session error and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Minute)
+				successor := rotate(ctx, t, s, old, "sess-b", nil, at)
+
+				err := s.MarkPresented(ctx, old.ID, at.Add(time.Second))
+
+				require.ErrorIs(t, err, session.ErrSessionSuperseded)
+				got, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assert.True(t, got.FirstPresentedAt.IsZero(), "a superseded session was marked presented")
+				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, at, at.Add(30*time.Second)), successor)
+			},
+		},
+		{
 			name: "family and supersession values round-trip at microsecond precision",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))

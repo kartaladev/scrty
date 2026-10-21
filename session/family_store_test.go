@@ -112,6 +112,20 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 			},
 		},
 		{
+			name: "mark presented of a superseded session returns the inner store's sentinel bare",
+			assert: func(t *testing.T, ctx context.Context, sealing session.Store, inner *session.MemoryStore) {
+				require.NoError(t, sealing.Create(ctx, familyOf("old", family)))
+				require.NoError(t, sealing.Supersede(ctx, firstRotation("old", familyOf("new", family))))
+
+				err := sealing.MarkPresented(ctx, "old", createdAt)
+
+				require.Equal(t, session.ErrSessionSuperseded, err) //nolint:errorlint // the sentinel bare, as a store returns it
+				stored, err := inner.Load(ctx, "old")
+				require.NoError(t, err)
+				assert.True(t, stored.FirstPresentedAt.IsZero(), "a superseded session was marked presented")
+			},
+		},
+		{
 			name: "delete family reaches the inner store and reports its count",
 			assert: func(t *testing.T, ctx context.Context, sealing session.Store, inner *session.MemoryStore) {
 				require.NoError(t, sealing.Create(ctx, familyOf("a", family)))

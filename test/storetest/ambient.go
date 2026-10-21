@@ -836,3 +836,88 @@ type descendingIDs struct{ issued atomic.Uint64 }
 func (g *descendingIDs) NewID() (id.ID, error) {
 	return id.Parse(fmt.Sprintf("7fffffff-ffff-7fff-bfff-%012x", 0xffffffffffff-g.issued.Add(1)))
 }
+
+// waitingPresentation counts the backends of the harness's database, other
+// than the one asking, that are waiting on a lock while recording a first
+// presentation: the mark RunSessionPresentationRace holds back.
+const waitingPresentation = `SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database() AND pid <> pg_backend_pid()
+  AND wait_event_type = 'Lock' AND query ILIKE '%set first_presented_at%'`
+
+// RunSessionPresentationRace holds a durable session store to refusing the
+// first-presentation mark of a session that a supersession supersedes while
+// the mark waits for it.
+//
+// It creates a family member O and rotates it once, committed, into an
+// unpresented successor S1. Inside a transaction attached with h.Begin it
+// then supersedes O again observing S1, with
+// Supersession.RequireUnpresentedSuccessor set, as a recovery of O does, and
+// leaves the transaction open: S1 is superseded there, not yet committed.
+// From another goroutine, through a store h.NewReplica returns, it records
+// S1's first presentation. Once that mark is waiting on a lock it commits the
+// transaction, and requires the mark to be refused with
+// session.ErrSessionSuperseded, with S1's first presentation still unset.
+//
+// A store that judges whether S1 is superseded before it takes the row lock
+// reads the committed, unsuperseded state, waits, and then records a
+// presentation on a session that was superseded while it waited: the
+// recovery's new successor and S1 are both live.
+//
+// It detects the waiting mark through h.Raw, from PostgreSQL's
+// pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
+// every missing input, when h is missing one.
+func RunSessionPresentationRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	h.Require(t)
+	requirePool(t, h.PoolSize, 2)
+
+	t.Run("a first presentation that waited on its session's supersession is refused", func(t *testing.T) {
+		s := h.New(t)
+		presenter := h.NewReplica(t)
+		name := "presentation-race-2402"
+		old := familySession(name, identity.UserID(name+"-user"), suiteID(2402))
+		require.NoError(t, s.Create(t.Context(), old))
+		first := successorOf(old, name+"-first", suiteStart)
+		require.NoError(t, s.Supersede(t.Context(), session.Supersession{
+			Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+			Successor: first, Now: suiteStart,
+		}))
+
+		// The recovery: S1 superseded, not yet committed.
+		later := suiteStart.Add(time.Hour)
+		recovering, commitRecovery, rollbackRecovery := h.Begin(t)
+		t.Cleanup(func() { _ = rollbackRecovery() })
+		require.NoError(t, s.Supersede(recovering, session.Supersession{
+			Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), RequireUnpresentedSuccessor: true,
+			AcceptUntil: later.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+			Successor: successorOf(old, name+"-late", later), Now: later,
+		}))
+
+		ctx, cancel := context.WithTimeout(t.Context(), revocationWait)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() { done <- presenter.MarkPresented(ctx, first.ID, later.Add(time.Second)) }()
+
+		awaitWaiting(t, h.Raw, waitingPresentation, done,
+			"the first-presentation mark returned while its session's supersession was uncommitted: "+
+				"it did not wait for the session's row",
+			"no first-presentation mark waited on the uncommitted supersession of its session")
+		require.NoError(t, commitRecovery(), "the supersession did not commit")
+
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(revocationWait):
+			t.Fatal("the mark did not return after the supersession it waited on committed")
+		}
+		require.ErrorIs(t, err, session.ErrSessionSuperseded,
+			"the mark went ahead on a session superseded while it waited: it judged the session before locking it")
+
+		got, err := s.Load(t.Context(), first.ID)
+		require.NoError(t, err)
+		assert.False(t, got.SupersededAt.IsZero(), "the supersession did not supersede the successor it observed")
+		assert.True(t, got.FirstPresentedAt.IsZero(),
+			"the refused mark recorded a first presentation: %v", got.FirstPresentedAt)
+	})
+}
