@@ -37,7 +37,8 @@ type EndSessionBuilder interface {
 }
 
 // logout ends the sign-in the request was authenticated with: every session of
-// the authenticating session's family, or that one session when it has none.
+// the authenticating session's family. A session with no family is refused:
+// nothing is deleted and the caller gets a 500.
 type logout struct {
 	sessions *session.Manager
 
@@ -125,7 +126,10 @@ func (l *logout) Intercept(ex *Exchange, next Next) error {
 // live. Every stored session belongs to a family; one with none is refused by
 // the manager rather than deleted alone. Nothing left to end is not an error.
 func (l *logout) end(ctx context.Context, s *session.Session) error {
-	_, err := l.sessions.RevokeFamily(ctx, s.FamilyID)
+	// Detached so a client hanging up cannot leave the family live;
+	// WithoutCancel keeps the context's values, so a consumer's transaction is
+	// still joined.
+	_, err := l.sessions.RevokeFamily(context.WithoutCancel(ctx), s.FamilyID)
 	if err != nil && !errors.Is(err, session.ErrSessionNotFound) {
 		return err
 	}

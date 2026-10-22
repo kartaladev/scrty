@@ -316,7 +316,10 @@ func (m *Manager) judge(ctx context.Context, s *Session, now time.Time, p purpos
 // request is still refused and the failure is not hidden; the observer is not
 // called then, since it is told about a revoked family.
 func (m *Manager) reuse(ctx context.Context, s *Session, now time.Time) error {
-	if _, err := m.store.DeleteFamily(ctx, s.FamilyID); err != nil {
+	// Detached so a client hanging up cannot abort the revocation;
+	// WithoutCancel keeps the context's values, so a consumer's transaction is
+	// still joined.
+	if _, err := m.store.DeleteFamily(context.WithoutCancel(ctx), s.FamilyID); err != nil {
 		m.logger.LogAttrs(ctx, slog.LevelError,
 			"session: a superseded session was presented after its window; its family could not be revoked",
 			append(diag.Failure("delete_family", err), slog.String("family", s.FamilyID.String()))...)
