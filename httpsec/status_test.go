@@ -95,6 +95,11 @@ func TestStatusForError(t *testing.T) {
 			want: 422,
 		},
 		{name: "password history unavailable is a dependency failure", err: password.ErrHistoryUnavailable, want: 500},
+		{
+			name: "password history unavailable wrapping a database error is a dependency failure",
+			err:  fmt.Errorf("%w: %w", password.ErrHistoryUnavailable, errors.New("db down")),
+			want: 500,
+		},
 		{name: "account locked", err: policy.ErrAccountLocked, want: 429},
 		{name: "account held", err: policy.ErrAccountHeld, want: 429},
 		{

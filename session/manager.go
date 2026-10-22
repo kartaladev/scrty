@@ -448,6 +448,10 @@ func (m *Manager) markPresented(ctx context.Context, s *Session, now time.Time) 
 // session is not undone. s is updated in memory only once the store has
 // accepted the write.
 //
+// Recording activity persists only the last-access time and the idle
+// deadline. A change to any other field of s, such as its Data, is persisted
+// by Save, never by Touch.
+//
 // With WithTouchInterval set, a Touch that finds the last recorded activity
 // younger than the interval writes nothing and leaves s as it is. The default
 // interval is 0: every Touch writes. A session that has been superseded
@@ -662,11 +666,14 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 //
 // Rotate never extends the session: the absolute deadline is carried over
 // whatever WithMaxFamilyLifetime allows, because a privilege change must not
-// lengthen it. The successor stays in s's family, and none of s's
-// supersession or presentation state is carried over: the successor is
-// recorded as presented at the rotation (FirstPresentedAt), since it goes
-// straight to the caller using it, so WithUnusedSuccessorRecovery can never
-// renew the old identifier into a second successor.
+// lengthen it. The successor's deadlines, absolute and idle, are those of the
+// session it is given, because the caller may have restored them (see
+// RestoreEnrolmentDeadlines); only the family fields come from storage. The
+// successor stays in s's family, and none of s's supersession or presentation
+// state is carried over: the successor is recorded as presented at the
+// rotation (FirstPresentedAt), since it goes straight to the caller using it,
+// so WithUnusedSuccessorRecovery can never renew the old identifier into a
+// second successor.
 //
 // A session superseded by RotateWithGrace is refused. Inside its window the
 // refusal is ErrSessionRenewalConflict and nothing is written, so the client

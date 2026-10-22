@@ -35,13 +35,6 @@ const (
 	defaultRenewalWindow = 10 * time.Minute
 )
 
-// orderSessionRenewal is the renewal endpoint's slot: inside bearer
-// authentication, which resolves the session it renews, and inside every gate
-// that confines a session (recovery, enrolment, second factor, password
-// change), so a confined session is refused by its gate before it can renew
-// its way out; and outside logout and the session-touch step.
-const orderSessionRenewal = OrderPasskeys + 15
-
 // SessionRenewalDeps are the collaborators the renewal endpoint is wired to.
 //
 // Users is required, and Sessions is optional. Tokens is required in the signed-token
@@ -246,7 +239,16 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 
 	s, err := r.sessions.LoadForRenewal(ex.Context(), ex.renewal)
 	if err != nil {
-		return nil, renewalRefusal(err)
+		refusal := renewalRefusal(err)
+
+		// A late credential the load refuses as expired, not found or reused is
+		// a failed guess like a refused reference at the bearer, and is counted
+		// against its source. A lost race or a store fault is not.
+		if ex.chargeRenewal != nil && errors.Is(refusal, ErrAuthenticationRequired) {
+			ex.chargeRenewal(ex.Context())
+		}
+
+		return nil, refusal
 	}
 
 	return s, nil
@@ -500,7 +502,7 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 			r.engine = ch.engine
 			r.logger = c.logger
 		})
-		c.register(r, orderSessionRenewal)
+		c.register(r, OrderSessionRenewal)
 
 		return nil
 	}

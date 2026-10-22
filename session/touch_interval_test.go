@@ -117,6 +117,31 @@ func TestTouch_Interval(t *testing.T) {
 	}
 }
 
+// The default has no interval: every activity is written, so two touches ten
+// seconds apart leave the stored deadline at the second one's. This runs on the
+// memory store rather than the mock table above, because it asserts what the
+// store holds afterwards.
+func TestTouch_DefaultWritesOnEveryActivity(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(createdAt)
+	m, _ := managerOnClock(t, clk)
+
+	s, err := m.Create(t.Context(), testUser)
+	require.NoError(t, err)
+
+	clk.Advance(20 * time.Minute)
+	require.NoError(t, m.Touch(t.Context(), s))
+	clk.Advance(10 * time.Second)
+	require.NoError(t, m.Touch(t.Context(), s))
+
+	stored, err := m.Load(t.Context(), s.ID)
+	require.NoError(t, err)
+	assert.Equal(t, createdAt.Add(20*time.Minute+10*time.Second+30*time.Minute), stored.IdleExpiresAt,
+		"the second touch was not written")
+	assert.Equal(t, createdAt.Add(20*time.Minute+10*time.Second), stored.LastAccessedAt)
+}
+
 // Skipping a write only ever brings expiry earlier: the stored deadline is
 // the one from the last write, never a later one.
 func TestTouch_SkippedWritesOnlyBringExpiryEarlier(t *testing.T) {

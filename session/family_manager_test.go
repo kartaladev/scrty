@@ -57,18 +57,24 @@ func TestRevokeFamily(t *testing.T) {
 	m, _ := managerOnClock(t, clk)
 	ctx := t.Context()
 
+	// The family holds a superseded session, still loadable inside its grace
+	// window, and its live successor.
 	one, err := m.Create(ctx, testUser)
 	require.NoError(t, err)
-	oneRotated, err := m.Rotate(ctx, one)
+	oneRenewed, _, err := m.RotateWithGrace(ctx, one, 30*time.Second)
 	require.NoError(t, err)
+	_, err = m.Load(ctx, one.ID)
+	require.NoError(t, err, "the superseded session should load inside its window")
 	other, err := m.Create(ctx, testUser)
 	require.NoError(t, err)
 
 	n, err := m.RevokeFamily(ctx, one.FamilyID)
 
 	require.NoError(t, err)
-	assert.Equal(t, 1, n, "the rotated session is the only one left in the family")
-	_, err = m.Load(ctx, oneRotated.ID)
+	assert.Equal(t, 2, n, "the superseded session and its successor are the family")
+	_, err = m.Load(ctx, one.ID)
+	require.ErrorIs(t, err, session.ErrSessionNotFound, "the superseded session survived its family's revocation")
+	_, err = m.Load(ctx, oneRenewed.ID)
 	require.ErrorIs(t, err, session.ErrSessionNotFound)
 	_, err = m.Load(ctx, other.ID)
 	require.NoError(t, err, "revoking one family took another family of the same user")

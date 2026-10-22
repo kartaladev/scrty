@@ -54,6 +54,16 @@ func TestLogout_EndsTheSignInWhenTheClientHangsUp(t *testing.T) {
 	s, err := signIn.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
 	require.NoError(t, err)
 
+	// The sign-in has been renewed: O is superseded by S1, and the client
+	// presents the successor. Ending the sign-in ends every member.
+	renewable, err := signIn.LoadForRenewal(t.Context(), s.ID)
+	require.NoError(t, err)
+	successor, _, err := signIn.RotateWithGrace(t.Context(), renewable, 30*time.Second)
+	require.NoError(t, err)
+	require.NotEqual(t, s.ID, successor.ID)
+	_, err = held.Load(t.Context(), successor.ID)
+	require.NoError(t, err, "the successor is live before the logout")
+
 	ctx, hangUp := context.WithCancel(t.Context())
 	defer hangUp()
 
@@ -73,12 +83,14 @@ func TestLogout_EndsTheSignInWhenTheClientHangsUp(t *testing.T) {
 	require.NoError(t, err)
 
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, httpsec.DefaultLogoutPath, nil)
-	req.Header.Set("Authorization", "Bearer "+s.ID)
+	req.Header.Set("Authorization", "Bearer "+successor.ID)
 	rec := httptest.NewRecorder()
 	run := chain.Assemble(func(*httpsec.Exchange) error { return nil })
 	_ = run(httpsec.NewExchange(ctx, httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(rec)))
 
 	require.NoError(t, seen, "the revocation ran on the request's cancelled context, and a context-honouring store aborted it")
-	_, err = held.Load(t.Context(), s.ID)
-	assert.ErrorIs(t, err, session.ErrSessionNotFound, "the session the client logged out of is still live")
+	for name, sessionID := range map[string]string{"the superseded original": s.ID, "the successor": successor.ID} {
+		_, err = held.Load(t.Context(), sessionID)
+		assert.ErrorIs(t, err, session.ErrSessionNotFound, "%s of the renewed sign-in is still live", name)
+	}
 }

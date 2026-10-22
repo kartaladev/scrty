@@ -259,6 +259,12 @@ func (c *config) useSessions(m *session.Manager) {
 // whatever the order of the options; the built-ins keep using the manager they
 // were given.
 //
+// With a built-in bearer (EnableBearerToken or EnableSessionBearer), the
+// explicit manager must be that bearer's: New refuses any other with a
+// configuration error, in either option order, because activity and rotation
+// written through a manager the bearer does not read would end sessions in use.
+// A chain with no built-in bearer is not checked.
+//
 // A nil manager is refused with a configuration error, since it would read as
 // "activity is recorded" while nothing was.
 //
@@ -324,6 +330,27 @@ func (c *config) validate() error {
 			return err
 		}
 	}
+
+	return c.checkExplicitSessions()
+}
+
+// checkExplicitSessions refuses an explicit session manager other than the one
+// a built-in bearer loads sessions from. Activity would otherwise be recorded
+// where the bearer never reads, so sessions in use would idle-expire, and a
+// second factor would rotate a session the bearer cannot find. With no
+// built-in bearer there is nothing to compare, which is what the option is for.
+func (c *config) checkExplicitSessions() error {
+	if !c.sessionsExplicit {
+		return nil
+	}
+
+	if bearer := bearerSessions(c); bearer != nil && bearer != c.sessions {
+		return newConfigError("WithSessionManager was given a manager other than the one " +
+			"EnableBearerToken or EnableSessionBearer resolves sessions through, so activity " +
+			"and second-factor rotation would be written where the bearer never reads; give " +
+			"both the same manager, or leave WithSessionManager out")
+	}
+
 	return nil
 }
 

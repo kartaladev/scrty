@@ -5,16 +5,21 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
@@ -310,4 +315,272 @@ func TestSessionBearerLimiterConstruction(t *testing.T) {
 		})
 	}
 
+}
+
+// errStoreDown is the store fault the late-renewal cases inject.
+var errStoreDown = errors.New("store down")
+
+// loadCountingStore counts the loads that reach the store, and can be armed to
+// fail the loads from the nth one on.
+type loadCountingStore struct {
+	session.Store
+
+	loads atomic.Int64
+
+	// failFrom, when positive, is the load number from which loads fail with
+	// failErr; loads before it reach the store.
+	failFrom atomic.Int64
+	failErr  error
+}
+
+func (s *loadCountingStore) Load(ctx context.Context, id string) (*session.Session, error) {
+	n := s.loads.Add(1)
+
+	if from := s.failFrom.Load(); from > 0 && n >= from {
+		return nil, s.failErr
+	}
+
+	return s.Store.Load(ctx, id)
+}
+
+// failEndpointLoad makes the load the renewal endpoint makes of the old
+// identifier fail with err: the bearer's load, which lets the late credential
+// through, is the first after this call, and the endpoint's is the second.
+func (s *loadCountingStore) failEndpointLoad(err error) {
+	s.failErr = err
+	s.failFrom.Store(s.loads.Load() + 2)
+}
+
+// failureRecordingLimiter is the default allowance, 100 failures a minute, that
+// also lists the keys it was charged.
+type failureRecordingLimiter struct {
+	ratelimit.Limiter
+
+	owner *lateRenewals
+}
+
+func (l *failureRecordingLimiter) RecordFailure(ctx context.Context, key string) error {
+	l.owner.mu.Lock()
+	l.owner.failures = append(l.owner.failures, key)
+	l.owner.mu.Unlock()
+
+	return l.Limiter.RecordFailure(ctx, key)
+}
+
+// lateRenewals is a session-reference chain with the renewal endpoint over a
+// manager with unused-successor recovery, and a session whose renewal window
+// has ended.
+type lateRenewals struct {
+	clk     *clockwork.FakeClock
+	store   *loadCountingStore
+	manager *session.Manager
+	chain   *httpsec.Chain
+
+	mu       sync.Mutex
+	failures []string
+}
+
+func newLateRenewals(t *testing.T) *lateRenewals {
+	t.Helper()
+
+	l := &lateRenewals{clk: clockwork.NewFakeClockAt(time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC))}
+	l.store = &loadCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(l.clk))}
+
+	var err error
+
+	l.manager, err = session.NewManager(
+		session.WithClock(l.clk),
+		session.WithStore(l.store),
+		session.WithUnusedSuccessorRecovery(),
+		session.WithIdleTimeout(7*24*time.Hour),
+		session.WithAbsoluteTimeout(30*24*time.Hour),
+	)
+	require.NoError(t, err)
+
+	inner, err := ratelimit.NewMemoryLimiter(100, time.Minute, ratelimit.WithMemoryLimiterClock(l.clk))
+	require.NoError(t, err)
+
+	limiter := &failureRecordingLimiter{Limiter: inner, owner: l}
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+
+	l.chain, err = httpsec.New(
+		httpsec.WithClock(l.clk),
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: l.manager, Users: users},
+			httpsec.WithSessionBearerLimiter(limiter)),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: users}),
+	)
+	require.NoError(t, err)
+
+	return l
+}
+
+// superseded creates a session and renews it directly through the manager, as
+// a renewal whose response was lost would have, and returns the old identifier
+// and the successor's.
+func (l *lateRenewals) superseded(t *testing.T) (string, string) {
+	t.Helper()
+
+	s, err := l.manager.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	next, _, err := l.manager.RotateWithGrace(t.Context(), s, 30*time.Second)
+	require.NoError(t, err)
+
+	return s.ID, next.ID
+}
+
+func (l *lateRenewals) renew(t *testing.T, credential string) served {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+	req.Header.Set("Authorization", "Bearer "+credential)
+	req.RemoteAddr = sessionReferenceSource + ":51000"
+
+	return serve(t, l.chain, req)
+}
+
+func (l *lateRenewals) recorded() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return append([]string(nil), l.failures...)
+}
+
+// TestSessionBearerLateRenewals pins that, under unused-successor recovery, a
+// late renewal the endpoint refuses is counted against its source like any
+// refused reference, and one it recovers is not.
+func TestSessionBearerLateRenewals(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		drive  func(t *testing.T, l *lateRenewals) []served
+		assert func(t *testing.T, l *lateRenewals, out []served)
+	}
+
+	cases := []testCase{
+		{
+			name: "refused late renewals throttle the source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+
+				// Past the window and past the session's own deadlines, with
+				// the successor never used: each renewal is refused as
+				// expired, and nothing is revoked, so the next one reaches
+				// the endpoint again.
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				var out []served
+				for range 100 {
+					out = append(out, l.renew(t, old))
+				}
+
+				l.store.loads.Store(0)
+
+				return append(out, l.renew(t, old))
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				for _, s := range out[:100] {
+					require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+				}
+
+				require.ErrorIs(t, out[100].err, httpsec.ErrAuthenticationRequired)
+				assert.Zero(t, l.store.loads.Load(), "a throttled source is refused before any store lookup")
+			},
+		},
+		{
+			name: "a refused late renewal is recorded once against its source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+
+				failures := l.recorded()
+				require.Len(t, failures, 1)
+				assert.Contains(t, failures[0], sessionReferenceSource)
+			},
+		},
+		{
+			name: "a reused late renewal is recorded against its source",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, successor := l.superseded(t)
+
+				// The successor is used and kept alive past the old
+				// session's own deadlines, then the old identifier is
+				// presented late, which is reuse.
+				next, err := l.manager.Load(t.Context(), successor)
+				require.NoError(t, err)
+
+				l.clk.Advance(6 * 24 * time.Hour)
+				require.NoError(t, l.manager.Touch(t.Context(), next))
+				l.clk.Advance(2 * 24 * time.Hour)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, session.ErrSessionReused)
+				assert.Len(t, l.recorded(), 1)
+			},
+		},
+		{
+			name: "a lost race at the endpoint's load is not recorded",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+				l.store.failEndpointLoad(session.ErrSessionRenewalConflict)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, httpsec.ErrSessionRenewalConflict)
+				assert.NotErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				assert.Empty(t, l.recorded(), "a lost race is not a failed guess")
+			},
+		},
+		{
+			name: "a store fault at the endpoint's load is not recorded",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(8 * 24 * time.Hour)
+				l.store.failEndpointLoad(errStoreDown)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.ErrorIs(t, out[0].err, errStoreDown)
+				assert.NotErrorIs(t, out[0].err, httpsec.ErrAuthenticationRequired)
+				assert.Empty(t, l.recorded(), "a store fault is not a failed guess")
+			},
+		},
+		{
+			name: "a recovered late renewal spends nothing",
+			drive: func(t *testing.T, l *lateRenewals) []served {
+				old, _ := l.superseded(t)
+				l.clk.Advance(time.Minute)
+
+				return []served{l.renew(t, old)}
+			},
+			assert: func(t *testing.T, l *lateRenewals, out []served) {
+				require.NoError(t, out[0].err)
+				assert.Empty(t, l.recorded(), "a recovered renewal is not a failed guess")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			l := newLateRenewals(t)
+			out := tc.drive(t, l)
+			tc.assert(t, l, out)
+		})
+	}
 }

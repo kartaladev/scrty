@@ -35,6 +35,8 @@ func TestRemove_EndsOtherSessionsByFamily(t *testing.T) {
 			assert: func(t *testing.T, e *manageEnv, si signIn, err error) {
 				t.Helper()
 				require.NoError(t, err)
+				assert.True(t, e.f.loads(t, si.predecessor.ID),
+					"the removing session itself must still load, beside its successor")
 				assert.True(t, e.f.loads(t, si.successor.ID),
 					"the removing sign-in's live successor must still load")
 				assert.False(t, e.f.loads(t, si.other.ID), "the user's other sign-in must end")

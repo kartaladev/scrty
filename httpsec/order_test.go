@@ -1,6 +1,8 @@
 package httpsec_test
 
 import (
+	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,6 +35,7 @@ func builtInSlots() []namedSlot {
 		{"MFAChallenge", httpsec.OrderMFAChallenge},
 		{"PasswordChange", httpsec.OrderPasswordChange},
 		{"Passkeys", httpsec.OrderPasskeys},
+		{"SessionRenewal", httpsec.OrderSessionRenewal},
 		{"Logout", httpsec.OrderLogout},
 		{"SessionTouch", httpsec.OrderSessionTouch},
 		{"Authorizer", httpsec.OrderAuthorizer},
@@ -100,6 +103,12 @@ func TestOrder(t *testing.T) {
 		assert.Greater(t, httpsec.OrderPasskeys, httpsec.OrderMFAChallenge)
 		assert.Less(t, httpsec.OrderPasskeys, httpsec.OrderLogout)
 
+		// The renewal endpoint sits between the passkey endpoints and logout:
+		// inside every gate and bearer authentication, outside logout.
+		assert.Less(t, httpsec.OrderPasskeys, httpsec.OrderSessionRenewal)
+		assert.Less(t, httpsec.OrderSessionRenewal, httpsec.OrderLogout)
+		assert.Greater(t, httpsec.OrderSessionRenewal, httpsec.OrderPasswordChange)
+
 		// "The refusal SHALL come before the password-change gate, the
 		// enrolment gate, the MFA challenge gate": the recovery gate runs
 		// after bearer authentication has resolved the session and
@@ -120,6 +129,61 @@ func TestOrder(t *testing.T) {
 				"%s must run outside the authorization stage", s.name)
 		}
 	})
+}
+
+// TestOrderSessionRenewal_Placement pins where a consumer interceptor lands
+// relative to the renewal endpoint: one registered before its slot runs for a
+// renewal request, and one registered after it never does, because the
+// endpoint answers the request first.
+func TestOrderSessionRenewal_Placement(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		slot   httpsec.Order
+		assert func(t *testing.T, ran bool, out served)
+	}
+
+	cases := []testCase{
+		{
+			name: "an interceptor before the renewal slot runs for a renewal request",
+			slot: httpsec.Before(httpsec.OrderSessionRenewal),
+			assert: func(t *testing.T, ran bool, out served) {
+				require.NoError(t, out.err)
+				assert.True(t, ran, "the interceptor outside the renewal slot ran")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+		{
+			name: "an interceptor after the renewal slot does not run, the endpoint answered first",
+			slot: httpsec.After(httpsec.OrderSessionRenewal),
+			assert: func(t *testing.T, ran bool, out served) {
+				require.NoError(t, out.err)
+				assert.False(t, ran, "the interceptor inside the renewal slot ran")
+				assert.Equal(t, http.StatusOK, out.rec.Code)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var ran atomic.Bool
+
+			probe := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+				ran.Store(true)
+				return next(ex)
+			})
+
+			f := newRenewalFixture(t, renewalSetup{
+				interceptors: []httpsec.Option{httpsec.RegisterInterceptor(probe, tc.slot)},
+			})
+
+			out := f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
+			tc.assert(t, ran.Load(), out)
+		})
+	}
 }
 
 func TestBeforeAndAfter(t *testing.T) {

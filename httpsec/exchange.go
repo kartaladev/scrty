@@ -125,6 +125,12 @@ type Exchange struct {
 	// it; it authenticates nothing.
 	renewal string
 
+	// chargeRenewal records a failure against the source the bearer resolved
+	// for a late renewal, and is set with renewal by the session-reference
+	// bearer alone. The signed-token bearer has no source guard, so it leaves
+	// it nil and nothing is charged.
+	chargeRenewal func(ctx context.Context)
+
 	ctx context.Context
 }
 

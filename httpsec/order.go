@@ -69,11 +69,24 @@ const (
 	// EnablePasskeys.
 	OrderPasskeys Order = 660
 
+	// OrderSessionRenewal is the session renewal endpoint. It is inside bearer
+	// authentication, which resolves the session it renews, and inside every
+	// gate that confines a session (recovery, enrolment, second factor,
+	// password change), so a confined session is refused by its gate before it
+	// can renew its way out. It is outside logout and the session-touch step.
+	// See EnableSessionRenewal.
+	OrderSessionRenewal Order = 675
+
 	// OrderLogout ends the session.
 	OrderLogout Order = 700
 
 	// OrderSessionTouch records activity, and runs after the handler has
 	// returned so a refused request is recorded too.
+	//
+	// Recording activity persists only the session's last-access time and idle
+	// deadline. A handler that changes any other field of the session, such as
+	// its Data, must persist it with Manager.Save (or the store's Save): this
+	// step never saves it.
 	OrderSessionTouch Order = 800
 
 	// OrderAuthorizer is the authorization stage, innermost of the built-ins

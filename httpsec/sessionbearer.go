@@ -1,6 +1,7 @@
 package httpsec
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -154,6 +155,14 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 		}
 
 		return err
+	}
+
+	if ex.renewal != "" {
+		// A late credential let through to the renewal endpoint is judged
+		// there, after the bearer has gone by, so the endpoint is left the
+		// means to charge the source this request came from when it refuses
+		// the credential.
+		ex.chargeRenewal = func(ctx context.Context) { recordSourceFailure(ctx, b.guard, src) }
 	}
 
 	return next(ex)

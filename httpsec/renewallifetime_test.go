@@ -52,11 +52,15 @@ func TestSessionRenewal_Lifetime(t *testing.T) {
 
 	cases := []testCase{
 		{
+			// Signed in at 09:00 with a 12 hour lifetime, renewed at 15:00: the
+			// successor keeps the 21:00 deadline, not 15:00 plus twelve hours.
 			name:     "no function carries the deadline over",
-			advances: []time.Duration{time.Hour},
+			advances: []time.Duration{6 * time.Hour},
 			assert: func(t *testing.T, f *lifetimeFixture, out served) {
 				require.NoError(t, out.err)
 				require.Len(t, f.results, 1)
+				assert.Equal(t, time.Date(2026, 10, 21, 15, 0, 0, 0, time.UTC), f.clk.Now(),
+					"the renewal happened at 15:00")
 				assert.Equal(t, time.Date(2026, 10, 21, 21, 0, 0, 0, time.UTC),
 					f.results[0].Session.AbsoluteExpiresAt)
 			},

@@ -205,6 +205,10 @@ type Store interface {
 	// survives it: a whole-record save in its place would write back the
 	// copy this request loaded. In SQL it is one conditional UPDATE of those
 	// two columns.
+	//
+	// Recording activity persists only the last-access time and the idle
+	// deadline. A change to any other field is persisted by Save, never by
+	// this write.
 	RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error
 
 	// Supersede performs op as one atomic operation. Three rules refuse it with
@@ -324,9 +328,11 @@ type Store interface {
 
 	// DeleteByUserExcept removes every session of this user except the one with
 	// identifier keep and, when keep belongs to a family, that family's current
-	// session (the member with no SupersededAt), expired ones included, in one
-	// atomic operation, and reports how many it removed. Every other member of
-	// keep's family goes, superseded ones included, so a keep inside its
+	// session (the member with no SupersededAt), expired ones included, and
+	// reports how many it removed. Each pass decides what it keeps and deletes
+	// atomically, and a durable store repeats it until a pass removes nothing,
+	// so a successor a racing supersession inserts is judged by this rule
+	// too. Every other member of keep's family goes, superseded ones included, so a keep inside its
 	// renewal window keeps its live successor and a keep that is the current
 	// session ends its predecessors. A supersession racing the call must either
 	// be judged by this rule or written after it: a store that reads the
