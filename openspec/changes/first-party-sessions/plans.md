@@ -1029,3 +1029,158 @@ Design findings 5, 9 and 10.
 
 - [ ] Dispatch a fresh Opus reviewer that edits nothing, over the group's commits, against every requirement named in Tasks 10.1–10.8 and the design section "Pull request review, second round (2026-10-22)". Findings go back to a fresh dispatch of the owning lane.
 - [ ] Run `make check` on go1.27.3 or later and `openspec validate first-party-sessions --strict`. Keep both outputs; push the branch to update the pull request.
+
+---
+
+## Group 11: Verification follow-up
+
+Design: "Verification (2026-10-22)" and decision 13, "Whose deadlines it carries". No spec delta changes: every task adds the assertion an existing scenario already states, corrects text, or (11.2) meets the settled requirement "Interceptors run in slot order around the handler", which says built-in slots are published.
+
+**Red step for a characterisation test.** Most of these tests pin behaviour that already exists, so they pass on arrival. For each, break the pinned behaviour temporarily in the production code (comment out the line, invert the condition, drop the field), run the focused test, record the failure line, and restore the code by editing it back, never with a git command that discards work. A test that keeps passing with the behaviour broken does not pin it: rewrite it.
+
+**Lanes** (file ownership; the lanes run in parallel, and no two own the same file):
+
+| Lane | Tasks | Owns |
+|---|---|---|
+| G, godoc | 11.1 | `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go` (the `Supersede` godoc only), `gorm/models.go` (comment only) |
+| H, httpsec | 11.2, 11.3 | `httpsec/order.go`, `httpsec/renewal.go`, `httpsec/order_test.go`, `httpsec/logout_cancel_test.go`, `httpsec/passkeylogin_test.go`, `httpsec/renewallifetime_test.go`, `httpsec/status_test.go`, `httpsec/mfabegin_test.go` |
+| A, adapters | 11.4 | new `ginsec/session_test.go`, new `fibersec/session_test.go` (and the adapters' existing fixtures, if a helper is needed) |
+| S, session | 11.5 | `session/family_manager_test.go`, `session/delete_test.go`, `session/touch_interval_test.go`, `session/touch_test.go`, new `session/rotate_deadlines_test.go`, `session/manager.go` (the `Rotate` godoc only), `passkey/manage_other_sessions_test.go` |
+| T, test module | 11.6 | `test/migrate_securitystate_test.go`, `test/storetest/session_suite.go`, `test/storetest/memory_test.go`; the session-families migration for a temporary red-step break only |
+
+---
+
+### Task 11.1: Stale store godoc (lane G)
+
+- [ ] **Step 1:** in the `Supersede` godoc of each SQL store, replace "A zero op.RetainUntil adds no deadline: a record that had none keeps none, and is judged by its own deadlines." with what happens: a zero `op.RetainUntil` is refused with the other invalid supersessions whenever `op.AcceptUntil` is set (`storekit.CheckSupersession`), and a stored row with no retention deadline (one written before the column) is judged by its own deadlines. In `gorm/models.go`, replace the `FamilyID` sentence about "a session written with no family" with: every store refuses a session with no family, and the migration's default gives a row written by older code a family of its own.
+- [ ] **Step 2:** `go doc -u ./sqlstore sessionStore.Supersede`, the same in `pgx` and `gorm` (run in their modules; the type is unexported), show the new text; `golangci-lint run ./...` is clean in the core, `pgx` and `gorm` modules.
+- [ ] **Step 3: commit** `docs(stores): say what a zero retention deadline does`.
+
+---
+
+### Task 11.2: The renewal endpoint's slot is named (lane H)
+
+**Interfaces:** Produces `httpsec.OrderSessionRenewal Order = 675`, declared in `order.go` beside `OrderPasskeys` (660) and `OrderLogout` (700), replacing the unexported `orderSessionRenewal` in `renewal.go`. Its godoc carries the reasons the unexported one did: inside bearer authentication and every confining gate, outside logout and the session-touch step.
+
+- [ ] **Step 1 (red):** add `OrderSessionRenewal` to `builtInSlots()` in `order_test.go` (so `TestOrder`'s distinct-slot and free-neighbour cases cover it), and a `TestOrder` case "the renewal slot sits between the passkey endpoints and logout": `OrderPasskeys < OrderSessionRenewal < OrderLogout`. Add the constant first at a wrong value, `OrderLogout + 50`, and see the case fail on that ordering assertion.
+- [ ] **Step 2 (red):** a test in `order_test.go` (or the renewal tests' fixture) registering a consumer interceptor at `Before(OrderSessionRenewal)` and one at `After(OrderSessionRenewal)` on a chain with `EnableSessionRenewal`: a renewal request passes through the first and is answered before reaching the second. With the constant still at the wrong value, see it fail.
+- [ ] **Step 3 (green):** set the constant to 675 with its godoc, use it in `renewal.go`, delete `orderSessionRenewal`. `go test -count=1 -run 'TestOrder|TestSessionRenewal' ./httpsec/` passes.
+- [ ] **Step 4: commit** `feat(httpsec): name the session renewal slot`.
+
+---
+
+### Task 11.3: httpsec scenarios asserted in full (lane H, after 11.2)
+
+Each case below is red by temporarily breaking what it pins.
+
+- [ ] **Step 1:** `TestLogout_EndsTheSignInWhenTheClientHangsUp`: seed the held store with a renewed family, O superseded by S1 through `RotateWithGrace`; after the hung-up logout, both O and S1 fail to load. Break: revoke only the presented session.
+- [ ] **Step 2:** `refusedAsFailed` in `passkeylogin_test.go`: the error text contains neither the credential ID nor the challenge, and the bad-signature and unknown-credential cases have identical `Error()` text. Break: wrap the refusal with the credential ID.
+- [ ] **Step 3:** `renewallifetime_test.go` "default carries over": sign in at 09:00 with a 12-hour lifetime, renew at 15:00, successor's absolute deadline 21:00. Break: give the successor `now + lifetime`.
+- [ ] **Step 4:** `status_test.go`: a row for `fmt.Errorf("%w: %w", password.ErrHistoryUnavailable, errors.New("db down"))` expecting 500. Break: add a temporary 4xx row for `ErrHistoryUnavailable`.
+- [ ] **Step 5:** `mfabegin_test.go` at the spent-challenge case: `httpsec.StatusForError(err) == http.StatusUnauthorized`. Break: map `mfa.ErrInvalidCode` elsewhere temporarily.
+- [ ] **Step 6:** `go test -race -count=1 ./httpsec/...` passes. **Commit** `test(httpsec): assert the verified scenarios in full`.
+
+---
+
+### Task 11.4: Adapters run the session bearer and activity step (lane A)
+
+- [ ] **Step 1 (red):** `TestSessionReferenceBearer` in a new `ginsec/session_test.go`, through `ginsec`'s middleware over a chain built with `httpsec.EnableSessionBearer` and a memory session store: a request carrying a live session reference reaches the handler with the session published; a request with an unknown reference is answered 401. Red: remove `EnableSessionBearer` from the test's chain and see the live-reference case fail.
+- [ ] **Step 2 (red):** `TestActivityRecordedAfterTheHandler` in the same file: the session's last access is unchanged while the handler runs and advanced after the response, including when a consumer interceptor inside the bearer refuses the request. Red: drop the touch step (no session manager touch interval / no `OrderSessionTouch` step) from the fixture and see it fail.
+- [ ] **Step 3:** the same two tests in `fibersec/session_test.go`.
+- [ ] **Step 4:** `go test -race -count=1 ./...` in `ginsec` and `fibersec` passes. **Commit** `test(adapters): session reference and activity through gin and fiber`.
+
+---
+
+### Task 11.5: session and passkey scenarios asserted in full (lane S)
+
+- [ ] **Step 1:** `TestRevokeFamily`: build the family with `RotateWithGrace` so it holds O (superseded) and S1 (live); after `RevokeFamily` neither loads. Break: make the memory store's family delete skip superseded records.
+- [ ] **Step 2:** `TestDeletingByUserExceptOne`: two manager-level cases. Named by O, superseded by S1 inside its window: O and S1 load, an unrelated session of the user does not. Named by S1: O no longer loads, S1 does. Break: keep only the named session.
+- [ ] **Step 3:** `TestTouch_Interval` "default writes on every activity": against `session.NewMemoryStore`, touches at 09:20 and 09:20:10 with a 30-minute idle timeout and no interval leave a stored idle deadline of 09:50:10. Break: skip the second write.
+- [ ] **Step 4:** `TestManagerTouch` "an unknown session is not found": `Touch` of a session never stored returns `session.ErrSessionNotFound` (with the default interval). Break: swallow the store's not-found. If `Touch` under a non-zero interval returns nil without reading the store, record that in the report; do not change it.
+- [ ] **Step 5:** `TestRotate_CarriesTheDeadlinesOfTheSessionItIsGiven` in `session/rotate_deadlines_test.go`: store a session with absolute deadline 09:15; hand `Rotate` a copy whose absolute and idle deadlines are 21:00 (as `RestoreEnrolmentDeadlines` leaves them); the successor carries 21:00 and the stored family fields. Break: build the successor from the stored record's deadlines. Then add to the `Rotate` godoc that the successor's deadlines are the given session's, because the caller may have restored them, and only the family fields come from storage.
+- [ ] **Step 6:** `TestRemove_EndsOtherSessionsByFamily` (renewed-session case): assert O itself still loads, beside its successor. Break: delete the named session in the memory store's `DeleteByUserExcept`.
+- [ ] **Step 7:** `go test -race -count=1 ./session/... ./passkey/...` passes. **Commit** `test(session): assert the verified scenarios in full`.
+
+---
+
+### Task 11.6: Store-level coverage (lane T)
+
+- [ ] **Step 1:** in `test/migrate_securitystate_test.go`, beside the populated-table and existing-rows cases: insert a session row with the migration before session families applied, migrate up, then `Load` it through the `sqlstore` and `pgx` stores (and `gorm` if its store is reachable from that file without a new import cycle; otherwise say so): `FamilyID` equals the row's own ID, `FamilyCreatedAt` equals `CreatedAt`, `RetainUntil` is zero. Break: temporarily change the backfill in `migrate/securitystate/20261021000000_session_families.sql` (for example `family_created_at` from `created_at` to `now()`), see the read-back fail, and edit it back.
+- [ ] **Step 2:** in `sessionSuccessorPresentedCases`, "the read writes nothing": snapshot the record and its successor through `Load` before and after `SuccessorPresented`, and assert they are equal, including `FirstPresentedAt`. Break: have the memory store mark the successor presented on read.
+- [ ] **Step 3:** `TestEncryptedSessionStore` in `test/storetest/memory_test.go`: `RunSessionStoreSuite` over `session.NewEncryptedStore(session.NewMemoryStore(...), cipher)` with a test cipher that seals reversibly. Every case must pass; a failing case is a finding to report with its output, not to fix in this lane.
+- [ ] **Step 4:** `go test -race -count=1 ./...` in the `test` module passes on PostgreSQL 18 (the default), and the migration test passes on 15 with `SCRTY_TEST_POSTGRES_IMAGE=postgres:15`. **Commit** `test(stores): migration read-back, a read that writes nothing, and the encrypted store`.
+
+---
+
+### Task 11.7: Gate for group 11 (main session)
+
+- [ ] Dispatch a fresh Sonnet reviewer that edits nothing, over the group's commits, against the scenarios named in Tasks 11.2–11.6 and the design section "Verification (2026-10-22)". Findings go back to a fresh dispatch of the owning lane.
+- [ ] Run `make check` and `openspec validate first-party-sessions --strict`; keep both outputs.
+
+---
+
+## Group 12: Pull request review, third round
+
+Design: "Pull request review, third round (2026-10-22)", items 1, 2, 4, 5 and 6 (3 is kept as designed; 7 is deferred). Specs: `security-state-stores` ("Every stored session belongs to a family", "Deleting a user's sessions reaches a successor being written"), `store-conformance` (the race-suite scenarios "User-wide delete racing a supersession" and "Single-pass user-wide delete caught"), `http-security-chain` ("An explicit session manager is the bearer's", "Refused late renewals count against the source").
+
+**A claim's red step decides it.** These are review claims, not known defects. Each task's first test is written against the claim and run before any fix. If it fails for the claimed reason, the fix follows. If it passes, the claim is wrong: stop that task, keep the test as a guard, and report it, so the main session can record the withdrawal in the design and drop the matching requirement text.
+
+**Lanes:**
+
+| Lane | Tasks, in order | Owns |
+|---|---|---|
+| D, durable stores (own worktree) | 12.1, then 12.2 as a fresh dispatch | `session/memory.go`, `internal/storekit/session_tx.go`, `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `test/storetest/{session_suite.go,ambient.go,broken_*}`, the `test/{sqlstore,pgxstore,gormstore}` runners, and any test fixture that creates a session without a family start time |
+| C, chain (main tree) | 12.3, 12.4, 12.5 | `httpsec/options.go`, `httpsec/chain.go` (or wherever `New` checks configuration), `httpsec/renewal.go`, `httpsec/sessionbearer.go`, `httpsec/resolve.go`, `httpsec/order.go` (godoc only), their tests; `session/manager.go` and `session/store.go` (godoc only) |
+
+Lane D runs in its own worktree because its fixes change `session/memory.go`, which lane C's tests use. Lane C never touches lane D's files.
+
+---
+
+### Task 12.1: A stored session carries its family start time (lane D, Sonnet)
+
+**Interfaces:** Produces no new API. Refusals are plain errors (no sentinel), worded like the nil-family refusal next to them, for example `"sqlstore: create session: a session with no family start time cannot be stored"`.
+
+- [ ] **Step 1 (red):** conformance cases in `RunSessionStoreSuite`'s family group: "a session with no family start time is refused at creation" (`Create` errors; `Load` gives `session.ErrSessionNotFound`) and "a successor with no family start time is refused" (`Supersede` errors; `Load(old)` shows it not superseded; `Load(successor)` is not found). Add broken variants in `test/storetest/broken_*` that accept each. Run the memory runner and one durable runner, and see both cases fail with "expected an error".
+- [ ] **Step 2 (green):** refuse a zero `FamilyCreatedAt` beside the existing `FamilyID.IsZero()` checks: `session/memory.go` (`Create`, about line 202, and the successor check, about line 495), `sqlstore/session.go:124`, `pgx/session.go:129`, `gorm/session.go:155`, and a new case in `storekit.CheckSupersession` after the nil-family case. Give every fixture that creates a session straight through a store without a start time one (gopls references to `session.Session{` literals in tests that reach `Create`).
+- [ ] **Step 3:** `go test -race -count=1 ./session/... ./httpsec/... ./passkey/...` in the core module; in `test`, `go test -race -count=1 ./storetest/ ./sqlstore/ ./pgxstore/ ./gormstore/` on PostgreSQL 18 and again with `SCRTY_TEST_POSTGRES_IMAGE=postgres:15`. **Commit** `fix(session): a stored session carries its family start time`.
+
+---
+
+### Task 12.2: A user-wide delete reaches a successor being written (lane D, Opus, after 12.1)
+
+**Interfaces:** Produces `storetest.RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S])` in `test/storetest/ambient.go`, modelled on `RunSessionFamilyRevocationRace` (same file, about line 408): hold a supersession inside its transaction, start the delete, detect it waiting through `h.Raw` (`pg_stat_activity`), commit the supersession, then assert. The store-port signatures are unchanged.
+
+- [ ] **Step 1 (red):** `RunSessionUserDeleteRace`, one table case per operation. `u-1` holds session X and an unrelated session K; for the provider cases, X carries the provider sign-in being ended. Each case: supersede X → Y and hold the transaction; start the delete; wait until it blocks; commit; then neither X nor Y loads, and for `DeleteByUserExcept(u-1, K)` K still loads. The operations are `DeleteByUser`, `DeleteByUserExcept`, `DeleteByExternalSession` and `DeleteByUserAndExternalIssuer`. Call it from `test/{sqlstore,pgxstore,gormstore}/ambient_test.go` next to `TestSessionFamilyRevocationRace`. Run it on one durable runner and see it fail with Y still loading. A case that passes is reported, not forced.
+- [ ] **Step 2 (red, broken variant):** a broken-store variant whose user-wide deletes run their statement once is caught by the race. Once step 3 lands, this keeps the race honest.
+- [ ] **Step 3 (green):** in each of `sqlstore`, `pgx` and `gorm`, the four methods repeat their statement until a pass removes nothing and return the sum (the two that return no count just loop). Follow each store's existing `DeleteFamily` loop, and check the context between passes as that loop does. In `internal/pgschema/sessions.go`, correct the godoc that says the context bounds the family-delete loop: say both callers detach the context, so a pass is bounded only by the store.
+- [ ] **Step 4:** the session, race, lock-order and ambient suites on every store, on PostgreSQL 15 and 18. **Commit** `fix(stores): a user-wide delete reaches a successor being written`.
+
+---
+
+### Task 12.3: The explicit session manager is the bearer's (lane C, Sonnet)
+
+- [ ] **Step 1 (red):** a table test `TestWithSessionManager_MustBeTheBearers` in `httpsec/sessionmanager_test.go`. Cases: signed-token bearer with M1 plus `WithSessionManager(M2)`, both option orders; the same with `EnableSessionBearer`. Each `New` fails with an error matching the package's configuration error. Signed-token bearer with M1 plus `WithSessionManager(M1)` builds. A consumer-only chain with `WithSessionManager(M2)` and no built-in bearer builds. Run it and see the mismatch cases fail with "expected an error".
+- [ ] **Step 2 (green):** after every option has applied, where `New` already settles cross-option checks, refuse when `c.sessionsExplicit` and `bearerSessions(c)` (`httpsec/renewal.go:506`) is non-nil and different. Name both options in the message. Extend the `WithSessionManager` godoc: the default is unchanged, and with a built-in bearer the explicit manager must be that bearer's.
+- [ ] **Step 3:** `go test -race -count=1 ./httpsec/...`, plus `ginsec` and `fibersec` builds and tests. **Commit** `fix(httpsec): an explicit session manager must be the bearer's`.
+
+---
+
+### Task 12.4: Refused late renewals count against the source (lane C, Sonnet, after 12.3)
+
+- [ ] **Step 1 (red):** in `httpsec/sessionbearer_throttle_test.go`, `TestSessionBearerLateRenewals`, with `session.WithUnusedSuccessorRecovery()` and `EnableSessionRenewal`. Case "refused late renewals throttle the source": one source posts 100 late renewals of sessions whose successors were used, or that are gone, and the next late renewal from that source is refused with 401 while a mocked session store expects no further call. Case "a recovered late renewal spends nothing": a counting limiter records no failure for a late renewal that is recovered. Run it and see the first case reach the store.
+- [ ] **Step 2 (green):** when the bearer lets a late credential through (`ex.renewal` set, `httpsec/resolve.go` about line 98), it leaves the endpoint a way to charge the source the bearer already resolved (the guard and `ratelimit.Source`). The renewal endpoint calls `recordSourceFailure` when its load for renewal refuses as expired, not found or reuse, and not when it renews. In the signed-token mode there is no guard, so nothing is charged.
+- [ ] **Step 3:** `go test -race -count=1 ./httpsec/...`. **Commit** `fix(httpsec): refused late renewals count against their source`.
+
+---
+
+### Task 12.5: The activity step says what it persists (lane C, Sonnet, after 12.4)
+
+- [ ] **Step 1:** godoc on `session.Manager.Touch`, `session.Store.RecordActivity` and `httpsec.OrderSessionTouch`: recording activity persists only the last-access time and the idle deadline. A change to any other field is persisted by `Manager.Save`, and the activity step never saves it. Documentation only, so there is no red step.
+- [ ] **Step 2:** `go doc ./session Manager.Touch`, `go doc ./session Store`, `go doc ./httpsec OrderSessionTouch` show it, and `golangci-lint run ./session/... ./httpsec/...` is clean. **Commit** `docs(session): recording activity persists only activity`.
+
+---
+
+### Task 12.6: Gate for group 12 (main session)
+
+- [ ] Integrate lane D's worktree. Dispatch a fresh Opus reviewer that edits nothing, over the group's changes, against the requirements named above and the design section. Findings go back to a fresh dispatch of the owning lane.
+- [ ] Run `make check` and `openspec validate first-party-sessions --strict`, and keep both outputs.

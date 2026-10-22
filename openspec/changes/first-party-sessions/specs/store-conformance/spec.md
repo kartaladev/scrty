@@ -47,6 +47,14 @@ For stores with single-use consumption or unique inserts, a race suite SHALL rel
 - **WHEN** the session supersession race runs against a store variant that reads the old record and then updates it unconditionally
 - **THEN** the suite fails
 
+#### Scenario: User-wide delete racing a supersession
+- **WHEN** the race suite holds a supersession of one of a user's sessions inside its write, starts each user-wide delete (every session of the user, every session but an unrelated one, every session of a provider sign-in, and every session of the user through one provider), then lets the supersession commit
+- **THEN** it passes only if neither the superseded session nor its successor loads once each delete returns
+
+#### Scenario: Single-pass user-wide delete caught
+- **WHEN** that race runs against a store variant whose user-wide delete runs its statement once
+- **THEN** the suite fails
+
 ## ADDED Requirements
 
 ### Requirement: The session suite covers activity, supersession and families

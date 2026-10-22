@@ -94,7 +94,7 @@ When a session carrying the enrolment-origin marker has its second factor satisf
 The manager SHALL:
 - delete a single session;
 - delete every session of a user;
-- delete every session of a user except one named session and, when that session belongs to a family, its family's current session, in one atomic operation, returning how many were removed; a named session that belongs to another user, or does not exist, SHALL NOT stop the user's other sessions from being deleted and SHALL itself be left untouched; every other session of the named session's family, superseded ones included, SHALL be deleted;
+- delete every session of a user except one named session and, when that session belongs to a family, its family's current session, each pass deciding what it keeps and deletes atomically and the delete repeating until a pass removes nothing, returning how many were removed; a named session that belongs to another user, or does not exist, SHALL NOT stop the user's other sessions from being deleted and SHALL itself be left untouched; every other session of the named session's family, superseded ones included, SHALL be deleted;
 - count a user's unexpired sessions, excluding expired ones;
 - delete every expired session, returning how many were removed.
 

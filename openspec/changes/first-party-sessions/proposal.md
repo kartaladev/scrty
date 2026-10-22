@@ -16,7 +16,7 @@ An application that signs its own users in, with no external identity provider, 
   - An opt-in recovery treats a superseded identifier whose successor was never presented as a lost response, not as theft, and rotates it again. Detection then happens on the second presentation instead of at the window's end.
   - Supersession is a conditional, atomic store operation, so two replicas cannot both win.
   - A renewal carries the absolute deadline over by default. An option gives the successor a new lifetime, bounded by the lifetime maximum and by a family maximum counted from the sign-in that started the family. The family maximum is finite, and it is the overall reauthentication limit.
-  - The existing rotation at second-factor verification is unchanged, except that its successor stays in the family.
+  - The existing rotation at second-factor verification still carries the deadline over and ends the old identifier, and its successor stays in the family. It now keeps the old identifier for a short in-flight window, refuses a session already superseded by a renewal, and records its successor as presented.
 - **Per-session absolute lifetime.** A creation option sets one session's absolute lifetime, bounded by a manager maximum that defaults to the absolute timeout. A lifetime above the maximum is refused, never silently shortened. Login gains a way to choose the lifetime from the parsed login request.
 - **Opaque session-reference bearer.**
   - A built-in authentication mode in which the bearer value is the session identifier itself: no signed token and no signing keys.
@@ -30,7 +30,7 @@ An application that signs its own users in, with no external identity provider, 
   - An exported way to publish the resolved session, alongside the caller.
   - A helper that runs the per-request policy phase with the same challenge handling the built-ins use.
   - Together these honour the chain's promise that a consumer interceptor has everything a built-in has.
-- **Schema.** A security-state migration adds the family and supersession columns, and the sweep keeps superseded records until their family's absolute deadline.
+- **Schema.** A security-state migration adds the family and supersession columns, and the sweep keeps a superseded record until its retention deadline: the latest of its family's end, its own absolute deadline and the end of its window.
 
 ## Capabilities
 

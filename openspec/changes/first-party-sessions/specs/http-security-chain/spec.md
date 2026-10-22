@@ -267,3 +267,25 @@ The renewal endpoint SHALL, by default, count every renewal of a family and refu
 #### Scenario: Another family unaffected
 - **WHEN** one family has reached the limit and another family of the same user renews
 - **THEN** that renewal succeeds
+
+### Requirement: An explicit session manager is the bearer's
+When the chain enables a built-in bearer, a session manager given to the chain explicitly SHALL be the one that bearer resolves sessions through; any other SHALL be a configuration error, since activity, second-factor rotation and enrolment marks would be written through a manager the bearer does not load from.
+
+#### Scenario: Session manager other than the bearer's
+- **WHEN** the chain enables a built-in bearer with session manager M1 and is given session manager M2 explicitly, in either option order
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Session manager equal to the bearer's
+- **WHEN** the chain enables a built-in bearer with session manager M1 and is given M1 explicitly
+- **THEN** the chain builds
+
+### Requirement: Refused late renewals count against the source
+In the session-reference mode, a late credential let through to the renewal endpoint under unused-successor recovery, which the endpoint then refuses as expired, not found or reused, SHALL be recorded against its source as a refused reference is. One the endpoint renews SHALL NOT be recorded.
+
+#### Scenario: Refused late renewals count against the source
+- **WHEN** unused-successor recovery is on, and one source posts 100 late renewals within a minute that the endpoint refuses, and then another late renewal
+- **THEN** the 101st request is refused without a store lookup
+
+#### Scenario: A recovered late renewal spends nothing
+- **WHEN** unused-successor recovery is on, and a late renewal of a session whose successor was never used is renewed
+- **THEN** nothing is recorded against its source

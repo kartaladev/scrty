@@ -139,11 +139,19 @@ Recording activity SHALL store an idle deadline no later than the absolute deadl
 - **THEN** the stored idle deadline is 09:15
 
 ### Requirement: Every stored session belongs to a family
-Creating a session in a store, or inserting a supersession's successor, SHALL be refused with an error, and nothing SHALL be written, when the session belongs to no family (the nil family identifier).
+Creating a session in a store, or inserting a supersession's successor, SHALL be refused with an error, and nothing SHALL be written, when the session belongs to no family (the nil family identifier) or carries no family start time (the zero time).
 
 #### Scenario: Session with no family refused at creation
 - **WHEN** a session whose family is the nil identifier is created through the store
 - **THEN** the creation fails with an error and the session does not load
+
+#### Scenario: Session with no family start time refused at creation
+- **WHEN** a session with a family but a zero family start time is created through the store
+- **THEN** the creation fails with an error and the session does not load
+
+#### Scenario: Successor with no family start time refused
+- **WHEN** a supersession's successor has a family but a zero family start time
+- **THEN** the supersession fails with an error, the superseded session is unchanged, and the successor does not load
 
 ### Requirement: A supersession never lowers a retention deadline
 A supersession SHALL NOT set a superseded session's retention deadline earlier than it was, and SHALL be refused with an error, writing nothing, when the retention deadline it gives is before its window's end.
@@ -183,8 +191,23 @@ A store SHALL report, for a stored superseded session, whether its current succe
 - **WHEN** session O is superseded by S1 with a retention deadline of 21:00, S1 is presented, and the store is asked about O at 21:00 before any sweep
 - **THEN** it fails with the session-not-found error, as loading O would
 
+### Requirement: Deleting a user's sessions reaches a successor being written
+Durable session stores SHALL delete, when deleting every session of a user, every session of a user except a named one, every session of a provider sign-in, or every session of a user signed in through one provider, a successor that a supersession of one of those sessions inserts while the delete runs, so no session the delete was asked to end survives as its successor. The memory store, which runs both under one lock, already does.
+
+#### Scenario: Renewal committing during a sign-out everywhere
+- **WHEN** a supersession of `u-1`'s session X, inserting successor Y, holds its write while every session of `u-1` is deleted, and the supersession commits before the delete finishes
+- **THEN** neither X nor Y loads after the delete returns
+
+#### Scenario: Renewal committing while other sessions are ended
+- **WHEN** a supersession of `u-1`'s session X, inserting successor Y, holds its write while `u-1`'s sessions except an unrelated session K are deleted, and the supersession commits before the delete finishes
+- **THEN** neither X nor Y loads, and K still loads
+
+#### Scenario: Renewal committing during a provider sign-out
+- **WHEN** a supersession of a session X of one provider sign-in, inserting successor Y, holds its write while every session of that provider sign-in is deleted, and the supersession commits before the delete finishes
+- **THEN** neither X nor Y loads after the delete returns
+
 ### Requirement: Ending a user's other sessions keeps the presenting sign-in
-Deleting every session of a user except a named one SHALL keep the named session and, when it belongs to a family, the family's current session, the one member not superseded, and SHALL delete every other session of the user, every other member of that family included, in one atomic operation.
+Deleting every session of a user except a named one SHALL keep the named session and, when it belongs to a family, the family's current session, the one member not superseded, and SHALL delete every other session of the user, every other member of that family included. Each pass SHALL decide what it keeps and deletes atomically, so a renewal committing between a read and a delete cannot lose the successor, and the delete SHALL repeat until a pass removes nothing.
 
 #### Scenario: Named session inside its renewal window
 - **WHEN** `u-1`'s session O is superseded by S1 with a window still open, `u-1` holds an unrelated session T, and `u-1`'s sessions except O are deleted
