@@ -2,10 +2,12 @@ package httpsec
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )
@@ -206,14 +208,29 @@ func (f InterceptorFunc) Intercept(ex *Exchange, next Next) error { return f(ex,
 // s only, with no result, publishes a session no caller owns, which no
 // built-in does.
 //
+// It refuses a non-nil s that belongs to no family (FamilyID is id.Nil) and
+// publishes nothing, neither a nor s. Every stored session belongs to a
+// family, which is what reuse detection, family revocation and logout act on;
+// a session without one would escape all three, so one can only come from an
+// interceptor that built it by hand. The error has fixed text and matches no
+// sentinel, ErrAuthenticationRequired and the session errors included, so an
+// interceptor that returns it gets the 500 any unclassified error maps to. A
+// nil s is not refused: it is WithCaller and SetContext, and returns nil.
+//
 // The default is unused: the built-ins call it, and a consumer calls it from
 // an interceptor registered with RegisterInterceptor, normally at
 // OrderBearerToken, after verifying the credential that names s. It is itself
 // the consumer's extension point, so it has no override.
-func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Session) {
+func (e *Exchange) PublishSession(a *authenticate.Authentication, s *session.Session) error {
+	if s != nil && s.FamilyID == id.Nil {
+		return errors.New("httpsec: a session with no family cannot be published; every stored session belongs to one")
+	}
+
 	e.Authentication = a
 	e.Session = s
 	e.SetContext(withSession(WithCaller(e.ctx, a), s))
+
+	return nil
 }
 
 // EvaluatePerRequest runs the chain's per-request policy phase for s, the

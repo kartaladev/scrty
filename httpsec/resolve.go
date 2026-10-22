@@ -134,11 +134,13 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 
 	now := r.phase.now()
 
-	ex.PublishSession(&authenticate.Authentication{
+	if err := ex.PublishSession(&authenticate.Authentication{
 		Principal:         principal,
 		Time:              now,
 		PasswordChangedAt: details.PasswordChangedAt,
-	}, s)
+	}, s); err != nil {
+		return err
+	}
 
 	return ex.evaluatePerRequest(&r.phase, s, principal, details.PasswordChangedAt, now)
 }

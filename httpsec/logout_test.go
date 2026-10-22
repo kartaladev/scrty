@@ -111,13 +111,15 @@ func TestLogout(t *testing.T) {
 		},
 		{
 			// Every stored session belongs to a family, so one with none
-			// reaching logout is a store fault. It is refused rather than
-			// deleted alone, which would leave a renewal's successor live.
+			// reaching the chain is a store fault. It is refused where it is
+			// published, before logout runs, rather than deleted alone, which
+			// would leave a renewal's successor live.
 			name: "a session with no family is refused, and not deleted alone",
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
-				h.expectResolvedSession(touchableSession())
-				h.acceptsActivityWriteBack()
+				familyless := touchableSession()
+				familyless.FamilyID = id.Nil
+				h.expectResolvedSession(familyless)
 			},
 			request: authorizedLogout,
 			assert: func(t *testing.T, _ *httpsec.Chain, s served) {

@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -52,6 +53,7 @@ func liveSession() *session.Session {
 		IdleExpiresAt:     now.Add(30 * time.Minute),
 		AbsoluteExpiresAt: now.Add(12 * time.Hour),
 		FirstFactor:       factor.Password,
+		FamilyID:          id.ID{1},
 	}
 }
 

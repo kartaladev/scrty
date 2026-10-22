@@ -40,7 +40,9 @@
 // missing credential.
 //
 // An interceptor that authenticates on a session publishes the result and the
-// session together with Exchange.PublishSession. SessionFromContext then
+// session together with Exchange.PublishSession, and returns the error it
+// reports, which refuses a session that belongs to no family and publishes
+// nothing; the chain answers it with 500. SessionFromContext then
 // returns the session to the handler, and the session-touch step records its
 // activity after the handler, through the session manager the chain was wired
 // with: the first enabled built-in's, or the one WithSessionManager names,

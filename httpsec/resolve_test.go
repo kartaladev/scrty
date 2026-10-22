@@ -62,11 +62,13 @@ func consumerAuthenticating(f resolveFixture, evaluate bool) httpsec.Interceptor
 		details := storedUser()
 		p := identity.PrincipalFromDetails(details)
 
-		ex.PublishSession(&authenticate.Authentication{
+		if err := ex.PublishSession(&authenticate.Authentication{
 			Principal:         p,
 			Time:              f.clk.Now(),
 			PasswordChangedAt: details.PasswordChangedAt,
-		}, s)
+		}, s); err != nil {
+			return err
+		}
 
 		if evaluate {
 			if err := ex.EvaluatePerRequest(s, p); err != nil {
@@ -247,7 +249,7 @@ func TestExchangeEvaluatePerRequest_FailsClosed(t *testing.T) {
 	}
 
 	publish := func(ex *httpsec.Exchange, f resolveFixture, s *session.Session, p *identity.Principal) {
-		ex.PublishSession(&authenticate.Authentication{Principal: p, Time: f.clk.Now()}, s)
+		require.NoError(t, ex.PublishSession(&authenticate.Authentication{Principal: p, Time: f.clk.Now()}, s))
 	}
 
 	cases := []testCase{

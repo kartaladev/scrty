@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -38,6 +39,7 @@ func touchableSession() *session.Session {
 		IdleExpiresAt:     now.Add(5 * time.Minute),
 		AbsoluteExpiresAt: now.Add(11 * time.Hour),
 		FirstFactor:       factor.Password,
+		FamilyID:          id.ID{1},
 	}
 }
 
