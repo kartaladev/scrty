@@ -229,7 +229,6 @@ func (pf *PasskeyFixture) confirmedSession(t *testing.T, sessions *session.Manag
 	if satisfied {
 		s.MFA = session.MFASatisfied
 		s.MFASatisfiedAt = pf.Base.Clock.Now()
-		s.AuthenticatedAt = s.MFASatisfiedAt
 	}
 
 	require.NoError(t, sessions.Save(t.Context(), s))
@@ -521,6 +520,7 @@ func passkeyScenarios() []Scenario {
 		passkeyCloneIsSuspendedThenRemoved(),
 		passkeyRemovalEndsTheOtherSessions(),
 		passkeyRemovalKeepsTheOtherSessionsOnRequest(),
+		passkeyManagementAsksForReauthenticationOnceStale(),
 		passkeyFirstPasswordlessPasskeyWaitsForSavedCodes(),
 		passkeyRecoveryThenRegistrationReachesFullSession(),
 		passkeyEnrolmentOnlyUserRegistersWithEmailedCode(),
@@ -741,6 +741,51 @@ func passkeyRemovalKeepsTheOtherSessionsOnRequest() Scenario {
 			c.reachesRoute(removing)
 			c.reachesRoute(other)
 		})
+}
+
+// passkeyManagementAsksForReauthenticationOnceStale pins spec passkey-
+// registration: once the session's latest authentication is older than the
+// management freshness window, beginning a registration and removing a passkey
+// are both refused as needing reauthentication, and the passkey stays.
+func passkeyManagementAsksForReauthenticationOnceStale() Scenario {
+	return Scenario{
+		Name: "passkey management asks for reauthentication once the session is stale",
+		Build: func(t *testing.T) ChainSpec {
+			t.Helper()
+
+			pf, sessions := newPasskeyFixture(t, passkeyBuild{enrolTOTP: true})
+			effects := passkeyEffects(pf, sessions)
+			effects.SessionID = pf.confirmedSession(t, sessions, true).ID
+
+			return ChainSpec{Options: pf.options(t, effects, sessions, true), Effects: effects, Routes: passkeyRoutes()}
+		},
+		Steps: func(t *testing.T, spec ChainSpec, send func(RequestSpec) Result) {
+			c := newPasskeyClient(t, spec, send)
+
+			c.readRegistered(c.register(bearer(spec.Effects.SessionID)))
+
+			header := bearerToken(accessTokenOf(t, c.passwordlessLogin()))
+
+			listing := c.list(header)
+			require.Len(t, listing, 1)
+
+			// Past the default 15 minute window, and inside the session's own
+			// lifetime.
+			spec.Effects.Passkey.Base.Clock.Advance(16 * time.Minute)
+
+			begun := c.send(post(passkeyRegisterBegin, withHeader(header, "Content-Type", "application/json"), ""))
+			require.ErrorIs(t, begun.Refusal, passkey.ErrReauthenticationRequired)
+
+			removed := c.send(post(passkeyRemove, withHeader(header, "Content-Type", formHeader["Content-Type"]),
+				url.Values{"id": {listing[0].ID}}.Encode()))
+			require.ErrorIs(t, removed.Refusal, passkey.ErrReauthenticationRequired)
+
+			after := c.list(header)
+			require.Len(t, after, 1, "a refused removal changes nothing")
+			assert.Equal(t, listing[0].ID, after[0].ID)
+			assert.Equal(t, listing[0].State, after[0].State)
+		},
+	}
 }
 
 // methodNames lists the names of the methods a challenge offers.

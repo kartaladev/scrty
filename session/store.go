@@ -165,8 +165,10 @@ type Store interface {
 	// change neither its own deadlines nor its retention deadline. This holds
 	// for a previous successor superseded by a re-rotation too.
 	//
-	// AuthenticatedAt is written by Create only, as the sign-in's time: Save
-	// keeps the stored value whatever the session handed to it says.
+	// AuthenticatedAt is written by Create, as the sign-in's time, and by a
+	// supersession's successor, which carries it over or takes the refreshed
+	// value: Save keeps the stored value whatever the session handed to it
+	// says.
 	//
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
 	// whatever the session handed to it says, so no later save can set or
@@ -370,10 +372,10 @@ type Store interface {
 // matching it, or a sentinel it wraps, still does.
 //
 // A sentinel of this package that the store returned bare — ErrSessionNotFound,
-// ErrSessionExpired, ErrSessionUnreadable, ErrSessionRenewalConflict or
-// ErrSuccessorAdvanced — carries no store text and comes back as itself, so
-// nothing that matches on it changes. The sentinels are not
-// passed to diag.Wrap as kinds: a fault matches its kinds, and every other
+// ErrSessionExpired, ErrSessionUnreadable, ErrSessionRenewalConflict,
+// ErrSuccessorAdvanced or ErrSessionSuperseded — carries no store text and
+// comes back as itself, so nothing that matches on it changes. The sentinels
+// are not passed to diag.Wrap as kinds: a fault matches its kinds, and every other
 // store failure would then read as a missing or expired session.
 func storeFailed(err error, text string) error {
 	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text

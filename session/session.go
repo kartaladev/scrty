@@ -80,8 +80,9 @@ type Session struct {
 	// consumer's own reference, matched byte-for-byte and never parsed.
 	UserID identity.UserID
 
-	// CreatedAt is when the session was created, read from the manager's
-	// clock.
+	// CreatedAt is when this record was created, read from the manager's
+	// clock. A renewal writes a new record with a new CreatedAt, so it is the
+	// renewal's time there; FamilyCreatedAt holds the sign-in's time.
 	CreatedAt time.Time
 
 	// LastAccessedAt is when activity was last recorded, which Touch moves.
@@ -95,8 +96,8 @@ type Session struct {
 	// constant use still ends at the hour it was always going to end.
 	// Manager.MarkEnrolmentPending and Manager.MarkRecoveryPending lower it
 	// for a confined session, and Manager.RestoreEnrolmentDeadlines gives it
-	// back on the upgrade, to no later than CreatedAt plus the absolute
-	// timeout and no later than the deadline held before the mark.
+	// back on the upgrade, to exactly EnrolmentOriginDeadline, the deadline
+	// held before the mark.
 	AbsoluteExpiresAt time.Time
 
 	// FirstFactor is the kind of factor the login that established this
