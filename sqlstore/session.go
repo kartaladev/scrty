@@ -144,7 +144,8 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 // minted from the store's id generator, or the refusal of a session this
 // store cannot hold without altering it. Only the insert writes the marker
 // and the family, supersession and presentation columns: SessionUpdate has
-// no column for them.
+// no column for them. A session is inserted with its RetainUntil as given,
+// NULL when it is zero.
 func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, error) {
 	cols, err := sessionColumns(op, sess)
 	if err != nil {
@@ -159,12 +160,12 @@ func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, erro
 
 	return append(args, sess.MFAAtFirstFactor, sess.FamilyID, storekit.Time(sess.FamilyCreatedAt),
 		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
-		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt)), nil
+		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil)), nil
 }
 
 // Save replaces the stored session whole, except for MFAAtFirstFactor and the
-// family, supersession and presentation fields, and never inserts. A
-// superseded session also keeps both of its deadlines.
+// family, supersession (RetainUntil included) and presentation fields, and
+// never inserts. A superseded session also keeps both of its own deadlines.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	const op = "save session"
 
@@ -184,7 +185,10 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 }
 
 // Load returns the session with this identifier, judging its expiry with the
-// store's clock.
+// store's clock: a superseded session with a retention deadline is returned
+// until that deadline, whatever its own deadlines say and with them intact,
+// and any other session until either of its own deadlines. A stored session
+// past them is session.ErrSessionExpired.
 func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Session, error) {
 	const op = "load session"
 
@@ -205,13 +209,14 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		superseded    sql.NullTime
 		acceptUntil   sql.NullTime
 		presented     sql.NullTime
+		retain        sql.NullTime
 	)
 	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
 		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
 		&amr, &sess.FederatedACR, &sess.FamilyID, &familyCreated, &superseded, &acceptUntil,
-		&sess.SuccessorDigest, &presented, &authenticated)
+		&sess.SuccessorDigest, &presented, &authenticated, &retain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -219,8 +224,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, err
 	}
 
-	now := s.c.clock.Now()
-	if !now.Before(idle) || !now.Before(abs) {
+	if stale(s.c.clock.Now(), superseded.Valid, retain, idle, abs) {
 		return nil, session.ErrSessionExpired
 	}
 
@@ -240,6 +244,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	sess.AuthenticatedAt = authenticated.UTC()
 	sess.SupersededAt, sess.AcceptUntil = fromNull(superseded), fromNull(acceptUntil)
 	sess.FirstPresentedAt = fromNull(presented)
+	sess.RetainUntil = fromNull(retain)
 	sess.CreatedAt, sess.LastAccessedAt = created.UTC(), last.UTC()
 	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = idle.UTC(), abs.UTC()
 
@@ -292,7 +297,22 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 		string(user), storekit.Time(s.c.clock.Now()))
 }
 
-// DeleteExpired removes every session expired by the store's clock.
+// stale reports whether a stored session is past what Load returns at now: a
+// superseded one with a retention deadline once that deadline is not after
+// now, any other once either of its own deadlines is not. It is the condition
+// SessionDeleteExpired deletes by, judged in Go.
+func stale(now time.Time, superseded bool, retain sql.NullTime, idle, abs time.Time) bool {
+	if superseded && retain.Valid {
+		return !now.Before(retain.Time)
+	}
+
+	return !now.Before(idle) || !now.Before(abs)
+}
+
+// DeleteExpired removes every session Load would no longer return by the
+// store's clock: a superseded session once its retention deadline passes, or
+// its own deadlines when it has none, and any other once either of its own
+// deadlines passes.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := s.c.exec(ctx, "delete expired sessions", pgschema.SessionDeleteExpired, storekit.Time(s.c.clock.Now()))
 	return int(n), err
@@ -376,9 +396,11 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 // and, with op.RequireUnpresentedSuccessor, never presented. When that update
 // changes no row, the successor has moved on or is no longer stored: nothing
 // is written and the store reports session.ErrSuccessorAdvanced. Old and its
-// previous successor have each deadline raised to op.RetainUntil when it is
-// earlier, and never lowered, so the sweep removes them only once their
-// family could no longer be live. No other session of the family is read or
+// previous successor are kept for reuse detection until the later of their
+// stored retention deadline and op.RetainUntil, never lowered, so the sweep
+// removes them only once their family could no longer be live; neither has
+// its own deadlines changed. A zero op.RetainUntil adds no deadline: a record that
+// had none keeps none, and is judged by its own deadlines. No other session of the family is read or
 // written, however many renewals came before.
 //
 // Two rules refuse a supersession whatever it observed. A session in no
@@ -435,7 +457,7 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 		res, err := q.ExecContext(ctx, pgschema.SessionSupersedeOld, oldDigest,
 			storekit.OptionalDigestArg(op.ObservedSuccessor), storekit.Time(op.Now), storekit.Time(op.AcceptUntil),
-			storekit.SessionDigest(op.Successor.ID), storekit.Time(op.RetainUntil))
+			storekit.SessionDigest(op.Successor.ID), nullTs(op.RetainUntil))
 		if err != nil {
 			return failed(name, err)
 		}
@@ -452,7 +474,7 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 		if len(op.ObservedSuccessor) > 0 {
 			res, err := q.ExecContext(ctx, pgschema.SessionSupersedePrevious, op.ObservedSuccessor,
-				storekit.Time(op.Now), op.RequireUnpresentedSuccessor, storekit.Time(op.RetainUntil))
+				storekit.Time(op.Now), op.RequireUnpresentedSuccessor, nullTs(op.RetainUntil))
 			if err != nil {
 				return failed(name, err)
 			}
@@ -642,8 +664,22 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 
 var _ session.Store = (*sessionStore)(nil)
 
-// SuccessorPresented is not implemented yet: it reports false, as if the
-// successor were unused.
-func (s *sessionStore) SuccessorPresented(_ context.Context, _ string) (bool, error) {
-	return false, nil
+// SuccessorPresented reports whether the current successor of the session
+// with this identifier was used, in one read that writes nothing: true when
+// that successor is stored and was presented or has been superseded, false
+// when it is stored unused, is no longer stored, or the session has none. A
+// session that is not stored is session.ErrSessionNotFound. "Stored" is
+// judged as Load judges it, with the store's clock, for the session and its
+// successor alike, so a row past its deadlines that the sweep has not yet
+// removed is not stored. It reads through the caller's transaction when one
+// is attached.
+func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string) (bool, error) {
+	var used bool
+	err := s.c.queryRow(ctx, "read whether session successor was used", pgschema.SessionSuccessorPresented,
+		[]any{storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())}, &used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, session.ErrSessionNotFound
+	}
+
+	return used, err
 }

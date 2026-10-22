@@ -259,6 +259,17 @@ func TestSessionFamilyAmbientTx(t *testing.T) {
 	t.Run("gorm", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
 }
 
+func TestSessionSuccessorAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSuccessorAmbientTx(t, h) })
+}
+
 func TestSessionFamilyRevocationRace(t *testing.T) {
 	t.Parallel()
 

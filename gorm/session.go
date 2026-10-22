@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strconv"
@@ -137,6 +138,8 @@ func sessionRecord(op string, sess *session.Session) (sessionRow, error) {
 		AcceptUntil:      nullTs(sess.AcceptUntil),
 		SuccessorDigest:  storekit.OptionalDigest(sess.SuccessorDigest),
 		FirstPresentedAt: nullTs(sess.FirstPresentedAt),
+		// As given, NULL when zero; Save omits the column.
+		RetainUntil: nullTs(sess.RetainUntil),
 		// Written on Create only: Save omits the column.
 		AuthenticatedAt: storekit.Time(sess.AuthenticatedAt),
 	}, nil
@@ -206,14 +209,15 @@ func insertSession(q *gormdb.DB, op string, row *sessionRow) (bool, error) {
 var savedColumnsOmitted = []string{
 	"id", "id_digest", "mfa_at_first_factor",
 	"family_id", "family_created_at", "superseded_at", "accept_until", "successor_digest", "first_presented_at",
-	"authenticated_at",
+	"retain_until", "authenticated_at",
 }
 
 // Save replaces the stored session whole, and never inserts: one UPDATE of
 // every column but the keys, the marker (MFAAtFirstFactor, written on Create
-// only) and the family, supersession and presentation columns, whose zero
-// rows affected is session.ErrSessionNotFound. A superseded session keeps both
-// of its deadlines: the UPDATE writes each only while superseded_at is NULL.
+// only) and the family, supersession (retain_until included) and
+// presentation columns, whose zero rows affected is
+// session.ErrSessionNotFound. A superseded session keeps both of its own
+// deadlines: the UPDATE writes each only while superseded_at is NULL.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	const op = "save session"
 
@@ -266,7 +270,10 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 }
 
 // Load returns the session with this identifier, judging its expiry with the
-// store's clock.
+// store's clock: a superseded session with a retention deadline is returned
+// until that deadline, whatever its own deadlines say and with them intact,
+// and any other session until either of its own deadlines. A stored session
+// past them is session.ErrSessionExpired.
 func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Session, error) {
 	const op = "load session"
 
@@ -283,8 +290,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, failed(op, err)
 	}
 
-	now := s.c.clock.Now()
-	if !now.Before(row.IdleExpiresAt) || !now.Before(row.AbsoluteExpiresAt) {
+	if row.stale(s.c.clock.Now()) {
 		return nil, session.ErrSessionExpired
 	}
 
@@ -312,6 +318,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		AcceptUntil:             fromNull(row.AcceptUntil),
 		SuccessorDigest:         row.SuccessorDigest,
 		FirstPresentedAt:        fromNull(row.FirstPresentedAt),
+		RetainUntil:             fromNull(row.RetainUntil),
 		AuthenticatedAt:         row.AuthenticatedAt.UTC(),
 	}
 	if row.EnrolmentGeneration != nil {
@@ -386,10 +393,36 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 	return int(n), nil
 }
 
-// DeleteExpired removes every session expired by the store's clock.
+// stale reports whether row is past what Load returns at now: a superseded
+// row with a retention deadline once that deadline is not after now, any
+// other once either of its own deadlines is not. It is the condition
+// SessionDeleteExpired deletes by, judged in Go.
+func (row *sessionRow) stale(now time.Time) bool {
+	if row.SupersededAt != nil && row.RetainUntil != nil {
+		return !now.Before(*row.RetainUntil)
+	}
+
+	return !now.Before(row.IdleExpiresAt) || !now.Before(row.AbsoluteExpiresAt)
+}
+
+// DeleteExpired removes every session Load would no longer return by the
+// store's clock: a superseded session once its retention deadline passes, or
+// its own deadlines when it has none, and any other once either of its own
+// deadlines passes. It runs SessionDeleteExpired, the statement the other
+// drivers run.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
-	now := storekit.Time(s.c.clock.Now())
-	return deleteWhere[sessionRow](ctx, s.c, "delete expired sessions", "idle_expires_at <= ? OR absolute_expires_at <= ?", now, now)
+	const op = "delete expired sessions"
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return 0, failed(op, err)
+	}
+	res := q.Exec(pgschema.SessionDeleteExpired, storekit.Time(s.c.clock.Now()))
+	if res.Error != nil {
+		return 0, failed(op, res.Error)
+	}
+
+	return int(res.RowsAffected), nil
 }
 
 // DeleteByExternalSession removes the sessions of issuer and provider session
@@ -473,9 +506,11 @@ func stored(q *gormdb.DB, op string, digest []byte) (bool, error) {
 // and, with op.RequireUnpresentedSuccessor, never presented. When that update
 // changes no row, the successor has moved on or is no longer stored: nothing
 // is written and the store reports session.ErrSuccessorAdvanced. Old and its
-// previous successor have each deadline raised to op.RetainUntil when it is
-// earlier, and never lowered, so the sweep removes them only once their
-// family could no longer be live. No other session of the family is read or
+// previous successor are kept for reuse detection until the later of their
+// stored retention deadline and op.RetainUntil, never lowered, so the sweep
+// removes them only once their family could no longer be live; neither has
+// its own deadlines changed. A zero op.RetainUntil adds no deadline: a record that
+// had none keeps none, and is judged by its own deadlines. No other session of the family is read or
 // written, however many renewals came before.
 //
 // Two rules refuse a supersession whatever it observed. A session in no
@@ -532,7 +567,7 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 		res := q.Exec(pgschema.SessionSupersedeOld, oldDigest, storekit.OptionalDigest(op.ObservedSuccessor),
 			storekit.Time(op.Now), storekit.Time(op.AcceptUntil), storekit.SessionDigest(op.Successor.ID),
-			storekit.Time(op.RetainUntil))
+			nullTs(op.RetainUntil))
 		if res.Error != nil {
 			return failed(name, res.Error)
 		}
@@ -547,7 +582,7 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 		if len(op.ObservedSuccessor) > 0 {
 			res := q.Exec(pgschema.SessionSupersedePrevious, op.ObservedSuccessor,
-				storekit.Time(op.Now), op.RequireUnpresentedSuccessor, storekit.Time(op.RetainUntil))
+				storekit.Time(op.Now), op.RequireUnpresentedSuccessor, nullTs(op.RetainUntil))
 			if res.Error != nil {
 				return failed(name, res.Error)
 			}
@@ -747,8 +782,31 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 
 var _ session.Store = (*sessionStore)(nil)
 
-// SuccessorPresented is not implemented yet: it reports false, as if the
-// successor were unused.
-func (s *sessionStore) SuccessorPresented(_ context.Context, _ string) (bool, error) {
-	return false, nil
+// SuccessorPresented reports whether the current successor of the session
+// with this identifier was used, in one read that writes nothing: true when
+// that successor is stored and was presented or has been superseded, false
+// when it is stored unused, is no longer stored, or the session has none. A
+// session that is not stored is session.ErrSessionNotFound. "Stored" is
+// judged as Load judges it, with the store's clock, for the session and its
+// successor alike, so a row past its deadlines that the sweep has not yet
+// removed is not stored. It reads through the caller's transaction when one
+// is attached.
+func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string) (bool, error) {
+	const op = "read whether session successor was used"
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	var used bool
+	err = q.Raw(pgschema.SessionSuccessorPresented,
+		storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())).Row().Scan(&used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, session.ErrSessionNotFound
+	}
+	if err != nil {
+		return false, failed(op, err)
+	}
+
+	return used, nil
 }

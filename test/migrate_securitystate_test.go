@@ -172,6 +172,7 @@ var securityStateColumns = map[string][]column{
 		optional("accept_until", colTimestamptz),
 		optional("successor_digest", colBytea),
 		optional("first_presented_at", colTimestamptz),
+		optional("retain_until", colTimestamptz),
 		defaulted("authenticated_at", colTimestamptz, "now()"),
 	},
 	"signing_keys": {
@@ -817,6 +818,39 @@ func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
 					require.NoError(t, db.QueryRowContext(t.Context(),
 						`SELECT authenticated_at FROM sessions WHERE id = $1`, id).Scan(&got))
 					assert.True(t, want.Equal(got), "session %s: authenticated_at %s, want %s", id, got, want)
+				}
+			},
+		},
+		{
+			// A row written before the column existed reads back with no
+			// retention deadline, which a store judges by the row's own
+			// deadlines; the down step removes the column again.
+			name: "adds the retention deadline, nullable with no default, unset on existing rows, removed on rollback",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSecurityState)
+				require.NoError(t, err)
+
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000f1', '\x01', 'u', now(), now(), now(), now())`)
+				require.NoError(t, err)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col retain_until timestamp with time zone NULL",
+					"retain_until is a nullable timestamptz with no default")
+				var unset bool
+				require.NoError(t, db.QueryRowContext(t.Context(),
+					`SELECT retain_until IS NULL FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000f1'`).
+					Scan(&unset))
+				assert.True(t, unset, "a row that existed before the column has no retention deadline")
+
+				_, err = p.Down(t.Context())
+				require.NoError(t, err)
+
+				for _, line := range sessionColumnsAndIndexes(t, db) {
+					assert.NotContains(t, line, "retain_until", "the down step removes the column")
 				}
 			},
 		},

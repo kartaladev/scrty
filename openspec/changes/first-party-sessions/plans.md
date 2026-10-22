@@ -919,7 +919,7 @@ Design finding 1, decisions 1 and 2 of the second round. Specs: `sessions` "Rota
 Specs: as Task 10.1, plus `schema-migrations` "The security-state set adds the session retention deadline" and `security-state-stores` "Session family and supersession state survive a durable store".
 
 **Files:**
-- Modify: `migrate/securitystate/20261021000000_session_families.sql` (up: `ADD COLUMN retain_until timestamptz NULL`; down: drop it), `internal/pgschema/sessions.go` (`SessionSupersedeOld` and `SessionSupersedePrevious` set `retain_until = GREATEST(COALESCE(retain_until, $n), $n)` and leave `idle_expires_at`/`absolute_expires_at` alone; `SessionLoad` and `SessionDeleteExpired` judge a superseded row by `retain_until` when set, else by its deadlines; `SessionUpdate` keeps `retain_until`; select lists and inserts gain the column), `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go`
+- Modify: `migrate/securitystate/20261021000000_session_families.sql` (up: `ADD COLUMN retain_until timestamptz NULL`; down: drop it), `internal/pgschema/sessions.go` (`SessionSupersedeOld` and `SessionSupersedePrevious` set `retain_until = GREATEST(COALESCE(retain_until, $n), $n)` and leave `idle_expires_at`/`absolute_expires_at` alone; `SessionDeleteExpired` judges a superseded row by `retain_until` when set, else by its deadlines, and `Load` reads the row and judges it in Go as the memory store's `stale` does (an SQL predicate would turn expired into not-found); a zero `RetainUntil` is bound as SQL NULL, never as the zero time; `SessionUpdate` keeps `retain_until`; select lists and inserts gain the column), `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go`
 - Test: `test/migrate_securitystate_test.go`, `test/storetest/session_suite.go` (the case for a superseded row with no retention deadline), `test/storetest/ambient.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go`, `test/gormstore/statements_test.go`
 
 The load predicate, for every driver:
@@ -930,7 +930,7 @@ WHERE id_digest = $1
            ELSE idle_expires_at > $2 AND absolute_expires_at > $2 END
 ```
 
-- [ ] **Step 1 (red):** the migration case (nullable, no default, null on existing rows, removed by the down step) and the null-retention conformance case. Run the durable session runners and `(cd test && go test -count=1 -run 'Migrate' ./...)` with `SCRTY_TEST_POSTGRES_IMAGE` unset (PostgreSQL 18) and `=postgres:15.19-alpine`. Expected: FAIL on the rewritten 10.1 cases and the new ones.
+- [ ] **Step 1 (red):** the migration case (nullable, no default, null on existing rows, removed by the down step) and the null-retention conformance case. Run the durable session runners and `(cd test && go test -count=1 -run 'Migrat' ./...)` with `SCRTY_TEST_POSTGRES_IMAGE` unset (PostgreSQL 18) and `=postgres:15.19-alpine`. Expected: FAIL on the rewritten 10.1 cases and the new ones.
 - [ ] **Step 2 (green):** implement as listed. Run the session, race, lock-order, ambient and broken suites on every backend on PostgreSQL 18 and 15, and `go vet` and `golangci-lint run` in the root, `pgx` and `gorm` modules.
 - [ ] **Step 2b (red, then green):** with the `SuccessorPresented` conformance cases from Task 10.1 failing on each durable runner (the stub returns false), implement it as one read:
   ```sql

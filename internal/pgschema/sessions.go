@@ -20,27 +20,28 @@ const (
 	// the nil family), $24 family_created_at, $25 superseded_at (NULL when not
 	// superseded), $26 accept_until (NULL when not superseded),
 	// $27 successor_digest (NULL for none), $28 first_presented_at (NULL when
-	// never presented), $29 authenticated_at. Zero rows affected means the
-	// digest is already stored.
+	// never presented), $29 authenticated_at, $30 retain_until (NULL for no
+	// retention deadline). Zero rows affected means the digest is already
+	// stored.
 	SessionInsert = `INSERT INTO sessions (id, id_digest, user_id, created_at, last_accessed_at,
   idle_expires_at, absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at,
   password_change_pending, external_provider, external_issuer, external_session_id,
   external_id_token, data, enrolment_origin_deadline, enrolment_generation, recovered_at,
   federated_amr, federated_acr, mfa_at_first_factor, family_id, family_created_at,
-  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at)
+  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at, retain_until)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
-  $23, $24, $25, $26, $27, $28, $29)
+  $23, $24, $25, $26, $27, $28, $29, $30)
 ON CONFLICT (id_digest) DO NOTHING`
 
 	// SessionUpdate replaces every field of the session with digest $1, in
 	// SessionInsert's order from $2 user_id to $20 federated_acr. It leaves
-	// mfa_at_first_factor, authenticated_at and the family, supersession and
-	// presentation columns out: only the insert, the supersession and the first
-	// presentation write them, so no later save can undo them. On a
-	// superseded row (superseded_at set) it also leaves both deadlines as the
-	// supersession set them, so a copy loaded before the supersession cannot
-	// shorten them. Zero rows affected means there is no longer a session to
-	// update.
+	// mfa_at_first_factor, authenticated_at and the family, supersession
+	// (retain_until included) and presentation columns out: only the insert,
+	// the supersession and the first presentation write them, so no later save
+	// can undo them. On a superseded row (superseded_at set) it also leaves
+	// both of the row's own deadlines as they were when it was superseded, so a
+	// copy loaded before the supersession can change neither. Zero rows
+	// affected means there is no longer a session to update.
 	SessionUpdate = `UPDATE sessions SET user_id = $2, created_at = $3, last_accessed_at = $4,
   idle_expires_at = CASE WHEN superseded_at IS NULL THEN $5 ELSE idle_expires_at END,
   absolute_expires_at = CASE WHEN superseded_at IS NULL THEN $6 ELSE absolute_expires_at END,
@@ -52,14 +53,30 @@ ON CONFLICT (id_digest) DO NOTHING`
 WHERE id_digest = $1`
 
 	// SessionSelect reads the session with digest $1. Expiry is judged by the
-	// caller, with its clock.
+	// caller, with its clock, by the condition sessionLoadable states: a
+	// stored row that is not loadable is an expired session, not a missing
+	// one.
 	SessionSelect = `SELECT user_id, created_at, last_accessed_at, idle_expires_at,
   absolute_expires_at, first_factor, mfa_state, mfa_satisfied_at, password_change_pending,
   external_provider, external_issuer, external_session_id, external_id_token, data,
   enrolment_origin_deadline, enrolment_generation, recovered_at,
   mfa_at_first_factor, federated_amr, federated_acr, family_id, family_created_at,
-  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at
+  superseded_at, accept_until, successor_digest, first_presented_at, authenticated_at,
+  retain_until
 FROM sessions WHERE id_digest = $1`
+
+	// SessionSuccessorPresented reads, in one row, whether the current
+	// successor of the session with digest $1 was used at $2: true when that
+	// successor is loadable and was presented or has been superseded, false
+	// when it is not loadable, is not stored, or the session has none (the
+	// join then yields NULLs, and the expression false). Both are judged by
+	// sessionLoadable. No row
+	// means the session itself is not loadable at $2, which reads as a
+	// missing session. It writes nothing.
+	SessionSuccessorPresented = `SELECT s.first_presented_at IS NOT NULL OR s.superseded_at IS NOT NULL
+FROM sessions o
+LEFT JOIN sessions s ON s.id_digest = o.successor_digest AND ` + sessionLoadableS + `
+WHERE o.id_digest = $1 AND ` + sessionLoadableO
 
 	// SessionExists reports whether a session with digest $1 is stored,
 	// expired or not. A conditional write that changed no row runs it to tell
@@ -88,12 +105,10 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	SessionLockSupersession = `SELECT id FROM sessions WHERE id_digest IN ($1, $2) ORDER BY id FOR UPDATE`
 
 	// SessionSupersedeOld marks the session with digest $1 superseded at $3,
-	// with its window ending at $4 and $5 as its successor's digest, and
-	// holds it to one deadline, the later of its absolute deadline and $6,
-	// the retention deadline, as both its deadlines (a later absolute
-	// deadline is kept, never lowered; the SET expressions read the row as it
-	// was, so the idle deadline repeats the GREATEST), provided it
-	// is in a family, its stored successor digest is still $2 (NULL for none), and,
+	// with its window ending at $4 and $5 as its successor's digest, and keeps
+	// it for reuse detection until the later of its stored retention deadline
+	// and $6 (NULL for none), never lowering it. It leaves both of the row's
+	// own deadlines alone. It does so provided it is in a family, its stored successor digest is still $2 (NULL for none), and,
 	// when $2 is NULL, it is not superseded already: a superseded session is
 	// superseded again only through its observed successor, and one with no
 	// successor was knocked out of its chain, so renewing it as a fresh head
@@ -103,7 +118,7 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// supersessions: a second one waits on the row locks the first took, in
 	// SessionLockSupersession, and then finds the successor changed.
 	SessionSupersedeOld = `UPDATE sessions SET superseded_at = $3, accept_until = $4, successor_digest = $5,
-  absolute_expires_at = GREATEST(absolute_expires_at, $6), idle_expires_at = GREATEST(absolute_expires_at, $6)
+  retain_until = GREATEST(COALESCE(retain_until, $6), $6)
 WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
   AND ($2::bytea IS NOT NULL OR superseded_at IS NULL)
   AND family_id <> '00000000-0000-0000-0000-000000000000'`
@@ -117,9 +132,10 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 
 	// SessionSupersedePrevious marks the session with digest $1, the previous
 	// successor of a session superseded again, superseded at $2 with a window
-	// ending at $2, and holds it to one deadline, the later of its absolute
-	// deadline and $4, the retention deadline, as both its deadlines, never lowering the absolute one, provided it is not superseded already and, when $3 is true,
-	// has never been presented. Zero rows affected means that successor has moved on: it is
+	// ending at $2, and keeps it for reuse detection until the later of its
+	// stored retention deadline and $4 (NULL for none), never lowering it and
+	// leaving both of its own deadlines alone, provided it is not superseded
+	// already and, when $3 is true, has never been presented. Zero rows affected means that successor has moved on: it is
 	// superseded, presented when $3 requires it not to be, or no longer
 	// stored; the supersession is refused and rolled back.
 	//
@@ -130,7 +146,7 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 	// successor that held the lock first refuses the supersession, and one
 	// that came after it waits for it.
 	SessionSupersedePrevious = `UPDATE sessions SET superseded_at = $2, accept_until = $2,
-  absolute_expires_at = GREATEST(absolute_expires_at, $4), idle_expires_at = GREATEST(absolute_expires_at, $4)
+  retain_until = GREATEST(COALESCE(retain_until, $4), $4)
 WHERE id_digest = $1 AND superseded_at IS NULL AND (NOT $3::boolean OR first_presented_at IS NULL)`
 
 	// SessionMarkPresented records $2 as the first presentation of the
@@ -178,8 +194,14 @@ DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
 WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $2
   AND superseded_at IS NULL`
 
-	// SessionDeleteExpired removes every session past either deadline at $1.
-	SessionDeleteExpired = `DELETE FROM sessions WHERE idle_expires_at <= $1 OR absolute_expires_at <= $1`
+	// SessionDeleteExpired removes every session no longer loadable at $1, the
+	// complement of sessionLoadable: a superseded session with a retention
+	// deadline once that deadline is not after $1, whatever its own deadlines
+	// say, and any other session once either of its own deadlines is not.
+	SessionDeleteExpired = `DELETE FROM sessions
+WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL
+           THEN retain_until <= $1
+           ELSE idle_expires_at <= $1 OR absolute_expires_at <= $1 END`
 
 	// SessionDeleteByExternal removes the sessions of issuer $1 and provider
 	// session $2. The issuer always leads, and an empty argument matches
@@ -198,4 +220,21 @@ const (
 	SupersedeRefusalMissing  = 0
 	SupersedeRefusalOther    = 1
 	SupersedeRefusalNoFamily = 2
+)
+
+// sessionLoadable is the condition, on a sessions row and the time $2, under
+// which a store returns that row: a superseded row with a retention deadline
+// while that deadline is after $2, whatever its own deadlines say, and any
+// other row, a superseded one with no retention deadline included, while both
+// of its own deadlines are. A row is not loadable at a deadline itself. It is
+// spelled once per alias the statements use: s for a successor, o for the
+// session asked about. SessionDeleteExpired removes exactly the rows it
+// excludes.
+const (
+	sessionLoadableS = `CASE WHEN s.superseded_at IS NOT NULL AND s.retain_until IS NOT NULL
+  THEN s.retain_until > $2
+  ELSE s.idle_expires_at > $2 AND s.absolute_expires_at > $2 END`
+	sessionLoadableO = `CASE WHEN o.superseded_at IS NOT NULL AND o.retain_until IS NOT NULL
+  THEN o.retain_until > $2
+  ELSE o.idle_expires_at > $2 AND o.absolute_expires_at > $2 END`
 )

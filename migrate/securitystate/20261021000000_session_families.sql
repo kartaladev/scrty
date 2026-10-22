@@ -23,11 +23,15 @@ ALTER TABLE sessions ADD COLUMN accept_until timestamptz NULL;
 -- SHA-256 of the successor's identifier, never the identifier itself.
 ALTER TABLE sessions ADD COLUMN successor_digest bytea NULL;
 ALTER TABLE sessions ADD COLUMN first_presented_at timestamptz NULL;
+-- How long a superseded session is kept for reuse detection, apart from its
+-- own deadlines; NULL = none, and the row is judged by its own deadlines.
+ALTER TABLE sessions ADD COLUMN retain_until timestamptz NULL;
 CREATE INDEX sessions_family ON sessions (family_id);
 
 -- +goose Down
 -- IF EXISTS so teardown completes after a test drops the table.
 DROP INDEX IF EXISTS sessions_family;
+ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS retain_until;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS first_presented_at;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS successor_digest;
 ALTER TABLE IF EXISTS sessions DROP COLUMN IF EXISTS accept_until;

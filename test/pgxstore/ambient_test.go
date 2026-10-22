@@ -255,6 +255,17 @@ func TestSessionFamilyAmbientTx(t *testing.T) {
 	t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
 }
 
+func TestSessionSuccessorAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSuccessorAmbientTx(t, h) })
+}
+
 func TestSessionFamilyRevocationRace(t *testing.T) {
 	t.Parallel()
 

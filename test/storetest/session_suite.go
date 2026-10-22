@@ -303,8 +303,8 @@ const (
 // refused, with an error that does not echo it, or round-trips unchanged, and
 // is never altered; Create never replaces, and Save
 // replaces the record whole but never inserts; Load judges both deadlines by the store's clock,
-// and a superseded session by its retention deadline instead, with its own
-// deadlines returned as stored; a supersession changes no deadline and never
+// and a superseded session by its retention deadline instead (by its own
+// deadlines when it has none), with its own deadlines returned as stored; a supersession changes no deadline and never
 // lowers a retention deadline; the
 // active count and every deletion are exact; and the federation deletions
 // match nothing on an empty issuer or provider session identifier.
@@ -2058,6 +2058,48 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				n, err = s.DeleteExpired(ctx)
 				require.NoError(t, err)
 				assert.Equal(t, 1, n, "the superseded record is swept at its retention deadline, its successor kept")
+				assertSessionsGone(ctx, t, s, old.ID)
+				assertSessionsLoad(ctx, t, s, successor)
+			},
+		},
+		{
+			// O's own deadlines are 10:30 and 10:20. It is superseded at
+			// 10:00 with no retention deadline, as a row superseded before
+			// the store kept one reads: a supersession whose window and
+			// retention are both zero leaves RetainUntil zero. At 10:19 it
+			// loads and the sweep keeps it; at 10:20, its absolute deadline,
+			// it is expired and the sweep removes it, its successor kept.
+			name: "a superseded record with no retention deadline is loaded, kept and swept by its own deadlines",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.AbsoluteExpiresAt = suiteStart.Add(20 * time.Minute)
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-b", suiteStart)
+				successor.IdleExpiresAt, successor.AbsoluteExpiresAt = sessionRetainUntil, sessionRetainUntil
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, Successor: successor, Now: suiteStart,
+				}))
+				want := supersededUntil(old, successor.ID, suiteStart, time.Time{}, time.Time{})
+
+				clk.Advance(19 * time.Minute)
+				assertSessionsLoad(ctx, t, s, want)
+				used, err := s.SuccessorPresented(ctx, old.ID)
+				require.NoError(t, err, "a superseded record with no retention deadline is stored until its own deadlines")
+				assert.False(t, used)
+				n, err := s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Zero(t, n, "a superseded record with no retention deadline was swept before its own deadlines")
+				assertSessionsLoad(ctx, t, s, want, successor)
+
+				clk.Advance(time.Minute)
+				_, err = s.Load(ctx, old.ID)
+				assert.ErrorIs(t, err, session.ErrSessionExpired,
+					"a superseded record with no retention deadline is expired at its own absolute deadline")
+				_, err = s.SuccessorPresented(ctx, old.ID)
+				assert.ErrorIs(t, err, session.ErrSessionNotFound)
+				n, err = s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the superseded record is swept at its own absolute deadline, its successor kept")
 				assertSessionsGone(ctx, t, s, old.ID)
 				assertSessionsLoad(ctx, t, s, successor)
 			},

@@ -316,6 +316,60 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 	})
 }
 
+// RunSessionSuccessorAmbientTx holds a durable session store to reading
+// whether a superseded session's successor was used (SuccessorPresented)
+// through a transaction its caller owns, as its other reads do: inside a
+// transaction attached with h.Begin it sees a presentation written in that
+// transaction, outside it does not until a commit, and a rollback leaves the
+// successor unused.
+//
+// It fails at once, naming every missing input, when h is missing one.
+func RunSessionSuccessorAmbientTx[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	h.Require(t)
+
+	begin := func(t *testing.T) (context.Context, func() error) {
+		ctx, _, rollback := h.Begin(t)
+		t.Cleanup(func() { _ = rollback() })
+		return ctx, rollback
+	}
+	// The case names its sessions and family apart from every other durable
+	// suite's, so it shares their database.
+	sid := func(name string) string { return "ambient-successor-" + name }
+
+	runDurableCases(t, []durableCase{
+		{
+			name: "whether a successor was used is read inside the caller's transaction",
+			assert: func(t *testing.T) {
+				s := h.New(t)
+				old := familySession(sid("old"), "ambient-successor-u1", suiteID(2101))
+				require.NoError(t, s.Create(t.Context(), old))
+				successor := successorOf(old, sid("successor"), suiteStart)
+				require.NoError(t, s.Supersede(t.Context(), session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: suiteStart,
+				}))
+
+				ctx, rollback := begin(t)
+				require.NoError(t, s.MarkPresented(ctx, successor.ID, suiteStart.Add(time.Minute)))
+				used, err := s.SuccessorPresented(ctx, old.ID)
+				require.NoError(t, err)
+				assert.True(t, used,
+					"the presentation written in the transaction is not seen: the store did not read in it")
+				used, err = s.SuccessorPresented(t.Context(), old.ID)
+				require.NoError(t, err)
+				assert.False(t, used, "an uncommitted presentation is seen outside its transaction")
+
+				require.NoError(t, rollback())
+				used, err = s.SuccessorPresented(t.Context(), old.ID)
+				require.NoError(t, err)
+				assert.False(t, used, "the presentation survived the rollback of its transaction")
+			},
+		},
+	})
+}
+
 // revocationWait bounds how long RunSessionFamilyRevocationRace waits for a
 // family revocation, first to start waiting on the in-flight supersession's
 // row lock, and then to return once that supersession commits. A healthy run

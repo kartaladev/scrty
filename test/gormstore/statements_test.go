@@ -28,6 +28,17 @@ import (
 	"github.com/kartaladev/scrty/test/storetest"
 )
 
+// sessionSuccessorPresentedStmt is the one read that tells whether a
+// session's current successor was used, judging the session and its
+// successor by the load condition.
+const sessionSuccessorPresentedStmt = `SELECT s.first_presented_at IS NOT NULL OR s.superseded_at IS NOT NULL ` +
+	`FROM sessions o LEFT JOIN sessions s ON s.id_digest = o.successor_digest AND ` +
+	`CASE WHEN s.superseded_at IS NOT NULL AND s.retain_until IS NOT NULL THEN s.retain_until > $2 ` +
+	`ELSE s.idle_expires_at > $2 AND s.absolute_expires_at > $2 END ` +
+	`WHERE o.id_digest = $1 AND ` +
+	`CASE WHEN o.superseded_at IS NOT NULL AND o.retain_until IS NOT NULL THEN o.retain_until > $2 ` +
+	`ELSE o.idle_expires_at > $2 AND o.absolute_expires_at > $2 END`
+
 // recordingPool is the connection pool beneath a *gorm.DB: every statement
 // gorm sends, and every transaction it begins, passes through it and is
 // recorded, whatever gorm's logger or callbacks do.
@@ -178,14 +189,14 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 	cases := []testCase{
 		{name: "session create", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Create(ctx, storefix.DurableSession("stmt-sid-create", now))
-		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","authenticated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}), assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","retain_until","authenticated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session create of a stored identifier", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now)))
 			started()
 			err := counted.sessions.Create(ctx, storefix.DurableSession("stmt-sid-dup", now))
 			require.Error(t, err)
 			return nil
-		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","authenticated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29) ON CONFLICT ("id_digest") DO NOTHING`)},
+		}, assert: one(`INSERT INTO "sessions" ("id","id_digest","user_id","created_at","last_accessed_at","idle_expires_at","absolute_expires_at","first_factor","mfa_state","mfa_satisfied_at","password_change_pending","external_provider","external_issuer","external_session_id","external_id_token","data","enrolment_origin_deadline","enrolment_generation","recovered_at","mfa_at_first_factor","federated_amr","federated_acr","family_id","family_created_at","superseded_at","accept_until","successor_digest","first_presented_at","retain_until","authenticated_at") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30) ON CONFLICT ("id_digest") DO NOTHING`)},
 		{name: "session save", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-save", now)))
 			started()
@@ -210,7 +221,15 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`SELECT count(*) FROM "sessions" WHERE user_id = $1 AND idle_expires_at > $2 AND absolute_expires_at > $3 AND superseded_at IS NULL`)},
 		{name: "session purge", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteExpired(ctx))
-		}), assert: one(`DELETE FROM "sessions" WHERE idle_expires_at <= $1 OR absolute_expires_at <= $2`)},
+		}), assert: one(`DELETE FROM sessions WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL THEN retain_until <= $1 ELSE idle_expires_at <= $1 OR absolute_expires_at <= $1 END`)},
+		{name: "session successor presented", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-successor", now)))
+			started()
+			return ignoring(counted.sessions.SuccessorPresented(ctx, "stmt-sid-successor"))
+		}, assert: one(sessionSuccessorPresentedStmt)},
+		{name: "session successor presented of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
+			return ignoring(s.sessions.SuccessorPresented(ctx, "stmt-sid-successor-gone"))
+		}), assert: refused(session.ErrSessionNotFound, sessionSuccessorPresentedStmt)},
 		{name: "session delete by provider session", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteByExternalSession(ctx, "https://idp.example", "stmt-ext"))
 		}), assert: one(`DELETE FROM "sessions" WHERE external_issuer = $1 AND external_session_id = $2 AND external_issuer <> '' AND external_session_id <> ''`)},
