@@ -2,6 +2,7 @@ package test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"io/fs"
 	"os"
@@ -10,12 +11,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // provider builds a goose provider over db for the migration files in dir of
@@ -1253,4 +1263,94 @@ func TestGooseDirect(t *testing.T) {
 
 	assertNoLeftoverTables(t.Context(), t, db, versionTable)
 	assert.Equal(t, 0, appliedVersionCount(t, db, versionTable))
+}
+
+// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
+// written before the session-families migration looks like through each
+// durable store once the migration has run: a family of its own, created when
+// it was, and no retention deadline. The schema cases above read the columns;
+// this one reads the rows as a consumer's code does, through the stores.
+func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	type testCase struct {
+		name string
+		open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
+	}
+
+	cases := []testCase{
+		{
+			name: "sqlstore",
+			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
+				s, err := sqlstore.NewSessionStore(conn.DB, c)
+				require.NoError(t, err)
+				return s
+			},
+		},
+		{
+			name: "pgx",
+			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
+				pool, err := pgxpool.New(t.Context(), conn.DSN)
+				require.NoError(t, err)
+				t.Cleanup(pool.Close)
+
+				s, err := pgx.NewSessionStore(pool, c)
+				require.NoError(t, err)
+				return s
+			},
+		},
+		{
+			name: "gorm",
+			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
+				db, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
+				require.NoError(t, err)
+				sqlDB, err := db.DB()
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = sqlDB.Close() })
+
+				s, err := gorm.NewSessionStore(db, c)
+				require.NoError(t, err)
+				return s
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := RunTestPostgres(t)
+			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
+			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
+
+			_, err := p.UpTo(t.Context(), versionSecurityState)
+			require.NoError(t, err)
+
+			const (
+				sessionID = "a-session-written-by-older-code"
+				rowID     = "0192f000-0000-7000-8000-0000000000a1"
+			)
+			created := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+			digest := sha256.Sum256([]byte(sessionID))
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+				VALUES ($1, $2, 'u', $3, $3, '2099-01-01', '2099-01-01')`,
+				rowID, digest[:], created)
+			require.NoError(t, err)
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+
+			got, err := tc.open(t, conn, storefix.TestCipher(t)).Load(t.Context(), sessionID)
+			require.NoError(t, err)
+
+			assert.Equal(t, rowID, got.FamilyID.String(), "the row is a family of its own")
+			assert.True(t, got.CreatedAt.Equal(created), "created_at is kept, got %s", got.CreatedAt)
+			assert.True(t, got.FamilyCreatedAt.Equal(got.CreatedAt),
+				"the family was created when the row was: %s, want %s", got.FamilyCreatedAt, got.CreatedAt)
+			assert.True(t, got.RetainUntil.IsZero(), "a row from before the column has no retention deadline")
+		})
+	}
 }

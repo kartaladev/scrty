@@ -155,6 +155,9 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 	if sess.FamilyID.IsZero() {
 		return errors.New("gorm: create session: a session with no family cannot be stored")
 	}
+	if sess.FamilyCreatedAt.IsZero() {
+		return errors.New("gorm: create session: a session with no family start time cannot be stored")
+	}
 
 	row, err := s.newRow(op, sess)
 	if err != nil {
@@ -344,12 +347,22 @@ func (s *sessionStore) Delete(ctx context.Context, sessionID string) error {
 
 // DeleteByUser removes every session of user, expired ones included. A user
 // reference PostgreSQL text cannot hold matches nothing.
+//
+// The delete is repeated until a pass removes nothing. Under PostgreSQL's
+// default READ COMMITTED isolation, a delete that waited on a session an
+// in-flight Supersede holds removes that session once the supersession
+// commits, but cannot see the successor it inserted; the next pass, on a
+// fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
+// SERIALIZABLE, such a pass fails with the driver's serialization failure
+// (SQLSTATE 40001) instead, and the caller retries its transaction.
 func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
 	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
-	_, err := deleteWhere[sessionRow](ctx, s.c, "delete user's sessions", "user_id = ?", string(user))
+	_, err := untilNone(func() (int, error) {
+		return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions", "user_id = ?", string(user))
+	})
 
 	return err
 }
@@ -357,13 +370,21 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 // DeleteByUserExcept removes every session of user except the one named by
 // keep and, when user holds keep, its family's current session, expired ones
 // included, and reports how many it removed. Every other member of keep's
-// family goes, superseded ones included. It is one statement, so a successor
-// a concurrent supersession commits after the statement's snapshot is neither
-// read nor deleted by it. keep is compared by its digest, as Delete's
-// identifier is, so one no store could hold names no session and every
-// session of the user goes. A user reference PostgreSQL text cannot hold
-// matches nothing. It runs SessionDeleteByUserExcept, the statement the
-// other drivers run.
+// family goes, superseded ones included. Each pass is one statement, so the
+// family kept is read on the snapshot the pass deletes on. keep is compared
+// by its digest, as Delete's identifier is, so one no store could hold names
+// no session and every session of the user goes. A user reference PostgreSQL
+// text cannot hold matches nothing. It runs SessionDeleteByUserExcept, the
+// statement the other drivers run.
+//
+// The delete is repeated until a pass removes nothing, summing what each pass removed. Under PostgreSQL's
+// default READ COMMITTED isolation, a delete that waited on a session an
+// in-flight Supersede holds removes that session once the supersession
+// commits, but cannot see the successor it inserted; the next pass, on a
+// fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
+// SERIALIZABLE, such a pass fails with the driver's serialization failure
+// (SQLSTATE 40001) instead, and the caller retries its transaction. On an
+// error, the number of rows the earlier passes removed is returned with it.
 func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
@@ -375,12 +396,15 @@ func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.Use
 	if err != nil {
 		return 0, failed(op, err)
 	}
-	res := q.Exec(pgschema.SessionDeleteByUserExcept, string(user), storekit.SessionDigest(keep))
-	if res.Error != nil {
-		return 0, failed(op, res.Error)
-	}
+	digest := storekit.SessionDigest(keep)
 
-	return int(res.RowsAffected), nil
+	return untilNone(func() (int, error) {
+		res := q.Exec(pgschema.SessionDeleteByUserExcept, string(user), digest)
+		if res.Error != nil {
+			return 0, failed(op, res.Error)
+		}
+		return int(res.RowsAffected), nil
+	})
 }
 
 // CountActiveByUser counts user's sessions unexpired by the store's clock and
@@ -443,18 +467,38 @@ func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 // DeleteByExternalSession removes the sessions of issuer and provider session
 // sessionID. An empty argument matches nothing: the absent federation values
 // are stored as empty text, and the statement's own condition excludes them.
+//
+// The delete is repeated until a pass removes nothing, summing what each pass removed. Under PostgreSQL's
+// default READ COMMITTED isolation, a delete that waited on a session an
+// in-flight Supersede holds removes that session once the supersession
+// commits, but cannot see the successor it inserted; the next pass, on a
+// fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
+// SERIALIZABLE, such a pass fails with the driver's serialization failure
+// (SQLSTATE 40001) instead, and the caller retries its transaction. On an
+// error, the number of rows the earlier passes removed is returned with it.
 func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	if !storekit.Storable(issuer, sessionID) {
 		return 0, nil
 	}
 
-	return deleteWhere[sessionRow](ctx, s.c, "delete provider session's sessions",
-		"external_issuer = ? AND external_session_id = ? AND external_issuer <> '' AND external_session_id <> ''",
-		issuer, sessionID)
+	return untilNone(func() (int, error) {
+		return deleteWhere[sessionRow](ctx, s.c, "delete provider session's sessions",
+			"external_issuer = ? AND external_session_id = ? AND external_issuer <> '' AND external_session_id <> ''",
+			issuer, sessionID)
+	})
 }
 
 // DeleteByUserAndExternalIssuer removes user's sessions from issuer. An empty
 // issuer matches nothing.
+//
+// The delete is repeated until a pass removes nothing, summing what each pass removed. Under PostgreSQL's
+// default READ COMMITTED isolation, a delete that waited on a session an
+// in-flight Supersede holds removes that session once the supersession
+// commits, but cannot see the successor it inserted; the next pass, on a
+// fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
+// SERIALIZABLE, such a pass fails with the driver's serialization failure
+// (SQLSTATE 40001) instead, and the caller retries its transaction. On an
+// error, the number of rows the earlier passes removed is returned with it.
 func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	ctx context.Context, user identity.UserID, issuer string,
 ) (int, error) {
@@ -462,8 +506,28 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 		return 0, nil
 	}
 
-	return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions from issuer",
-		"user_id = ? AND external_issuer = ? AND external_issuer <> ''", string(user), issuer)
+	return untilNone(func() (int, error) {
+		return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions from issuer",
+			"user_id = ? AND external_issuer = ? AND external_issuer <> ''", string(user), issuer)
+	})
+}
+
+// untilNone runs pass, a delete of sessions, until it removes nothing, and
+// returns what every pass removed, those before an error included. A pass
+// that waited on a session an in-flight supersession holds cannot see the
+// successor that supersession inserted; the pass after it can.
+func untilNone(pass func() (int, error)) (int, error) {
+	total := 0
+	for {
+		n, err := pass()
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, nil
+		}
+		total += n
+	}
 }
 
 // RecordActivity writes lastAccessed and idleExpires, the latter capped at the
@@ -524,8 +588,10 @@ func stored(q *gormdb.DB, op string, digest []byte) (bool, error) {
 // previous successor are kept for reuse detection until the later of their
 // stored retention deadline and op.RetainUntil, never lowered, so the sweep
 // removes them only once their family could no longer be live; neither has
-// its own deadlines changed. A zero op.RetainUntil adds no deadline: a record
-// that had none keeps none, and is judged by its own deadlines. No other
+// its own deadlines changed. A zero op.RetainUntil is refused with the other
+// invalid supersessions, before any statement, whenever op.AcceptUntil is set.
+// A stored record with no retention deadline, one written before the column
+// existed, is judged by its own deadlines. No other
 // session of the family is read or written, however many renewals came
 // before.
 //
@@ -665,8 +731,10 @@ func (u *supersession) Failed(err error) error { return failed(u.op, err) }
 // fresh snapshot, does. Each pass that removes something removes members of
 // a family that only a supersession of a remaining member grows, so the
 // passes end once no supersession is in flight; a Create that keeps adding
-// members to the family as fast as they go would keep it running, and ctx
-// bounds it.
+// members to the family as fast as they go would keep it running. Both of
+// the library's callers, the revocation of a reused session's family and
+// logout, pass a context detached from cancellation, so nothing but the
+// store bounds the passes.
 //
 // Each pass locks the family's sessions in row id order before deleting
 // them, the order Supersede locks them in, so a revocation and a supersession
@@ -694,17 +762,13 @@ func (s *sessionStore) DeleteFamily(ctx context.Context, family id.ID) (int, err
 	if err != nil {
 		return 0, failed(op, err)
 	}
-	total := 0
-	for {
+	return untilNone(func() (int, error) {
 		res := q.Exec(pgschema.SessionDeleteFamily, family)
 		if res.Error != nil {
-			return total, failed(op, res.Error)
+			return 0, failed(op, res.Error)
 		}
-		if res.RowsAffected == 0 {
-			return total, nil
-		}
-		total += int(res.RowsAffected)
-	}
+		return int(res.RowsAffected), nil
+	})
 }
 
 // MarkPresented records at as the session's first presentation, only when

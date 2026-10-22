@@ -150,6 +150,10 @@ const (
 	// Create accepts a session in no family, so every such session shares
 	// the nil family.
 	sessionCreateAcceptsNoFamily sessionDefect = "create-accepts-nil-family"
+	// Create accepts a session with no family start time.
+	sessionCreateAcceptsNoFamilyStart sessionDefect = "create-accepts-no-family-start"
+	// Supersede inserts a successor with no family start time.
+	sessionSupersedeAcceptsNoFamilyStart sessionDefect = "supersede-accepts-no-family-start"
 	// Supersede retains Old and the previous successor to their own absolute
 	// deadline rather than the retention deadline, as an UPDATE setting
 	// retain_until = absolute_expires_at would.
@@ -342,6 +346,9 @@ func (s *sessionStore) Create(_ context.Context, sess *session.Session) error {
 
 	if sess.FamilyID.IsZero() && s.defect != sessionCreateAcceptsNoFamily {
 		return errors.New("a session with no family cannot be stored")
+	}
+	if sess.FamilyCreatedAt.IsZero() && s.defect != sessionCreateAcceptsNoFamilyStart {
+		return errors.New("a session with no family start time cannot be stored")
 	}
 	if _, exists := s.records[sess.ID]; exists {
 		return errors.New("identifier already stored")
@@ -674,6 +681,9 @@ func (s *sessionStore) Supersede(_ context.Context, op session.Supersession) err
 
 	if op.Successor.FamilyID.IsZero() && s.defect != sessionSupersedeAcceptsNoFamilySuccessor {
 		return errors.New("a successor with no family cannot be stored")
+	}
+	if op.Successor.FamilyCreatedAt.IsZero() && s.defect != sessionSupersedeAcceptsNoFamilyStart {
+		return errors.New("a successor with no family start time cannot be stored")
 	}
 	if op.RetainUntil.Before(op.AcceptUntil) && s.defect != sessionSupersedeAcceptsEarlyRetention {
 		return errors.New("a retention deadline cannot be before the window's end")

@@ -371,15 +371,17 @@ func RunSessionSuccessorAmbientTx[S session.Store](t *testing.T, h DurableHarnes
 }
 
 // revocationWait bounds how long RunSessionFamilyRevocationRace waits for a
-// family revocation, first to start waiting on the in-flight supersession's
-// row lock, and then to return once that supersession commits. A healthy run
-// takes milliseconds; the bound turns a hang into a failure.
+// family revocation, and RunSessionUserDeleteRace for a user-wide delete,
+// first to start waiting on the in-flight supersession's row lock, and then
+// to return once that supersession commits. A healthy run takes
+// milliseconds; the bound turns a hang into a failure.
 const revocationWait = 15 * time.Second
 
 // waitingRevocation counts the backends of the harness's database, other than
 // the one asking, that are waiting on a lock while running a delete from
 // sessions, whether the statement deletes directly or locks the rows it
-// deletes first: the family revocation the race holds back.
+// deletes first: the family revocation RunSessionFamilyRevocationRace holds
+// back, or the user-wide delete RunSessionUserDeleteRace does.
 const waitingRevocation = `SELECT count(*) FROM pg_stat_activity
 WHERE datname = current_database() AND pid <> pg_backend_pid()
   AND wait_event_type = 'Lock' AND query ILIKE '%delete from%sessions%'`
@@ -507,6 +509,177 @@ func awaitWaitingRevocation[O any](t *testing.T, raw *sql.DB, done <-chan O) {
 		"the family revocation returned while a supersession of a member was uncommitted: "+
 			"it did not wait for the member's row",
 		"no family revocation waited on the uncommitted supersession's row lock")
+}
+
+// RunSessionUserDeleteRace holds a durable session store to ending, through
+// each of its user-wide deletes, the successor a supersession of one of the
+// deleted sessions inserts while the delete runs.
+//
+// For each case it stores, for one user, a session X and an unrelated session
+// K of another sign-in; in the provider cases X was established through a
+// provider, and K was not. It supersedes X by a successor Y, which carries X's
+// provider sign-in, inside a transaction attached with h.Begin and leaves that
+// transaction open, then runs the case's delete through a store h.NewReplica
+// returns, from another goroutine: every session of the user, every session of
+// the user but K, every session of X's provider sign-in, or every session of
+// the user from X's provider. Once the delete is waiting on X's row lock it
+// commits the supersession, and requires that neither X nor Y loads once the
+// delete returns, that the delete counted both where it reports a count, and
+// that K is gone only where the delete was asked to end it.
+//
+// A single DELETE does not: under PostgreSQL's default READ COMMITTED
+// isolation, a delete that waited on a row re-checks that row once the lock
+// is released, but never sees a row inserted by the transaction it waited
+// for, so the successor of a session the delete was asked to end survives it.
+//
+// It detects the waiting delete through h.Raw, from PostgreSQL's
+// pg_stat_activity, and so needs a PostgreSQL store. It fails at once, naming
+// every missing input, when h is missing one.
+func RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	h.Require(t)
+	requirePool(t, h.PoolSize, 2)
+
+	// sessions is what a case stores: X, superseded in flight, and K.
+	type sessions struct {
+		user identity.UserID
+		x, k *session.Session
+	}
+
+	type testCase struct {
+		name string
+		// race numbers the case's user and provider sign-in apart from every
+		// other case's.
+		race int
+		// federated establishes X through a provider.
+		federated bool
+		// del runs the case's delete, and returns what it reports removing,
+		// or 0 for a delete that reports nothing.
+		del func(ctx context.Context, s S, in sessions) (int, error)
+		// assert checks the count del returned and whether K survived; that
+		// neither X nor Y loads is checked for every case.
+		assert func(t *testing.T, n int, kLoads bool)
+	}
+
+	cases := []testCase{
+		{
+			name: "deleting every session of a user waiting on a supersession removes its successor",
+			race: 2201,
+			del: func(ctx context.Context, s S, in sessions) (int, error) {
+				return 0, s.DeleteByUser(ctx, in.user)
+			},
+			assert: func(t *testing.T, _ int, kLoads bool) {
+				assert.False(t, kLoads, "the user's unrelated session survived deleting every session of the user")
+			},
+		},
+		{
+			name: "deleting a user's other sessions waiting on a supersession removes its successor",
+			race: 2202,
+			del: func(ctx context.Context, s S, in sessions) (int, error) {
+				return s.DeleteByUserExcept(ctx, in.user, in.k.ID)
+			},
+			assert: func(t *testing.T, n int, kLoads bool) {
+				assert.True(t, kLoads, "the kept session was deleted")
+				assert.Equal(t, 2, n, "the delete did not count both the superseded session and its successor")
+			},
+		},
+		{
+			name:      "deleting a provider sign-in's sessions waiting on a supersession removes its successor",
+			race:      2203,
+			federated: true,
+			del: func(ctx context.Context, s S, in sessions) (int, error) {
+				return s.DeleteByExternalSession(ctx, in.x.ExternalIssuer, in.x.ExternalSessionID)
+			},
+			assert: func(t *testing.T, n int, kLoads bool) {
+				assert.True(t, kLoads, "a session of another sign-in was deleted with the provider sign-in's")
+				assert.Equal(t, 2, n, "the delete did not count both the superseded session and its successor")
+			},
+		},
+		{
+			name:      "deleting a user's sessions from a provider waiting on a supersession removes its successor",
+			race:      2204,
+			federated: true,
+			del: func(ctx context.Context, s S, in sessions) (int, error) {
+				return s.DeleteByUserAndExternalIssuer(ctx, in.user, in.x.ExternalIssuer)
+			},
+			assert: func(t *testing.T, n int, kLoads bool) {
+				assert.True(t, kLoads, "a session of another sign-in was deleted with the provider's")
+				assert.Equal(t, 2, n, "the delete did not count both the superseded session and its successor")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := h.New(t)
+			deleter := h.NewReplica(t)
+			name := fmt.Sprintf("user-delete-race-%d", tc.race)
+			in := sessions{user: identity.UserID(name + "-user")}
+			in.x = sessionRecord(name+"-x", in.user)
+			if tc.federated {
+				in.x = federatedSession(name+"-x", in.user, sessionIssuerA, name+"-sid")
+			}
+			in.k = sessionRecord(name+"-k", in.user)
+			require.NoError(t, s.Create(t.Context(), in.x))
+			require.NoError(t, s.Create(t.Context(), in.k))
+
+			// The supersession in flight: written, not yet committed. The
+			// successor carries X's provider sign-in, as a renewal's does.
+			superseding, commitSupersession, rollback := h.Begin(t)
+			t.Cleanup(func() { _ = rollback() })
+			successor := successorOf(in.x, name+"-y", suiteStart)
+			successor.FirstFactor = in.x.FirstFactor
+			successor.MFA = in.x.MFA
+			successor.MFASatisfiedAt = in.x.MFASatisfiedAt
+			successor.ExternalProvider = in.x.ExternalProvider
+			successor.ExternalIssuer = in.x.ExternalIssuer
+			successor.ExternalSessionID = in.x.ExternalSessionID
+			successor.ExternalIDToken = in.x.ExternalIDToken
+			require.NoError(t, s.Supersede(superseding, session.Supersession{
+				Old: in.x.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+				Successor: successor, Now: suiteStart,
+			}))
+
+			type outcome struct {
+				n   int
+				err error
+			}
+			deleteCtx, cancel := context.WithTimeout(t.Context(), revocationWait)
+			defer cancel()
+			done := make(chan outcome, 1)
+			go func() {
+				n, err := tc.del(deleteCtx, deleter, in)
+				done <- outcome{n, err}
+			}()
+
+			awaitWaiting(t, h.Raw, waitingRevocation, done,
+				"the delete returned while a supersession of one of its sessions was uncommitted: "+
+					"it did not wait for the session's row",
+				"no delete waited on the uncommitted supersession's row lock")
+			require.NoError(t, commitSupersession(), "the supersession did not commit")
+
+			var got outcome
+			select {
+			case got = <-done:
+			case <-time.After(revocationWait):
+				t.Fatal("the delete did not return after the supersession it waited on committed")
+			}
+			require.NoError(t, got.err)
+
+			for _, sessionID := range []string{in.x.ID, successor.ID} {
+				_, err := s.Load(t.Context(), sessionID)
+				assert.ErrorIs(t, err, session.ErrSessionNotFound,
+					"%s is still stored after the delete: the delete did not see "+
+						"the successor of the supersession it waited on", sessionID)
+			}
+			_, err := s.Load(t.Context(), in.k.ID)
+			if !errors.Is(err, session.ErrSessionNotFound) {
+				require.NoError(t, err)
+			}
+			tc.assert(t, got.n, err == nil)
+		})
+	}
 }
 
 // awaitWaiting returns once query, run through raw, counts a backend waiting

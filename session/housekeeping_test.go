@@ -31,6 +31,7 @@ func seedForHousekeeping(t *testing.T, store *session.MemoryStore) (expiredID, l
 	expired := &session.Session{
 		ID:                "expiring",
 		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		UserID:            testUser,
 		CreatedAt:         now,
 		LastAccessedAt:    now,
@@ -40,6 +41,7 @@ func seedForHousekeeping(t *testing.T, store *session.MemoryStore) (expiredID, l
 	live := &session.Session{
 		ID:                "live",
 		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		UserID:            testUser,
 		CreatedAt:         now,
 		LastAccessedAt:    now,
@@ -120,6 +122,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 			require.NoError(t, store.Create(t.Context(), &session.Session{
 				ID:                "after-stop",
 				FamilyID:          storedFamily,
+				FamilyCreatedAt:   createdAt,
 				UserID:            testUser,
 				CreatedAt:         now,
 				IdleExpiresAt:     now.Add(-time.Second),
@@ -153,6 +156,7 @@ func TestHousekeepingExitsWithItsContext(t *testing.T) {
 	require.NoError(t, store.Create(ctx, &session.Session{
 		ID:                "expiring",
 		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		UserID:            testUser,
 		CreatedAt:         now,
 		IdleExpiresAt:     now.Add(20 * time.Millisecond),
@@ -172,6 +176,7 @@ func TestHousekeepingExitsWithItsContext(t *testing.T) {
 	require.NoError(t, store.Create(t.Context(), &session.Session{
 		ID:                "after-cancel",
 		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		UserID:            testUser,
 		CreatedAt:         stale,
 		IdleExpiresAt:     stale.Add(-time.Second),
@@ -254,6 +259,7 @@ func sessionExpiringAt(id string, at time.Time) *session.Session {
 	return &session.Session{
 		ID:                id,
 		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		UserID:            testUser,
 		CreatedAt:         createdAt,
 		LastAccessedAt:    createdAt,

@@ -61,8 +61,9 @@ type sessionRow struct {
 	FederatedACR string `gorm:"column:federated_acr;type:text"`
 	// The family, supersession and presentation columns are written by the
 	// insert, the supersession and the first presentation only; the update
-	// omits them. FamilyID is the all-zero UUID for a session written with no
-	// family. SupersededAt, AcceptUntil and SuccessorDigest are NULL for a
+	// omits them. Every store refuses a session with no family, and the
+	// migration's column default gives a row written by older code a family of
+	// its own. SupersededAt, AcceptUntil and SuccessorDigest are NULL for a
 	// session never superseded, and FirstPresentedAt for one never presented.
 	FamilyID         id.ID      `gorm:"column:family_id;type:uuid"`
 	FamilyCreatedAt  time.Time  `gorm:"column:family_created_at;type:timestamptz"`

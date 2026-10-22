@@ -183,6 +183,10 @@ DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
 	SessionDelete = `DELETE FROM sessions WHERE id_digest = $1`
 
 	// SessionDeleteByUser removes every session of user $1, expired or not.
+	// The caller repeats it until it affects no row, as it does
+	// SessionDeleteFamily and for the same reason: a delete that waited on a
+	// row an uncommitted supersession holds does not see the successor that
+	// supersession inserted.
 	SessionDeleteByUser = `DELETE FROM sessions WHERE user_id = $1`
 
 	// SessionDeleteByUserExcept removes every session of user $1, expired or
@@ -199,8 +203,9 @@ DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
 	// it keeps itself alone, not every other session of the user in it.
 	//
 	// It is one statement, so the family is read on the same snapshot the
-	// delete runs on: a successor a supersession commits after that snapshot
-	// was taken is not visible to it, and so is not deleted.
+	// delete runs on. A successor a supersession commits after that snapshot
+	// was taken is not visible to it, so the caller repeats it until it
+	// affects no row, as it does SessionDeleteFamily.
 	SessionDeleteByUserExcept = `DELETE FROM sessions
 WHERE user_id = $1
   AND id_digest <> $2
@@ -226,12 +231,14 @@ WHERE CASE WHEN superseded_at IS NOT NULL AND retain_until IS NOT NULL
 
 	// SessionDeleteByExternal removes the sessions of issuer $1 and provider
 	// session $2. The issuer always leads, and an empty argument matches
-	// nothing.
+	// nothing. The caller repeats it until it affects no row, as it does
+	// SessionDeleteFamily.
 	SessionDeleteByExternal = `DELETE FROM sessions
 WHERE external_issuer = $1 AND external_session_id = $2 AND $1 <> '' AND $2 <> ''`
 
 	// SessionDeleteByUserIssuer removes user $1's sessions from issuer $2. An
-	// empty issuer matches nothing.
+	// empty issuer matches nothing. The caller repeats it until it affects no
+	// row, as it does SessionDeleteFamily.
 	SessionDeleteByUserIssuer = `DELETE FROM sessions WHERE user_id = $1 AND external_issuer = $2 AND $2 <> ''`
 )
 

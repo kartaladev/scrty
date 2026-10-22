@@ -142,13 +142,15 @@ type SessionTx[Q any] interface {
 
 // CheckSupersession refuses a supersession no store runs, before any
 // statement: one with no successor, a successor with no family (the nil
-// family), or a retention deadline before the end of its window.
+// family) or no family start time, or a retention deadline before the end of its window.
 func CheckSupersession(op session.Supersession) error {
 	switch {
 	case op.Successor == nil:
 		return errors.New("a supersession needs a successor")
 	case op.Successor.FamilyID.IsZero():
 		return errors.New("a successor with no family cannot be stored")
+	case op.Successor.FamilyCreatedAt.IsZero():
+		return errors.New("a successor with no family start time cannot be stored")
 	case op.RetainUntil.Before(op.AcceptUntil):
 		return errors.New("the retention deadline is before the end of the window")
 	default:

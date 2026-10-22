@@ -12,6 +12,8 @@ import (
 
 	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
@@ -262,6 +264,14 @@ var brokenVariants = []storefix.BrokenVariant{
 	},
 	lockOrderVariant("session-supersede-locks-the-successor-first", false),
 	lockOrderVariant("session-supersede-locks-in-statement-order", true),
+	userDeleteVariant("session-user-delete-in-one-pass", deleteByUser,
+		"deleting every session of a user waiting on a supersession removes its successor"),
+	userDeleteVariant("session-user-except-delete-in-one-pass", deleteByUserExcept,
+		"deleting a user's other sessions waiting on a supersession removes its successor"),
+	userDeleteVariant("session-provider-sign-in-delete-in-one-pass", deleteByExternalSession,
+		"deleting a provider sign-in's sessions waiting on a supersession removes its successor"),
+	userDeleteVariant("session-user-issuer-delete-in-one-pass", deleteByUserAndExternalIssuer,
+		"deleting a user's sessions from a provider waiting on a supersession removes its successor"),
 }
 
 // attachedTxKey is the context key beginTracked attaches its transaction
@@ -541,4 +551,79 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 	return s.db.WithContext(ctx).Exec(
 		`UPDATE sessions SET first_presented_at = ? WHERE id_digest = ? AND first_presented_at IS NULL`,
 		at, digest[:]).Error
+}
+
+// userDelete names one of a session store's user-wide deletes.
+type userDelete int
+
+const (
+	deleteByUser userDelete = iota
+	deleteByUserExcept
+	deleteByExternalSession
+	deleteByUserAndExternalIssuer
+)
+
+// userDeleteVariant is a store whose user-wide delete op runs its statement
+// once, through singlePassUserDelete, run through RunSessionUserDeleteRace,
+// whose case failsCase races that delete against a supersession.
+func userDeleteVariant(name string, op userDelete, failsCase string) storefix.BrokenVariant {
+	return storefix.BrokenVariant{
+		Name: name,
+		Run: func(t *testing.T) {
+			c := storefix.TestCipher(t)
+			h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+				return singlePassUserDelete{Store: newSessionStore(t, db, c, opts...), db: db, op: op}
+			})
+			t.Run("gorm", func(t *testing.T) { storetest.RunSessionUserDeleteRace(t, h) })
+		},
+		FailsCase: failsCase,
+		FailsWith: "the delete did not see the successor",
+	}
+}
+
+// singlePassUserDelete runs its user-wide delete op as one statement, as the
+// store did before it repeated it: a delete that waited on an in-flight
+// supersession cannot see the successor that supersession inserted. Its other
+// user-wide deletes are the store's own.
+type singlePassUserDelete struct {
+	session.Store
+	db *gormdb.DB
+	op userDelete
+}
+
+func (s singlePassUserDelete) DeleteByUser(ctx context.Context, user identity.UserID) error {
+	if s.op != deleteByUser {
+		return s.Store.DeleteByUser(ctx, user)
+	}
+	_, err := s.once(ctx, pgschema.SessionDeleteByUser, string(user))
+	return err
+}
+
+func (s singlePassUserDelete) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+	if s.op != deleteByUserExcept {
+		return s.Store.DeleteByUserExcept(ctx, user, keep)
+	}
+	return s.once(ctx, pgschema.SessionDeleteByUserExcept, string(user), storekit.SessionDigest(keep))
+}
+
+func (s singlePassUserDelete) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
+	if s.op != deleteByExternalSession {
+		return s.Store.DeleteByExternalSession(ctx, issuer, sessionID)
+	}
+	return s.once(ctx, pgschema.SessionDeleteByExternal, issuer, sessionID)
+}
+
+func (s singlePassUserDelete) DeleteByUserAndExternalIssuer(
+	ctx context.Context, user identity.UserID, issuer string,
+) (int, error) {
+	if s.op != deleteByUserAndExternalIssuer {
+		return s.Store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
+	}
+	return s.once(ctx, pgschema.SessionDeleteByUserIssuer, string(user), issuer)
+}
+
+// once runs statement a single time and reports the rows it removed.
+func (s singlePassUserDelete) once(ctx context.Context, statement string, args ...any) (int, error) {
+	res := s.db.WithContext(ctx).Exec(statement, args...)
+	return int(res.RowsAffected), res.Error
 }

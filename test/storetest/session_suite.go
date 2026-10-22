@@ -1951,6 +1951,21 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			// A family's start bounds its lifetime, so a session that does not
+			// carry it would escape that bound for the whole family.
+			name: "creating a session with no family start time is refused and stores nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				unstarted := sessionRecord("sess-a", "u-1")
+				unstarted.FamilyCreatedAt = time.Time{}
+
+				err := s.Create(ctx, unstarted)
+
+				require.Error(t, err, "a session with no family start time must be refused at creation")
+				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assertSessionsGone(ctx, t, s, unstarted.ID)
+			},
+		},
+		{
 			// O is superseded at 11:00 with a retention deadline of 21:00,
 			// and re-rotated at 16:00 with one of 18:00: the retention is
 			// after the window but below what O holds, so O keeps 21:00, and
@@ -2225,6 +2240,27 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			name: "a successor with no family start time is refused and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-b", suiteStart)
+				successor.FamilyCreatedAt = time.Time{}
+
+				err := s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: suiteStart,
+				})
+
+				require.Error(t, err, "a successor with no family start time must be refused")
+				assert.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
+				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
+				assertSessionsGone(ctx, t, s, successor.ID)
+				assertSessionsLoad(ctx, t, s, old)
+			},
+		},
+		{
 			name: "deleting a session removes it from its family",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				a := familySession("sess-a", "u-1", suiteID(1))
@@ -2322,6 +2358,34 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 
 				presented(ctx, t, s, old.ID, false, old)
 				assertSessionsGone(ctx, t, s, successor.ID)
+			},
+		},
+		{
+			// The read answers whether the successor was used; it must not be
+			// the use. Both records are loaded before and after, so a read
+			// that marks the successor presented, or touches the record it
+			// asked about, shows as a difference, FirstPresentedAt included.
+			name: "the read writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+
+				oldBefore, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				successorBefore, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				require.True(t, successorBefore.FirstPresentedAt.IsZero(), "the successor starts unpresented")
+
+				used, err := s.SuccessorPresented(ctx, old.ID)
+				require.NoError(t, err)
+				assert.False(t, used)
+
+				oldAfter, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				successorAfter, err := s.Load(ctx, successor.ID)
+				require.NoError(t, err)
+				assert.Equal(t, oldBefore, oldAfter, "the record asked about is unchanged by the read")
+				assert.Equal(t, successorBefore, successorAfter, "the successor is unchanged by the read")
+				assert.True(t, successorAfter.FirstPresentedAt.IsZero(), "the read did not mark the successor presented")
 			},
 		},
 		{

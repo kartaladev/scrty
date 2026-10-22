@@ -196,11 +196,11 @@ func TestMemoryStoreClock(t *testing.T) {
 
 		now := time.Now()
 		require.NoError(t, store.Create(t.Context(), &session.Session{
-			ID: "expired", UserID: testUser, FamilyID: storedFamily, CreatedAt: now.Add(-time.Hour),
+			ID: "expired", UserID: testUser, FamilyID: storedFamily, FamilyCreatedAt: now, CreatedAt: now.Add(-time.Hour),
 			IdleExpiresAt: now.Add(-time.Second), AbsoluteExpiresAt: now.Add(time.Hour),
 		}))
 		require.NoError(t, store.Create(t.Context(), &session.Session{
-			ID: "live", UserID: testUser, FamilyID: storedFamily, CreatedAt: now,
+			ID: "live", UserID: testUser, FamilyID: storedFamily, FamilyCreatedAt: now, CreatedAt: now,
 			IdleExpiresAt: now.Add(time.Hour), AbsoluteExpiresAt: now.Add(2 * time.Hour),
 		}))
 

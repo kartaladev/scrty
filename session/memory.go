@@ -202,6 +202,9 @@ func (s *MemoryStore) Create(_ context.Context, sess *Session) error {
 	if sess.FamilyID.IsZero() {
 		return errors.New("session: a session with no family cannot be stored")
 	}
+	if sess.FamilyCreatedAt.IsZero() {
+		return errors.New("session: a session with no family start time cannot be stored")
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -494,6 +497,9 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	}
 	if op.Successor.FamilyID.IsZero() {
 		return errors.New("session: a supersession's successor needs a family")
+	}
+	if op.Successor.FamilyCreatedAt.IsZero() {
+		return errors.New("session: a supersession's successor needs a family start time")
 	}
 	if op.RetainUntil.Before(op.AcceptUntil) {
 		return errors.New("session: a supersession's retention deadline is before the end of its window")

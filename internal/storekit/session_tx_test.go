@@ -368,6 +368,17 @@ func TestCheckSupersession(t *testing.T) {
 			},
 		},
 		{
+			name: "a successor with no family start time is refused",
+			op: func() session.Supersession {
+				op := supersession(now, nil)
+				op.Successor.FamilyCreatedAt = time.Time{}
+				return op
+			}(),
+			assert: func(t *testing.T, err error) {
+				require.EqualError(t, err, "a successor with no family start time cannot be stored")
+			},
+		},
+		{
 			name: "a retention before the end of the window is refused",
 			op: func() session.Supersession {
 				op := supersession(now, nil)
@@ -398,8 +409,9 @@ func supersession(now time.Time, observed []byte) session.Supersession {
 		RetainUntil:       now.Add(time.Hour),
 		Now:               now,
 		Successor: &session.Session{
-			ID:       "new",
-			FamilyID: id.MustParse("01890000-0000-7000-8000-000000000001"),
+			ID:              "new",
+			FamilyID:        id.MustParse("01890000-0000-7000-8000-000000000001"),
+			FamilyCreatedAt: now,
 		},
 	}
 }

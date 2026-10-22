@@ -1,7 +1,11 @@
 package storetest_test
 
 import (
+	"bytes"
+	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/mfa"
@@ -24,6 +28,54 @@ func TestMemorySessionStore(t *testing.T) {
 	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
 		t.Helper()
 		return session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed)))
+	})
+}
+
+// xorCipher seals reversibly and binds the additional data, which is all the
+// encrypting store's contract rests on: Open refuses a value sealed for other
+// additional data, so a wrapper that sealed a field for one session and read it
+// back for another would fail the suite. It hides nothing from a reader; this
+// module's real ciphers are exercised by the durable stores' own tests.
+type xorCipher struct{}
+
+var errAdditionalData = errors.New("xor cipher: additional data does not match")
+
+func (xorCipher) Seal(plaintext, additionalData []byte) ([]byte, error) {
+	out := append(bytes.Clone(additionalData), 0x00)
+	for _, b := range plaintext {
+		out = append(out, b^0x5a)
+	}
+
+	return out, nil
+}
+
+func (xorCipher) Open(ciphertext, additionalData []byte) ([]byte, error) {
+	rest, ok := bytes.CutPrefix(ciphertext, append(bytes.Clone(additionalData), 0x00))
+	if !ok {
+		return nil, errAdditionalData
+	}
+
+	plaintext := make([]byte, 0, len(rest))
+	for _, b := range rest {
+		plaintext = append(plaintext, b^0x5a)
+	}
+
+	return plaintext, nil
+}
+
+// The encrypting wrapper is a Store like any other, so it runs the same suite
+// over the in-memory store: every case that passes bare must pass sealed.
+func TestEncryptedSessionStore(t *testing.T) {
+	t.Parallel()
+
+	storetest.RunSessionStoreSuite(t, func(t *testing.T, clk clock.Clock) session.Store {
+		t.Helper()
+
+		s, err := session.NewEncryptedStore(
+			session.NewMemoryStore(session.WithMemoryStoreClock(clk.(clock.Timed))), xorCipher{})
+		require.NoError(t, err)
+
+		return s
 	})
 }
 
