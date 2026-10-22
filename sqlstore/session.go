@@ -439,159 +439,102 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) error {
 	const name = "supersede session"
 
-	if op.Successor == nil {
-		return errors.New("sqlstore: supersede session: a supersession needs a successor")
-	}
-	if op.Successor.FamilyID.IsZero() {
-		return errors.New("sqlstore: supersede session: a successor with no family cannot be stored")
-	}
-	if op.RetainUntil.Before(op.AcceptUntil) {
-		return errors.New("sqlstore: supersede session: the retention deadline is before the end of the window")
+	if err := storekit.CheckSupersession(op); err != nil {
+		return failed(name, err)
 	}
 	args, err := s.insertArgs(name, op.Successor)
 	if err != nil {
 		return err
 	}
-	oldDigest := storekit.SessionDigest(op.Old)
-
-	return s.atomically(ctx, name, func(q DBTX) error {
-		if _, err := q.ExecContext(ctx, pgschema.SessionLockSupersession, oldDigest,
-			storekit.OptionalDigestArg(op.ObservedSuccessor)); err != nil {
-			return failed(name, err)
-		}
-
-		res, err := q.ExecContext(ctx, pgschema.SessionSupersedeOld, oldDigest,
-			storekit.OptionalDigestArg(op.ObservedSuccessor), storekit.Time(op.Now), storekit.Time(op.AcceptUntil),
-			storekit.SessionDigest(op.Successor.ID), nullTs(op.RetainUntil))
-		if err != nil {
-			return failed(name, err)
-		}
-		if n, err := res.RowsAffected(); err != nil {
-			return failed(name, err)
-		} else if n == 0 {
-			var cause int
-			if err := q.QueryRowContext(ctx, pgschema.SessionSupersedeRefusal, oldDigest).Scan(&cause); err != nil {
-				return failed(name, err)
-			}
-			return storekit.SupersedeRefusal(cause,
-				errors.New("sqlstore: supersede session: a session with no family cannot be superseded"))
-		}
-
-		if len(op.ObservedSuccessor) > 0 {
-			res, err := q.ExecContext(ctx, pgschema.SessionSupersedePrevious, op.ObservedSuccessor,
-				storekit.Time(op.Now), op.RequireUnpresentedSuccessor, nullTs(op.RetainUntil))
-			if err != nil {
-				return failed(name, err)
-			}
-			if n, err := res.RowsAffected(); err != nil {
-				return failed(name, err)
-			} else if n == 0 {
-				return session.ErrSuccessorAdvanced
-			}
-		}
-
-		res, err = q.ExecContext(ctx, pgschema.SessionInsert, args...)
-		if err != nil {
-			return failed(name, err)
-		}
-		if n, err := res.RowsAffected(); err != nil {
-			return failed(name, err)
-		} else if n == 0 {
-			return errors.New("sqlstore: supersede session: the successor's identifier is already in use")
-		}
-
-		return nil
-	})
-}
-
-// atomically runs fn as one unit on the handle ctx resolves to: under a
-// savepoint inside a caller's transaction, otherwise in a transaction of the
-// store's own on its *sql.DB. A refusal fn returns is returned as it is, so a
-// sentinel stays bare.
-func (s *sessionStore) atomically(ctx context.Context, op string, fn func(q DBTX) error) error {
 	q, _, ambient, err := s.c.conn(ctx)
 	if err != nil {
-		return failed(op, err)
+		return failed(name, err)
 	}
 
-	if ambient {
-		return s.underSavepoint(ctx, q, op, fn)
-	}
+	return storekit.Supersede(ctx, &supersession{s: s, op: name, insert: args}, q, ambient, op)
+}
 
-	tx, err := s.c.base.BeginTx(ctx, nil)
+// supersession is this store's side of storekit.Supersede, for one call to
+// op: database/sql's transaction, savepoint and statement calls, each failure
+// wrapped with the adapter prefix and op.
+type supersession struct {
+	s  *sessionStore
+	op string
+	// insert is the successor's SessionInsert arguments.
+	insert []any
+	// tx is the transaction Begin began, when the store owns the unit.
+	tx *sql.Tx
+}
+
+// Begin begins a transaction of the store's own on its *sql.DB.
+func (u *supersession) Begin(ctx context.Context, _ DBTX) (DBTX, error) {
+	tx, err := u.s.c.base.BeginTx(ctx, nil)
 	if err != nil {
-		return failed(op, err)
+		return nil, failed(u.op, err)
 	}
-	// Rolled back on every way out but a commit, a panic in fn included, so
-	// the transaction and the row lock it holds never outlive the call. After
-	// a commit the rollback does nothing.
-	defer func() { _ = tx.Rollback() }()
+	u.tx = tx
 
-	if err := fn(tx); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return failed(op, err)
+	return tx, nil
+}
+
+func (u *supersession) Commit(context.Context) error {
+	if err := u.tx.Commit(); err != nil {
+		return failed(u.op, err)
 	}
 
 	return nil
 }
 
-// underSavepoint runs fn on q, a caller's transaction, under a savepoint of
-// its own. When fn fails, the savepoint is rolled back, which undoes fn's
-// writes and clears the aborted state a failed statement leaves, so the
-// caller's transaction stays usable with its earlier writes intact; the
-// savepoint is released either way. When fn panics, the savepoint is rolled
-// back and released before the panic goes on.
-//
-// The statements that close the savepoint run even when ctx is done, since
-// leaving it open would leave the caller's transaction aborted, or commit
-// fn's writes with the caller's.
-func (s *sessionStore) underSavepoint(ctx context.Context, q DBTX, op string, fn func(q DBTX) error) error {
-	name := "scrty_sessions_" + strconv.FormatUint(s.savepoints.Add(1), 10)
+// Rollback takes no context: database/sql binds the transaction to the one
+// BeginTx was given, and rolls it back itself when that one is done.
+func (u *supersession) Rollback(context.Context) { _ = u.tx.Rollback() }
 
-	if _, err := q.ExecContext(ctx, "SAVEPOINT "+name); err != nil {
-		return failed(op, err)
-	}
-
-	closeCtx := context.WithoutCancel(ctx)
-	exec := func(stmt string) error {
-		if _, err := q.ExecContext(closeCtx, stmt+name); err != nil {
-			return failed(op, err)
-		}
-		return nil
-	}
-
-	// open is cleared by every normal return, which has already closed the
-	// savepoint or tried to; only a panic leaves it set.
-	open := true
-	defer func() {
-		if open {
-			bestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
-			bestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
-		}
-	}()
-
-	err := fn(q)
-
-	if err != nil {
-		rbErr := exec("ROLLBACK TO SAVEPOINT ")
-		if rbErr == nil {
-			rbErr = exec("RELEASE SAVEPOINT ")
-		}
-		open = false
-		if rbErr != nil {
-			return errors.Join(err, rbErr)
-		}
-
-		return err
-	}
-
-	relErr := exec("RELEASE SAVEPOINT ")
-	open = false
-
-	return relErr
+func (u *supersession) SavepointName() string {
+	return "scrty_sessions_" + strconv.FormatUint(u.s.savepoints.Add(1), 10)
 }
+
+func (u *supersession) ExecSavepoint(ctx context.Context, q DBTX, stmt string) error {
+	if _, err := q.ExecContext(ctx, stmt); err != nil {
+		return failed(u.op, err)
+	}
+
+	return nil
+}
+
+func (u *supersession) Exec(ctx context.Context, q DBTX, stmt string, args ...any) (int64, error) {
+	res, err := q.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return 0, failed(u.op, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, failed(u.op, err)
+	}
+
+	return n, nil
+}
+
+func (u *supersession) QueryInt(ctx context.Context, q DBTX, stmt string, args ...any) (int, error) {
+	var n int
+	if err := q.QueryRowContext(ctx, stmt, args...).Scan(&n); err != nil {
+		return 0, failed(u.op, err)
+	}
+
+	return n, nil
+}
+
+func (u *supersession) InsertSuccessor(ctx context.Context, q DBTX) (bool, error) {
+	n, err := u.Exec(ctx, q, pgschema.SessionInsert, u.insert...)
+	if err != nil {
+		return false, err
+	}
+
+	return n > 0, nil
+}
+
+func (u *supersession) NullTime(t time.Time) any { return nullTs(t) }
+
+func (u *supersession) Failed(err error) error { return failed(u.op, err) }
 
 // DeleteFamily removes every session of family, superseded or not and expired
 // or not, and reports how many went. The nil family is refused before any
