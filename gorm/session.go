@@ -577,11 +577,11 @@ func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) e
 
 	return s.atomically(ctx, name, func(q *gormdb.DB) error {
 		if res := q.Exec(pgschema.SessionLockSupersession, oldDigest,
-			storekit.OptionalDigest(op.ObservedSuccessor)); res.Error != nil {
+			storekit.OptionalDigestArg(op.ObservedSuccessor)); res.Error != nil {
 			return failed(name, res.Error)
 		}
 
-		res := q.Exec(pgschema.SessionSupersedeOld, oldDigest, storekit.OptionalDigest(op.ObservedSuccessor),
+		res := q.Exec(pgschema.SessionSupersedeOld, oldDigest, storekit.OptionalDigestArg(op.ObservedSuccessor),
 			storekit.Time(op.Now), storekit.Time(op.AcceptUntil), storekit.SessionDigest(op.Successor.ID),
 			nullTs(op.RetainUntil))
 		if res.Error != nil {
