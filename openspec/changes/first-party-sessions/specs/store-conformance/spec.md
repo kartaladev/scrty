@@ -59,3 +59,10 @@ The session store suite SHALL cover, for every session store, the narrow activit
 #### Scenario: In-memory default conforms
 - **WHEN** the session suite runs against the in-memory default store
 - **THEN** every activity, supersession and family case passes
+
+### Requirement: The session suite covers reading whether a successor was used
+The session store suite SHALL cover, for every session store, reading whether a superseded session's successor was used: presented, unused, superseded, no longer stored and not stored, and that the read writes nothing.
+
+#### Scenario: Store that reads a gone successor as used caught
+- **WHEN** the session suite runs against a store variant that reports a successor no longer stored as used
+- **THEN** the suite fails on the case whose successor is no longer stored

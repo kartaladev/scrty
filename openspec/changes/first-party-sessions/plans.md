@@ -115,6 +115,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
     - the reuse revocation (`session/reuse.go`) and logout's `RevokeFamily` (`httpsec/logout.go`) run on `context.WithoutCancel(ctx)`;
     - `Store.DeleteByUserExcept(ctx, user, keep)` keeps `keep` and, when it belongs to a family, that family's current session (the member with no `SupersededAt`), and deletes every other session of the user in one atomic operation; signature unchanged;
     - `(*httpsec.Exchange).PublishSession(a, s) error`: refuses a non-nil `s` whose `FamilyID` is `id.Nil` with fixed text matching no sentinel (500), publishing nothing.
+    - added after the review of task 10.1 (design finding 1, "An ended session whose successor was used"): `session.Store` gains `SuccessorPresented(ctx context.Context, id string) (bool, error)`. It reads only. It is true when the record `id` names is stored and its current successor (the record its `SuccessorDigest` names) is stored with a non-zero `FirstPresentedAt` or `SupersededAt`. It is false when that successor is stored unused, is no longer stored, or `SuccessorDigest` is empty. It returns `ErrSessionNotFound` when `id` is not stored. Under recovery, a renewal of a record past its window and past one of its own deadlines calls it: true → reuse (`DeleteFamily` on `context.WithoutCancel(ctx)`, `ErrSessionReused`), false → `ErrSessionExpired`; no successor either way. Only the renewal path consults it.
   - `session.ValidIdentifier(string) bool`: reports whether a string has the exact encoded length and alphabet of a session identifier. It is used by the session-reference bearer to refuse before any lookup.
 - **Verification commands**, run from the repository root unless stated:
   - core module: `go test -race -count=1 ./session/... ./httpsec/... ./internal/... ./sqlstore/...`;
@@ -158,6 +159,9 @@ Read the design and the spec deltas your task names before starting it. Plan tas
 10. **A renewal racing a passkey removal's cut** inside one store.
    - Expected: the cut and the supersession serialise on the store's lock (memory) or row locks (durable), so the result is either "S1 kept as the current session" or "the cut ran first and O's renewal then finds O gone (not found)", never both O and S1 deleted while the request that removed the passkey holds O.
    - Test: added to task 10.4 as a race-suite case run `-race -count=20`.
+11. **An ended predecessor renewed under recovery whose successor's first presentation lands at the same moment.**
+   - Expected: either outcome is acceptable (reuse or expired), nothing is written on the expired branch, and the successor stays usable by its own window and deadlines; never a successor issued for the ended predecessor.
+   - Test: added to task 10.1's step 5 as a manager case with the store mock recording `MarkPresented` between `SuccessorPresented` and the decision (expired, nothing revoked, no `Supersede` call).
 
 ---
 
@@ -189,8 +193,8 @@ Read the design and the spec deltas your task names before starting it. Plan tas
 | 9h | main | 9.11 | — | Opus reviewer |
 | 10a (parallel) | R1 | 10.3 | `session/reuse.go` (the revocation call only), `httpsec/logout.go` (the revocation call and the `logout` type's doc), new `session/reuse_revocation_context_test.go`, new `httpsec/logout_cancel_test.go` | Sonnet: the fix is stated, one call each, test first |
 | 10a' (parallel) | H2 | 10.5 | `httpsec/exchange.go`, `httpsec/resolve.go`, every caller of `PublishSession` (found with gopls references; the session bearer, the signed bearer and the resolution core), and their tests, new `httpsec/publish_family_test.go` | Sonnet: a refusal and a signature change with known callers |
-| 10b (after R1) | S4 | 10.1 | `session/session.go`, `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/reuse.go`, `session/manager.go`, `session/expiry.go`, `session/*_test.go` for them, new `session/superseded_deadline_test.go`, `test/storetest/session_suite.go`, `test/storetest/broken_session_test.go`, `test/storetest/broken_test.go` | Opus: expiry and reuse judgement, security-critical, and a store contract other lanes compile against |
-| 10c (after S4) | D4 | 10.2 | `migrate/securitystate/20261021000000_session_families.sql`, `test/migrate_securitystate_test.go`, `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go`, `test/storetest/ambient.go` | Opus: conditional writes and the sweep across three drivers |
+| 10b (after R1) | S4, then S5 | 10.1 (S5: the review findings and `SuccessorPresented`, memory side and port) | `session/session.go`, `session/store.go`, `session/memory.go`, `session/encrypted.go`, `session/reuse.go`, `session/manager.go`, `session/expiry.go`, `session/*_test.go` for them, new `session/superseded_deadline_test.go`, `test/storetest/session_suite.go`, `test/storetest/broken_session_test.go`, `test/storetest/broken_test.go` | Opus: expiry and reuse judgement, security-critical, and a store contract other lanes compile against |
+| 10c (after S5) | D4 | 10.2, including `SuccessorPresented` in the durable stores | `migrate/securitystate/20261021000000_session_families.sql`, `test/migrate_securitystate_test.go`, `internal/pgschema/sessions.go`, `sqlstore/session.go`, `pgx/session.go`, `gorm/session.go`, `gorm/models.go`, `test/{sqlstore,pgxstore,gormstore}/*_test.go`, `test/storetest/ambient.go` | Opus: conditional writes and the sweep across three drivers |
 | 10d (after D4) | K1 | 10.4 | `session/store.go` (`DeleteByUserExcept` godoc), `session/memory.go`, `session/encrypted.go`, `internal/pgschema/sessions.go`, the three durable session files, `passkey/manager.go` (godoc of `SessionRevoker`), new `passkey/manage_other_sessions_test.go`, `test/storetest/session_suite.go`, `test/storetest/race.go`, the broken variants | Opus: a revocation rule whose naive form is wrong, decided atomically in every store |
 | 10e (after K1, parallel) | D5 | 10.6 | `gorm/session.go`, `sqlstore/session.go`, `test/gormstore/*_test.go`, `test/sqlstore/*_test.go` | Sonnet: two stated driver checks, test first |
 | 10e' (after K1, parallel) | P2 | 10.8 | `test/httpsecconformance/passkey_scenarios.go`, godoc lines only in `session/session.go` and `session/store.go` | Sonnet: a scenario and godoc against stated text |
@@ -893,7 +897,20 @@ Design finding 1, decisions 1 and 2 of the second round. Specs: `sessions` "Rota
   ```
   Use `stale` in `Load` and `DeleteExpired`. In `session/reuse.go`, inside the window, refuse with `ErrSessionExpired` (no revocation) when `s.expired(now)`; under recovery, refuse a late renewal the same way before the store is asked to supersede. Keep `Save` preserving `RetainUntil` with the other library-only fields. Run `go test -race -count=1 ./session/...`.
 - [ ] **Step 3 (rewrite):** rewrite the tests listed under Files to the amended specs and the conformance cases to "own deadlines unchanged; retention 21:00"; add the memory-runner cases "loads past its own deadlines until retention", "swept after retention", "a knocked-out successor keeps the later retention deadline", "a stale save changes neither", with broken variants that raise the deadlines, sweep by the deadlines, or lower the retention deadline. Run `(cd test && go test -count=1 -race -run 'TestMemory|TestSuitesCatchBrokenStores' ./storetest/)` and `go test -race -count=50 -run 'Race|Racing|Concurrent' ./session/`. The durable runners fail the rewritten cases until D4: confirm they compile.
-- [ ] **Step 4: commit** `fix(session): keep a superseded session's retention apart from its own deadlines`.
+- [ ] **Step 4 (review fold, dispatch S5):** from the review of steps 1–3:
+  - the two recovery cases "after the session's absolute deadline" and "…idle deadline" also assert `NotErrorIs(err, ErrSessionReused)` and that the store holds two records (no successor, nothing revoked);
+  - the godoc of `WithMaxFamilyLifetime` and its sibling in `session/options.go` (about lines 116 and 335) says a superseded record keeps the later of the retention deadline it holds and the new one;
+  - the `Session.RetainUntil` godoc says the library sets it only through `Store.Supersede`, and a store keeps whatever value it is given (a successor is inserted as given);
+  - the `ErrSessionRenewalRequired` godoc says the renewal it asks for can still be expired, when the record's own deadline has passed;
+  - reflow the comments touched at `session/manager.go:336` and `session/reuse.go:157,175,279`.
+- [ ] **Step 5 (red, dispatch S5):** in `session/superseded_deadline_test.go`, cases under `WithUnusedSuccessorRecovery()` and a 30-minute idle timeout, O rotated at 09:00 with 30 s grace into S1:
+  - "an ended session whose successor was used is reuse": S1 loaded at 09:20, O renewed (`LoadForRenewal` and `RotateWithGrace`) at 09:31 → `ErrSessionReused`, S1 no longer loads, the store holds no record of the family;
+  - "an ended session whose unused successor is gone is expired": S1 deleted, O renewed at 09:31 → `ErrSessionExpired`, `NotErrorIs` `ErrSessionReused`, O still loads;
+  - "an ended session whose successor is unused is expired": as above with S1 kept, and S1 still loads;
+  - the Review Focus 11 case, over the `session.Store` mock: `SuccessorPresented` returns false, then nothing but `Load` is called.
+  In `test/storetest/session_suite.go`, conformance cases for `SuccessorPresented`: presented (after `MarkPresented`) → true; unused → false; successor superseded → true; successor deleted → false; unknown id → `ErrSessionNotFound`; after each call the records are unchanged. A broken variant `successor-gone-as-used` is caught at "successor deleted". Stub `SuccessorPresented` in every store (memory, encrypted, and the three durable ones) returning `false, nil` so the tree compiles. Run `go test -count=1 -run 'TestSupersededRecord_RetentionIsNotADeadline' ./session/` and the memory runner. Expected: the reuse case and the presented and superseded conformance cases FAIL.
+- [ ] **Step 6 (green, dispatch S5):** add the port method and godoc to `session/store.go`, implement it in `session/memory.go` under the read lock, and delegate it in `session/encrypted.go`. Regenerate the mock (`go generate ./session/`), then consult it in `session/reuse.go`'s recovery branch for an own-deadline-ended record, before any supersession. Run `go test -race -count=1 ./session/...`, `go test -race -count=50 -run 'Race|Racing|Concurrent' ./session/`, the memory and broken runners, and `make generate-check`. The durable stores keep the stub until D4.
+- [ ] **Step 7: commit** `fix(session): keep a superseded session's retention apart from its own deadlines`.
 
 ---
 
@@ -915,6 +932,13 @@ WHERE id_digest = $1
 
 - [ ] **Step 1 (red):** the migration case (nullable, no default, null on existing rows, removed by the down step) and the null-retention conformance case. Run the durable session runners and `(cd test && go test -count=1 -run 'Migrate' ./...)` with `SCRTY_TEST_POSTGRES_IMAGE` unset (PostgreSQL 18) and `=postgres:15.19-alpine`. Expected: FAIL on the rewritten 10.1 cases and the new ones.
 - [ ] **Step 2 (green):** implement as listed. Run the session, race, lock-order, ambient and broken suites on every backend on PostgreSQL 18 and 15, and `go vet` and `golangci-lint run` in the root, `pgx` and `gorm` modules.
+- [ ] **Step 2b (red, then green):** with the `SuccessorPresented` conformance cases from Task 10.1 failing on each durable runner (the stub returns false), implement it as one read:
+  ```sql
+  SELECT s.first_presented_at IS NOT NULL OR s.superseded_at IS NOT NULL
+  FROM sessions o LEFT JOIN sessions s ON s.id_digest = o.successor_digest
+  WHERE o.id_digest = $1
+  ```
+  No row means `ErrSessionNotFound`; a NULL result (no successor row) means false. Add it to `internal/pgschema/sessions.go`, with `sqlstore`, `pgx` and `gorm` using it. Run the session suite on every backend on PostgreSQL 18 and 15.
 - [ ] **Step 3: commit** `fix(stores): keep a superseded session's retention apart from its own deadlines`.
 
 ---

@@ -156,6 +156,29 @@ A supersession SHALL NOT set a superseded session's retention deadline earlier t
 - **WHEN** a successor knocked out by a re-rotation already holds a retention deadline of 21:00, and the re-rotation gives a retention deadline of 18:00
 - **THEN** the knocked-out successor keeps 21:00 as its retention deadline
 
+### Requirement: Whether a superseded session's successor was used is read without writing
+A store SHALL report, for a stored superseded session, whether its current successor (the session its successor digest names) is stored and has been presented or superseded. It SHALL report false when that successor is stored and unpresented, or is no longer stored, SHALL fail with the session-not-found error when the named session is not stored, and SHALL write nothing.
+
+#### Scenario: Successor presented
+- **WHEN** session O is superseded by S1, and S1's first presentation is recorded
+- **THEN** the store reports that O's successor was used, and nothing is written
+
+#### Scenario: Successor unused
+- **WHEN** session O is superseded by S1, and S1 is never presented
+- **THEN** the store reports that O's successor was not used
+
+#### Scenario: Successor superseded
+- **WHEN** session O is superseded by S1, and S1 is superseded by S2
+- **THEN** the store reports that O's successor was used
+
+#### Scenario: Successor no longer stored
+- **WHEN** session O is superseded by S1, and S1 is deleted
+- **THEN** the store reports that O's successor was not used
+
+#### Scenario: Session not stored
+- **WHEN** the store is asked about a session it does not hold
+- **THEN** it fails with the session-not-found error
+
 ### Requirement: Ending a user's other sessions keeps the presenting sign-in
 Deleting every session of a user except a named one SHALL keep the named session and, when it belongs to a family, the family's current session, the one member not superseded, and SHALL delete every other session of the user, every other member of that family included, in one atomic operation.
 
