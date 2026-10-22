@@ -207,6 +207,28 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 			},
 		},
 		{
+			name:    "named by a superseded session inside its window keeps it and its successor",
+			prepare: renewFirstSession,
+			keep:    func(ids exceptIDs) string { return ids.mine[0] },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 2, removed, "only the two unrelated sessions of the user go")
+				assertLoads(t, m, ids.mine[0], ids.fresh, ids.theirs)
+				assertGone(t, m, ids.mine[1:]...)
+			},
+		},
+		{
+			name:    "named by the successor ends the superseded session of its family",
+			prepare: renewFirstSession,
+			keep:    func(ids exceptIDs) string { return ids.fresh },
+			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+				require.NoError(t, err)
+				assert.Equal(t, 3, removed, "the superseded session and the two unrelated sessions go")
+				assertLoads(t, m, ids.fresh, ids.theirs)
+				assertGone(t, m, ids.mine...)
+			},
+		},
+		{
 			name: "expired sessions of the user are deleted and counted",
 			prepare: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs {
 				t.Helper()
@@ -266,6 +288,21 @@ func seedExcept(t *testing.T, m *session.Manager) exceptIDs {
 	s, err := m.Create(t.Context(), otherUser)
 	require.NoError(t, err)
 	ids.theirs = s.ID
+
+	return ids
+}
+
+// renewFirstSession renews the first seeded session with a grace window, so
+// the family holds it superseded and its successor live; the successor's
+// identifier goes in ids.fresh.
+func renewFirstSession(t *testing.T, m *session.Manager, _ *clockwork.FakeClock, ids exceptIDs) exceptIDs {
+	t.Helper()
+
+	first, err := m.Load(t.Context(), ids.mine[0])
+	require.NoError(t, err)
+	successor, _, err := m.RotateWithGrace(t.Context(), first, 30*time.Second)
+	require.NoError(t, err)
+	ids.fresh = successor.ID
 
 	return ids
 }

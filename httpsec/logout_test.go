@@ -14,6 +14,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -41,6 +42,17 @@ func statelessAuthentication() httpsec.Option {
 			return next(ex)
 		}),
 		httpsec.Before(httpsec.OrderLogout))
+}
+
+// testFamily is the family a signed-in session belongs to in these cases.
+var testFamily = id.ID{0x01}
+
+// familiedSession is touchableSession as a sign-in's family records it.
+func familiedSession() *session.Session {
+	s := touchableSession()
+	s.FamilyID = testFamily
+
+	return s
 }
 
 // TestLogout pins what ends a session, what it answers, and what it refuses.
@@ -71,7 +83,7 @@ func TestLogout(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "an authenticated POST deletes the session and answers 200 empty",
+			name: "an authenticated POST revokes the session's family and answers 200 empty",
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
@@ -80,11 +92,12 @@ func TestLogout(t *testing.T) {
 				// The session is there for the logout and gone afterwards, so
 				// the token the caller still holds names nothing.
 				gomock.InOrder(
-					h.store.EXPECT().Load(gomock.Any(), testJTI).Return(touchableSession(), nil),
+					h.store.EXPECT().Load(gomock.Any(), testJTI).Return(familiedSession(), nil),
 					h.store.EXPECT().Load(gomock.Any(), testJTI).
 						Return(nil, session.ErrSessionNotFound).AnyTimes(),
 				)
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil).Times(1)
+				h.acceptsFirstPresentation()
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil).Times(1)
 			},
 			request: authorizedLogout,
 			assert: func(t *testing.T, chain *httpsec.Chain, s served) {
@@ -97,15 +110,56 @@ func TestLogout(t *testing.T) {
 			},
 		},
 		{
-			name: "a second logout for an already-deleted session is also 200",
+			// Every stored session belongs to a family, so one with none
+			// reaching the chain is a store fault. It is refused where it is
+			// published, before logout runs, rather than deleted alone, which
+			// would leave a renewal's successor live.
+			name: "a session with no family is refused, and not deleted alone",
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
-				h.expectResolvedSession(touchableSession())
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).
-					Return(session.ErrSessionNotFound)
+				familyless := touchableSession()
+				familyless.FamilyID = id.Nil
+				h.expectResolvedSession(familyless)
+			},
+			request: authorizedLogout,
+			assert: func(t *testing.T, _ *httpsec.Chain, s served) {
+				require.Error(t, s.err, "a session with no family names no sign-in to end")
+				assert.False(t, s.handlerRan)
+			},
+		},
+		{
+			name: "a session of a family is ended by revoking the family",
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(2, nil).Times(1)
 			},
 			request: authorizedLogout,
 			assert:  endedCleanly,
+		},
+		{
+			name: "a family already gone is also 200",
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(0, nil).Times(1)
+			},
+			request: authorizedLogout,
+			assert:  endedCleanly,
+		},
+		{
+			name: "a family the store could not revoke is refused",
+			wire: func(_ *testing.T, h *authHarness) {
+				h.expectVerified()
+				h.expectResolvedSession(familiedSession())
+				h.acceptsActivityWriteBack()
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(0, errFixtureFailure)
+			},
+			request: authorizedLogout,
+			assert: func(t *testing.T, _ *httpsec.Chain, s served) {
+				require.ErrorIs(t, s.err, errFixtureFailure)
+				assert.False(t, s.handlerRan)
+			},
 		},
 		{
 			name: "an anonymous POST is refused",
@@ -152,8 +206,8 @@ func TestLogout(t *testing.T) {
 			opts: []httpsec.LogoutOption{httpsec.WithLogoutRequestPath("/session/end")},
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
-				h.expectResolvedSession(touchableSession())
-				h.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil)
+				h.expectResolvedSession(familiedSession())
+				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil)
 			},
 			request: func(ctx context.Context) *http.Request {
 				return logoutRequest(ctx, http.MethodPost, "/session/end", true)

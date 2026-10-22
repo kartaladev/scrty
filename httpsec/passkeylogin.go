@@ -83,6 +83,10 @@ type passwordlessInterceptor struct {
 	enforced          map[policy.ChallengeKind]bool
 	challengeMethods  challengeMethodsFunc
 
+	// issue issues the login's credential as the chain's bearer mode
+	// decides, settled at assembly (resolve).
+	issue credentialIssuer
+
 	// cancelHeld cancels the user's held account recoveries at login, set at
 	// assembly when the chain's recovery may hold one, and nil otherwise.
 	cancelHeld heldRecoveryCanceller
@@ -238,6 +242,11 @@ func PasswordlessLimiter(l ratelimit.Limiter) PasswordlessSetting {
 //
 // Default: the token generator given to EnableFormLogin. A chain without form
 // login must give one. A nil generator is refused.
+//
+// With EnableSessionBearer on, it must not be given, and form login's
+// generator is not inherited: the credential is the opened session's
+// identifier, and a generator is a configuration error from New, since a
+// token it minted would not be accepted by that chain.
 func PasswordlessTokens(g token.Generator) PasswordlessSetting {
 	return func(cfg *passwordlessConfig) error {
 		if err := requireDep("PasswordlessTokens", "token generator", g); err != nil {
@@ -331,14 +340,25 @@ func (p *passkeyInterceptor) checkPasswordless(option string) error {
 func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 	l := c.formLogin()
 
-	if i.tokens == nil && l != nil {
-		i.tokens = l.tokens
+	if c.sessionBearer {
+		// The credential is the session's identifier, so a generator, given
+		// here or inherited from form login, would mint tokens this chain
+		// refuses. Form login's own check refuses its generator.
+		if err := checkTokenGenerator(c, option, "PasswordlessTokens", i.tokens); err != nil {
+			return err
+		}
+	} else {
+		if i.tokens == nil && l != nil {
+			i.tokens = l.tokens
+		}
+
+		if nilcheck.IsNil(i.tokens) {
+			return newConfigError("%s's passwordless login needs a token generator: give "+
+				"PasswordlessTokens, or enable form login, whose generator it then uses", option)
+		}
 	}
 
-	if nilcheck.IsNil(i.tokens) {
-		return newConfigError("%s's passwordless login needs a token generator: give "+
-			"PasswordlessTokens, or enable form login, whose generator it then uses", option)
-	}
+	i.issue = c.credentialIssuer(i.tokens)
 
 	if i.respond == nil {
 		i.respond = writeLoginResult
@@ -512,6 +532,7 @@ func (i *passwordlessInterceptor) finish(ex *Exchange) error {
 		engine:            i.engine,
 		sessions:          i.sessions,
 		tokens:            i.tokens,
+		issue:             i.issue,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		challengeMethods:  i.challengeMethods,

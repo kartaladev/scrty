@@ -93,6 +93,22 @@ func TestManagerTouch(t *testing.T) {
 		})
 	}
 
+	t.Run("an unknown session is not found", func(t *testing.T) {
+		t.Parallel()
+
+		clk := clockwork.NewFakeClockAt(createdAt)
+		m, _ := managerOnClock(t, clk)
+		// Created through another manager, so the first one's store never held it.
+		elsewhere, _ := managerOnClock(t, clk)
+		stranger, err := elsewhere.Create(t.Context(), testUser)
+		require.NoError(t, err)
+
+		clk.Advance(10 * time.Minute)
+		err = m.Touch(t.Context(), stranger)
+
+		require.ErrorIs(t, err, session.ErrSessionNotFound)
+	})
+
 	t.Run("the extension is persisted, not only applied in memory", func(t *testing.T) {
 		t.Parallel()
 

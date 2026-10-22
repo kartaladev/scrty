@@ -80,6 +80,7 @@ func (i *oidcInterceptor) redeem(ex *Exchange) error {
 		engine:            i.engine,
 		sessions:          i.sessions,
 		tokens:            i.tokens,
+		issue:             i.issue,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		challengeMethods:  out.challengeMethods(i.challengeMethods),

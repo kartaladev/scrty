@@ -177,3 +177,36 @@ func TestIdleTimeoutPolicyPhases(t *testing.T) {
 		"a rule written for every request must be asked on every request, and nowhere else")
 	assert.NotEmpty(t, p.Name(), "a policy with no name cannot be told apart in a log")
 }
+
+func TestIdleTimeoutPolicyIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		opts   []policy.IdleOption
+		assert func(t *testing.T, got time.Duration)
+	}
+
+	cases := []testCase{
+		{
+			name:   "default is thirty minutes",
+			assert: func(t *testing.T, got time.Duration) { assert.Equal(t, 30*time.Minute, got) },
+		},
+		{
+			name:   "reports what WithIdlePolicyTimeout configured",
+			opts:   []policy.IdleOption{policy.WithIdlePolicyTimeout(5 * time.Minute)},
+			assert: func(t *testing.T, got time.Duration) { assert.Equal(t, 5*time.Minute, got) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p, err := policy.NewIdleTimeoutPolicy(tc.opts...)
+			require.NoError(t, err)
+
+			tc.assert(t, p.IdleTimeout())
+		})
+	}
+}

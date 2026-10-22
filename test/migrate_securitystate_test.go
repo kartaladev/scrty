@@ -2,19 +2,30 @@ package test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"io/fs"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	gormdb "gorm.io/gorm"
 
+	"github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
 // provider builds a goose provider over db for the migration files in dir of
@@ -165,6 +176,14 @@ var securityStateColumns = map[string][]column{
 		defaulted("mfa_at_first_factor", colBoolean, "false"),
 		defaulted("federated_amr", colJSONB, defEmptyArray),
 		defaulted("federated_acr", colText, defEmptyText),
+		defaulted("family_id", colUUID, "gen_random_uuid()"),
+		defaulted("family_created_at", colTimestamptz, "now()"),
+		optional("superseded_at", colTimestamptz),
+		optional("accept_until", colTimestamptz),
+		optional("successor_digest", colBytea),
+		optional("first_presented_at", colTimestamptz),
+		optional("retain_until", colTimestamptz),
+		defaulted("authenticated_at", colTimestamptz, "now()"),
 	},
 	"signing_keys": {
 		required("id", colUUID),
@@ -328,6 +347,7 @@ var securityStateIndexes = map[string][]string{
 		"CREATE INDEX sessions_user ON sessions USING btree (user_id)",
 		"CREATE INDEX sessions_idle_expiry ON sessions USING btree (idle_expires_at)",
 		"CREATE INDEX sessions_absolute_expiry ON sessions USING btree (absolute_expires_at)",
+		"CREATE INDEX sessions_family ON sessions USING btree (family_id)",
 	},
 	"signing_keys": {
 		"CREATE UNIQUE INDEX signing_keys_pkey ON signing_keys USING btree (id)",
@@ -652,6 +672,229 @@ func TestSecurityStateMigrations_Schema(t *testing.T) {
 	runSchemaChecks(t, db, securityStateSchemaChecks(migrate.SecurityStateVersionTable))
 }
 
+// securityStateMigrationCount is how many migration files the security-state
+// set holds.
+const securityStateMigrationCount = 2
+
+// Versions of the security-state migrations the family tests address.
+const (
+	versionSecurityState   int64 = 20260926000000
+	versionSessionFamilies int64 = 20261021000000
+)
+
+// sessionColumnsAndIndexes describes the sessions table as sorted column and
+// index lines, for comparing its shape before and after a migration.
+func sessionColumnsAndIndexes(t *testing.T, db *sql.DB) []string {
+	t.Helper()
+
+	lines := queryStrings(t, db, `SELECT 'col ' || a.attname || ' ' || format_type(a.atttypid, a.atttypmod)
+	        || CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE ' NULL' END
+	        || coalesce(' DEFAULT ' || pg_get_expr(d.adbin, d.adrelid), '')
+	   FROM pg_attribute a
+	   LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+	  WHERE a.attrelid = 'sessions'::regclass AND a.attnum > 0 AND NOT a.attisdropped
+	 UNION ALL
+	 SELECT 'idx ' || replace(indexdef, current_schema() || '.', '') FROM pg_indexes
+	  WHERE tablename = 'sessions' AND schemaname = current_schema()`)
+	slices.Sort(lines)
+	return lines
+}
+
+// TestSecurityStateMigrations_SessionFamilies pins the session-family
+// migration: the columns and index it adds, the backfill of rows that already
+// exist, and a rollback that restores the previous shape. The backfill and
+// rollback are asserted with SQL against the table, not through a store.
+func TestSecurityStateMigrations_SessionFamilies(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	type testCase struct {
+		name string
+		run  func(t *testing.T, db *sql.DB, p *goose.Provider)
+	}
+
+	cases := []testCase{
+		{
+			name: "adds the family columns and index",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				got := sessionColumnsAndIndexes(t, db)
+				for _, want := range []string{
+					"col family_id uuid NOT NULL DEFAULT gen_random_uuid()",
+					"col family_created_at timestamp with time zone NOT NULL DEFAULT now()",
+					"col authenticated_at timestamp with time zone NOT NULL DEFAULT now()",
+					"col superseded_at timestamp with time zone NULL",
+					"col accept_until timestamp with time zone NULL",
+					"col successor_digest bytea NULL",
+					"col first_presented_at timestamp with time zone NULL",
+					"idx CREATE INDEX sessions_family ON sessions USING btree (family_id)",
+				} {
+					assert.Contains(t, got, want)
+				}
+			},
+		},
+		{
+			name: "backfills existing sessions as their own family",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSecurityState)
+				require.NoError(t, err)
+
+				ids := []string{"0192f000-0000-7000-8000-0000000000c1", "0192f000-0000-7000-8000-0000000000c2"}
+				created := []time.Time{
+					time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC),
+					time.Date(2026, 9, 2, 11, 30, 0, 0, time.UTC),
+				}
+				for i, sid := range ids {
+					_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
+						(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+						VALUES ($1, $2, 'u', $3, $3, $4, $4)`,
+						sid, []byte{byte(i + 1)}, created[i], created[i].Add(time.Hour))
+					require.NoError(t, err)
+				}
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				rows, err := db.QueryContext(t.Context(),
+					`SELECT id::text, family_id::text, created_at, family_created_at,
+					        superseded_at IS NULL, accept_until IS NULL,
+					        successor_digest IS NULL, first_presented_at IS NULL
+					   FROM sessions ORDER BY id`)
+				require.NoError(t, err)
+				defer func() { _ = rows.Close() }()
+
+				n := 0
+				for rows.Next() {
+					var sid, fid string
+					var createdAt, familyCreatedAt time.Time
+					var supersededNull, acceptNull, successorNull, presentedNull bool
+					require.NoError(t, rows.Scan(&sid, &fid, &createdAt, &familyCreatedAt,
+						&supersededNull, &acceptNull, &successorNull, &presentedNull))
+					assert.Equal(t, sid, fid, "family_id is the row's own id")
+					assert.True(t, createdAt.Equal(familyCreatedAt), "family_created_at is created_at")
+					assert.True(t, supersededNull && acceptNull && successorNull && presentedNull,
+						"the supersession columns stay NULL")
+					n++
+				}
+				require.NoError(t, rows.Err())
+				assert.Equal(t, len(ids), n)
+			},
+		},
+		{
+			name: "an older writer's insert succeeds",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.Up(t.Context())
+				require.NoError(t, err)
+
+				// Names neither family column nor authenticated_at.
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000d1', '\x07', 'u', now(), now(), now(), now())`)
+				require.NoError(t, err)
+
+				var ok bool
+				require.NoError(t, db.QueryRowContext(t.Context(),
+					`SELECT family_id IS NOT NULL AND family_created_at IS NOT NULL AND authenticated_at IS NOT NULL
+					   FROM sessions`).Scan(&ok))
+				assert.True(t, ok, "the three columns take their defaults")
+			},
+		},
+		{
+			name: "existing rows get their authentication time",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSecurityState)
+				require.NoError(t, err)
+
+				signedIn := time.Date(2026, 9, 1, 9, 0, 0, 0, time.UTC)
+				second := signedIn.Add(20 * time.Minute)
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, mfa_satisfied_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000e1', '\x01', 'u', $1, $1, $2, $2, $3),
+					       ('0192f000-0000-7000-8000-0000000000e2', '\x02', 'u', $1, $1, $2, $2, NULL)`,
+					signedIn, signedIn.Add(time.Hour), second)
+				require.NoError(t, err)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				for id, want := range map[string]time.Time{
+					"0192f000-0000-7000-8000-0000000000e1": second,
+					"0192f000-0000-7000-8000-0000000000e2": signedIn,
+				} {
+					var got time.Time
+					require.NoError(t, db.QueryRowContext(t.Context(),
+						`SELECT authenticated_at FROM sessions WHERE id = $1`, id).Scan(&got))
+					assert.True(t, want.Equal(got), "session %s: authenticated_at %s, want %s", id, got, want)
+				}
+			},
+		},
+		{
+			// A row written before the column existed reads back with no
+			// retention deadline, which a store judges by the row's own
+			// deadlines; the down step removes the column again.
+			name: "adds the retention deadline, nullable with no default, unset on existing rows, removed on rollback",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSecurityState)
+				require.NoError(t, err)
+
+				_, err = db.ExecContext(t.Context(), `INSERT INTO sessions
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+					VALUES ('0192f000-0000-7000-8000-0000000000f1', '\x01', 'u', now(), now(), now(), now())`)
+				require.NoError(t, err)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+
+				assert.Contains(t, sessionColumnsAndIndexes(t, db), "col retain_until timestamp with time zone NULL",
+					"retain_until is a nullable timestamptz with no default")
+				var unset bool
+				require.NoError(t, db.QueryRowContext(t.Context(),
+					`SELECT retain_until IS NULL FROM sessions WHERE id = '0192f000-0000-7000-8000-0000000000f1'`).
+					Scan(&unset))
+				assert.True(t, unset, "a row that existed before the column has no retention deadline")
+
+				_, err = p.Down(t.Context())
+				require.NoError(t, err)
+
+				for _, line := range sessionColumnsAndIndexes(t, db) {
+					assert.NotContains(t, line, "retain_until", "the down step removes the column")
+				}
+			},
+		},
+		{
+			name: "rollback restores the previous columns and indexes",
+			run: func(t *testing.T, db *sql.DB, p *goose.Provider) {
+				_, err := p.UpTo(t.Context(), versionSecurityState)
+				require.NoError(t, err)
+				before := sessionColumnsAndIndexes(t, db)
+
+				_, err = p.Up(t.Context())
+				require.NoError(t, err)
+				require.NotEqual(t, before, sessionColumnsAndIndexes(t, db),
+					"the family migration changed the sessions table")
+
+				_, err = p.Down(t.Context())
+				require.NoError(t, err)
+
+				assert.Equal(t, before, sessionColumnsAndIndexes(t, db))
+				assert.Equal(t, 1, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, p := freshSecurityState(t, set)
+			tc.run(t, db, p)
+		})
+	}
+}
+
 // rollBackAtCleanup registers a cleanup that rolls p back to version zero,
 // failing the test if that errors, and then fails naming every table left in
 // the current schema other than exempt: the leftover-table check the helper
@@ -727,7 +970,7 @@ func TestSecurityStateMigrations_VersionTable(t *testing.T) {
 				require.NoError(t, err)
 			},
 			assert: func(t *testing.T, db *sql.DB) {
-				assert.Equal(t, 1, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
+				assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
 			},
 		},
 		{
@@ -739,7 +982,7 @@ func TestSecurityStateMigrations_VersionTable(t *testing.T) {
 				require.NoError(t, err)
 			},
 			assert: func(t *testing.T, db *sql.DB) {
-				assert.Equal(t, 1, appliedVersionCount(t, db, "auth_schema_versions"))
+				assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, "auth_schema_versions"))
 				assert.False(t, regclassExists(t, db, migrate.SecurityStateVersionTable),
 					"no goose_security_state table is created")
 			},
@@ -762,7 +1005,7 @@ func TestSecurityStateMigrations_VersionTable(t *testing.T) {
 				for _, tbl := range securityStateTables {
 					assert.True(t, regclassExists(t, db, tbl), "table %s should still exist", tbl)
 				}
-				assert.Equal(t, 1, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
+				assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, migrate.SecurityStateVersionTable))
 				assert.False(t, regclassExists(t, db, "identity_probe_users"),
 					"the probe set's own table is gone after its own rollback")
 			},
@@ -951,15 +1194,18 @@ func TestSecurityStateMigrations_Lifecycle(t *testing.T) {
 				require.NoError(t, err)
 				entries, err := fs.ReadDir(sub, ".")
 				require.NoError(t, err)
-				require.Len(t, entries, 1,
-					"the set has exactly one migration file today; extend this case if it gains a second")
+				require.Len(t, entries, securityStateMigrationCount,
+					"extend this case if the set gains another migration file")
 
-				runDownSection(t, db, sub, entries[0].Name())
+				// Newest first, the order a rollback runs them in.
+				for _, e := range slices.Backward(entries) {
+					runDownSection(t, db, sub, e.Name())
+				}
 
 				for _, tbl := range securityStateTables {
 					assert.False(t, regclassExists(t, db, tbl), "table %s should be gone after its own Down", tbl)
 				}
-				assert.Equal(t, 1, appliedVersionCount(t, db, migrate.SecurityStateVersionTable),
+				assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, migrate.SecurityStateVersionTable),
 					"the version table itself is untouched by executing the Down section directly")
 			},
 		},
@@ -1017,4 +1263,94 @@ func TestGooseDirect(t *testing.T) {
 
 	assertNoLeftoverTables(t.Context(), t, db, versionTable)
 	assert.Equal(t, 0, appliedVersionCount(t, db, versionTable))
+}
+
+// TestSecurityStateMigrations_ExistingSessionsReadBack pins what a session
+// written before the session-families migration looks like through each
+// durable store once the migration has run: a family of its own, created when
+// it was, and no retention deadline. The schema cases above read the columns;
+// this one reads the rows as a consumer's code does, through the stores.
+func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
+	t.Parallel()
+
+	set := migrate.SecurityState()
+
+	type testCase struct {
+		name string
+		open func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store
+	}
+
+	cases := []testCase{
+		{
+			name: "sqlstore",
+			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
+				s, err := sqlstore.NewSessionStore(conn.DB, c)
+				require.NoError(t, err)
+				return s
+			},
+		},
+		{
+			name: "pgx",
+			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
+				pool, err := pgxpool.New(t.Context(), conn.DSN)
+				require.NoError(t, err)
+				t.Cleanup(pool.Close)
+
+				s, err := pgx.NewSessionStore(pool, c)
+				require.NoError(t, err)
+				return s
+			},
+		},
+		{
+			name: "gorm",
+			open: func(t *testing.T, conn PostgresConn, c seal.Cipher) session.Store {
+				db, err := gormdb.Open(postgres.Open(conn.DSN), &gormdb.Config{DisableAutomaticPing: true})
+				require.NoError(t, err)
+				sqlDB, err := db.DB()
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = sqlDB.Close() })
+
+				s, err := gorm.NewSessionStore(db, c)
+				require.NoError(t, err)
+				return s
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := RunTestPostgres(t)
+			p := provider(t, conn.DB, set.FS(), set.Dir, migrate.SecurityStateVersionTable)
+			rollBackAtCleanup(t, conn.DB, p, migrate.SecurityStateVersionTable)
+
+			_, err := p.UpTo(t.Context(), versionSecurityState)
+			require.NoError(t, err)
+
+			const (
+				sessionID = "a-session-written-by-older-code"
+				rowID     = "0192f000-0000-7000-8000-0000000000a1"
+			)
+			created := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+			digest := sha256.Sum256([]byte(sessionID))
+			_, err = conn.DB.ExecContext(t.Context(), `INSERT INTO sessions
+				(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
+				VALUES ($1, $2, 'u', $3, $3, '2099-01-01', '2099-01-01')`,
+				rowID, digest[:], created)
+			require.NoError(t, err)
+
+			_, err = p.Up(t.Context())
+			require.NoError(t, err)
+
+			got, err := tc.open(t, conn, storefix.TestCipher(t)).Load(t.Context(), sessionID)
+			require.NoError(t, err)
+
+			assert.Equal(t, rowID, got.FamilyID.String(), "the row is a family of its own")
+			assert.True(t, got.CreatedAt.Equal(created), "created_at is kept, got %s", got.CreatedAt)
+			assert.True(t, got.FamilyCreatedAt.Equal(got.CreatedAt),
+				"the family was created when the row was: %s, want %s", got.FamilyCreatedAt, got.CreatedAt)
+			assert.True(t, got.RetainUntil.IsZero(), "a row from before the column has no retention deadline")
+		})
+	}
 }

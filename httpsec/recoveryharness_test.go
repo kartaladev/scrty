@@ -98,6 +98,11 @@ type recoveryHarness struct {
 	noFormLogin bool
 	noBinding   bool
 
+	// reference builds the chain in the session-reference bearer mode: form
+	// login is given no token generator, and EnableSessionBearer is on, so
+	// every credential the chain issues is a session identifier.
+	reference bool
+
 	chain *httpsec.Chain
 
 	// allow and coreCheckCalls are state a case's consumer hooks share with
@@ -206,12 +211,21 @@ func (h *recoveryHarness) options(t *testing.T) []httpsec.Option {
 	opts := append([]httpsec.Option(nil), h.chainOpts...)
 
 	if !h.noFormLogin {
-		opts = append(opts, httpsec.EnableFormLogin(httpsec.FormLoginDeps{
+		deps := httpsec.FormLoginDeps{
 			Authenticator: h.authn,
 			Sessions:      h.sessions,
 			Tokens:        h.tokens,
 			Attempts:      h.attempts,
-		}))
+		}
+		if h.reference {
+			deps.Tokens = nil
+		}
+
+		opts = append(opts, httpsec.EnableFormLogin(deps))
+	}
+
+	if h.reference {
+		opts = append(opts, httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: h.sessions, Users: h.users}))
 	}
 
 	if !h.noBinding {

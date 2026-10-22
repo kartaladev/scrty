@@ -39,6 +39,46 @@
 // refuses a caller that has just been authenticated, indistinguishably from a
 // missing credential.
 //
+// An interceptor that authenticates on a session publishes the result and the
+// session together with Exchange.PublishSession, and returns the error it
+// reports, which refuses a session that belongs to no family and publishes
+// nothing; the chain answers it with 500. SessionFromContext then
+// returns the session to the handler, and the session-touch step records its
+// activity after the handler, through the session manager the chain was wired
+// with: the first enabled built-in's, or the one WithSessionManager names,
+// which a chain whose only authenticator is the consumer's own needs. The
+// interceptor then calls Exchange.EvaluatePerRequest, which runs the
+// per-request policy phase with the challenge handling the built-ins apply: a
+// denial is returned, and a challenge is marked where its gate reads it, a
+// session entering the enrolment-only state being stored before the request
+// goes on. It refuses, running no policy, anything but the pair PublishSession
+// published. The built-in bearer authenticators resolve their sessions through
+// PublishSession and the same per-request handling, so a consumer's
+// interceptor refuses and marks exactly as they do.
+//
+// # Bearer modes
+//
+// A chain runs one bearer mode. The default is the signed token
+// (EnableBearerToken): every credential-issuing endpoint mints a token through
+// the consumer's generator, naming its session through the token's jti. The
+// opt-in alternative is the session reference (EnableSessionBearer): the
+// session's own identifier is the credential, and form login, magic link,
+// federated login redemption, passwordless passkey login, second-factor
+// verification and recovery completion issue it in place of a token. Both
+// modes run the same resolution core after extraction, so they refuse
+// identically, including a superseded session presented after its renewal
+// window, which is refused with ErrAuthenticationRequired joined to
+// session.ErrSessionReused once its family is revoked. Enabling both modes, or
+// giving a credential-issuing endpoint a token generator in the
+// session-reference mode, is a configuration error from New.
+//
+// The renewal endpoint (EnableSessionRenewal) issues in either mode too: it
+// rotates the request's session with a grace window and answers with the
+// successor's credential. Under the manager's unused-successor recovery, a
+// renewed credential presented after its window is refused on every request
+// but a renewal, which alone the core lets through to that endpoint, with
+// nothing published on the way.
+//
 // # A credential field reads the body, and only the body
 //
 // Form login, the MFA verify endpoint and the MFA enrolment endpoints each

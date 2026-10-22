@@ -29,10 +29,10 @@
 //
 //   - a session with no user, or owing a password change, is refused;
 //   - a full session — no pending challenge, never confined — must have met
-//     its second factor when its account has one, and its latest
-//     authentication, the later of its creation and its second factor, must
-//     be within the management freshness window (WithManagementFreshness, 15
-//     minutes by default);
+//     its second factor when its account has one, and its authentication
+//     time (Session.AuthenticatedAt: sign-in or the last second factor, never
+//     a renewal) must be within the management freshness window
+//     (WithManagementFreshness, 15 minutes by default);
 //   - a recovery-pending or enrolment-only session may register without the
 //     assurance and freshness checks, since the recovery is its
 //     authentication and its life is short by construction; it may not

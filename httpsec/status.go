@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/session"
 )
 
 // statusRow is one refusal and the status it answers with. The table is
@@ -77,6 +78,17 @@ var statusTable = []statusRow{
 	// authentic, but in conflict with the record's state. A client can retry
 	// once the hold is over, which a 403 would not say.
 	{recovery.ErrNotYetCompletable, http.StatusConflict},
+
+	// A rotation that lost a concurrent renewal of the same session. The
+	// session core's sentinel is the row, so the chain's own, which wraps it,
+	// and the core's reaching here unwrapped answer alike: the client retries
+	// with the credential it holds. A reused session needs no row: it leaves
+	// the chain joined with ErrAuthenticationRequired, answered 401 above.
+	{session.ErrSessionRenewalConflict, http.StatusConflict},
+
+	// A family that renewed too often in the window, or a renewal limiter that
+	// could not answer: the client backs off, as for any other 429.
+	{ErrRenewalThrottled, http.StatusTooManyRequests},
 
 	// A federated-login path segment naming no registered provider, and a
 	// second-factor path segment naming no configured method. Which providers

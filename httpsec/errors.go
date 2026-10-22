@@ -56,6 +56,25 @@ var (
 	// state. It maps to 403: the caller is known, and has nothing to list
 	// methods for.
 	ErrNoMFAChallengePending = errors.New("httpsec: no MFA challenge pending")
+
+	// ErrSessionRenewalConflict refuses a rotation of a session that a
+	// concurrent renewal of the same session has already superseded: the
+	// client lost a race with itself, or with whoever else holds the
+	// credential. Nothing was written. It maps to 409, so the client retries
+	// with the credential it now holds rather than signing in again.
+	//
+	// It wraps session.ErrSessionRenewalConflict, so a consumer matching either
+	// identity reaches both. Its text carries no session identifier.
+	ErrSessionRenewalConflict = fmt.Errorf("httpsec: the session was renewed concurrently: %w",
+		session.ErrSessionRenewalConflict)
+
+	// ErrRenewalThrottled refuses a renewal of a session family that has
+	// renewed too often in the window, or whose renewal limiter could not
+	// answer (the endpoint fails closed). Nothing was rotated. It maps to 429,
+	// so the client backs off and retries with the credential it holds.
+	//
+	// Its text names neither the family nor the limiter's failure.
+	ErrRenewalThrottled = errors.New("httpsec: too many renewals of this session family")
 )
 
 // ChallengeError refuses a request that must satisfy a challenge before it

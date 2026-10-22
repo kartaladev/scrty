@@ -84,7 +84,7 @@ func TestIdentityMigrations_Independent(t *testing.T) {
 		for _, tbl := range securityStateTables {
 			assert.True(t, regclassExists(t, db, tbl), "table %s should still exist", tbl)
 		}
-		assert.Equal(t, 1, appliedVersionCount(t, db, ss.VersionTable))
+		assert.Equal(t, securityStateMigrationCount, appliedVersionCount(t, db, ss.VersionTable))
 		// The identity version records are gone: goose keeps only the
 		// version-zero row it bootstraps its version table with.
 		assert.Equal(t, []string{"0"},

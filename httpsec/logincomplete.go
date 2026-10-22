@@ -31,11 +31,59 @@ const msgTokenNotIssued = "httpsec: the access token could not be issued"
 // engine reduced to, and none of them returns nil for a refusal.
 func policyDenyReason(d policy.Decision) error { return d.Reason }
 
+// credentialIssuer issues the credential a caller carries away for s, the
+// session an endpoint has just established or rotated, held by p.
+//
+// The chain's bearer mode decides which one an endpoint is given: a signed
+// token from the consumer's generator in the default mode (signedTokens), the
+// session's own identifier in the session-reference mode
+// (issueSessionReference). An endpoint never chooses for itself, so a
+// credential it issues is always one the chain's bearer accepts.
+type credentialIssuer func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error)
+
+// signedTokens issues a token from g naming s through its jti, which is how a
+// later signed bearer request finds the session. The generator is the
+// consumer's, so its error comes back behind fixed text.
+func signedTokens(g token.Generator) credentialIssuer {
+	return func(ctx context.Context, s *session.Session, p *identity.Principal) (string, error) {
+		tok, err := g.Generate(ctx, s.ID, p)
+		if err != nil {
+			return "", diag.Wrap(err, msgTokenNotIssued)
+		}
+
+		return tok, nil
+	}
+}
+
+// issueSessionReference issues the session's own identifier, which is the
+// credential the session-reference bearer accepts.
+func issueSessionReference(_ context.Context, s *session.Session, _ *identity.Principal) (string, error) {
+	return s.ID, nil
+}
+
+// credentialIssuer is the issuer an endpoint holding the token generator g
+// issues through on this chain: the session reference when EnableSessionBearer
+// is on, and g otherwise. Assembly has already refused a generator in the
+// first case and a missing one in the second.
+func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
+	if c.sessionBearer {
+		return issueSessionReference
+	}
+
+	return signedTokens(g)
+}
+
 // loginTailDeps is what the login tail needs to end a login.
 type loginTailDeps struct {
 	engine   *policy.Engine
 	sessions *session.Manager
 	tokens   token.Generator
+
+	// issue issues the login's credential, as the chain's bearer mode
+	// decides (config.credentialIssuer). Nil issues a signed token through
+	// tokens, which is what a first factor not yet handed an issuer by
+	// assembly uses.
+	issue credentialIssuer
 
 	// enrolmentLifetime is how long a session marked for an enrolment
 	// challenge may live. The chain hands it to each first factor at assembly.
@@ -351,12 +399,16 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 		}
 	}
 
-	// The session identifier is the token's jti, which is how a later bearer
-	// request finds the session the token was issued for. The generator is the
-	// consumer's, so its error comes back behind fixed text.
-	tok, err := deps.tokens.Generate(ctx, s.ID, in.Principal)
+	// Issued against the session just created: a signed token names it
+	// through its jti, and a session reference is its identifier.
+	issue := deps.issue
+	if issue == nil {
+		issue = signedTokens(deps.tokens)
+	}
+
+	tok, err := issue(ctx, s, in.Principal)
 	if err != nil {
-		return "", diag.Wrap(err, msgTokenNotIssued)
+		return "", err
 	}
 
 	// Published on the challenge path too, so a consumer rendering the prompt

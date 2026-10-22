@@ -3,9 +3,11 @@ package session
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // ErrSessionNotFound is what a store reports when there is no session to act
@@ -30,6 +32,81 @@ var ErrSessionExpired = errors.New("session: session expired")
 // missing session would hide it behind a perfectly ordinary-looking login
 // prompt.
 var ErrSessionUnreadable = errors.New("session: session cannot be read")
+
+// ErrSessionRenewalConflict is what a store reports when a supersession lost
+// to another: the session's current successor is no longer the one the caller
+// observed, because a concurrent renewal superseded it first. Nothing was
+// written. The caller that sees it did not produce a successor, and another
+// caller did.
+var ErrSessionRenewalConflict = errors.New("session: the session was renewed concurrently")
+
+// ErrSuccessorAdvanced is what a store reports when a supersession names a
+// successor that has moved on, and nothing was written. Supersede returns it
+// when op.ObservedSuccessor is set and that successor has itself been
+// superseded or is no longer stored, or when op.RequireUnpresentedSuccessor
+// is set and that successor has been presented (its FirstPresentedAt is
+// recorded). It is judged in the same atomic step as the rest of the
+// supersession, so a presentation or a rotation of the successor racing it
+// either happens first and refuses it, or happens after it.
+//
+// The Manager reads it as reuse: renewing an identifier whose successor has
+// moved on would leave the family with two live heads.
+var ErrSuccessorAdvanced = errors.New("session: the session's successor has moved on")
+
+// ErrSessionSuperseded is what a store reports when Store.MarkPresented is
+// asked to record the first presentation of a session that has been
+// superseded, and nothing was written. A superseded session is never marked
+// presented: its presentation state is its successor's to record.
+//
+// The Manager never returns it: it re-loads the session and judges it, which
+// is how a recovery committed between a load and its mark is caught.
+var ErrSessionSuperseded = errors.New("session: the session has been superseded")
+
+// Supersession is one atomic supersession: Store.Supersede marks Old
+// superseded by Successor and inserts Successor, provided Old's current
+// successor is still the one the caller observed.
+type Supersession struct {
+	// Old is the identifier of the session being superseded.
+	Old string
+
+	// ObservedSuccessor is the SuccessorDigest the caller read on Old before
+	// deciding to supersede it. It is nil for a first rotation, when Old has
+	// no successor yet. The supersession happens only while Old's stored
+	// successor digest still equals it, byte for byte.
+	ObservedSuccessor []byte
+
+	// AcceptUntil is the end of Old's grace window, which the store records
+	// on Old unchanged.
+	AcceptUntil time.Time
+
+	// RetainUntil is the retention deadline: the latest time Old's family
+	// could still be live, its FamilyCreatedAt plus the family maximum
+	// (WithMaxFamilyLifetime), and never before AcceptUntil or Old's own
+	// absolute deadline. The store sets the Session.RetainUntil of every
+	// record the supersession supersedes, Old and Old's previous successor,
+	// to the later of its stored value and this, never lowering it, and
+	// changes neither record's own deadlines. A superseded identifier is so
+	// kept, and judged as superseded rather than expired, for as long as any
+	// member of its family could be.
+	RetainUntil time.Time
+
+	// Successor is the session inserted in Old's place. It is inserted as
+	// given, as Create would insert it.
+	Successor *Session
+
+	// Now is the time of the supersession, read from the caller's clock. It
+	// is Old's SupersededAt, and both the time a previous successor is
+	// superseded at and the end of that previous successor's window.
+	Now time.Time
+
+	// RequireUnpresentedSuccessor, when set, makes the supersession also
+	// conditional on the observed successor never having been presented: one
+	// whose FirstPresentedAt is recorded refuses it with ErrSuccessorAdvanced.
+	// The Manager sets it when it recovers an identifier past its window
+	// (WithUnusedSuccessorRecovery). It has no effect when ObservedSuccessor
+	// is nil.
+	RequireUnpresentedSuccessor bool
+}
 
 // Store persists sessions.
 //
@@ -61,11 +138,37 @@ type Store interface {
 	// Create inserts s. An identifier that is already stored is an error
 	// rather than a replacement: overwriting would silently end the session
 	// already holding it.
+	//
+	// Every stored session belongs to a family. A session whose FamilyID is
+	// the nil family, id.Nil, is refused with an error and nothing is
+	// written: sessions with no family would all share it, so a family
+	// revocation or a supersession naming it could reach unrelated users'
+	// sessions. The Manager always gives a session a family; a consumer
+	// writing to a store directly must too.
 	Create(ctx context.Context, s *Session) error
 
 	// Save updates the stored session with this identifier, whole except for
-	// MFAAtFirstFactor, and reports ErrSessionNotFound when there is no longer
-	// one to update. It never inserts.
+	// MFAAtFirstFactor and the family, supersession and presentation fields,
+	// and reports ErrSessionNotFound when there is no longer one to update. It
+	// never inserts.
+	//
+	// The family, supersession and presentation fields (FamilyID,
+	// FamilyCreatedAt, SupersededAt, AcceptUntil, RetainUntil,
+	// SuccessorDigest, FirstPresentedAt) are written by Create, Supersede and
+	// MarkPresented only: Save keeps the stored values whatever the session
+	// handed to it says, so saving a copy loaded before a concurrent
+	// supersession cannot undo it.
+	//
+	// A stored session that is superseded (SupersededAt set) also keeps its
+	// IdleExpiresAt and AbsoluteExpiresAt as stored: a superseded session
+	// takes no activity, and a copy loaded before the supersession must
+	// change neither its own deadlines nor its retention deadline. This holds
+	// for a previous successor superseded by a re-rotation too.
+	//
+	// AuthenticatedAt is written by Create, as the sign-in's time, and by a
+	// supersession's successor, which carries it over or takes the refreshed
+	// value: Save keeps the stored value whatever the session handed to it
+	// says.
 	//
 	// MFAAtFirstFactor is written by Create only: Save keeps the stored value
 	// whatever the session handed to it says, so no later save can set or
@@ -73,8 +176,146 @@ type Store interface {
 	Save(ctx context.Context, s *Session) error
 
 	// Load returns the session with this identifier, ErrSessionNotFound when
-	// there is none, and ErrSessionExpired when it is past either deadline.
+	// there is none, and ErrSessionExpired when a session that is not
+	// superseded is past either deadline.
+	//
+	// A superseded session is returned with its supersession state
+	// (SupersededAt, AcceptUntil, RetainUntil, SuccessorDigest) and its own
+	// deadlines as stored, whether or not its grace window or its own
+	// deadlines have ended, until its RetainUntil passes; then it is
+	// ErrSessionExpired. One with a zero RetainUntil, written before the
+	// field existed, is judged by its own deadlines. The Manager judges the
+	// window, and the record's own deadlines inside it, with its own clock. A
+	// consumer calling Load directly therefore sees superseded sessions,
+	// expired ones included, and must not treat one as live without that
+	// judgement.
 	Load(ctx context.Context, id string) (*Session, error)
+
+	// RecordActivity writes lastAccessed and idleExpires to the session with
+	// this identifier, and nothing else, provided its stored LastAccessedAt is
+	// not later than olderThan and it is not superseded. The idle deadline written is
+	// the lesser of idleExpires and the stored AbsoluteExpiresAt, so an
+	// absolute deadline another request lowered after this one loaded its copy
+	// is never outlasted by the idle deadline. A session that is fresher,
+	// or superseded, is left unchanged, and that is not an error.
+	//
+	// It reports ErrSessionNotFound only when there is no session with this
+	// identifier, and it never inserts. It never touches any other field, so
+	// a change another request saved to the same session in the meantime
+	// survives it: a whole-record save in its place would write back the
+	// copy this request loaded. In SQL it is one conditional UPDATE of those
+	// two columns.
+	//
+	// Recording activity persists only the last-access time and the idle
+	// deadline. A change to any other field is persisted by Save, never by
+	// this write.
+	RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error
+
+	// Supersede performs op as one atomic operation. Three rules refuse it with
+	// an error, before anything is written, whatever the observation: a nil
+	// op.Successor; a successor with no family (the nil family), as Create
+	// refuses such a session; and a RetainUntil before AcceptUntil, since a
+	// record cannot be retained for less than its window. A supersession
+	// never lowers a retention deadline: each record it supersedes takes the
+	// later of its stored RetainUntil and op.RetainUntil. It never changes
+	// either deadline, idle or absolute, of any record. Otherwise:
+	//
+	//   - it marks op.Old superseded at op.Now, with op.AcceptUntil as its
+	//     window end, the digest of op.Successor's identifier as its
+	//     successor, and its retention deadline as above;
+	//   - it marks Old's previous successor, if it had one, superseded at
+	//     op.Now with a window ending at op.Now, and its retention deadline
+	//     as above;
+	//   - it inserts op.Successor.
+	//
+	// It writes those records and no other: no earlier superseded session of
+	// the family, and no session of another family, so its cost does not
+	// grow with the number of earlier renewals.
+	//
+	// The retention deadline is what lets a renewal that extends the family
+	// (see WithSuccessorLifetime) keep detecting reuse: a superseded
+	// identifier presented after its own original deadline, while the family
+	// is still live, must load as superseded so the Manager judges it as
+	// reuse, not read as an ordinary expiry that leaves the family alive. No
+	// renewal extends a family past it, so a record superseded earlier never
+	// needs rewriting. A superseded session never authenticates past its
+	// window, so keeping it grants nothing.
+	//
+	// It is conditional on op.ObservedSuccessor: it happens only while Old's
+	// stored SuccessorDigest equals it byte for byte, nil meaning none. When
+	// it does not, Supersede writes nothing and reports
+	// ErrSessionRenewalConflict, so concurrent renewals of one session produce
+	// exactly one successor. An Old that is not stored, as after its family
+	// was revoked, is ErrSessionNotFound, and nothing is inserted.
+	//
+	// When the observation holds, a non-nil op.ObservedSuccessor must still
+	// name a stored successor that is not superseded, and, with
+	// op.RequireUnpresentedSuccessor, one never presented. Otherwise
+	// Supersede writes nothing and reports ErrSuccessorAdvanced, so a family
+	// never holds two live heads. The checks are made in this order: Old
+	// missing, then Old's family, then the observation and the rule below
+	// for a superseded Old, then the successor.
+	//
+	// Two rules refuse a supersession whatever it observed. An Old with no
+	// family, the nil family, is refused with an error and nothing is written,
+	// as DeleteFamily refuses it; Create stores no such session, so this
+	// guards only a record written some other way. An Old that is superseded
+	// already is superseded again only through its observed successor: with
+	// none observed, as for a fresh head, it is ErrSessionRenewalConflict,
+	// because a superseded session with no successor was knocked out of its
+	// chain by a later supersession, and renewing it would give the family a
+	// second live head.
+	//
+	// The condition must hold across processes, not only within one: a lock
+	// held by one instance does not stop another replica. In SQL it is one
+	// transaction whose conditional UPDATE of Old decides the outcome, joining
+	// a caller's transaction when one is attached.
+	Supersede(ctx context.Context, op Supersession) error
+
+	// DeleteFamily removes every session of this family, superseded or not,
+	// expired or not, and reports how many went. Sessions of other families,
+	// the same user's included, are untouched.
+	//
+	// The nil family, id.Nil, is refused with an error and nothing is
+	// deleted: it names no family, and Create stores no session in it.
+	DeleteFamily(ctx context.Context, family id.ID) (int, error)
+
+	// MarkPresented records at as the session's FirstPresentedAt, only when
+	// none is recorded and the session is not superseded, in one atomic
+	// conditional write: a later call leaves the first time unchanged and is
+	// not an error. A session that is not stored is ErrSessionNotFound. A
+	// superseded one is ErrSessionSuperseded, and nothing is written, so a
+	// supersession racing the mark either happens first and refuses it, or
+	// happens after it and sees it. It never inserts and never touches any
+	// other field.
+	MarkPresented(ctx context.Context, id string, at time.Time) error
+
+	// SuccessorPresented reports whether the current successor of the
+	// session with this identifier was used, and writes nothing. The current
+	// successor is the session its SuccessorDigest names. It is used when
+	// that successor is stored and was presented (FirstPresentedAt set) or
+	// has been superseded (SupersededAt set). It is unused when it is stored
+	// and neither, when it is no longer stored, and when the session has no
+	// successor. A session that is not stored is ErrSessionNotFound.
+	//
+	// Stored is judged as Load judges it: a record Load would not return is
+	// not stored, whether or not it has been swept. That is a record past its
+	// RetainUntil, and one with no RetainUntil that is past its own
+	// deadlines. The session asked about is then ErrSessionNotFound, and its
+	// successor counts as no longer stored.
+	//
+	// A successor no longer stored counts as unused because an unused
+	// successor's own deadlines end close to its predecessor's, so it is
+	// usually swept by the time its predecessor has ended; reading that as
+	// use would revoke the family of a client that only retried late.
+	//
+	// The Manager asks it when, with WithUnusedSuccessorRecovery on, a
+	// renewal presents a superseded session past its window and past one of
+	// its own deadlines: true is reuse, false is ErrSessionExpired. The read
+	// need not be atomic with anything: nothing is written on the false
+	// branch, so a presentation landing just after it loses only that one
+	// detection.
+	SuccessorPresented(ctx context.Context, id string) (bool, error)
 
 	// Delete removes the session with this identifier. Deleting one that is
 	// not there is not an error: the caller asked for it to be gone, and it
@@ -86,18 +327,33 @@ type Store interface {
 	DeleteByUser(ctx context.Context, user identity.UserID) error
 
 	// DeleteByUserExcept removes every session of this user except the one with
-	// identifier keep, expired ones included, in one atomic operation, and reports
-	// how many it removed. A keep that names another user's session, or none, is
-	// left untouched and does not stop the user's sessions from being removed; an
-	// empty keep removes them all.
+	// identifier keep and, when keep belongs to a family, that family's current
+	// session (the member with no SupersededAt), expired ones included, and
+	// reports how many it removed. Each pass decides what it keeps and deletes
+	// atomically, and a durable store repeats it until a pass removes nothing,
+	// so a successor a racing supersession inserts is judged by this rule
+	// too. Every other member of keep's family goes, superseded ones included, so a keep inside its
+	// renewal window keeps its live successor and a keep that is the current
+	// session ends its predecessors. A supersession racing the call must either
+	// be judged by this rule or written after it: a store that reads the
+	// family first and deletes after loses a successor committed in between.
+	// A keep that names another user's session, or none, is left untouched and
+	// does not stop the user's sessions from being removed; an empty keep
+	// removes them all.
 	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
 
 	// CountActiveByUser counts this user's unexpired sessions. Expired ones
 	// are excluded whether or not anything has swept them, because a session
-	// that will never be served again is not one the user is holding.
+	// that will never be served again is not one the user is holding. A
+	// superseded session is excluded too, whether or not its grace window has
+	// ended: the sign-in it belonged to is counted once, by its current head.
 	CountActiveByUser(ctx context.Context, user identity.UserID) (int, error)
 
-	// DeleteExpired removes every expired session and reports how many went.
+	// DeleteExpired removes every expired session and reports how many went:
+	// one that is not superseded once either of its deadlines has passed, and
+	// a superseded one once its RetainUntil has passed, whatever its own
+	// deadlines say, or, with a zero RetainUntil, once one of its own
+	// deadlines has.
 	DeleteExpired(ctx context.Context) (int, error)
 
 	// DeleteByExternalSession removes the sessions matching both issuer and
@@ -122,13 +378,15 @@ type Store interface {
 // matching it, or a sentinel it wraps, still does.
 //
 // A sentinel of this package that the store returned bare — ErrSessionNotFound,
-// ErrSessionExpired or ErrSessionUnreadable — carries no store text and comes
-// back as itself, so nothing that matches on it changes. The sentinels are not
-// passed to diag.Wrap as kinds: a fault matches its kinds, and every other
+// ErrSessionExpired, ErrSessionUnreadable, ErrSessionRenewalConflict,
+// ErrSuccessorAdvanced or ErrSessionSuperseded — carries no store text and
+// comes back as itself, so nothing that matches on it changes. The sentinels
+// are not passed to diag.Wrap as kinds: a fault matches its kinds, and every other
 // store failure would then read as a missing or expired session.
 func storeFailed(err error, text string) error {
 	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text
-	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable {
+	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable ||
+		err == ErrSessionRenewalConflict || err == ErrSuccessorAdvanced || err == ErrSessionSuperseded {
 		return err
 	}
 

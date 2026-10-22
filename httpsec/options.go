@@ -134,6 +134,21 @@ type config struct {
 	// and a chain that resolves no session has nothing to record.
 	sessions *session.Manager
 
+	// sessionsExplicit records that WithSessionManager set sessions, which no
+	// built-in's manager then replaces.
+	sessionsExplicit bool
+
+	// sessionBearer records that EnableSessionBearer is on: the chain's bearer
+	// mode is the session reference, so every credential-issuing endpoint
+	// issues the session's identifier and none may be given a token
+	// generator.
+	sessionBearer bool
+
+	// renewal is the renewal endpoint EnableSessionRenewal registered, and nil
+	// while it is off. The bearers' resolution core reads it to let a late
+	// renewal through to it alone (sessionResolver.renewal).
+	renewal *sessionRenewal
+
 	// authorizer is what the authorization stage publishes for the guards
 	// behind it, and what the last EnableAuthorization call named: a chain
 	// judges by one authorizer, so a second call replacing the first is the
@@ -225,12 +240,45 @@ func (c *config) wire(fn func(*Chain)) {
 // the chain's own activity write-back has one without the consumer declaring it
 // twice.
 //
-// The first one wins and a nil one is ignored: a deployment has one session
+// The first one wins, unless WithSessionManager set one, and a nil one is ignored: a deployment has one session
 // store, and the built-in whose dependency is missing is refused by its own
 // check rather than by this one.
 func (c *config) useSessions(m *session.Manager) {
-	if c.sessions == nil && m != nil {
+	if c.sessions == nil && !c.sessionsExplicit && m != nil {
 		c.sessions = m
+	}
+}
+
+// WithSessionManager sets the session manager the chain itself uses: the one
+// that records a session's activity after the handler, and the one a mark from
+// Exchange.EvaluatePerRequest is stored through.
+//
+// It is what a chain needs when its only session-resolving interceptor is the
+// consumer's own, published through Exchange.PublishSession, and no built-in
+// was wired to a manager. It takes precedence over the manager of any built-in
+// whatever the order of the options; the built-ins keep using the manager they
+// were given.
+//
+// With a built-in bearer (EnableBearerToken or EnableSessionBearer), the
+// explicit manager must be that bearer's: New refuses any other with a
+// configuration error, in either option order, because activity and rotation
+// written through a manager the bearer does not read would end sessions in use.
+// A chain with no built-in bearer is not checked.
+//
+// A nil manager is refused with a configuration error, since it would read as
+// "activity is recorded" while nothing was.
+//
+// Default: the manager of the first enabled built-in that was wired to one.
+// A chain with none records no activity and refuses to store an enrolment mark.
+func WithSessionManager(m *session.Manager) Option {
+	return func(c *config) error {
+		if err := requireDep("WithSessionManager", "session manager", m); err != nil {
+			return err
+		}
+
+		c.sessions = m
+		c.sessionsExplicit = true
+		return nil
 	}
 }
 
@@ -282,6 +330,27 @@ func (c *config) validate() error {
 			return err
 		}
 	}
+
+	return c.checkExplicitSessions()
+}
+
+// checkExplicitSessions refuses an explicit session manager other than the one
+// a built-in bearer loads sessions from. Activity would otherwise be recorded
+// where the bearer never reads, so sessions in use would idle-expire, and a
+// second factor would rotate a session the bearer cannot find. With no
+// built-in bearer there is nothing to compare, which is what the option is for.
+func (c *config) checkExplicitSessions() error {
+	if !c.sessionsExplicit {
+		return nil
+	}
+
+	if bearer := bearerSessions(c); bearer != nil && bearer != c.sessions {
+		return newConfigError("WithSessionManager was given a manager other than the one " +
+			"EnableBearerToken or EnableSessionBearer resolves sessions through, so activity " +
+			"and second-factor rotation would be written where the bearer never reads; give " +
+			"both the same manager, or leave WithSessionManager out")
+	}
+
 	return nil
 }
 
@@ -337,6 +406,34 @@ func New(opts ...Option) (*Chain, error) {
 	return c.build()
 }
 
+// checkTouchInterval refuses a chain whose session manager coalesces activity
+// writes over an interval that an idle-timeout policy in the engine does not
+// exceed. The stored last-access time can be up to one interval stale, so such
+// a policy could refuse a session that is in constant use. A manager that
+// writes on every touch (interval zero), a chain with no manager, and an engine
+// with no idle policy are all accepted. Only policies registered in the engine
+// before New runs are checked.
+func (c *config) checkTouchInterval() error {
+	if c.sessions == nil || c.engine == nil {
+		return nil
+	}
+
+	interval := c.sessions.TouchInterval()
+	if interval <= 0 {
+		return nil
+	}
+
+	for _, idle := range c.engine.IdleTimeouts() {
+		if idle <= interval {
+			return newConfigError("the session manager coalesces activity over %s, but a policy enforces an idle timeout of %s: "+
+				"the stored last access can be up to one interval stale, so the idle timeout must be longer than the interval",
+				interval, idle)
+		}
+	}
+
+	return nil
+}
+
 // build freezes the validated configuration into the chain that serves it.
 func (c *config) build() (*Chain, error) {
 	// Before anything is built: a challenge nothing enforces is the one wiring
@@ -371,6 +468,13 @@ func (c *config) build() (*Chain, error) {
 		return nil, err
 	}
 
+	// An interval that coalesces activity writes leaves the stored last-access
+	// time up to one interval stale, which an idle policy no longer than that
+	// would read as an idle session.
+	if err := c.checkTouchInterval(); err != nil {
+		return nil, err
+	}
+
 	// The enrolment path takes the enrollable methods EnableMFA was given and the
 	// chain's sessions and logout path, any of which an option applied after
 	// EnableMFAEnrolment may still have set.
@@ -394,6 +498,10 @@ func (c *config) build() (*Chain, error) {
 	}
 
 	if err := c.wireAPIKey(); err != nil {
+		return nil, err
+	}
+
+	if err := c.wireSessionBearer(); err != nil {
 		return nil, err
 	}
 
@@ -455,6 +563,14 @@ func (c *config) build() (*Chain, error) {
 	// reporter writes through the chain's logger and there is no chain until
 	// every option has been applied.
 	chain.sampler = logsample.New(c.refusalInterval, logsample.WithReporter(chain.reportRefusals))
+
+	chain.perRequest = &perRequestPhase{
+		engine:            c.engine,
+		sessions:          c.sessions,
+		enrolmentLifetime: c.enrolmentLifetime,
+		enforced:          chain.enforced,
+		now:               c.now,
+	}
 
 	// The built-ins are wired last, because each of them reads settings — the
 	// engine, the logger — that an option applied after its own Enable may
@@ -868,8 +984,10 @@ func WithLockDisclosure() Option {
 
 // FormLoginDeps are the collaborators form login is wired to.
 //
-// Every one is required, and a missing or typed-nil field is refused when the
-// chain is built. There is no useful default for any of them: scrty ships no
+// Every one is required, except Tokens in the session-reference mode
+// (EnableSessionBearer), where it must be absent, and a missing or typed-nil
+// field is refused when the chain is built. There is no useful default for any
+// of them: scrty ships no
 // user store to authenticate against, no durable session store, no signing key
 // to issue a token with, and an attempt store of its own here would be one the
 // lockout policy never reads, which is worse than none.
@@ -884,6 +1002,11 @@ type FormLoginDeps struct {
 	// Tokens issues the access token the response carries. The session
 	// identifier is the token's jti, which is how a later bearer request finds
 	// the session the token was issued for.
+	//
+	// With EnableSessionBearer on, it must be left nil, and the response
+	// carries the session's own identifier instead: a token would not be
+	// accepted by that chain, so a generator here is a configuration error
+	// from New.
 	Tokens token.Generator
 
 	// Attempts is where a failed login is recorded and a successful one clears
@@ -1005,7 +1128,7 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 			if err := requireDep(option, "session manager", d.Sessions); err != nil {
 				return err
 			}
-			if err := requireDep(option, "token generator", d.Tokens); err != nil {
+			if err := checkTokenGenerator(c, option, "FormLoginDeps.Tokens", d.Tokens); err != nil {
 				return err
 			}
 
@@ -1014,6 +1137,9 @@ func EnableFormLogin(d FormLoginDeps, opts ...LoginOption) Option {
 
 		c.useSessions(d.Sessions)
 		c.wire(l.wire)
+		// The bearer mode may be enabled after form login, so the issuer is
+		// chosen once every option has been applied.
+		c.wire(func(*Chain) { l.issue = c.credentialIssuer(l.tokens) })
 		c.register(l, OrderFormLogin)
 
 		return nil
@@ -1384,6 +1510,9 @@ func EnableBearerToken(d BearerTokenDeps, opts ...BearerTokenOption) Option {
 
 		c.useSessions(d.Sessions)
 		c.wire(b.wire)
+		// The renewal endpoint may be enabled after this option, so it is
+		// handed to the core once every option has been applied.
+		c.wire(func(*Chain) { b.resolver.renewal = c.renewal })
 		c.register(b, OrderBearerToken)
 
 		return nil
@@ -1591,6 +1720,10 @@ func EnableMFA(methods []mfa.Method, opts ...MFAOption) Option {
 					"and none of the built-ins enabled on this chain was wired to one", option)
 			}
 
+			if c.sessionBearer {
+				return checkTokenGenerator(c, option, "WithMFATokens", i.tokens)
+			}
+
 			if i.tokens == nil {
 				return newConfigError("%s needs a token generator: rotating the handle ends the "+
 					"credential the caller arrived with, so the response has to hand back one "+
@@ -1667,10 +1800,13 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 
 // WithMFATokens issues the rotated session's access token through g.
 //
-// There is no default, and it is required: rotation deletes the handle the
-// caller arrived with, and the session identifier is the token's jti, so
-// without a generator a caller who passed their second factor would hold a
-// credential naming a session that no longer exists. It is the same generator
+// There is no default, and it is required in the signed-token mode: rotation
+// deletes the handle the caller arrived with, and the session identifier is
+// the token's jti, so without a generator a caller who passed their second
+// factor would hold a credential naming a session that no longer exists. With
+// EnableSessionBearer on, it must not be given: the endpoint hands back the
+// rotated session's identifier instead, and a generator is a configuration
+// error from New. It is the same generator
 // the first factors issue through, so a token from a login and one from a
 // second factor are indistinguishable to whatever verifies them.
 func WithMFATokens(g token.Generator) MFAOption {
@@ -2081,6 +2217,11 @@ func WithMagicLinkSessions(m *session.Manager) MagicLinkOption {
 // generator is the same one the other first factors issue through, so a token
 // from a link and a token from a password are indistinguishable to whatever
 // verifies them.
+//
+// With EnableSessionBearer on, it must not be given: the credential is the
+// opened session's identifier (MagicLinkResult.Token), and a generator is a
+// configuration error from New, since a token it minted would not be accepted
+// by that chain.
 func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		if err := requireDep("WithMagicLinkTokens", "token generator", g); err != nil {
@@ -2465,6 +2606,37 @@ func WithErrorHandler(fn func(w http.ResponseWriter, r *http.Request, err error)
 		}
 
 		c.errorHandler = fn
+
+		return nil
+	}
+}
+
+// WithLoginLifetime lets fn choose the absolute lifetime of the session a
+// login opens, from the fields the request carried (LoginFields), for example
+// a longer one when the user ticked "remember me".
+//
+// Default: with no option, or when fn returns zero or less, the session lives
+// for the manager's absolute timeout (session.WithAbsoluteTimeout). A positive
+// d is given to the new session (session.WithAbsoluteLifetime). fn runs once
+// the password is verified, before the policy phase and the session creation,
+// so it does not run for a failed credential check, but it does run for a
+// login the policy phase then refuses.
+//
+// fn never sees the password: the configured password parameter is not among
+// the fields. The manager holds d to its lifetime maximum
+// (session.WithMaxAbsoluteLifetime): a larger d is a wiring mistake, so the
+// login is refused with session.ErrConfig, a 500, and no session is created,
+// rather than silently shortened. Renewals of the session are held to the
+// family maximum (session.WithMaxFamilyLifetime) as for any session. fn must
+// not block. A nil fn is refused when the chain is built.
+func WithLoginLifetime(fn func(*Exchange, LoginFields) time.Duration) LoginOption {
+	return func(l *formLogin) error {
+		if fn == nil {
+			return newConfigError("WithLoginLifetime was given no function; omit the option " +
+				"to keep the absolute timeout")
+		}
+
+		l.lifetime = fn
 
 		return nil
 	}

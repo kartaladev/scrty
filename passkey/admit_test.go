@@ -226,6 +226,31 @@ func TestAdmissionCountsOwnPasskeys(t *testing.T) {
 			session: func() *session.Session {
 				s := password()
 				s.MFA, s.MFASatisfiedAt = session.MFASatisfied, s.CreatedAt.Add(time.Minute)
+				s.AuthenticatedAt = s.MFASatisfiedAt
+
+				return s
+			},
+			rc:     passwordless,
+			assert: admitted,
+		},
+		{
+			name: "a renewed session is judged by its authentication time, not its renewal time",
+			session: func() *session.Session {
+				s := password()
+				s.MFA, s.MFASatisfiedAt = session.MFASatisfied, s.CreatedAt.Add(-6*time.Hour)
+				s.AuthenticatedAt = s.CreatedAt.Add(-6 * time.Hour)
+
+				return s
+			},
+			rc:     passwordless,
+			assert: refused,
+		},
+		{
+			name: "a session whose authentication time is fresh is admitted",
+			session: func() *session.Session {
+				s := password()
+				s.MFA, s.MFASatisfiedAt = session.MFASatisfied, s.CreatedAt
+				s.AuthenticatedAt = s.CreatedAt
 
 				return s
 			},

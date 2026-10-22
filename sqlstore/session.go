@@ -3,9 +3,10 @@ package sqlstore
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/kartaladev/scrty/factor"
@@ -77,7 +78,13 @@ func NewSessionStore(db *sql.DB, c seal.Cipher, opts ...Option) (session.Store, 
 
 // sessionStore is the unsealed store NewSessionStore wraps. It stores
 // ExternalIDToken as given, which is why it is not exported.
-type sessionStore struct{ c *config }
+type sessionStore struct {
+	c *config
+
+	// savepoints numbers the savepoints this store opens inside a caller's
+	// transaction, so each is named apart from any other open on it.
+	savepoints atomic.Uint64
+}
 
 // sessionColumns returns the values of sess's columns from user_id to
 // federated_acr, in the order SessionUpdate takes them, or the
@@ -87,11 +94,7 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		return nil, failed(op, err)
 	}
 
-	data := sess.Data
-	if data == nil {
-		data = map[string]string{}
-	}
-	encoded, err := json.Marshal(data)
+	encoded, err := storekit.EncodeSessionData(sess.Data)
 	if err != nil {
 		return nil, failed(op, err)
 	}
@@ -106,28 +109,30 @@ func sessionColumns(op string, sess *session.Session) ([]any, error) {
 		storekit.Time(sess.IdleExpiresAt), storekit.Time(sess.AbsoluteExpiresAt), string(sess.FirstFactor),
 		int64(sess.MFA), nullTs(sess.MFASatisfiedAt),
 		sess.PasswordChangePending, sess.ExternalProvider, sess.ExternalIssuer, sess.ExternalSessionID,
-		sess.ExternalIDToken, string(encoded),
+		sess.ExternalIDToken, encoded,
 		nullTs(sess.EnrolmentOriginDeadline), nullID(sess.EnrolmentGeneration),
 		nullTs(sess.RecoveredAt), amr, sess.FederatedACR,
 	}, nil
 }
 
-// Create inserts sess, refusing an identifier already stored.
+// Create inserts sess, refusing an identifier already stored. A session with
+// no family, the nil family, is refused with an error before any statement
+// runs: every stored session belongs to a family.
 func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error {
 	const op = "create session"
 
-	cols, err := sessionColumns(op, sess)
+	if sess.FamilyID.IsZero() {
+		return errors.New("sqlstore: create session: a session with no family cannot be stored")
+	}
+	if sess.FamilyCreatedAt.IsZero() {
+		return errors.New("sqlstore: create session: a session with no family start time cannot be stored")
+	}
+
+	args, err := s.insertArgs(op, sess)
 	if err != nil {
 		return err
 	}
-	rowID, err := s.c.ids.NewID()
-	if err != nil {
-		return failed(op, err)
-	}
-
-	// Only the insert writes the marker: SessionUpdate has no column for it.
-	args := append([]any{rowID, storekit.SessionDigest(sess.ID)}, cols...)
-	n, err := s.c.exec(ctx, op, pgschema.SessionInsert, append(args, sess.MFAAtFirstFactor)...)
+	n, err := s.c.exec(ctx, op, pgschema.SessionInsert, args...)
 	if err != nil {
 		return err
 	}
@@ -138,8 +143,32 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 	return nil
 }
 
-// Save replaces the stored session whole, except for MFAAtFirstFactor, and
-// never inserts.
+// insertArgs returns SessionInsert's arguments for sess, under a primary key
+// minted from the store's id generator, or the refusal of a session this
+// store cannot hold without altering it. Only the insert writes the marker
+// and the family, supersession and presentation columns: SessionUpdate has
+// no column for them. A session is inserted with its RetainUntil as given,
+// NULL when it is zero.
+func (s *sessionStore) insertArgs(op string, sess *session.Session) ([]any, error) {
+	cols, err := sessionColumns(op, sess)
+	if err != nil {
+		return nil, err
+	}
+	rowID, err := s.c.ids.NewID()
+	if err != nil {
+		return nil, failed(op, err)
+	}
+
+	args := append([]any{rowID, storekit.SessionDigest(sess.ID)}, cols...)
+
+	return append(args, sess.MFAAtFirstFactor, sess.FamilyID, storekit.Time(sess.FamilyCreatedAt),
+		nullTs(sess.SupersededAt), nullTs(sess.AcceptUntil), storekit.OptionalDigestArg(sess.SuccessorDigest),
+		nullTs(sess.FirstPresentedAt), storekit.Time(sess.AuthenticatedAt), nullTs(sess.RetainUntil)), nil
+}
+
+// Save replaces the stored session whole, except for MFAAtFirstFactor and the
+// family, supersession (RetainUntil included) and presentation fields, and
+// never inserts. A superseded session also keeps both of its own deadlines.
 func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 	const op = "save session"
 
@@ -159,7 +188,10 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 }
 
 // Load returns the session with this identifier, judging its expiry with the
-// store's clock.
+// store's clock: a superseded session with a retention deadline is returned
+// until that deadline, whatever its own deadlines say and with them intact,
+// and any other session until either of its own deadlines. A stored session
+// past them is session.ErrSessionExpired.
 func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Session, error) {
 	const op = "load session"
 
@@ -175,12 +207,19 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		origin        sql.NullTime
 		generation    sql.Null[id.ID]
 		recovered     sql.NullTime
+		familyCreated time.Time
+		authenticated time.Time
+		superseded    sql.NullTime
+		acceptUntil   sql.NullTime
+		presented     sql.NullTime
+		retain        sql.NullTime
 	)
 	err := s.c.queryRow(ctx, op, pgschema.SessionSelect, []any{storekit.SessionDigest(sessionID)},
 		&user, &created, &last, &idle, &abs, &firstFactor, &mfaState, &mfaSatisfied,
 		&sess.PasswordChangePending, &sess.ExternalProvider, &sess.ExternalIssuer, &sess.ExternalSessionID,
 		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
-		&amr, &sess.FederatedACR)
+		&amr, &sess.FederatedACR, &sess.FamilyID, &familyCreated, &superseded, &acceptUntil,
+		&sess.SuccessorDigest, &presented, &authenticated, &retain)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, session.ErrSessionNotFound
 	}
@@ -188,16 +227,12 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, err
 	}
 
-	now := s.c.clock.Now()
-	if !now.Before(idle) || !now.Before(abs) {
+	if stale(s.c.clock.Now(), superseded.Valid, retain, idle, abs) {
 		return nil, session.ErrSessionExpired
 	}
 
-	if err := json.Unmarshal(encoded, &sess.Data); err != nil {
+	if sess.Data, err = storekit.DecodeSessionData(encoded); err != nil {
 		return nil, failed(op, err)
-	}
-	if sess.Data == nil {
-		sess.Data = map[string]string{}
 	}
 	if sess.FederatedAMR, err = storekit.DecodeAMR(amr); err != nil {
 		return nil, failed(op, err)
@@ -208,6 +243,11 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	sess.MFASatisfiedAt = fromNull(mfaSatisfied)
 	sess.EnrolmentOriginDeadline, sess.EnrolmentGeneration = fromNull(origin), generation.V
 	sess.RecoveredAt = fromNull(recovered)
+	sess.FamilyCreatedAt = familyCreated.UTC()
+	sess.AuthenticatedAt = authenticated.UTC()
+	sess.SupersededAt, sess.AcceptUntil = fromNull(superseded), fromNull(acceptUntil)
+	sess.FirstPresentedAt = fromNull(presented)
+	sess.RetainUntil = fromNull(retain)
 	sess.CreatedAt, sess.LastAccessedAt = created.UTC(), last.UTC()
 	sess.IdleExpiresAt, sess.AbsoluteExpiresAt = idle.UTC(), abs.UTC()
 
@@ -223,33 +263,52 @@ func (s *sessionStore) Delete(ctx context.Context, sessionID string) error {
 
 // DeleteByUser removes every session of user, expired ones included. A user
 // reference PostgreSQL text cannot hold matches nothing.
+//
+// The delete is repeated until a pass removes nothing. Under PostgreSQL's
+// default READ COMMITTED isolation, a delete that waited on a session an
+// in-flight Supersede holds removes that session once the supersession
+// commits, but cannot see the successor it inserted; the next pass, on a
+// fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
+// SERIALIZABLE, such a pass fails with the driver's serialization failure
+// (SQLSTATE 40001) instead, and the caller retries its transaction.
 func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
 	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
-	_, err := s.c.exec(ctx, "delete user's sessions", pgschema.SessionDeleteByUser, string(user))
+	_, err := s.deleteUntilNone(ctx, "delete user's sessions", pgschema.SessionDeleteByUser, string(user))
 
 	return err
 }
 
 // DeleteByUserExcept removes every session of user except the one named by
-// keep, expired ones included, and reports how many it removed. keep is
-// compared by its digest, as Delete's identifier is, so one no store could
-// hold names no session and every session of the user goes. A user reference
-// PostgreSQL text cannot hold matches nothing.
+// keep and, when user holds keep, its family's current session, expired ones
+// included, and reports how many it removed. Every other member of keep's
+// family goes, superseded ones included. Each pass is one statement, so the
+// family kept is read on the snapshot the pass deletes on. keep is compared
+// by its digest, as Delete's identifier is, so one no store could hold names
+// no session and every session of the user goes. A user reference PostgreSQL
+// text cannot hold matches nothing.
+//
+// The delete is repeated until a pass removes nothing, summing what each pass
+// removed. Under PostgreSQL's default READ COMMITTED isolation, a delete that
+// waited on a session an in-flight Supersede holds removes that session once
+// the supersession commits, but cannot see the successor it inserted; the next
+// pass, on a fresh snapshot, does. Inside a caller's transaction at REPEATABLE
+// READ or SERIALIZABLE, such a pass fails with the driver's serialization
+// failure (SQLSTATE 40001) instead, and the caller retries its transaction. On
+// an error, the number of rows the earlier passes removed is returned with it.
 func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
 	}
 
-	n, err := s.c.exec(ctx, "delete user's other sessions", pgschema.SessionDeleteByUserExcept,
+	return s.deleteUntilNone(ctx, "delete user's other sessions", pgschema.SessionDeleteByUserExcept,
 		string(user), storekit.SessionDigest(keep))
-
-	return int(n), err
 }
 
-// CountActiveByUser counts user's sessions unexpired by the store's clock.
+// CountActiveByUser counts user's sessions unexpired by the store's clock and
+// not superseded.
 func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
@@ -259,7 +318,22 @@ func (s *sessionStore) CountActiveByUser(ctx context.Context, user identity.User
 		string(user), storekit.Time(s.c.clock.Now()))
 }
 
-// DeleteExpired removes every session expired by the store's clock.
+// stale reports whether a stored session is past what Load returns at now: a
+// superseded one with a retention deadline once that deadline is not after
+// now, any other once either of its own deadlines is not. It is the condition
+// SessionDeleteExpired deletes by, judged in Go.
+func stale(now time.Time, superseded bool, retain sql.NullTime, idle, abs time.Time) bool {
+	if superseded && retain.Valid {
+		return !now.Before(retain.Time)
+	}
+
+	return !now.Before(idle) || !now.Before(abs)
+}
+
+// DeleteExpired removes every session Load would no longer return by the
+// store's clock: a superseded session once its retention deadline passes, or
+// its own deadlines when it has none, and any other once either of its own
+// deadlines passes.
 func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := s.c.exec(ctx, "delete expired sessions", pgschema.SessionDeleteExpired, storekit.Time(s.c.clock.Now()))
 	return int(n), err
@@ -267,19 +341,35 @@ func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 
 // DeleteByExternalSession removes the sessions of issuer and provider session
 // sessionID. An empty argument matches nothing.
+//
+// The delete is repeated until a pass removes nothing, summing what each pass
+// removed. Under PostgreSQL's default READ COMMITTED isolation, a delete that
+// waited on a session an in-flight Supersede holds removes that session once
+// the supersession commits, but cannot see the successor it inserted; the next
+// pass, on a fresh snapshot, does. Inside a caller's transaction at REPEATABLE
+// READ or SERIALIZABLE, such a pass fails with the driver's serialization
+// failure (SQLSTATE 40001) instead, and the caller retries its transaction. On
+// an error, the number of rows the earlier passes removed is returned with it.
 func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	if !storekit.Storable(issuer, sessionID) {
 		return 0, nil
 	}
 
-	n, err := s.c.exec(ctx, "delete provider session's sessions", pgschema.SessionDeleteByExternal,
+	return s.deleteUntilNone(ctx, "delete provider session's sessions", pgschema.SessionDeleteByExternal,
 		issuer, sessionID)
-
-	return int(n), err
 }
 
 // DeleteByUserAndExternalIssuer removes user's sessions from issuer. An empty
 // issuer matches nothing.
+//
+// The delete is repeated until a pass removes nothing, summing what each pass
+// removed. Under PostgreSQL's default READ COMMITTED isolation, a delete that
+// waited on a session an in-flight Supersede holds removes that session once
+// the supersession commits, but cannot see the successor it inserted; the next
+// pass, on a fresh snapshot, does. Inside a caller's transaction at REPEATABLE
+// READ or SERIALIZABLE, such a pass fails with the driver's serialization
+// failure (SQLSTATE 40001) instead, and the caller retries its transaction. On
+// an error, the number of rows the earlier passes removed is returned with it.
 func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	ctx context.Context, user identity.UserID, issuer string,
 ) (int, error) {
@@ -287,10 +377,301 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 		return 0, nil
 	}
 
-	n, err := s.c.exec(ctx, "delete user's sessions from issuer", pgschema.SessionDeleteByUserIssuer,
+	return s.deleteUntilNone(ctx, "delete user's sessions from issuer", pgschema.SessionDeleteByUserIssuer,
 		string(user), issuer)
+}
 
-	return int(n), err
+// deleteUntilNone runs statement, a delete of sessions, until a pass removes
+// nothing, and returns what every pass removed, those before an error
+// included. A pass that waited on a session an in-flight supersession holds
+// cannot see the successor that supersession inserted; the pass after it
+// can.
+func (s *sessionStore) deleteUntilNone(ctx context.Context, op, statement string, args ...any) (int, error) {
+	total := 0
+	for {
+		n, err := s.c.exec(ctx, op, statement, args...)
+		if err != nil {
+			return total, err
+		}
+		if n == 0 {
+			return total, nil
+		}
+		total += int(n)
+	}
+}
+
+// RecordActivity writes lastAccessed and idleExpires, and nothing else, to a
+// session last accessed not later than olderThan and not superseded: one conditional
+// UPDATE of those two columns. A session that is fresher or superseded is left
+// unchanged and is not an error; one that is not stored is
+// session.ErrSessionNotFound.
+func (s *sessionStore) RecordActivity(
+	ctx context.Context, sessionID string, lastAccessed, idleExpires, olderThan time.Time,
+) error {
+	const op = "record session activity"
+
+	digest := storekit.SessionDigest(sessionID)
+	n, err := s.c.exec(ctx, op, pgschema.SessionRecordActivity, digest,
+		storekit.Time(lastAccessed), storekit.Time(idleExpires), storekit.Time(olderThan))
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return storekit.NotFoundUnless(s.stored(ctx, op, digest))
+	}
+
+	return nil
+}
+
+// stored reports whether a session with digest is stored, expired or not,
+// reading through the handle ctx resolves to: what a conditional write that
+// changed no row runs to tell a missing session from one whose condition did
+// not hold.
+func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bool, error) {
+	var exists bool
+	err := s.c.queryRow(ctx, op, pgschema.SessionExists, []any{digest}, &exists)
+
+	return exists, err
+}
+
+// Supersede marks op.Old superseded by op.Successor, supersedes Old's previous
+// successor, and inserts op.Successor, in one transaction: the caller's when
+// one is attached, under a savepoint of its own, otherwise one it begins and
+// commits. The conditional UPDATE of Old decides the outcome: when it changes
+// no row, nothing is written, and the store reports
+// session.ErrSessionRenewalConflict when Old is stored and
+// session.ErrSessionNotFound when it is not. A successor whose identifier is
+// already stored is an error, and nothing is written. A nil Successor, a
+// Successor with no family (the nil family), and an op.RetainUntil before
+// op.AcceptUntil are errors too, refused before any statement runs.
+//
+// When Old is updated, its observed previous successor, if any, is updated
+// next under the same transaction, conditional on it not being superseded
+// and, with op.RequireUnpresentedSuccessor, never presented. When that update
+// changes no row, the successor has moved on or is no longer stored: nothing
+// is written and the store reports session.ErrSuccessorAdvanced. Old and its
+// previous successor are kept for reuse detection until the later of their
+// stored retention deadline and op.RetainUntil, never lowered, so the sweep
+// removes them only once their family could no longer be live; neither has
+// its own deadlines changed. A zero op.RetainUntil is refused with the other
+// invalid supersessions, before any statement, whenever op.AcceptUntil is set.
+// A stored record with no retention deadline, one written before the column
+// existed, is judged by its own deadlines. No other
+// session of the family is read or written, however many renewals came
+// before.
+//
+// Two rules refuse a supersession whatever it observed. A session in no
+// family, the nil family, is refused with an error, since every family-less
+// session carries it; the family read in the conditional update decides it,
+// so nothing is written. A session superseded already is superseded again
+// only through its observed successor: with none observed it is
+// session.ErrSessionRenewalConflict, as it was knocked out of its chain and
+// renewing it would give the family a second live head.
+//
+// Locking: the transaction first locks the rows it updates, Old and the
+// observed previous successor (Old alone on a first rotation), in row id
+// order, and only then updates either, so it takes them in the order
+// DeleteFamily takes the whole family in. Two supersessions of one family, or
+// a supersession and a family revocation, therefore wait for each other
+// instead of deadlocking, whichever of the two rows sorts first.
+// A presentation, rotation or removal of the observed successor either
+// commits first and refuses the supersession, or waits for it.
+//
+// Isolation: at the default READ COMMITTED, a supersession that loses a race
+// to another one is session.ErrSessionRenewalConflict, and one whose
+// successor moved on while it waited is session.ErrSuccessorAdvanced. Inside
+// a caller's transaction at REPEATABLE READ or SERIALIZABLE, a lost race may
+// instead surface as the driver's serialization failure (SQLSTATE 40001),
+// when PostgreSQL refuses a conditional UPDATE of a row changed since the
+// transaction's snapshot; it is still one of the sentinels when the
+// competitor committed before that snapshot was taken, and under
+// SERIALIZABLE the failure can also arrive at commit. The caller handles it
+// as it handles any other serialization failure, by retrying its
+// transaction.
+func (s *sessionStore) Supersede(ctx context.Context, op session.Supersession) error {
+	const name = "supersede session"
+
+	if err := storekit.CheckSupersession(op); err != nil {
+		return failed(name, err)
+	}
+	args, err := s.insertArgs(name, op.Successor)
+	if err != nil {
+		return err
+	}
+	q, _, ambient, err := s.c.conn(ctx)
+	if err != nil {
+		return failed(name, err)
+	}
+
+	return storekit.Supersede(ctx, &supersession{s: s, op: name, insert: args}, q, ambient, op)
+}
+
+// supersession is this store's side of storekit.Supersede, for one call to
+// op: database/sql's transaction, savepoint and statement calls, each failure
+// wrapped with the adapter prefix and op.
+type supersession struct {
+	s  *sessionStore
+	op string
+	// insert is the successor's SessionInsert arguments.
+	insert []any
+	// tx is the transaction Begin began, when the store owns the unit.
+	tx *sql.Tx
+}
+
+// Begin begins a transaction of the store's own on its *sql.DB.
+func (u *supersession) Begin(ctx context.Context, _ DBTX) (DBTX, error) {
+	tx, err := u.s.c.base.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, failed(u.op, err)
+	}
+	u.tx = tx
+
+	return tx, nil
+}
+
+func (u *supersession) Commit(context.Context) error {
+	if err := u.tx.Commit(); err != nil {
+		return failed(u.op, err)
+	}
+
+	return nil
+}
+
+// Rollback takes no context: database/sql binds the transaction to the one
+// BeginTx was given, and rolls it back itself when that one is done.
+func (u *supersession) Rollback(context.Context) { _ = u.tx.Rollback() }
+
+func (u *supersession) SavepointName() string {
+	return "scrty_sessions_" + strconv.FormatUint(u.s.savepoints.Add(1), 10)
+}
+
+func (u *supersession) ExecSavepoint(ctx context.Context, q DBTX, stmt string) error {
+	if _, err := q.ExecContext(ctx, stmt); err != nil {
+		return failed(u.op, err)
+	}
+
+	return nil
+}
+
+func (u *supersession) Exec(ctx context.Context, q DBTX, stmt string, args ...any) (int64, error) {
+	res, err := q.ExecContext(ctx, stmt, args...)
+	if err != nil {
+		return 0, failed(u.op, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, failed(u.op, err)
+	}
+
+	return n, nil
+}
+
+func (u *supersession) QueryInt(ctx context.Context, q DBTX, stmt string, args ...any) (int, error) {
+	var n int
+	if err := q.QueryRowContext(ctx, stmt, args...).Scan(&n); err != nil {
+		return 0, failed(u.op, err)
+	}
+
+	return n, nil
+}
+
+func (u *supersession) InsertSuccessor(ctx context.Context, q DBTX) (bool, error) {
+	n, err := u.Exec(ctx, q, pgschema.SessionInsert, u.insert...)
+	if err != nil {
+		return false, err
+	}
+
+	return n > 0, nil
+}
+
+func (u *supersession) NullTime(t time.Time) any { return nullTs(t) }
+
+func (u *supersession) Failed(err error) error { return failed(u.op, err) }
+
+// DeleteFamily removes every session of family, superseded or not and expired
+// or not, and reports how many went. The nil family is refused before any
+// statement runs: sessions written with no family all carry it.
+//
+// The delete is repeated until it removes nothing, summing what each pass
+// removed, in the caller's transaction when one is attached. Under PostgreSQL's
+// default READ COMMITTED isolation, a delete that waited on a member an
+// in-flight Supersede holds removes that member once the supersession
+// commits, but cannot see the successor it inserted; the next pass, on a
+// fresh snapshot, does. Each pass that removes something removes members of
+// a family that only a supersession of a remaining member grows, so the
+// passes end once no supersession is in flight; a Create that keeps adding
+// members to the family as fast as they go would keep it running. Both of
+// the library's callers, the revocation of a reused session's family and
+// logout, pass a context detached from cancellation, so nothing but the
+// store bounds the passes.
+//
+// Each pass locks the family's sessions in row id order before deleting
+// them, the order Supersede locks them in, so a revocation and a supersession
+// of the same family wait for each other instead of deadlocking.
+//
+// Inside a caller's transaction at REPEATABLE READ or SERIALIZABLE, a pass
+// that waited on an in-flight supersession fails with the driver's
+// serialization failure (SQLSTATE 40001) instead of looping, and the caller
+// retries its transaction. On any error, the number of rows the earlier
+// passes removed is returned with it.
+//
+// Inside a caller's transaction the passes run directly in it, with no
+// savepoint of the store's own: the count returned is of deletes not yet
+// committed, which the caller's commit makes final and its rollback undoes.
+// After an error the caller must roll its transaction back: a failed
+// statement leaves it aborted, with no savepoint to return to.
+func (s *sessionStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	if family.IsZero() {
+		return 0, errors.New("sqlstore: delete session family: the nil family names no family")
+	}
+
+	return s.deleteUntilNone(ctx, "delete session family", pgschema.SessionDeleteFamily, family)
+}
+
+// MarkPresented records at as the session's first presentation, only when
+// none is recorded and the session is not superseded: one conditional UPDATE
+// of that column, so a supersession racing it either commits first and
+// refuses it, or waits on the row and sees it. Only when it changes no row
+// does one read tell why: a session that is not stored is
+// session.ErrSessionNotFound, a superseded one is
+// session.ErrSessionSuperseded, with nothing written, and one already
+// presented is not an error.
+func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
+	const op = "mark session presented"
+
+	digest := storekit.SessionDigest(sessionID)
+	n, err := s.c.exec(ctx, op, pgschema.SessionMarkPresented, digest, storekit.Time(at))
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		var exists, superseded bool
+		err := s.c.queryRow(ctx, op, pgschema.SessionPresentationRefusal, []any{digest}, &exists, &superseded)
+
+		return storekit.PresentationRefusal(exists, superseded, err)
+	}
+
+	return nil
 }
 
 var _ session.Store = (*sessionStore)(nil)
+
+// SuccessorPresented reports whether the current successor of the session
+// with this identifier was used, in one read that writes nothing: true when
+// that successor is stored and was presented or has been superseded, false
+// when it is stored unused, is no longer stored, or the session has none. A
+// session that is not stored is session.ErrSessionNotFound. "Stored" is
+// judged as Load judges it, with the store's clock, for the session and its
+// successor alike, so a row past its deadlines that the sweep has not yet
+// removed is not stored. It reads through the caller's transaction when one
+// is attached.
+func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string) (bool, error) {
+	var used bool
+	err := s.c.queryRow(ctx, "read whether session successor was used", pgschema.SessionSuccessorPresented,
+		[]any{storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())}, &used)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, session.ErrSessionNotFound
+	}
+
+	return used, err
+}

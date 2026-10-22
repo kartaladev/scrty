@@ -501,6 +501,13 @@ func assertInstantPtr(t *testing.T, field string, want, got *time.Time) {
 	}
 }
 
+// crossBackendFamily is the family crossBackendSession puts session sid in:
+// one of its own, since a store holds no session without a family.
+func crossBackendFamily(sid string) id.ID {
+	sum := sha256.Sum256([]byte("family:" + sid))
+	return id.ID(sum[:16])
+}
+
 // crossBackendSession is a federated session with identifier sid, holding a
 // provider ID token, valid for an hour from now.
 func crossBackendSession(sid string) *session.Session {
@@ -509,6 +516,8 @@ func crossBackendSession(sid string) *session.Session {
 	return &session.Session{
 		ID:                sid,
 		UserID:            identity.UserID("u-" + sid),
+		FamilyID:          crossBackendFamily(sid),
+		FamilyCreatedAt:   now,
 		CreatedAt:         now,
 		LastAccessedAt:    now,
 		IdleExpiresAt:     now.Add(5 * time.Minute),

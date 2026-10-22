@@ -3,12 +3,17 @@ package test_test
 import (
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/fibersec"
+	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 )
 
@@ -200,3 +205,116 @@ var (
 	_ httpsecconformance.Adapter = ginAdapter{}
 	_ httpsecconformance.Adapter = fiberAdapter{}
 )
+
+// TestSessionBearerFiber runs the session-reference bearer through the fiber
+// integration: a live reference reaches the route with its session, and a
+// reused one is refused 401. The integration needs no change for the mode.
+func TestSessionBearerFiber(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		reference func(f sessionReferenceFixture) string
+		assert    func(t *testing.T, f sessionReferenceFixture, status int, seen string)
+	}
+
+	cases := []testCase{
+		{
+			name:      "a live reference authenticates",
+			reference: func(f sessionReferenceFixture) string { return f.live },
+			assert: func(t *testing.T, f sessionReferenceFixture, status int, seen string) {
+				assert.Equal(t, http.StatusOK, status)
+				assert.Equal(t, f.live, seen, "the route sees the referenced session")
+			},
+		},
+		{
+			name:      "a reused reference is refused",
+			reference: func(f sessionReferenceFixture) string { return f.reused },
+			assert: func(t *testing.T, f sessionReferenceFixture, status int, seen string) {
+				assert.Equal(t, http.StatusUnauthorized, status)
+				assert.Empty(t, seen, "the route never ran")
+
+				_, err := f.sessions.Load(t.Context(), f.successor)
+				require.ErrorIs(t, err, session.ErrSessionNotFound, "the family was revoked, successor included")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newSessionReferenceFixture(t)
+
+			var seen string
+
+			// The throttle needs an attributable client address, which the
+			// in-memory transport only has through a trusted forwarding header.
+			app := fiber.New(fiber.Config{
+				ErrorHandler:       fibersec.ErrorHandler,
+				TrustProxy:         true,
+				TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
+				ProxyHeader:        fiber.HeaderXForwardedFor,
+				EnableIPValidation: true,
+			})
+			app.Use(fibersec.Middleware(f.chain))
+			app.Get("/orders", func(fc fiber.Ctx) error {
+				if s, ok := httpsec.SessionFromContext(fc.Context()); ok {
+					seen = s.ID
+				}
+
+				return fc.SendStatus(http.StatusOK)
+			})
+
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+			req.RemoteAddr = ""
+			req.Header.Set(fiber.HeaderXForwardedFor, "203.0.113.7")
+			req.Header.Set("Authorization", "Bearer "+tc.reference(f))
+
+			out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+			require.NoError(t, err)
+			require.NoError(t, out.Body.Close())
+
+			tc.assert(t, f, out.StatusCode, seen)
+		})
+	}
+}
+
+// TestSessionBearerFloodedSourceFiber runs the per-source throttle through the
+// fiber integration: a source that presented 100 unknown references is refused
+// even with a live one, and a source that did not is served.
+func TestSessionBearerFloodedSourceFiber(t *testing.T) {
+	t.Parallel()
+
+	f := newSessionReferenceFixture(t)
+
+	app := fiber.New(fiber.Config{
+		ErrorHandler:       fibersec.ErrorHandler,
+		TrustProxy:         true,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: []string{inMemoryPeer}},
+		ProxyHeader:        fiber.HeaderXForwardedFor,
+		EnableIPValidation: true,
+	})
+	app.Use(fibersec.Middleware(f.chain))
+	app.Get("/orders", func(fc fiber.Ctx) error { return fc.SendStatus(http.StatusOK) })
+
+	send := func(source, reference string) int {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/orders", nil)
+		req.RemoteAddr = ""
+		req.Header.Set(fiber.HeaderXForwardedFor, source)
+		req.Header.Set("Authorization", "Bearer "+reference)
+
+		out, err := app.Test(req, fiber.TestConfig{Timeout: 0, FailOnTimeout: false})
+		require.NoError(t, err)
+		require.NoError(t, out.Body.Close())
+
+		return out.StatusCode
+	}
+
+	for i := range 100 {
+		require.Equal(t, http.StatusUnauthorized, send("203.0.113.7", referenceUnknownTo(i)))
+	}
+
+	assert.Equal(t, http.StatusUnauthorized, send("203.0.113.7", f.live), "the flooded source is refused")
+	assert.Equal(t, http.StatusOK, send("198.51.100.4", f.live), "another source is served")
+}

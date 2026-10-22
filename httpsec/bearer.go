@@ -1,17 +1,13 @@
 package httpsec
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -30,16 +26,13 @@ type bearerToken struct {
 	sessions *session.Manager
 	users    identity.UserLoader
 
-	engine *policy.Engine
-	log    *slog.Logger
+	// log is the chain's logger, handed over by wire.
+	log *slog.Logger
 
-	// enrolmentLifetime is how long a session marked for an enrolment
-	// challenge may live, handed over by wire.
-	enrolmentLifetime time.Duration
-
-	// enforced holds the challenge kinds something on the chain enforces,
-	// handed over by wire; a raised kind outside it refuses the request.
-	enforced map[policy.ChallengeKind]bool
+	// resolver is the resolution core the bearer joins once its token has
+	// verified, built by wire over the bearer's own session manager and user
+	// loader and the chain's engine, enforcer set and enrolment lifetime.
+	resolver sessionResolver
 
 	now func() time.Time
 
@@ -50,10 +43,19 @@ type bearerToken struct {
 // wire takes the settings the chain resolved, once every option has been
 // applied.
 func (b *bearerToken) wire(c *Chain) {
-	b.engine = c.engine
 	b.log = c.logger
-	b.enrolmentLifetime = c.enrolmentLifetime
-	b.enforced = c.enforced
+	b.resolver = sessionResolver{
+		sessions: b.sessions,
+		users:    b.users,
+		log:      c.logger,
+		phase: perRequestPhase{
+			engine:            c.engine,
+			sessions:          b.sessions,
+			enrolmentLifetime: c.enrolmentLifetime,
+			enforced:          c.enforced,
+			now:               b.now,
+		},
+	}
 }
 
 // Intercept authenticates a bearer token against a live session and a live
@@ -92,178 +94,49 @@ func (b *bearerToken) Intercept(ex *Exchange, next Next) error {
 	}
 
 	// The session identifier is the token's jti, which is how a token issued at
-	// login finds the session it was issued for.
-	s, err := b.sessions.Load(ctx, claims.ID())
-	if err != nil {
-		if errors.Is(err, session.ErrSessionUnreadable) {
-			// Visible to an operator, because it means a sealing key was
-			// retired while sessions sealed under it were still live. The
-			// caller is answered "log in again", because that is the remedy
-			// and a 500 storm is not.
-			//
-			// The record carries a fixed reason and the error's Go type, never
-			// its text: the consumer's store may word the failure with the
-			// row it could not read.
-			b.log.LogAttrs(ctx, slog.LevelError, msgSessionUnreadable,
-				diag.Failure("session-store", err)...)
-		}
-
-		// Missing, expired and unreadable are the same answer: telling them
-		// apart would report whether a session ever existed.
-		return ErrAuthenticationRequired
-	}
-
-	// Reloaded rather than taken from the token, so a role revoked a minute ago
-	// is not honoured for the rest of the token's life. The token's subject is
-	// the username, which is what the user loader is keyed on.
-	details, err := b.users.LoadByUsername(ctx, claims.Subject())
-	if err != nil {
-		return ErrAuthenticationRequired
-	}
-
-	principal := identity.PrincipalFromDetails(details)
-	if principal == nil {
-		// A loader that reported no error and no user has told us nothing, and
-		// a request judged on no principal is an anonymous one wearing a token.
-		return ErrAuthenticationRequired
-	}
-
-	now := b.now()
-	auth := &authenticate.Authentication{
-		Principal:         principal,
-		Time:              now,
-		PasswordChangedAt: details.PasswordChangedAt,
-	}
-
-	ex.Authentication = auth
-	ex.Session = s
-	ctx = withSession(WithCaller(ctx, auth), s)
-	ex.SetContext(ctx)
-
-	d := evaluatePhase(ctx, b.engine, policy.PerRequest, &policy.Input{
-		User:               principal.ID,
-		Username:           principal.Username,
-		Principal:          principal,
-		Session:            s,
-		FirstFactor:        s.FirstFactor,
-		MFASatisfied:       s.MFA == session.MFASatisfied,
-		PasswordChangedAt:  details.PasswordChangedAt,
-		FederatedAssurance: sessionFederatedAssurance(s),
-		Now:                now,
-	})
-
-	switch d.Outcome {
-	case policy.Deny:
-		return policyDenyReason(d)
-	case policy.Challenge:
-		// A kind nothing on the chain enforces is refused before anything is
-		// marked, whatever state the session is in; see refuseUnenforced.
-		if err := refuseUnenforced(b.enforced, d.Challenge); err != nil {
-			return err
-		}
-
-		// A recovery-pending session is not marked: marking would move it out
-		// of that state without a binding, and the recovery gate is its only
-		// enforcer until one completes. It goes on to that gate, which
-		// refuses it unless the request is one that can bind it. Only the
-		// mark is skipped: the check above and the record below still apply.
-		//
-		// Otherwise it is marked and continued, not refused here: the gate for
-		// this challenge enforces it at its own slot, and refusing at this one
-		// would also block the very endpoint the caller must reach to resolve
-		// it.
-		if s.MFA != session.MFARecoveryPending {
-			if err := b.markChallenge(ctx, s, d.Challenge); err != nil {
-				return err
-			}
-		}
-
-		// A consumer kind has no field on the session to be marked in, so it
-		// is recorded where the gate the consumer declared for it reads it.
-		if _, builtIn := builtInEnforcers[d.Challenge]; !builtIn {
-			ex.raised = d.Challenge
-		}
-	case policy.Allow:
+	// login finds the session it was issued for. The token's subject is the
+	// username, which is what the user loader is keyed on.
+	if err := b.resolver.resolve(ex, claims.ID(), lookupByUsername(claims.Subject())); err != nil {
+		return err
 	}
 
 	return next(ex)
 }
 
-// sessionFederatedAssurance is the evidence a federated session's login
-// asserted, minted afresh on every request from the session's library-owned
-// fields: the provider and issuer it was created with and the amr and acr
-// recorded in the creating write. The policies match it against the
-// provider's configuration as it is now, so a tightened or removed provider
-// takes effect at the session's next request.
-//
-// A session whose first factor is not on the federated channel carries no
-// evidence, whatever its fields hold. Nothing is read from the request, a
-// header, a claim or the session's consumer data.
-func sessionFederatedAssurance(s *session.Session) policy.FederatedAssurance {
-	if s.FirstFactor.Channel() != factor.Federated {
-		return policy.FederatedAssurance{}
-	}
-
-	return mintFederated(s.ExternalProvider, s.ExternalIssuer, s.FederatedAMR, s.FederatedACR)
-}
-
-// markChallenge records a per-request challenge on s.
-//
-// A session entering the enrolment-only state is saved here, before the
-// request goes on. That mark lowers the session's deadlines, and the gate that
-// enforces it refuses the request at a slot outside the session-touch step, so
-// a mark left for that step to persist would never be stored: the session
-// would keep its full lifetime while it is confined. A session already in the
-// state is not written again, since marking it changes nothing. A failed save
-// refuses the request rather than serving it on an unrecorded mark.
-//
-// The other kinds are marked in memory only, as before: the per-request phase
-// raises them again on every request, and they change no deadline.
-//
-// A kind nothing on the chain enforces is refused with a configuration error
-// before anything is marked; see refuseUnenforced.
-func (b *bearerToken) markChallenge(ctx context.Context, s *session.Session, kind policy.ChallengeKind) error {
-	if err := refuseUnenforced(b.enforced, kind); err != nil {
-		return err
-	}
-
-	entering := kind == policy.ChallengeMFAEnrolment && s.MFA != session.MFAEnrolmentPending
-
-	challengeMarker{sessions: b.sessions, enrolmentLifetime: b.enrolmentLifetime}.mark(s, kind)
-
-	if !entering {
-		return nil
-	}
-
-	return b.sessions.Save(ctx, s)
-}
-
 // presented reports the token an Authorization header carries, and whether this
 // interceptor claims the header at all.
+func (b *bearerToken) presented(header string) (string, bool) {
+	return presentedCredential(header, b.scheme, b.allowEmptyScheme)
+}
+
+// presentedCredential reports the credential an Authorization header carries
+// under scheme, and whether the header is claimed at all. Both bearer modes
+// extract through it, so they claim exactly the same headers.
 //
 // The scheme is compared without regard to case, as RFC 7235 requires, which is
 // deliberately unlike the exact match Basic authentication makes: a bearer
-// token's scheme is the one this chain issues tokens under, whereas "Basic"
-// names a scheme whose neighbours share the header.
-func (b *bearerToken) presented(header string) (string, bool) {
+// credential's scheme is the one this chain issues credentials under, whereas
+// "Basic" names a scheme whose neighbours share the header. A header naming the
+// scheme with nothing after it is not claimed.
+func presentedCredential(header, scheme string, allowEmptyScheme bool) (string, bool) {
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return "", false
 	}
 
-	scheme, rest, found := strings.Cut(header, " ")
+	got, rest, found := strings.Cut(header, " ")
 	if !found {
 		// A bare credential is indistinguishable from another scheme's opaque
 		// token, so it is claimed only where the consumer said this header
 		// carries nothing else.
-		if b.allowEmptyScheme {
+		if allowEmptyScheme {
 			return header, true
 		}
 
 		return "", false
 	}
 
-	if !strings.EqualFold(scheme, b.scheme) {
+	if !strings.EqualFold(got, scheme) {
 		return "", false
 	}
 
@@ -274,11 +147,6 @@ func (b *bearerToken) presented(header string) (string, bool) {
 	return "", false
 }
 
-// The records a bearer refusal is reported with. The verification cause is at
-// debug because a stream of expired tokens is ordinary traffic; an unreadable
-// session is at error because it is an outage of the deployment's own keys.
-const (
-	//nolint:gosec // G101: a log message naming what failed, not a credential
-	msgBearerNotVerified = "httpsec: a bearer token did not verify"
-	msgSessionUnreadable = "httpsec: a session could not be decrypted"
-)
+// msgBearerNotVerified reports a token that did not verify. It is at debug
+// because a stream of expired tokens is ordinary traffic.
+const msgBearerNotVerified = "httpsec: a bearer token did not verify" //nolint:gosec // G101: a log message naming what failed, not a credential

@@ -906,7 +906,9 @@ func TestMFAVerifySuccess(t *testing.T) {
 
 	s := h.pendingSession(t, factor.Password)
 	previous := s.ID
+	signedIn := s.AuthenticatedAt
 
+	h.clock.Advance(5 * time.Minute)
 	out := serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath))
 
 	require.NoError(t, out.err)
@@ -922,6 +924,18 @@ func TestMFAVerifySuccess(t *testing.T) {
 	rotated := h.stored(t, h.resolved.ID)
 	assert.Equal(t, session.MFASatisfied, rotated.MFA)
 	assert.False(t, rotated.MFASatisfiedAt.IsZero(), "the satisfied time is recorded")
+	// This chain reads the system clock, which is past the harness's
+	// minute-truncated sign-in time, so the two are told apart.
+	assert.True(t, rotated.AuthenticatedAt.Equal(rotated.MFASatisfiedAt),
+		"satisfying the second factor refreshes the authentication time: got %s, satisfied %s",
+		rotated.AuthenticatedAt, rotated.MFASatisfiedAt)
+	assert.True(t, rotated.AuthenticatedAt.After(signedIn), "the authentication time moved on from the sign-in's")
+	// The successor is a record written at the rotation: its creation time
+	// is the rotation's, while the sign-in's time lives in AuthenticatedAt
+	// (refreshed above) and MFASatisfiedAt.
+	assert.True(t, rotated.CreatedAt.Equal(h.clock.Now()),
+		"the successor's creation time is when it was written: got %s, rotated at %s", rotated.CreatedAt, h.clock.Now())
+	assert.True(t, rotated.CreatedAt.After(s.CreatedAt), "the successor is a newer record than the one it replaced")
 	assert.Equal(t, testMFAUser, rotated.UserID, "everything else is carried over")
 	assert.Equal(t, factor.Password, rotated.FirstFactor)
 }
@@ -1301,4 +1315,87 @@ func TestMFAVerifyThrottleAcrossMethods(t *testing.T) {
 
 	require.ErrorIs(t, out.err, mfa.ErrVerifyThrottled)
 	assert.Equal(t, session.MFAPending, h.stored(t, s.ID).MFA, "the challenge stays pending")
+}
+
+// TestMFAVerifyRotationRefusals pins what a second factor verified on a
+// session that a renewal has already superseded is answered with. Inside the
+// renewal's window the strict rotation refuses it as a lost renewal race, a
+// 409 the client retries with the credential it now holds; after the window
+// it is reuse, a 401. A session that vanished from the store between the
+// endpoint's load and the rotation, its family revoked in between, is a
+// session the caller no longer holds: a 401 too. None is a server fault.
+func TestMFAVerifyRotationRefusals(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name  string
+		after time.Duration
+
+		// vanishes deletes the session from the store once the endpoint holds
+		// it, before the rotation.
+		vanishes bool
+		assert   func(t *testing.T, out served)
+	}
+
+	cases := []testCase{
+		{
+			name:     "the session vanished before the rotation",
+			vanishes: true,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out.err, session.ErrSessionNotFound)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			name:  "inside the renewal's window",
+			after: 10 * time.Second,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrSessionRenewalConflict)
+				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
+			},
+		},
+		{
+			name:  "after the renewal's window",
+			after: 31 * time.Second,
+			assert: func(t *testing.T, out served) {
+				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+				require.ErrorIs(t, out.err, session.ErrSessionReused)
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMFAHarness(t)
+			h.channel(factor.AuthenticatorApp).allows().accepts().recordsNoFailure()
+
+			s := h.pendingSession(t, factor.Password)
+
+			// A renewal of the same session, racing the verification: the
+			// verification still holds the session as it was before.
+			if tc.vanishes {
+				require.NoError(t, h.sessions.Delete(t.Context(), s.ID))
+			} else {
+				racing := *s
+				_, _, err := h.sessions.RotateWithGrace(t.Context(), &racing, 30*time.Second)
+				require.NoError(t, err)
+			}
+
+			h.clock.Advance(tc.after)
+
+			was := *s
+			tc.assert(t, serve(t, h.chain(t, s), postCode(t.Context(), testMFAVerifyPath)))
+
+			// A refused rotation leaves the session the caller holds as it
+			// was: the second factor is not recorded on it.
+			assert.Equal(t, was.MFA, s.MFA, "the second-factor state is rolled back")
+			assert.True(t, s.MFASatisfiedAt.Equal(was.MFASatisfiedAt), "the satisfied time is rolled back: got %s", s.MFASatisfiedAt)
+			assert.True(t, s.AuthenticatedAt.Equal(was.AuthenticatedAt), "the authentication time is rolled back: got %s", s.AuthenticatedAt)
+		})
+	}
 }

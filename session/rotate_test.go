@@ -20,8 +20,8 @@ import (
 var errStoreWrite = errors.New("store refused the write")
 
 // failingWriteStore is a real store that takes the first insert — the case's
-// own fixture — and refuses every later one, which is the write a rotation
-// makes before it deletes anything.
+// own fixture — and refuses every later one, along with every supersession,
+// which is the write a rotation makes before it deletes anything.
 type failingWriteStore struct {
 	session.Store
 
@@ -33,6 +33,10 @@ func (s *failingWriteStore) Create(ctx context.Context, sess *session.Session) e
 		return s.Store.Create(ctx, sess)
 	}
 
+	return errStoreWrite
+}
+
+func (*failingWriteStore) Supersede(context.Context, session.Supersession) error {
 	return errStoreWrite
 }
 
@@ -67,7 +71,7 @@ func TestManagerRotate(t *testing.T) {
 				assert.Equal(t, old.UserID, got.UserID)
 				assert.Equal(t, old.FirstFactor, got.FirstFactor)
 				assert.Equal(t, old.Data, got.Data)
-				assert.True(t, got.CreatedAt.Equal(old.CreatedAt))
+				assert.True(t, got.AuthenticatedAt.Equal(old.AuthenticatedAt), "the authentication time is carried over")
 				assert.True(t, got.AbsoluteExpiresAt.Equal(old.AbsoluteExpiresAt))
 
 				_, loadErr := m.Load(t.Context(), old.ID)

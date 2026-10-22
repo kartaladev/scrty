@@ -80,8 +80,9 @@ type Session struct {
 	// consumer's own reference, matched byte-for-byte and never parsed.
 	UserID identity.UserID
 
-	// CreatedAt is when the session was created, read from the manager's
-	// clock.
+	// CreatedAt is when this record was created, read from the manager's
+	// clock. A renewal writes a new record with a new CreatedAt, so it is the
+	// renewal's time there; FamilyCreatedAt holds the sign-in's time.
 	CreatedAt time.Time
 
 	// LastAccessedAt is when activity was last recorded, which Touch moves.
@@ -95,8 +96,8 @@ type Session struct {
 	// constant use still ends at the hour it was always going to end.
 	// Manager.MarkEnrolmentPending and Manager.MarkRecoveryPending lower it
 	// for a confined session, and Manager.RestoreEnrolmentDeadlines gives it
-	// back on the upgrade, to no later than CreatedAt plus the absolute
-	// timeout and no later than the deadline held before the mark.
+	// back on the upgrade, to exactly EnrolmentOriginDeadline, the deadline
+	// held before the mark.
 	AbsoluteExpiresAt time.Time
 
 	// FirstFactor is the kind of factor the login that established this
@@ -114,6 +115,22 @@ type Session struct {
 	// through Data, so a satisfied second factor is something the library
 	// recorded and not something a consumer key can claim.
 	MFASatisfiedAt time.Time
+
+	// AuthenticatedAt is when the user last proved who they are, read from
+	// the manager's clock: the time the authentication occurred, as the
+	// OpenID Connect auth_time claim means it. Manager.Create sets it to
+	// CreatedAt, before the create options run, so a CreateOption may still
+	// set another time; it is refreshed when a second factor is satisfied.
+	// No renewal moves it: RotateWithGrace carries the stored value over,
+	// and Rotate writes the value from the session it is given, which is how
+	// second-factor verification records its refresh. Either way a
+	// successor's CreatedAt is its renewal time while its AuthenticatedAt
+	// stays the sign-in's, unless the caller refreshed it. Every freshness check that asks
+	// how recently the user authenticated reads this field alone, never
+	// CreatedAt. Library-owned: Save keeps the stored value, so changing it
+	// here and saving changes nothing, and a consumer cannot set it through
+	// Data.
+	AuthenticatedAt time.Time
 
 	// MFAAtFirstFactor marks that the second factor was met at the first
 	// factor of the login that created this session, as a user-verified
@@ -171,6 +188,56 @@ type Session struct {
 	// Library-owned: a consumer cannot set it through Data.
 	RecoveredAt time.Time
 
+	// FamilyID identifies the family this session belongs to: the chain of
+	// sessions one sign-in started, linked by rotation. Manager.Create starts
+	// a new family from the manager's identifier generator, and every
+	// rotation keeps it, so revoking the family ends every session the
+	// sign-in produced. It is not a secret and is never a bearer credential.
+	// Library-owned: a consumer cannot set it through Data.
+	FamilyID id.ID
+
+	// FamilyCreatedAt is when the family started: the CreatedAt of the
+	// session that began it. Every rotation keeps it. Library-owned.
+	FamilyCreatedAt time.Time
+
+	// SupersededAt is when a rotation with a grace window replaced this
+	// session with a successor, and is zero for a session never superseded.
+	// Only Store.Supersede sets it. Library-owned.
+	SupersededAt time.Time
+
+	// AcceptUntil is the end of a superseded session's grace window: the
+	// first instant at which presenting it is reuse rather than a late
+	// retry. It is zero for a session never superseded. Only Store.Supersede
+	// sets it. Library-owned.
+	AcceptUntil time.Time
+
+	// RetainUntil is how long a superseded session is kept for reuse
+	// detection: until then a store returns it, and keeps it through the
+	// expiry sweep, whatever its own deadlines say, so that presenting it
+	// late is detected as reuse rather than reported as not found. It is
+	// never a deadline of the session: IdleExpiresAt and AbsoluteExpiresAt
+	// stay its own, and a renewal, a recovery and a load inside the window
+	// read those. It is zero for a session never superseded, and a
+	// superseded session with a zero RetainUntil is kept only until its own
+	// deadlines pass. The library sets it only through Store.Supersede, to
+	// the later of its stored value and Supersession.RetainUntil, so it is
+	// never lowered. A store keeps whatever value it is given: a session
+	// handed to Create, as a successor is inside Supersede, is stored with
+	// its RetainUntil as given. Library-owned.
+	RetainUntil time.Time
+
+	// FirstPresentedAt is when the session was first loaded successfully,
+	// and is zero until then. Only Store.MarkPresented sets it, and only
+	// once. Library-owned.
+	FirstPresentedAt time.Time
+
+	// SuccessorDigest is the SHA-256 digest of the identifier of this
+	// session's current successor, and is nil for a session never
+	// superseded. It is a digest and never the identifier itself, so the
+	// stored record cannot be used to reach the successor. Only
+	// Store.Supersede sets it. Library-owned.
+	SuccessorDigest []byte
+
 	// ExternalProvider names the identity provider a federated login came
 	// from, as the consumer configured it.
 	ExternalProvider string
@@ -211,6 +278,7 @@ func (s *Session) clone() *Session {
 
 	out := *s
 	out.FederatedAMR = slices.Clone(s.FederatedAMR)
+	out.SuccessorDigest = slices.Clone(s.SuccessorDigest)
 	if s.Data != nil {
 		out.Data = make(map[string]string, len(s.Data))
 		for k, v := range s.Data {

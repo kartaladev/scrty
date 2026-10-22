@@ -243,3 +243,102 @@ func assertConsumerOwnedIdentity(ctx context.Context, t *testing.T, pool *pgxpoo
 	_, err = handoffs.DeleteExpired(ctx, storefix.OIDCStart.Add(time.Hour))
 	require.NoError(t, err)
 }
+
+func TestSessionFamilyAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
+}
+
+func TestSessionSuccessorAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSuccessorAmbientTx(t, h) })
+}
+
+func TestSessionFamilyRevocationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionFamilyRevocationRace(t, h) })
+}
+
+func TestSessionUserDeleteRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionUserDeleteRace(t, h) })
+}
+
+func TestSessionSuccessorAdvanceRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
+}
+
+func TestSessionPresentationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
+}
+
+func TestSessionSupersessionLockOrder(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+	// Row ids that sort against insertion order, so a store that locks the
+	// rows it writes in statement order rather than id order meets the
+	// reverse order.
+	ids := storetest.DescendingIDs()
+	descending := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, append(opts, pgxstore.WithIDGenerator(ids))...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSupersessionLockOrder(t, h) })
+	t.Run("pgx with descending row ids", func(t *testing.T) {
+		storetest.RunSessionSupersessionLockOrder(t, descending)
+	})
+}
+
+func TestSessionSupersedeRefusesNilFamily(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migrated(t), func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
+		return newSessionStore(t, pool, c, opts...)
+	})
+
+	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSupersedeRefusesNilFamily(t, h) })
+	t.Run("pgx except", func(t *testing.T) { storetest.RunSessionDeleteExceptNilFamily(t, h) })
+}

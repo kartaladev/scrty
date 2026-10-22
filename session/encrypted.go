@@ -3,11 +3,14 @@ package session
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // Cipher seals and opens the one session field that is a credential in its own
@@ -214,6 +217,49 @@ func (s *encryptedStore) DeleteByUserAndExternalIssuer(ctx context.Context, user
 	n, err := s.inner.DeleteByUserAndExternalIssuer(ctx, user, issuer)
 
 	return n, storeFailed(err, "session: the inner store could not delete the user's sessions from the issuer")
+}
+
+func (s *encryptedStore) RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
+	return storeFailed(s.inner.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan),
+		"session: the inner store could not record the session's activity")
+}
+
+// Supersede seals the successor's ID token, bound to the successor's own
+// identifier, as Create does, and passes the supersession on. The caller's
+// successor keeps its plaintext.
+func (s *encryptedStore) Supersede(ctx context.Context, op Supersession) error {
+	if op.Successor == nil {
+		return errors.New("session: a supersession needs a successor")
+	}
+	successor, err := s.sealed(op.Successor)
+	if err != nil {
+		return err
+	}
+	op.Successor = successor
+
+	return storeFailed(s.inner.Supersede(ctx, op), "session: the inner store could not supersede the session")
+}
+
+func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
+	n, err := s.inner.DeleteFamily(ctx, family)
+
+	return n, storeFailed(err, "session: the inner store could not delete the session family")
+}
+
+// MarkPresented passes the mark on. The inner store's ErrSessionNotFound and
+// ErrSessionSuperseded come back bare, as Supersede's refusals do.
+func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
+	return storeFailed(s.inner.MarkPresented(ctx, id, at),
+		"session: the inner store could not record the session's first presentation")
+}
+
+// SuccessorPresented passes the read on: it reads only presentation and
+// supersession state, which is not sealed. The inner store's
+// ErrSessionNotFound comes back bare.
+func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (bool, error) {
+	used, err := s.inner.SuccessorPresented(ctx, id)
+
+	return used, storeFailed(err, "session: the inner store could not read whether the session's successor was used")
 }
 
 var _ Store = (*encryptedStore)(nil)

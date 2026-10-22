@@ -59,6 +59,26 @@ type sessionRow struct {
 	// for none. Neither is sealed, and both are replaced by an update.
 	FederatedAMR string `gorm:"column:federated_amr;type:jsonb"`
 	FederatedACR string `gorm:"column:federated_acr;type:text"`
+	// The family, supersession and presentation columns are written by the
+	// insert, the supersession and the first presentation only; the update
+	// omits them. Every store refuses a session with no family, and the
+	// migration's column default gives a row written by older code a family of
+	// its own. SupersededAt, AcceptUntil and SuccessorDigest are NULL for a
+	// session never superseded, and FirstPresentedAt for one never presented.
+	FamilyID         id.ID      `gorm:"column:family_id;type:uuid"`
+	FamilyCreatedAt  time.Time  `gorm:"column:family_created_at;type:timestamptz"`
+	SupersededAt     *time.Time `gorm:"column:superseded_at;type:timestamptz"`
+	AcceptUntil      *time.Time `gorm:"column:accept_until;type:timestamptz"`
+	SuccessorDigest  []byte     `gorm:"column:successor_digest;type:bytea"`
+	FirstPresentedAt *time.Time `gorm:"column:first_presented_at;type:timestamptz"`
+	// RetainUntil is how long a superseded session is kept for reuse
+	// detection, NULL for none: a superseded row with none is judged by its
+	// own deadlines. The insert and the supersession write it; the update
+	// omits it.
+	RetainUntil *time.Time `gorm:"column:retain_until;type:timestamptz"`
+	// AuthenticatedAt is when the user last proved who they are, written by
+	// the insert only; the update omits it.
+	AuthenticatedAt time.Time `gorm:"column:authenticated_at;type:timestamptz"`
 }
 
 // TableName is the table the migration creates for sessions.

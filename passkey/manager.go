@@ -436,12 +436,7 @@ func (m *Manager) admit(ctx context.Context, s *session.Session, rc Registration
 		}
 	}
 
-	latest := s.CreatedAt
-	if s.MFASatisfiedAt.After(latest) {
-		latest = s.MFASatisfiedAt
-	}
-
-	if m.clock.Now().Sub(latest) > m.freshness {
+	if m.clock.Now().Sub(s.AuthenticatedAt) > m.freshness {
 		return ErrReauthenticationRequired
 	}
 

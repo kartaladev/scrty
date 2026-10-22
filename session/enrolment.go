@@ -76,12 +76,12 @@ func (m *Manager) confine(s *Session, lifetime time.Duration) {
 // Rotate straight after, which carries the restored deadlines over as it
 // carries every other field.
 //
-// The absolute deadline becomes the earlier of CreatedAt plus the manager's
-// absolute timeout and the deadline recorded in EnrolmentOriginDeadline, the
-// one s held before it was marked. It is therefore never later than either:
-// not than the deadline a login would have had under this manager, and not
-// than the deadline s actually held, even if the absolute timeout has since
-// been raised. A fault here can only end a session early, never late. The
+// The absolute deadline becomes exactly the one recorded in
+// EnrolmentOriginDeadline, the deadline s held before it was marked. It is
+// therefore never later than the deadline s actually held, even if the
+// absolute timeout has since been raised, and a session created with its own
+// lifetime (WithAbsoluteLifetime) gets that lifetime back rather than the
+// manager's timeout. A fault here can only end a session early, never late. The
 // idle deadline becomes the earlier of now plus the idle timeout and that
 // absolute deadline. The marker and the EnrolmentGeneration are then cleared.
 //
@@ -104,10 +104,7 @@ func (m *Manager) RestoreEnrolmentDeadlines(s *Session) error {
 		return ErrSessionExpired
 	}
 
-	absolute := s.CreatedAt.Add(m.absoluteTimeout)
-	if s.EnrolmentOriginDeadline.Before(absolute) {
-		absolute = s.EnrolmentOriginDeadline
-	}
+	absolute := s.EnrolmentOriginDeadline
 	idle := now.Add(m.idleTimeout)
 	if idle.After(absolute) {
 		idle = absolute

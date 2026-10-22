@@ -609,6 +609,7 @@ func TestPending(t *testing.T) {
 
 				later := fullSession("sess-b", "u-1")
 				later.CreatedAt = e.f.clock.Now()
+				later.AuthenticatedAt = later.CreatedAt
 
 				challenge := e.f.begin(t, e.m, later)
 				res2, err := e.m.FinishRegistration(t.Context(), later, regBody(challenge, "cred-b", ""),

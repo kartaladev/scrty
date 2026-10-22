@@ -136,18 +136,30 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 		if err := i.checkConveyance(option); err != nil {
 			return err
 		}
+
+		if c.sessionBearer {
+			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
+				return err
+			}
+		}
 	} else {
 		if i.handoffs == nil {
 			return newConfigError("%s needs a handoff manager to convey a login with, unless "+
 				"WithCallbackSuccess conveys it instead", option)
 		}
 
-		if i.tokens == nil {
+		if c.sessionBearer {
+			if err := checkTokenGenerator(c, option, "WithOIDCTokens", i.tokens); err != nil {
+				return err
+			}
+		} else if i.tokens == nil {
 			return newConfigError("%s needs a token generator: a redeemed handoff opens a "+
 				"session, and a caller with no credential for it could not use it "+
 				"(WithOIDCTokens)", option)
 		}
 	}
+
+	i.issue = c.credentialIssuer(i.tokens)
 
 	if i.sessions == nil && c.sessions == nil {
 		return newConfigError("%s needs a session manager, and neither WithOIDCSessions "+
@@ -322,6 +334,11 @@ func (i *oidcInterceptor) resolve(c *config) error {
 // from a federated login and one from a password are indistinguishable to
 // whatever verifies them. A nil generator, including an interface holding a
 // nil pointer, is refused.
+//
+// With EnableSessionBearer on, it must not be given: the credential a
+// redeemed handoff returns is the opened session's identifier, and a
+// generator is a configuration error from New, since a token it minted would
+// not be accepted by that chain.
 func WithOIDCTokens(g token.Generator) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if err := requireDep("WithOIDCTokens", "token generator", g); err != nil {

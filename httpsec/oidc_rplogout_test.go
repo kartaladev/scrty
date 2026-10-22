@@ -139,7 +139,7 @@ func TestOIDCRPInitiatedLogout(t *testing.T) {
 			if tc.noLogout {
 				ah.acceptsActivityWriteBack()
 			} else {
-				ah.store.EXPECT().Delete(gomock.Any(), testJTI).Return(nil)
+				ah.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil)
 			}
 
 			oh := newOIDCHarness(t)

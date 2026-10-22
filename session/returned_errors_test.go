@@ -40,6 +40,8 @@ func returnedErrorsSession(idToken string) *session.Session {
 	return &session.Session{
 		ID:                returnedErrorsID,
 		UserID:            testUser,
+		FamilyID:          storedFamily,
+		FamilyCreatedAt:   createdAt,
 		CreatedAt:         createdAt,
 		LastAccessedAt:    createdAt,
 		IdleExpiresAt:     createdAt.Add(time.Hour),
@@ -134,7 +136,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		{
 			name: "manager touch",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-				d.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errStoreQuotes)
+				d.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(errStoreQuotes)
 				return manager(t, d).Touch(ctx, returnedErrorsSession(""))
 			},
 			assert: hidesStoreText(),
@@ -226,25 +228,79 @@ func TestSessionReturnedErrors(t *testing.T) {
 			assert: hidesStoreText(),
 		},
 		{
-			name: "manager rotate: create of the new entry",
+			name: "manager rotate: the supersession of the old entry",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
-				d.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(errStoreQuotes)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(errStoreQuotes)
 				_, err := manager(t, d).Rotate(ctx, returnedErrorsSession(""))
 				return err
 			},
 			assert: hidesStoreText(),
 		},
 		{
-			name: "manager rotate: delete of the old entry",
+			name: "manager rotate: a lost race comes back bare",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
-				d.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrSessionRenewalConflict)
+				_, err := manager(t, d).Rotate(ctx, returnedErrorsSession(""))
+				return err
+			},
+			assert: isBare(session.ErrSessionRenewalConflict),
+		},
+		{
+			// The successor is stored, so a failed delete is logged by type,
+			// never returned: there is no store text to hide.
+			name: "manager rotate: delete of the old entry is not returned",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(nil)
 				d.store.EXPECT().Delete(gomock.Any(), returnedErrorsID).Return(errStoreQuotes)
 				_, err := manager(t, d).Rotate(ctx, returnedErrorsSession(""))
 				return err
 			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "manager rotate with grace: load of the old entry",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(nil, errStoreQuotes)
+				_, _, err := manager(t, d).RotateWithGrace(ctx, returnedErrorsSession(""), time.Second)
+				return err
+			},
 			assert: hidesStoreText(),
+		},
+		{
+			name: "manager rotate with grace: the supersession",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(errStoreQuotes)
+				_, _, err := manager(t, d).RotateWithGrace(ctx, returnedErrorsSession(""), time.Second)
+				return err
+			},
+			assert: hidesStoreText(),
+		},
+		{
+			name: "manager rotate with grace: a lost race comes back bare",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrSessionRenewalConflict)
+				_, _, err := manager(t, d).RotateWithGrace(ctx, returnedErrorsSession(""), time.Second)
+				return err
+			},
+			assert: isBare(session.ErrSessionRenewalConflict),
+		},
+		{
+			name: "encrypted supersede: a successor that moved on comes back bare",
+			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrSuccessorAdvanced)
+				return encrypted(t, d).Supersede(ctx, session.Supersession{
+					Old: returnedErrorsID, Successor: returnedErrorsSession(""), Now: createdAt,
+				})
+			},
+			assert: isBare(session.ErrSuccessorAdvanced),
 		},
 		{
 			name: "manager load: a store error wrapping a sentinel gets fixed text and still matches it",
@@ -444,7 +500,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 			testCase{
 				name: "bare " + sentinel.Error() + ": manager touch",
 				call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
-					d.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(sentinel)
+					d.store.EXPECT().RecordActivity(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(sentinel)
 					return manager(t, d).Touch(ctx, returnedErrorsSession(""))
 				},
 				assert: isBare(sentinel),

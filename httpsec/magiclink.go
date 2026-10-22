@@ -59,7 +59,9 @@ const (
 // MagicLinkResult is what a successful redemption produced, handed to whatever
 // writes the response.
 type MagicLinkResult struct {
-	// Token is the access token issued for the new session.
+	// Token is the access token issued for the new session. With
+	// EnableSessionBearer on it is the session's identifier, the session
+	// reference, rather than a signed token.
 	Token string
 
 	// Session is the session the redemption opened.
@@ -118,6 +120,10 @@ type magicLinkInterceptor struct {
 	tokens   token.Generator
 	checks   []magiclink.Check
 
+	// issue issues the redeemed link's credential as the chain's bearer mode
+	// decides, settled once every option has been applied.
+	issue credentialIssuer
+
 	engine  *policy.Engine
 	log     *slog.Logger
 	sampler *logsample.Sampler
@@ -167,11 +173,17 @@ func (i *magicLinkInterceptor) check(c *config, option string) error {
 			option, i.requestPath)
 	}
 
-	if i.tokens == nil {
+	if c.sessionBearer {
+		if err := checkTokenGenerator(c, option, "WithMagicLinkTokens", i.tokens); err != nil {
+			return err
+		}
+	} else if i.tokens == nil {
 		return newConfigError("%s needs a token generator: a redeemed link opens a session, "+
 			"and a caller with no credential for it could not use it (WithMagicLinkTokens)",
 			option)
 	}
+
+	i.issue = c.credentialIssuer(i.tokens)
 
 	if i.sessions == nil && c.sessions == nil {
 		return newConfigError("%s needs a session manager, and neither WithMagicLinkSessions "+
@@ -410,6 +422,7 @@ func (i *magicLinkInterceptor) consume(ex *Exchange) error {
 		engine:            i.engine,
 		sessions:          i.sessions,
 		tokens:            i.tokens,
+		issue:             i.issue,
 		enrolmentLifetime: i.enrolmentLifetime,
 		enforced:          i.enforced,
 		challengeMethods:  out.challengeMethods(i.challengeMethods),

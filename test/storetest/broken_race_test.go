@@ -3,12 +3,15 @@ package storetest_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -251,8 +254,52 @@ var enrolmentRaceVariants = []brokenVariant{
 	},
 }
 
+const cutCase = "a cut naming a session racing its renewal keeps the renewed sign-in"
+
+const supersedeCase = "exactly one supersession wins per session"
+
+// supersedeVariant races supersessions of each session against a store
+// newStore makes, shared by both instances. An empty failsCase is a
+// conforming run, which the race must pass.
+func supersedeVariant[S session.Store](name string, newStore func() S, failsCase, failsWith string) brokenVariant {
+	return brokenVariant{
+		name: name,
+		run: func(t *testing.T) {
+			storetest.RunSessionSupersessionRace(t, sharedHarness(newStore))
+		},
+		failsCase: failsCase,
+		failsWith: failsWith,
+	}
+}
+
+// supersedeStore returns a maker of a sessionStore carrying d.
+func supersedeStore(d sessionDefect) func() *sessionStore {
+	return func() *sessionStore { return newSessionStore(d, clock.System()) }
+}
+
+// readThenWriteSupersede is a store that checks the observed successor, then
+// supersedes unconditionally after the read: every racer that read before
+// the first write wins.
+var readThenWriteSupersede = supersedeVariant("race-supersede-read-then-write",
+	supersedeStore(sessionReadThenWriteSupersede), supersedeCase, "more than one successful supersession")
+
+// readThenDeleteExcept is a store whose cut reads the family's current
+// member, then deletes in a separate step: a renewal landing between the two
+// loses its successor to the cut.
+var readThenDeleteExcept = supersedeVariant("race-cut-read-then-delete",
+	supersedeStore(sessionExceptReadThenDelete), cutCase, "must still load")
+
+// sessionRaceVariants race supersessions: the shipped memory store and the
+// conforming fake must pass, and the read-then-write fake must fail.
+var sessionRaceVariants = []brokenVariant{
+	supersedeVariant("race-supersede-memory", func() *session.MemoryStore { return session.NewMemoryStore() }, "", ""),
+	supersedeVariant("race-supersede-conforming", supersedeStore(sessionConforming), "", ""),
+	readThenWriteSupersede,
+	readThenDeleteExcept,
+}
+
 // raceVariants are the race suites' variants: the single-use races' below,
-// then the enrolment path's.
+// then the enrolment path's, then the session supersession's.
 var raceVariants = append([]brokenVariant{
 	raceVariant("consume", storetest.RunConsumeRace[*raceStore], raceConforming, "", ""),
 	raceVariant("consume", storetest.RunConsumeRace[*raceStore], raceReadThenWrite,
@@ -287,4 +334,4 @@ var raceVariants = append([]brokenVariant{
 		failsCase: "narrow pool",
 		failsWith: "storetest: a pool of 2 connections cannot exercise a race of 8 racers",
 	},
-}, enrolmentRaceVariants...)
+}, slices.Concat(enrolmentRaceVariants, sessionRaceVariants)...)

@@ -87,11 +87,12 @@ func WithPasskeyLimit(n int) Option {
 	return func(m *Manager) { m.passkeyLimit = n }
 }
 
-// WithManagementFreshness replaces how recent a full session's latest
-// authentication must be — the later of its creation and its second factor —
-// for it to register or remove a passkey. The default is 15 minutes; an older
-// session is refused with ErrReauthenticationRequired. Zero or less is a
-// configuration error.
+// WithManagementFreshness replaces how recent a full session's authentication
+// must be for it to register or remove a passkey. The window is measured from
+// the session's AuthenticatedAt: its sign-in, or the last time it satisfied a
+// second factor. A renewal never refreshes it, so a renewed session does not
+// regain freshness. The default is 15 minutes; an older session is refused
+// with ErrReauthenticationRequired. Zero or less is a configuration error.
 func WithManagementFreshness(d time.Duration) Option {
 	return func(m *Manager) { m.freshness = d }
 }

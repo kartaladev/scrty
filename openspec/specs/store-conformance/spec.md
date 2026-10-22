@@ -90,6 +90,22 @@ For stores with single-use consumption or unique inserts, a race suite SHALL rel
 - **WHEN** the race suite releases 8 handle assignments for each of 50 independent users who hold none, at once
 - **THEN** it passes only if every user holds exactly one handle and every caller received it
 
+#### Scenario: Session supersession race
+- **WHEN** the race suite releases 8 supersessions of the same session, each having observed no successor, for each of 50 independent sessions at once
+- **THEN** it passes only if every session has exactly one successor, and every other caller received the renewal-conflict error
+
+#### Scenario: Read-then-write supersession caught
+- **WHEN** the session supersession race runs against a store variant that reads the old record and then updates it unconditionally
+- **THEN** the suite fails
+
+#### Scenario: User-wide delete racing a supersession
+- **WHEN** the race suite holds a supersession of one of a user's sessions inside its write, starts each user-wide delete (every session of the user, every session but an unrelated one, every session of a provider sign-in, and every session of the user through one provider), then lets the supersession commit
+- **THEN** it passes only if neither the superseded session nor its successor loads once each delete returns
+
+#### Scenario: Single-pass user-wide delete caught
+- **WHEN** that race runs against a store variant whose user-wide delete runs its statement once
+- **THEN** the suite fails
+
 ### Requirement: The ambient-transaction suite proves transaction participation
 Every durable store scrty ships SHALL pass an ambient-transaction suite. The shared PostgreSQL rate limiter SHALL NOT run it, because it ignores the caller's transaction by design; the suite's documentation SHALL state that exclusion. The suite SHALL show that:
 - work performed inside a caller-owned transaction is rolled back and committed with it;
@@ -201,3 +217,21 @@ The MFA enrolment suite SHALL cover charging and giving back TOTP verification a
 #### Scenario: Give-back across windows caught
 - **WHEN** the suites run against a store variant whose give-back ignores the window it names
 - **THEN** the suites fail
+
+### Requirement: The session suite covers activity, supersession and families
+The session store suite SHALL cover, for every session store, the narrow activity write, supersession and its conflict, loading superseded sessions with their own deadlines, the sweep keeping them until their retention deadline, family revocation, deleting a user's other sessions while keeping the presenting sign-in, first-presentation recording, and the round trip of every family and supersession value. The in-memory default store SHALL pass it.
+
+#### Scenario: Store that widens the activity write caught
+- **WHEN** the session suite runs against a store variant whose activity write saves the whole record
+- **THEN** the suite fails on the case that changes another field between load and activity
+
+#### Scenario: In-memory default conforms
+- **WHEN** the session suite runs against the in-memory default store
+- **THEN** every activity, supersession and family case passes
+
+### Requirement: The session suite covers reading whether a successor was used
+The session store suite SHALL cover, for every session store, reading whether a superseded session's successor was used: presented, unused, superseded, no longer stored and not stored, and that the read writes nothing.
+
+#### Scenario: Store that reads a gone successor as used caught
+- **WHEN** the session suite runs against a store variant that reports a successor no longer stored as used
+- **THEN** the suite fails on the case whose successor is no longer stored

@@ -467,6 +467,57 @@ func (d *pwlDeployment) sessionGone(t *testing.T, sid, msg string) {
 	assert.ErrorIs(t, err, session.ErrSessionNotFound, msg)
 }
 
+// namesNoCredentialOrChallenge asserts a refusal's text carries neither a
+// credential identifier (every credential the tests use is "cred-...") nor any
+// challenge the deployment issued, raw or as clientDataJSON encodes it.
+func namesNoCredentialOrChallenge(t *testing.T, d *pwlDeployment, err error) {
+	t.Helper()
+
+	text := err.Error()
+	assert.NotContains(t, text, "cred-", "the refusal names the credential")
+
+	d.verifier.mu.Lock()
+	defer d.verifier.mu.Unlock()
+
+	for _, challenge := range d.verifier.requests {
+		assert.NotContains(t, text, challenge, "the refusal names the challenge")
+		assert.NotContains(t, text, encodeChallenge(challenge), "the refusal names the encoded challenge")
+	}
+}
+
+// TestPasswordless_RefusalsReadAlike pins that a refused ceremony does not
+// say why: an unknown credential and a bad signature fail with the same text,
+// so a caller cannot tell which credentials exist.
+func TestPasswordless_RefusalsReadAlike(t *testing.T) {
+	t.Parallel()
+
+	refuse := func(t *testing.T, act func(t *testing.T, d *pwlDeployment) served) string {
+		t.Helper()
+
+		d := newPwlDeployment(t).build(t)
+		out := act(t, d)
+
+		require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
+		namesNoCredentialOrChallenge(t, d, out.err)
+
+		return out.err.Error()
+	}
+
+	unknown := refuse(t, func(t *testing.T, d *pwlDeployment) served {
+		handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+
+		return d.login(t, "cred-unknown", handle)
+	})
+	badSignature := refuse(t, func(t *testing.T, d *pwlDeployment) served {
+		handle := d.seed(t, e2eUser, "cred-1", passkey.StateActive)
+		d.verifier.refuseAssertions.Store(true)
+
+		return d.login(t, "cred-1", handle)
+	})
+
+	assert.Equal(t, unknown, badSignature, "the two refusals must read alike")
+}
+
 // TestPasswordless drives passwordless login through a chain.
 func TestPasswordless(t *testing.T) {
 	t.Parallel()
@@ -486,6 +537,7 @@ func TestPasswordless(t *testing.T) {
 		assert.False(t, out.handlerRan)
 		clearedCookie(t, out, httpsec.DefaultPasswordlessCookieName, passwordlessFinishPath)
 		assert.Zero(t, d.sessionCount(t, out), "no session is created")
+		namesNoCredentialOrChallenge(t, d, out.err)
 	}
 
 	cases := []testCase{

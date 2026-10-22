@@ -677,3 +677,79 @@ func TestRequiredAttemptViews(t *testing.T) {
 		})
 	}
 }
+
+// idleStub is a policy that reports an idle timeout through the optional
+// IdleTimeout method, as a consumer's own policy may.
+type idleStub struct {
+	stubPolicy
+	idle time.Duration
+}
+
+func (s idleStub) IdleTimeout() time.Duration { return s.idle }
+
+func TestEngineIdleTimeouts(t *testing.T) {
+	t.Parallel()
+
+	pre := []policy.Phase{policy.PerRequest}
+
+	idlePolicy := func(t *testing.T, d time.Duration) *policy.IdleTimeoutPolicy {
+		t.Helper()
+
+		p, err := policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyTimeout(d))
+		require.NoError(t, err)
+
+		return p
+	}
+
+	type testCase struct {
+		name   string
+		build  func(t *testing.T) []policy.Policy
+		assert func(t *testing.T, got []time.Duration)
+	}
+
+	cases := []testCase{
+		{
+			name: "an idle-timeout policy reports its timeout",
+			build: func(t *testing.T) []policy.Policy {
+				return []policy.Policy{idlePolicy(t, 5*time.Minute)}
+			},
+			assert: func(t *testing.T, got []time.Duration) { assert.Equal(t, []time.Duration{5 * time.Minute}, got) },
+		},
+		{
+			name: "every reporter, in registration order, others left out",
+			build: func(t *testing.T) []policy.Policy {
+				return []policy.Policy{
+					idlePolicy(t, time.Hour),
+					stubPolicy{phases: pre},
+					idleStub{stubPolicy: stubPolicy{phases: pre}, idle: time.Minute},
+				}
+			},
+			assert: func(t *testing.T, got []time.Duration) {
+				assert.Equal(t, []time.Duration{time.Hour, time.Minute}, got)
+			},
+		},
+		{
+			name: "a reporter asked in no phase is never reported",
+			build: func(*testing.T) []policy.Policy {
+				return []policy.Policy{idleStub{idle: time.Minute}}
+			},
+			assert: func(t *testing.T, got []time.Duration) { assert.Nil(t, got) },
+		},
+		{
+			name:   "an engine with no policies reports nothing",
+			build:  func(*testing.T) []policy.Policy { return nil },
+			assert: func(t *testing.T, got []time.Duration) { assert.Nil(t, got) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e, err := policy.NewEngine(tc.build(t)...)
+			require.NoError(t, err)
+
+			tc.assert(t, e.IdleTimeouts())
+		})
+	}
+}

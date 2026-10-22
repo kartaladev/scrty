@@ -146,19 +146,16 @@ func challengePending(s *session.Session) bool {
 }
 
 // regenerate replaces the session user's saved codes, when the session's
-// latest authentication is within the window, through the core, which also
-// sends the user the notice. Outside the window it is
+// latest authentication (session.Session.AuthenticatedAt: the sign-in, or the
+// second factor satisfied since) is within the window, through the core, which
+// also sends the user the notice. A renewal is not an authentication and never
+// moves that time. Outside the window it is
 // recovery.ErrReauthenticationRequired, and nothing changes.
 //
 // Cache-Control: no-store is set before the responder runs, since the
 // response carries the new codes.
 func (i *recoveryInterceptor) regenerate(ex *Exchange, s *session.Session) error {
-	latest := s.CreatedAt
-	if s.MFASatisfiedAt.After(latest) {
-		latest = s.MFASatisfiedAt
-	}
-
-	if i.now().Sub(latest) > i.freshness {
+	if i.now().Sub(s.AuthenticatedAt) > i.freshness {
 		return recovery.ErrReauthenticationRequired
 	}
 

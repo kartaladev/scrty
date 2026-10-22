@@ -968,8 +968,8 @@ func TestRunTestPostgresIsolation(t *testing.T) {
 
 				now := time.Now().UTC()
 				_, err := inserter.DB.ExecContext(t.Context(), `INSERT INTO sessions
-					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-					VALUES ($1, $2, 'u', $3, $3, $4, $4)`,
+					(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, family_id, family_created_at)
+					VALUES ($1, $2, 'u', $3, $3, $4, $4, $1, $3)`,
 					sessionID, []byte("digest"), now, now.Add(time.Hour))
 				require.NoError(t, err)
 
@@ -1427,8 +1427,8 @@ func insertProbeSession(t *testing.T, db *sql.DB) {
 
 	now := time.Now().UTC()
 	_, err := db.ExecContext(t.Context(), `INSERT INTO sessions
-		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at)
-		VALUES ($1, $2, 'u', $3, $3, $4, $4)`,
+		(id, id_digest, user_id, created_at, last_accessed_at, idle_expires_at, absolute_expires_at, family_id, family_created_at)
+		VALUES ($1, $2, 'u', $3, $3, $4, $4, $1, $3)`,
 		id.MustParse("0192f000-0000-7000-8000-0000000000bb"), []byte("digest"), now, now.Add(time.Hour))
 	require.NoError(t, err)
 }

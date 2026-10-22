@@ -247,3 +247,102 @@ func assertConsumerOwnedIdentity(ctx context.Context, t *testing.T, db *gormdb.D
 	_, err = handoffs.DeleteExpired(ctx, storefix.OIDCStart.Add(time.Hour))
 	require.NoError(t, err)
 }
+
+func TestSessionFamilyAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionFamilyAmbientTx(t, h) })
+}
+
+func TestSessionSuccessorAmbientTx(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSuccessorAmbientTx(t, h) })
+}
+
+func TestSessionFamilyRevocationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionFamilyRevocationRace(t, h) })
+}
+
+func TestSessionUserDeleteRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionUserDeleteRace(t, h) })
+}
+
+func TestSessionSuccessorAdvanceRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSuccessorAdvanceRace(t, h) })
+}
+
+func TestSessionPresentationRace(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionPresentationRace(t, h) })
+}
+
+func TestSessionSupersessionLockOrder(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+	// Row ids that sort against insertion order, so a store that locks the
+	// rows it writes in statement order rather than id order meets the
+	// reverse order.
+	ids := storetest.DescendingIDs()
+	descending := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, append(opts, gormstore.WithIDGenerator(ids))...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSupersessionLockOrder(t, h) })
+	t.Run("gorm with descending row ids", func(t *testing.T) {
+		storetest.RunSessionSupersessionLockOrder(t, descending)
+	})
+}
+
+func TestSessionSupersedeRefusesNilFamily(t *testing.T) {
+	t.Parallel()
+
+	c := storefix.TestCipher(t)
+	h := durableHarness(migratedDB(t), func(t *testing.T, db *gormdb.DB, opts ...gormstore.Option) session.Store {
+		return newSessionStore(t, db, c, opts...)
+	})
+
+	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSupersedeRefusesNilFamily(t, h) })
+	t.Run("gorm except", func(t *testing.T) { storetest.RunSessionDeleteExceptNilFamily(t, h) })
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -52,6 +53,7 @@ func liveSession() *session.Session {
 		IdleExpiresAt:     now.Add(30 * time.Minute),
 		AbsoluteExpiresAt: now.Add(12 * time.Hour),
 		FirstFactor:       factor.Password,
+		FamilyID:          id.ID{1},
 	}
 }
 
@@ -334,6 +336,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
 					Return(nil, identity.ErrUserNotFound)
 			},
@@ -344,6 +347,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+				h.acceptsFirstPresentation()
 				h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).
 					Return(nil, errors.New("users: connection refused"))
 			},
@@ -729,8 +733,9 @@ func TestBearerMarksEnrolment(t *testing.T) {
 		// the request.
 		pending bool
 
-		// saves is how many times the request stored the session.
-		assert func(t *testing.T, out served, saves int32)
+		// saves is how many times the request stored the session, and
+		// activity how many times it recorded activity on it.
+		assert func(t *testing.T, out served, saves, activity int32)
 	}
 
 	cases := []testCase{
@@ -740,7 +745,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
 				passThroughAt(httpsec.OrderMFAEnrolment),
 			},
-			assert: func(t *testing.T, out served, _ int32) {
+			assert: func(t *testing.T, out served, _, _ int32) {
 				t.Helper()
 
 				require.NoError(t, out.err)
@@ -754,7 +759,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
 				httpsec.RegisterInterceptor(confining, httpsec.OrderMFAEnrolment),
 			},
-			assert: func(t *testing.T, out served, _ int32) {
+			assert: func(t *testing.T, out served, _, _ int32) {
 				t.Helper()
 
 				var ch *httpsec.ChallengeError
@@ -770,13 +775,15 @@ func TestBearerMarksEnrolment(t *testing.T) {
 				passThroughAt(httpsec.OrderMFAEnrolment),
 			},
 			pending: true,
-			assert: func(t *testing.T, out served, saves int32) {
+			assert: func(t *testing.T, out served, saves, activity int32) {
 				t.Helper()
 
 				require.NoError(t, out.err)
 				require.True(t, out.handlerRan)
-				assert.Equal(t, int32(1), saves,
-					"only the session touch stores it: marking it again changes nothing")
+				assert.Equal(t, int32(0), saves,
+					"marking it again changes nothing, so the bearer stores nothing")
+				assert.Equal(t, int32(1), activity,
+					"only the session touch writes, and it writes the activity alone")
 			},
 		},
 	}
@@ -809,6 +816,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			}
 
 			store.saves.Store(0)
+			store.activity.Store(0)
 
 			ctrl := gomock.NewController(t)
 			verifier := NewMockVerifier(ctrl)
@@ -827,7 +835,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			require.NoError(t, err)
 
 			out := serve(t, chain, bearerRequest(t.Context(), "Bearer abc.def.ghi"))
-			tc.assert(t, out, store.saves.Load())
+			tc.assert(t, out, store.saves.Load(), store.activity.Load())
 
 			stored, err := sessions.Load(t.Context(), s.ID)
 			require.NoError(t, err)
@@ -841,12 +849,20 @@ func TestBearerMarksEnrolment(t *testing.T) {
 	}
 }
 
-// countingSaves counts the saves that reach the store it wraps, so a test can
-// pin how many times a request stored a session.
+// countingSaves counts the saves and the activity writes that reach the store
+// it wraps, so a test can pin how many times a request stored a session and
+// how many times it only recorded activity on one.
 type countingSaves struct {
 	session.Store
 
-	saves atomic.Int32
+	saves    atomic.Int32
+	activity atomic.Int32
+}
+
+func (c *countingSaves) RecordActivity(ctx context.Context, id string, lastAccessed, idleExpires, olderThan time.Time) error {
+	c.activity.Add(1)
+
+	return c.Store.RecordActivity(ctx, id, lastAccessed, idleExpires, olderThan)
 }
 
 func (c *countingSaves) Save(ctx context.Context, s *session.Session) error {
@@ -866,6 +882,7 @@ func TestBearerMarksEnrolmentSaveFails(t *testing.T) {
 	h := newAuthHarness(t)
 	h.expectVerified()
 	h.store.EXPECT().Load(gomock.Any(), testJTI).Return(liveSession(), nil)
+	h.acceptsFirstPresentation()
 	h.users.EXPECT().LoadByUsername(gomock.Any(), testSubject).Return(storedUser(), nil)
 	h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(errStore).AnyTimes()
 
@@ -973,4 +990,42 @@ func TestBearerRecordsConsumerChallenge(t *testing.T) {
 			tc.assert(t, out, seen, stored)
 		})
 	}
+}
+
+// TestBearerRefusesReusedSession pins what a token naming a session superseded
+// by a renewal is refused with once that renewal's window has ended: an error
+// both the authentication-required and the reused-session refusal, after the
+// manager has revoked the session's whole family.
+func TestBearerRefusesReusedSession(t *testing.T) {
+	t.Parallel()
+
+	f := newResolveFixture(t)
+	ctrl := gomock.NewController(t)
+	verifier := NewMockVerifier(ctrl)
+	users := NewMockUserLoader(ctrl)
+
+	successor, _, err := f.sessions.RotateWithGrace(t.Context(), f.session, 30*time.Second)
+	require.NoError(t, err)
+
+	f.clk.Advance(31 * time.Second)
+
+	verifier.EXPECT().Verify(gomock.Any(), gomock.Any()).
+		Return(token.NewClaims(testSubject, f.session.ID), nil)
+
+	chain, err := httpsec.New(
+		httpsec.WithLogger(slog.New(slog.DiscardHandler)),
+		httpsec.WithClock(f.clk),
+		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{Verifier: verifier, Sessions: f.sessions, Users: users}),
+	)
+	require.NoError(t, err)
+
+	s := serve(t, chain, bearerRequest(t.Context(), "Bearer abc.def.ghi"))
+
+	require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
+	require.ErrorIs(t, s.err, session.ErrSessionReused)
+	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
+	assert.False(t, s.handlerRan)
+
+	_, err = f.sessions.Load(t.Context(), successor.ID)
+	require.ErrorIs(t, err, session.ErrSessionNotFound, "the family is revoked, its live successor with it")
 }

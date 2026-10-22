@@ -95,6 +95,11 @@ func TestStatusForError(t *testing.T) {
 			want: 422,
 		},
 		{name: "password history unavailable is a dependency failure", err: password.ErrHistoryUnavailable, want: 500},
+		{
+			name: "password history unavailable wrapping a database error is a dependency failure",
+			err:  fmt.Errorf("%w: %w", password.ErrHistoryUnavailable, errors.New("db down")),
+			want: 500,
+		},
 		{name: "account locked", err: policy.ErrAccountLocked, want: 429},
 		{name: "account held", err: policy.ErrAccountHeld, want: 429},
 		{
@@ -103,6 +108,22 @@ func TestStatusForError(t *testing.T) {
 			want: 401,
 		},
 		{name: "too many sessions", err: policy.ErrTooManySessions, want: 429},
+		{
+			name: "wrapped renewal conflict",
+			err:  fmt.Errorf("renewing: %w", httpsec.ErrSessionRenewalConflict),
+			want: 409,
+		},
+		{
+			name: "the session core's renewal conflict, unwrapped by the chain",
+			err:  fmt.Errorf("rotating: %w", session.ErrSessionRenewalConflict),
+			want: 409,
+		},
+		{name: "renewal throttled", err: fmt.Errorf("renewing: %w", httpsec.ErrRenewalThrottled), want: 429},
+		{
+			name: "reused session joined with authentication required",
+			err:  errors.Join(httpsec.ErrAuthenticationRequired, session.ErrSessionReused),
+			want: 401,
+		},
 		{name: "unknown identity provider", err: oidc.ErrUnknownProvider, want: 404},
 		{name: "unknown MFA method", err: httpsec.ErrUnknownMFAMethod, want: 404},
 		{name: "MFA method not usable", err: fmt.Errorf("x: %w", httpsec.ErrMFAMethodNotUsable), want: 403},
@@ -365,14 +386,21 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrMalformedRequest":       httpsec.ErrMalformedRequest,
 		"httpsec.ErrMFAMethodNotUsable":     httpsec.ErrMFAMethodNotUsable,
 		"httpsec.ErrNoMFAChallengePending":  httpsec.ErrNoMFAChallengePending,
+		"httpsec.ErrRenewalThrottled":       httpsec.ErrRenewalThrottled,
 		"httpsec.ErrRequestTooLarge":        httpsec.ErrRequestTooLarge,
+		"httpsec.ErrSessionRenewalConflict": httpsec.ErrSessionRenewalConflict,
 		"httpsec.ErrUnknownMFAMethod":       httpsec.ErrUnknownMFAMethod,
 	},
 	"github.com/kartaladev/scrty/session": {
-		"session.ErrConfig":            session.ErrConfig,
-		"session.ErrSessionExpired":    session.ErrSessionExpired,
-		"session.ErrSessionNotFound":   session.ErrSessionNotFound,
-		"session.ErrSessionUnreadable": session.ErrSessionUnreadable,
+		"session.ErrConfig":                 session.ErrConfig,
+		"session.ErrSessionExpired":         session.ErrSessionExpired,
+		"session.ErrSessionReused":          session.ErrSessionReused,
+		"session.ErrSessionNotFound":        session.ErrSessionNotFound,
+		"session.ErrSessionUnreadable":      session.ErrSessionUnreadable,
+		"session.ErrSessionRenewalConflict": session.ErrSessionRenewalConflict,
+		"session.ErrSessionRenewalRequired": session.ErrSessionRenewalRequired,
+		"session.ErrSessionSuperseded":      session.ErrSessionSuperseded,
+		"session.ErrSuccessorAdvanced":      session.ErrSuccessorAdvanced,
 	},
 }
 
@@ -394,10 +422,20 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"authorize.ErrUnsupportedAttributes":      "a misbuilt guard, deliberately 500 per design Decision 7",
 		"authorize.ErrInvalidAttributes":          "a misbuilt guard, deliberately 500 per design Decision 7",
 		"session.ErrConfig":                       "a wiring fault, refused at construction",
-		"session.ErrSessionNotFound":              "converted to ErrAuthenticationRequired before it leaves the chain",
-		"session.ErrSessionExpired":               "converted to ErrAuthenticationRequired before it leaves the chain",
-		"session.ErrSessionUnreadable":            "converted to ErrAuthenticationRequired before it leaves the chain",
-		"ratelimit.ErrConfig":                     "a wiring fault, refused at construction",
+		"session.ErrSessionNotFound": "leaves the chain only joined with ErrAuthenticationRequired, " +
+			"which answers it 401",
+		"session.ErrSessionExpired": "leaves the chain only joined with ErrAuthenticationRequired, " +
+			"which answers it 401",
+		"session.ErrSessionReused": "leaves the chain only joined with ErrAuthenticationRequired, " +
+			"which answers it 401",
+		"session.ErrSessionRenewalRequired": "leaves the chain only joined with ErrAuthenticationRequired, " +
+			"which answers it 401",
+		"session.ErrSuccessorAdvanced": "returned only by Store.Supersede and never leaves the session manager, " +
+			"which turns it into ErrSessionReused",
+		"session.ErrSessionSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
+			"which re-loads the session and returns its verdict instead",
+		"session.ErrSessionUnreadable": "converted to ErrAuthenticationRequired before it leaves the chain",
+		"ratelimit.ErrConfig":          "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
 		"ratelimit.ErrLimiterFull": "returned by a full in-memory limiter, never by a flow: every built-in caller " +
