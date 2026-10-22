@@ -50,7 +50,7 @@ For stores with single-use consumption or unique inserts, a race suite SHALL rel
 ## ADDED Requirements
 
 ### Requirement: The session suite covers activity, supersession and families
-The session store suite SHALL cover, for every session store, the narrow activity write, supersession and its conflict, loading superseded sessions, the sweep keeping them, family revocation, first-presentation recording, and the round trip of every family and supersession value. The in-memory default store SHALL pass it.
+The session store suite SHALL cover, for every session store, the narrow activity write, supersession and its conflict, loading superseded sessions with their own deadlines, the sweep keeping them until their retention deadline, family revocation, deleting a user's other sessions while keeping the presenting sign-in, first-presentation recording, and the round trip of every family and supersession value. The in-memory default store SHALL pass it.
 
 #### Scenario: Store that widens the activity write caught
 - **WHEN** the session suite runs against a store variant whose activity write saves the whole record

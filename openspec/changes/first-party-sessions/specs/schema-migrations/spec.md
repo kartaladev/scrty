@@ -20,6 +20,13 @@ A new security-state migration SHALL add to the sessions table: a non-null uuid 
 - **WHEN** after the migration a session is inserted by a statement that names neither family column
 - **THEN** the insert succeeds, and the row has a family identifier and a family start time
 
+### Requirement: The security-state set adds the session retention deadline
+The same migration SHALL add a nullable retention deadline to the sessions table, with no default, and SHALL leave it null for every existing row. Rolling it back SHALL remove the column.
+
+#### Scenario: Existing rows have none
+- **WHEN** the migration is applied to a database holding sessions created before it
+- **THEN** each existing session reads back with no retention deadline
+
 ### Requirement: The security-state set adds the session authentication time
 The same migration SHALL add a non-null authentication time to the sessions table, defaulting to the insert time, and SHALL backfill each existing row with the later of its creation time and its second-factor satisfaction time. Rolling it back SHALL remove the column.
 

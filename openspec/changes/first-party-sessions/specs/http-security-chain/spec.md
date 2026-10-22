@@ -192,6 +192,13 @@ The chain SHALL let a consumer interceptor publish an authentication result toge
 - **WHEN** a consumer interceptor runs the per-request phase for a session the policy challenges for enrolment
 - **THEN** the session is saved enrolment-pending and the enrolment gate refuses the request, as for a bearer-authenticated request
 
+### Requirement: A session with no family cannot be published
+Publishing a session that belongs to no family SHALL fail with an error that maps to 500 and SHALL publish nothing, because such a session would have no reuse detection, family revocation or logout.
+
+#### Scenario: Session with no family
+- **WHEN** a consumer interceptor publishes an authentication result and a session whose family is the nil identifier
+- **THEN** publishing fails with an error, nothing is published, and the request is answered 500
+
 ### Requirement: The chain's session manager can be given explicitly
 By default the chain records activity, and marks per-request challenges, through the session manager of the first enabled built-in that has one. A consumer MAY give the chain its session manager explicitly, which then takes precedence whatever the option order. A nil session manager SHALL be a configuration error.
 
@@ -204,11 +211,15 @@ By default the chain records activity, and marks per-request challenges, through
 - **THEN** construction fails with a configuration error
 
 ### Requirement: Logout ends the whole sign-in
-When logout deletes a session, it SHALL revoke every session of that session's family, so logging out with an identifier inside its renewal window also ends the successor. A session that was never renewed is the only member of its family, so logout behaves exactly as before for it.
+When logout deletes a session, it SHALL revoke every session of that session's family, so logging out with an identifier inside its renewal window also ends the successor. A session that was never renewed is the only member of its family, so logout behaves exactly as before for it. The revocation SHALL complete even when the client disconnects during the request.
 
 #### Scenario: Logout with the predecessor inside its window
 - **WHEN** session O is renewed into S1 with a 30-second grace, and a request bearing O posts to the logout path inside the window
 - **THEN** logout answers 200, and a later request bearing S1 is refused
+
+#### Scenario: Client disconnects during logout
+- **WHEN** a request bearing session O posts to the logout path and its client disconnects once the caller is authenticated
+- **THEN** O and every other session of its family no longer load
 
 ### Requirement: A coalescing interval must be shorter than every idle timeout the policy enforces
 A chain whose session manager coalesces activity writes SHALL fail construction with a configuration error when its policy engine enforces an idle timeout no longer than that interval, because the stored last-access time can be up to one interval stale.

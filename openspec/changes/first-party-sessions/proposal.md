@@ -46,9 +46,10 @@ None.
   - rotation with a grace window, session families and reuse detection;
   - the reuse observer;
   - the new superseded and reused errors.
-- `security-state-stores`: durable stores persist the family and supersession, record activity with a narrow conditional write, supersede atomically under concurrency, revoke a family, and sweep superseded records only at their family's absolute deadline.
+- `security-state-stores`: durable stores persist the family and supersession, record activity with a narrow conditional write, supersede atomically under concurrency, revoke a family, keep a superseded record's retention deadline apart from its own deadlines and sweep it only once that passes, and end a user's other sessions while keeping the presenting sign-in.
 - `store-conformance`: the session suite covers the new store operations, including the supersession race.
-- `schema-migrations`: the security-state migration set gains the new session columns (family, family creation time, supersession, successor digest, first presentation) and indexes.
+- `schema-migrations`: the security-state migration set gains the new session columns (family, family creation time, supersession, retention deadline, successor digest, first presentation, authentication time) and indexes.
+- `passkey-authentication`: removing a passkey with a renewed session keeps that sign-in's current session.
 - `http-security-chain`:
   - the opaque session-reference bearer and its shared steps;
   - the session renewal endpoint;
@@ -61,6 +62,7 @@ None.
 
 - **Changed code:**
   - `session` (manager, options, store port, memory store, encrypted wrapper);
+  - `passkey` (session revocation on removal);
   - `httpsec` (a new bearer mode, renewal endpoint, login option, exported helpers, activity interceptor);
   - `internal/pgschema`, `sqlstore`, the `pgx` and `gorm` modules;
   - `migrate/securitystate`;

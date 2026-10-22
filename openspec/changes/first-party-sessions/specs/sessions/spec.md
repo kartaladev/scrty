@@ -90,6 +90,41 @@ When a session carrying the enrolment-origin marker has its second factor satisf
 - **WHEN** a session without the enrolment-origin marker, whose absolute deadline is 21:00, has its second factor satisfied
 - **THEN** its absolute deadline stays 21:00
 
+### Requirement: Sessions can be deleted singly, per user and when expired
+The manager SHALL:
+- delete a single session;
+- delete every session of a user;
+- delete every session of a user except one named session and, when that session belongs to a family, its family's current session, in one atomic operation, returning how many were removed; a named session that belongs to another user, or does not exist, SHALL NOT stop the user's other sessions from being deleted and SHALL itself be left untouched; every other session of the named session's family, superseded ones included, SHALL be deleted;
+- count a user's unexpired sessions, excluding expired ones;
+- delete every expired session, returning how many were removed.
+
+The user reference SHALL be matched exactly as the consumer supplied it.
+
+#### Scenario: Delete per user
+- **WHEN** user `u-1` has three sessions and user `u-2` has one, and the sessions of `u-1` are deleted
+- **THEN** no session of `u-1` loads
+- **AND** the session of `u-2` still loads
+
+#### Scenario: Delete per user except one
+- **WHEN** user `u-1` has sessions `s-1`, `s-2` and `s-3`, user `u-2` has one, and the sessions of `u-1` except `s-1` are deleted
+- **THEN** 2 is returned, `s-1` still loads, `s-2` and `s-3` do not, and the session of `u-2` still loads
+
+#### Scenario: The kept session is superseded inside its window
+- **WHEN** `u-1`'s session O is renewed into S1 with a 30-second grace, `u-1` also holds an unrelated session T, and inside the window the sessions of `u-1` except O are deleted
+- **THEN** O and S1 still load, and T does not
+
+#### Scenario: The kept session is the current one
+- **WHEN** `u-1`'s session O is renewed into S1 with a 30-second grace, and inside the window the sessions of `u-1` except S1 are deleted
+- **THEN** S1 still loads, and O does not
+
+#### Scenario: The kept session is another user's
+- **WHEN** the sessions of `u-1` except `u-2`'s session are deleted
+- **THEN** every session of `u-1` is deleted and `u-2`'s session still loads
+
+#### Scenario: Count excludes expired
+- **WHEN** user `u-1` has two valid sessions and one expired session
+- **THEN** counting the active sessions of `u-1` returns 2
+
 ## ADDED Requirements
 
 ### Requirement: A session's absolute lifetime can be chosen at creation, up to a maximum
@@ -180,6 +215,13 @@ The manager SHALL rotate a session with a grace window: it SHALL create a succes
 - **WHEN** a session is rotated without a grace window
 - **THEN** loading the old identifier returns the not-found error
 
+### Requirement: A superseded identifier inside its window is judged by its own deadlines
+Inside its window, loading a superseded identifier SHALL succeed only while its own idle and absolute deadlines are unexpired; once either has passed, it SHALL fail with the session-expired error and SHALL NOT revoke the family.
+
+#### Scenario: Idle deadline passed inside the window
+- **WHEN** a session whose idle deadline is 09:00:10 is rotated at 09:00 with a 30-second grace, and its old identifier is loaded at 09:00:20
+- **THEN** the load fails with the session-expired error, and the family is not revoked
+
 ### Requirement: Renewing a superseded identifier inside its window re-rotates
 Rotating with a grace window an identifier that is already superseded and still inside its window SHALL issue a fresh successor in the same family, and SHALL supersede the previous successor with a window that has already ended. Any later presentation of that previous successor SHALL then be reuse. If the previous successor has itself been superseded, or is no longer stored, the re-rotation SHALL be reuse instead, so a family never holds two live heads.
 
@@ -193,7 +235,7 @@ Rotating with a grace window an identifier that is already superseded and still 
 - **THEN** the rotation fails with the reused-session error and the family is revoked
 
 ### Requirement: A superseded identifier presented after its window revokes its family
-Loading a superseded identifier at or after the end of its window SHALL be treated as reuse: the manager SHALL revoke the identifier's whole family and SHALL fail with a reused-session error that also matches the expired-session error. Superseded sessions SHALL be kept until their family's absolute deadline, so a late presentation is detected rather than reported as not found.
+Loading a superseded identifier at or after the end of its window SHALL be treated as reuse: the manager SHALL revoke the identifier's whole family and SHALL fail with a reused-session error that also matches the expired-session error. Superseded sessions SHALL be kept until their family's absolute deadline, so a late presentation is detected rather than reported as not found, whether or not the superseded session's own deadlines have passed.
 
 #### Scenario: Reuse after the window
 - **WHEN** session O is rotated at 09:00 with a 30-second grace into S1, and O is loaded at 09:05
@@ -203,6 +245,17 @@ Loading a superseded identifier at or after the end of its window SHALL be treat
 #### Scenario: Detected long after the window
 - **WHEN** a session with an absolute deadline of 21:00 is rotated at 09:00 with a 30-second grace, and its old identifier is presented at 18:00
 - **THEN** the load fails with the reused-session error
+
+#### Scenario: Detected after the session's own deadline
+- **WHEN** a session with an absolute deadline of 10:00 under a family maximum ending at 21:00 is rotated at 09:00 with a 30-second grace, and its old identifier is presented at 12:00
+- **THEN** the load fails with the reused-session error and the family is revoked
+
+### Requirement: Reuse revocation completes when the presenting request is cancelled
+The family revocation that detected reuse triggers SHALL complete even when the request that presented the identifier is cancelled.
+
+#### Scenario: Presenting request cancelled
+- **WHEN** a superseded identifier is presented after its window by a request that is cancelled once its session has been read
+- **THEN** the family is revoked
 
 ### Requirement: Recovery while the successor is unused is opt-in
 The manager SHALL record when a session is first loaded successfully. By default a superseded identifier presented after its window SHALL be reuse. With unused-successor recovery enabled, renewing such an identifier SHALL rotate it again as inside the window when its current successor has never been loaded and has not been superseded, decided atomically by the store; otherwise the renewal SHALL be reuse.
@@ -219,6 +272,18 @@ The manager SHALL record when a session is first loaded successfully. By default
 #### Scenario: Recovery refuses once the successor was used
 - **WHEN** a manager with unused-successor recovery enabled rotates O into S1, S1 is loaded, and O is renewed after its window
 - **THEN** the renewal fails with the reused-session error and the family is revoked
+
+### Requirement: Recovery never revives a session that has ended
+With unused-successor recovery enabled, renewing a superseded identifier whose own idle or absolute deadline has passed SHALL fail with the session-expired error, SHALL issue no successor and SHALL NOT revoke the family.
+
+#### Scenario: Recovery refuses a session past its absolute deadline
+- **WHEN** a manager with unused-successor recovery enabled rotates at 09:00, with a 30-second grace, a session O whose absolute deadline is 11:00, S1 is never presented, and O is renewed at 12:00
+- **THEN** the renewal fails with the session-expired error
+- **AND** the family is not revoked, and no successor is issued
+
+#### Scenario: Recovery refuses a session past its idle deadline
+- **WHEN** a manager with unused-successor recovery enabled and a 30-minute idle timeout rotates O at 09:00, with a 30-second grace, into S1, S1 is never presented, and O is renewed at 10:00
+- **THEN** the renewal fails with the session-expired error, and no successor is issued
 
 ### Requirement: Under recovery an ordinary late request is refused without revoking
 With unused-successor recovery enabled, loading a superseded identifier after its window for anything but a renewal SHALL fail with a renewal-required error that matches the expired-session error, and SHALL NOT revoke the family.
@@ -240,11 +305,15 @@ Every session SHALL record the time the user last authenticated: the sign-in tim
 - **THEN** it reports 09:20 as its authentication time
 
 ### Requirement: Rotation at second-factor verification keeps the old identifier only in flight
-Rotating without a grace window SHALL supersede the old session with a short in-flight window and then delete it. A load of the old identifier between the two writes SHALL return the old session as it was, and SHALL NOT be judged as reuse.
+Rotating without a grace window SHALL supersede the old session with a short in-flight window and then delete it. A load of the old identifier between the two writes SHALL return the old session as it was, its own deadlines included, and SHALL NOT be judged as reuse.
 
 #### Scenario: Load between the writes
 - **WHEN** a load of the old identifier runs after the strict rotation has superseded it and before it is deleted
 - **THEN** the load returns the old session, and the family is not revoked
+
+#### Scenario: Its own deadlines between the writes
+- **WHEN** a session with an idle deadline of 09:30 and an absolute deadline of 10:00, in a family whose maximum ends at 21:00, is rotated without grace at 09:00, and its old identifier is loaded between the two writes
+- **THEN** the loaded session reports 09:30 and 10:00 as its deadlines
 
 ### Requirement: A failed delete does not fail a second-factor rotation
 When the delete after a rotation without a grace window fails, the rotation SHALL still return the successor, and the old identifier SHALL expire as a superseded session when its in-flight window ends.
@@ -267,6 +336,14 @@ By default a successor SHALL keep its predecessor's absolute deadline. A caller 
 #### Scenario: Default carries over
 - **WHEN** a session whose absolute deadline is 21:00 is rotated with a grace window at 15:00
 - **THEN** the successor's absolute deadline is 21:00
+
+#### Scenario: Re-rotation carries over the session's own deadline
+- **WHEN** a session created at 09:00 with a 1-hour lifetime, under a 30-day lifetime maximum, is rotated with a 30-second grace at 09:10, and its old identifier is rotated again at 09:10:10
+- **THEN** the second successor's absolute deadline is 10:00
+
+#### Scenario: Re-rotation keeps an enrolment confinement
+- **WHEN** a session confined to enrolment until 09:15 is rotated with a grace window at 09:05, and its old identifier is rotated again inside the window
+- **THEN** the second successor's absolute deadline is 09:15
 
 #### Scenario: Consumer lifetime extends within the family maximum
 - **WHEN** a manager with a 30-day lifetime maximum and a 90-day family maximum rotates, on day 20 of a family, a session with a chosen 30-day lifetime

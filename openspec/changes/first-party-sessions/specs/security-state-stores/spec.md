@@ -49,23 +49,38 @@ When the caller observed a successor that has since been superseded or is no lon
 - **WHEN** session O's successor S1 has been presented, and O is superseded again observing S1 and requiring an unpresented successor
 - **THEN** the store refuses with the successor-advanced error and writes nothing
 
+### Requirement: A supersession keeps retention apart from the session's own deadlines
+A supersession SHALL give the session it supersedes a retention deadline, the latest time its family could still be live, and SHALL NOT change that session's own idle and absolute deadlines.
+
+#### Scenario: Own deadlines unchanged by the supersession
+- **WHEN** a session with an idle deadline of 09:30 and an absolute deadline of 10:00 is superseded at 09:00 with a retention deadline of 21:00
+- **THEN** the store returns it with 09:30 and 10:00 as its deadlines, and 21:00 as its retention deadline
+
 ### Requirement: Superseded sessions are returned by load and kept by the sweep
-Loading a superseded session SHALL return it with its supersession state, whether or not its window has ended, while its idle and absolute deadlines are unexpired. A superseded session SHALL keep, as both of its deadlines, the retention deadline its supersession gave, the latest time its family could still be live, so the expiry sweep deletes it only when that deadline passes.
+Loading a superseded session SHALL return it with its supersession state and its own deadlines, whether or not its window or its own deadlines have ended, until its retention deadline passes. The expiry sweep SHALL delete a superseded session only once its retention deadline has passed. A superseded session with no retention deadline, written before the retention deadline existed, SHALL be judged by its own deadlines.
 
 #### Scenario: Load past the window
 - **WHEN** a session superseded at 09:00 with a window ending at 09:00:30 is loaded at 12:00 through the store
 - **THEN** the store returns it, reporting it superseded at 09:00 with window end 09:00:30
 
+#### Scenario: Load past its own deadlines
+- **WHEN** a session with an absolute deadline of 10:00, superseded at 09:00 with a retention deadline of 21:00, is loaded through the store at 12:00
+- **THEN** the store returns it
+
 #### Scenario: Sweep keeps a superseded session
 - **WHEN** a session is superseded at 09:00 with a retention deadline of 21:00, and expired sessions are swept at 12:00
 - **THEN** the superseded session is not deleted
 
+#### Scenario: Sweep deletes it after retention
+- **WHEN** the same sessions are swept at 21:01
+- **THEN** the superseded session is deleted
+
 ### Requirement: Saving a superseded session keeps its deadlines
-Saving a superseded session SHALL NOT change either of its deadlines, so a copy loaded before the supersession cannot shorten them.
+Saving a superseded session SHALL NOT change its deadlines or its retention deadline, so a copy loaded before the supersession cannot change them.
 
 #### Scenario: Stale save keeps the deadlines
-- **WHEN** a copy of a session is loaded, the session is then superseded with a retention deadline of 21:00, and the earlier copy, with an idle deadline of 09:30, is saved
-- **THEN** the stored session still reports 21:00 as both its idle and absolute deadline
+- **WHEN** a copy of a session with an idle deadline of 09:30 is loaded, the session is then superseded with a retention deadline of 21:00, and the earlier copy, with its idle deadline changed to 09:45, is saved
+- **THEN** the stored session still reports 09:30 as its idle deadline and 21:00 as its retention deadline
 
 ### Requirement: A supersession writes only the sessions it supersedes
 A supersession SHALL write only the session it supersedes, its previous successor if there is one, and the new successor. It SHALL NOT rewrite any other session of the family, so its cost does not grow with the number of earlier renewals.
@@ -99,7 +114,7 @@ Durable session stores SHALL record when a session was first loaded successfully
 - **THEN** the superseded-session error is returned and no presentation time is stored
 
 ### Requirement: Session family and supersession state survive a durable store
-Durable session stores SHALL persist and return a session's family identifier, family start time, supersession time, window end, successor and first-presentation time exactly as written, at microsecond precision. A session that was never superseded or presented SHALL report none. Saving a session SHALL NOT change any of them.
+Durable session stores SHALL persist and return a session's family identifier, family start time, supersession time, window end, retention deadline, successor and first-presentation time exactly as written, at microsecond precision. A session that was never superseded or presented SHALL report none. Saving a session SHALL NOT change any of them.
 
 #### Scenario: Round trip
 - **WHEN** a session is created, superseded, its successor first presented, and both are loaded
@@ -130,13 +145,24 @@ Creating a session in a store, or inserting a supersession's successor, SHALL be
 - **WHEN** a session whose family is the nil identifier is created through the store
 - **THEN** the creation fails with an error and the session does not load
 
-### Requirement: A supersession never lowers a deadline
-A supersession SHALL NOT set a superseded session's deadlines earlier than they were, and SHALL be refused with an error, writing nothing, when the retention deadline it gives is before its window's end.
+### Requirement: A supersession never lowers a retention deadline
+A supersession SHALL NOT set a superseded session's retention deadline earlier than it was, and SHALL be refused with an error, writing nothing, when the retention deadline it gives is before its window's end.
 
-#### Scenario: Retention below the stored deadline
-- **WHEN** a session whose absolute deadline is 21:00 is superseded at 16:00 with a retention deadline of 15:00 and a window ending at 16:00:30
+#### Scenario: Retention before the window's end
+- **WHEN** a session is superseded at 16:00 with a retention deadline of 15:00 and a window ending at 16:00:30
 - **THEN** the supersession is refused and nothing is written
 
-#### Scenario: Retention below a stored deadline but after the window
-- **WHEN** a session whose absolute deadline is 21:00 is superseded at 16:00 with a retention deadline of 18:00 and a window ending at 16:00:30
-- **THEN** the superseded session keeps 21:00 as both deadlines
+#### Scenario: A later supersession gives an earlier retention deadline
+- **WHEN** a successor knocked out by a re-rotation already holds a retention deadline of 21:00, and the re-rotation gives a retention deadline of 18:00
+- **THEN** the knocked-out successor keeps 21:00 as its retention deadline
+
+### Requirement: Ending a user's other sessions keeps the presenting sign-in
+Deleting every session of a user except a named one SHALL keep the named session and, when it belongs to a family, the family's current session, the one member not superseded, and SHALL delete every other session of the user, every other member of that family included, in one atomic operation.
+
+#### Scenario: Named session inside its renewal window
+- **WHEN** `u-1`'s session O is superseded by S1 with a window still open, `u-1` holds an unrelated session T, and `u-1`'s sessions except O are deleted
+- **THEN** O and S1 still load, T does not, and 1 is returned
+
+#### Scenario: Named session is the family's current one
+- **WHEN** `u-1`'s session O is superseded by S1 with a window still open, and `u-1`'s sessions except S1 are deleted
+- **THEN** S1 still loads and O does not
