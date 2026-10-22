@@ -253,4 +253,13 @@ func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.T
 		"session: the inner store could not record the session's first presentation")
 }
 
+// SuccessorPresented passes the read on: it reads only presentation and
+// supersession state, which is not sealed. The inner store's
+// ErrSessionNotFound comes back bare.
+func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (bool, error) {
+	used, err := s.inner.SuccessorPresented(ctx, id)
+
+	return used, storeFailed(err, "session: the inner store could not read whether the session's successor was used")
+}
+
 var _ Store = (*encryptedStore)(nil)

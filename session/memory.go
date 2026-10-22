@@ -245,10 +245,11 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 }
 
 // Save updates the stored session, whole except for MFAAtFirstFactor,
-// AuthenticatedAt and the family, supersession and presentation fields, and
-// never inserts. Those are
-// kept as Create, Supersede and MarkPresented wrote them, whatever the saved
-// session says. A superseded record also keeps both of its deadlines.
+// AuthenticatedAt and the family, supersession (RetainUntil included) and
+// presentation fields, and never inserts. Those are kept as Create, Supersede
+// and MarkPresented wrote them, whatever the saved session says. A superseded
+// record also keeps both of its own deadlines, so a stale copy can change
+// neither them nor its retention.
 //
 // A session that is no longer stored is ErrSessionNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
@@ -270,6 +271,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	rec.SupersededAt = stored.SupersededAt
 	rec.AcceptUntil = stored.AcceptUntil
 	rec.SuccessorDigest = stored.SuccessorDigest
+	rec.RetainUntil = stored.RetainUntil
 	rec.FirstPresentedAt = stored.FirstPresentedAt
 	if !stored.SupersededAt.IsZero() {
 		rec.IdleExpiresAt = stored.IdleExpiresAt
@@ -280,7 +282,11 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 	return nil
 }
 
-// Load returns the session with this identifier.
+// Load returns the session with this identifier. A live session past either
+// deadline is ErrSessionExpired. A superseded one is returned until its
+// RetainUntil passes, whatever its own deadlines say and with them intact, so
+// the Manager can tell a late presentation (reuse) from an expiry; one with no
+// RetainUntil is judged by its own deadlines.
 func (s *MemoryStore) Load(_ context.Context, id string) (*Session, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -289,7 +295,7 @@ func (s *MemoryStore) Load(_ context.Context, id string) (*Session, error) {
 	if !found {
 		return nil, ErrSessionNotFound
 	}
-	if rec.expired(s.clock.Now()) {
+	if stale(rec, s.clock.Now()) {
 		return nil, ErrSessionExpired
 	}
 
@@ -359,11 +365,13 @@ func (s *MemoryStore) CountActiveByUser(_ context.Context, user identity.UserID)
 	return n, nil
 }
 
-// DeleteExpired removes every expired session and reports how many went.
+// DeleteExpired removes every expired session and reports how many went: a
+// live one once either of its deadlines passes, and a superseded one once its
+// RetainUntil passes, or its own deadlines when it has none.
 func (s *MemoryStore) DeleteExpired(_ context.Context) (int, error) {
 	now := s.clock.Now()
 
-	return s.removeWhere(func(rec *Session) bool { return rec.expired(now) }), nil
+	return s.removeWhere(func(rec *Session) bool { return stale(rec, now) }), nil
 }
 
 // DeleteByExternalSession removes the sessions matching both issuer and the
@@ -450,9 +458,10 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 //
 // A successor with no family, or a RetainUntil before AcceptUntil, is
 // refused with an error before anything is written. Old and its previous
-// successor take the later of each current deadline and op.RetainUntil, so
-// housekeeping removes them only when their family could no longer be live,
-// and no supersession lowers a deadline.
+// successor take the later of their stored RetainUntil and op.RetainUntil as
+// their RetainUntil, so housekeeping removes them only when their family
+// could no longer be live, and no supersession lowers a retention deadline.
+// Neither record's own deadlines change.
 //
 // Nothing else is written: no other record of the family is touched, however
 // many renewals came before.
@@ -504,17 +513,27 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 	return nil
 }
 
-// retain holds a superseded record to one deadline: the later of its absolute
-// deadline and until, as both of its deadlines. It never lowers one: a record
-// that already outlives the retention keeps its own absolute deadline.
+// retain keeps a superseded record for reuse detection until the later of its
+// retention deadline and until, never lowering it. Its own deadlines are left
+// alone: renewal, recovery and a load inside the window still read them.
 func retain(rec *Session, until time.Time) {
-	rec.AbsoluteExpiresAt = laterTime(rec.AbsoluteExpiresAt, until)
-	rec.IdleExpiresAt = rec.AbsoluteExpiresAt
+	rec.RetainUntil = laterTime(rec.RetainUntil, until)
+}
+
+// stale reports whether the store may forget rec at now: a superseded record
+// once its retention deadline passes, any other, and a superseded one with no
+// retention deadline, once one of its own deadlines does.
+func stale(rec *Session, now time.Time) bool {
+	if rec.superseded() && !rec.RetainUntil.IsZero() {
+		return !now.Before(rec.RetainUntil)
+	}
+
+	return rec.expired(now)
 }
 
 // successorLocked returns the stored record whose identifier old's successor
 // digest names, or nil when old has no successor or it is no longer stored.
-// Callers hold s.mu.
+// Callers hold s.mu, for reading at least.
 func (s *MemoryStore) successorLocked(old *Session) *Session {
 	if len(old.SuccessorDigest) == 0 {
 		return nil
@@ -573,6 +592,31 @@ func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) 
 	rec.FirstPresentedAt = at
 
 	return nil
+}
+
+// SuccessorPresented reports whether the current successor of the session
+// with this identifier was used, under the store's read lock, writing
+// nothing: true when that successor is stored and was presented or has been
+// superseded, false when it is stored unused, is no longer stored, or the
+// session has none. A session that is not stored is ErrSessionNotFound.
+// "Stored" is judged as Load judges it, at the store's clock: a record Load
+// would not return, swept or not, is not stored, for the session and for its
+// successor alike.
+func (s *MemoryStore) SuccessorPresented(_ context.Context, id string) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := s.clock.Now()
+	rec, found := s.records[id]
+	if !found || stale(rec, now) {
+		return false, ErrSessionNotFound
+	}
+	successor := s.successorLocked(rec)
+	if successor == nil || stale(successor, now) {
+		return false, nil
+	}
+
+	return !successor.FirstPresentedAt.IsZero() || successor.superseded(), nil
 }
 
 var _ Store = (*MemoryStore)(nil)

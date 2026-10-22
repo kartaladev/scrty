@@ -428,10 +428,15 @@ func TestMemoryStoreSupersessionNeverLowersADeadline(t *testing.T) {
 	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 	require.NoError(t, store.Create(t.Context(), storedSession("old")))
 
-	first := firstRotation("old", storedSession("n1"))
-	first.RetainUntil = createdAt.Add(2 * time.Hour) // below the absolute deadline, 12 hours
+	// n1 is inserted already holding a retention deadline of 23:00, as a
+	// store holds whatever it was given.
+	n1 := storedSession("n1")
+	n1.RetainUntil = createdAt.Add(14 * time.Hour)
+	first := firstRotation("old", n1)
+	first.RetainUntil = createdAt.Add(14 * time.Hour)
 	require.NoError(t, store.Supersede(t.Context(), first))
 
+	// The re-rotation gives a retention deadline of 11:00, earlier than both.
 	second := firstRotation("old", storedSession("n2"))
 	second.ObservedSuccessor = storekit.SessionDigest("n1")
 	second.RetainUntil = createdAt.Add(2 * time.Hour)
@@ -440,8 +445,9 @@ func TestMemoryStoreSupersessionNeverLowersADeadline(t *testing.T) {
 	for _, sessionID := range []string{"old", "n1"} {
 		got, err := store.Load(t.Context(), sessionID)
 		require.NoError(t, err)
-		assert.Equal(t, createdAt.Add(12*time.Hour), got.AbsoluteExpiresAt, "%s: absolute deadline lowered", sessionID)
-		assert.Equal(t, createdAt.Add(12*time.Hour), got.IdleExpiresAt, "%s: a superseded record keeps one deadline, its absolute", sessionID)
+		assert.Equal(t, createdAt.Add(14*time.Hour), got.RetainUntil, "%s: retention deadline lowered", sessionID)
+		assert.Equal(t, createdAt.Add(12*time.Hour), got.AbsoluteExpiresAt, "%s: own absolute deadline changed", sessionID)
+		assert.Equal(t, createdAt.Add(30*time.Minute), got.IdleExpiresAt, "%s: own idle deadline changed", sessionID)
 	}
 }
 

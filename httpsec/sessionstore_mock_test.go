@@ -545,6 +545,45 @@ func (c *MockStoreSaveCall) DoAndReturn(f func(context.Context, *session.Session
 	return c
 }
 
+// SuccessorPresented mocks base method.
+func (m *MockStore) SuccessorPresented(ctx context.Context, arg1 string) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SuccessorPresented", ctx, arg1)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SuccessorPresented indicates an expected call of SuccessorPresented.
+func (mr *MockStoreMockRecorder) SuccessorPresented(ctx, arg1 any) *MockStoreSuccessorPresentedCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SuccessorPresented", reflect.TypeOf((*MockStore)(nil).SuccessorPresented), ctx, arg1)
+	return &MockStoreSuccessorPresentedCall{Call: call}
+}
+
+// MockStoreSuccessorPresentedCall wrap *gomock.Call
+type MockStoreSuccessorPresentedCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreSuccessorPresentedCall) Return(arg0 bool, arg1 error) *MockStoreSuccessorPresentedCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreSuccessorPresentedCall) Do(f func(context.Context, string) (bool, error)) *MockStoreSuccessorPresentedCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreSuccessorPresentedCall) DoAndReturn(f func(context.Context, string) (bool, error)) *MockStoreSuccessorPresentedCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // Supersede mocks base method.
 func (m *MockStore) Supersede(ctx context.Context, op session.Supersession) error {
 	m.ctrl.T.Helper()

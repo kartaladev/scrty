@@ -180,24 +180,26 @@ func supersededAs(old *session.Session, successor string, now, acceptUntil time.
 	return supersededUntil(old, successor, now, acceptUntil, sessionRetainUntil)
 }
 
-// supersededUntil is supersededAs with the retention deadline retain: both
-// deadlines become retain, and nothing else changes.
+// supersededUntil is supersededAs with the retention deadline retain: its
+// RetainUntil becomes retain, its own deadlines stay as they were, and
+// nothing else changes.
 func supersededUntil(old *session.Session, successor string, now, acceptUntil, retain time.Time) *session.Session {
 	s := *old
 	s.SupersededAt = now
 	s.AcceptUntil = acceptUntil
 	s.SuccessorDigest = sessionDigest(successor)
-	s.IdleExpiresAt, s.AbsoluteExpiresAt = retain, retain
+	s.RetainUntil = retain
 	return &s
 }
 
 // knockedOutAs returns previous, a successor a re-rotation superseded at now,
 // as a store must hold it: superseded with a window that ended at now, no
-// successor of its own, and the retention deadline retain as both deadlines.
+// successor of its own, its own deadlines unchanged and retain as its
+// retention deadline.
 func knockedOutAs(previous *session.Session, now, retain time.Time) *session.Session {
 	s := *previous
 	s.SupersededAt, s.AcceptUntil = now, now
-	s.IdleExpiresAt, s.AbsoluteExpiresAt = retain, retain
+	s.RetainUntil = retain
 	return &s
 }
 
@@ -233,6 +235,7 @@ func assertSession(t *testing.T, want, got *session.Session) {
 	assertTimeEqual(t, want.FamilyCreatedAt, got.FamilyCreatedAt, "FamilyCreatedAt")
 	assertTimeEqual(t, want.SupersededAt, got.SupersededAt, "SupersededAt")
 	assertTimeEqual(t, want.AcceptUntil, got.AcceptUntil, "AcceptUntil")
+	assertTimeEqual(t, want.RetainUntil, got.RetainUntil, "RetainUntil")
 	assertTimeEqual(t, want.FirstPresentedAt, got.FirstPresentedAt, "FirstPresentedAt")
 	if len(want.SuccessorDigest) == 0 {
 		assert.Empty(t, got.SuccessorDigest, "a session never superseded must load with no successor")
@@ -299,7 +302,10 @@ const (
 // hold (a NUL byte, invalid UTF-8) in the data or the user reference is either
 // refused, with an error that does not echo it, or round-trips unchanged, and
 // is never altered; Create never replaces, and Save
-// replaces the record whole but never inserts; Load judges both deadlines by the store's clock; the
+// replaces the record whole but never inserts; Load judges both deadlines by the store's clock,
+// and a superseded session by its retention deadline instead, with its own
+// deadlines returned as stored; a supersession changes no deadline and never
+// lowers a retention deadline; the
 // active count and every deletion are exact; and the federation deletions
 // match nothing on an empty issuer or provider session identifier.
 //
@@ -1114,6 +1120,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 
 	cases = append(cases, sessionActivityCases()...)
 	cases = append(cases, sessionFamilyCases()...)
+	cases = append(cases, sessionSuccessorPresentedCases()...)
 
 	runSuite(t, cases, newStore)
 }
@@ -1450,7 +1457,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				clk.Advance(2 * time.Hour)
 
 				got, err := s.Load(ctx, old.ID)
-				require.NoError(t, err, "a superseded session is returned until its absolute deadline")
+				require.NoError(t, err, "a superseded session is returned until its retention deadline")
 				assertSession(t, supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second)), got)
 			},
 		},
@@ -1723,8 +1730,9 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				assertTimeMicro(t, at.Add(30*time.Second), gotOld.AcceptUntil, "old AcceptUntil")
 				assert.Equal(t, sessionDigest(successor.ID), gotOld.SuccessorDigest, "old SuccessorDigest")
 				assert.True(t, gotOld.FirstPresentedAt.IsZero(), "a session never presented reports none")
-				assertTimeMicro(t, retain, gotOld.IdleExpiresAt, "old IdleExpiresAt, the retention deadline")
-				assertTimeMicro(t, retain, gotOld.AbsoluteExpiresAt, "old AbsoluteExpiresAt, the retention deadline")
+				assertTimeMicro(t, retain, gotOld.RetainUntil, "old RetainUntil")
+				assertTimeMicro(t, old.IdleExpiresAt, gotOld.IdleExpiresAt, "old IdleExpiresAt, its own")
+				assertTimeMicro(t, old.AbsoluteExpiresAt, gotOld.AbsoluteExpiresAt, "old AbsoluteExpiresAt, its own")
 
 				gotNew, err := s.Load(ctx, successor.ID)
 				require.NoError(t, err)
@@ -1733,6 +1741,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				assertTimeMicro(t, presented, gotNew.FirstPresentedAt, "successor FirstPresentedAt")
 				assert.True(t, gotNew.SupersededAt.IsZero(), "a session never superseded reports no supersession")
 				assert.True(t, gotNew.AcceptUntil.IsZero(), "a session never superseded reports no window")
+				assert.True(t, gotNew.RetainUntil.IsZero(), "a session never superseded reports no retention deadline")
 				assert.Empty(t, gotNew.SuccessorDigest, "a session never superseded reports no successor")
 			},
 		},
@@ -1753,6 +1762,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, err)
 				want := *loaded
 				loaded.Data = map[string]string{"tenant": "saved after supersession"}
+				loaded.RetainUntil = suiteStart.Add(time.Hour)
 				require.NoError(t, s.Save(ctx, loaded))
 				want.Data = loaded.Data
 				assertSessionsLoad(ctx, t, s, &want)
@@ -1766,8 +1776,9 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, s.Save(ctx, stale))
 				got, err := s.Load(ctx, old.ID)
 				require.NoError(t, err)
-				assertTimeEqual(t, sessionRetainUntil, got.IdleExpiresAt, "IdleExpiresAt of a superseded record after a save")
-				assertTimeEqual(t, sessionRetainUntil, got.AbsoluteExpiresAt, "AbsoluteExpiresAt of a superseded record after a save")
+				assertTimeEqual(t, old.IdleExpiresAt, got.IdleExpiresAt, "IdleExpiresAt of a superseded record after a save")
+				assertTimeEqual(t, old.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "AbsoluteExpiresAt of a superseded record after a save")
+				assertTimeEqual(t, sessionRetainUntil, got.RetainUntil, "RetainUntil of a superseded record after a save")
 				assert.Equal(t, old.FamilyID, got.FamilyID, "a save must not move the family")
 				assertTimeEqual(t, old.FamilyCreatedAt, got.FamilyCreatedAt, "FamilyCreatedAt after a save")
 				assertTimeEqual(t, suiteStart, got.FirstPresentedAt, "FirstPresentedAt after a save")
@@ -1779,7 +1790,8 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 		},
 		{
 			// The previous successor a re-rotation supersedes is a superseded
-			// record too, and a copy loaded before it keeps its deadlines.
+			// record too: a copy loaded before it changes neither its own
+			// deadlines nor its retention deadline.
 			name: "save keeps the deadlines of a successor superseded by a re-rotation",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))
@@ -1795,8 +1807,9 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 
 				got, err := s.Load(ctx, first.ID)
 				require.NoError(t, err)
-				assertTimeEqual(t, sessionRetainUntil, got.IdleExpiresAt, "IdleExpiresAt after a stale save")
-				assertTimeEqual(t, sessionRetainUntil, got.AbsoluteExpiresAt, "AbsoluteExpiresAt after a stale save")
+				assertTimeEqual(t, first.IdleExpiresAt, got.IdleExpiresAt, "IdleExpiresAt after a stale save")
+				assertTimeEqual(t, first.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "AbsoluteExpiresAt after a stale save")
+				assertTimeEqual(t, sessionRetainUntil, got.RetainUntil, "RetainUntil after a stale save")
 				assertTimeEqual(t, suiteStart.Add(10*time.Second), got.SupersededAt, "SupersededAt after a stale save")
 			},
 		},
@@ -1882,58 +1895,63 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
-			// O's absolute deadline is 21:00. It is superseded at 16:00 with
-			// a retention deadline of 18:00 and a window ending at 16:00:30:
-			// the retention is after the window but below what O holds, so
-			// both of O's deadlines stay 21:00.
-			name: "a supersession never lowers a deadline",
+			// O is superseded at 11:00 with a retention deadline of 21:00,
+			// and re-rotated at 16:00 with one of 18:00: the retention is
+			// after the window but below what O holds, so O keeps 21:00, and
+			// its own deadlines, 10:30 and 18:00, are untouched by either.
+			name: "a supersession never lowers a retention deadline",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))
-				old.IdleExpiresAt, old.AbsoluteExpiresAt = sessionRetainUntil, sessionRetainUntil
 				require.NoError(t, s.Create(ctx, old))
-				at := suiteStart.Add(6 * time.Hour)
-				successor := successorOf(old, "sess-b", at)
+				at, again := suiteStart.Add(time.Hour), suiteStart.Add(6*time.Hour)
+				first := successorOf(old, "sess-b", at)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: first, Now: at,
+				}))
 
 				require.NoError(t, s.Supersede(ctx, session.Supersession{
-					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: suiteStart.Add(8 * time.Hour),
-					Successor: successor, Now: at,
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), AcceptUntil: again.Add(30 * time.Second),
+					RetainUntil: suiteStart.Add(8 * time.Hour), Successor: successorOf(old, "sess-c", again), Now: again,
 				}))
 
 				got, err := s.Load(ctx, old.ID)
 				require.NoError(t, err)
-				assertTimeEqual(t, sessionRetainUntil, got.IdleExpiresAt, "IdleExpiresAt after a lower retention")
-				assertTimeEqual(t, sessionRetainUntil, got.AbsoluteExpiresAt, "AbsoluteExpiresAt after a lower retention")
+				assertTimeEqual(t, sessionRetainUntil, got.RetainUntil, "RetainUntil after a lower retention")
+				assertTimeEqual(t, old.IdleExpiresAt, got.IdleExpiresAt, "IdleExpiresAt after two supersessions")
+				assertTimeEqual(t, old.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "AbsoluteExpiresAt after two supersessions")
 			},
 		},
 		{
-			// O's idle deadline is 16:30 and its absolute deadline 21:00. It
-			// is superseded at 16:00 with a retention deadline of 18:00: the
-			// record is held to one deadline, 21:00, as both.
-			name: "a superseded record keeps one deadline",
+			// O's idle deadline is 10:30 and its absolute deadline 11:00. It
+			// is superseded at 10:00 with a retention deadline of 21:00: the
+			// store returns it with 10:30 and 11:00 as its deadlines and 21:00
+			// as its retention deadline.
+			name: "a supersession keeps the record's own deadlines apart from its retention",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))
-				old.IdleExpiresAt, old.AbsoluteExpiresAt = suiteStart.Add(6*time.Hour+30*time.Minute), sessionRetainUntil
+				old.AbsoluteExpiresAt = suiteStart.Add(time.Hour)
 				require.NoError(t, s.Create(ctx, old))
-				at := suiteStart.Add(6 * time.Hour)
-				successor := successorOf(old, "sess-b", at)
+				successor := successorOf(old, "sess-b", suiteStart)
 
 				require.NoError(t, s.Supersede(ctx, session.Supersession{
-					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: suiteStart.Add(8 * time.Hour),
-					Successor: successor, Now: at,
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: suiteStart,
 				}))
 
 				got, err := s.Load(ctx, old.ID)
 				require.NoError(t, err)
-				assertTimeEqual(t, sessionRetainUntil, got.IdleExpiresAt, "IdleExpiresAt of a superseded record")
-				assertTimeEqual(t, sessionRetainUntil, got.AbsoluteExpiresAt, "AbsoluteExpiresAt of a superseded record")
+				assertTimeEqual(t, suiteStart.Add(sessionIdle), got.IdleExpiresAt, "IdleExpiresAt of a superseded record")
+				assertTimeEqual(t, suiteStart.Add(time.Hour), got.AbsoluteExpiresAt, "AbsoluteExpiresAt of a superseded record")
+				assertTimeEqual(t, sessionRetainUntil, got.RetainUntil, "RetainUntil of a superseded record")
 			},
 		},
 		{
 			// O is superseded by S1, whose idle deadline is 16:30 and
 			// absolute deadline 21:00, and re-rotated at 16:00 with a
-			// retention deadline of 18:00: S1 is superseded in turn and
-			// keeps 21:00 as both deadlines, never lowered to 18:00.
-			name: "re-rotation never lowers the previous successor's deadlines",
+			// retention deadline of 18:00: S1 is superseded in turn, retained
+			// to 18:00, and keeps 16:30 and 21:00 as its own deadlines.
+			name: "re-rotation leaves the previous successor's own deadlines",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))
 				require.NoError(t, s.Create(ctx, old))
@@ -1954,8 +1972,117 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 
 				got, err := s.Load(ctx, first.ID)
 				require.NoError(t, err)
-				assertTimeEqual(t, sessionRetainUntil, got.IdleExpiresAt, "previous successor IdleExpiresAt")
+				assertTimeEqual(t, suiteStart.Add(6*time.Hour+30*time.Minute), got.IdleExpiresAt, "previous successor IdleExpiresAt")
 				assertTimeEqual(t, sessionRetainUntil, got.AbsoluteExpiresAt, "previous successor AbsoluteExpiresAt")
+				assertTimeEqual(t, suiteStart.Add(8*time.Hour), got.RetainUntil, "previous successor RetainUntil")
+			},
+		},
+		{
+			// S1 already holds a retention deadline of 21:00 when O's
+			// re-rotation at 16:00 knocks it out with one of 18:00: S1 keeps
+			// 21:00.
+			name: "a knocked-out successor keeps the later retention deadline",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				at := suiteStart.Add(time.Hour)
+				first := successorOf(old, "sess-b", at)
+				first.RetainUntil = sessionRetainUntil
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: at.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: first, Now: at,
+				}))
+				again := suiteStart.Add(6 * time.Hour)
+
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, ObservedSuccessor: sessionDigest(first.ID), AcceptUntil: again.Add(30 * time.Second),
+					RetainUntil: suiteStart.Add(8 * time.Hour), Successor: successorOf(old, "sess-c", again), Now: again,
+				}))
+
+				got, err := s.Load(ctx, first.ID)
+				require.NoError(t, err)
+				assertTimeEqual(t, sessionRetainUntil, got.RetainUntil, "knocked-out successor RetainUntil")
+				assertTimeEqual(t, first.IdleExpiresAt, got.IdleExpiresAt, "knocked-out successor IdleExpiresAt")
+				assertTimeEqual(t, first.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "knocked-out successor AbsoluteExpiresAt")
+			},
+		},
+		{
+			// O's absolute deadline is 11:00. Superseded at 10:00 with a
+			// retention deadline of 21:00, it loads at 13:00 and at 20:59,
+			// with its own deadlines, and is expired at 21:00.
+			name: "a superseded record loads past its own deadlines until its retention deadline",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.AbsoluteExpiresAt = suiteStart.Add(time.Hour)
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-b", suiteStart)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: suiteStart,
+				}))
+				want := supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second))
+
+				clk.Advance(3 * time.Hour)
+				assertSessionsLoad(ctx, t, s, want)
+
+				clk.Advance(sessionRetainUntil.Add(-time.Minute).Sub(clk.Now()))
+				assertSessionsLoad(ctx, t, s, want)
+
+				clk.Advance(time.Minute)
+				_, err := s.Load(ctx, old.ID)
+				assert.ErrorIs(t, err, session.ErrSessionExpired, "a superseded record is expired at its retention deadline")
+			},
+		},
+		{
+			// O's own deadlines are 10:30 and 11:00, and its retention
+			// deadline 21:00. Swept at 13:00 it stays; swept at 21:00 it goes.
+			name: "a superseded record is swept after its retention deadline, not by its own deadlines",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				old.AbsoluteExpiresAt = suiteStart.Add(time.Hour)
+				require.NoError(t, s.Create(ctx, old))
+				successor := successorOf(old, "sess-b", suiteStart)
+				successor.IdleExpiresAt, successor.AbsoluteExpiresAt = sessionRetainUntil.Add(time.Hour), sessionRetainUntil.Add(time.Hour)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil,
+					Successor: successor, Now: suiteStart,
+				}))
+
+				clk.Advance(3 * time.Hour)
+				n, err := s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Zero(t, n, "a superseded record past its own deadlines was swept before its retention deadline")
+				assertSessionsLoad(ctx, t, s, supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second)))
+
+				clk.Advance(sessionRetainUntil.Sub(clk.Now()))
+				n, err = s.DeleteExpired(ctx)
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the superseded record is swept at its retention deadline, its successor kept")
+				assertSessionsGone(ctx, t, s, old.ID)
+				assertSessionsLoad(ctx, t, s, successor)
+			},
+		},
+		{
+			// A copy of O with an idle deadline of 10:30 is loaded; O is then
+			// superseded with a retention deadline of 21:00, and the copy,
+			// its idle deadline moved to 10:45, is saved. O still reports
+			// 10:30 and 21:00.
+			name: "a stale save of a superseded record changes neither its deadlines nor its retention",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, old))
+				stale, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				successor := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+
+				stale.IdleExpiresAt = suiteStart.Add(45 * time.Minute)
+				require.NoError(t, s.Save(ctx, stale))
+
+				got, err := s.Load(ctx, old.ID)
+				require.NoError(t, err)
+				assertTimeEqual(t, old.IdleExpiresAt, got.IdleExpiresAt, "IdleExpiresAt after a stale save")
+				assertTimeEqual(t, sessionRetainUntil, got.RetainUntil, "RetainUntil after a stale save")
+				assert.Equal(t, sessionDigest(successor.ID), got.SuccessorDigest)
 			},
 		},
 		{
@@ -2012,6 +2139,124 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				require.NoError(t, err)
 				assert.Equal(t, 1, n, "only the session still stored is in the family")
 				assertSessionsGone(ctx, t, s, a.ID, b.ID)
+			},
+		},
+	}
+}
+
+// sessionSuccessorPresentedCases are the cases of the read that tells
+// whether a superseded session's current successor was used. Each reads
+// twice, and checks after the reads that every record is as it was.
+func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
+	// chain stores old, supersedes it at suiteStart by a successor sess-b
+	// with a thirty-second window, and returns old as now stored and the
+	// successor.
+	chain := func(ctx context.Context, t *testing.T, s session.Store) (*session.Session, *session.Session) {
+		t.Helper()
+
+		old := familySession("sess-a", "u-1", suiteID(1))
+		require.NoError(t, s.Create(ctx, old))
+		successor := successorOf(old, "sess-b", suiteStart)
+		require.NoError(t, s.Supersede(ctx, session.Supersession{
+			Old: old.ID, AcceptUntil: suiteStart.Add(30 * time.Second),
+			RetainUntil: sessionRetainUntil, Successor: successor, Now: suiteStart,
+		}))
+
+		return supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second)), successor
+	}
+
+	// presented asks twice whether sessionID's successor was used, requires
+	// both answers to be want, and every record in unchanged to load as it
+	// was before the reads.
+	presented := func(ctx context.Context, t *testing.T, s session.Store, sessionID string, want bool,
+		unchanged ...*session.Session,
+	) {
+		t.Helper()
+
+		for range 2 {
+			used, err := s.SuccessorPresented(ctx, sessionID)
+			require.NoError(t, err)
+			assert.Equal(t, want, used, "whether the successor of %s was used", sessionID)
+		}
+		assertSessionsLoad(ctx, t, s, unchanged...)
+	}
+
+	return []suiteCase[session.Store]{
+		{
+			name: "successor presented reads as used",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+				at := suiteStart.Add(time.Minute)
+				require.NoError(t, s.MarkPresented(ctx, successor.ID, at))
+				successor.FirstPresentedAt = at
+
+				presented(ctx, t, s, old.ID, true, old, successor)
+			},
+		},
+		{
+			name: "successor unused reads as unused",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+
+				presented(ctx, t, s, old.ID, false, old, successor)
+			},
+		},
+		{
+			name: "successor superseded reads as used",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+				at := suiteStart.Add(10 * time.Second)
+				next := successorOf(successor, "sess-c", at)
+				require.NoError(t, s.Supersede(ctx, session.Supersession{
+					Old: successor.ID, AcceptUntil: at.Add(30 * time.Second),
+					RetainUntil: sessionRetainUntil, Successor: next, Now: at,
+				}))
+
+				presented(ctx, t, s, old.ID, true,
+					old, supersededAs(successor, next.ID, at, at.Add(30*time.Second)), next)
+			},
+		},
+		{
+			name: "successor deleted reads as unused",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+				require.NoError(t, s.Delete(ctx, successor.ID))
+
+				presented(ctx, t, s, old.ID, false, old)
+				assertSessionsGone(ctx, t, s, successor.ID)
+			},
+		},
+		{
+			name: "a session never superseded reads as unused",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				sess := familySession("sess-a", "u-1", suiteID(1))
+				require.NoError(t, s.Create(ctx, sess))
+
+				presented(ctx, t, s, sess.ID, false, sess)
+			},
+		},
+		{
+			name: "a record past its retention deadline is not stored, swept or not",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+				require.NoError(t, s.MarkPresented(ctx, successor.ID, suiteStart.Add(time.Minute)))
+				clk.Advance(sessionRetainUntil.Sub(clk.Now()))
+
+				_, err := s.SuccessorPresented(ctx, old.ID)
+
+				require.ErrorIs(t, err, session.ErrSessionNotFound)
+			},
+		},
+		{
+			name: "whether an unknown session's successor was used is not found",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+
+				_, err := s.SuccessorPresented(ctx, "sess-never")
+
+				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				assertSessionsLoad(ctx, t, s, old, successor)
+				assertSessionsGone(ctx, t, s, "sess-never")
 			},
 		},
 	}

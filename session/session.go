@@ -210,6 +210,21 @@ type Session struct {
 	// sets it. Library-owned.
 	AcceptUntil time.Time
 
+	// RetainUntil is how long a superseded session is kept for reuse
+	// detection: until then a store returns it, and keeps it through the
+	// expiry sweep, whatever its own deadlines say, so that presenting it
+	// late is detected as reuse rather than reported as not found. It is
+	// never a deadline of the session: IdleExpiresAt and AbsoluteExpiresAt
+	// stay its own, and a renewal, a recovery and a load inside the window
+	// read those. It is zero for a session never superseded, and a
+	// superseded session with a zero RetainUntil is kept only until its own
+	// deadlines pass. The library sets it only through Store.Supersede, to
+	// the later of its stored value and Supersession.RetainUntil, so it is
+	// never lowered. A store keeps whatever value it is given: a session
+	// handed to Create, as a successor is inside Supersede, is stored with
+	// its RetainUntil as given. Library-owned.
+	RetainUntil time.Time
+
 	// FirstPresentedAt is when the session was first loaded successfully,
 	// and is zero until then. Only Store.MarkPresented sets it, and only
 	// once. Library-owned.

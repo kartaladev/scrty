@@ -274,7 +274,7 @@ The manager SHALL record when a session is first loaded successfully. By default
 - **THEN** the renewal fails with the reused-session error and the family is revoked
 
 ### Requirement: Recovery never revives a session that has ended
-With unused-successor recovery enabled, renewing a superseded identifier whose own idle or absolute deadline has passed SHALL issue no successor. When its current successor is stored and has been presented or superseded, as the store reports, the renewal SHALL be reuse and SHALL revoke the family; otherwise it SHALL fail with the session-expired error and SHALL NOT revoke the family.
+With unused-successor recovery enabled, renewing a superseded identifier that still names a successor and whose own idle or absolute deadline has passed SHALL issue no successor. When its current successor is stored and has been presented or superseded, as the store reports, the renewal SHALL be reuse and SHALL revoke the family; otherwise it SHALL fail with the session-expired error and SHALL NOT revoke the family.
 
 #### Scenario: Recovery refuses a session past its absolute deadline
 - **WHEN** a manager with unused-successor recovery enabled rotates at 09:00, with a 30-second grace, a session O whose absolute deadline is 11:00, S1 is never presented, and O is renewed at 12:00
@@ -286,8 +286,12 @@ With unused-successor recovery enabled, renewing a superseded identifier whose o
 - **THEN** the renewal fails with the session-expired error, and no successor is issued
 
 #### Scenario: An ended session whose successor was used is reuse
-- **WHEN** a manager with unused-successor recovery enabled and a 30-minute idle timeout rotates O at 09:00, with a 30-second grace, into S1, S1 is loaded at 09:20, and O is renewed at 09:31
+- **WHEN** a manager with unused-successor recovery enabled and a 30-minute idle timeout rotates O, last active at 09:00, at 09:10 with a 30-second grace into S1, S1 is loaded at 09:20, and O is renewed at 09:31
 - **THEN** the renewal fails with the reused-session error, no successor is issued, and the family is revoked
+
+#### Scenario: A knocked-out identifier is reuse whatever its own deadlines
+- **WHEN** a manager with unused-successor recovery enabled rotates O into S1, O is renewed again inside its window into S2, and S1 is renewed after its own idle deadline
+- **THEN** the renewal fails with the reused-session error, and the family is revoked
 
 #### Scenario: An ended session whose unused successor is gone is expired
 - **WHEN** a manager with unused-successor recovery enabled rotates O into S1, S1 is never presented and is no longer stored, and O is renewed after its window and after its own idle deadline

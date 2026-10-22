@@ -746,3 +746,9 @@ func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at t
 }
 
 var _ session.Store = (*sessionStore)(nil)
+
+// SuccessorPresented is not implemented yet: it reports false, as if the
+// successor were unused.
+func (s *sessionStore) SuccessorPresented(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}

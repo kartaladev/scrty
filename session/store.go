@@ -82,10 +82,12 @@ type Supersession struct {
 	// RetainUntil is the retention deadline: the latest time Old's family
 	// could still be live, its FamilyCreatedAt plus the family maximum
 	// (WithMaxFamilyLifetime), and never before AcceptUntil or Old's own
-	// absolute deadline. The store raises both deadlines of every record the
-	// supersession supersedes, Old and Old's previous successor, to it, and
-	// never lowers one, so a superseded identifier is kept, and judged as superseded rather
-	// than expired, for as long as any member of its family could be.
+	// absolute deadline. The store sets the Session.RetainUntil of every
+	// record the supersession supersedes, Old and Old's previous successor,
+	// to the later of its stored value and this, never lowering it, and
+	// changes neither record's own deadlines. A superseded identifier is so
+	// kept, and judged as superseded rather than expired, for as long as any
+	// member of its family could be.
 	RetainUntil time.Time
 
 	// Successor is the session inserted in Old's place. It is inserted as
@@ -151,18 +153,17 @@ type Store interface {
 	// never inserts.
 	//
 	// The family, supersession and presentation fields (FamilyID,
-	// FamilyCreatedAt, SupersededAt, AcceptUntil, SuccessorDigest,
-	// FirstPresentedAt) are written by Create, Supersede and MarkPresented
-	// only: Save keeps the stored values whatever the session handed to it
-	// says, so saving a copy loaded before a concurrent supersession cannot
-	// undo it.
+	// FamilyCreatedAt, SupersededAt, AcceptUntil, RetainUntil,
+	// SuccessorDigest, FirstPresentedAt) are written by Create, Supersede and
+	// MarkPresented only: Save keeps the stored values whatever the session
+	// handed to it says, so saving a copy loaded before a concurrent
+	// supersession cannot undo it.
 	//
 	// A stored session that is superseded (SupersededAt set) also keeps its
-	// IdleExpiresAt and AbsoluteExpiresAt: Supersede set both to the
-	// supersession's retention deadline (Supersession.RetainUntil). A copy
-	// loaded before the supersession would otherwise shorten them and let
-	// housekeeping remove the record early. This holds for a previous
-	// successor superseded by a re-rotation too.
+	// IdleExpiresAt and AbsoluteExpiresAt as stored: a superseded session
+	// takes no activity, and a copy loaded before the supersession must
+	// change neither its own deadlines nor its retention deadline. This holds
+	// for a previous successor superseded by a re-rotation too.
 	//
 	// AuthenticatedAt is written by Create only, as the sign-in's time: Save
 	// keeps the stored value whatever the session handed to it says.
@@ -173,14 +174,19 @@ type Store interface {
 	Save(ctx context.Context, s *Session) error
 
 	// Load returns the session with this identifier, ErrSessionNotFound when
-	// there is none, and ErrSessionExpired when it is past either deadline.
+	// there is none, and ErrSessionExpired when a session that is not
+	// superseded is past either deadline.
 	//
-	// A superseded session is returned like any other, with its supersession
-	// state (SupersededAt, AcceptUntil, SuccessorDigest) set, whether or not
-	// its grace window has ended: the store enforces the two deadlines only,
-	// and the Manager judges the window with its own clock. A consumer calling
-	// Load directly therefore sees superseded sessions, and must not treat
-	// one as live without that judgement.
+	// A superseded session is returned with its supersession state
+	// (SupersededAt, AcceptUntil, RetainUntil, SuccessorDigest) and its own
+	// deadlines as stored, whether or not its grace window or its own
+	// deadlines have ended, until its RetainUntil passes; then it is
+	// ErrSessionExpired. One with a zero RetainUntil, written before the
+	// field existed, is judged by its own deadlines. The Manager judges the
+	// window, and the record's own deadlines inside it, with its own clock. A
+	// consumer calling Load directly therefore sees superseded sessions,
+	// expired ones included, and must not treat one as live without that
+	// judgement.
 	Load(ctx context.Context, id string) (*Session, error)
 
 	// RecordActivity writes lastAccessed and idleExpires to the session with
@@ -203,16 +209,17 @@ type Store interface {
 	// an error, before anything is written, whatever the observation: a nil
 	// op.Successor; a successor with no family (the nil family), as Create
 	// refuses such a session; and a RetainUntil before AcceptUntil, since a
-	// record cannot be retained for less than its window. A supersession also
-	// never lowers a deadline: each record it supersedes takes the later of
-	// its current deadline and RetainUntil. Otherwise:
+	// record cannot be retained for less than its window. A supersession
+	// never lowers a retention deadline: each record it supersedes takes the
+	// later of its stored RetainUntil and op.RetainUntil. It never changes
+	// either deadline, idle or absolute, of any record. Otherwise:
 	//
 	//   - it marks op.Old superseded at op.Now, with op.AcceptUntil as its
-	//     window end and the digest of op.Successor's identifier as its
-	//     successor, and raises both of its deadlines to op.RetainUntil;
+	//     window end, the digest of op.Successor's identifier as its
+	//     successor, and its retention deadline as above;
 	//   - it marks Old's previous successor, if it had one, superseded at
-	//     op.Now with a window ending at op.Now, and raises both of that
-	//     successor's deadlines to op.RetainUntil;
+	//     op.Now with a window ending at op.Now, and its retention deadline
+	//     as above;
 	//   - it inserts op.Successor.
 	//
 	// It writes those records and no other: no earlier superseded session of
@@ -277,6 +284,33 @@ type Store interface {
 	// other field.
 	MarkPresented(ctx context.Context, id string, at time.Time) error
 
+	// SuccessorPresented reports whether the current successor of the
+	// session with this identifier was used, and writes nothing. The current
+	// successor is the session its SuccessorDigest names. It is used when
+	// that successor is stored and was presented (FirstPresentedAt set) or
+	// has been superseded (SupersededAt set). It is unused when it is stored
+	// and neither, when it is no longer stored, and when the session has no
+	// successor. A session that is not stored is ErrSessionNotFound.
+	//
+	// Stored is judged as Load judges it: a record Load would not return is
+	// not stored, whether or not it has been swept. That is a record past its
+	// RetainUntil, and one with no RetainUntil that is past its own
+	// deadlines. The session asked about is then ErrSessionNotFound, and its
+	// successor counts as no longer stored.
+	//
+	// A successor no longer stored counts as unused because an unused
+	// successor's own deadlines end close to its predecessor's, so it is
+	// usually swept by the time its predecessor has ended; reading that as
+	// use would revoke the family of a client that only retried late.
+	//
+	// The Manager asks it when, with WithUnusedSuccessorRecovery on, a
+	// renewal presents a superseded session past its window and past one of
+	// its own deadlines: true is reuse, false is ErrSessionExpired. The read
+	// need not be atomic with anything: nothing is written on the false
+	// branch, so a presentation landing just after it loses only that one
+	// detection.
+	SuccessorPresented(ctx context.Context, id string) (bool, error)
+
 	// Delete removes the session with this identifier. Deleting one that is
 	// not there is not an error: the caller asked for it to be gone, and it
 	// is.
@@ -300,7 +334,11 @@ type Store interface {
 	// ended: the sign-in it belonged to is counted once, by its current head.
 	CountActiveByUser(ctx context.Context, user identity.UserID) (int, error)
 
-	// DeleteExpired removes every expired session and reports how many went.
+	// DeleteExpired removes every expired session and reports how many went:
+	// one that is not superseded once either of its deadlines has passed, and
+	// a superseded one once its RetainUntil has passed, whatever its own
+	// deadlines say, or, with a zero RetainUntil, once one of its own
+	// deadlines has.
 	DeleteExpired(ctx context.Context) (int, error)
 
 	// DeleteByExternalSession removes the sessions matching both issuer and

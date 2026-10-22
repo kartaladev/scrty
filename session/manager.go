@@ -330,11 +330,13 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 
 // Load returns the session with this identifier.
 //
-// A session superseded by RotateWithGrace loads until its grace window ends.
-// Presenting it at or after that is reuse: Load revokes its whole family and
-// returns ErrSessionReused (see there for what a consumer's transaction must
-// do with it). Every endpoint that reaches a session through Load — logout
-// included — therefore gives the same verdict.
+// A session superseded by RotateWithGrace loads until its grace window ends,
+// while its own deadlines are unexpired; inside the window, one past either
+// of them is ErrSessionExpired and nothing is revoked. Presenting it at or
+// after the window's end is reuse, whatever its own deadlines say: Load
+// revokes its whole family and returns ErrSessionReused (see there for what a
+// consumer's transaction must do with it). Every endpoint that reaches a
+// session through Load — logout included — therefore gives the same verdict.
 //
 // With WithUnusedSuccessorRecovery on, a superseded session past its window
 // that names a successor is refused with ErrSessionRenewalRequired instead,

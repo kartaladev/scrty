@@ -179,6 +179,10 @@ A store SHALL report, for a stored superseded session, whether its current succe
 - **WHEN** the store is asked about a session it does not hold
 - **THEN** it fails with the session-not-found error
 
+#### Scenario: Session past its retention deadline
+- **WHEN** session O is superseded by S1 with a retention deadline of 21:00, S1 is presented, and the store is asked about O at 21:00 before any sweep
+- **THEN** it fails with the session-not-found error, as loading O would
+
 ### Requirement: Ending a user's other sessions keeps the presenting sign-in
 Deleting every session of a user except a named one SHALL keep the named session and, when it belongs to a family, the family's current session, the one member not superseded, and SHALL delete every other session of the user, every other member of that family included, in one atomic operation.
 
