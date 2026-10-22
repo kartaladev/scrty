@@ -1339,6 +1339,62 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			name: "named session inside its window keeps its successor and ends an unrelated session",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				unrelated := sessionRecord("sess-t", "u-1")
+				foreign := sessionRecord("sess-f", "u-2")
+				createSessions(ctx, t, s, old, unrelated, foreign)
+				successor := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+
+				n, err := s.DeleteByUserExcept(ctx, "u-1", old.ID)
+				require.NoError(t, err)
+
+				assert.Equal(t, 1, n, "only the unrelated session goes")
+				assertSessionsGone(ctx, t, s, unrelated.ID)
+				assertSessionsLoad(ctx, t, s,
+					supersededAs(old, successor.ID, suiteStart, suiteStart.Add(30*time.Second)), successor, foreign)
+			},
+		},
+		{
+			name: "named current session ends its superseded predecessor",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				unrelated := sessionRecord("sess-t", "u-1")
+				createSessions(ctx, t, s, old, unrelated)
+				successor := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+
+				n, err := s.DeleteByUserExcept(ctx, "u-1", successor.ID)
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n, "the superseded predecessor and the unrelated session go")
+				assertSessionsGone(ctx, t, s, old.ID, unrelated.ID)
+				assertSessionsLoad(ctx, t, s, successor)
+			},
+		},
+		{
+			// Review Focus: a family whose current member was deleted after
+			// a knock-out has no member that is not superseded, so nothing
+			// but the named session is kept.
+			name: "a named session whose family has no current member is kept alone",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
+				old := familySession("sess-a", "u-1", suiteID(1))
+				unrelated := sessionRecord("sess-t", "u-1")
+				createSessions(ctx, t, s, old, unrelated)
+				first := rotate(ctx, t, s, old, "sess-b", nil, suiteStart)
+				again := suiteStart.Add(10 * time.Second)
+				second := rotate(ctx, t, s, old, "sess-c", sessionDigest(first.ID), again)
+				require.NoError(t, s.Delete(ctx, second.ID))
+
+				n, err := s.DeleteByUserExcept(ctx, "u-1", first.ID)
+				require.NoError(t, err)
+
+				assert.Equal(t, 2, n, "the superseded old session and the unrelated session go")
+				assertSessionsGone(ctx, t, s, old.ID, second.ID, unrelated.ID)
+				assertSessionsLoad(ctx, t, s, knockedOutAs(first, again, sessionRetainUntil))
+			},
+		},
+		{
 			name: "re-rotation observing a successor already superseded is refused and writes nothing",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old := familySession("sess-a", "u-1", suiteID(1))
@@ -2302,4 +2358,43 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 			},
 		},
 	}
+}
+
+// RunSessionDeleteExceptNilFamily checks that DeleteByUserExcept naming a
+// session in no family, the all-zero family, keeps that session alone and
+// does not read the nil family as a family whose current member is kept.
+//
+// The case stores two sessions of one user, moves both rows to the all-zero
+// family through h.Raw, bypassing Create's refusal of it, and deletes except
+// one of them: the other must go.
+//
+// It fails at once, naming every missing input, when h is missing one.
+func RunSessionDeleteExceptNilFamily[S session.Store](t *testing.T, h DurableHarness[S]) {
+	t.Helper()
+
+	h.Require(t)
+
+	t.Run("a kept session in no family keeps itself alone", func(t *testing.T) {
+		s := h.New(t)
+		user := identity.UserID("nil-family-except-user")
+		keep := familySession("nil-family-except-keep", user, suiteID(2501))
+		other := familySession("nil-family-except-other", user, suiteID(2502))
+		require.NoError(t, s.Create(t.Context(), keep))
+		require.NoError(t, s.Create(t.Context(), other))
+		for _, sess := range []*session.Session{keep, other} {
+			_, err := h.Raw.ExecContext(t.Context(),
+				`UPDATE sessions SET family_id = '00000000-0000-0000-0000-000000000000' WHERE id_digest = $1`,
+				sessionDigest(sess.ID))
+			require.NoError(t, err)
+		}
+
+		n, err := s.DeleteByUserExcept(t.Context(), user, keep.ID)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, n, "the other session of the nil family goes")
+		_, err = s.Load(t.Context(), other.ID)
+		assert.ErrorIs(t, err, session.ErrSessionNotFound, "the nil family's other current session survived")
+		_, err = s.Load(t.Context(), keep.ID)
+		assert.NoError(t, err, "the named session must be kept")
+	})
 }

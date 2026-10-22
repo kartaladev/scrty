@@ -70,9 +70,8 @@ FROM sessions WHERE id_digest = $1`
 	// successor is loadable and was presented or has been superseded, false
 	// when it is not loadable, is not stored, or the session has none (the
 	// join then yields NULLs, and the expression false). Both are judged by
-	// sessionLoadable. No row
-	// means the session itself is not loadable at $2, which reads as a
-	// missing session. It writes nothing.
+	// sessionLoadable. No row means the session itself is not loadable at $2,
+	// which reads as a missing session. It writes nothing.
 	SessionSuccessorPresented = `SELECT s.first_presented_at IS NOT NULL OR s.superseded_at IS NOT NULL
 FROM sessions o
 LEFT JOIN sessions s ON s.id_digest = o.successor_digest AND ` + sessionLoadableS + `
@@ -108,11 +107,12 @@ WHERE id_digest = $1 AND last_accessed_at <= $4 AND superseded_at IS NULL`
 	// with its window ending at $4 and $5 as its successor's digest, and keeps
 	// it for reuse detection until the later of its stored retention deadline
 	// and $6 (NULL for none), never lowering it. It leaves both of the row's
-	// own deadlines alone. It does so provided it is in a family, its stored successor digest is still $2 (NULL for none), and,
-	// when $2 is NULL, it is not superseded already: a superseded session is
-	// superseded again only through its observed successor, and one with no
-	// successor was knocked out of its chain, so renewing it as a fresh head
-	// would give the family a second live head. Zero rows affected means it is missing, in no
+	// own deadlines alone. It does so provided it is in a family, its stored
+	// successor digest is still $2 (NULL for none), and, when $2 is NULL, it
+	// is not superseded already: a superseded session is superseded again
+	// only through its observed successor, and one with no successor was
+	// knocked out of its chain, so renewing it as a fresh head would give the
+	// family a second live head. Zero rows affected means it is missing, in no
 	// family, or its successor is not the one observed; SessionSupersedeRefusal
 	// tells which. This conditional update is what decides concurrent
 	// supersessions: a second one waits on the row locks the first took, in
@@ -135,9 +135,10 @@ WHERE id_digest = $1 AND successor_digest IS NOT DISTINCT FROM $2
 	// ending at $2, and keeps it for reuse detection until the later of its
 	// stored retention deadline and $4 (NULL for none), never lowering it and
 	// leaving both of its own deadlines alone, provided it is not superseded
-	// already and, when $3 is true, has never been presented. Zero rows affected means that successor has moved on: it is
-	// superseded, presented when $3 requires it not to be, or no longer
-	// stored; the supersession is refused and rolled back.
+	// already and, when $3 is true, has never been presented. Zero rows
+	// affected means that successor has moved on: it is superseded, presented
+	// when $3 requires it not to be, or no longer stored; the supersession is
+	// refused and rolled back.
 	//
 	// It runs after SessionLockSupersession and SessionSupersedeOld. Under READ
 	// COMMITTED a supersession that waited on the successor's row lock, in
@@ -184,9 +185,29 @@ DELETE FROM sessions WHERE id IN (SELECT id FROM doomed)`
 	// SessionDeleteByUser removes every session of user $1, expired or not.
 	SessionDeleteByUser = `DELETE FROM sessions WHERE user_id = $1`
 
-	// SessionDeleteByUserExcept removes every session of user $1 except the
-	// one with digest $2, expired or not.
-	SessionDeleteByUserExcept = `DELETE FROM sessions WHERE user_id = $1 AND id_digest <> $2`
+	// SessionDeleteByUserExcept removes every session of user $1, expired or
+	// not, except the one with digest $2 and, when user $1 holds it, its
+	// family's current member, the one with no superseded_at. Every other
+	// member of that family goes, superseded ones included.
+	//
+	// The kept family is read by a subquery that yields NULL when user $1
+	// holds no session with digest $2. IS DISTINCT FROM reads that NULL as
+	// "no family is kept", so every other session of the user goes; a
+	// comparison with = would be NULL there, and NOT of it NULL too, which
+	// would keep every current session of the user. The all-zero family,
+	// which no supported write produces, is no family either: a session in
+	// it keeps itself alone, not every other session of the user in it.
+	//
+	// It is one statement, so the family is read on the same snapshot the
+	// delete runs on: a successor a supersession commits after that snapshot
+	// was taken is not visible to it, and so is not deleted.
+	SessionDeleteByUserExcept = `DELETE FROM sessions
+WHERE user_id = $1
+  AND id_digest <> $2
+  AND (superseded_at IS NOT NULL
+       OR family_id IS DISTINCT FROM (SELECT family_id FROM sessions
+         WHERE id_digest = $2 AND user_id = $1
+           AND family_id <> '00000000-0000-0000-0000-000000000000'))`
 
 	// SessionCountActive counts user $1's sessions unexpired at $2: both
 	// deadlines strictly after it, and not superseded.

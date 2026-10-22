@@ -329,4 +329,5 @@ func TestSessionSupersedeRefusesNilFamily(t *testing.T) {
 	})
 
 	t.Run("pgx", func(t *testing.T) { storetest.RunSessionSupersedeRefusesNilFamily(t, h) })
+	t.Run("pgx except", func(t *testing.T) { storetest.RunSessionDeleteExceptNilFamily(t, h) })
 }

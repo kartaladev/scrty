@@ -157,7 +157,7 @@ Read the design and the spec deltas your task names before starting it. Plan tas
    - Expected: refused as well; the nil-family rule is about the session, not the result.
    - Test: added to task 10.5.
 10. **A renewal racing a passkey removal's cut** inside one store.
-   - Expected: the cut and the supersession serialise on the store's lock (memory) or row locks (durable), so the result is either "S1 kept as the current session" or "the cut ran first and O's renewal then finds O gone (not found)", never both O and S1 deleted while the request that removed the passkey holds O.
+   - Expected: the cut and the supersession serialise on the store's lock (memory) or row locks (durable), so the renewal succeeds and both O and S1 survive the cut in either order (the cut never deletes the session it names, so O's renewal cannot find O gone), and never both O and S1 deleted while the request that removed the passkey holds O.
    - Test: added to task 10.4 as a race-suite case run `-race -count=20`.
 11. **An ended predecessor renewed under recovery whose successor's first presentation lands at the same moment.**
    - Expected: either outcome is acceptable (reuse or expired), nothing is written on the expired branch, and the successor stays usable by its own window and deadlines; never a successor issued for the ended predecessor.
@@ -957,9 +957,10 @@ The durable statement, one statement so a supersession committing between a read
 DELETE FROM sessions
 WHERE user_id = $1
   AND id_digest <> $2
-  AND NOT (family_id = (SELECT family_id FROM sessions WHERE id_digest = $2 AND user_id = $1)
-           AND superseded_at IS NULL)
+  AND (superseded_at IS NOT NULL
+       OR family_id IS DISTINCT FROM (SELECT family_id FROM sessions WHERE id_digest = $2 AND user_id = $1))
 ```
+(Corrected after dispatch K1: the first form, `NOT (family_id = (…) AND superseded_at IS NULL)`, kept every live session when `keep` names no session of the user, because the subquery is NULL; three existing conformance cases failed on it.)
 
 - [ ] **Step 1 (red):** copy the passkey test in. Add the conformance cases: "named session inside its window keeps its successor and ends an unrelated session" (returns 1), "named current session ends its superseded predecessor", "a named session whose family has no current member is kept alone", with broken variants "keeps only the named session" and "keeps the whole family". Add the race-suite case: a renewal of O and a cut naming O interleave 20 times under `-race`; afterwards at least one of O and its successor loads. Run `go test -count=1 -run 'TestRemove_EndsOtherSessionsByFamily' ./passkey/` and the memory runner. Expected: FAIL (the successor is deleted).
 - [ ] **Step 2 (green):** the memory store applies the rule under its lock using its family index; the durable stores use the statement above. Update the godoc. Run `go test -race -count=1 ./passkey/... ./session/...`, the session and race suites on every backend on PostgreSQL 18 and 15, and `(cd test && go test -count=1 -run 'Conformance' ./...)`.

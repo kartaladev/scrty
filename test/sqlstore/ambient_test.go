@@ -330,4 +330,5 @@ func TestSessionSupersedeRefusesNilFamily(t *testing.T) {
 	})
 
 	t.Run("sqlstore", func(t *testing.T) { storetest.RunSessionSupersedeRefusesNilFamily(t, h) })
+	t.Run("sqlstore except", func(t *testing.T) { storetest.RunSessionDeleteExceptNilFamily(t, h) })
 }

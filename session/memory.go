@@ -332,15 +332,38 @@ func (s *MemoryStore) DeleteByUser(_ context.Context, user identity.UserID) erro
 }
 
 // DeleteByUserExcept removes every session of this user except the one with
-// identifier keep, expired ones included, and reports how many went. It runs
-// under the store's lock, so a session created concurrently is either removed
-// or created after the call.
+// identifier keep and its family's current session, the member not
+// superseded, expired ones included, and reports how many went. Every other
+// member of keep's family goes, superseded ones included. It runs under the
+// store's lock, so a session created or superseded concurrently is either
+// judged by this rule or written after the call.
 //
 // A keep naming another user's session, or none, leaves it untouched and
 // removes every session of this user; an empty keep names none. The reference
 // is compared byte-for-byte, as DeleteByUser compares it.
 func (s *MemoryStore) DeleteByUserExcept(_ context.Context, user identity.UserID, keep string) (int, error) {
-	return s.removeWhere(func(rec *Session) bool { return rec.UserID == user && rec.ID != keep }), nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	kept := map[string]struct{}{keep: {}}
+	if rec, found := s.records[keep]; found && rec.UserID == user && !rec.FamilyID.IsZero() {
+		for member := range s.byFamily[rec.FamilyID] {
+			if s.records[member].SupersededAt.IsZero() {
+				kept[member] = struct{}{}
+			}
+		}
+	}
+
+	var removed int
+	for sessionID, rec := range s.records {
+		if _, keepIt := kept[sessionID]; keepIt || rec.UserID != user {
+			continue
+		}
+		s.deleteLocked(sessionID)
+		removed++
+	}
+
+	return removed, nil
 }
 
 // CountActiveByUser counts this user's unexpired sessions that are not

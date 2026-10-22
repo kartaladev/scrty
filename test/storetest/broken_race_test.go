@@ -254,6 +254,8 @@ var enrolmentRaceVariants = []brokenVariant{
 	},
 }
 
+const cutCase = "a cut naming a session racing its renewal keeps the renewed sign-in"
+
 const supersedeCase = "exactly one supersession wins per session"
 
 // supersedeVariant races supersessions of each session against a store
@@ -281,12 +283,19 @@ func supersedeStore(d sessionDefect) func() *sessionStore {
 var readThenWriteSupersede = supersedeVariant("race-supersede-read-then-write",
 	supersedeStore(sessionReadThenWriteSupersede), supersedeCase, "more than one successful supersession")
 
+// readThenDeleteExcept is a store whose cut reads the family's current
+// member, then deletes in a separate step: a renewal landing between the two
+// loses its successor to the cut.
+var readThenDeleteExcept = supersedeVariant("race-cut-read-then-delete",
+	supersedeStore(sessionExceptReadThenDelete), cutCase, "must still load")
+
 // sessionRaceVariants race supersessions: the shipped memory store and the
 // conforming fake must pass, and the read-then-write fake must fail.
 var sessionRaceVariants = []brokenVariant{
 	supersedeVariant("race-supersede-memory", func() *session.MemoryStore { return session.NewMemoryStore() }, "", ""),
 	supersedeVariant("race-supersede-conforming", supersedeStore(sessionConforming), "", ""),
 	readThenWriteSupersede,
+	readThenDeleteExcept,
 }
 
 // raceVariants are the race suites' variants: the single-use races' below,

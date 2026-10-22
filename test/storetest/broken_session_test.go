@@ -30,6 +30,18 @@ const (
 	// DeleteByUserExcept ignores the identifier to keep and deletes every
 	// session of the user.
 	sessionExceptDeletesAll sessionDefect = "except-deletes-kept"
+	// DeleteByUserExcept keeps the named session alone, as a delete of every
+	// other identifier would, so the live successor of a named session inside
+	// its renewal window goes.
+	sessionExceptKeepsOnlyNamed sessionDefect = "except-keeps-only-named"
+	// DeleteByUserExcept keeps every member of the named session's family,
+	// superseded ones included, as a delete of every other family would.
+	sessionExceptKeepsWholeFamily sessionDefect = "except-keeps-whole-family"
+	// DeleteByUserExcept reads the named session's family's current member,
+	// releases the lock, and deletes in a separate step, as a store reading
+	// the family before a DELETE would: a successor written in between is
+	// not the one it read, and goes.
+	sessionExceptReadThenDelete sessionDefect = "except-read-then-delete"
 	// Save writes a partial column list: the activity and second-factor
 	// fields and Data, keeping the stored user, creation time, first factor,
 	// absolute deadline and provider fields.
@@ -526,7 +538,51 @@ func (s *sessionStore) DeleteByUserExcept(_ context.Context, user identity.UserI
 	if s.defect == sessionExceptDeletesAll {
 		keep = ""
 	}
-	return s.removeWhere(func(sess *session.Session) bool { return sess.UserID == user && sess.ID != keep }), nil
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// kept is the named session's family, when the user holds it: its
+	// current member is kept with it, or, under the whole-family defect,
+	// every member.
+	var family *id.ID
+	if rec, found := s.records[keep]; found && rec.UserID == user && s.defect != sessionExceptKeepsOnlyNamed {
+		family = &rec.FamilyID
+	}
+
+	// current is the family's current member as read, which the
+	// read-then-delete defect keeps in place of the member at delete time.
+	var current string
+	if s.defect == sessionExceptReadThenDelete && family != nil {
+		for _, sess := range s.records {
+			if sess.UserID == user && sess.FamilyID == *family && sess.SupersededAt.IsZero() {
+				current = sess.ID
+			}
+		}
+		// The window between the read and the delete that a real store's
+		// round trips open.
+		s.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		s.mu.Lock()
+	}
+
+	n := 0
+	for key, sess := range s.records {
+		if sess.UserID != user || sess.ID == keep {
+			continue
+		}
+		if s.defect == sessionExceptReadThenDelete {
+			if family != nil && sess.ID == current {
+				continue
+			}
+		} else if family != nil && sess.FamilyID == *family &&
+			(sess.SupersededAt.IsZero() || s.defect == sessionExceptKeepsWholeFamily) {
+			continue
+		}
+		delete(s.records, key)
+		n++
+	}
+	return n, nil
 }
 
 func (s *sessionStore) CountActiveByUser(_ context.Context, user identity.UserID) (int, error) {

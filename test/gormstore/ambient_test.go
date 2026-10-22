@@ -333,4 +333,5 @@ func TestSessionSupersedeRefusesNilFamily(t *testing.T) {
 	})
 
 	t.Run("gorm", func(t *testing.T) { storetest.RunSessionSupersedeRefusesNilFamily(t, h) })
+	t.Run("gorm except", func(t *testing.T) { storetest.RunSessionDeleteExceptNilFamily(t, h) })
 }

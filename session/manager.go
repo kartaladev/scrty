@@ -502,9 +502,11 @@ func (m *Manager) DeleteByUser(ctx context.Context, user identity.UserID) error 
 }
 
 // DeleteByUserExcept removes every session of this user except the one with
-// identifier keep, expired ones included, in one atomic operation, and reports
-// how many went. It is what ending a user's other sessions, after a change to
-// how they sign in, is written against: the caller's own session survives.
+// identifier keep and, when keep belongs to a family, that family's current
+// session (the member not superseded), expired ones included, in one atomic
+// operation, and reports how many went. It is what ending a user's other
+// sessions, after a change to how they sign in, is written against: the
+// caller's sign-in survives even when keep was renewed inside its window.
 //
 // A keep naming another user's session, or none, is left untouched and every
 // session of this user goes; an empty keep ends them all.

@@ -19,7 +19,10 @@ type SessionRevoker interface {
 	// DeleteByUser ends every session of user.
 	DeleteByUser(ctx context.Context, user identity.UserID) error
 	// DeleteByUserExcept ends every session of user but the one with
-	// identifier keep, and reports how many it ended.
+	// identifier keep and, when keep was renewed, its family's current
+	// session, and reports how many it ended. The removing sign-in survives
+	// whichever of its identifiers the request presented; its other,
+	// superseded sessions end with the user's other sign-ins.
 	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
 }
 

@@ -321,10 +321,17 @@ type Store interface {
 	DeleteByUser(ctx context.Context, user identity.UserID) error
 
 	// DeleteByUserExcept removes every session of this user except the one with
-	// identifier keep, expired ones included, in one atomic operation, and reports
-	// how many it removed. A keep that names another user's session, or none, is
-	// left untouched and does not stop the user's sessions from being removed; an
-	// empty keep removes them all.
+	// identifier keep and, when keep belongs to a family, that family's current
+	// session (the member with no SupersededAt), expired ones included, in one
+	// atomic operation, and reports how many it removed. Every other member of
+	// keep's family goes, superseded ones included, so a keep inside its
+	// renewal window keeps its live successor and a keep that is the current
+	// session ends its predecessors. A supersession racing the call must either
+	// be judged by this rule or written after it: a store that reads the
+	// family first and deletes after loses a successor committed in between.
+	// A keep that names another user's session, or none, is left untouched and
+	// does not stop the user's sessions from being removed; an empty keep
+	// removes them all.
 	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
 
 	// CountActiveByUser counts this user's unexpired sessions. Expired ones

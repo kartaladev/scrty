@@ -296,10 +296,14 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 }
 
 // DeleteByUserExcept removes every session of user except the one named by
-// keep, expired ones included, and reports how many it removed. keep is
-// compared by its digest, as Delete's identifier is, so one no store could
-// hold names no session and every session of the user goes. A user reference
-// PostgreSQL text cannot hold matches nothing.
+// keep and, when user holds keep, its family's current session, expired ones
+// included, and reports how many it removed. Every other member of keep's
+// family goes, superseded ones included. It is one statement, so a successor
+// a concurrent supersession commits after the statement's snapshot is neither
+// read nor deleted by it. keep is compared by its digest, as Delete's
+// identifier is, so one no store could hold names no session and every
+// session of the user goes. A user reference PostgreSQL text cannot hold
+// matches nothing.
 func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
@@ -424,9 +428,10 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 // previous successor are kept for reuse detection until the later of their
 // stored retention deadline and op.RetainUntil, never lowered, so the sweep
 // removes them only once their family could no longer be live; neither has
-// its own deadlines changed. A zero op.RetainUntil adds no deadline: a record that
-// had none keeps none, and is judged by its own deadlines. No other session of the family is read or
-// written, however many renewals came before.
+// its own deadlines changed. A zero op.RetainUntil adds no deadline: a record
+// that had none keeps none, and is judged by its own deadlines. No other
+// session of the family is read or written, however many renewals came
+// before.
 //
 // Two rules refuse a supersession whatever it observed. A session in no
 // family, the nil family, is refused with an error, since every family-less
