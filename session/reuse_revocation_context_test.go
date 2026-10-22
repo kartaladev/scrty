@@ -51,6 +51,8 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 
 	type testCase struct {
 		name string
+		// opts are manager options the case adds to the store and the clock.
+		opts []session.ManagerOption
 		// expect wires the store; cancel is the presenting request hanging up,
 		// which each case calls once the store has answered the read.
 		expect func(store *MockStore, cancel context.CancelFunc, seen *error)
@@ -127,6 +129,32 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 			},
 			assert: revoked,
 		},
+		{
+			name: "renewal of an ended session whose successor was used",
+			opts: []session.ManagerOption{session.WithUnusedSuccessorRecovery()},
+			expect: func(store *MockStore, cancel context.CancelFunc, seen *error) {
+				store.EXPECT().Load(gomock.Any(), sid).DoAndReturn(func(context.Context, string) (*session.Session, error) {
+					cancel()
+					s := supersededPastWindow(sid)
+					s.IdleExpiresAt = createdAt.Add(-time.Minute)
+
+					return s, nil
+				}).Times(1)
+				store.EXPECT().SuccessorPresented(gomock.Any(), sid).DoAndReturn(func(ctx context.Context, _ string) (bool, error) {
+					if err := ctx.Err(); err != nil {
+						return false, err
+					}
+
+					return true, nil
+				}).Times(1)
+				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(honouringDeleteFamily(seen)).Times(1)
+			},
+			call: func(ctx context.Context, m *session.Manager) error {
+				_, err := m.LoadForRenewal(ctx, sid)
+				return err
+			},
+			assert: revoked,
+		},
 	}
 
 	for _, tc := range cases {
@@ -139,7 +167,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 			var seen error
 			store := NewMockStore(gomock.NewController(t))
 			tc.expect(store, cancel, &seen)
-			m := managerFor(t, session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt)))
+			m := managerFor(t, append([]session.ManagerOption{session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt))}, tc.opts...)...)
 
 			err := tc.call(ctx, m)
 			tc.assert(t, err, seen)

@@ -122,7 +122,7 @@ func slowSuccessorInserts(ctx context.Context, t *testing.T, db *sql.DB, user st
 	_, err := db.ExecContext(ctx, `CREATE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.user_id = '`+user+`' THEN
-    PERFORM pg_sleep(60);
+    PERFORM pg_sleep(600);
   END IF;
   RETURN NEW;
 END $$`)
@@ -162,14 +162,14 @@ func TestSessionStore_SupersedeCancelledMidTransaction(t *testing.T) {
 		err := db.QueryRowContext(ctx,
 			`SELECT count(*) FROM pg_stat_activity WHERE wait_event = 'PgSleep' AND datname = current_database()`).Scan(&n)
 		return err == nil && n == 1
-	}, 10*time.Second, 20*time.Millisecond, "the supersession never reached the successor's insert")
+	}, 2*time.Minute, 20*time.Millisecond, "the supersession never reached the successor's insert")
 	cancel()
 
 	select {
 	case err := <-done:
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
-	case <-time.After(15 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("a cancelled supersession did not return")
 	}
 

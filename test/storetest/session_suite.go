@@ -2346,6 +2346,23 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 			},
 		},
 		{
+			name: "a successor past its own deadlines, unswept, reads as unused",
+			assert: func(t *testing.T, ctx context.Context, s session.Store, clk *clockwork.FakeClock) {
+				old, successor := chain(ctx, t, s)
+				require.NoError(t, s.MarkPresented(ctx, successor.ID, suiteStart.Add(time.Minute)))
+				// Past the successor's idle and absolute deadlines, before the
+				// retention deadline that keeps the predecessor, and no sweep.
+				clk.Advance(suiteStart.Add(sessionAbsolute + time.Hour).Sub(clk.Now()))
+				require.True(t, clk.Now().Before(sessionRetainUntil))
+
+				for range 2 {
+					used, err := s.SuccessorPresented(ctx, old.ID)
+					require.NoError(t, err)
+					assert.False(t, used, "a successor past its own deadlines is judged as Load would, so it was not used")
+				}
+			},
+		},
+		{
 			name: "whether an unknown session's successor was used is not found",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
 				old, successor := chain(ctx, t, s)

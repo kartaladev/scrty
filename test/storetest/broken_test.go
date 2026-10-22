@@ -144,6 +144,7 @@ var portableVariants = []brokenVariant{
 		"marking a superseded session's first presentation returns the superseded-session error and writes nothing"),
 	sessionVariant(sessionSuccessorGoneAsUsed, "successor deleted reads as unused"),
 	sessionVariant(sessionSuccessorReadsStaleRecord, "a record past its retention deadline is not stored, swept or not"),
+	sessionVariant(sessionSuccessorIgnoresStaleness, "a successor past its own deadlines, unswept, reads as unused"),
 	{
 		name: "session-" + string(sessionCreateRefusesEchoing),
 		run: func(t *testing.T) {

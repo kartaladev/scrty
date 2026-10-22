@@ -352,7 +352,9 @@ func (m *Manager) judge(ctx context.Context, s *Session, now time.Time, p purpos
 // refused either way, and revoking on a failed read would sign out a client
 // whose successor may never have been used.
 func (m *Manager) ended(ctx context.Context, s *Session, now time.Time) error {
-	used, err := m.store.SuccessorPresented(ctx, s.ID)
+	// Detached so a client hanging up cannot turn a reuse verdict into a
+	// refusal that revokes nothing; values are kept, as in reuse.
+	used, err := m.store.SuccessorPresented(context.WithoutCancel(ctx), s.ID)
 	if err != nil {
 		return storeFailed(err, "session: whether the session's successor was used could not be read")
 	}

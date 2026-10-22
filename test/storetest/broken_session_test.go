@@ -217,6 +217,10 @@ const (
 	// that has not been swept, as a query without the staleness predicate
 	// Load applies would.
 	sessionSuccessorReadsStaleRecord sessionDefect = "successor-reads-stale-record"
+	// SuccessorPresented counts a successor past its own deadlines that has
+	// not been swept as used, as a query that does not judge the successor
+	// as Load does would.
+	sessionSuccessorIgnoresStaleness sessionDefect = "successor-ignores-staleness"
 )
 
 // unstorableText reports whether v holds what a PostgreSQL text column
@@ -869,7 +873,10 @@ func (s *sessionStore) SuccessorPresented(_ context.Context, sessionID string) (
 		return false, nil
 	}
 	successor := s.successorOf(stored)
-	if successor == nil || staleSession(successor, now, false) {
+	if successor == nil {
+		return s.defect == sessionSuccessorGoneAsUsed, nil
+	}
+	if s.defect != sessionSuccessorIgnoresStaleness && staleSession(successor, now, false) {
 		return s.defect == sessionSuccessorGoneAsUsed, nil
 	}
 	return !successor.FirstPresentedAt.IsZero() || !successor.SupersededAt.IsZero(), nil
