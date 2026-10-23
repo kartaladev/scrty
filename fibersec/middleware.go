@@ -49,6 +49,14 @@ import (
 // the request, as it does under net/http. fiber's own request context is not
 // cancelled or replaced for code outside the chain.
 //
+// A route behind the chain reads a context that carries every value the chain
+// added, while its deadline and cancellation are those of fiber's own context
+// as this handler found it. The chain's end-of-request cancellation does not
+// reach it, so a body the route streams with SendStreamWriter, which fiber
+// writes after the handlers return, still sees a live request context while it
+// is written, and a deadline or cancellation that middleware outside the chain
+// set before it keeps bounding the route.
+//
 // A client that disconnects mid-request is not detected on fiber. fasthttp
 // gives the handler no disconnect signal: its RequestCtx.Done() fires only at
 // server shutdown. The chain's context therefore ends when the request's
@@ -73,11 +81,20 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		// route's to answer and is not a refusal of the request.
 		var nextErr error
 
+		outer := fc.Context()
+
 		//nolint:contextcheck // ex.Context() derives from fc.Context(), which is what is written back here
 		run := chain.Assemble(func(ex *httpsec.Exchange) error {
 			// Written back before the remaining fiber handlers run, so a route
 			// reads the caller and the session through c.Context() as usual.
-			fc.SetContext(ex.Context())
+			//
+			// The chain's own context ends when this handler returns, but the
+			// route's must not: fiber writes a streamed body after the handlers
+			// have returned, so the route would see "context canceled" while it
+			// is still writing. The route's context therefore reads values from
+			// the chain's context but its deadline and cancellation from
+			// fiber's original one, so an upstream timeout still bounds it.
+			fc.SetContext(routeContext{Context: outer, chain: ex.Context()})
 
 			nextErr = fc.Next()
 
@@ -90,8 +107,6 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		// ServeHTTP returns; fiber's own context is never cancelled, and it is
 		// put back before the cancel so what runs outside the chain reads it
 		// as it was.
-		outer := fc.Context()
-
 		ctx, cancel := context.WithCancel(outer)
 		defer func() {
 			fc.SetContext(outer)
@@ -118,4 +133,28 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		// second one over the first.
 		return nil
 	}
+}
+
+// routeContext is the request context a route behind the chain reads. Values
+// are looked up on the chain's context first, so the caller, the session and
+// anything an interceptor added are visible, and then on fiber's original
+// context. Deadline, Done and Err come only from the embedded original context:
+// the chain's context is cancelled when the middleware returns, which is before
+// fiber writes a streamed body, and taking its cancellation would end the route's
+// context while it is still writing. Taking fiber's original one instead keeps
+// whatever bounded the request before the chain, such as a timeout an outer
+// fiber middleware set.
+type routeContext struct {
+	context.Context
+
+	chain context.Context
+}
+
+// Value reads the chain's context before fiber's original one.
+func (c routeContext) Value(key any) any {
+	if v := c.chain.Value(key); v != nil {
+		return v
+	}
+
+	return c.Context.Value(key)
 }

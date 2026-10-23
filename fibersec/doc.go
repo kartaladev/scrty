@@ -38,6 +38,11 @@
 // fasthttp's RequestCtx.Done() fires only at server shutdown, so the chain's
 // context ends when the request's handling ends, not earlier. fiber's own
 // request context is never cancelled or replaced for code outside the chain.
+// A route behind the chain reads the values the chain added through a context
+// whose deadline and cancellation are fiber's own, as found on entry. The
+// chain's end-of-request cancellation does not reach it, so a body it streams
+// after the handlers return still sees a live request context, and a timeout
+// that middleware outside the chain set keeps bounding the route.
 //
 // # Refusals
 //
