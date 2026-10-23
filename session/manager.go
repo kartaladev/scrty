@@ -357,16 +357,20 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 // time of the mark is ErrSessionNotFound. Any other failure to record the
 // mark is logged at debug and the session is read again and judged the same
 // way, since the mark may have lost the race before the failure was
-// reported; if that read fails too, the load fails.
+// reported; if that read fails too, the load fails. With
+// WithUnusedSuccessorRecovery such a failure fails the load at once (it is
+// still logged at debug), because a session served with its first use
+// unrecorded could later be judged an unused successor and recovered; leave
+// recovery off to serve it.
 func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
 	return m.load(ctx, id, forRequest)
 }
 
 // load is Load and LoadForRenewal, which differ only in p.
 func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, error) {
-	s, err := m.store.Load(ctx, id)
+	s, err := m.loadStored(ctx, id, "session: the session could not be loaded")
 	if err != nil {
-		return nil, storeFailed(err, "session: the session could not be loaded")
+		return nil, err
 	}
 
 	now := m.clock.Now()
@@ -375,8 +379,29 @@ func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, err
 	}
 	if !s.superseded() && s.FirstPresentedAt.IsZero() {
 		if err := m.markPresented(ctx, s, now); err != nil {
+			if m.unusedSuccessorRecovery && !errors.Is(err, ErrSessionSuperseded) &&
+				!errors.Is(err, ErrSessionNotFound) {
+				return nil, storeFailed(err, "session: the session's first presentation could not be recorded")
+			}
+
 			return m.reloadSuperseded(ctx, id, p, err)
 		}
+	}
+
+	return s, nil
+}
+
+// loadStored reads the session with this identifier from the store. A store
+// that answers with neither a session nor an error is read as ErrSessionNotFound,
+// so no caller dereferences it; any other failure is a store failure carrying
+// text.
+func (m *Manager) loadStored(ctx context.Context, id, text string) (*Session, error) {
+	s, err := m.store.Load(ctx, id)
+	if err != nil {
+		return nil, storeFailed(err, text)
+	}
+	if s == nil {
+		return nil, ErrSessionNotFound
 	}
 
 	return s, nil
@@ -385,7 +410,8 @@ func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, err
 // reloadSuperseded answers a load whose mark failed with err:
 // ErrSessionNotFound when the session is gone, and for any other failure,
 // ErrSessionSuperseded included, the verdict on the session read again. A
-// failure that is not a refusal is read again too, because the mark may have
+// failure that is not a refusal is read again too when recovery is off (with
+// it on, load fails on such a failure before calling this), because the mark may have
 // reached the store and lost the race to a recovery before the failure was
 // reported; serving the session unmarked would leave this request
 // authenticated by a successor the recovery just superseded. If the read
@@ -409,9 +435,9 @@ func (m *Manager) reloadSuperseded(ctx context.Context, id string, p purpose, er
 		return nil, ErrSessionNotFound
 	}
 
-	again, err := m.store.Load(ctx, id)
+	again, err := m.loadStored(ctx, id, "session: the session could not be loaded")
 	if err != nil {
-		return nil, storeFailed(err, "session: the session could not be loaded")
+		return nil, err
 	}
 	if err := m.judge(ctx, again, m.clock.Now(), p); err != nil {
 		return nil, err
@@ -693,9 +719,9 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	unlock := m.rotating.lock(s.ID)
 	defer unlock()
 
-	stored, err := m.store.Load(ctx, s.ID)
+	stored, err := m.loadStored(ctx, s.ID, "session: the session to rotate could not be loaded")
 	if err != nil {
-		return nil, storeFailed(err, "session: the session to rotate could not be loaded")
+		return nil, err
 	}
 	now := m.clock.Now()
 	if stored.superseded() && stored.insideWindow(now) {

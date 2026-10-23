@@ -160,6 +160,9 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 	if err != nil {
 		return nil, storeFailed(err, "session: the inner store could not load the session")
 	}
+	if sess == nil {
+		return nil, ErrSessionNotFound
+	}
 	if sess.ExternalIDToken == "" {
 		return sess, nil
 	}
