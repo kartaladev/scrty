@@ -48,6 +48,13 @@ this change contributes under `Unreleased`, in Keep a Changelog 1.1.0 sections. 
 - Signing keys: construction, reload and housekeeping share one publishing rule; a future-dated key
   never signs.
 
+- Policies deny a zero `Input.Now` (idle timeout, password age, enrolment path) and `Engine.EvaluatePhase` denies a nil input; they allowed before.
+- A nested `authenticate.Manager` whose delegates skip lets the outer manager try its next delegate.
+- Default login, magic-link, MFA begin and verify, and passkey login responses carry `Cache-Control: no-store`.
+- A WebAuthn backed-up state without backup eligibility is refused at registration and assertion.
+- SMTP bodies normalise bare CR and bare LF to CRLF.
+- New sentinels: `password.ErrPasswordContainsNUL`, `policy.ErrAttemptStoreFull`, `onetime.ErrIssueLimitReached`, `apikey.ErrRotationRefused`, `session.ErrDeleteDidNotSettle`, `storeerr.ErrIsolationTooStrong`.
+
 ## Added
 
 - Package `storeerr`, holding errors every durable store backend shares.
@@ -68,3 +75,7 @@ this change contributes under `Unreleased`, in Keep a Changelog 1.1.0 sections. 
 - `pgx/go.mod` and `gorm/go.mod` require a root-module version that predates `storeerr`,
   `session.ErrDeleteDidNotSettle` and the new store ports. The workspace hides this; the
   requirements must be bumped to the tagged root version (`release-readiness` task 2.x).
+- `layout_test.go` and `layout_guard_test.go` already scan every module `go.work` lists except
+  `./test` (`workspaceModules(t, root)`, `workspaceViolations`, `TestModuleLayoutEveryWorkspaceModule`).
+  `release-readiness` task 2.1 adds its own test beside them; reuse `workspaceModules` rather than
+  reading `go.work` again.

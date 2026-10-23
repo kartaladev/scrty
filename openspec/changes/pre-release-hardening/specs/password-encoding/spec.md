@@ -23,7 +23,7 @@ The ceilings are a stated limit with no override, because a stored hash is data 
 - **THEN** no match is reported
 
 ### Requirement: An encoder cannot be built to produce hashes it would refuse
-Constructing an encoder with any parameter above its record ceiling SHALL fail with a configuration error that names the parameter.
+Constructing an encoder with any parameter above its record ceiling SHALL fail with the encoder's invalid-parameters error (`password.ErrInvalidParameters`, the package's configuration error), naming the parameter.
 
 #### Scenario: scrypt parallelism above the ceiling
 - **WHEN** a scrypt encoder is constructed with p 32

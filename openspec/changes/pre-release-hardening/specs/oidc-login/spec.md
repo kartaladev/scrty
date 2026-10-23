@@ -6,11 +6,11 @@
 Construction SHALL fail with a configuration error when the clock-skew leeway is longer than 5 minutes, because a longer leeway accepts tokens expired by that much.
 
 #### Scenario: Leeway of an hour
-- **WHEN** the broker is configured with a one-hour clock-skew leeway
+- **WHEN** the OIDC manager is configured with a one-hour clock-skew leeway
 - **THEN** construction fails with a configuration error
 
 #### Scenario: Consumer leeway within the bound
-- **WHEN** the broker is configured with a 2-minute clock-skew leeway
+- **WHEN** the OIDC manager is configured with a 2-minute clock-skew leeway
 - **THEN** construction succeeds and tokens are judged with that leeway
 
 ## MODIFIED Requirements

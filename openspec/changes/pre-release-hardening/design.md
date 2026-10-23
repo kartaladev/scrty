@@ -70,7 +70,7 @@ See `proposal.md` (Why) for the motivation, and the delta specs for the requirem
 ### 2. Stored hashes carry bounded work, and constructors share the ceilings (H2, N1)
 
 - **Ceilings.** Each record parser checks one set of ceilings before deriving anything:
-  - scrypt: `p ≤ 16` and `(N + p) · 128 · r ≤ 1 GiB`;
+  - scrypt: `p ≤ 16`, `(N + p) · 128 · r ≤ 1 GiB`, and `N` a power of two of at least 2 (scrypt itself refuses any other `N` before deriving, so a record with one would otherwise be recognised yet refused unread);
   - bcrypt: `cost ≤ 16`;
   - Argon2id: memory ≤ 1 GiB, iterations ≤ 16, threads ≤ 16, salt ≤ 64 bytes, key ≤ 64 bytes.
 - **Constructors.** Each constructor refuses a parameter above its ceiling, so an encoder never produces hashes it would refuse.
@@ -202,7 +202,7 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 - **The manager.** `TOTP` passes the generation it read. A refused write maps to `ErrInvalidCode`, the same answer a wrong code gets, so the race reveals nothing.
 - **The period.** It must be a whole number of seconds, at least one. Every `NewTOTP` error wraps `ErrConfig`.
 - **The sealed secret (U3).** `seal.MFASecretAAD` gains the generation.
-  - **Data:** existing sealed TOTP secrets stop opening. This is a deliberate pre-tag break: nothing is released, and an opt-in legacy fallback would keep the hole open while it was on. The CHANGELOG entry and the `secrets-at-rest` delta state that affected users enrol again.
+  - **Data:** existing sealed TOTP secrets stop opening. This is a deliberate pre-tag break: nothing is released, and an opt-in fallback to the old binding would keep the hole open while it was on. The CHANGELOG entry and the `secrets-at-rest` delta state that affected users enrol again.
 - **The idiom fix (U12).** `seal/mfa.go`'s `==` on a sentinel becomes `errors.Is`.
 - **Override:** none. Generations are the store's consistency mechanism, not a policy.
 - **Departure:** the established design had no generations.
@@ -225,6 +225,7 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 - `NewAccountLockoutPolicy` builds its default store knowing its own longest retention: the window, or the cap's retention.
 - The store drops timestamps older than that on each write for the key it touches. Every window it sweeps inline, as `memoryShard` does.
 - It caps identifiers at 100,000 (`WithAttemptStoreCapacity`) and digests identifiers over 256 bytes. A capacity of zero or less panics at wiring, since the store's constructor returns no error (as decision 14 does for guards).
+- A lockout policy tells the store its retention only when it is handed a `*MemoryAttemptStore` itself. A consumer's wrapper around one never learns it, never sweeps, and once full refuses every new identifier until reset; the godoc of `MemoryAttemptStore` and `WithAttemptStore` states this stated limit, and the remedy (pass the inner store to the policy, or sweep a wrapped store yourself).
 - A store shared by several policies keeps what the longest-retaining of them needs: its inline sweep and its purge never drop a failure or streak younger than that retention, so one policy's purge cannot disarm another's lockout.
 - Holds are never swept early.
 - **When full after a sweep:** recording a new identifier fails, and lockout denies as it does on any store error. This mirrors "a full in-memory limiter refuses new keys". The trade-off is that a flood of distinct usernames denies new usernames' logins until failures age out. A durable or shared attempt store is the override.
@@ -234,6 +235,7 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 **The outage hold (M9, L15).**
 - It caps at the in-memory limiter's default key cap and digests long keys.
 - When full, a check for a key it does not hold is answered exceeded for the window.
+- On a backwards clock step it drops every hold already seen to have ended (it records the latest time it was called). A hold that ended unobserved before the step cannot be told from a running one by the wall clock, so it is released at most one step-length late; this is a stated limit (reproduced by the whole-branch review, no monotonic clock is taken on for it).
 - Its sweep re-arms when the clock steps backwards, the same `now.Before(last)` reset `passkey/login.go` uses. `httpsec/mfabegin.go`'s `sweepClock` gets the same reset.
 
 **The log sampler (U5).** It caps keys per window at 100,000 (option) and counts overflow under one key, so suppression accounting stays exact.
@@ -281,7 +283,7 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 
 - **fibersec (M12, U6).**
   - Errors: `Middleware` captures the error `fc.Next()` returns and passes it back unchanged when the chain returns that same error (`errors.Is`). `ErrorHandler` answers a `*fiber.Error` with its code.
-  - Cancellation: the chain runs on a context derived from fiber's request context and cancelled when the request's handling ends. fasthttp gives a handler no disconnect signal (`RequestCtx.Done()` fires only at server shutdown), and watching the socket would race fasthttp's own reads, so a mid-request disconnect is not detected; this is a stated limit in fibersec's godoc (user decision, 2026-10-23, after U6 reproduced).
+  - Cancellation: the chain runs on a context derived from fiber's request context and cancelled when the request's handling ends. fasthttp gives a handler no disconnect signal (`RequestCtx.Done()` fires only at server shutdown), and watching the socket would race fasthttp's own reads, so a mid-request disconnect is not detected; this is a stated limit in fibersec's godoc (user decision, 2026-10-23, after U6 reproduced). The route behind the chain receives a context that reads values from the chain's context (caller, session) and takes its deadline and cancellation from fiber's context as the middleware received it: the chain's end-of-request cancel does not reach it, because fiber writes a streamed body after the handler returns (cancelling it broke streamed responses, reproduced by `TestFiber_RouteContextSurvivesTheChainWhileTheBodyStreams`), while any deadline or cancel an outer middleware set still bounds it (`TestFiber_RouteContextStaysBoundedByWhatBoundedTheRequest`).
 - **Layout guard (M13).** It runs its file and `go.mod` checks for every workspace module except `./test`. This task follows `release-readiness` 2.1, which also edits `layout_test.go`.
 - **gorm (U1).** A read/write-splitting plugin can route a store's reads to a lagging replica, which can serve a revoked session. This is documented as a stated limit in `gorm/doc.go`; no `dbresolver` dependency is added.
 

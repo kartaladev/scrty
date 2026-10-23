@@ -14,7 +14,7 @@ With unused-successor recovery enabled, when recording a session's first success
 
 #### Scenario: First-use write fails with recovery enabled
 - **WHEN** unused-successor recovery is enabled, successor S1 is loaded, and recording its first use fails
-- **THEN** the load fails, and a later late renewal of S1's predecessor is treated as reuse
+- **THEN** the load fails and S1 is not served with its first use unrecorded, and while S1 stays unpresented a later late renewal of its predecessor recovers S1 rather than being judged reuse
 
 #### Scenario: First-use write fails with recovery disabled
 - **WHEN** unused-successor recovery is disabled, a session is loaded, and recording its first use fails

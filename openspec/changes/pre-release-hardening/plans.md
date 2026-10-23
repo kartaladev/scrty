@@ -23,7 +23,7 @@
   - table tests use the `table-test` skill (`assert` closures, `t.Context()`);
   - mocks come from `use-mockgen`, regenerated with `go generate` when a port changes;
   - PostgreSQL comes through the existing `test` module helpers (`use-testcontainers`).
-- **Legacy reference:** consulted only per `legacy-reference.md`, and never cited in code, docs or commits.
+- **Reference material:** consulted only as the project rules allow, and never cited in code, docs or commits.
 - **Ceilings, fixed values:**
   - scrypt `p ≤ 16` and `(N+p)·128·r ≤ 1 GiB`;
   - bcrypt `cost ≤ 16`;

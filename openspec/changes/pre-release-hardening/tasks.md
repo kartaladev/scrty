@@ -221,7 +221,7 @@
   - a nil element in a stored credential list is treated as missing in `passkey/pending.go` [S7, `UNREPRODUCED`].
   - **Red tests:** `TestSweep_BeginRegistrationWithLoaderReturningNoUserDoesNotPanic`, plus the RP ID table (`UNREPRODUCED` until it fails on HEAD).
   - **Verify:** `go test -race -count=1 ./passkey/...` passes.
-- [ ] 10.5 Documentation and layout [U1, M13]:
+- [x] 10.5 Documentation and layout [U1, M13]:
   - state the replica-read limit in `gorm/doc.go`;
   - after `release-readiness` task 2.1 lands, run the layout guard's file and `go.mod` checks for every workspace module except `./test`.
   - **Red test:** a planted `Mock*` type in a nested module, and a test-module import in a nested module, go undetected on HEAD.

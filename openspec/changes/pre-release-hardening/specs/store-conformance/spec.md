@@ -2,8 +2,8 @@
 
 ## ADDED Requirements
 
-### Requirement: The race suite proves bounded inserts
-The race suite SHALL prove, for the one-time token store and the passkey credential store, that concurrent bounded inserts for one subject never take the count past the limit, that bounded inserts for different subjects do not block each other, and that a refused bounded insert writes nothing.
+### Requirement: The conformance suites prove bounded inserts
+The one-time-token and passkey-credential conformance suites SHALL prove, for the one-time token store and the passkey credential store, that concurrent bounded inserts for one subject never take the count past the limit, that bounded inserts for different subjects do not block each other, and that a refused bounded insert writes nothing.
 
 #### Scenario: Count-then-insert store
 - **WHEN** the race suite runs against a store whose bounded insert counts and then inserts without a per-subject lock
