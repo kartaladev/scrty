@@ -68,7 +68,7 @@
 - [ ] 3.5 Refuse a backed-up state without backup eligibility in the `passkey` core, for registration and assertion [L8].
   - **Red tests:** the two `BackupStateWithoutBackupEligible` tests.
   - **Verify:** `go test -race -count=1 ./passkey/...` passes.
-- [ ] 3.6 Register `ErrIssueLimitReached` in the sentinel registry, through lane A's owner, and update the race-suite docs.
+- [x] 3.6 Register `ErrIssueLimitReached` in the sentinel registry, through lane A's owner, and update the race-suite docs.
   - **Verify:** `go test -count=1 -run TestStatusForErrorCoversEverySentinel ./httpsec/` passes.
 - [ ] 3.7 Review (Opus) of group 3 against D7 and the `one-time-tokens`, `magic-link`, `account-recovery`, `multi-factor-auth`, `passkey-authentication`, `security-state-stores` and `store-conformance` deltas.
   - **Verify:** the review is clean.
@@ -94,9 +94,9 @@
 - [x] 4.4 Panic at wiring on a nil ownership checker or extractor in the core guards [L13]. Bound the OIDC authorize `next` at 2048 bytes before it reaches the broker [M10, httpsec part].
   - **Red tests:** `TestOwnershipGuard_NilCheckerFailsClosedWithoutPanic`, rewritten to expect a wiring panic, and an over-long `next` test.
   - **Verify:** `go test -race -count=1 ./httpsec/` passes.
-- [ ] 4.5 Add the sentinels other lanes hand over (`ErrRotationRefused`, `ErrIssueLimitReached`, the did-not-settle error, the isolation refusal) to `status.go` where they map, and to `TestStatusForErrorCoversEverySentinel`.
+- [x] 4.5 Add the sentinels other lanes hand over (`ErrRotationRefused` 409, `ErrIssueLimitReached` 429, the did-not-settle error, the isolation refusal) to `status.go` where they map, and to `TestStatusForErrorCoversEverySentinel`. Register the `apikey`, `onetime` and `magiclink` packages; map `apikey.ErrKeyNotFound` to 404 and `magiclink.ErrInvalidLink` to 401 (it answered 500; reproduced by `TestMagicLinkRefusalStatus`) (`http-error-propagation` delta).
   - **Verify:** that test passes.
-- [ ] 4.6 Review (Opus) of group 4 against D1, D4, D14, D15 and the `http-security-chain` delta.
+- [x] 4.6 Review (Opus) of group 4 against D1, D4, D14, D15 and the `http-security-chain` delta.
   - **Verify:** the review is clean.
 
 ## 5. Framework adapters (lane B, D16; starts after 4.4)
@@ -190,7 +190,7 @@
 
 ## 10. Point fixes (lane J, D11, D14, D16, D17)
 
-- [ ] 10.1 API keys [M3, N3, L10]:
+- [x] 10.1 API keys [M3, N3, L10]:
   - `Rotate` refuses revoked and expired keys with `ErrRotationRefused`;
   - `apikey.Store.Revoke` reports whether it moved the key, on every backend and fake;
   - `Rotate` revokes its replacement when it loses the race;

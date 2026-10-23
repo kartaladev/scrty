@@ -113,6 +113,7 @@ None.
 - `sessions`: first-use write failure; nil store results.
 - `framework-adapters`: fiber route errors and cancellation; nil guard wiring.
 - `email-notification`: bare CR normalisation.
+- `http-error-propagation`: statuses for the issuance limit (429), a refused rotation (409), an unknown API key (404), and a refused magic-link redemption (401, which answered 500 before).
 
 `module-layout` needs no delta. Its requirements already cover "any scrty module", and the layout-guard fix makes the guard enforce them.
 
