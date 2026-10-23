@@ -116,7 +116,9 @@ func WithJITAllowUnverifiedEmail(provider string) BrokerOption {
 }
 
 // WithJITEmailDomains restricts provisioning for provider to emails whose
-// domain exactly equals one of domains, compared case-insensitively; a
+// domain exactly equals one of domains, ignoring ASCII letter case only (a
+// character that matches a letter only under Unicode folding, such as the
+// Kelvin sign, never matches it); a
 // subdomain does not match its parent. The default is no allowlist. Called
 // with no domains it configures an empty allowlist, which admits no one.
 // Repeated calls for one provider add to its list. An empty domain is refused,

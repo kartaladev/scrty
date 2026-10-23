@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"github.com/kartaladev/scrty/identity"
 )
@@ -81,7 +80,7 @@ func (b *Broker) admits(ext ExternalIdentity) (string, bool) {
 	}
 	if domains, configured := b.jitDomains[ext.Provider]; configured {
 		domain := emailDomain(ext.Email)
-		allowed := domain != "" && containsFold(domains, domain)
+		allowed := domain != "" && containsFoldASCII(domains, domain)
 		if !allowed {
 			return "the email domain is not allowed", false
 		}
@@ -106,12 +105,41 @@ func (b *Broker) provisionOptions(ctx context.Context, ext ExternalIdentity) []i
 	)
 }
 
-// containsFold reports whether list holds s, compared case-insensitively.
-func containsFold(list []string, s string) bool {
+// containsFoldASCII reports whether list holds s, compared ignoring ASCII
+// letter case only.
+//
+// strings.EqualFold applies Unicode simple folding, which equates U+212A (the
+// Kelvin sign) with "k" and U+017F with "s". An email domain spelled with one
+// of them would then match an allowlist entry it is not, and a provider that
+// presents such a domain would be provisioned on the strength of a name it does
+// not own.
+func containsFoldASCII(list []string, s string) bool {
 	for _, v := range list {
-		if strings.EqualFold(v, s) {
+		if equalFoldASCII(v, s) {
 			return true
 		}
 	}
 	return false
+}
+
+// equalFoldASCII reports whether a and b are the same bytes once A-Z is folded
+// to a-z. Every other byte, including every byte of a multi-byte sequence, must
+// match exactly; the bytes rewritten are ASCII and never occur inside one.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if foldASCII(a[i]) != foldASCII(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func foldASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
 }

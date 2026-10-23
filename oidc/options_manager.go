@@ -195,15 +195,31 @@ func WithDiscoveryStaleWhileError(window time.Duration) ManagerOption {
 // nbf when WithClockSkew is not given.
 const DefaultClockSkew = 60 * time.Second
 
+// MaxClockSkew is the longest leeway WithClockSkew accepts. A longer one
+// accepts a token that expired that long ago, so it is refused at construction
+// rather than honoured.
+const MaxClockSkew = 5 * time.Minute
+
+// MaxLogoutTokenMaxAge is the longest age WithLogoutTokenMaxAge accepts. The
+// maximum age is the replay window of a captured logout token, so a longer one
+// is refused at construction rather than honoured.
+const MaxLogoutTokenMaxAge = time.Hour
+
 // WithClockSkew sets the leeway allowed between the manager's clock and a
 // provider's when judging a token's expiry (exp), issued-at (iat) and
 // not-before (nbf) times. The default is DefaultClockSkew (60 seconds). Zero
 // tolerates no difference at all; a negative leeway is refused, since it would
-// refuse tokens that are valid now.
+// refuse tokens that are valid now, and so is one above MaxClockSkew (5
+// minutes), since it would accept tokens expired by that much. There is no way
+// to exceed the bound: it is the line past which the manager's expiry guarantee
+// stops holding.
 func WithClockSkew(d time.Duration) ManagerOption {
 	return func(m *Manager) error {
 		if d < 0 {
 			return fmt.Errorf("%w: WithClockSkew must not be negative, got %s", ErrConfig, d)
+		}
+		if d > MaxClockSkew {
+			return fmt.Errorf("%w: WithClockSkew must not exceed %s, got %s", ErrConfig, MaxClockSkew, d)
 		}
 		m.skew, m.skewSet = d, true
 		return nil
@@ -217,11 +233,16 @@ func WithClockSkew(d time.Duration) ManagerOption {
 // The maximum age is also the replay window: no jti is recorded, so a captured
 // token is accepted again until its issued-at is older than the maximum age
 // plus the leeway, and widening one widens the other. A maximum age of zero or
-// less is refused: no token could be accepted.
+// less is refused: no token could be accepted. One above MaxLogoutTokenMaxAge
+// (one hour) is refused too, because it would keep a captured token replayable
+// for that long; the bound cannot be exceeded.
 func WithLogoutTokenMaxAge(d time.Duration) ManagerOption {
 	return func(m *Manager) error {
 		if d <= 0 {
 			return fmt.Errorf("%w: WithLogoutTokenMaxAge must be positive, got %s", ErrConfig, d)
+		}
+		if d > MaxLogoutTokenMaxAge {
+			return fmt.Errorf("%w: WithLogoutTokenMaxAge must not exceed %s, got %s", ErrConfig, MaxLogoutTokenMaxAge, d)
 		}
 		m.logoutMaxAge = d
 		return nil

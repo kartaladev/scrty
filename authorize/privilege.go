@@ -37,8 +37,11 @@ type PrivilegeOption func(*PrivilegeAuthorizer)
 // WithPrivilegeNameComparer replaces how group, resource and privilege names
 // are compared.
 //
-// The default compares them ignoring surrounding whitespace and letter case,
-// which suits role data entered by hand. A consumer whose data is generated and
+// The default compares them ignoring surrounding ASCII whitespace and ASCII
+// letter case only, which suits role data entered by hand. It applies no
+// Unicode case mapping and trims no Unicode space, so a character that matches
+// an ASCII letter only under Unicode folding (the Kelvin sign for "k"), or a
+// no-break space around a name, never makes two different names equal. A consumer whose data is generated and
 // canonical may want exact comparison, and one whose data is normalised some
 // other way — a locale-aware fold, a prefix convention — supplies that instead.
 // Replacing the comparison changes nothing else: the default remains what an
@@ -79,15 +82,46 @@ func NewPrivilegeAuthorizer(roles identity.RoleLoader, opts ...PrivilegeOption) 
 	return a, nil
 }
 
-// equalNamesFolded is the default name comparison: surrounding whitespace is
-// ignored and letters are compared without case.
+// equalNamesFolded is the default name comparison: surrounding ASCII
+// whitespace is ignored and ASCII letters are compared without case.
 //
 // Role data is frequently typed by a person into an administration screen, and
 // "Write" or " write" there must not silently become a different privilege from
 // the one an attempt names — a mismatch that reads, to whoever is refused, as
 // the system having lost their permissions.
+//
+// The fold and the trim stay inside ASCII on purpose. strings.EqualFold maps
+// U+212A (the Kelvin sign) to "k" and U+017F to "s", and strings.TrimSpace
+// strips U+00A0 and other Unicode spaces, so each would make two names equal
+// that a person reading them would tell apart. A consumer whose data needs a
+// wider rule supplies it through WithPrivilegeNameComparer.
 func equalNamesFolded(a, b string) bool {
-	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+	a, b = strings.Trim(a, asciiSpace), strings.Trim(b, asciiSpace)
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := 0; i < len(a); i++ {
+		if asciiFold(a[i]) != asciiFold(b[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// asciiSpace is the whitespace the default comparison ignores around a name.
+const asciiSpace = " \t\n\v\f\r"
+
+// asciiFold lowercases c when it is an ASCII capital and leaves every other
+// byte alone. Working on bytes is safe: only ASCII bytes are rewritten, and
+// those never occur inside a multi-byte UTF-8 sequence.
+func asciiFold(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+
+	return c
 }
 
 // Authorize reports whether the subject's active role grants what attrs

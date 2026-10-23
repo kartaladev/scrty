@@ -141,6 +141,23 @@ func TestNewManagerOptions(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 			}},
+		{name: "a clock skew above 5 minutes is refused", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithClockSkew(5*time.Minute + time.Nanosecond)}, assert: refusedConfig("WithClockSkew")},
+		{name: "a clock skew of exactly 5 minutes is accepted", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithClockSkew(5 * time.Minute)},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, m)
+			}},
+		{name: "a logout-token max age above one hour is refused", registry: reg, broker: stubBroker{},
+			opts:   []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(time.Hour + time.Nanosecond)},
+			assert: refusedConfig("WithLogoutTokenMaxAge")},
+		{name: "a logout-token max age of exactly one hour is accepted", registry: reg, broker: stubBroker{},
+			opts: []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(time.Hour)},
+			assert: func(t *testing.T, m *oidc.Manager, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, m)
+			}},
 		{name: "a zero logout-token max age is refused", registry: reg, broker: stubBroker{},
 			opts: []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(0)}, assert: refusedConfig("WithLogoutTokenMaxAge")},
 		{name: "a negative logout-token max age is refused", registry: reg, broker: stubBroker{},
