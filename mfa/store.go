@@ -83,19 +83,25 @@ type Enrolment struct {
 
 // EnrolmentStore holds enrolments.
 //
-// Four of its operations decide an outcome by the write rather than by a
+// Five of its operations decide an outcome by the write rather than by a
 // preceding read, and an implementation that reads first and then writes is
 // wrong however careful the read is:
 //
 //   - PutPending must refuse when a confirmed enrolment exists, decided by the
 //     write, so two concurrent begins cannot both replace one confirmed
 //     enrolment.
+//   - Confirm must be one conditional update — confirm only where the
+//     enrolment is pending on the generation the caller names — so a code
+//     checked against one pending secret never confirms a secret a later
+//     begin put in its place.
 //   - AcceptStep must be one conditional update — set the last step to this one
-//     only where the enrolment is confirmed and the recorded step is strictly
-//     lower — and report whether it changed anything. On a SQL backend that is a
-//     single UPDATE with the condition in its WHERE clause. It is what makes
-//     each time step usable once per user, so of concurrent verifications of one
-//     code, exactly one succeeds.
+//     only where the enrolment is confirmed, is on the generation the caller
+//     names, and the recorded step is strictly lower — and report whether it
+//     changed anything. On a SQL backend that is a single UPDATE with the
+//     condition in its WHERE clause. It is what makes each time step usable
+//     once per user, so of concurrent verifications of one code, exactly one
+//     succeeds, and what keeps a code checked against a removed secret from
+//     counting for the enrolment that replaced it.
 //   - ChargeVerifyAttempt must be one conditional update that opens a new
 //     window or counts one more below the limit, and RefundVerifyAttempt one
 //     that lowers a positive count only in the window it names. On a SQL
@@ -133,16 +139,19 @@ type EnrolmentStore interface {
 	// begin survives a later one.
 	PutPending(ctx context.Context, e Enrolment) error
 
-	// Confirm marks the user's pending enrolment confirmed at the given time
-	// and records step, never moving the recorded step backwards, and clears
-	// any outstanding emailed code. It reports false when there was no pending
-	// enrolment to confirm.
-	Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error)
+	// Confirm marks the user's pending enrolment on generation gen confirmed
+	// at the given time and records step, never moving the recorded step
+	// backwards, and clears any outstanding emailed code. It reports false,
+	// changing nothing, when there is no pending enrolment on gen to confirm:
+	// none at all, one already confirmed, or one a later begin moved to
+	// another generation. The nil generation matches nothing.
+	Confirm(ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time) (bool, error)
 
 	// AcceptStep records step for user in the same operation that decides
-	// whether it may be accepted. It reports false when the enrolment is not
-	// confirmed, or when the recorded step is already at or past step.
-	AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error)
+	// whether it may be accepted. It reports false, changing nothing, when the
+	// enrolment is not confirmed, is not on generation gen, or its recorded
+	// step is already at or past step. The nil generation matches nothing.
+	AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error)
 
 	// Delete removes the user's enrolment. Deleting an absent enrolment is not
 	// an error: the caller wanted it gone and it is gone.

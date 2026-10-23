@@ -46,13 +46,13 @@ func StepRace[S mfa.EnrolmentStore]() storetest.Race[S] {
 		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
 			user := identity.UserID(fmt.Sprintf("race-user-%d", i))
 			require.NoError(t, s.PutPending(ctx, Pending(user, "secret")))
-			ok, err := s.Confirm(ctx, user, 1000, EnrolmentBegun.Add(time.Minute))
+			ok, err := s.Confirm(ctx, user, EnrolmentGen, 1000, EnrolmentBegun.Add(time.Minute))
 			require.NoError(t, err)
 			require.True(t, ok)
 			return string(user)
 		},
 		Attempt: func(ctx context.Context, s S, key string, _ int) (bool, error) {
-			return s.AcceptStep(ctx, identity.UserID(key), 1002)
+			return s.AcceptStep(ctx, identity.UserID(key), EnrolmentGen, 1002)
 		},
 	}
 }
@@ -175,7 +175,7 @@ func VerifyChargeRace[S mfa.EnrolmentStore]() storetest.Race[S] {
 		Seed: func(ctx context.Context, t *testing.T, s S, i int) string {
 			user := identity.UserID(fmt.Sprintf("race-user-%d", i))
 			require.NoError(t, s.PutPending(ctx, Pending(user, "secret")))
-			ok, err := s.Confirm(ctx, user, 1000, EnrolmentBegun.Add(time.Minute))
+			ok, err := s.Confirm(ctx, user, EnrolmentGen, 1000, EnrolmentBegun.Add(time.Minute))
 			require.NoError(t, err)
 			require.True(t, ok, "the seeded enrolment of %q must confirm", user)
 			return string(user)

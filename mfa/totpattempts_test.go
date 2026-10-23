@@ -499,7 +499,7 @@ func TestTOTP_VerifyGivesBack(t *testing.T) {
 				s.EXPECT().
 					ChargeVerifyAttempt(gomock.Any(), identity.UserID("u-1"), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(until, true, nil)
-				s.EXPECT().AcceptStep(gomock.Any(), identity.UserID("u-1"), gomock.Any()).Return(true, nil)
+				s.EXPECT().AcceptStep(gomock.Any(), identity.UserID("u-1"), gomock.Any(), gomock.Any()).Return(true, nil)
 				s.EXPECT().RefundVerifyAttempt(gomock.Any(), identity.UserID("u-1"), until).Return(false, errChargeBoom)
 
 				return s

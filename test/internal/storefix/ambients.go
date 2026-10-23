@@ -165,7 +165,7 @@ func EnrolmentAmbient() storetest.Ambient[mfa.EnrolmentStore] {
 			if err := s.PutPending(ctx, Pending("ambient-confirmed", "TOTP-SECRET")); err != nil {
 				return err
 			}
-			if _, err := s.Confirm(ctx, "ambient-confirmed", 1000, EnrolmentBegun); err != nil {
+			if _, err := s.Confirm(ctx, "ambient-confirmed", EnrolmentGen, 1000, EnrolmentBegun); err != nil {
 				return err
 			}
 			return s.PutPending(ctx, Pending("ambient-confirmed", "TOTP-OTHER"))

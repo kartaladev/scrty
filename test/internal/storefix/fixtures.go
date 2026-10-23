@@ -143,9 +143,14 @@ func (s SaveUpsertsStore) Save(ctx context.Context, sess *session.Session) error
 // EnrolmentBegun is when every MFA enrolment here was begun.
 var EnrolmentBegun = time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
 
-// Pending is a pending enrolment of user carrying secret.
+// EnrolmentGen is the enrolment generation every enrolment here is begun on,
+// and so the one a confirmation or an accepted step names.
+var EnrolmentGen = id.MustParse("01926a4e-0000-7000-8000-0000000000e0")
+
+// Pending is a pending enrolment of user carrying secret, begun on
+// EnrolmentGen.
 func Pending(user identity.UserID, secret string) mfa.Enrolment {
-	return mfa.Enrolment{User: user, Secret: []byte(secret), CreatedAt: EnrolmentBegun}
+	return mfa.Enrolment{User: user, Secret: []byte(secret), CreatedAt: EnrolmentBegun, Generation: EnrolmentGen}
 }
 
 // KeyCreated is when every signing key here was generated; kids break the

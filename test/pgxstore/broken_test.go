@@ -366,9 +366,11 @@ type readThenWriteAcceptStep struct {
 	pool *pgxpool.Pool
 }
 
-func (s readThenWriteAcceptStep) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
+func (s readThenWriteAcceptStep) AcceptStep(
+	ctx context.Context, user identity.UserID, gen id.ID, step int64,
+) (bool, error) {
 	e, ok, err := s.Get(ctx, user)
-	if err != nil || !ok || e.ConfirmedAt.IsZero() || e.LastStep >= step {
+	if err != nil || !ok || e.ConfirmedAt.IsZero() || gen.IsZero() || e.Generation != gen || e.LastStep >= step {
 		return false, err
 	}
 	_, err = s.pool.Exec(ctx, `UPDATE mfa_enrolments SET last_step = $2 WHERE user_id = $1`, string(user), step)

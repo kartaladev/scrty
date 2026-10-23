@@ -369,7 +369,7 @@ func (s putPendingVerbatimStore) PutPending(ctx context.Context, e mfa.Enrolment
 	if err := s.MemoryEnrolmentStore.PutPending(ctx, e); err != nil || e.ConfirmedAt.IsZero() {
 		return err
 	}
-	_, err := s.Confirm(ctx, e.User, e.LastStep, e.ConfirmedAt)
+	_, err := s.Confirm(ctx, e.User, e.Generation, e.LastStep, e.ConfirmedAt)
 	return err
 }
 

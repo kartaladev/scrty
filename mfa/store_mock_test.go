@@ -45,18 +45,18 @@ func (m *MockEnrolmentStore) EXPECT() *MockEnrolmentStoreMockRecorder {
 }
 
 // AcceptStep mocks base method.
-func (m *MockEnrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
+func (m *MockEnrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AcceptStep", ctx, user, step)
+	ret := m.ctrl.Call(m, "AcceptStep", ctx, user, gen, step)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AcceptStep indicates an expected call of AcceptStep.
-func (mr *MockEnrolmentStoreMockRecorder) AcceptStep(ctx, user, step any) *MockEnrolmentStoreAcceptStepCall {
+func (mr *MockEnrolmentStoreMockRecorder) AcceptStep(ctx, user, gen, step any) *MockEnrolmentStoreAcceptStepCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AcceptStep", reflect.TypeOf((*MockEnrolmentStore)(nil).AcceptStep), ctx, user, step)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AcceptStep", reflect.TypeOf((*MockEnrolmentStore)(nil).AcceptStep), ctx, user, gen, step)
 	return &MockEnrolmentStoreAcceptStepCall{Call: call}
 }
 
@@ -72,13 +72,13 @@ func (c *MockEnrolmentStoreAcceptStepCall) Return(arg0 bool, arg1 error) *MockEn
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockEnrolmentStoreAcceptStepCall) Do(f func(context.Context, identity.UserID, int64) (bool, error)) *MockEnrolmentStoreAcceptStepCall {
+func (c *MockEnrolmentStoreAcceptStepCall) Do(f func(context.Context, identity.UserID, id.ID, int64) (bool, error)) *MockEnrolmentStoreAcceptStepCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockEnrolmentStoreAcceptStepCall) DoAndReturn(f func(context.Context, identity.UserID, int64) (bool, error)) *MockEnrolmentStoreAcceptStepCall {
+func (c *MockEnrolmentStoreAcceptStepCall) DoAndReturn(f func(context.Context, identity.UserID, id.ID, int64) (bool, error)) *MockEnrolmentStoreAcceptStepCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }
@@ -124,18 +124,18 @@ func (c *MockEnrolmentStoreChargeVerifyAttemptCall) DoAndReturn(f func(context.C
 }
 
 // Confirm mocks base method.
-func (m *MockEnrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
+func (m *MockEnrolmentStore) Confirm(ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Confirm", ctx, user, step, at)
+	ret := m.ctrl.Call(m, "Confirm", ctx, user, gen, step, at)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Confirm indicates an expected call of Confirm.
-func (mr *MockEnrolmentStoreMockRecorder) Confirm(ctx, user, step, at any) *MockEnrolmentStoreConfirmCall {
+func (mr *MockEnrolmentStoreMockRecorder) Confirm(ctx, user, gen, step, at any) *MockEnrolmentStoreConfirmCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Confirm", reflect.TypeOf((*MockEnrolmentStore)(nil).Confirm), ctx, user, step, at)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Confirm", reflect.TypeOf((*MockEnrolmentStore)(nil).Confirm), ctx, user, gen, step, at)
 	return &MockEnrolmentStoreConfirmCall{Call: call}
 }
 
@@ -151,13 +151,13 @@ func (c *MockEnrolmentStoreConfirmCall) Return(arg0 bool, arg1 error) *MockEnrol
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockEnrolmentStoreConfirmCall) Do(f func(context.Context, identity.UserID, int64, time.Time) (bool, error)) *MockEnrolmentStoreConfirmCall {
+func (c *MockEnrolmentStoreConfirmCall) Do(f func(context.Context, identity.UserID, id.ID, int64, time.Time) (bool, error)) *MockEnrolmentStoreConfirmCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockEnrolmentStoreConfirmCall) DoAndReturn(f func(context.Context, identity.UserID, int64, time.Time) (bool, error)) *MockEnrolmentStoreConfirmCall {
+func (c *MockEnrolmentStoreConfirmCall) DoAndReturn(f func(context.Context, identity.UserID, id.ID, int64, time.Time) (bool, error)) *MockEnrolmentStoreConfirmCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

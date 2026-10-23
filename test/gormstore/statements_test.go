@@ -316,7 +316,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA begin over a confirmed enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", storefix.EnrolmentGen, 1000, now)))
 			started()
 			return counted.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP-OTHER"))
 		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
@@ -328,20 +328,20 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		{name: "MFA confirm", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
-			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", 1000, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND confirmed_at IS NULL`)},
+			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", storefix.EnrolmentGen, 1000, now))
+		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND generation = $5 AND confirmed_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1000, now)))
 			started()
-			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-step", 1001))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND confirmed_at IS NOT NULL AND last_step < $3`)},
+			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1001))
+		}, assert: one(`UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
 		{name: "MFA accept of a step already accepted", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-stale", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-stale", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-stale", storefix.EnrolmentGen, 1000, now)))
 			started()
-			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", 1000))
-		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND confirmed_at IS NOT NULL AND last_step < $3`)},
+			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", storefix.EnrolmentGen, 1000))
+		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
 		{name: "MFA device proof", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			gen := begunOn(ctx, t, seed, "stmt-mfa-prove")
 			started()
@@ -371,7 +371,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: refused(errNotStored, chargeStmt)},
 		{name: "MFA verification charge", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vcharge", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vcharge", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vcharge", storefix.EnrolmentGen, 1000, now)))
 			started()
 			_, ok, err := counted.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vcharge", now, 5, 15*time.Minute)
 			return flag(ok, err)
@@ -384,7 +384,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: refused(errNotStored, verifyChargeStmt)},
 		{name: "MFA verification give-back", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vrefund", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vrefund", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vrefund", storefix.EnrolmentGen, 1000, now)))
 			until, _, err := seed.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vrefund", now, 5, 15*time.Minute)
 			require.NoError(t, err)
 			started()

@@ -2,6 +2,7 @@ package seal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -57,8 +58,12 @@ type provingEnrolmentStore struct {
 // operation passes straight through, and the values inner receives are the
 // raw sealed bytes, which a store with a text column encodes itself.
 //
-// The secret is bound to the user reference (MFASecretAAD), byte for byte, so
-// a secret copied to another user's enrolment will not open there. The
+// The secret is bound to the enrolment's generation and the user reference
+// (MFASecretAAD), byte for byte, so a secret copied to another user's
+// enrolment will not open there, and neither will a secret from an earlier
+// generation copied back onto the same user's later enrolment. A secret
+// sealed before the generation was part of that binding does not open: a user
+// enrolled under it must enrol again. The
 // emailed code is bound to the enrolment's generation and the user reference
 // (MFAEmailCodeAAD), so a code copied to another user, into the secret, or
 // carried into a later generation will not open there either.
@@ -81,8 +86,9 @@ type provingEnrolmentStore struct {
 //
 // A failure of c or of inner is returned behind fixed text that names no user
 // and carries none of the failing error's text, and still matches that error
-// through errors.Is and errors.As; mfa.ErrAlreadyEnrolled returned bare by
-// inner comes back as itself. Nothing is stored when sealing fails.
+// through errors.Is and errors.As; an inner error matching
+// mfa.ErrAlreadyEnrolled comes back as that sentinel itself, bare, with no
+// store text. Nothing is stored when sealing fails.
 //
 // By default a read that opens a secret under a key other than the active
 // one re-seals it under the active key and hands the old and new values to r.
@@ -138,7 +144,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		return mfa.Enrolment{}, false, nil
 	}
 
-	aad := MFASecretAAD(user)
+	aad := MFASecretAAD(user, e.Generation)
 	plaintext, keyID, err := s.cipher.Open(e.Secret, aad)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored MFA secret could not be opened")
@@ -186,7 +192,7 @@ func (s *enrolmentStore) reseal(ctx context.Context, user identity.UserID, plain
 
 // PutPending seals the secret of a copy of e and stores the copy as pending.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
-	sealed, err := s.cipher.Seal(e.Secret, MFASecretAAD(e.User))
+	sealed, err := s.cipher.Seal(e.Secret, MFASecretAAD(e.User, e.Generation))
 	if err != nil {
 		return diag.Wrap(err, "seal: the MFA secret could not be sealed")
 	}
@@ -197,15 +203,17 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 }
 
 // Confirm passes through to inner.
-func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
-	ok, err := s.inner.Confirm(ctx, user, step, at)
+func (s *enrolmentStore) Confirm(
+	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
+) (bool, error) {
+	ok, err := s.inner.Confirm(ctx, user, gen, step, at)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not confirm the MFA enrolment")
 }
 
 // AcceptStep passes through to inner.
-func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
-	ok, err := s.inner.AcceptStep(ctx, user, step)
+func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
+	ok, err := s.inner.AcceptStep(ctx, user, gen, step)
 
 	return ok, enrolmentFailed(err, "seal: the inner store could not accept the MFA time step")
 }
@@ -270,13 +278,12 @@ func (s provingEnrolmentStore) ChargeEmailCode(
 	return n, ok, enrolmentFailed(err, "seal: the inner store could not charge the emailed code")
 }
 
-// enrolmentFailed returns an inner store's error behind text, except
-// mfa.ErrAlreadyEnrolled returned bare, which carries no store text and which
-// callers match on.
+// enrolmentFailed returns an inner store's error behind text, except one
+// matching mfa.ErrAlreadyEnrolled, which callers match on: that comes back as
+// the bare sentinel, carrying no store text.
 func enrolmentFailed(err error, text string) error {
-	//nolint:errorlint // identity: only the bare sentinel is known to carry no store text
-	if err == mfa.ErrAlreadyEnrolled {
-		return err
+	if errors.Is(err, mfa.ErrAlreadyEnrolled) {
+		return mfa.ErrAlreadyEnrolled
 	}
 
 	return diag.Wrap(err, text)

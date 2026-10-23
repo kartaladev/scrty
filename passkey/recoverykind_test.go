@@ -294,10 +294,11 @@ func newRecoveryWorld(t *testing.T) *recoveryWorld {
 	require.NoError(t, err)
 	w.totp = totp
 
+	gen := id.MustParse("01920000-0000-7000-8000-0000000000f1")
 	require.NoError(t, w.totpStore.PutPending(ctx, mfa.Enrolment{
-		User: "u-1", Secret: []byte("0123456789abcdef0123"), CreatedAt: regStart,
+		User: "u-1", Secret: []byte("0123456789abcdef0123"), CreatedAt: regStart, Generation: gen,
 	}))
-	confirmed, err := w.totpStore.Confirm(ctx, "u-1", 1, regStart)
+	confirmed, err := w.totpStore.Confirm(ctx, "u-1", gen, 1, regStart)
 	require.NoError(t, err)
 	require.True(t, confirmed)
 

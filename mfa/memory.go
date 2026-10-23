@@ -86,19 +86,21 @@ func (s *MemoryEnrolmentStore) PutPending(_ context.Context, e Enrolment) error 
 	return nil
 }
 
-// Confirm marks a pending enrolment confirmed and records the step its code
-// belonged to. An enrolment that is already confirmed reports false: there was
-// no pending enrolment to confirm, and silently re-confirming one would reset
-// the step that makes codes single-use. Confirming clears any outstanding
-// emailed code, and the recorded step only moves forward.
+// Confirm marks a pending enrolment on gen confirmed and records the step its
+// code belonged to. An enrolment that is already confirmed reports false: there
+// was no pending enrolment to confirm, and silently re-confirming one would
+// reset the step that makes codes single-use. So does one a later begin moved
+// to another generation, whose secret the code was never checked against.
+// Confirming clears any outstanding emailed code, and the recorded step only
+// moves forward.
 func (s *MemoryEnrolmentStore) Confirm(
-	_ context.Context, user identity.UserID, step int64, at time.Time,
+	_ context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
 ) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.enrolments[user]
-	if !ok || !e.ConfirmedAt.IsZero() {
+	if !ok || !onPendingGeneration(e, gen) {
 		return false, nil
 	}
 
@@ -115,19 +117,19 @@ func (s *MemoryEnrolmentStore) Confirm(
 }
 
 // AcceptStep records step for user, if and only if the enrolment is confirmed
-// and its recorded step is strictly lower.
+// on gen and its recorded step is strictly lower.
 //
 // The condition is evaluated and the write performed under one lock, so of any
 // number of concurrent calls for one step, exactly one reports true. That is
 // what makes a code single-use.
 func (s *MemoryEnrolmentStore) AcceptStep(
-	_ context.Context, user identity.UserID, step int64,
+	_ context.Context, user identity.UserID, gen id.ID, step int64,
 ) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.enrolments[user]
-	if !ok || e.ConfirmedAt.IsZero() || e.LastStep >= step {
+	if !ok || gen == id.Nil || e.Generation != gen || e.ConfirmedAt.IsZero() || e.LastStep >= step {
 		return false, nil
 	}
 

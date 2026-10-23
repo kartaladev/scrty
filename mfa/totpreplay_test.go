@@ -14,6 +14,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // failingEnrolmentStore is a store that is there but cannot answer: a
@@ -29,13 +30,13 @@ func (s failingEnrolmentStore) Get(
 func (s failingEnrolmentStore) PutPending(context.Context, mfa.Enrolment) error { return s.err }
 
 func (s failingEnrolmentStore) Confirm(
-	context.Context, identity.UserID, int64, time.Time,
+	context.Context, identity.UserID, id.ID, int64, time.Time,
 ) (bool, error) {
 	return false, s.err
 }
 
 func (s failingEnrolmentStore) AcceptStep(
-	context.Context, identity.UserID, int64,
+	context.Context, identity.UserID, id.ID, int64,
 ) (bool, error) {
 	return false, s.err
 }
@@ -165,7 +166,7 @@ func TestTOTPProvingCodeNotReplayableAfterConfirm(t *testing.T) {
 	require.ErrorIs(t, m.ConfirmEnrolment(t.Context(), "u-1", previous), mfa.ErrInvalidCode,
 		"a path-proven enrolment completes only through the path")
 
-	confirmed, err := store.Confirm(t.Context(), "u-1", now.Unix()/30-1, now)
+	confirmed, err := store.Confirm(t.Context(), "u-1", gen, now.Unix()/30-1, now)
 	require.NoError(t, err)
 	require.True(t, confirmed)
 

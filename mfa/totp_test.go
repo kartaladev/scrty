@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 )
 
 // rfc6238SHA1Secret is the ASCII seed RFC 6238 Appendix B uses for HMAC-SHA-1,
@@ -28,15 +29,19 @@ func base32Secret(secret []byte) string {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
 }
 
-// enrolConfirmed writes a confirmed enrolment straight to the store, with a
-// last step of zero so that no verification under test is refused as a replay
-// of a step this fixture recorded.
+// fixtureGen is the enrolment generation the fixtures that write straight to
+// a store begin on, and then confirm and accept steps on.
+var fixtureGen = id.MustParse("01920000-0000-7000-8000-0000000000f0")
+
+// enrolConfirmed writes a confirmed enrolment straight to the store, on
+// fixtureGen, with a last step of zero so that no verification under test is
+// refused as a replay of a step this fixture recorded.
 func enrolConfirmed(t *testing.T, s mfa.EnrolmentStore, user identity.UserID, secret []byte) {
 	t.Helper()
 
-	require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{User: user, Secret: secret}))
+	require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{User: user, Secret: secret, Generation: fixtureGen}))
 
-	ok, err := s.Confirm(t.Context(), user, 0, time.Now())
+	ok, err := s.Confirm(t.Context(), user, fixtureGen, 0, time.Now())
 	require.NoError(t, err)
 	require.True(t, ok)
 }
@@ -78,11 +83,11 @@ type countingEnrolmentStore struct {
 }
 
 func (s *countingEnrolmentStore) AcceptStep(
-	ctx context.Context, user identity.UserID, step int64,
+	ctx context.Context, user identity.UserID, gen id.ID, step int64,
 ) (bool, error) {
 	s.acceptStep.Add(1)
 
-	return s.EnrolmentStore.AcceptStep(ctx, user, step)
+	return s.EnrolmentStore.AcceptStep(ctx, user, gen, step)
 }
 
 func (s *countingEnrolmentStore) AcceptStepCalls() int64 { return s.acceptStep.Load() }

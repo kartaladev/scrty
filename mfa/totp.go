@@ -73,9 +73,10 @@ type TOTP struct {
 //
 // Construction fails on an absent store, an empty issuer, an issuer containing
 // ':' — the separator of the provisioning URI's label — a digit count that is
-// neither 6 nor 8, a period of zero or less, a verification attempt limit or
-// window of zero or less, and a nil clock, random source or identifier
-// generator.
+// neither 6 nor 8, a period shorter than one second or not a whole number of
+// seconds, a verification attempt limit or window of zero or less, and a nil
+// clock, random source, logger or identifier generator. Every one of those
+// failures matches ErrConfig.
 // Each of those is a wiring mistake whose symptom would otherwise appear at the
 // first verification, a long way from its cause.
 func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, error) {
@@ -100,23 +101,28 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 	}
 
 	if nilcheck.IsNil(t.store) {
-		return nil, errors.New("mfa: totp requires an enrolment store")
+		return nil, fmt.Errorf("%w: totp requires an enrolment store", ErrConfig)
 	}
 
 	if t.issuer == "" {
-		return nil, errors.New("mfa: totp requires an issuer, which the library does not default")
+		return nil, fmt.Errorf("%w: totp requires an issuer, which the library does not default", ErrConfig)
 	}
 
 	if strings.Contains(t.issuer, ":") {
-		return nil, fmt.Errorf("mfa: totp issuer must not contain ':', got %q", t.issuer)
+		return nil, fmt.Errorf("%w: totp issuer must not contain ':', got %q", ErrConfig, t.issuer)
 	}
 
 	if t.digits != 6 && t.digits != 8 {
-		return nil, fmt.Errorf("mfa: totp digits must be 6 or 8, got %d", t.digits)
+		return nil, fmt.Errorf("%w: totp digits must be 6 or 8, got %d", ErrConfig, t.digits)
 	}
 
-	if t.period <= 0 {
-		return nil, fmt.Errorf("mfa: totp period must be positive, got %s", t.period)
+	// The step counter is the Unix time divided by whole seconds, and a
+	// provisioning URI carries the period as whole seconds: a shorter period
+	// would divide by zero at the first code, and a fractional one would be
+	// truncated to a step the consumer never configured.
+	if t.period < time.Second || t.period%time.Second != 0 {
+		return nil, fmt.Errorf("%w: totp period must be a whole number of seconds, at least one, got %s",
+			ErrConfig, t.period)
 	}
 
 	if t.verifyLimit <= 0 {
@@ -136,11 +142,11 @@ func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, er
 	}
 
 	if t.logger == nil {
-		return nil, errors.New("mfa: totp logger must not be nil")
+		return nil, fmt.Errorf("%w: totp logger must not be nil", ErrConfig)
 	}
 
 	if nilcheck.IsNil(t.ids) {
-		return nil, errors.New("mfa: totp identifier generator must not be nil")
+		return nil, fmt.Errorf("%w: totp identifier generator must not be nil", ErrConfig)
 	}
 
 	t.proofs, _ = t.store.(DeviceProofStore)
@@ -203,7 +209,10 @@ func (t *TOTP) Period() time.Duration { return t.period }
 // decided.
 //
 // Every other refusal is ErrInvalidCode — an unknown user, an unconfirmed
-// enrolment, a wrong code, a code from outside the window, and a replay. They
+// enrolment, a wrong code, a code from outside the window, a replay, and a
+// code whose enrolment was removed or re-enrolled between the read and the
+// accepting write, which the store refuses because the generation it names
+// is no longer the enrolment's. They
 // are deliberately indistinguishable: telling them apart would say whether a
 // user exists and whether they have enrolled.
 //
@@ -243,7 +252,10 @@ func (t *TOTP) Verify(ctx context.Context, user identity.UserID, response []byte
 		return ErrInvalidCode
 	}
 
-	accepted, err := t.store.AcceptStep(ctx, user, step)
+	// The step is accepted only on the generation whose secret it was matched
+	// against: a removal and a re-enrolment landing since the read must not
+	// let the old secret's code count for the new one.
+	accepted, err := t.store.AcceptStep(ctx, user, e.Generation, step)
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not record the accepted step")
 	}
@@ -497,11 +509,16 @@ func (t *TOTP) provisioningURI(label, secret string) string {
 // Enroller.RedeemEmailCode. A store failure is returned with the package's own
 // text, the store's error still matching by identity.
 //
-// Known limit: it reads the enrolment, then calls the store's Confirm, which
-// conditions on neither the generation nor the device proof. A device proof
-// landing between that read and that write, or not yet visible to a store
-// whose reads may lag its writes, is not seen, and the enrolment is
-// confirmed with it. This call serves out-of-band enrolment through a
+// The confirmation is written only on the generation whose secret the code
+// was checked against: a new begin landing between the read and the write
+// replaces the secret and the generation, and the confirmation then fails
+// with ErrInvalidCode and confirms nothing, the same answer a wrong code
+// gets. An enrolment stored without a generation cannot be confirmed here.
+//
+// Known limit: the store's Confirm does not condition on the device proof. A
+// device proof of the same generation landing between that read and that
+// write, or not yet visible to a store whose reads may lag its writes, is not
+// seen, and the enrolment is confirmed with it. This call serves out-of-band enrolment through a
 // consumer's own route, which a session confined to the enrolment path cannot
 // reach; a consumer exposing both to one session should not offer this call
 // while an enrolment-path proof may be in flight.
@@ -520,7 +537,9 @@ func (t *TOTP) ConfirmEnrolment(ctx context.Context, user identity.UserID, code 
 		return ErrInvalidCode
 	}
 
-	confirmed, err := t.store.Confirm(ctx, user, step, t.clock.Now())
+	// The confirmation names the generation whose secret the code was matched
+	// against, so a begin landing since the read confirms nothing.
+	confirmed, err := t.store.Confirm(ctx, user, e.Generation, step, t.clock.Now())
 	if err != nil {
 		return enrolmentStoreFailed(err, "mfa: totp could not confirm the enrolment")
 	}

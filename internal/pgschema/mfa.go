@@ -1,7 +1,8 @@
 package pgschema
 
 // MFA enrolment statements. Every refusal is a single conditional write: a
-// begin over a confirmed enrolment, a second confirmation, a step at or below
+// begin over a confirmed enrolment, a second confirmation, a confirmation or
+// a step naming a generation that is not the enrolment's, a step at or below
 // the recorded one, a device proof, completion or charge whose conditions do
 // not hold, and a TOTP verification charge or give-back that may not land each
 // affect no row. The secret and email_code columns hold the
@@ -31,11 +32,12 @@ ON CONFLICT (user_id) DO UPDATE
   email_code, email_code_until, email_code_attempts, verify_attempts, verify_window_until
 FROM mfa_enrolments WHERE user_id = $1`
 
-	// EnrolmentConfirm confirms user $1's enrolment at $3 and records step $2,
-	// never moving the recorded step backwards, only while it is pending. It
-	// clears the emailed code and keeps its expiry.
-	EnrolmentConfirm = `UPDATE mfa_enrolments SET confirmed_at = $3, last_step = GREATEST(last_step, $2), email_code = NULL
-WHERE user_id = $1 AND confirmed_at IS NULL`
+	// EnrolmentConfirm confirms user $1's enrolment at $4 and records step $3,
+	// never moving the recorded step backwards, only while it is pending on
+	// generation $2. It clears the emailed code and keeps its expiry. A NULL
+	// $2 matches no row.
+	EnrolmentConfirm = `UPDATE mfa_enrolments SET confirmed_at = $4, last_step = GREATEST(last_step, $3), email_code = NULL
+WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NULL`
 
 	// EnrolmentProveDevice records the device proof of user $1's enrolment
 	// on generation $2: step $3 as the last accepted step, emailed code $4
@@ -64,10 +66,11 @@ WHERE user_id = $1 AND confirmed_at IS NULL`
    AND email_code_until > $3 AND email_code_attempts < $4
 RETURNING email_code_attempts`
 
-	// EnrolmentAcceptStep records step $2 for user $1 only where the
-	// enrolment is confirmed and its recorded step is strictly lower.
-	EnrolmentAcceptStep = `UPDATE mfa_enrolments SET last_step = $2
-WHERE user_id = $1 AND confirmed_at IS NOT NULL AND last_step < $2`
+	// EnrolmentAcceptStep records step $3 for user $1 only where the
+	// enrolment is confirmed on generation $2 and its recorded step is
+	// strictly lower. A NULL $2 matches no row.
+	EnrolmentAcceptStep = `UPDATE mfa_enrolments SET last_step = $3
+WHERE user_id = $1 AND generation = $2 AND confirmed_at IS NOT NULL AND last_step < $3`
 
 	// EnrolmentChargeVerifyAttempt charges one TOTP verification attempt
 	// against user $1's confirmed enrolment at $2. When the window has ended

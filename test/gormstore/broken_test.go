@@ -404,9 +404,11 @@ type readThenWriteAcceptStep struct {
 	db *gormdb.DB
 }
 
-func (s readThenWriteAcceptStep) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
+func (s readThenWriteAcceptStep) AcceptStep(
+	ctx context.Context, user identity.UserID, gen id.ID, step int64,
+) (bool, error) {
 	e, ok, err := s.Get(ctx, user)
-	if err != nil || !ok || e.ConfirmedAt.IsZero() || e.LastStep >= step {
+	if err != nil || !ok || e.ConfirmedAt.IsZero() || gen.IsZero() || e.Generation != gen || e.LastStep >= step {
 		return false, err
 	}
 	err = s.db.WithContext(ctx).Table("mfa_enrolments").Where("user_id = ?", string(user)).Update("last_step", step).Error

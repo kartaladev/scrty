@@ -2,7 +2,6 @@ package mfa
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -91,7 +90,8 @@ type VerifyThrottle struct {
 //
 // A limiter, logger or clock given as nil — including a non-nil interface holding a
 // nil pointer — is a configuration error rather than a silent fallback to the
-// default: a consumer who passed the option meant to replace something.
+// default: a consumer who passed the option meant to replace something. Every
+// construction failure matches ErrConfig.
 func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 	t := &VerifyThrottle{
 		logger:      slog.Default(),
@@ -106,7 +106,7 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 	}
 
 	if t.logger == nil {
-		return nil, errors.New("mfa: verification throttle logger must not be nil")
+		return nil, fmt.Errorf("%w: verification throttle logger must not be nil", ErrConfig)
 	}
 
 	if nilcheck.IsNil(t.clock) {

@@ -29,6 +29,12 @@ const (
 	// Complete confirms a proven pending enrolment whatever generation it
 	// names, so a proof made for one begin completes a later one.
 	mfaGenerationBlindComplete mfaDefect = "generation-blind-complete"
+	// Confirm confirms a pending enrolment whatever generation it names, so
+	// a code checked against one begin's secret confirms a later begin's.
+	mfaGenerationBlindConfirm mfaDefect = "generation-blind-confirm"
+	// AcceptStep accepts a step whatever generation it names, so a code
+	// checked against a removed secret counts for the re-enrolment.
+	mfaGenerationBlindAccept mfaDefect = "generation-blind-accept"
 	// Confirm records the step it is given, lowering a later one a device
 	// proof recorded, so the proving code can be replayed.
 	mfaStepOverwritingConfirm mfaDefect = "step-overwriting-confirm"
@@ -149,12 +155,17 @@ func (s *mfaStore) PutPending(_ context.Context, e mfa.Enrolment) error {
 	return nil
 }
 
-func (s *mfaStore) Confirm(_ context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
+func (s *mfaStore) Confirm(
+	_ context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
+) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.enrolments[user]
 	if !ok || !e.ConfirmedAt.IsZero() {
+		return false, nil
+	}
+	if s.defect != mfaGenerationBlindConfirm && !s.onGeneration(e, gen) {
 		return false, nil
 	}
 	e.ConfirmedAt, e.LastStep = at, max(e.LastStep, step)
@@ -168,12 +179,16 @@ func (s *mfaStore) Confirm(_ context.Context, user identity.UserID, step int64, 
 	return true, nil
 }
 
-func (s *mfaStore) AcceptStep(_ context.Context, user identity.UserID, step int64) (bool, error) {
+func (s *mfaStore) AcceptStep(_ context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	e, ok := s.enrolments[user]
 	if !ok || e.ConfirmedAt.IsZero() {
+		return false, nil
+	}
+	if s.defect != mfaGenerationBlindAccept &&
+		(e.Generation != gen || (gen == id.Nil && s.defect != mfaNilGenerationMatches)) {
 		return false, nil
 	}
 	if s.defect == mfaAcceptStepMovesBack {
@@ -363,6 +378,8 @@ var enrolmentPathVariants = []brokenVariant{
 		"EmailCodeUntil is"),
 	deviceProofVariant(mfaNilGenerationMatches, "nil generation",
 		"nil generation: ProveDevice must report false"),
+	mfaVariant(mfaGenerationBlindConfirm, "confirm naming a replaced generation is refused"),
+	mfaVariant(mfaGenerationBlindAccept, "accept naming a removed generation is refused"),
 	mfaVariant(mfaStepOverwritingConfirm, confirmKeepsStepCase),
 	mfaVariant(mfaConfirmKeepsCode, confirmKeepsStepCase),
 	mfaVariant(mfaPutPendingKeepsProof, newGenerationCase),
