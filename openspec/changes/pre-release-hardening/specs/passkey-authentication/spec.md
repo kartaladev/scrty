@@ -40,7 +40,7 @@ Construction SHALL fail with a configuration error when the relying party identi
 - **THEN** construction succeeds
 
 ### Requirement: A user lookup with no result is refused, not dereferenced
-When the user loader returns no user and no error, a registration begin SHALL be refused, and the default display-name resolver SHALL return an error, rather than panic. A credential list containing an empty entry SHALL be refused as a store failure rather than panic.
+When the user loader returns no user and no error, a registration begin SHALL be refused, and the default display-name resolver SHALL return an error, rather than panic. A credential list containing an empty entry SHALL treat that entry as missing rather than panic.
 
 #### Scenario: Loader returns no user
 - **WHEN** a session of `u-1` begins a registration and the user loader returns no user and no error

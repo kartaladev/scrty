@@ -199,7 +199,7 @@
   This is the `apikey` port change and goes to Opus.
   - **Red tests:** `TestRotate_RefusesRevokedKey`, `TestRotate_ConcurrentRotationsLeaveOneLiveReplacement` and `TestVerify_EmptyDigestDoesNotAcceptAnySecret`.
   - **Verify:** `go test -race -count=1 ./apikey/` and the API-key storetest cases on all backends pass.
-- [ ] 10.2 OIDC and authorize [L1, M10, U11, L2]:
+- [x] 10.2 OIDC and authorize [L1, M10, U11, L2]:
   - ASCII-only domain allowlist;
   - `next` over 2048 bytes not recorded, and over-long allowlist entries refused;
   - skew bounded at 5 minutes and logout max-age at 1 hour;
@@ -214,7 +214,7 @@
   - SMTP normalises CR, LF and CRLF to CRLF.
   - **Red tests:** `TestSweep_VerifyTypedNilPublicKeyDoesNotPanic`, `TestSweep_SubSecondLifetimeProducesUsableTokens`, `TestSweep_ManagerLoadOfStoreReturningNoSessionDoesNotPanic`, the U4 case (`UNREPRODUCED`), and `TestBuild_WireCarriesNoBareCarriageReturn`.
   - **Verify:** `go test -race -count=1 ./token/ ./session/ ./notify/` passes.
-- [ ] 10.4 Passkey and WebAuthn, after groups 3 and 4 [U8, S3, S9]:
+- [x] 10.4 Passkey and WebAuthn, after groups 3 and 4 [U8, S3, S9]:
   - RP ID must be a lowercase DNS name;
   - `(nil, nil)` user details refused at registration begin;
   - whole-second ceremony cookie TTLs.
@@ -226,12 +226,12 @@
   - after `release-readiness` task 2.1 lands, run the layout guard's file and `go.mod` checks for every workspace module except `./test`.
   - **Red test:** a planted `Mock*` type in a nested module, and a test-module import in a nested module, go undetected on HEAD.
   - **Verify:** `go test -count=1 -run 'TestModuleLayout|TestAudit' .` fails on each plant and passes without them.
-- [ ] 10.6 Review of group 10 against D11, D14, D16, D17 and the `api-keys`, `oidc-login`, `oidc-logout`, `identity-linking`, `authorization`, `token-issuance`, `sessions`, `email-notification` and `passkey-authentication` deltas. 10.1 gets Opus; the rest get Sonnet.
+- [x] 10.6 Review of group 10 against D11, D14, D16, D17 and the `api-keys`, `oidc-login`, `oidc-logout`, `identity-linking`, `authorization`, `token-issuance`, `sessions`, `email-notification` and `passkey-authentication` deltas. 10.1 gets Opus; the rest get Sonnet.
   - **Verify:** the review is clean.
 
 ## 11. Gate
 
-- [ ] 11.1 Record every breaking change in `CHANGELOG.md` under `Unreleased`, or, if `release-readiness` has not yet created it, in a note that change picks up. The breaking changes:
+- [x] 11.1 Record every breaking change in `CHANGELOG.md` under `Unreleased`, or, if `release-readiness` has not yet created it, in a note that change picks up. The breaking changes:
   - the port additions and signature changes;
   - sealed TOTP secrets needing re-enrolment;
   - hash ceilings and the bcrypt NUL refusal;
