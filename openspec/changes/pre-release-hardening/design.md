@@ -75,7 +75,7 @@ See `proposal.md` (Why) for the motivation, and the delta specs for the requirem
   - Argon2id: memory ≤ 1 GiB, iterations ≤ 16, threads ≤ 16, salt ≤ 64 bytes, key ≤ 64 bytes.
 - **Constructors.** Each constructor refuses a parameter above its ceiling, so an encoder never produces hashes it would refuse.
 - **No override:** a stated limit under `library-design.md` rule 4. The ceilings bound what stored data can make the process do. Configurable ceilings would let one configuration line reopen the process-kill.
-- **Default bcrypt cost.** It stays 12. 16 is far above every published recommendation (OWASP's bcrypt floor is 10).
+- **Default bcrypt cost.** It stays 10, OWASP's bcrypt floor. The ceiling of 16 is far above every published recommendation, so a consumer raising the cost has ample room.
 - **OIDC claim cost band.** The band must stay at or under the record ceiling, so its maximum falls from 31 to 16 (identity-linking delta). Without that, a hash would be accepted at provisioning and then never match.
 - **Departure:** the established design bounds neither scrypt `p` nor bcrypt cost.
 
@@ -213,7 +213,8 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 **The default attempt store (M8).**
 - `NewAccountLockoutPolicy` builds its default store knowing its own longest retention: the window, or the cap's retention.
 - The store drops timestamps older than that on each write for the key it touches. Every window it sweeps inline, as `memoryShard` does.
-- It caps identifiers at 100,000 (`WithAttemptStoreCapacity`) and digests identifiers over 256 bytes.
+- It caps identifiers at 100,000 (`WithAttemptStoreCapacity`) and digests identifiers over 256 bytes. A capacity of zero or less panics at wiring, since the store's constructor returns no error (as decision 14 does for guards).
+- A store shared by several policies keeps what the longest-retaining of them needs: its inline sweep and its purge never drop a failure or streak younger than that retention, so one policy's purge cannot disarm another's lockout.
 - Holds are never swept early.
 - **When full after a sweep:** recording a new identifier fails, and lockout denies as it does on any store error. This mirrors "a full in-memory limiter refuses new keys". The trade-off is that a flood of distinct usernames denies new usernames' logins until failures age out. A durable or shared attempt store is the override.
 - The store implements purge, so the default no longer reports purge-unsupported.

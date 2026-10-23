@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Keys survive a restart
-Construction SHALL load the keys in the store, publishing every key that is within the key lifetime and, for each configured algorithm, the newest key whatever its age. It SHALL NOT publish a key past the key lifetime that is not the newest key of a configured algorithm, and SHALL NOT generate a replacement for an algorithm that already has a stored key. A token signed before a restart by a key within its lifetime SHALL verify after it. For each algorithm, the current key SHALL be the stored key created most recently among those not created later than the present time plus the reload interval, whatever order the store returns keys in. When creation times are equal, it SHALL be the key the store lists later. Construction, reload and housekeeping SHALL apply the same rule for which keys are published.
+Construction SHALL load the keys in the store, publishing every key that is within the key lifetime and, for each configured algorithm, the current key whatever its age. It SHALL NOT publish a key past the key lifetime that is not the current key of a configured algorithm, and SHALL NOT generate a replacement for an algorithm that already has a stored key that can be current. When every stored key for an algorithm is dated later than the present time plus the reload interval, none can be current, and construction SHALL generate one. A token signed before a restart by a key within its lifetime SHALL verify after it. For each algorithm, the current key SHALL be the stored key created most recently among those not created later than the present time plus the reload interval, whatever order the store returns keys in. When creation times are equal, it SHALL be the key the store lists later. Construction, reload and housekeeping SHALL apply the same rule for which keys are published.
 
 #### Scenario: Restart keeps tokens valid
 - **WHEN** a token is signed by a key manager and a second key manager is constructed over the same store
@@ -25,8 +25,12 @@ Construction SHALL load the keys in the store, publishing every key that is with
 - **WHEN** the store holds an RS256 key created now and another dated one year ahead
 - **THEN** the current RS256 key is the one created now
 
+#### Scenario: Only far-future keys stored
+- **WHEN** the only stored RS256 key is dated one year ahead, and a key manager configured for RS256 is constructed over it
+- **THEN** a new RS256 key is generated and is the current key, and the far-future key does not sign
+
 ### Requirement: Replicas sharing a store reload each other's keys
-Once started, the key manager SHALL reload every key from the store each reload interval, which is 1 minute by default and configurable. Each reload SHALL publish every stored key not already held, except keys older than the key lifetime. After each reload, the current key for each configured algorithm SHALL be the most recently created key held for it among those not created later than the present time plus the reload interval. A reload failure SHALL keep the keys already held, and SHALL be reported like a rotation failure. A reload interval of zero or less, or one that is not shorter than the rotation interval, SHALL fail at construction.
+Once started, the key manager SHALL reload every key from the store each reload interval, which is 1 minute by default and configurable. Each reload SHALL publish every stored key not already held, except keys older than the key lifetime. After each reload, the current key for each configured algorithm SHALL be the most recently created key held for it among those not created later than the present time plus the reload interval. A reload SHALL never leave a configured algorithm without a current key: when no held key of it qualifies, as after the clock steps back, its previous current key stays current. A reload failure SHALL keep the keys already held, and SHALL be reported like a rotation failure. A reload interval of zero or less, or one that is not shorter than the rotation interval, SHALL fail at construction.
 
 #### Scenario: Key rotated in by another replica
 - **WHEN** replicas A and B share a store and replica A rotates in key `k2` and signs a token with it
@@ -45,6 +49,10 @@ Once started, the key manager SHALL reload every key from the store each reload 
 - **WHEN** a reload fails because the store is unreachable
 - **THEN** the manager keeps signing and verifying with the keys it already holds
 - **AND** the failure is reported to the configured logger
+
+#### Scenario: Clock stepped back keeps a signer
+- **WHEN** a started key manager's clock steps back further than the reload interval, so every held RS256 key is dated after the present time plus the reload interval, and a reload runs
+- **THEN** the previous current RS256 key stays current and tokens can still be signed
 
 #### Scenario: Future-dated key does not undo rotation
 - **WHEN** a key dated one year ahead is in the store and the manager rotates in a new key

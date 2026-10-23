@@ -118,7 +118,7 @@
 
 ## 6. Password encoding and authentication (lane C, D2, D3, D17)
 
-- [ ] 6.1 Apply the stored-record ceilings to scrypt, bcrypt and Argon2id, and refuse a constructor parameter above them [H2, N1].
+- [x] 6.1 Apply the stored-record ceilings to scrypt, bcrypt and Argon2id, and refuse a constructor parameter above them [H2, N1].
   - **Red tests:**
     - `TestParseScrypt_RefusesParallelismBeyondFootprintCeiling`;
     - the scrypt CPU-time test;
@@ -126,7 +126,7 @@
     - an Argon2id threads case;
     - constructor-ceiling tables. The Argon2id constructor case is `UNREPRODUCED` until it fails on HEAD.
   - **Verify:** `go test -race -count=1 ./password/` passes, and no `Match` in the suite takes over a second.
-- [ ] 6.2 Refuse NUL in bcrypt `Encode` and `Match`, subsuming the 72-byte padding guard [L9].
+- [x] 6.2 Refuse NUL in bcrypt `Encode` and `Match`, subsuming the 72-byte padding guard [L9].
   - **Red test:** `TestBcryptMatch_RefusesNulJoinedRepetitionOfPassword`.
   - **Verify:** `go test -race -count=1 ./password/` passes, including the existing NUL-suffix test.
 - [ ] 6.3 Add the optional recognition interface to the three encoders, and spend exactly one discarded reference verification for a user with an empty or unrecognised hash [M2]. Fix the three fixtures that use hashless users with stub encoders.
@@ -135,10 +135,10 @@
     - the unrecognised-hash case (`UNREPRODUCED` until it fails on HEAD);
     - a test that the reference password never admits.
   - **Verify:** `go test -race -count=1 ./authenticate/ ./password/` passes.
-- [ ] 6.4 Treat a delegate's `ErrNoEligibleAuthenticator` as a skip, and refuse typed-nil credentials in `Authenticate` and `VerifyDecoy` [L11, L13].
+- [x] 6.4 Treat a delegate's `ErrNoEligibleAuthenticator` as a skip, and refuse typed-nil credentials in `Authenticate` and `VerifyDecoy` [L11, L13].
   - **Red tests:** `TestManager_NestedManagerThatSkipsLetsOuterTryNextDelegate` and `TestPasswordProvider_TypedNilCredentialsRefusedWithoutPanic`.
   - **Verify:** `go test -race -count=1 ./authenticate/` passes.
-- [ ] 6.5 Cap the OIDC password-claim cost band at 16 (identity-linking delta).
+- [x] 6.5 Cap the OIDC password-claim cost band at 16 (identity-linking delta).
   - **Red test:** a band of 10 to 20 constructs.
   - **Verify:** `go test -race -count=1 ./oidc/` passes. The `oidc/passwordclaim.go` change is handed to lane J for this one function.
 - [ ] 6.6 Review of group 6 against D2, D3, D17 and the `password-encoding`, `authentication` and `identity-linking` deltas. 6.1, 6.2, 6.4 and 6.5 get Sonnet; 6.3 gets Opus.
@@ -146,18 +146,18 @@
 
 ## 7. Recovery channels (lane G, D5, D6)
 
-- [ ] 7.1 Refuse an issued code paired with an email-channel MFA proof as a malformed recovery, before any proof is checked [M4].
+- [x] 7.1 Refuse an issued code paired with an email-channel MFA proof as a malformed recovery, before any proof is checked [M4].
   - **Red test:** `TestRecoverer_RefusesIssuedCodePairedWithEmailChannelMethod`, and the saved-code plus email-MFA case still succeeding.
   - **Verify:** `go test -race -count=1 ./recovery/` passes.
-- [ ] 7.2 Carry each authenticator's channel on `AuthenticatorRef` from the MFA kind, and stop the way-back check pairing an email-channel method with an issued code. Treat a loader's `(nil, nil)` as a user with nothing [M4, L13].
+- [x] 7.2 Carry each authenticator's channel on `AuthenticatorRef` from the MFA kind, and stop the way-back check pairing an email-channel method with an issued code. Treat a loader's `(nil, nil)` as a user with nothing [M4, L13].
   - **Red tests:**
     - only an emailed MFA method with issued codes reports yes on HEAD;
     - `TestHasWayBack_LoaderWithNoDetailsDoesNotPanic`.
   - **Verify:** `go test -race -count=1 ./recovery/` passes.
-- [ ] 7.3 Fold ASCII case only in the cancel-link `localhost` check [N4]. Treat `(nil, nil)` record and list results as missing [S7, `UNREPRODUCED`]. Add D1's defensive ID check to recovery `Finish`.
+- [x] 7.3 Fold ASCII case only in the cancel-link `localhost` check [N4]. Treat `(nil, nil)` record and list results as missing [S7, `UNREPRODUCED`]. Add D1's defensive ID check to recovery `Finish`.
   - **Red test:** `TestParseCancelLink_RefusesHTTPOnUnicodeFoldedLocalhost`.
   - **Verify:** `go test -race -count=1 ./recovery/` passes.
-- [ ] 7.4 Review (Opus) of group 7 against D5, D6 and the `account-recovery` delta.
+- [x] 7.4 Review (Opus) of group 7 against D5, D6 and the `account-recovery` delta.
   - **Verify:** the review is clean.
 
 ## 8. Signing keys (lane H, D9)
@@ -177,12 +177,12 @@
   - **Red test:** `TestDefaultLockoutStore_ReleasesIdentifiersOutsideWindow` (50,001 held), plus the full-store denial and the consumer capacity.
   - **Verify:** `go test -race -count=1 ./policy/` passes.
 - [ ] 9.2 Deny a nil input in `Engine.EvaluatePhase`, and a zero `Now` in the idle, password-age and enrolment-path policies [M11, L13].
-  - **Red tests:** `TestIdleTimeout_ZeroNowDoesNotAllowIdleSession`, `TestPasswordAge_ZeroNowStillChallengesStalePassword`, an enrolment-path twin, and `TestEngine_NilInputDeniesRatherThanPanics`.
+  - **Red tests:** `TestIdleTimeout_ZeroNowDoesNotAllowIdleSession`, `TestPasswordAge_ZeroNowDeniesStalePassword`, an enrolment-path twin, and `TestEngine_NilInputDeniesRatherThanPanics`.
   - **Verify:** `go test -race -count=1 ./policy/` passes.
-- [ ] 9.3 Cap the outage hold, digest its long keys, answer exceeded when it is full, and re-arm its sweep after a backwards clock step [M9, L15].
+- [x] 9.3 Cap the outage hold, digest its long keys, answer exceeded when it is full, and re-arm its sweep after a backwards clock step [M9, L15].
   - **Red tests:** `TestUnavailable_RefuseHoldIsBoundedUnderKeySpray` and `TestHold_SweepsAfterClockStepsBackwards`.
   - **Verify:** `go test -race -count=1 ./internal/unavailable/` passes.
-- [ ] 9.4 Cap the log sampler's keys per window, with an overflow key [U5, `UNREPRODUCED`]. Refuse empty or `:`-bearing flow names in `NewSourceGuard` [U10].
+- [x] 9.4 Cap the log sampler's keys per window, with an overflow key [U5, `UNREPRODUCED`]. Refuse empty or `:`-bearing flow names in `NewSourceGuard` [U10].
   - **Red tests:** a one-million-key spray in one window, and a `login:2001` flow constructing.
   - **Verify:** `go test -race -count=1 ./pkg/logsample/ ./ratelimit/` passes.
 - [ ] 9.5 Review of group 9 against D12, D13, D14 and the `security-policy`, `rate-limiting` and `log-sampling` deltas. 9.1 gets Opus; the rest get Sonnet.
@@ -206,7 +206,7 @@
   - ASCII-only privilege comparer with ASCII-only trim.
   - **Red tests:** `TestBroker_RefusesProvisioningForUnicodeFoldedDomain`, `TestAuthorize_BoundsUntrustedNextLength`, the two bound cases, and `TestPrivilegeAuthorizer_DefaultComparerDoesNotFoldDistinctUnicodeNames` plus the NBSP case.
   - **Verify:** `go test -race -count=1 ./oidc/ ./authorize/` passes.
-- [ ] 10.3 Tokens, sessions and notify [S1, S6, S2, U4, L14]:
+- [x] 10.3 Tokens, sessions and notify [S1, S6, S2, U4, L14]:
   - a typed-nil verification key is an unusable key set;
   - a whole-second token lifetime;
   - a `(nil, nil)` session load is not-found;
@@ -218,6 +218,7 @@
   - RP ID must be a lowercase DNS name;
   - `(nil, nil)` user details refused at registration begin;
   - whole-second ceremony cookie TTLs.
+  - a nil element in a stored credential list is treated as missing in `passkey/pending.go` [S7, `UNREPRODUCED`].
   - **Red tests:** `TestSweep_BeginRegistrationWithLoaderReturningNoUserDoesNotPanic`, plus the RP ID table (`UNREPRODUCED` until it fails on HEAD).
   - **Verify:** `go test -race -count=1 ./passkey/...` passes.
 - [ ] 10.5 Documentation and layout [U1, M13]:

@@ -513,7 +513,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 
 ### Task 7.3: ASCII loopback; nil records
 
-**Files:** `recovery/hold.go:175`, `recovery/hold.go:379`, `passkey/pending.go:146`
+**Files:** `recovery/hold.go:175`, `recovery/hold.go:379` (the `passkey/pending.go:146` nil guard moved to task 10.4, which owns `passkey/`)
 
 - [ ] **Step 1: Write the tests.**
   - `TestParseCancelLink_RefusesHTTPOnUnicodeFoldedLocalhost`: `localhoſt` gives a config error, and `LOCALHOST` is fine.
@@ -521,7 +521,7 @@ These five failure modes are implied by the spec but no single task's tests exer
   - `TestHoldFinish_RefusesUserWhoseIDDiffers` (D1's defence in `Finish`, `recovery/hold.go:320`).
 - [ ] **Step 2: Run them.** Expected: the first and third fail. If the S7 case passes on HEAD, report it.
 - [ ] **Step 3: Implement it.** Fold ASCII using `internal/origin`'s helper, guard nil records, and refuse in `Finish` when `details.ID != rec.User`.
-- [ ] **Step 4: Run `go test -race -count=1 ./recovery/ ./passkey/`.** Expected: PASS.
+- [ ] **Step 4: Run `go test -race -count=1 ./recovery/`.** Expected: PASS.
 - [ ] **Step 5: Commit** `fix(recovery): ASCII-only loopback check, nil records are missing`.
 
 ### Task 7.4: Review (Opus)
@@ -589,7 +589,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 
 **Files:** `policy/engine.go:275`, `policy/idle.go`, `policy/passwordage.go`, `policy/enrolmentpath.go`
 
-- [ ] **Step 1: Write the failing tests.** `TestIdleTimeout_ZeroNowDoesNotAllowIdleSession`, `TestPasswordAge_ZeroNowStillChallengesStalePassword`, `TestEnrolmentPath_ZeroNowIsClosed` and `TestEngine_NilInputDeniesRatherThanPanics`.
+- [ ] **Step 1: Write the failing tests.** `TestIdleTimeout_ZeroNowDoesNotAllowIdleSession`, `TestPasswordAge_ZeroNowDeniesStalePassword`, `TestEnrolmentPath_ZeroNowIsClosed` and `TestEngine_NilInputDeniesRatherThanPanics`.
 - [ ] **Step 2: Run them.** Expected: Allow, and a panic at `concurrent.go:136`.
 - [ ] **Step 3: Implement it.** `EvaluatePhase` denies a nil input. Each policy denies `in.Now.IsZero()`.
 - [ ] **Step 4: Run `go test -race -count=1 ./policy/`.** Expected: PASS.
@@ -687,9 +687,9 @@ These five failure modes are implied by the spec but no single task's tests exer
 
 ### Task 10.4: Passkey and WebAuthn (Sonnet, after lanes E and A)
 
-**Files:** `passkey/relyingparty.go:53`, `passkey/manager.go:372`, `passkey/register.go:40`, the ceremony cookie TTL options in `httpsec/magiclink.go:303` and `httpsec/passkeylogin.go:465` (handed over from lane A)
+**Files:** `passkey/relyingparty.go:53`, `passkey/manager.go:372`, `passkey/register.go:40`, `passkey/pending.go:146` (S7: a nil element in a credential list), the ceremony cookie TTL options in `httpsec/magiclink.go:303` and `httpsec/passkeylogin.go:465` (handed over from lane A)
 
-- [ ] **Step 1: Write the failing tests.** `TestValidateRPID` is a table: `Example.com`, `-login.example.com`, and a 64-character label all fail; `login.example.com` and `localhost` pass. Mark it `UNREPRODUCED` until it fails on HEAD. Also write `TestBeginRegistration_LoaderReturningNoUserIsRefused` and `TestCeremonyCookieTTL_RefusesSubSecond`.
+- [ ] **Step 1: Write the failing tests.** `TestValidateRPID` is a table: `Example.com`, `-login.example.com`, and a 64-character label all fail; `login.example.com` and `localhost` pass. Mark it `UNREPRODUCED` until it fails on HEAD. Also write `TestBeginRegistration_LoaderReturningNoUserIsRefused`, `TestCeremonyCookieTTL_RefusesSubSecond`, and a nil-credential-in-list case for `pending.go` (S7, `UNREPRODUCED`).
 - [ ] **Step 2: Run them.** Expected: the RP ID cases are accepted, and the begin panics at `manager.go:373`.
 - [ ] **Step 3: Implement the DNS-name check, the nil guard and whole-second TTLs.**
 - [ ] **Step 4: Run `go test -race -count=1 ./passkey/... ./httpsec/`.** Expected: PASS.
