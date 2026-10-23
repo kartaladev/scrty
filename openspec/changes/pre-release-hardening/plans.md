@@ -351,12 +351,12 @@ These five failure modes are implied by the spec but no single task's tests exer
 
 **Files:** `httpsec/status.go:159`, `httpsec/status_test.go:410`
 
-- [ ] **Step 1: Add the rows** for `apikey.ErrRotationRefused`, `onetime.ErrIssueLimitReached`, `session.ErrDeleteDidNotSettle` and `storeerr.ErrIsolationTooStrong` to `TestStatusForErrorCoversEverySentinel`.
+- [ ] **Step 1: Add the rows** for `apikey.ErrRotationRefused` and `onetime.ErrIssueLimitReached` (`session.ErrDeleteDidNotSettle` and `storeerr.ErrIsolationTooStrong` are already registered) to `TestStatusForErrorCoversEverySentinel`.
 - [ ] **Step 2: Run it.** Expected: FAIL for each unmapped sentinel.
 - [ ] **Step 3: Map them.**
   - `ErrIssueLimitReached` → 429.
   - `ErrRotationRefused` → 409.
-  - The isolation and did-not-settle errors → 500.
+  - The isolation and did-not-settle errors stay unmapped (500 by default) and are listed as unmapped with a reason; lane F registered them when it added them.
 - [ ] **Step 4: Run it.** Expected: PASS.
 - [ ] **Step 5: Commit** `fix(httpsec): map the sentinels the hardening adds`.
 

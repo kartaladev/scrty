@@ -16,22 +16,22 @@
 
 ## 1. Store isolation (lane F, D8)
 
-- [ ] 1.1 Add the READ COMMITTED transaction helper and the caller-isolation check to `pgx`, `sqlstore` and `gorm` [M7, S4, S5].
+- [x] 1.1 Add the READ COMMITTED transaction helper and the caller-isolation check to `pgx`, `sqlstore` and `gorm` [M7, S4, S5].
   - **Red tests:** in `test/{pgx,sql,gorm}store`, with the database default set to REPEATABLE READ:
     - concurrent failure streaks for one username all count;
     - overlapping saved-code replacements keep only the later set;
     - 8 concurrent provisions give exactly 1 success and 7 user-exists;
     - concurrent limiter records report no backend failure.
   - **Verify:** `(cd test && go test -race -count=1 -run 'RepeatableRead' ./pgxstore/ ./sqlstore/ ./gormstore/)` passes on PostgreSQL 18 and 15, where each case failed before.
-- [ ] 1.2 Make operations that need READ COMMITTED refuse a caller's stronger transaction with an error naming the level: recovery-code replace and `StreakAdd`.
+- [x] 1.2 Make operations that need READ COMMITTED refuse a caller's stronger transaction with an error naming the level: recovery-code replace and `StreakAdd`.
   - **Red test:** a caller's REPEATABLE READ transaction replacing a saved-code set silently keeps both sets.
   - **Verify:** the refusal case passes on all three backends, and the caller's transaction is still usable afterwards.
-- [ ] 1.3 Bound the user-wide delete loops (`DeleteByUser`, `DeleteByUserExcept`, `DeleteByExternalSession`, `DeleteByUserAndExternalIssuer`) at 64 passes, ending with `session.ErrDeleteDidNotSettle` [U2, `UNREPRODUCED`].
+- [x] 1.3 Bound the user-wide delete loops (`DeleteByUser`, `DeleteByUserExcept`, `DeleteByExternalSession`, `DeleteByUserAndExternalIssuer`) at 64 passes, ending with `session.ErrDeleteDidNotSettle` [U2, `UNREPRODUCED`].
   - **Red test:** concurrent `Create` for the user keeps the delete looping until its context deadline. If it passes on HEAD, record that and skip the fix.
   - **Verify:** the case returns before its deadline on all three backends.
-- [ ] 1.4 Add the isolation suite cases to `test/storetest` and wire them for every backend (store-conformance delta).
+- [x] 1.4 Add the isolation suite cases to `test/storetest` and wire them for every backend (store-conformance delta).
   - **Verify:** `(cd test && go test -race -count=1 ./...)` passes on PostgreSQL 18 and 15.
-- [ ] 1.5 Review (Opus) of group 1 against D8 and the `security-state-stores` and `store-conformance` deltas.
+- [x] 1.5 Review (Opus) of group 1 against D8 and the `security-state-stores` and `store-conformance` deltas.
   - **Verify:** the review is clean, or its findings are folded by a fresh dispatch and reviewed again.
 
 ## 2. TOTP enrolment generations (lane D, D10)
@@ -101,19 +101,19 @@
 
 ## 5. Framework adapters (lane B, D16; starts after 4.4)
 
-- [ ] 5.1 Pass a fiber route's own error through unchanged, and have `ErrorHandler` honour `*fiber.Error` [M12].
+- [x] 5.1 Pass a fiber route's own error through unchanged, and have `ErrorHandler` honour `*fiber.Error` [M12].
   - **Red tests:** `TestFiber_ErrorHandlerKeepsNonRefusalStatuses` and `TestFiber_DefaultErrorHandlerKeepsRouteErrorText`.
   - **Verify:** `(cd fibersec && go test -race -count=1 ./...)` passes.
-- [ ] 5.2 Run the fiber chain on a context derived from fiber's and cancelled when the request's handling ends, and state in fibersec's godoc that a mid-request disconnect is not detected on fiber [U6].
+- [x] 5.2 Run the fiber chain on a context derived from fiber's and cancelled when the request's handling ends, and state in fibersec's godoc that a mid-request disconnect is not detected on fiber [U6].
   - **Red test:** a disconnecting client leaves a store lookup's context alive.
   - **Verify:** the test passes, or is recorded as not reproducing.
-- [ ] 5.3 Panic at wiring on nil ownership checkers or extractors in the fibersec and ginsec guards [L13].
+- [x] 5.3 Panic at wiring on nil ownership checkers or extractors in the fibersec and ginsec guards [L13].
   - **Red test:** `TestFiber_OwnershipGuardWithNilCheckerFailsAtWiring`, plus the gin twin.
   - **Verify:** `(cd fibersec && go test -race -count=1 ./...)` and `(cd ginsec && go test -race -count=1 ./...)` pass.
-- [ ] 5.4 Add a fiber conformance case showing the cool-down holds for `/Account/Email`, `/account/email/` and `/account/email//` with fiber's default routing [H3 end-to-end].
+- [x] 5.4 Add a fiber conformance case showing the cool-down holds for `/Account/Email`, `/account/email/` and `/account/email//` with fiber's default routing [H3 end-to-end].
   - **Red test:** `TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute`, which passes once group 4.2 has landed.
   - **Verify:** `(cd fibersec && go test -race -count=1 ./...)` passes.
-- [ ] 5.5 Review (Sonnet) of group 5 against D16 and the `framework-adapters` delta.
+- [x] 5.5 Review (Sonnet) of group 5 against D16 and the `framework-adapters` delta.
   - **Verify:** the review is clean.
 
 ## 6. Password encoding and authentication (lane C, D2, D3, D17)
