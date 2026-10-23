@@ -22,9 +22,9 @@ func (s *IdentityStore) atomically(ctx context.Context, op string, fn func(q *go
 		return s.underSavepoint(ctx, q, op, fn)
 	}
 
-	tx := q.Begin()
-	if tx.Error != nil {
-		return dbFailed(op, tx.Error)
+	tx, err := beginReadCommitted(ctx, q)
+	if err != nil {
+		return dbFailed(op, err)
 	}
 	// Rolled back on every way out but a commit, a panic in fn included, so
 	// the transaction and the row locks it holds never outlive the call.

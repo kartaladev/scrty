@@ -31,6 +31,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/storeerr"
 )
 
 func TestStatusForError(t *testing.T) {
@@ -403,6 +404,10 @@ var sentinelRegistry = map[string]map[string]error{
 		"session.ErrSessionRenewalRequired": session.ErrSessionRenewalRequired,
 		"session.ErrSessionSuperseded":      session.ErrSessionSuperseded,
 		"session.ErrSuccessorAdvanced":      session.ErrSuccessorAdvanced,
+		"session.ErrDeleteDidNotSettle":     session.ErrDeleteDidNotSettle,
+	},
+	"github.com/kartaladev/scrty/storeerr": {
+		"storeerr.ErrIsolationTooStrong": storeerr.ErrIsolationTooStrong,
 	},
 }
 
@@ -436,8 +441,10 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 			"which turns it into ErrSessionReused",
 		"session.ErrSessionSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
 			"which re-loads the session and returns its verdict instead",
-		"session.ErrSessionUnreadable": "converted to ErrAuthenticationRequired before it leaves the chain",
-		"ratelimit.ErrConfig":          "a wiring fault, refused at construction",
+		"session.ErrSessionUnreadable":   "converted to ErrAuthenticationRequired before it leaves the chain",
+		"session.ErrDeleteDidNotSettle":  "a store contract failure, answered 500 by default",
+		"storeerr.ErrIsolationTooStrong": "a store contract failure, answered 500 by default",
+		"ratelimit.ErrConfig":            "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
 		"policy.ErrAttemptStoreFull": "returned by a full in-memory attempt store; the lockout policy denies with ErrPolicyDenied",
@@ -486,6 +493,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"github.com/kartaladev/scrty/ratelimit",
 		"github.com/kartaladev/scrty/recovery",
 		"github.com/kartaladev/scrty/session",
+		"github.com/kartaladev/scrty/storeerr",
 	} {
 		for name, err := range exportedSentinels(t, pkg) {
 			if _, ok := unmapped[name]; ok {

@@ -52,6 +52,15 @@
 // unexpected reason aborts that transaction, as PostgreSQL defines, a read
 // (for example one cancelled by a statement timeout) as much as a write.
 //
+// Isolation: every transaction a store begins for itself runs SET TRANSACTION
+// ISOLATION LEVEL READ COMMITTED first, and AddStreakFailure runs in a READ
+// COMMITTED transaction of its own, so
+// the stores' guarantees hold whatever default_transaction_isolation the
+// database or the role sets. Inside a caller's transaction,
+// RecoveryCodeStore.ReplaceSet and AttemptStore.AddStreakFailure refuse an
+// isolation stronger than READ COMMITTED with ErrIsolationTooStrong, leaving
+// the transaction usable; every other operation joins it at any isolation.
+//
 // The identity store is the exception: provisioning, updating and retiring a
 // password are several statements. Outside a caller's transaction each runs
 // in a transaction the store begins and ends itself; inside one it runs under

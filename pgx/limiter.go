@@ -181,12 +181,30 @@ func (l *Limiter) Policy() (limit int, window time.Duration) {
 func (l *Limiter) Verify(ctx context.Context) error { return l.check.verify(ctx) }
 
 // limiterRunner runs the shared limiter's statements on the pool, never in a
-// transaction.
+// caller's transaction.
 type limiterRunner struct{ pool *pgxpool.Pool }
 
 func (r limiterRunner) Exec(ctx context.Context, q string, args ...any) (pglimiter.Result, error) {
 	tag, err := r.pool.Exec(ctx, q, args...)
 	return commandResult(tag), err
+}
+
+// ExecReadCommitted runs q as the only statement of a READ COMMITTED
+// transaction of its own on the pool, whatever the database's default
+// isolation is, and commits it. The transaction is rolled back on every other
+// way out, even when ctx is done.
+func (r limiterRunner) ExecReadCommitted(ctx context.Context, q string, args ...any) error {
+	tx, err := beginReadCommitted(ctx, r.pool)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := tx.Exec(ctx, q, args...); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
 
 // commandResult is a command tag as the shared limiter's Result; pgx always

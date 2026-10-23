@@ -214,6 +214,49 @@ func (c *MockRunnerExecCall) DoAndReturn(f func(context.Context, string, ...any)
 	return c
 }
 
+// ExecReadCommitted mocks base method.
+func (m *MockRunner) ExecReadCommitted(ctx context.Context, sql string, args ...any) error {
+	m.ctrl.T.Helper()
+	varargs := []any{ctx, sql}
+	for _, a := range args {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "ExecReadCommitted", varargs...)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// ExecReadCommitted indicates an expected call of ExecReadCommitted.
+func (mr *MockRunnerMockRecorder) ExecReadCommitted(ctx, sql any, args ...any) *MockRunnerExecReadCommittedCall {
+	mr.mock.ctrl.T.Helper()
+	varargs := append([]any{ctx, sql}, args...)
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExecReadCommitted", reflect.TypeOf((*MockRunner)(nil).ExecReadCommitted), varargs...)
+	return &MockRunnerExecReadCommittedCall{Call: call}
+}
+
+// MockRunnerExecReadCommittedCall wrap *gomock.Call
+type MockRunnerExecReadCommittedCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockRunnerExecReadCommittedCall) Return(arg0 error) *MockRunnerExecReadCommittedCall {
+	c.Call = c.Call.Return(arg0)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockRunnerExecReadCommittedCall) Do(f func(context.Context, string, ...any) error) *MockRunnerExecReadCommittedCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockRunnerExecReadCommittedCall) DoAndReturn(f func(context.Context, string, ...any) error) *MockRunnerExecReadCommittedCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // QueryRow mocks base method.
 func (m *MockRunner) QueryRow(ctx context.Context, sql string, args ...any) pglimiter.Row {
 	m.ctrl.T.Helper()

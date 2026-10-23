@@ -355,12 +355,17 @@ func (s *sessionStore) Delete(ctx context.Context, sessionID string) error {
 // fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
 // SERIALIZABLE, such a pass fails with the driver's serialization failure
 // (SQLSTATE 40001) instead, and the caller retries its transaction.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
 	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
-	_, err := untilNone(func() (int, error) {
+	_, err := untilSettled("delete user's sessions", func() (int, error) {
 		return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions", "user_id = ?", string(user))
 	})
 
@@ -385,6 +390,11 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 // SERIALIZABLE, such a pass fails with the driver's serialization failure
 // (SQLSTATE 40001) instead, and the caller retries its transaction. On an
 // error, the number of rows the earlier passes removed is returned with it.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
@@ -398,7 +408,7 @@ func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.Use
 	}
 	digest := storekit.SessionDigest(keep)
 
-	return untilNone(func() (int, error) {
+	return untilSettled(op, func() (int, error) {
 		res := q.Exec(pgschema.SessionDeleteByUserExcept, string(user), digest)
 		if res.Error != nil {
 			return 0, failed(op, res.Error)
@@ -476,12 +486,17 @@ func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 // SERIALIZABLE, such a pass fails with the driver's serialization failure
 // (SQLSTATE 40001) instead, and the caller retries its transaction. On an
 // error, the number of rows the earlier passes removed is returned with it.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	if !storekit.Storable(issuer, sessionID) {
 		return 0, nil
 	}
 
-	return untilNone(func() (int, error) {
+	return untilSettled("delete provider session's sessions", func() (int, error) {
 		return deleteWhere[sessionRow](ctx, s.c, "delete provider session's sessions",
 			"external_issuer = ? AND external_session_id = ? AND external_issuer <> '' AND external_session_id <> ''",
 			issuer, sessionID)
@@ -499,6 +514,11 @@ func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sess
 // SERIALIZABLE, such a pass fails with the driver's serialization failure
 // (SQLSTATE 40001) instead, and the caller retries its transaction. On an
 // error, the number of rows the earlier passes removed is returned with it.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	ctx context.Context, user identity.UserID, issuer string,
 ) (int, error) {
@@ -506,7 +526,7 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 		return 0, nil
 	}
 
-	return untilNone(func() (int, error) {
+	return untilSettled("delete user's sessions from issuer", func() (int, error) {
 		return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions from issuer",
 			"user_id = ? AND external_issuer = ? AND external_issuer <> ''", string(user), issuer)
 	})
@@ -656,10 +676,10 @@ type supersession struct {
 
 // Begin begins a transaction of the store's own on q, the handle the call
 // resolved to on the store's *gorm.DB.
-func (u *supersession) Begin(_ context.Context, q *gormdb.DB) (*gormdb.DB, error) {
-	tx := q.Begin()
-	if tx.Error != nil {
-		return nil, failed(u.op, tx.Error)
+func (u *supersession) Begin(ctx context.Context, q *gormdb.DB) (*gormdb.DB, error) {
+	tx, err := beginReadCommitted(ctx, q)
+	if err != nil {
+		return nil, failed(u.op, err)
 	}
 	u.tx = tx
 

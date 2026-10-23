@@ -43,6 +43,15 @@
 // commit or roll back a transaction they did not open; the identity store
 // rolls back only to a savepoint of its own, as below.
 //
+// Isolation: every transaction a store begins for itself runs SET TRANSACTION
+// ISOLATION LEVEL READ COMMITTED first, and AddStreakFailure and the limiter's
+// record each run in a READ COMMITTED transaction of their own, so
+// the stores' guarantees hold whatever default_transaction_isolation the
+// database or the role sets. Inside a caller's transaction,
+// RecoveryCodeStore.ReplaceSet and AttemptStore.AddStreakFailure refuse an
+// isolation stronger than READ COMMITTED with ErrIsolationTooStrong, leaving
+// the transaction usable; every other operation joins it at any isolation.
+//
 // Refusals — an already-consumed token, a duplicate link, a replayed time step
 // — are reported without a failed statement, so they leave a caller's
 // transaction usable. The limit, for the security-state stores: any statement

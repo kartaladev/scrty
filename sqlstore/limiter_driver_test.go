@@ -16,8 +16,9 @@ import (
 )
 
 // stubDriver is a database/sql driver that reaches no database: every Exec
-// succeeds with driver.ResultNoRows, which reports no row count, and every
-// query fails with errStubQuery. Each connection it opens is a stubConn.
+// succeeds with driver.ResultNoRows, which reports no row count, every query
+// fails with errStubQuery, and every transaction begins and ends. Each
+// connection it opens is a stubConn.
 type stubDriver struct{}
 
 var errStubQuery = errors.New("stub driver: no rows to query")
@@ -30,7 +31,14 @@ func (stubConn) Prepare(string) (driver.Stmt, error) {
 	return nil, errors.New("stub driver: no prepare")
 }
 func (stubConn) Close() error              { return nil }
-func (stubConn) Begin() (driver.Tx, error) { return nil, errors.New("stub driver: no transactions") }
+func (stubConn) Begin() (driver.Tx, error) { return stubTx{}, nil }
+
+// stubTx is a transaction of stubConn: its statements run as stubConn's do,
+// and committing or rolling it back always succeeds.
+type stubTx struct{}
+
+func (stubTx) Commit() error   { return nil }
+func (stubTx) Rollback() error { return nil }
 
 func (stubConn) ExecContext(context.Context, string, []driver.NamedValue) (driver.Result, error) {
 	return driver.ResultNoRows, nil

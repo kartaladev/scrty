@@ -139,6 +139,12 @@ var (
 // writer creates between this write's snapshot and its insert makes the
 // statement return no row, and it runs again while ctx is live, up to
 // pgschema.StreakAddMaxRuns.
+//
+// Isolation: the count is exact only at READ COMMITTED, so on the pool each
+// run is a READ COMMITTED transaction of its own, whatever the database's
+// default is. Inside a caller's transaction stronger than READ COMMITTED it
+// refuses with an error wrapping ErrIsolationTooStrong and naming the
+// isolation, writes nothing and leaves the transaction usable.
 func (s *AttemptStore) AddStreakFailure(
 	ctx context.Context, username string, at, since time.Time, limit int,
 ) (policy.FailureStreak, bool, error) {
@@ -148,9 +154,14 @@ func (s *AttemptStore) AddStreakFailure(
 		return policy.FailureStreak{}, false, failed(op, err)
 	}
 
-	q, _, err := s.c.conn(ctx)
+	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
 		return policy.FailureStreak{}, false, failed(op, err)
+	}
+	if ambient {
+		if err := requireReadCommitted(ctx, q); err != nil {
+			return policy.FailureStreak{}, false, failed(op, err)
+		}
 	}
 
 	for range pgschema.StreakAddMaxRuns {
@@ -168,9 +179,16 @@ func (s *AttemptStore) AddStreakFailure(
 			heldAt  *time.Time
 			setHold bool
 		)
-		err = q.Raw(pgschema.StreakAdd,
-			rowID, username, storekit.Time(at), storekit.Time(since), limit,
-		).Row().Scan(&got.Failures, &got.Newest, &heldAt, &setHold)
+		run := func(q *gormdb.DB) error {
+			return q.Raw(pgschema.StreakAdd,
+				rowID, username, storekit.Time(at), storekit.Time(since), limit,
+			).Row().Scan(&got.Failures, &got.Newest, &heldAt, &setHold)
+		}
+		if ambient {
+			err = run(q)
+		} else {
+			err = readCommitted(ctx, q, run)
+		}
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

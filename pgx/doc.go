@@ -46,6 +46,15 @@
 // and releases whether the unit succeeds or fails, so their failure leaves the
 // caller's transaction usable and no savepoint open.
 //
+// Isolation: every transaction a store begins for itself runs SET TRANSACTION
+// ISOLATION LEVEL READ COMMITTED first, and AddStreakFailure and the limiter's
+// record each run in a READ COMMITTED transaction of their own, so
+// the stores' guarantees hold whatever default_transaction_isolation the
+// database or the role sets. Inside a caller's transaction,
+// RecoveryCodeStore.ReplaceSet and AttemptStore.AddStreakFailure refuse an
+// isolation stronger than READ COMMITTED with ErrIsolationTooStrong, leaving
+// the transaction usable; every other operation joins it at any isolation.
+//
 // Refusals — an already-consumed token, a duplicate identifier, a save of a
 // session that is gone — are reported without a failed statement, so they
 // leave a caller's transaction usable. The limit: any statement a store runs

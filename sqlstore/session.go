@@ -271,12 +271,17 @@ func (s *sessionStore) Delete(ctx context.Context, sessionID string) error {
 // fresh snapshot, does. Inside a caller's transaction at REPEATABLE READ or
 // SERIALIZABLE, such a pass fails with the driver's serialization failure
 // (SQLSTATE 40001) instead, and the caller retries its transaction.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) error {
 	if !storekit.Storable(string(user)) {
 		return nil
 	}
 
-	_, err := s.deleteUntilNone(ctx, "delete user's sessions", pgschema.SessionDeleteByUser, string(user))
+	_, err := s.deleteUntilSettled(ctx, "delete user's sessions", pgschema.SessionDeleteByUser, string(user))
 
 	return err
 }
@@ -298,12 +303,17 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 // READ or SERIALIZABLE, such a pass fails with the driver's serialization
 // failure (SQLSTATE 40001) instead, and the caller retries its transaction. On
 // an error, the number of rows the earlier passes removed is returned with it.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	if !storekit.Storable(string(user)) {
 		return 0, nil
 	}
 
-	return s.deleteUntilNone(ctx, "delete user's other sessions", pgschema.SessionDeleteByUserExcept,
+	return s.deleteUntilSettled(ctx, "delete user's other sessions", pgschema.SessionDeleteByUserExcept,
 		string(user), storekit.SessionDigest(keep))
 }
 
@@ -350,12 +360,17 @@ func (s *sessionStore) DeleteExpired(ctx context.Context) (int, error) {
 // READ or SERIALIZABLE, such a pass fails with the driver's serialization
 // failure (SQLSTATE 40001) instead, and the caller retries its transaction. On
 // an error, the number of rows the earlier passes removed is returned with it.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	if !storekit.Storable(issuer, sessionID) {
 		return 0, nil
 	}
 
-	return s.deleteUntilNone(ctx, "delete provider session's sessions", pgschema.SessionDeleteByExternal,
+	return s.deleteUntilSettled(ctx, "delete provider session's sessions", pgschema.SessionDeleteByExternal,
 		issuer, sessionID)
 }
 
@@ -370,6 +385,11 @@ func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sess
 // READ or SERIALIZABLE, such a pass fails with the driver's serialization
 // failure (SQLSTATE 40001) instead, and the caller retries its transaction. On
 // an error, the number of rows the earlier passes removed is returned with it.
+//
+// The passes are bounded at 64: when every one of them removed sessions,
+// because sessions it matches are being created as fast as it removes them,
+// it stops with an error wrapping ErrDeleteDidNotSettle rather than running
+// until ctx ends. What its passes removed stays removed.
 func (s *sessionStore) DeleteByUserAndExternalIssuer(
 	ctx context.Context, user identity.UserID, issuer string,
 ) (int, error) {
@@ -377,7 +397,7 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 		return 0, nil
 	}
 
-	return s.deleteUntilNone(ctx, "delete user's sessions from issuer", pgschema.SessionDeleteByUserIssuer,
+	return s.deleteUntilSettled(ctx, "delete user's sessions from issuer", pgschema.SessionDeleteByUserIssuer,
 		string(user), issuer)
 }
 
@@ -520,7 +540,7 @@ type supersession struct {
 
 // Begin begins a transaction of the store's own on its *sql.DB.
 func (u *supersession) Begin(ctx context.Context, _ DBTX) (DBTX, error) {
-	tx, err := u.s.c.base.BeginTx(ctx, nil)
+	tx, err := u.s.c.beginReadCommitted(ctx)
 	if err != nil {
 		return nil, failed(u.op, err)
 	}
