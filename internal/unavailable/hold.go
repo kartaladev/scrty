@@ -34,6 +34,9 @@ type hold struct {
 	// until maps a key to the instant its hold ends.
 	until   map[string]time.Time
 	sweptAt time.Time
+	// seenAt is the time of the latest call, so a step backwards is told from the
+	// clock merely running behind a sweep.
+	seenAt time.Time
 	// fullUntil is when the refusal of every key ends, set when a key could not
 	// be held because the set was full. Zero when no key was turned away.
 	fullUntil time.Time
@@ -61,6 +64,7 @@ func newHold(clk clock.Clock, window time.Duration) *hold {
 		maxKeys: ratelimit.DefaultMemoryLimiterMaxKeys,
 		until:   map[string]time.Time{},
 		sweptAt: clk.Now(),
+		seenAt:  clk.Now(),
 	}
 }
 
@@ -125,8 +129,22 @@ func (h *hold) len() int {
 // A clock stepped back re-arms it from the earlier time, as the passkey login
 // purge does; waiting for the clock to catch up would leave ended holds in place
 // for as long as the step was long. The full-set refusal is capped to one window
-// from the new time for the same reason.
+// from the new time for the same reason. A hold already seen to have ended is
+// released at the step: by the new clock it would otherwise be running again for
+// as long as the step was long. One still running at the step is kept, as add
+// promises.
 func (h *hold) sweepLocked(now time.Time) {
+	if now.Before(h.seenAt) {
+		for key, end := range h.until {
+			if !end.After(h.seenAt) {
+				delete(h.until, key)
+			}
+		}
+		if !h.fullUntil.After(h.seenAt) {
+			h.fullUntil = time.Time{}
+		}
+	}
+	h.seenAt = now
 	if now.Before(h.sweptAt) {
 		h.sweptAt = now
 		if limit := now.Add(h.window); h.fullUntil.After(limit) {

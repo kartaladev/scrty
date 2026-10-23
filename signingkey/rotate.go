@@ -141,21 +141,15 @@ func (km *KeyManager) reload(ctx context.Context) {
 
 	km.mu.RLock()
 	held := make(map[string]struct{}, len(km.keys))
-	keys := make([]storedKey, 0, len(km.order)+len(recs))
 	for _, kid := range km.order {
 		held[kid] = struct{}{}
-		keys = append(keys, km.keys[kid].stored())
 	}
+	keys := km.listedOrderLocked(recs)
 	km.mu.RUnlock()
 
 	// The publishing rule asks whether a record is the newest key of its
 	// algorithm, and that is decided over everything known: the keys held and
 	// the records not yet held alike.
-	for _, rec := range recs {
-		if _, have := held[rec.Kid]; !have {
-			keys = append(keys, storedKey{kid: rec.Kid, alg: rec.Alg, createdAt: rec.CreatedAt})
-		}
-	}
 	newest := km.pickCurrent(keys, now)
 
 	// Decoding a record parses a private key and hashes a thumbprint, which
@@ -205,12 +199,40 @@ func (km *KeyManager) reload(ctx context.Context) {
 	for _, entry := range fresh {
 		km.holdLocked(entry)
 	}
-	km.repickCurrentLocked(now)
+	km.repickCurrentLocked(recs, now)
 	km.mu.Unlock()
 
 	for _, failed := range failed {
 		km.report(ctx, "reload", failed.alg, failed.f)
 	}
+}
+
+// listedOrderLocked returns every key known to a reload in the order a tie in
+// creation time is broken by: first the held keys the store did not list, in
+// the order they were held, then every record the store listed, in its order.
+// A held key takes its place from the store's listing like any other, so it
+// wins a tie only where the store lists it later — as it did at construction —
+// and never merely because it is held. Callers hold km.mu.
+func (km *KeyManager) listedOrderLocked(recs []Record) []storedKey {
+	listed := make(map[string]struct{}, len(recs))
+	for _, rec := range recs {
+		listed[rec.Kid] = struct{}{}
+	}
+
+	keys := make([]storedKey, 0, len(km.order)+len(recs))
+	for _, kid := range km.order {
+		if _, ok := listed[kid]; !ok {
+			keys = append(keys, km.keys[kid].stored())
+		}
+	}
+	for _, rec := range recs {
+		if entry, ok := km.keys[rec.Kid]; ok {
+			keys = append(keys, entry.stored())
+			continue
+		}
+		keys = append(keys, storedKey{kid: rec.Kid, alg: rec.Alg, createdAt: rec.CreatedAt})
+	}
+	return keys
 }
 
 // housekeep stops publishing every held key the publishing rule no longer

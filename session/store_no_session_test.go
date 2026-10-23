@@ -2,7 +2,9 @@ package session_test
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
@@ -102,25 +104,66 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 	}
 }
 
+// failFirstMarkStore fails the first MarkPresented of one identifier, as a
+// store outage would, and delegates everything else.
+type failFirstMarkStore struct {
+	*session.MemoryStore
+
+	id   string
+	once sync.Once
+}
+
+func (s *failFirstMarkStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
+	if id == s.id {
+		failed := false
+		s.once.Do(func() { failed = true })
+		if failed {
+			return errStoreQuotes
+		}
+	}
+
+	return s.MemoryStore.MarkPresented(ctx, id, at)
+}
+
 // TestLoad_FailedFirstUseWrite pins what a failed first-use write does to a
 // load: with unused-successor recovery on it fails the load, because serving
 // a session whose first use was not recorded would let a used successor be
-// judged unused later; with recovery off the session is still served.
+// judged unused later; with recovery off the session is still served. It also
+// pins the other half of that: the successor whose write failed was never
+// served, so a late renewal of its predecessor recovers it rather than
+// judging it reuse.
 func TestLoad_FailedFirstUseWrite(t *testing.T) {
 	t.Parallel()
 
 	const sid = "failed-first-use"
 
 	type testCase struct {
-		name   string
-		opts   []session.ManagerOption
+		name string
+		opts []session.ManagerOption
+		// act runs the case's steps and returns what its last step returned.
+		act    func(ctx context.Context, t *testing.T, opts []session.ManagerOption) (*session.Session, error)
 		assert func(t *testing.T, got *session.Session, err error)
+	}
+
+	loadOnMock := func(ctx context.Context, t *testing.T, opts []session.ManagerOption) (*session.Session, error) {
+		t.Helper()
+
+		store := NewMockStore(gomock.NewController(t))
+		store.EXPECT().Load(gomock.Any(), sid).Return(liveUnpresented(sid), nil).AnyTimes()
+		store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(errStoreQuotes).Times(1)
+
+		all := append([]session.ManagerOption{
+			session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt)),
+		}, opts...)
+
+		return managerFor(t, all...).Load(ctx, sid)
 	}
 
 	cases := []testCase{
 		{
 			name: "with recovery on the load fails",
 			opts: []session.ManagerOption{session.WithUnusedSuccessorRecovery()},
+			act:  loadOnMock,
 			assert: func(t *testing.T, got *session.Session, err error) {
 				require.ErrorIs(t, err, errStoreQuotes)
 				assert.NotContains(t, err.Error(), "alice@example.com")
@@ -129,8 +172,40 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 		},
 		{
 			name: "with recovery off the session is served",
+			act:  loadOnMock,
 			assert: func(t *testing.T, got *session.Session, err error) {
 				require.NoError(t, err)
+				require.NotNil(t, got)
+			},
+		},
+		{
+			name: "with recovery on a later renewal of the predecessor recovers the successor whose write failed",
+			act: func(ctx context.Context, t *testing.T, _ []session.ManagerOption) (*session.Session, error) {
+				t.Helper()
+
+				clk := clockwork.NewFakeClockAt(createdAt)
+				store := &failFirstMarkStore{MemoryStore: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
+				m := recoveryManager(t, store, clk)
+
+				o, err := m.Create(ctx, testUser)
+				require.NoError(t, err)
+				s1, _, err := m.RotateWithGrace(ctx, o, 30*time.Second)
+				require.NoError(t, err)
+
+				store.id = s1.ID
+				_, err = m.Load(ctx, s1.ID)
+				require.ErrorIs(t, err, errStoreQuotes, "the first use of the successor was not recorded")
+
+				clk.Advance(nextDay)
+				got, kind, err := m.RotateWithGrace(ctx, o, 30*time.Second)
+				if err == nil {
+					assert.Equal(t, session.RenewalRecovery, kind)
+				}
+
+				return got, err
+			},
+			assert: func(t *testing.T, got *session.Session, err error) {
+				require.NoError(t, err, "a successor that was never served is recovered, not judged reuse")
 				require.NotNil(t, got)
 			},
 		},
@@ -140,14 +215,7 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := NewMockStore(gomock.NewController(t))
-			store.EXPECT().Load(gomock.Any(), sid).Return(liveUnpresented(sid), nil).AnyTimes()
-			store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(errStoreQuotes).Times(1)
-
-			opts := append([]session.ManagerOption{
-				session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt)),
-			}, tc.opts...)
-			got, err := managerFor(t, opts...).Load(t.Context(), sid)
+			got, err := tc.act(t.Context(), t, tc.opts)
 			tc.assert(t, got, err)
 		})
 	}

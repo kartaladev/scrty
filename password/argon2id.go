@@ -42,6 +42,11 @@ type Argon2idOption func(*argon2idEncoder)
 //
 // Memory is the parameter that makes parallel cracking expensive, so it is the
 // one worth raising first.
+//
+// The ceiling is 1 GiB (1048576 KiB). Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override: a configurable ceiling would reopen the process-kill, a fatal
+// allocation failure, that it exists to prevent.
 func WithArgon2idMemory(kib uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.memory = kib }
 }
@@ -51,21 +56,39 @@ func WithArgon2idMemory(kib uint32) Argon2idOption {
 // Iterations buy strength when memory cannot be raised — on a host that cannot
 // spare 46 MiB per concurrent verification, two iterations at 19 MiB is the
 // accepted trade.
+//
+// The ceiling is 16. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override: a configurable ceiling would reopen the unbounded login-path work it
+// exists to prevent.
 func WithArgon2idIterations(n uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.iterations = n }
 }
 
 // WithArgon2idThreads sets the parallelism. Default: 4.
+//
+// The ceiling is 16. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override: a configurable ceiling would reopen the unbounded login-path work it
+// exists to prevent.
 func WithArgon2idThreads(n uint8) Argon2idOption {
 	return func(e *argon2idEncoder) { e.threads = n }
 }
 
 // WithArgon2idSaltLength sets the salt length in bytes. Default: 16.
+//
+// The ceiling is 64 bytes. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override.
 func WithArgon2idSaltLength(n int) Argon2idOption {
 	return func(e *argon2idEncoder) { e.saltLength = n }
 }
 
 // WithArgon2idKeyLength sets the derived key length in bytes. Default: 32.
+//
+// The ceiling is 64 bytes. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override.
 func WithArgon2idKeyLength(n uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.keyLength = n }
 }

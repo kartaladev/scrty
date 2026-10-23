@@ -25,9 +25,13 @@
 // are two different passwords, as are "hunter2" and " hunter2".
 //
 // Every encoder's parameters have a floor, taken from the OWASP password-storage
-// minimums; see [ErrWeakParameters]. The floors are the only limit on how a
-// consumer configures an encoder — anything at or above them is accepted,
-// including parameters far stronger than the defaults.
+// minimums; see [ErrWeakParameters]. They also have a ceiling, far above any
+// plausible deployment, because the same limits bound what a stored record may
+// ask Match to do on the login path; see [ErrInvalidParameters]. Between the two
+// anything is accepted, including parameters far stronger than the defaults.
+// The ceilings are not options: a bound the consumer could raise would reopen
+// the process-killing allocation they exist to prevent. A stored record above a
+// ceiling is not recognised and never matches.
 //
 // Memory is the parameter worth planning for, because verification costs as much
 // of it as encoding does and concurrent logins multiply it; see
@@ -95,7 +99,8 @@ type Encoder interface {
 
 // Recognizer is implemented by an encoder that can tell whether a stored hash
 // is one its Match would actually verify: in its own format, well formed, and
-// within the limits on the work a record may demand.
+// within the limits on the work a record may demand. A record whose parameters
+// are above an encoder's ceilings is not recognised.
 //
 // It is optional and checked by type assertion. The Argon2id, bcrypt and scrypt
 // encoders all implement it. Its consumer is a login path that must spend the

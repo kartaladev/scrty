@@ -40,16 +40,34 @@ type ScryptOption func(*scryptEncoder)
 // WithScryptN sets the CPU and memory cost. Default: 32768.
 //
 // It must be a power of two, and it is the dial that makes cracking expensive.
+//
+// Construction refuses a value below 32768 with [ErrWeakParameters], and a value
+// that is not a power of two, or that takes the footprint over the ceiling,
+// with [ErrInvalidParameters]. The ceilings are N a power of two of at least 2,
+// and (N+p)*128*r at most 1 GiB. They have no override, because a configurable
+// ceiling would reopen the process-kill they exist to prevent; a stored record
+// above them never matches.
 func WithScryptN(n int) ScryptOption {
 	return func(e *scryptEncoder) { e.n = n }
 }
 
 // WithScryptR sets the block size. Default: 8.
+//
+// It counts toward the footprint ceiling of (N+p)*128*r at most 1 GiB. Construction
+// refuses a value over it with [ErrInvalidParameters], a stored record over it
+// never matches, and there is no override: a configurable ceiling would reopen
+// the process-kill it exists to prevent.
 func WithScryptR(r int) ScryptOption {
 	return func(e *scryptEncoder) { e.r = r }
 }
 
 // WithScryptP sets the parallelisation factor. Default: 1.
+//
+// The ceiling is 16, and p also counts toward the footprint ceiling of
+// (N+p)*128*r at most 1 GiB. Construction refuses a value over either with
+// [ErrInvalidParameters], a stored record over either never matches, and there
+// is no override: a configurable ceiling would reopen the process-kill it exists
+// to prevent.
 func WithScryptP(p int) ScryptOption {
 	return func(e *scryptEncoder) { e.p = p }
 }

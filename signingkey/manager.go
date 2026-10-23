@@ -203,15 +203,18 @@ func (km *KeyManager) publishable(k storedKey, newestOfAlg bool, now time.Time) 
 }
 
 // repickCurrentLocked re-chooses the current key per configured algorithm from
-// the keys held, as pickCurrent describes. A reload never leaves a configured
-// algorithm without a current key: where no held key qualifies, as after the
-// clock steps back past the reload interval, the previous current key stays
-// current while it is still held. Callers hold km.mu.
-func (km *KeyManager) repickCurrentLocked(now time.Time) {
-	keys := make([]storedKey, 0, len(km.order))
-	for _, kid := range km.order {
-		keys = append(keys, km.keys[kid].stored())
-	}
+// the keys held, as pickCurrent describes, breaking a tie by the order
+// listedOrderLocked gives them over recs, the records the reload listed. The
+// order is taken here, under the lock, so a key rotation held after the reload
+// read the store is a candidate too. A listed record the manager does not hold
+// is passed over. A reload never leaves a configured algorithm without a
+// current key: where no held key qualifies, as after the clock steps back past
+// the reload interval, the previous current key stays current while it is still
+// held. Callers hold km.mu.
+func (km *KeyManager) repickCurrentLocked(recs []Record, now time.Time) {
+	keys := slices.DeleteFunc(km.listedOrderLocked(recs), func(k storedKey) bool {
+		return km.keys[k.kid] == nil
+	})
 	picked := km.pickCurrent(keys, now)
 	for alg, kid := range km.current {
 		if _, ok := picked[alg]; !ok && km.keys[kid] != nil {

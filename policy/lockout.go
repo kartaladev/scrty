@@ -171,7 +171,11 @@ type LockoutOption func(*AccountLockoutPolicy)
 // NewMemoryAttemptStore, which counts within one replica, does not survive a
 // restart, and holds at most 100,000 identifiers, denying logins for new ones
 // while it is full. A MemoryAttemptStore passed here is told this policy's
-// retention, exactly as the default one is.
+// retention, exactly as the default one is. Only a *MemoryAttemptStore itself
+// is told: a consumer wrapper around one never learns the retention, never
+// sweeps, and once full refuses every new identifier until reset. Build a
+// wrapper over a store the consumer sweeps itself, or give the policy the inner
+// *MemoryAttemptStore and have the wrapper forward to it.
 //
 // A nil store is a configuration error rather than a silent fallback to
 // memory: a consumer who passed one meant to supply their own, and a lockout

@@ -227,3 +227,84 @@ func TestFinishRegistration_RefusedOrFailedFinishLeavesNothing(t *testing.T) {
 		})
 	}
 }
+
+// TestFinishRegistration_AbandonedRegistrationReplacedAtLimitOne holds a user
+// at a passkey limit of one with a passkey left pending by a registration they
+// abandoned. Registering again replaces it: the old passkey is gone, so it no
+// longer counts against the limit, and the new one confirms with its own codes.
+func TestFinishRegistration_AbandonedRegistrationReplacedAtLimitOne(t *testing.T) {
+	t.Parallel()
+
+	type env struct {
+		f *fixture
+		m *passkey.Manager
+		s *session.Session
+	}
+
+	type testCase struct {
+		name    string
+		session *session.Session
+		rc      passkey.RegistrationContext
+		codes   bool // wire saved codes for a user with no way back
+		confirm func(t *testing.T, e *env, res *passkey.RegistrationResult) (*passkey.Credential, error)
+	}
+
+	cases := []testCase{
+		{
+			name:    "a passkey awaiting saved codes",
+			session: fullSession("sess-a", "u-1"),
+			codes:   true,
+			confirm: func(t *testing.T, e *env, res *passkey.RegistrationResult) (*passkey.Credential, error) {
+				require.Len(t, res.RecoveryCodes, 10)
+
+				return e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0], passkey.RegistrationContext{})
+			},
+		},
+		{
+			name:    "a passkey awaiting an emailed code",
+			session: enrolmentSession("sess-a", "u-1"),
+			rc:      passkey.RegistrationContext{EmailConfirmation: true},
+			confirm: func(t *testing.T, e *env, _ *passkey.RegistrationResult) (*passkey.Credential, error) {
+				msgs := e.f.messages()
+				require.Len(t, msgs, 2, "one code for each registration")
+
+				return e.m.ConfirmEmailCode(t.Context(), e.s, sixDigits.FindString(msgs[1].TextBody),
+					passkey.RegistrationContext{EmailConfirmation: true})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newFixture(t)
+			if tc.codes {
+				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
+			}
+
+			e := &env{f: f, m: f.manager(t, passkey.WithPasskeyLimit(1)), s: tc.session}
+
+			first, err := e.m.FinishRegistration(t.Context(), e.s,
+				regBody(f.begin(t, e.m, e.s), "cred-first", ""), tc.rc)
+			require.NoError(t, err, "the abandoned registration")
+			require.Equal(t, passkey.StatePending, first.Credential.State)
+
+			f.clock.Advance(time.Minute)
+
+			second, err := e.m.FinishRegistration(t.Context(), e.s,
+				regBody(f.begin(t, e.m, e.s), "cred-second", ""), tc.rc)
+			require.NoError(t, err, "registering again at the limit")
+
+			held, err := f.creds.List(t.Context(), "u-1")
+			require.NoError(t, err)
+			require.Len(t, held, 1, "passkeys u-1 holds")
+			assert.Equal(t, second.Credential.ID, held[0].ID, "the passkey u-1 holds")
+
+			c, err := tc.confirm(t, e, second)
+			require.NoError(t, err, "the new registration's own codes")
+			assert.Equal(t, second.Credential.ID, c.ID)
+			assert.Equal(t, passkey.StateActive, c.State)
+		})
+	}
+}

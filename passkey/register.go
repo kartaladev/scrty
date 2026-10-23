@@ -204,10 +204,7 @@ type RegistrationResult struct {
 //     data reporting the backup state without backup eligibility, which
 //     WebAuthn Level 3 rules out, is refused whatever the verifier accepted.
 //  4. Run the consumer's registration check; its error is returned unchanged.
-//  5. Refuse a user holding the passkey limit, counting every state, with
-//     ErrLimitReached. This early count spares a user plainly at the limit
-//     the work below; it does not decide.
-//  6. Decide the passkey's pending reasons, remove the user's passkeys left
+//  5. Decide the passkey's pending reasons, remove the user's passkeys left
 //     pending by an abandoned registration that the new one replaces, and draw
 //     the emailed code when one is needed. Nothing is generated or sent yet.
 //     A pending passkey awaiting the same reason counts as abandoned only when
@@ -217,6 +214,11 @@ type RegistrationResult struct {
 //     already have returned its codes, and is kept; when the limit then has no
 //     room, this finish is refused in step 7. The removals stand even when the
 //     finish is refused later.
+//  6. Refuse a user still holding the passkey limit, counting every state,
+//     with ErrLimitReached. It runs after the removals above so the passkeys
+//     they replaced no longer count: a user whose only passkey is an abandoned
+//     one registers again at a limit of one. This early count spares a user
+//     plainly at the limit the work below; it does not decide.
 //  7. Store the credential through the store's bounded insert, which decides
 //     the limit by the write: of finishes racing for one user, the user never
 //     ends up holding more than the limit, and the others are refused with
@@ -294,6 +296,13 @@ func (m *Manager) FinishRegistration(
 		}
 	}
 
+	now := m.clock.Now()
+
+	plan, err := m.planPending(ctx, s, rc, now, issued)
+	if err != nil {
+		return nil, err
+	}
+
 	held, err := m.credentials.Count(ctx, s.UserID)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not count the user's passkeys")
@@ -301,13 +310,6 @@ func (m *Manager) FinishRegistration(
 
 	if held >= m.passkeyLimit {
 		return nil, ErrLimitReached
-	}
-
-	now := m.clock.Now()
-
-	plan, err := m.planPending(ctx, s, rc, now, issued)
-	if err != nil {
-		return nil, err
 	}
 
 	cid, err := m.ids.NewID()

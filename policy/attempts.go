@@ -271,6 +271,13 @@ func WithAttemptStoreCapacity(n int) MemoryAttemptOption {
 //   - It does not survive a restart. A deploy clears every count, and every
 //     account locked at that moment is unlocked.
 //
+// A lockout policy tells the store its retention only when the store passed to
+// WithAttemptStore is a *MemoryAttemptStore itself. A consumer type that wraps
+// one never learns the retention, so it never sweeps, and once full it refuses
+// every new identifier until it is reset. Build such a wrapper over a store the
+// consumer sweeps itself, or pass the inner *MemoryAttemptStore to the policy
+// and have the wrapper forward to it.
+//
 // A deployment that needs any of those, or a capacity a single process cannot
 // give, supplies its own store through WithAttemptStore: a durable or shared
 // store is the override for the full-store trade-off.

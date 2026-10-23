@@ -262,3 +262,80 @@ func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, ahead.Kid, kid, "a key within one reload interval ahead is adopted as current")
 }
+
+// TestReloadBreaksATieAsTheStoreLists pins the tie rule across a reload: two
+// keys of one algorithm created at the same instant are decided by the order
+// the store lists them in, at every reload as at construction. The keys the
+// manager already holds must not win the tie merely because it holds them, and
+// a record it does not hold must not win merely because it is new to it.
+func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
+	type testCase struct {
+		name string
+		// listed returns the records the store lists at construction, and the
+		// ones it lists from the first reload on, and the kid that must be
+		// current throughout.
+		listed func(t *testing.T) (atStart, atReload []signingkey.Record, current string)
+		assert func(t *testing.T, km *signingkey.KeyManager, atReload []signingkey.Record)
+	}
+
+	cases := []testCase{
+		{
+			name: "a tied key past its lifetime, listed earlier, stays unpublished",
+			listed: func(t *testing.T) ([]signingkey.Record, []signingkey.Record, string) {
+				// Both are past the lifetime; only the current key is
+				// published, and it is the one the store lists later.
+				earlier := realRecord(t, epoch.Add(-48*time.Hour))
+				later := realRecord(t, epoch.Add(-48*time.Hour))
+				recs := []signingkey.Record{earlier, later}
+				return recs, recs, later.Kid
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, atReload []signingkey.Record) {
+				assert.False(t, publishes(km, atReload[0].Kid),
+					"a key past its lifetime that is not current is never republished")
+			},
+		},
+		{
+			name: "a tied key another replica stores, listed earlier, does not take signing",
+			listed: func(t *testing.T) ([]signingkey.Record, []signingkey.Record, string) {
+				held := realRecord(t, epoch)
+				arrived := realRecord(t, epoch)
+				return []signingkey.Record{held}, []signingkey.Record{arrived, held}, held.Kid
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, atReload []signingkey.Record) {
+				assert.True(t, publishes(km, atReload[0].Kid),
+					"the arriving key is within its lifetime, so it is published")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := newClock()
+			atStart, atReload, current := tc.listed(t)
+			store := &listingStore{recs: atStart}
+
+			km, err := signingkey.NewKeyManager(t.Context(),
+				signingkey.WithKeyStore(store),
+				signingkey.WithClock(clk),
+				signingkey.WithReloadInterval(10*time.Second),
+				signingkey.WithRotateInterval(time.Hour),
+				signingkey.WithHousekeepingInterval(12*time.Hour),
+				signingkey.WithLifetime(24*time.Hour),
+			)
+			require.NoError(t, err)
+			stopAndVerify(t, km)
+			require.Equal(t, current, currentKid(t, km, signingkey.RS256),
+				"construction gives the tie to the key the store lists later")
+
+			// Replaced before Start, so no loop reads the store concurrently.
+			store.recs = atReload
+			require.NoError(t, km.Start(t.Context()))
+
+			advance(t, clk, 10*time.Second, loopCount)
+			assert.Equal(t, current, currentKid(t, km, signingkey.RS256),
+				"a reload gives the tie to the key the store lists later")
+			tc.assert(t, km, atReload)
+			assert.Zero(t, store.stored, "nothing is minted")
+		})
+	}
+}

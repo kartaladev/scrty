@@ -29,6 +29,15 @@ const (
 	// record returns that error, and the key it could not record is refused on
 	// this instance for one window, even once checks reach the backend again.
 	//
+	// That memory is bounded: it holds at most [DefaultMemoryLimiterMaxKeys]
+	// keys, and a key longer than 64 bytes is held as a digest of it, so its
+	// size in bytes is bounded too. Once it is full, every source, held or not,
+	// is refused for one window from the latest key it had no room for, so a
+	// spray of distinct keys during an outage cannot grow it or slip past it.
+	// There is no option for the cap: the memory only bounds what an outage can
+	// make the limiter remember, and a larger or unbounded one would let an
+	// attacker who causes the outage grow it.
+	//
 	// What it costs, stated: during an outage every flow guarded by the
 	// limiter refuses, including second-factor verification, so a user who
 	// needs a second factor cannot complete sign-in until the backend returns.
