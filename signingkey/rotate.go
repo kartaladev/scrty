@@ -114,8 +114,8 @@ func failureAttrs(op string, alg Alg, suppressed int) []slog.Attr {
 	return append(attrs, slog.Int("suppressed", suppressed))
 }
 
-// reload publishes every stored key the manager does not already hold, skipping
-// those past their lifetime, and then re-picks the current key per algorithm.
+// reload publishes every stored key the manager does not already hold and the
+// publishing rule admits, and then re-picks the current key per algorithm.
 //
 // This is what lets replicas sharing a store verify each other's tokens:
 // without it, a key one replica rotated in would be rejected by every other
@@ -141,10 +141,22 @@ func (km *KeyManager) reload(ctx context.Context) {
 
 	km.mu.RLock()
 	held := make(map[string]struct{}, len(km.keys))
-	for kid := range km.keys {
+	keys := make([]storedKey, 0, len(km.order)+len(recs))
+	for _, kid := range km.order {
 		held[kid] = struct{}{}
+		keys = append(keys, km.keys[kid].stored())
 	}
 	km.mu.RUnlock()
+
+	// The publishing rule asks whether a record is the newest key of its
+	// algorithm, and that is decided over everything known: the keys held and
+	// the records not yet held alike.
+	for _, rec := range recs {
+		if _, have := held[rec.Kid]; !have {
+			keys = append(keys, storedKey{kid: rec.Kid, alg: rec.Alg, createdAt: rec.CreatedAt})
+		}
+	}
+	newest := km.pickCurrent(keys, now)
 
 	// Decoding a record parses a private key and hashes a thumbprint, which
 	// for RSA is not cheap. It happens outside the keyring lock so that a
@@ -160,12 +172,10 @@ func (km *KeyManager) reload(ctx context.Context) {
 		if _, have := held[rec.Kid]; have {
 			continue
 		}
-		// pastLifetime, not expired: the current-key exemption cannot apply
-		// here. A record that got this far is one the manager does not hold,
-		// and every current key is a key it holds, so no record reaching this
-		// line is current. Asking about an exemption that can never be granted
-		// would read as a rule this path has and does not.
-		if km.pastLifetime(rec.CreatedAt, now) {
+		// Asked before decoding, so a record that will not be published costs
+		// no key parse.
+		k := storedKey{kid: rec.Kid, alg: rec.Alg, createdAt: rec.CreatedAt}
+		if !km.publishable(k, newest[rec.Alg] == rec.Kid, now) {
 			continue
 		}
 		entry, err := entryFromRecord(rec)
@@ -195,7 +205,7 @@ func (km *KeyManager) reload(ctx context.Context) {
 	for _, entry := range fresh {
 		km.holdLocked(entry)
 	}
-	km.repickCurrentLocked()
+	km.repickCurrentLocked(now)
 	km.mu.Unlock()
 
 	for _, failed := range failed {
@@ -203,9 +213,10 @@ func (km *KeyManager) reload(ctx context.Context) {
 	}
 }
 
-// housekeep stops publishing every key created longer ago than the lifetime,
-// except the current key of each algorithm, which is kept however old it is —
-// dropping it would leave the algorithm with nothing to sign with.
+// housekeep stops publishing every held key the publishing rule no longer
+// admits: every key created longer ago than the lifetime, except the current
+// key of each algorithm, which is kept however old it is — dropping it would
+// leave the algorithm with nothing to sign with.
 //
 // The store is not pruned: removal is from the keys held and the published JWK
 // Set only. That is deliberate as well as structural — a KeyStore has no delete
@@ -225,7 +236,7 @@ func (km *KeyManager) housekeep(context.Context) {
 	// second pass or a fresh slice.
 	km.order = slices.DeleteFunc(km.order, func(kid string) bool {
 		entry := km.keys[kid]
-		if !km.expired(km.current, entry.alg, kid, entry.createdAt, now) {
+		if km.publishable(entry.stored(), km.current[entry.alg] == kid, now) {
 			return false
 		}
 		delete(km.keys, kid)

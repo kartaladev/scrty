@@ -362,7 +362,9 @@ func TestStoredRecordCarriesThePublishablePublicKey(t *testing.T) {
 // has just deleted. Reload dedups against the keys already held, but not within
 // one batch, so a store that lists a new key twice is enough.
 func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
-	dup := realRecord(t, epoch.Add(-25*time.Hour))
+	// Exactly one lifetime old: construction publishes it, and one second
+	// later it is past the lifetime.
+	dup := realRecord(t, epoch.Add(-24*time.Hour))
 	current := realRecord(t, epoch)
 
 	clk := newClock()

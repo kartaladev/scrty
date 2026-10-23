@@ -186,3 +186,79 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 	assert.NotEmpty(t, records[0]["error_type"],
 		"the record carries the error's type, never its text")
 }
+
+func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
+	clk := &steppedClock{FakeClock: newClock()}
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+		signingkey.WithClock(clk),
+		signingkey.WithAlgs(signingkey.RS256),
+		signingkey.WithRotateInterval(24*time.Hour),
+		signingkey.WithReloadInterval(time.Minute),
+		signingkey.WithHousekeepingInterval(12*time.Hour),
+		signingkey.WithLifetime(48*time.Hour),
+	)
+	require.NoError(t, err)
+	stopAndVerify(t, km)
+	held := currentKid(t, km, signingkey.RS256)
+	require.NoError(t, km.Start(t.Context()))
+
+	// The reading steps back an hour, so the held key is dated further ahead
+	// than one reload interval, then a reload runs.
+	clk.back.Store(int64(time.Hour))
+	advance(t, clk.FakeClock, time.Minute, loopCount)
+
+	kid, signer, ok := km.GetSigner(signingkey.RS256)
+	require.True(t, ok, "a reload never leaves a configured algorithm without a current key")
+	assert.NotNil(t, signer)
+	assert.Equal(t, held, kid, "the previous current key stays current")
+}
+
+func TestConstructionOverOnlyAFarFutureKeyMintsACurrentKey(t *testing.T) {
+	clk := newClock()
+	store := signingkey.NewInMemoryKeyStore()
+	future := realRecord(t, epoch.Add(365*24*time.Hour))
+	require.NoError(t, store.Store(t.Context(), future))
+
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithKeyStore(store),
+		signingkey.WithClock(clk),
+		signingkey.WithAlgs(signingkey.RS256),
+	)
+	require.NoError(t, err)
+
+	kid := currentKid(t, km, signingkey.RS256)
+	assert.NotEqual(t, future.Kid, kid, "the far-future key does not sign")
+	assert.False(t, publishes(km, future.Kid), "and is not published")
+	recs, err := store.LoadAll(t.Context())
+	require.NoError(t, err)
+	assert.Len(t, recs, 2, "a new key was stored")
+}
+
+func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
+	clk := newClock()
+	store := signingkey.NewInMemoryKeyStore()
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithKeyStore(store),
+		signingkey.WithClock(clk),
+		signingkey.WithAlgs(signingkey.RS256),
+		signingkey.WithRotateInterval(24*time.Hour),
+		signingkey.WithReloadInterval(time.Minute),
+		signingkey.WithHousekeepingInterval(12*time.Hour),
+		signingkey.WithLifetime(48*time.Hour),
+	)
+	require.NoError(t, err)
+	stopAndVerify(t, km)
+	require.NoError(t, km.Start(t.Context()))
+
+	// A replica whose clock runs 90 seconds fast stores a key, so at the first
+	// reload it is dated 30 seconds ahead, within the reload interval.
+	ahead := realRecord(t, epoch.Add(90*time.Second))
+	require.NoError(t, store.Store(t.Context(), ahead))
+
+	advance(t, clk, time.Minute, loopCount)
+
+	kid, _, ok := km.GetSigner(signingkey.RS256)
+	require.True(t, ok)
+	assert.Equal(t, ahead.Kid, kid, "a key within one reload interval ahead is adopted as current")
+}

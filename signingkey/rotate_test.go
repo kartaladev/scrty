@@ -337,3 +337,39 @@ func TestRotationFailureIsObservable(t *testing.T) {
 		})
 	}
 }
+
+// TestRotation_IsNotUndoneByAFutureDatedStoredKey pins that a stored key dated
+// far ahead — a clock gone wrong on the replica that wrote it, or a row someone
+// edited — never becomes the key that signs. Were the newest key current
+// whatever its date, every reload would hand signing back to it after each
+// rotation, and it would never age out.
+func TestRotation_IsNotUndoneByAFutureDatedStoredKey(t *testing.T) {
+	clk := newClock()
+	store := signingkey.NewInMemoryKeyStore()
+	future := realRecordFor(t, signingkey.EdDSA, epoch.Add(365*24*time.Hour))
+	require.NoError(t, store.Store(t.Context(), realRecordFor(t, signingkey.EdDSA, epoch)))
+	require.NoError(t, store.Store(t.Context(), future))
+
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithKeyStore(store),
+		signingkey.WithClock(clk),
+		signingkey.WithAlgs(signingkey.EdDSA),
+		signingkey.WithRotateInterval(time.Hour),
+		signingkey.WithReloadInterval(time.Minute),
+		signingkey.WithHousekeepingInterval(time.Hour),
+		signingkey.WithLifetime(24*time.Hour),
+	)
+	require.NoError(t, err)
+	stopAndVerify(t, km)
+	require.NoError(t, km.Start(t.Context()))
+
+	for range 48 {
+		advance(t, clk, time.Hour, loopCount)
+	}
+	// One more reload interval, so a reload is the last thing to have run.
+	advance(t, clk, time.Minute, loopCount)
+
+	assert.NotEqual(t, future.Kid, currentKid(t, km, signingkey.EdDSA),
+		"a key dated a year ahead never signs")
+	assert.False(t, publishes(km, future.Kid), "and is not published")
+}

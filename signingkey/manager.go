@@ -58,7 +58,17 @@ type KeyManager struct {
 
 // NewKeyManager returns a manager holding a current key for every configured
 // algorithm, generating and storing one where the store has none. A stored key
-// is always adopted rather than replaced, so a restart invalidates no token.
+// is adopted rather than replaced, so a restart invalidates no token signed
+// within the key lifetime.
+//
+// Construction publishes what reload and housekeeping would: every stored key
+// within the key lifetime, and the newest key of each configured algorithm
+// whatever its age, which becomes current. A key past the lifetime that is not
+// the newest of its algorithm is not published, so a manager that is never
+// started still stops verifying it. The newest key is chosen among those dated
+// no later than the present plus the reload interval, so an algorithm whose
+// stored keys are all dated later than that gets a fresh key; a key dated more
+// than one lifetime ahead is not published at all.
 //
 // It starts no goroutine.
 //
@@ -129,56 +139,128 @@ func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 	return km, nil
 }
 
-// loadFromStore holds every stored record. A record that cannot be decoded
-// fails the load: it is never skipped, and never replaced by a fresh key.
+// loadFromStore holds every stored record the publishing rule admits, and makes
+// the newest key of each configured algorithm current. A record that cannot be
+// decoded fails the load, whether or not it would have been published: it is
+// never skipped, and never replaced by a fresh key.
+//
+// A key past the lifetime is dropped here rather than left for housekeeping,
+// because a manager that only verifies may never be started, and would
+// otherwise publish it for as long as the process lived.
 func (km *KeyManager) loadFromStore(ctx context.Context) error {
 	recs, err := km.store.LoadAll(ctx)
 	if err != nil {
 		return diag.Wrap(err, "signingkey: load keys")
 	}
 
-	km.mu.Lock()
-	defer km.mu.Unlock()
-
+	entries := make([]*keyEntry, 0, len(recs))
+	keys := make([]storedKey, 0, len(recs))
 	for _, rec := range recs {
 		entry, err := entryFromRecord(rec)
 		if err != nil {
 			return err
 		}
-		km.holdLocked(entry)
+		entries = append(entries, entry)
+		keys = append(keys, entry.stored())
 	}
-	km.repickCurrentLocked()
+
+	now := km.clock.Now()
+	current := km.pickCurrent(keys, now)
+
+	km.mu.Lock()
+	defer km.mu.Unlock()
+
+	for _, entry := range entries {
+		if km.publishable(entry.stored(), current[entry.alg] == entry.kid, now) {
+			km.holdLocked(entry)
+		}
+	}
+	km.current = current
 	return nil
 }
 
-// repickCurrentLocked chooses, per configured algorithm, the held key created
-// most recently, whatever order the store returned the records in. An exact tie
-// goes to the record seen later, which for a store's own ordering is the one it
-// listed last. Callers hold km.mu.
+// storedKey is what the publishing rule and the choice of current key read of
+// a key, whether the manager holds it or the store has only listed it.
+type storedKey struct {
+	kid       string
+	alg       Alg
+	createdAt time.Time
+}
+
+func (e *keyEntry) stored() storedKey {
+	return storedKey{kid: e.kid, alg: e.alg, createdAt: e.createdAt}
+}
+
+// publishable is the one rule for which keys are published, shared by
+// construction, reload and housekeeping: a key is published while it is within
+// the key lifetime, or while it is the newest key of a configured algorithm,
+// which is the one that signs and is kept however old it is.
+//
+// There is no option over the rule itself, because it is what makes a retired
+// key stop verifying; WithLifetime moves the line it draws.
+func (km *KeyManager) publishable(k storedKey, newestOfAlg bool, now time.Time) bool {
+	return newestOfAlg || !km.pastLifetime(k.createdAt, now)
+}
+
+// repickCurrentLocked re-chooses the current key per configured algorithm from
+// the keys held, as pickCurrent describes. A reload never leaves a configured
+// algorithm without a current key: where no held key qualifies, as after the
+// clock steps back past the reload interval, the previous current key stays
+// current while it is still held. Callers hold km.mu.
+func (km *KeyManager) repickCurrentLocked(now time.Time) {
+	keys := make([]storedKey, 0, len(km.order))
+	for _, kid := range km.order {
+		keys = append(keys, km.keys[kid].stored())
+	}
+	picked := km.pickCurrent(keys, now)
+	for alg, kid := range km.current {
+		if _, ok := picked[alg]; !ok && km.keys[kid] != nil {
+			picked[alg] = kid
+		}
+	}
+	km.current = picked
+}
+
+// pickCurrent chooses, per configured algorithm, the key in keys created most
+// recently, whatever order they are listed in, among those created no later
+// than now plus the reload interval. An exact tie goes to the key listed later,
+// which for a store's own ordering is the one it listed last.
+//
+// The bound is what keeps a key dated far ahead from signing: it would
+// otherwise be the newest key at every reload, and take signing back from each
+// key rotation makes current. The allowance of one reload interval absorbs the
+// usual skew between replicas, so a key a slightly fast replica has just minted
+// is adopted at the next reload. WithReloadInterval moves it; the bound itself
+// has no option, because without it a stored date decides who signs.
+//
+// An algorithm with no key that qualifies gets no entry from pickCurrent; a
+// reload keeps its previous current key instead (see repickCurrentLocked), so
+// signing never stops, while construction mints a new key.
 //
 // Only configured algorithms get a current key. A store is shared, and the
 // replica on the other side of it may be configured differently, so it holds
 // keys for algorithms this manager was never asked about. Such a key stays
-// published — that is what lets this replica verify the other's tokens — but
-// making it current would hand it to GetSigner for an algorithm SupportedAlgs
-// denies, and would exempt it from housekeeping for as long as the process
-// lived, because the current key of an algorithm is never expired.
-func (km *KeyManager) repickCurrentLocked() {
+// published while it is within the lifetime — that is what lets this replica
+// verify the other's tokens — but making it current would hand it to GetSigner
+// for an algorithm SupportedAlgs denies, and would exempt it from housekeeping
+// for as long as the process lived, because the current key of an algorithm is
+// never expired.
+func (km *KeyManager) pickCurrent(keys []storedKey, now time.Time) map[Alg]string {
 	current := make(map[Alg]string, len(km.algs))
 	newest := make(map[Alg]time.Time, len(km.algs))
+	latest := now.Add(km.reloadEvery)
 
-	for _, kid := range km.order {
-		entry := km.keys[kid]
-		if !slices.Contains(km.algs, entry.alg) {
+	for _, k := range keys {
+		if !slices.Contains(km.algs, k.alg) || k.createdAt.After(latest) {
 			continue
 		}
-		if best, seen := newest[entry.alg]; seen && entry.createdAt.Before(best) {
+		if best, seen := newest[k.alg]; seen && k.createdAt.Before(best) {
 			continue
 		}
-		newest[entry.alg] = entry.createdAt
-		current[entry.alg] = kid
+		newest[k.alg] = k.createdAt
+		current[k.alg] = k.kid
 	}
-	km.current = current
+	return current
 }
 
 // mintMissing generates and stores a key for every configured algorithm that
@@ -226,23 +308,15 @@ func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, *failu
 	return entry.kid, nil
 }
 
-// pastLifetime reports whether a key created at createdAt has outlived the key
-// lifetime by now. It is the whole question on the reload path, where a record
-// the manager does not already hold cannot be anyone's current key.
+// pastLifetime reports whether a key created at createdAt is more than one key
+// lifetime away from now, in either direction: it has outlived the lifetime, or
+// it is dated more than one lifetime ahead. A key that far ahead is a clock
+// gone wrong or an edited row, and would otherwise never age out at all; one
+// dated a little ahead by the skew between replicas stays within it, so the
+// tokens that replica signs still verify.
 func (km *KeyManager) pastLifetime(createdAt, now time.Time) bool {
-	return now.Sub(createdAt) > km.lifetime
-}
-
-// expired reports whether the key identified by kid, created at createdAt for
-// alg, has outlived the key lifetime and may stop being published. The current
-// key of an algorithm is never expired however old it is: dropping it would
-// leave that algorithm with nothing to sign with.
-//
-// Only housekeeping asks this, because only housekeeping drops a key it holds.
-// The current key per algorithm is passed in rather than read from the manager,
-// so a caller may ask outside the keyring lock from a snapshot.
-func (km *KeyManager) expired(current map[Alg]string, alg, kid string, createdAt, now time.Time) bool {
-	return current[alg] != kid && km.pastLifetime(createdAt, now)
+	age := now.Sub(createdAt)
+	return age > km.lifetime || age < -km.lifetime
 }
 
 // holdLocked holds entry, remembering the order keys were held in. Callers hold
