@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/mfa"
@@ -59,6 +61,10 @@ func (m *Manager) BeginRegistration(
 		return nil, diag.Wrap(err, "passkey: could not load the user")
 	}
 
+	if details == nil {
+		return nil, fmt.Errorf("passkey: the user loader returned no details and no error: %w", identity.ErrUserNotFound)
+	}
+
 	name, display, err := m.names(ctx, details)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not resolve the user's names")
@@ -76,6 +82,10 @@ func (m *Manager) BeginRegistration(
 
 	exclude := make([]Descriptor, 0, len(held))
 	for _, c := range held {
+		if c == nil {
+			continue
+		}
+
 		exclude = append(exclude, Descriptor{ID: c.CredentialID, Transports: c.Transports})
 	}
 
@@ -377,7 +387,7 @@ func (m *Manager) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 	}
 
 	for _, h := range held {
-		if h.State == StateActive && h.BackupEligible {
+		if h != nil && h.State == StateActive && h.BackupEligible {
 			return false
 		}
 	}

@@ -369,7 +369,12 @@ func (m *Manager) RequiresRecoveryCodes() bool {
 }
 
 // usernameAsNames is the default NameResolver: the username, for both names.
+// A user the loader did not find is identity.ErrUserNotFound.
 func usernameAsNames(_ context.Context, d *identity.Details) (string, string, error) {
+	if d == nil {
+		return "", "", identity.ErrUserNotFound
+	}
+
 	return d.Username, d.Username, nil
 }
 

@@ -11,10 +11,11 @@ import (
 // RelyingParty is the WebAuthn relying party. None of its fields has a
 // default.
 //
-// ID is a host name with no scheme, port, path or trailing dot; an IP address
-// is not one, because WebAuthn scopes credentials to a domain. Changing it
-// orphans every registered passkey, because authenticators scope their
-// credentials to it.
+// ID is a lowercase DNS name with no scheme, port, path or trailing dot: at
+// most 253 characters, in labels of 1 to 63 letters, digits and inner
+// hyphens. These bounds have no override. An IP address is not one, because
+// WebAuthn scopes credentials to a domain. Changing it orphans every
+// registered passkey, because authenticators scope their credentials to it.
 //
 // Each of Origins is an absolute https origin, or an http origin on a loopback
 // host (localhost or a name under .localhost), whose host equals ID or ends
@@ -40,7 +41,7 @@ func (rp RelyingParty) Validate() error {
 		return fmt.Errorf("%w: relying-party origins are required", ErrConfig)
 	}
 
-	rpID := strings.ToLower(rp.ID)
+	rpID := rp.ID
 	for i, o := range rp.Origins {
 		if err := validateOrigin(o, rpID); err != nil {
 			return fmt.Errorf("%w: relying-party origin %d (%q) %s", ErrConfig, i, o, err.Error()) //nolint:forbidigo // validateOrigin returns only library-written text, never a dependency's
@@ -49,6 +50,13 @@ func (rp RelyingParty) Validate() error {
 
 	return nil
 }
+
+// The DNS limits (RFC 1035, RFC 1123) a relying-party ID is held to. They have
+// no override: no authenticator or browser accepts an ID beyond them.
+const (
+	maxRPIDLength      = 253
+	maxRPIDLabelLength = 63
+)
 
 func validateRPID(rpID string) error {
 	if rpID == "" {
@@ -59,10 +67,19 @@ func validateRPID(rpID string) error {
 		return fmt.Errorf("%w: relying-party ID must be a host name, not an IP address", ErrConfig)
 	}
 
+	if len(rpID) > maxRPIDLength {
+		return fmt.Errorf("%w: relying-party ID must be at most %d characters", ErrConfig, maxRPIDLength)
+	}
+
 	for label := range strings.SplitSeq(rpID, ".") {
 		if label == "" || strings.ContainsFunc(label, invalidHostRune) {
 			return fmt.Errorf(
-				"%w: relying-party ID must be a host name with no scheme, port, path or trailing dot", ErrConfig)
+				"%w: relying-party ID must be a lowercase host name with no scheme, port, path or trailing dot", ErrConfig)
+		}
+
+		if len(label) > maxRPIDLabelLength || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("%w: relying-party ID labels must be 1 to %d characters and neither start nor end with a hyphen",
+				ErrConfig, maxRPIDLabelLength)
 		}
 	}
 
@@ -72,7 +89,7 @@ func validateRPID(rpID string) error {
 // invalidHostRune reports a rune that has no place in a host name label.
 func invalidHostRune(r rune) bool {
 	switch {
-	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+	case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
 		return false
 	default:
 		return true

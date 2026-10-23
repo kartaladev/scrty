@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/passkey"
@@ -418,4 +419,41 @@ func TestBeginRegistration(t *testing.T) {
 			tc.assert(t, f, raw, err)
 		})
 	}
+}
+
+// TestBeginRegistration_LoaderReturningNoUserIsRefused pins that a loader
+// answering neither details nor an error is a refusal naming the user as
+// unknown, not a nil dereference in the name resolver.
+func TestBeginRegistration_LoaderReturningNoUserIsRefused(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+
+	empty := NewMockUserLoader(f.ctrl)
+	empty.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+
+	f.deps.Users = empty
+
+	m := f.manager(t)
+
+	var (
+		raw json.RawMessage
+		err error
+	)
+
+	require.NotPanics(t, func() {
+		raw, err = m.BeginRegistration(t.Context(), fullSession("sess-a", "u-1"), passkey.RegistrationContext{})
+	})
+	require.ErrorIs(t, err, identity.ErrUserNotFound)
+	assert.Nil(t, raw)
+	assert.Empty(t, f.creations())
+}
+
+func TestDefaultNameResolver_NoUserIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	var err error
+
+	require.NotPanics(t, func() { _, _, err = passkey.UsernameAsNames(t.Context(), nil) })
+	require.ErrorIs(t, err, identity.ErrUserNotFound)
 }

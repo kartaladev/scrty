@@ -19,3 +19,7 @@ func (m *Manager) NotifyRemoved(ctx context.Context, c *Credential, sessionsEnde
 func (m *Manager) NotifySuspended(ctx context.Context, c *Credential, sessionsEnded bool) {
 	m.notify(ctx, noticeSuspended, c, nil, sessionsEnded)
 }
+
+// UsernameAsNames is the default NameResolver, exposed so a test can call it
+// with a user the loader did not find.
+var UsernameAsNames = usernameAsNames

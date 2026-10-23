@@ -140,8 +140,11 @@ type passwordlessInterceptor struct {
 // (passkey.WithOptionalRecoveryCodes) is not chosen, since a passkey-only
 // user would otherwise have no way back in; no token generator is given and
 // the chain has no form login to take one from; or WithPasswordlessLogin is
-// given twice. Its paths are checked with the other passkey paths (see
-// EnablePasskeys).
+// given twice. The ceremony cookie lives as long as the challenge, so New also
+// refuses a passkey manager whose challenge lifetime
+// (passkey.Manager.ChallengeTTL) is not a whole number of seconds, at least
+// one; that bound has no override. Its paths are checked with the other
+// passkey paths (see EnablePasskeys).
 func WithPasswordlessLogin(settings ...PasswordlessSetting) PasskeyOption {
 	return func(p *passkeyInterceptor) error {
 		if p.passwordless != nil {
@@ -369,6 +372,11 @@ func (i *passwordlessInterceptor) resolve(option string, c *config) error {
 
 	if i.respondBegin == nil {
 		i.respondBegin = writePasskeyBegin
+	}
+
+	if err := checkCookieTTL(option, "the passkey manager's challenge lifetime",
+		i.manager.ChallengeTTL(), true); err != nil {
+		return err
 	}
 
 	// Sampled over the passkey manager's window, as the endpoints' own

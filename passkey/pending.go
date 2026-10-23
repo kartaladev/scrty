@@ -193,7 +193,7 @@ func (m *Manager) deleteAbandoned(
 	}
 
 	for _, c := range held {
-		if c.State != StatePending || c.Pending&reasons == 0 || !c.CreatedAt.Before(issued) {
+		if c == nil || c.State != StatePending || c.Pending&reasons == 0 || !c.CreatedAt.Before(issued) {
 			continue
 		}
 
@@ -400,7 +400,7 @@ func (m *Manager) awaiting(ctx context.Context, user identity.UserID, r PendingR
 	}
 
 	for _, c := range held {
-		if c.State == StatePending && c.Pending&r != 0 {
+		if c != nil && c.State == StatePending && c.Pending&r != 0 {
 			return c, nil
 		}
 	}
