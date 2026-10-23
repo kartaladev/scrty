@@ -55,7 +55,7 @@ func SigningKeyAAD(kid string) []byte {
 // generation was part of this binding, against the user reference alone, does
 // not open under it: a user whose enrolment was sealed that way must enrol
 // again.
-func MFASecretAAD(user identity.UserID, gen id.ID) []byte {
+func MFASecretAAD(gen id.ID, user identity.UserID) []byte {
 	return []byte(AADMFASecretPrefix + gen.String() + ":" + string(user))
 }
 

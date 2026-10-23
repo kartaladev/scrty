@@ -144,7 +144,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 		return mfa.Enrolment{}, false, nil
 	}
 
-	aad := MFASecretAAD(user, e.Generation)
+	aad := MFASecretAAD(e.Generation, user)
 	plaintext, keyID, err := s.cipher.Open(e.Secret, aad)
 	if err != nil {
 		return mfa.Enrolment{}, false, diag.Wrap(err, "seal: the stored MFA secret could not be opened")
@@ -192,7 +192,7 @@ func (s *enrolmentStore) reseal(ctx context.Context, user identity.UserID, plain
 
 // PutPending seals the secret of a copy of e and stores the copy as pending.
 func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error {
-	sealed, err := s.cipher.Seal(e.Secret, MFASecretAAD(e.User, e.Generation))
+	sealed, err := s.cipher.Seal(e.Secret, MFASecretAAD(e.Generation, e.User))
 	if err != nil {
 		return diag.Wrap(err, "seal: the MFA secret could not be sealed")
 	}

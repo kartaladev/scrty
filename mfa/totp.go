@@ -216,6 +216,11 @@ func (t *TOTP) Period() time.Duration { return t.period }
 // are deliberately indistinguishable: telling them apart would say whether a
 // user exists and whether they have enrolled.
 //
+// A confirmed enrolment stored without a generation never verifies: the
+// accepting write names the generation it read, and a store writes nothing for
+// none, so the refusal is ErrInvalidCode. Such an enrolment must be removed and
+// begun again.
+//
 // A store failure is returned as an error, never as ErrInvalidCode, so a caller
 // can tell a refusal from an outage. It is also never reported as "not
 // enrolled". Its text is the package's own, never the store's, and the store's

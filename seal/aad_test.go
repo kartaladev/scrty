@@ -36,16 +36,16 @@ func TestAADGolden(t *testing.T) {
 			// The generation's canonical text comes first, at a fixed length,
 			// then the user reference byte for byte: never trimmed or folded.
 			name: "an MFA secret is bound to its generation and user reference",
-			got:  func() []byte { return seal.MFASecretAAD("Alice ", gen) },
+			got:  func() []byte { return seal.MFASecretAAD(gen, "Alice ") },
 			assert: func(t *testing.T, got []byte) {
 				assert.Equal(t, []byte("scrty/mfa:secret:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:Alice "), got)
 			},
 		},
 		{
 			name: "an MFA secret is not bound like the same user's secret of another generation",
-			got:  func() []byte { return seal.MFASecretAAD("Alice ", gen) },
+			got:  func() []byte { return seal.MFASecretAAD(gen, "Alice ") },
 			assert: func(t *testing.T, got []byte) {
-				assert.NotEqual(t, seal.MFASecretAAD("Alice ", id.MustParse("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c")), got)
+				assert.NotEqual(t, seal.MFASecretAAD(id.MustParse("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c"), "Alice "), got)
 			},
 		},
 		{
@@ -61,7 +61,7 @@ func TestAADGolden(t *testing.T) {
 			name: "an emailed MFA code is not bound like the same user's secret",
 			got:  func() []byte { return seal.MFAEmailCodeAAD(gen, "Alice ") },
 			assert: func(t *testing.T, got []byte) {
-				assert.NotEqual(t, seal.MFASecretAAD("Alice ", gen), got)
+				assert.NotEqual(t, seal.MFASecretAAD(gen, "Alice "), got)
 			},
 		},
 		{
