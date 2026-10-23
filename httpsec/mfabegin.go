@@ -56,9 +56,12 @@ const msgChallengeNotIssued = "httpsec: the MFA challenge could not be issued"
 type MFABeginResponder func(ex *Exchange, data json.RawMessage) error
 
 // writeMFABegin is the response a begin succeeds with when the consumer
-// supplies no responder: 200, the method's document as the JSON body.
+// supplies no responder: 200, the method's document as the JSON body, marked
+// Cache-Control: no-store because it carries a live challenge. A consumer's
+// responder owns its headers and is not given this one.
 func writeMFABegin(ex *Exchange, data json.RawMessage) error {
 	ex.Writer.SetHeader("Content-Type", "application/json")
+	ex.Writer.SetHeader("Cache-Control", "no-store")
 	ex.Writer.WriteHeader(http.StatusOK)
 	_, err := ex.Writer.Write(data)
 

@@ -108,6 +108,7 @@ func TestMFABegin(t *testing.T) {
 		assert.False(t, out.handlerRan, "the endpoint is the library's own")
 		assert.Equal(t, http.StatusOK, out.rec.Code)
 		assert.Equal(t, "application/json", out.rec.Header().Get("Content-Type"))
+		assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"))
 
 		challenge := issuedChallenge(t, out)
 		require.NotEmpty(t, challenge, "a challenge is issued")
@@ -266,6 +267,7 @@ func TestMFABegin(t *testing.T) {
 				require.NoError(t, out.err)
 				assert.Equal(t, http.StatusCreated, out.rec.Code)
 				assert.Equal(t, "application/vnd.test+json", out.rec.Header().Get("Content-Type"))
+				assert.Empty(t, out.rec.Header().Get("Cache-Control"), "a consumer responder owns its headers")
 
 				var doc struct {
 					Wrapped stubChallengeDocument `json:"wrapped"`

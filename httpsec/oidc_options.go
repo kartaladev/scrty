@@ -307,7 +307,8 @@ func (i *oidcInterceptor) resolve(c *config) error {
 	}
 
 	allow, err := origin.NewAllowlist(i.allowedRedirects, i.allowedOrigins,
-		"WithOIDCAllowedRedirects", "WithOIDCAllowedOrigins")
+		"WithOIDCAllowedRedirects", "WithOIDCAllowedOrigins",
+		origin.WithMaxEntryLen(origin.MaxEntryLen))
 	if err != nil {
 		return newConfigError("EnableOIDCLogin was given a redirect target it cannot use: %s", err)
 	}

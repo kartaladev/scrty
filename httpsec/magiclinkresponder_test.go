@@ -38,6 +38,7 @@ func TestMagicLinkResponder(t *testing.T) {
 				require.NoError(t, buildErr)
 				require.NoError(t, out.err)
 				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"))
 
 				var got map[string]any
 				require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &got))
@@ -121,6 +122,7 @@ func TestMagicLinkConsumerResponder(t *testing.T) {
 
 	assert.Empty(t, out.rec.Body.String(),
 		"the consumer's responder replaces the default entirely")
+	assert.Empty(t, out.rec.Header().Get("Cache-Control"), "a consumer responder owns its headers")
 	assert.Equal(t, "no-referrer", out.rec.Header().Get("Referrer-Policy"),
 		"and cannot forget the header that keeps the token out of the referrer")
 

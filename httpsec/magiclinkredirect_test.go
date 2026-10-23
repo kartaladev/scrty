@@ -2,6 +2,7 @@ package httpsec_test
 
 import (
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,6 +95,14 @@ func TestMagicLinkRedirects(t *testing.T) {
 			name:    "a declared origin with a path",
 			origins: []string{"https://partner.example.com/app"},
 			assert:  configErrorNaming("https://partner.example.com/app"),
+		},
+		{
+			// The 2048-byte bound belongs to the federated login's recorded
+			// destination, not to every allowlist.
+			name:      "an entry over 2048 bytes is not refused",
+			allowed:   []string{"/" + strings.Repeat("a", 2048)},
+			submitted: "/" + strings.Repeat("a", 2048),
+			assert:    resolvesTo("/" + strings.Repeat("a", 2048)),
 		},
 		{
 			name:      "a declared origin makes its entry usable",

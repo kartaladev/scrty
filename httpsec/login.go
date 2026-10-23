@@ -668,6 +668,11 @@ func writeLoginResult(ex *Exchange, result LoginResult) error {
 // success with: the document as JSON, with the content type and 200 that go
 // with it. The responders differ in the document they build and in nothing
 // else, so they share this and cannot drift apart in how they write it.
+//
+// The response is marked Cache-Control: no-store, because the documents carry
+// credentials or the state of a credential. A consumer's own responder owns its
+// headers, so this is the default's and nothing here overrides what a
+// replacement sets.
 func writeSuccessDocument(ex *Exchange, body any) error {
 	//nolint:gosec // G117: the access token is the document's purpose, not a leak of one
 	encoded, err := json.Marshal(body)
@@ -676,6 +681,7 @@ func writeSuccessDocument(ex *Exchange, body any) error {
 	}
 
 	ex.Writer.SetHeader("Content-Type", "application/json")
+	ex.Writer.SetHeader("Cache-Control", "no-store")
 	ex.Writer.WriteHeader(http.StatusOK)
 	_, err = ex.Writer.Write(encoded)
 

@@ -913,6 +913,7 @@ func TestMFAVerifySuccess(t *testing.T) {
 
 	require.NoError(t, out.err)
 	assert.Equal(t, http.StatusOK, out.rec.Code)
+	assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"))
 	assert.False(t, out.handlerRan, "the request does not reach later handlers")
 
 	require.NotNil(t, h.resolved, "the new handle is published on the exchange")

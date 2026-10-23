@@ -15,6 +15,27 @@ import (
 // constructor, never a surprise on the first request that needs it.
 var ErrConfig = errors.New("origin: invalid configuration")
 
+// MaxEntryLen is the longest destination a federated login records, in bytes.
+// A flow that records destinations passes it to WithMaxEntryLen, so an entry
+// longer than that could never be requested and is a configuration mistake
+// rather than a target. An allowlist built without WithMaxEntryLen has no
+// length bound.
+const MaxEntryLen = 2048
+
+// Option adjusts how NewAllowlist checks its input.
+type Option func(*config)
+
+type config struct {
+	maxEntryLen int
+}
+
+// WithMaxEntryLen refuses any entry longer than n bytes, whatever its form.
+// It replaces the default of no length bound. A value of 0 or less leaves the
+// allowlist unbounded.
+func WithMaxEntryLen(n int) Option {
+	return func(c *config) { c.maxEntryLen = n }
+}
+
 // Allowlist is the set of targets a flow may send a browser to when it is
 // done.
 //
@@ -22,6 +43,7 @@ var ErrConfig = errors.New("origin: invalid configuration")
 // from nothing at all is valid and accepts nothing, so a flow that consults it
 // always lands on "/".
 type Allowlist struct {
+	maxEntryLen  int
 	entries      []string
 	declared     []string
 	entryOption  string
@@ -31,7 +53,9 @@ type Allowlist struct {
 // NewAllowlist checks every configured target and every declared origin, and
 // refuses the whole configuration if any one of them is unacceptable.
 //
-// An entry is acceptable in exactly two forms:
+// An entry longer than WithMaxEntryLen bytes, when that option is given, is
+// refused whatever its form; without it no length is enforced. An entry is
+// otherwise acceptable in exactly two forms:
 //
 //   - a host-relative path: it starts with "/", the next character is neither
 //     "/" nor "\", and it contains no whitespace and no control character;
@@ -57,7 +81,12 @@ type Allowlist struct {
 //
 // Both slices are copied, so a caller that keeps and later mutates its own
 // slice cannot change what was checked.
-func NewAllowlist(entries, declaredOrigins []string, entryOption, originOption string) (*Allowlist, error) {
+func NewAllowlist(entries, declaredOrigins []string, entryOption, originOption string, opts ...Option) (*Allowlist, error) {
+	var cfg config
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	// Origins first: an entry is judged against them, so an undeclarable
 	// origin should be reported as such rather than as an unlisted entry.
 	for _, declared := range declaredOrigins {
@@ -67,12 +96,13 @@ func NewAllowlist(entries, declaredOrigins []string, entryOption, originOption s
 	}
 
 	for _, entry := range entries {
-		if err := validateEntry(entry, declaredOrigins, entryOption, originOption); err != nil {
+		if err := validateEntry(entry, declaredOrigins, entryOption, originOption, cfg.maxEntryLen); err != nil {
 			return nil, err
 		}
 	}
 
 	return &Allowlist{
+		maxEntryLen:  cfg.maxEntryLen,
 		entries:      slices.Clone(entries),
 		declared:     slices.Clone(declaredOrigins),
 		entryOption:  entryOption,
@@ -100,7 +130,7 @@ func (a *Allowlist) Resolve(requested string) string {
 		if requested != entry {
 			continue
 		}
-		if validateEntry(entry, a.declared, a.entryOption, a.originOption) != nil {
+		if validateEntry(entry, a.declared, a.entryOption, a.originOption, a.maxEntryLen) != nil {
 			continue
 		}
 
@@ -120,9 +150,14 @@ func (a *Allowlist) Resolve(requested string) string {
 // a slash and follow it off-site. Whitespace and control characters are
 // refused because they are how those two shapes are smuggled past a reader,
 // and a legitimate target never needs one.
-func validateEntry(entry string, declared []string, entryOption, originOption string) error {
+func validateEntry(entry string, declared []string, entryOption, originOption string, maxEntryLen int) error {
 	if entry == "" {
 		return fmt.Errorf("%w: %s was given an empty redirect target", ErrConfig, entryOption)
+	}
+
+	if maxEntryLen > 0 && len(entry) > maxEntryLen {
+		return fmt.Errorf("%w: %s entry is %d bytes, over the %d-byte limit",
+			ErrConfig, entryOption, len(entry), maxEntryLen)
 	}
 
 	if strings.HasPrefix(entry, "/") {

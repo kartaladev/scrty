@@ -1,6 +1,7 @@
 package httpsec_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -346,6 +347,11 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			name:   "a protocol-relative allowlist entry",
 			enable: with(httpsec.WithOIDCAllowedRedirects("//evil.example/app")),
 			assert: refused("WithOIDCAllowedRedirects", "//evil.example/app"),
+		},
+		{
+			name:   "an allowlist entry over 2048 bytes",
+			enable: with(httpsec.WithOIDCAllowedRedirects("/" + strings.Repeat("a", 2048))),
+			assert: refused("WithOIDCAllowedRedirects", "2049"),
 		},
 		{
 			name:   "an absolute entry on an undeclared origin",
