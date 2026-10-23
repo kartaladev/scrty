@@ -227,6 +227,8 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			return op(ctx, counted)
 		}
 	}
+	// apiKeyRevokeStmt is the shared conditional revocation, run raw.
+	apiKeyRevokeStmt := `WITH revoked AS ( UPDATE api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id ) SELECT EXISTS (SELECT 1 FROM revoked) AS revoked, EXISTS (SELECT 1 FROM api_keys WHERE id = $1) AS present`
 	// ignoring drops a result an operation returns beside its error.
 	ignoring := func(_ any, err error) error { return err }
 	// ignoring2 drops the two results an operation returns beside its error.
@@ -461,11 +463,23 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		{name: "API key revoke", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.apiKeys.Put(ctx, storefix.APIKey(0x502, "stmt-svc")))
 			started()
-			return counted.apiKeys.Revoke(ctx, storefix.APIKey(0x502, "").ID, now)
-		}, assert: one(`UPDATE "api_keys" SET "revoked_at"=COALESCE(revoked_at, $1) WHERE id = $2`)},
+			return flag(counted.apiKeys.Revoke(ctx, storefix.APIKey(0x502, "").ID, now))
+		}, assert: one(apiKeyRevokeStmt)},
+		{name: "API key revoke of a revoked key: the same one statement, reporting no revocation", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, seed.apiKeys.Put(ctx, storefix.APIKey(0x505, "stmt-svc")))
+			revoked, err := seed.apiKeys.Revoke(ctx, storefix.APIKey(0x505, "").ID, now)
+			require.NoError(t, err)
+			require.True(t, revoked)
+			started()
+			again, err := counted.apiKeys.Revoke(ctx, storefix.APIKey(0x505, "").ID, now)
+			if err == nil && again {
+				return errors.New("a second revoke reported that it revoked the key")
+			}
+			return err
+		}, assert: one(apiKeyRevokeStmt)},
 		{name: "API key revoke of an unknown key", run: with(func(ctx context.Context, s storeSet) error {
-			return s.apiKeys.Revoke(ctx, storefix.APIKey(0x503, "").ID, now)
-		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "revoked_at"=COALESCE(revoked_at, $1) WHERE id = $2`)},
+			return ignoring(s.apiKeys.Revoke(ctx, storefix.APIKey(0x503, "").ID, now))
+		}), assert: refused(apikey.ErrKeyNotFound, apiKeyRevokeStmt)},
 		{name: "API key touch", run: with(func(ctx context.Context, s storeSet) error {
 			return s.apiKeys.TouchLastUsed(ctx, storefix.APIKey(0x504, "").ID, now)
 		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "last_used_at"=$1 WHERE id = $2`)},

@@ -183,7 +183,8 @@ func APIKeyAmbient[S apikey.Store]() storetest.Ambient[S] {
 		},
 		Present: APIKeyPresent,
 		Refuse: func(ctx context.Context, s S) error {
-			return s.Revoke(ctx, APIKey(999, "").ID, time.Now())
+			_, err := s.Revoke(ctx, APIKey(999, "").ID, time.Now())
+			return err
 		},
 		Refusal: apikey.ErrKeyNotFound,
 	}

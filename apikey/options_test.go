@@ -48,6 +48,21 @@ func TestNewAPIKeyManager(t *testing.T) {
 		{name: "empty prefix", opts: []apikey.Option{apikey.WithPrefix("")}, assert: configError},
 		{name: "prefix too long", opts: []apikey.Option{apikey.WithPrefix("abcdefghijklmnopq")}, assert: configError},
 		{name: "nil digest", opts: []apikey.Option{apikey.WithDigest(nil)}, assert: configError},
+		{
+			name:   "a digest returning nothing",
+			opts:   []apikey.Option{apikey.WithDigest(func([]byte) []byte { return nil })},
+			assert: configError,
+		},
+		{
+			name:   "a digest returning an empty value",
+			opts:   []apikey.Option{apikey.WithDigest(func([]byte) []byte { return []byte{} })},
+			assert: configError,
+		},
+		{
+			name:   "a digest returning the same value for different inputs",
+			opts:   []apikey.Option{apikey.WithDigest(func([]byte) []byte { return []byte("constant") })},
+			assert: configError,
+		},
 		{name: "nil id generator", opts: []apikey.Option{apikey.WithIDGenerator(nil)}, assert: configError},
 		{name: "nil clock", opts: []apikey.Option{apikey.WithClock(nil)}, assert: configError},
 		{

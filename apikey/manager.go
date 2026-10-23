@@ -1,6 +1,7 @@
 package apikey
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,6 +20,10 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 )
+
+// compensatingRevokeTimeout bounds the revoke of a replacement that a lost
+// rotation undoes, which runs detached from the caller's cancellation.
+const compensatingRevokeTimeout = 5 * time.Second
 
 // Manager issues, verifies, revokes and rotates API keys.
 //
@@ -96,6 +101,9 @@ func NewManager(opts ...Option) (*Manager, error) {
 	if nilcheck.IsNil(m.random) {
 		return nil, fmt.Errorf("%w: random source must not be nil", ErrConfig)
 	}
+	if err := probeDigest(m.digest); err != nil {
+		return nil, err
+	}
 
 	m.opening = m.prefix + prefixSeparator
 
@@ -105,6 +113,33 @@ func NewManager(opts ...Option) (*Manager, error) {
 // Prefix reports the prefix every key this manager issues carries, which is
 // what WithPrefix configured.
 func (m *Manager) Prefix() string { return m.prefix }
+
+// digestProbes are the two inputs NewManager hands the digest once, each the
+// size of a real secret. Neither starts with a zero byte, and they differ in
+// every byte.
+var digestProbes = [2][secretBytes]byte{
+	[secretBytes]byte(bytes.Repeat([]byte{0xa5}, secretBytes)),
+	[secretBytes]byte(bytes.Repeat([]byte{0x5a}, secretBytes)),
+}
+
+// probeDigest calls digest once on each of two different inputs and refuses
+// it when either digest is empty or the two are equal.
+//
+// It catches the digest that cannot work, not every weak one. A digest that
+// returns nothing would store keys under no digest, and every secret would
+// then match; one that returns the same value for everything would let any
+// secret verify against any key. Neither is a policy a consumer could mean.
+func probeDigest(digest func([]byte) []byte) error {
+	first, second := digest(digestProbes[0][:]), digest(digestProbes[1][:])
+	if len(first) == 0 || len(second) == 0 {
+		return fmt.Errorf("%w: digest must not return an empty value", ErrConfig)
+	}
+	if bytes.Equal(first, second) {
+		return fmt.Errorf("%w: digest must return different values for different inputs", ErrConfig)
+	}
+
+	return nil
+}
 
 // sha256Digest is the default digest. It is a fast hash on purpose: see
 // WithDigest for why a password hash would buy nothing here.
@@ -135,7 +170,10 @@ func sha256Digest(b []byte) []byte {
 //
 // Nothing is stored unless everything before the write succeeded. A random
 // source that cannot answer and a generator that cannot mint an identifier are
-// each reported, and neither leaves a record behind.
+// each reported, and neither leaves a record behind. A digest that returns an
+// empty value for the secret is refused with ErrConfig, and stores nothing:
+// NewManager's probe refuses a digest that always does, and this refuses one
+// that does only for some inputs.
 func (m *Manager) Issue(
 	ctx context.Context,
 	principal identity.UserID,
@@ -159,6 +197,13 @@ func (m *Manager) Issue(
 		return "", Key{}, fmt.Errorf("apikey: could not mint an identifier: %w", err)
 	}
 
+	digest := m.digest(secret)
+	if len(digest) == 0 {
+		// A key stored under no digest would match every secret a broken
+		// digest also returns nothing for.
+		return "", Key{}, fmt.Errorf("%w: the digest returned an empty value", ErrConfig)
+	}
+
 	now := m.clock.Now()
 
 	rec := Key{
@@ -166,7 +211,7 @@ func (m *Manager) Issue(
 		Principal:    principal,
 		Name:         name,
 		Scopes:       slices.Clone(scopes),
-		SecretDigest: m.digest(secret),
+		SecretDigest: digest,
 		CreatedAt:    now,
 	}
 
@@ -210,7 +255,9 @@ func (m *Manager) List(ctx context.Context, principal identity.UserID) ([]Key, e
 // that looked different from a refusal would say when the store was down.
 //
 // The digest comparison is constant time, so the length of a shared prefix
-// between a guess and the stored digest cannot be measured.
+// between a guess and the stored digest cannot be measured. An empty digest,
+// stored or computed from the presented secret, never verifies: it is logged
+// at error, since it means a record or a digest function is broken.
 //
 // A key is accepted while now is not after its expiry, so one verified on the
 // instant it expires still works. A key issued with a lifetime of zero or less
@@ -239,13 +286,23 @@ func (m *Manager) Verify(ctx context.Context, presented string) (identity.Princi
 		return identity.Principal{}, Key{}, ErrVerificationFailed
 	}
 
-	if subtle.ConstantTimeCompare(m.digest(secret), rec.SecretDigest) != 1 {
+	digest := m.digest(secret)
+	if len(digest) == 0 || len(rec.SecretDigest) == 0 {
+		// Two empty digests compare equal, so without this a record stored
+		// under no digest would accept every secret a broken digest drops.
+		m.log(ctx, slog.LevelError, "apikey: verification refused an empty digest",
+			slog.String("key_id", keyID.String()))
+
+		return identity.Principal{}, Key{}, ErrVerificationFailed
+	}
+
+	if subtle.ConstantTimeCompare(digest, rec.SecretDigest) != 1 {
 		return identity.Principal{}, Key{}, ErrVerificationFailed
 	}
 
 	now := m.clock.Now()
 
-	if rec.RevokedAt != nil || (rec.ExpiresAt != nil && now.After(*rec.ExpiresAt)) {
+	if !rec.liveAt(now) {
 		return identity.Principal{}, Key{}, ErrVerificationFailed
 	}
 
@@ -302,7 +359,9 @@ func levelFor(err error) slog.Level {
 // wrapped, with fixed text; a consumer who wants its own detail logs it
 // inside their own implementation of Store.
 func (m *Manager) Revoke(ctx context.Context, keyID id.ID) error {
-	return keyStoreFailed(m.store.Revoke(ctx, keyID, m.clock.Now()), "apikey: could not revoke the key")
+	_, err := m.store.Revoke(ctx, keyID, m.clock.Now())
+
+	return keyStoreFailed(err, "apikey: could not revoke the key")
 }
 
 // keyStoreFailed returns a Store's error as the manager returns it: nil as
@@ -327,12 +386,34 @@ func keyStoreFailed(err error, text string) error {
 // change what a key may do. An identifier that was never issued is
 // ErrKeyNotFound, and nothing is issued for it.
 //
+// Only a live key rotates. A key already revoked, or past its expiry, is
+// ErrRotationRefused, and nothing is issued for it: renewing it would hand a
+// working credential to whoever holds one that was ended, on purpose or by
+// its lifetime. A key on the instant it expires is still live, as Verify
+// judges it.
+//
 // The new key is returned only when both steps succeed, so a caller acting on
 // the returned string is acting on a completed rotation.
 //
+// # Concurrent rotations
+//
+// The replacement is issued first and the old key revoked second, through
+// Store.Revoke, a conditional write that reports whether this call was the
+// one that ended the key. When it was not — a concurrent rotation or
+// revocation got there first — the replacement just issued is revoked too, and
+// the rotation is ErrRotationRefused. So of any number of concurrent rotations
+// of one key, at most one leaves a live replacement, and that one is the
+// rotation that returned it. Should revoking the replacement fail as well, the
+// error still matches ErrRotationRefused, and names the replacement, which an
+// operator then revokes by hand. A key that expires while the replacement is
+// being issued loses the same way, since it is no longer live to be rotated.
+// Revoking the replacement does not depend on the caller's context: it runs
+// detached from its cancellation, bounded by a few seconds, so a caller that
+// hangs up mid-rotation cannot leave the replacement live.
+//
 // # Atomicity
 //
-// These are two separate writes. Outside a transaction the caller has attached
+// These are separate writes. Outside a transaction the caller has attached
 // to the store, a failure between them leaves the new key issued and the old
 // one still live; the error says so and names both identifiers, because an
 // operator reading it needs to know which key to revoke by hand. Neither
@@ -345,14 +426,45 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 		return "", Key{}, keyStoreFailed(err, "apikey: could not read the key to rotate")
 	}
 
+	if !existing.liveAt(m.clock.Now()) {
+		return "", Key{}, ErrRotationRefused
+	}
+
 	presented, rec, err := m.Issue(ctx, existing.Principal, existing.Name, existing.Scopes, lifetime)
 	if err != nil {
 		return "", Key{}, err
 	}
 
-	if err := m.store.Revoke(ctx, keyID, m.clock.Now()); err != nil {
-		return "", Key{}, diag.Wrap(err, fmt.Sprintf(
-			"apikey: rotated key %s was issued but %s could not be revoked", rec.ID, keyID))
+	// One reading of the clock judges the old key and dates its revocation: a
+	// key that expired while the replacement was being issued is one this
+	// rotation must not end as though it were live.
+	at := m.clock.Now()
+
+	revoked := false
+	if existing.liveAt(at) {
+		revoked, err = m.store.Revoke(ctx, keyID, at)
+		if err != nil {
+			return "", Key{}, diag.Wrap(err, fmt.Sprintf(
+				"apikey: rotated key %s was issued but %s could not be revoked", rec.ID, keyID))
+		}
+	}
+
+	if !revoked {
+		// The old key was ended by someone else, or ran out, between the read
+		// and this write, so this rotation lost: its replacement must not
+		// stay live. The caller may be gone by now, and a replacement left
+		// live for it would be a credential nobody was handed, so this write
+		// outlives the caller's cancellation, within a bound.
+		undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensatingRevokeTimeout)
+		defer cancel()
+
+		if _, err := m.store.Revoke(undoCtx, rec.ID, m.clock.Now()); err != nil {
+			return "", Key{}, diag.Wrap(err, fmt.Sprintf(
+				"apikey: rotation of %s was refused, but its replacement %s could not be revoked", keyID, rec.ID),
+				ErrRotationRefused)
+		}
+
+		return "", Key{}, ErrRotationRefused
 	}
 
 	return presented, rec, nil

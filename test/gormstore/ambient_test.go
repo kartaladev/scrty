@@ -221,7 +221,8 @@ func assertConsumerOwnedIdentity(ctx context.Context, t *testing.T, db *gormdb.D
 	require.NoError(t, apiKeys.Put(ctx, key))
 	_, err = apiKeys.Get(ctx, key.ID)
 	require.NoError(t, err)
-	require.NoError(t, apiKeys.Revoke(ctx, key.ID, time.Now()))
+	_, err = apiKeys.Revoke(ctx, key.ID, time.Now())
+	require.NoError(t, err)
 
 	links := newLinkStore(t, db)
 	require.NoError(t, links.Insert(ctx, storefix.Link(t, "corp", "https://identity.example", "s-1", user)))

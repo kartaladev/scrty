@@ -28,6 +28,15 @@ var ErrVerificationFailed = errors.New("apikey: verification failed")
 // caller already holds the identifier and is entitled to know it is unknown.
 var ErrKeyNotFound = errors.New("apikey: key not found")
 
+// ErrRotationRefused is what Rotate returns for a key it will not replace:
+// one already revoked or past its expiry, or one a concurrent rotation or
+// revocation ended while this rotation was under way. Nothing issued by a
+// refused rotation stays live.
+//
+// A key that is no longer accepted cannot be renewed into one that is: a
+// revoked key was ended on purpose, and an expired one ended by its lifetime.
+var ErrRotationRefused = errors.New("apikey: rotation refused")
+
 // Key is the stored record of one API key.
 //
 // It never holds the secret. The secret exists once, in the string Issue
@@ -67,6 +76,12 @@ type Key struct {
 
 	// CreatedAt is when the key was issued.
 	CreatedAt time.Time
+}
+
+// liveAt reports whether the key is accepted at now: not revoked, and not
+// past its expiry. A key on the instant it expires is still live.
+func (k Key) liveAt(now time.Time) bool {
+	return k.RevokedAt == nil && (k.ExpiresAt == nil || !now.After(*k.ExpiresAt))
 }
 
 // parsePresented splits a presented key into its record identifier and its

@@ -21,7 +21,9 @@
 // leaves no search space for a slow key-derivation function to defend; all a
 // slow hash would buy is latency on every machine request. A consumer whose
 // policy names another digest supplies it, and both issuance and verification
-// then use it.
+// then use it. NewManager probes a supplied digest once and refuses one that
+// returns an empty value or the same value for two different inputs, and an
+// empty digest, stored or computed, never verifies.
 //
 // # Prefixed
 //
@@ -62,6 +64,12 @@
 // says so and names both identifiers, neither of which is a secret, so an
 // operator can revoke the old one by hand. A store that carries a transaction
 // can make the pair atomic; this package neither opens one nor requires one.
+//
+// Only a live key rotates: a revoked or expired one is ErrRotationRefused,
+// and nothing is issued for it. Concurrent rotations of one key are decided by
+// the revocation, a conditional write: the rotation whose revoke did not end
+// the key revokes its own replacement and is refused, so at most one
+// replacement stays live.
 //
 // # Defaults and ports
 //

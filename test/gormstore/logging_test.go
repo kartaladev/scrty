@@ -137,9 +137,9 @@ func TestStores_LogNothing(t *testing.T) {
 		_ = apiKeys.Put(ctx, key)
 		_ = apiKeys.Put(ctx, key)
 		_, _ = apiKeys.Get(ctx, key.ID)
-		_ = apiKeys.Revoke(ctx, key.ID, at)
+		_, _ = apiKeys.Revoke(ctx, key.ID, at)
 		_ = apiKeys.TouchLastUsed(ctx, key.ID, at)
-		_ = apiKeys.Revoke(ctx, storefix.NewID(t), at)
+		_, _ = apiKeys.Revoke(ctx, storefix.NewID(t), at)
 		_, _ = apiKeys.List(ctx, logCanary)
 
 		links := newLinkStore(t, db, opts...)

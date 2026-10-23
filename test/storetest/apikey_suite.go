@@ -6,6 +6,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,6 +75,17 @@ func putAPIKeys(ctx context.Context, t *testing.T, s apikey.Store, keys ...apike
 	}
 }
 
+// revokeAPIKey revokes the key keyID at, failing the case at an error, and
+// reports whether the store said this call revoked it.
+func revokeAPIKey(ctx context.Context, t *testing.T, s apikey.Store, keyID id.ID, at time.Time) bool {
+	t.Helper()
+
+	revoked, err := s.Revoke(ctx, keyID, at)
+	require.NoError(t, err, "revoke %s", keyID)
+
+	return revoked
+}
+
 // apiKeyTextCase puts the key apiKeyRecord returns, changed by with to carry
 // text a PostgreSQL text column cannot hold, marked by canary. The store
 // either refuses it, with an error that does not echo it, and stores
@@ -100,7 +113,9 @@ func apiKeyTextCase(name, canary string, with func(*apikey.Key)) suiteCase[apike
 // manager relies on: a key round-trips every field, its scopes in order, and
 // a key with no scopes, nil or empty, is stored and loads with none; an
 // unknown identifier is ErrKeyNotFound for Get, Revoke and TouchLastUsed;
-// revoking keeps the first revocation time; touching records the latest use;
+// revoking keeps the first revocation time; Revoke reports true only when
+// that call moved the key from live to revoked, so of concurrent revokes of
+// one live key exactly one reports it; touching records the latest use;
 // the scopes and digest put, read and listed are the caller's own copies;
 // Get and List judge no expiry; stored times keep microsecond precision; List
 // returns exactly one principal's keys, revoked and expired ones included,
@@ -162,7 +177,8 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 				for _, unknown := range []id.ID{suiteID(0x2ff), id.Nil} {
 					_, err := s.Get(ctx, unknown)
 					require.ErrorIs(t, err, apikey.ErrKeyNotFound, "get %s", unknown)
-					require.ErrorIs(t, s.Revoke(ctx, unknown, suiteStart), apikey.ErrKeyNotFound, "revoke %s", unknown)
+					_, err = s.Revoke(ctx, unknown, suiteStart)
+					require.ErrorIs(t, err, apikey.ErrKeyNotFound, "revoke %s", unknown)
 					require.ErrorIs(t, s.TouchLastUsed(ctx, unknown, suiteStart), apikey.ErrKeyNotFound,
 						"touch %s", unknown)
 				}
@@ -175,13 +191,74 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 				putAPIKeys(ctx, t, s, apiKeyRecord(1, keyPrincipal), apiKeyRecord(2, keyPrincipal))
 
 				first := suiteStart.Add(time.Hour)
-				require.NoError(t, s.Revoke(ctx, suiteID(0x201), first))
-				require.NoError(t, s.Revoke(ctx, suiteID(0x201), first.Add(time.Hour)))
+				revokeAPIKey(ctx, t, s, suiteID(0x201), first)
+				revokeAPIKey(ctx, t, s, suiteID(0x201), first.Add(time.Hour))
 
 				want := apiKeyRecord(1, keyPrincipal)
 				want.RevokedAt = &first
 				assertAPIKeyStored(ctx, t, s, want)
 				assertAPIKeyStored(ctx, t, s, apiKeyRecord(2, keyPrincipal))
+			},
+		},
+		{
+			name: "revoke reports whether this call revoked the key",
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
+				live := apiKeyRecord(1, keyPrincipal)
+				// Put stores the record as given, so this one is revoked
+				// before any Revoke reaches it.
+				putRevoked := apiKeyRecord(2, keyPrincipal)
+				earlier := suiteStart.Add(time.Minute)
+				putRevoked.RevokedAt = &earlier
+				putAPIKeys(ctx, t, s, live, putRevoked)
+
+				at := suiteStart.Add(time.Hour)
+				assert.True(t, revokeAPIKey(ctx, t, s, live.ID, at), "the first revoke of a live key revokes it")
+				assert.False(t, revokeAPIKey(ctx, t, s, live.ID, at.Add(time.Hour)),
+					"a second revoke finds the key already revoked")
+				assert.False(t, revokeAPIKey(ctx, t, s, putRevoked.ID, at),
+					"a key stored revoked is already revoked")
+			},
+		},
+		{
+			// The answer must come from the write, not from a read before it:
+			// a store that reads then writes lets every caller see the key
+			// live, and rotation would then keep every concurrent replacement.
+			name: "concurrent revokes of one live key report a revocation exactly once",
+			assert: func(t *testing.T, ctx context.Context, s apikey.Store, _ *clockwork.FakeClock) {
+				key := apiKeyRecord(1, keyPrincipal)
+				putAPIKeys(ctx, t, s, key)
+
+				const callers = 8
+				var (
+					wg      sync.WaitGroup
+					start   = make(chan struct{})
+					revoked atomic.Int32
+					errs    = make(chan error, callers)
+				)
+				for i := range callers {
+					wg.Go(func() {
+						<-start
+						ok, err := s.Revoke(ctx, key.ID, suiteStart.Add(time.Duration(i+1)*time.Minute))
+						if err != nil {
+							errs <- err
+							return
+						}
+						if ok {
+							revoked.Add(1)
+						}
+					})
+				}
+				close(start)
+				wg.Wait()
+				close(errs)
+
+				for err := range errs {
+					require.NoError(t, err, "a revoke of a stored key must not fail")
+				}
+				assert.Equal(t, int32(1), revoked.Load(), "exactly one of the concurrent revokes revoked the key")
+				got, err := s.Get(ctx, key.ID)
+				require.NoError(t, err)
+				assert.NotNil(t, got.RevokedAt, "the key is revoked")
 			},
 		},
 		{
@@ -270,7 +347,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 				putAPIKeys(ctx, t, s, rec)
 				revoked, used := preciseStart.Add(2*time.Hour), preciseStart.Add(time.Hour)
 				require.NoError(t, s.TouchLastUsed(ctx, rec.ID, used))
-				require.NoError(t, s.Revoke(ctx, rec.ID, revoked))
+				revokeAPIKey(ctx, t, s, rec.ID, revoked)
 
 				got, err := s.Get(ctx, rec.ID)
 				require.NoError(t, err)
@@ -297,7 +374,7 @@ func RunAPIKeyStoreSuite(t *testing.T, newStore func(t *testing.T) apikey.Store)
 				putAPIKeys(ctx, t, s, apiKeyRecord(3, "svc-billing "), apiKeyRecord(4, "Svc-Billing"),
 					apiKeyRecord(5, "svc-other"))
 				revoked := suiteStart.Add(time.Hour)
-				require.NoError(t, s.Revoke(ctx, mine[1].ID, revoked))
+				revokeAPIKey(ctx, t, s, mine[1].ID, revoked)
 				mine[1].RevokedAt = &revoked
 
 				got, err := s.List(ctx, keyPrincipal)

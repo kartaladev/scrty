@@ -23,6 +23,7 @@ func TestManagerIssue(t *testing.T) {
 		principal identity.UserID
 		lifetime  time.Duration
 		random    io.Reader
+		digest    func([]byte) []byte
 		assert    func(t *testing.T, presented string, rec apikey.Key, err error, stored int)
 	}
 
@@ -94,6 +95,20 @@ func TestManagerIssue(t *testing.T) {
 				assert.Zero(t, stored, "the store must receive no write")
 			},
 		},
+		{
+			// The secret drawn here starts with a zero byte, the one input
+			// this consumer digest returns nothing for.
+			name:      "a digest returning nothing for the secret stores nothing",
+			principal: "svc-billing",
+			random:    zeroReader{},
+			digest:    emptyForLeadingZero,
+			assert: func(t *testing.T, presented string, _ apikey.Key, err error, stored int) {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, apikey.ErrConfig, "a digest that returns nothing is a broken configuration")
+				assert.Empty(t, presented)
+				assert.Zero(t, stored, "a key stored under no digest would accept any secret its digest also drops")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -107,6 +122,9 @@ func TestManagerIssue(t *testing.T) {
 			opts := []apikey.Option{apikey.WithStore(store)}
 			if tc.random != nil {
 				opts = append(opts, apikey.WithRandom(tc.random))
+			}
+			if tc.digest != nil {
+				opts = append(opts, apikey.WithDigest(tc.digest))
 			}
 
 			m, err := apikey.NewManager(opts...)

@@ -268,6 +268,8 @@ var portableVariants = []brokenVariant{
 	apiKeyVariant(apiKeyPutRefusesNoScopes, "a key with nil or empty scopes is stored and found with none"),
 	apiKeyVariant(apiKeyPutAltersText, "a scope holding invalid UTF-8 is refused or round-trips, never altered"),
 	apiKeyVariant(apiKeyPutRefusesText, ""),
+	apiKeyVariant(apiKeyRevokeReportsEvery, "revoke reports whether this call revoked the key"),
+	apiKeyVariant(apiKeyRevokeReadsThenWrites, "concurrent revokes of one live key report a revocation exactly once"),
 }
 
 func sessionVariant(d sessionDefect, failsCase string) brokenVariant {
@@ -396,13 +398,14 @@ func (s putPendingOverwritesStore) PutPending(ctx context.Context, e mfa.Enrolme
 // later revoke.
 type revokeMovesTimeStore struct{ *apikey.MemoryStore }
 
-func (s revokeMovesTimeStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
+func (s revokeMovesTimeStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error) {
 	rec, err := s.Get(ctx, keyID)
 	if err != nil {
-		return err
+		return false, err
 	}
+	live := rec.RevokedAt == nil
 	rec.RevokedAt = &at
-	return s.Put(ctx, rec)
+	return live, s.Put(ctx, rec)
 }
 
 // TestBrokenStoreConformance runs one suite against the broken variant named

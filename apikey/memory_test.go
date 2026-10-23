@@ -48,7 +48,9 @@ func TestMemoryKeyStore(t *testing.T) {
 		{
 			name: "revoking an unknown key is ErrKeyNotFound",
 			run: func(t *testing.T, s apikey.Store) (any, error) {
-				return nil, s.Revoke(t.Context(), id.MustParse(unknownID), time.Now())
+				_, err := s.Revoke(t.Context(), id.MustParse(unknownID), time.Now())
+
+				return nil, err
 			},
 			assert: notFound,
 		},
@@ -114,8 +116,10 @@ func TestMemoryKeyStore(t *testing.T) {
 				require.NoError(t, s.Put(t.Context(), k))
 
 				first := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
-				require.NoError(t, s.Revoke(t.Context(), k.ID, first))
-				require.NoError(t, s.Revoke(t.Context(), k.ID, first.Add(time.Hour)))
+				_, err := s.Revoke(t.Context(), k.ID, first)
+				require.NoError(t, err)
+				_, err = s.Revoke(t.Context(), k.ID, first.Add(time.Hour))
+				require.NoError(t, err)
 
 				return s.Get(t.Context(), k.ID)
 			},
