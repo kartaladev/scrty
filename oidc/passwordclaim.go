@@ -13,12 +13,14 @@ import (
 )
 
 // The accepted bcrypt cost band of a mapped password-hash claim, by default
-// and at its widest. The widest is bcrypt's own range.
+// and at its widest. The widest tops out at the record ceiling of the password
+// package's bcrypt encoder, 16, rather than at bcrypt's own 31: a hash above
+// the ceiling would be accepted here and then never match at login.
 const (
 	defaultPasswordClaimMinCost = 10
 	defaultPasswordClaimMaxCost = 15
 	bcryptMinCost               = 4
-	bcryptMaxCost               = 31
+	bcryptMaxCost               = 16
 )
 
 // bcryptHash matches exactly one bcrypt hash and nothing around it, capturing

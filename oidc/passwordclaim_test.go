@@ -366,11 +366,25 @@ func TestBrokerPasswordClaimOptions(t *testing.T) {
 			assert: refused("WithPasswordClaimCostRange"),
 		},
 		{
-			name: "bcrypt's whole range is an accepted band",
+			name: "a band up to the record ceiling of 16 is accepted",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(4, 31))
+				return claimed(t, oidc.WithPasswordClaimCostRange(4, 16))
 			},
 			assert: func(t *testing.T, _ *oidc.Broker, err error) { require.NoError(t, err) },
+		},
+		{
+			name: "a band beyond the record ceiling is refused",
+			opts: func(t *testing.T) []oidc.BrokerOption {
+				return claimed(t, oidc.WithPasswordClaimCostRange(10, 20))
+			},
+			assert: refused("WithPasswordClaimCostRange"),
+		},
+		{
+			name: "a band one above the record ceiling is refused",
+			opts: func(t *testing.T) []oidc.BrokerOption {
+				return claimed(t, oidc.WithPasswordClaimCostRange(10, 17))
+			},
+			assert: refused("WithPasswordClaimCostRange"),
 		},
 		{
 			name: "an empty provider key is refused",

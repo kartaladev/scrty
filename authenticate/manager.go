@@ -52,7 +52,10 @@ func NewManager(delegates ...Authenticator) (*Manager, error) {
 // Authenticate offers c to each delegate in turn and returns the first answer
 // that is not a refusal to handle the credentials.
 //
-// A delegate reporting ErrUnsupportedCredentials is skipped. Any other error
+// A delegate reporting ErrUnsupportedCredentials is skipped, and so is one
+// reporting ErrNoEligibleAuthenticator, which is what a nested Manager whose
+// delegates all skipped reports: a skip stays a skip however deep it is
+// nested. Any other error
 // ends the walk and is returned unchanged, so an outage inside one provider
 // reaches the caller as itself rather than being retried by the next provider
 // or collapsed into a refusal. When every delegate skips,
@@ -66,7 +69,7 @@ func NewManager(delegates ...Authenticator) (*Manager, error) {
 func (m *Manager) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	for _, d := range m.delegates {
 		a, err := d.Authenticate(ctx, c)
-		if errors.Is(err, ErrUnsupportedCredentials) {
+		if errors.Is(err, ErrUnsupportedCredentials) || errors.Is(err, ErrNoEligibleAuthenticator) {
 			continue
 		}
 		if err != nil {

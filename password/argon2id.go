@@ -98,6 +98,9 @@ func WithArgon2idRandom(r io.Reader) Argon2idOption {
 const (
 	maxRecordMemory     uint64 = 1024 * 1024 // 1 GiB, expressed in KiB
 	maxRecordIterations uint64 = 16
+	maxRecordThreads    uint64 = 16
+	maxRecordSaltLen           = 64 // bytes
+	maxRecordKeyLen            = 64 // bytes
 )
 
 // The OWASP floors for Argon2id. Memory and iterations trade against each other,
@@ -144,6 +147,26 @@ func (e *argon2idEncoder) validate() error {
 	if e.keyLength < floorArgon2idKeyLength {
 		return fmt.Errorf("%w: derived key length %d bytes; need at least %d",
 			ErrWeakParameters, e.keyLength, floorArgon2idKeyLength)
+	}
+
+	return e.validateCeilings()
+}
+
+// validateCeilings refuses a configuration above the ceilings a stored record is
+// held to, so the encoder never writes a hash that [Encoder.Match] would refuse.
+func (e *argon2idEncoder) validateCeilings() error {
+	switch {
+	case uint64(e.memory) > maxRecordMemory:
+		return fmt.Errorf("%w: memory %d KiB; at most %d KiB", ErrInvalidParameters, e.memory, maxRecordMemory)
+	case uint64(e.iterations) > maxRecordIterations:
+		return fmt.Errorf("%w: iterations %d; at most %d", ErrInvalidParameters, e.iterations, maxRecordIterations)
+	case uint64(e.threads) > maxRecordThreads:
+		return fmt.Errorf("%w: threads %d; at most %d", ErrInvalidParameters, e.threads, maxRecordThreads)
+	case e.saltLength > maxRecordSaltLen:
+		return fmt.Errorf("%w: salt length %d bytes; at most %d", ErrInvalidParameters, e.saltLength, maxRecordSaltLen)
+	case e.keyLength > maxRecordKeyLen:
+		return fmt.Errorf("%w: derived key length %d bytes; at most %d",
+			ErrInvalidParameters, e.keyLength, maxRecordKeyLen)
 	}
 
 	return nil
@@ -249,17 +272,17 @@ func parseArgon2id(encoded []byte) (
 	}
 
 	threads64, err := strconv.ParseUint(parts[3], 10, 8)
-	if err != nil || threads64 < 1 {
+	if err != nil || threads64 < 1 || threads64 > maxRecordThreads {
 		return 0, 0, 0, nil, nil, false
 	}
 
 	salt, err = b64.DecodeString(parts[4])
-	if err != nil || len(salt) == 0 {
+	if err != nil || len(salt) == 0 || len(salt) > maxRecordSaltLen {
 		return 0, 0, 0, nil, nil, false
 	}
 
 	key, err = b64.DecodeString(parts[5])
-	if err != nil || len(key) == 0 {
+	if err != nil || len(key) == 0 || len(key) > maxRecordKeyLen {
 		return 0, 0, 0, nil, nil, false
 	}
 

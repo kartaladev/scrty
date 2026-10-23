@@ -255,7 +255,9 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 // it, and a wrong guess there leaves the password resident after a success.
 func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	creds, ok := c.(*identity.UsernamePassword)
-	if !ok {
+	if !ok || creds == nil {
+		// A typed nil is not credentials of any kind: dereferencing it panics, so
+		// it is refused as unsupported like any kind this provider does not handle.
 		return nil, ErrUnsupportedCredentials
 	}
 
@@ -403,7 +405,7 @@ var _ RefusalLogFlusher = (*passwordAuthenticator)(nil)
 // without any hashing.
 func (a *passwordAuthenticator) VerifyDecoy(_ context.Context, c identity.Credentials) bool {
 	creds, ok := c.(*identity.UsernamePassword)
-	if !ok {
+	if !ok || creds == nil {
 		return false
 	}
 
