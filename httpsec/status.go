@@ -4,10 +4,13 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
+	"github.com/kartaladev/scrty/magiclink"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
@@ -39,6 +42,11 @@ var statusTable = []statusRow{
 	{mfa.ErrInvalidCode, http.StatusUnauthorized},
 	{mfa.ErrVerifyThrottled, http.StatusUnauthorized},
 	{mfa.ErrEnrolmentThrottled, http.StatusUnauthorized},
+
+	// A refused magic-link redemption: a wrong, spent or expired token and a
+	// throttled source are one indistinguishable refusal, and the client is
+	// asked to authenticate again.
+	{magiclink.ErrInvalidLink, http.StatusUnauthorized},
 
 	// A refused recovery (recovery.ErrRefused) and a throttled saved-code
 	// presentation (recovery.ErrCodeThrottled) need no rows: they wrap
@@ -86,9 +94,19 @@ var statusTable = []statusRow{
 	// the chain joined with ErrAuthenticationRequired, answered 401 above.
 	{session.ErrSessionRenewalConflict, http.StatusConflict},
 
+	// A rotation of an API key that is revoked, expired or was ended by a
+	// concurrent rotation or revocation: well formed, but in conflict with
+	// the key's state, and a retry with the same key will not succeed.
+	{apikey.ErrRotationRefused, http.StatusConflict},
+
 	// A family that renewed too often in the window, or a renewal limiter that
 	// could not answer: the client backs off, as for any other 429.
 	{ErrRenewalThrottled, http.StatusTooManyRequests},
+
+	// A subject that asked for more one-time tokens within the issuance
+	// window than the limit allows: the client backs off, as for any other
+	// 429.
+	{onetime.ErrIssueLimitReached, http.StatusTooManyRequests},
 
 	// A federated-login path segment naming no registered provider, and a
 	// second-factor path segment naming no configured method. Which providers
@@ -99,6 +117,10 @@ var statusTable = []statusRow{
 	// A passkey identifier naming no passkey of the session's user: another
 	// user's and none at all are deliberately the same refusal.
 	{passkey.ErrNotFound, http.StatusNotFound},
+
+	// An API key identifier naming no key of the caller: another owner's and
+	// none at all are the same refusal, as for a passkey.
+	{apikey.ErrKeyNotFound, http.StatusNotFound},
 
 	{authorize.ErrAccessDenied, http.StatusForbidden},
 	{policy.ErrPolicyDenied, http.StatusForbidden},

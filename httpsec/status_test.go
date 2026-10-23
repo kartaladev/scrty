@@ -20,11 +20,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/magiclink"
 	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
@@ -169,6 +172,18 @@ func TestStatusForError(t *testing.T) {
 		{name: "recovery not yet completable", err: recovery.ErrNotYetCompletable, want: 409},
 		{name: "recovery cool-down", err: recovery.ErrCooldown, want: 403},
 		{name: "reauthentication required", err: recovery.ErrReauthenticationRequired, want: 403},
+		{name: "one-time token issuance limit", err: onetime.ErrIssueLimitReached, want: 429},
+		{
+			name: "wrapped one-time token issuance limit",
+			err:  fmt.Errorf("issuing: %w", onetime.ErrIssueLimitReached),
+			want: 429,
+		},
+		{name: "API key naming no key of the caller", err: apikey.ErrKeyNotFound, want: 404},
+		{name: "wrapped API key naming no key", err: fmt.Errorf("revoking: %w", apikey.ErrKeyNotFound), want: 404},
+		{name: "refused magic-link redemption", err: magiclink.ErrInvalidLink, want: 401},
+		{name: "wrapped refused magic-link redemption", err: fmt.Errorf("redeeming: %w", magiclink.ErrInvalidLink), want: 401},
+		{name: "refused API key rotation", err: apikey.ErrRotationRefused, want: 409},
+		{name: "wrapped refused API key rotation", err: fmt.Errorf("rotating: %w", apikey.ErrRotationRefused), want: 409},
 		{name: "throttled saved-code presentation", err: recovery.ErrCodeThrottled, want: 401},
 		{name: "suspected passkey clone", err: passkey.ErrCloneSuspected, want: 403},
 		{name: "suspended passkey", err: passkey.ErrSuspended, want: 403},
@@ -280,6 +295,25 @@ func TestPolicyDenyReason(t *testing.T) {
 // reflection cannot enumerate package-level variables; declaredErrVars keeps it
 // honest by failing when a package exports one that is not listed here.
 var sentinelRegistry = map[string]map[string]error{
+	"github.com/kartaladev/scrty/apikey": {
+		"apikey.ErrConfig":             apikey.ErrConfig,
+		"apikey.ErrKeyNotFound":        apikey.ErrKeyNotFound,
+		"apikey.ErrRotationRefused":    apikey.ErrRotationRefused,
+		"apikey.ErrVerificationFailed": apikey.ErrVerificationFailed,
+	},
+	"github.com/kartaladev/scrty/magiclink": {
+		"magiclink.ErrConfig":      magiclink.ErrConfig,
+		"magiclink.ErrInvalidLink": magiclink.ErrInvalidLink,
+	},
+	"github.com/kartaladev/scrty/onetime": {
+		"onetime.ErrConfig":              onetime.ErrConfig,
+		"onetime.ErrInvalidToken":        onetime.ErrInvalidToken,
+		"onetime.ErrIssueLimitReached":   onetime.ErrIssueLimitReached,
+		"onetime.ErrReapUnsupported":     onetime.ErrReapUnsupported,
+		"onetime.ErrRetainSinceRequired": onetime.ErrRetainSinceRequired,
+		"onetime.ErrSubjectRequired":     onetime.ErrSubjectRequired,
+		"onetime.ErrTokenNotFound":       onetime.ErrTokenNotFound,
+	},
 	"github.com/kartaladev/scrty/authenticate": {
 		"authenticate.ErrAuthenticationFailed":    authenticate.ErrAuthenticationFailed,
 		"authenticate.ErrConfig":                  authenticate.ErrConfig,
@@ -479,14 +513,26 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"recovery.ErrRecordNotFound":            "a store outcome the recovery core converts to ErrRefused before it leaves the core",
 		"passkey.ErrConfig":                     "a wiring fault, refused at construction",
 		"passkey.ErrDuplicateCredential":        "a store outcome the passkey core converts to authenticate.ErrAuthenticationFailed before it leaves the core",
+		"apikey.ErrConfig":                      "a wiring fault, refused at construction",
+		"magiclink.ErrConfig":                   "a wiring fault, refused at construction",
+		"apikey.ErrVerificationFailed":          "the verifier's one indistinguishable refusal; the consumer's authenticator answers it",
+		"onetime.ErrConfig":                     "a wiring fault, refused at construction",
+		"onetime.ErrInvalidToken":               "the manager's one indistinguishable refusal; the consumer's flow answers it",
+		"onetime.ErrReapUnsupported":            "a maintenance-path fault, not a request refusal",
+		"onetime.ErrRetainSinceRequired":        "a maintenance-path fault, not a request refusal",
+		"onetime.ErrSubjectRequired":            "a programming error in the consumer's own Issue call",
+		"onetime.ErrTokenNotFound":              "a store outcome the manager converts to ErrInvalidToken before it leaves the manager",
 	}
 
 	for _, pkg := range []string{
+		"github.com/kartaladev/scrty/apikey",
 		"github.com/kartaladev/scrty/authenticate",
 		"github.com/kartaladev/scrty/authorize",
 		"github.com/kartaladev/scrty/httpsec",
+		"github.com/kartaladev/scrty/magiclink",
 		"github.com/kartaladev/scrty/mfa",
 		"github.com/kartaladev/scrty/oidc",
+		"github.com/kartaladev/scrty/onetime",
 		"github.com/kartaladev/scrty/passkey",
 		"github.com/kartaladev/scrty/password",
 		"github.com/kartaladev/scrty/policy",

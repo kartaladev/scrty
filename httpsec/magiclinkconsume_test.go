@@ -106,6 +106,60 @@ func TestMagicLinkConsumeEndpoint(t *testing.T) {
 	})
 }
 
+// TestMagicLinkRefusalStatus pins that a refused redemption, whether the token
+// is wrong or the source is throttled, is answered 401 by the default error
+// mapping rather than falling through to 500.
+func TestMagicLinkRefusalStatus(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		redeem func(t *testing.T, h *magicLinkHarness, c *httpsec.Chain, token, nonce string) served
+		assert func(t *testing.T, out served)
+	}
+
+	refused := func(t *testing.T, out served) {
+		t.Helper()
+
+		require.ErrorIs(t, out.err, magiclink.ErrInvalidLink)
+		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+	}
+
+	tests := []testCase{
+		{
+			name: "an invalid token",
+			redeem: func(t *testing.T, h *magicLinkHarness, c *httpsec.Chain, _, nonce string) served {
+				return h.redeem(t, c, "wrong-token", nonce)
+			},
+			assert: refused,
+		},
+		{
+			name: "a throttled source",
+			redeem: func(t *testing.T, h *magicLinkHarness, c *httpsec.Chain, token, nonce string) served {
+				for range 10 {
+					require.ErrorIs(t, h.redeemFrom(t, c, magicLinkSource, "wrong-token", nonce).err,
+						magiclink.ErrInvalidLink)
+				}
+
+				return h.redeemFrom(t, c, magicLinkSource, token, nonce)
+			},
+			assert: refused,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newMagicLinkHarness(t)
+			c := h.chain(t)
+			token, nonce := h.link(t, c)
+
+			tc.assert(t, tc.redeem(t, h, c, token, nonce))
+		})
+	}
+}
+
 // TestBindingFollowsManager pins that the interceptor asks the manager whether
 // links are bound, so the cookie it emits and the binding the manager checks
 // can never disagree.
