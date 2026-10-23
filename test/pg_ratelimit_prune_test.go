@@ -622,11 +622,15 @@ type pruneLockWaits struct {
 	// is shorter than it.
 	gap time.Duration
 	// pruneSeen counts the samples that found a prune transaction open, and
-	// recordSessions the record sessions the last sample found in the
-	// database, idle or not. Both match pg_stat_activity's query text
-	// exactly, as the wait query does, so a positive count shows the match
-	// finds the statements the adapters send.
-	pruneSeen, recordSessions int
+	// recordSeen those that found a record session with the record statement
+	// current: running it, or idle in its transaction before the commit.
+	// Both match pg_stat_activity's query text exactly, as the wait query
+	// does, so a positive count shows the match finds the statements the
+	// adapters send. A record runs in a READ COMMITTED
+	// transaction of its own, so once it commits its session shows the
+	// COMMIT, not the record: only a sample taken while the record is still
+	// in flight can see it, as only such a sample can see its wait.
+	pruneSeen, recordSeen int
 	// samples and failed count the samples taken and those whose query
 	// failed; firstErr is the first such failure.
 	samples, failed int
@@ -668,9 +672,14 @@ SELECT pid, xact_start FROM pg_stat_activity
 WHERE datname = current_database() AND query = $1 AND xact_start IS NOT NULL`
 
 // pruneRecordSessionsQuery counts the sessions of the current database whose
-// current or last statement is $1, the record statement.
+// current statement is $1, the record statement: running it, as a session
+// waiting on a lock is, or idle in its transaction after it. An idle session
+// shows its last statement, the COMMIT of a record's transaction, so it is
+// left out.
 const pruneRecordSessionsQuery = `
-SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND query = $1`
+SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database() AND query = $1
+  AND state IN ('active', 'idle in transaction')`
 
 // pruneSampleEvery is how often sampleLockWaits samples.
 const pruneSampleEvery = 10 * time.Millisecond
@@ -800,6 +809,14 @@ func sampleLockWaits(t *testing.T, conn PostgresConn, lockTimeout time.Duration,
 			fail(err)
 			return
 		}
+		var recording int
+		if err := db.QueryRowContext(t.Context(), pruneRecordSessionsQuery, recordStmt).Scan(&recording); err != nil {
+			fail(err)
+			return
+		}
+		if recording > 0 {
+			got.recordSeen++
+		}
 
 		if len(open) > 0 {
 			got.pruneSeen++
@@ -828,15 +845,11 @@ func sampleLockWaits(t *testing.T, conn PostgresConn, lockTimeout time.Duration,
 			}
 		}
 	}
-	// last takes the final sample, closes the waits still under way at it,
-	// and counts the record sessions.
+	// last takes the final sample and closes the waits still under way at it.
 	last := func() {
 		sample()
 		for _, w := range waiting {
 			got.bound = max(got.bound, lastAt.Sub(w.since))
-		}
-		if err := db.QueryRowContext(t.Context(), pruneRecordSessionsQuery, recordStmt).Scan(&got.recordSessions); err != nil {
-			fail(err)
 		}
 	}
 
@@ -937,8 +950,8 @@ FROM generate_series(1, 1000000) AS g`, ns)
 				removed, pruneDur, attempted, len(recorded), warmed)
 			t.Logf("server: %d record waits on the prune's locks, longest seen %s, at most %s, %d given up while the prune held the lock; %d records refused a lock (55P03)",
 				waits.waits, waits.longest, waits.bound, waits.abandoned, refused)
-			t.Logf("sampler: %d samples, %d failed (first error %v), longest gap %s; prune transaction seen in %d, %d record sessions",
-				waits.samples, waits.failed, waits.firstErr, waits.gap, waits.pruneSeen, waits.recordSessions)
+			t.Logf("sampler: %d samples, %d failed (first error %v), longest gap %s; prune transaction seen in %d, a record in flight in %d",
+				waits.samples, waits.failed, waits.firstErr, waits.gap, waits.pruneSeen, waits.recordSeen)
 			t.Logf("client: worst record wait %s; %d records failed or waited past %s: %s",
 				worst, len(slow), timeout, pruneFailures(slow, timeout))
 
@@ -949,7 +962,7 @@ FROM generate_series(1, 1000000) AS g`, ns)
 				len(recorded), attempted)
 			require.Less(t, waits.failed, waits.samples, "no lock-wait sample succeeded")
 			assert.Positive(t, waits.pruneSeen, "no sample matched the prune's statement in pg_stat_activity")
-			assert.Positive(t, waits.recordSessions, "no session matched the record statement in pg_stat_activity")
+			assert.Positive(t, waits.recordSeen, "no sample found a session running the record statement in pg_stat_activity")
 			assert.Less(t, waits.gap, timeout, "the samples left a gap a wait as long as the timeout could fall in unseen")
 			assert.Less(t, waits.bound, timeout, "a record waited on a lock the prune held for as long as its timeout")
 			assert.Zero(t, refused, "the server refused records a lock (SQLSTATE 55P03): a wait reached the timeout")
