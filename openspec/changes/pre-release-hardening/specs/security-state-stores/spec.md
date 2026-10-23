@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Store guarantees hold at the database's weaker default isolations
-Every transaction a durable store opens for itself, and every statement it runs outside a transaction, SHALL run at READ COMMITTED whatever the database's or role's default isolation is.
+Every transaction a durable store opens for itself SHALL run at READ COMMITTED whatever the database's or role's default isolation is. A statement the store runs outside a transaction whose guarantee depends on READ COMMITTED, as the failure-streak add and the PostgreSQL rate-limiter record do, SHALL run in a READ COMMITTED transaction of its own; other single statements keep the default, since each takes its own snapshot.
 
 #### Scenario: Repeatable-read database default
 - **WHEN** the database's default isolation is REPEATABLE READ and 16 failed logins for one username are recorded concurrently
@@ -40,7 +40,7 @@ The one-time token store and the passkey credential store SHALL offer an insert 
 - **THEN** it reports not inserted and no record is written
 
 ### Requirement: Deleting a user's sessions ends in a bounded number of passes
-Deleting every session of a user, every session of an external session, or every session of a user from an external issuer SHALL finish within a bounded number of passes even while sessions for that user are being created concurrently. When the bound is reached, it SHALL return an identifiable error saying the deletion did not settle, and SHALL NOT loop until its context ends.
+Deleting every session of a user, every session of a user but one, every session of an external session, or every session of a user from an external issuer SHALL finish within a bounded number of passes even while sessions for that user are being created concurrently. When the bound is reached, it SHALL return an error that matches `session.ErrDeleteDidNotSettle` on every backend, and SHALL NOT loop until its context ends.
 
 #### Scenario: Concurrent logins during a revoke-all
 - **WHEN** sessions for `u-1` are created in a tight loop while every session of `u-1` is deleted

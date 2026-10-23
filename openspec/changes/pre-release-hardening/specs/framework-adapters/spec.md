@@ -14,11 +14,11 @@ On fiber, an error returned by the route or by middleware after the chain SHALL 
 - **THEN** the response is 404
 
 ### Requirement: fiber request cancellation reaches the chain
-On fiber, the chain SHALL run with a context that ends when the client's request ends, as it does on net/http and gin, so store lookups and limiter calls made for a request that went away stop.
+On fiber, the chain SHALL run with a context derived from fiber's request context that is cancelled when the request's handling ends, as net/http cancels a request's context when its handler returns, so work the chain started for a request that has ended stops. fiber gives a handler no signal when a client disconnects mid-request, so on fiber a disconnect does not cancel the chain's context before the handler returns; fibersec's documentation SHALL state this limit.
 
-#### Scenario: Client disconnects during a store lookup
-- **WHEN** a fiber client disconnects while the chain waits on a session store lookup
-- **THEN** the lookup's context is cancelled
+#### Scenario: Chain context ends with the request
+- **WHEN** an interceptor keeps the chain's context and the fiber request's handling ends
+- **THEN** that context is cancelled
 
 ### Requirement: Adapter ownership guards fail at wiring
 Building a gin or fiber ownership guard with a nil ownership checker or a nil identifier extractor SHALL panic at wiring time with a message naming the missing dependency, as the core guard does.

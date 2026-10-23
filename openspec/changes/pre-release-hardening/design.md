@@ -153,11 +153,11 @@ See `proposal.md` (Why) for the motivation, and the delta specs for the requirem
   - This covers identity, session supersede, recovery-code replace and the bounded inserts, in `pgx`, `sqlstore` and `gorm`.
   - A statement rather than a `TxOptions` field, so the `pgx` `base` interface (pool or tx) need not widen and the three drivers share one shape.
 - **Autocommit statements.** `StreakAdd` and the PostgreSQL limiter record each run in their own READ COMMITTED transaction. An autocommit statement inherits the session default.
-- **Inside a caller's transaction.** An operation whose guarantee depends on READ COMMITTED reads `current_setting('transaction_isolation')` once, in its savepoint, and refuses with an error naming the level when it is stronger. That covers recovery-code replace, the bounded inserts and `StreakAdd`.
+- **Inside a caller's transaction.** An operation whose guarantee depends on READ COMMITTED reads `current_setting('transaction_isolation')` once, in its savepoint (in the caller's transaction directly for `StreakAdd`, which has none), and refuses with an error naming the level when it is stronger. That covers recovery-code replace, the bounded inserts and `StreakAdd`. The error matches `storeerr.ErrIsolationTooStrong` on every backend: a new public root-module package `storeerr` holds it, and each backend's own name is an alias (user decision, 2026-10-23), so `httpsec` and a consumer can match it whichever backend runs, since `pgx` and `gorm` are separate modules.
   - **Why not degrade silently:** the recovery-code case keeps both sets with no error.
   - **Why not override the caller's isolation:** a store cannot change it mid-transaction.
   - **Other operations** join a caller's transaction at any isolation, as today. Their guarantees come from conditional writes that recheck on the committed row; the sweep checked one-time consume under REPEATABLE READ.
-- **User-wide delete loops.** They become bounded at 64 passes, matching `StreakAddMaxRuns`, and end with an identifiable did-not-settle error.
+- **User-wide delete loops.** `DeleteByUser`, `DeleteByUserExcept`, `DeleteByExternalSession` and `DeleteByUserAndExternalIssuer` become bounded at 64 passes, matching `StreakAddMaxRuns`, and end with `session.ErrDeleteDidNotSettle`, which each backend wraps. `DeleteFamily` stays unbounded: a family gains a member only when its current member is superseded, and the delete removes that member, so concurrent work cannot keep refilling it.
 - **Override:** none for the isolation. A consumer who needs a stronger isolation for their own work runs the store operation outside that transaction. The godoc states which operations refuse.
 - **Departure:** the established design pinned no isolation.
 
@@ -271,7 +271,7 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 
 - **fibersec (M12, U6).**
   - Errors: `Middleware` captures the error `fc.Next()` returns and passes it back unchanged when the chain returns that same error (`errors.Is`). `ErrorHandler` answers a `*fiber.Error` with its code.
-  - Cancellation: the chain runs on a context derived from fiber's request context that ends when the request ends.
+  - Cancellation: the chain runs on a context derived from fiber's request context and cancelled when the request's handling ends. fasthttp gives a handler no disconnect signal (`RequestCtx.Done()` fires only at server shutdown), and watching the socket would race fasthttp's own reads, so a mid-request disconnect is not detected; this is a stated limit in fibersec's godoc (user decision, 2026-10-23, after U6 reproduced).
 - **Layout guard (M13).** It runs its file and `go.mod` checks for every workspace module except `./test`. This task follows `release-readiness` 2.1, which also edits `layout_test.go`.
 - **gorm (U1).** A read/write-splitting plugin can route a store's reads to a lagging replica, which can serve a revoked session. This is documented as a stated limit in `gorm/doc.go`; no `dbresolver` dependency is added.
 

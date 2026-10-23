@@ -26,7 +26,7 @@
 - [ ] 1.2 Make operations that need READ COMMITTED refuse a caller's stronger transaction with an error naming the level: recovery-code replace and `StreakAdd`.
   - **Red test:** a caller's REPEATABLE READ transaction replacing a saved-code set silently keeps both sets.
   - **Verify:** the refusal case passes on all three backends, and the caller's transaction is still usable afterwards.
-- [ ] 1.3 Bound the user-wide delete loops (`DeleteByUser`, `DeleteByExternalSession`, `DeleteByUserAndExternalIssuer`) at 64 passes, with an identifiable did-not-settle error [U2, `UNREPRODUCED`].
+- [ ] 1.3 Bound the user-wide delete loops (`DeleteByUser`, `DeleteByUserExcept`, `DeleteByExternalSession`, `DeleteByUserAndExternalIssuer`) at 64 passes, ending with `session.ErrDeleteDidNotSettle` [U2, `UNREPRODUCED`].
   - **Red test:** concurrent `Create` for the user keeps the delete looping until its context deadline. If it passes on HEAD, record that and skip the fix.
   - **Verify:** the case returns before its deadline on all three backends.
 - [ ] 1.4 Add the isolation suite cases to `test/storetest` and wire them for every backend (store-conformance delta).
@@ -104,7 +104,7 @@
 - [ ] 5.1 Pass a fiber route's own error through unchanged, and have `ErrorHandler` honour `*fiber.Error` [M12].
   - **Red tests:** `TestFiber_ErrorHandlerKeepsNonRefusalStatuses` and `TestFiber_DefaultErrorHandlerKeepsRouteErrorText`.
   - **Verify:** `(cd fibersec && go test -race -count=1 ./...)` passes.
-- [ ] 5.2 Run the fiber chain on a context that ends with the request [U6, `UNREPRODUCED`].
+- [ ] 5.2 Run the fiber chain on a context derived from fiber's and cancelled when the request's handling ends, and state in fibersec's godoc that a mid-request disconnect is not detected on fiber [U6].
   - **Red test:** a disconnecting client leaves a store lookup's context alive.
   - **Verify:** the test passes, or is recorded as not reproducing.
 - [ ] 5.3 Panic at wiring on nil ownership checkers or extractors in the fibersec and ginsec guards [L13].

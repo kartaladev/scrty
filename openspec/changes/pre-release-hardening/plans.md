@@ -84,7 +84,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 **Files:** the `WithTx` savepoint paths of recovery-code replace and `AddStreakFailure` in `pgx/`, `sqlstore/` and `gorm/`; `test/{pgx,sql,gorm}store/isolation_test.go`
 
 **Interfaces:**
-- Produces: `var ErrIsolationTooStrong` in each backend package (`pgx.ErrIsolationTooStrong`, etc.), wrapped with the level found.
+- Produces: `storeerr.ErrIsolationTooStrong` in a new public root-module package `storeerr`; each backend's `ErrIsolationTooStrong` is an alias of it, wrapped with the level found.
 - Produces an unexported `func (c *conn) requireReadCommitted(ctx context.Context, tx …) error`, called first in the savepoint path. Lane E reuses it.
 
 - [ ] **Step 1: Write `TestRecoveryReplace_RefusesCallerRepeatableReadTx`.**
@@ -101,7 +101,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 **Files:** `pgx/session.go:414` (`deleteUntilNone`), `sqlstore/session.go:389`, `gorm/session.go:519` (`untilNone`); `test/storetest/session_suite.go`
 
 **Interfaces:**
-- Produces: `session.ErrDeleteDidNotSettle` (in `session/store.go`), returned after 64 passes that each removed rows. The constant is `maxDeletePasses = 64`, in each backend.
+- Produces: `session.ErrDeleteDidNotSettle` (in `session/store.go`), returned after 64 passes that each removed rows, by `DeleteByUser`, `DeleteByUserExcept`, `DeleteByExternalSession` and `DeleteByUserAndExternalIssuer`. The constant is `maxDeletePasses = 64`, in each backend, and each backend's own name is an alias of the session sentinel.
 
 - [ ] **Step 1: Write the storetest case `"deleting a user's sessions settles under concurrent creates"`.**
   - One goroutine creates sessions for `u-1` in a loop until stopped. Another calls `DeleteByUser` with a 5 s context.
@@ -351,7 +351,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 
 **Files:** `httpsec/status.go:159`, `httpsec/status_test.go:410`
 
-- [ ] **Step 1: Add the rows** for `apikey.ErrRotationRefused`, `onetime.ErrIssueLimitReached`, `session.ErrDeleteDidNotSettle` and the backend `ErrIsolationTooStrong`s to `TestStatusForErrorCoversEverySentinel`.
+- [ ] **Step 1: Add the rows** for `apikey.ErrRotationRefused`, `onetime.ErrIssueLimitReached`, `session.ErrDeleteDidNotSettle` and `storeerr.ErrIsolationTooStrong` to `TestStatusForErrorCoversEverySentinel`.
 - [ ] **Step 2: Run it.** Expected: FAIL for each unmapped sentinel.
 - [ ] **Step 3: Map them.**
   - `ErrIssueLimitReached` → 429.
@@ -380,11 +380,11 @@ These five failure modes are implied by the spec but no single task's tests exer
 - [ ] **Step 4: Run `(cd fibersec && go test -race -count=1 ./...)`.** Expected: PASS.
 - [ ] **Step 5: Commit** `fix(fibersec): a route's own error keeps its status`.
 
-### Task 5.2: fiber cancellation (U6, UNREPRODUCED)
+### Task 5.2: fiber cancellation (U6)
 
-- [ ] **Step 1: Write `TestFiber_ClientDisconnectCancelsChainContext`.** A store lookup blocks on `<-ctx.Done()`, the client closes the connection, and the test asserts that the context ends within 1 s.
-- [ ] **Step 2: Run it.** If it passes on HEAD, report that and stop.
-- [ ] **Step 3: Derive the chain context** from fiber's request context.
+- [ ] **Step 1: Write `TestFiber_ChainContextEndsWithTheRequest`.** An interceptor keeps the chain's context; after the request's handling ends, the test asserts that context is done. (A client-disconnect test reproduced U6 but cannot pass on fiber: fasthttp gives no disconnect signal.)
+- [ ] **Step 2: Run it.** Expected: FAIL on HEAD.
+- [ ] **Step 3: Derive the chain context** from fiber's request context with a cancel that runs when `Middleware`'s handler returns, and state the disconnect limit in fibersec's godoc.
 - [ ] **Step 4: Run it.** Expected: PASS.
 - [ ] **Step 5: Commit** `fix(fibersec): request cancellation reaches the chain`.
 
