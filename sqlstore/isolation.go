@@ -15,7 +15,8 @@ import (
 // storeerr.ErrIsolationTooStrong under this package's name, so errors.Is
 // matches either, and the error names the isolation it found. The operation
 // writes nothing, and the caller's transaction stays usable. The operations
-// that refuse are RecoveryCodeStore.ReplaceSet and AttemptStore.AddStreakFailure;
+// that refuse are RecoveryCodeStore.ReplaceSet, AttemptStore.AddStreakFailure,
+// OneTimeStore.InsertWithin and PasskeyCredentialStore.InsertWithin;
 // every other operation joins a caller's transaction at any isolation. There
 // is no option to relax it: a store cannot change a transaction's isolation
 // once it has begun, so a consumer whose own work needs a stronger isolation

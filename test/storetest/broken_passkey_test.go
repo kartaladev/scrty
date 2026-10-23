@@ -52,6 +52,15 @@ const (
 	credChargeAtExpiry       credDefect = "charge-at-expiry" //nolint:gosec // G101: a fixture string, not a credential
 	credRenameAcrossUsers    credDefect = "rename-across-users"
 	credDeleteAwaitingAll    credDefect = "delete-awaiting-all-users"
+	// A bounded insert counts, lets go of the lock, and then inserts, so
+	// racers for one user all read the same count and all store.
+	credBoundedCountsThenInserts credDefect = "bounded-counts-then-inserts"
+	// A bounded insert at the limit reports the refusal but stores the
+	// credential.
+	credBoundedWritesRefused credDefect = "bounded-writes-refused"
+	// A bounded insert counts every user's credentials, so one user's
+	// passkeys use up another's allowance.
+	credBoundedCountsEveryUser credDefect = "bounded-counts-every-user"
 )
 
 // credTable is the state the instances of one fake credential store share,
@@ -129,6 +138,42 @@ func (s *credFake) Insert(_ context.Context, c *passkey.Credential) error {
 	}
 	s.table.rows[cp.ID] = cp
 	return nil
+}
+
+func (s *credFake) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
+	if s.defect == credBoundedCountsThenInserts {
+		n, _ := s.Count(ctx, c.User)
+		// The pause stands in for the round trip between the two statements
+		// of a count-then-insert written against a database.
+		time.Sleep(20 * time.Millisecond)
+		if n >= limit {
+			return false, nil
+		}
+		return true, s.Insert(ctx, c)
+	}
+
+	cp := cloneCred(c)
+
+	s.table.mu.Lock()
+	defer s.table.mu.Unlock()
+
+	n := 0
+	for _, row := range s.table.rows {
+		if row.User == cp.User || s.defect == credBoundedCountsEveryUser {
+			n++
+		}
+	}
+	if n >= limit {
+		if s.defect == credBoundedWritesRefused && limit > 0 {
+			s.table.rows[cp.ID] = cp
+		}
+		return false, nil
+	}
+	if s.byCredID(cp.CredentialID) != nil || s.table.rows[cp.ID] != nil {
+		return false, passkey.ErrDuplicateCredential
+	}
+	s.table.rows[cp.ID] = cp
+	return true, nil
 }
 
 func (s *credFake) out(c *passkey.Credential) *passkey.Credential {
@@ -588,6 +633,10 @@ var passkeyVariants = []storefix.BrokenVariant{
 	credSuiteVariant(credRenameAcrossUsers, "rename is within the user"),
 	credSuiteVariant(credDeleteAwaitingAll,
 		"delete awaiting saved codes removes only the user's credentials with the reason, and counts them"),
+	credSuiteVariant(credBoundedCountsThenInserts, "bounded inserts for one user never exceed the limit"),
+	credSuiteVariant(credBoundedWritesRefused,
+		"a bounded insert counts every state of the user, and a refused one writes nothing"),
+	credSuiteVariant(credBoundedCountsEveryUser, "bounded inserts count each user on its own"),
 	handleSuiteVariant(handleOverwrites, "a later assignment returns the held handle and stores no other"),
 	handleSuiteVariant(handleReturnsOffer, "a later assignment returns the held handle and stores no other"),
 	handleSuiteVariant(handleAnyLength, "an offer of the wrong length is refused as a configuration error"),

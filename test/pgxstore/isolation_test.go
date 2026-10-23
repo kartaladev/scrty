@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/passkey"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
@@ -64,6 +65,9 @@ func isolationFixture(t *testing.T) (storetest.IsolationFixture, *pgxpool.Pool) 
 		},
 		Identities: func(t *testing.T) identity.UserProvisioner { return newIdentityStore(t, pool) },
 		OneTime:    func(t *testing.T) onetime.Store { return newOneTimeStore(t, pool) },
+		Passkeys: func(t *testing.T) passkey.CredentialStore {
+			return newPasskeyCredentialStore(t, pool, storefix.TestCipher(t))
+		},
 		Limiter: func(t *testing.T) ratelimit.Limiter {
 			l, err := pgxstore.NewLimiter(pool, "isolation", 400, time.Hour,
 				pgxstore.WithLimiterOperationTimeout(5*time.Second))

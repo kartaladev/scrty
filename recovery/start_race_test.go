@@ -53,8 +53,7 @@ func (s *countHoldingTokenStore) CountRecentBySubject(
 
 // TestStart_ConcurrentBurstStaysWithinIssuanceLimit releases twenty recovery
 // starts for one username at once against the default issued-code limit of
-// five: no more than five codes are stored and no more than five messages are
-// sent.
+// five: exactly five codes are stored and exactly five messages are sent.
 func TestStart_ConcurrentBurstStaysWithinIssuanceLimit(t *testing.T) {
 	t.Parallel()
 
@@ -87,7 +86,7 @@ func TestStart_ConcurrentBurstStaysWithinIssuanceLimit(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	assert.LessOrEqual(t, store.Len(), limit, "codes issued")
-	assert.LessOrEqual(t, int(sent.Load()), limit, "emails sent")
+	assert.Equal(t, limit, store.Len(), "codes issued")
+	assert.Equal(t, limit, int(sent.Load()), "emails sent")
 	assert.Equal(t, store.Len(), int(sent.Load()), "every issued code is sent, and nothing else")
 }

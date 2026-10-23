@@ -16,6 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -66,6 +67,8 @@ type IsolationFixture struct {
 	Limiter func(t *testing.T) ratelimit.Limiter
 	// OneTime returns a one-time token store on the database.
 	OneTime func(t *testing.T) onetime.Store
+	// Passkeys returns a passkey credential store on the database.
+	Passkeys func(t *testing.T) passkey.CredentialStore
 	// Begin begins a caller-owned transaction on the database at isolation,
 	// and rolls it back at cleanup unless the case ended it.
 	Begin func(t *testing.T, isolation Isolation) CallerTx
@@ -91,6 +94,7 @@ func (f IsolationFixture) missing() []string {
 		input{"IsolationFixture.Identities", f.Identities != nil},
 		input{"IsolationFixture.Limiter", f.Limiter != nil},
 		input{"IsolationFixture.OneTime", f.OneTime != nil},
+		input{"IsolationFixture.Passkeys", f.Passkeys != nil},
 		input{"IsolationFixture.Begin", f.Begin != nil},
 		input{"IsolationFixture.Raw", f.Raw != nil},
 		input{"IsolationFixture.IsolationRefused", f.IsolationRefused != nil},
@@ -104,7 +108,8 @@ func (f IsolationFixture) missing() []string {
 // replacements leave only the later set, concurrent provisions of one
 // username give one user, concurrent updates of one user all succeed, and
 // concurrent limiter records report no failure, and concurrent bounded
-// one-time inserts for one subject store no more than their limit. Inside a
+// one-time inserts for one subject, and bounded passkey inserts for one user,
+// store no more than their limit. Inside a
 // caller's REPEATABLE READ transaction, the operations that need READ
 // COMMITTED refuse with an error naming the level and leave the transaction
 // usable. Inside a caller's READ COMMITTED transaction, a bounded insert holds
@@ -271,6 +276,44 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			require.NoError(t, err)
 			assert.Zero(t, n, "the refused bounded insert stored a record")
 		}},
+		{"concurrent bounded passkey inserts of one user store no more than the limit", func(t *testing.T) {
+			s := f.Passkeys(t)
+			user := identity.UserID("iso-passkeys")
+
+			stored := make([]bool, isolationRacers)
+			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, i int) error {
+				var err error
+				stored[i], err = s.InsertWithin(ctx, isolationCredential(i, user), isolationLimit)
+				return err
+			})
+
+			assertNoErrors(t, errs, "a concurrent bounded passkey insert")
+			won := 0
+			for _, ok := range stored {
+				if ok {
+					won++
+				}
+			}
+			assert.Equal(t, isolationLimit, won, "bounded passkey inserts reported stored")
+			n, err := s.Count(t.Context(), user)
+			require.NoError(t, err)
+			assert.Equal(t, isolationLimit, n, "passkeys stored")
+		}},
+		{"a caller's repeatable-read transaction refuses a bounded passkey insert", func(t *testing.T) {
+			s := f.Passkeys(t)
+			user := identity.UserID("iso-passkeys-refused")
+
+			tx := f.Begin(t, RepeatableRead)
+			stored, err := s.InsertWithin(tx.Ctx, isolationCredential(100, user), isolationLimit)
+
+			assertIsolationRefused(t, f, err)
+			assert.False(t, stored)
+			require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
+			require.NoError(t, tx.Commit())
+			n, err := s.Count(t.Context(), user)
+			require.NoError(t, err)
+			assert.Zero(t, n, "the refused bounded passkey insert stored a credential")
+		}},
 		{"a caller's read-committed transaction holds only its subject's bounded inserts until it ends", func(t *testing.T) {
 			s := f.OneTime(t)
 
@@ -406,4 +449,11 @@ func isolationToken(n int, subject string) onetime.Token {
 		IssuedAt:   suiteStart,
 		ExpiresAt:  suiteStart.Add(oneTimeTTL),
 	}
+}
+
+// isolationCredential returns the isolation suite's n-th passkey credential,
+// of user. Each n is one library identifier and one credential ID, so callers
+// number their credentials apart.
+func isolationCredential(n int, user identity.UserID) *passkey.Credential {
+	return passkeyCredential(6000+n, user, fmt.Sprintf("iso-credential-%d", n))
 }

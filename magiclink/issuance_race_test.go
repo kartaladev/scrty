@@ -54,8 +54,8 @@ func (s *countHoldingStore) CountRecentBySubject(
 }
 
 // TestRequest_ConcurrentBurstStaysWithinIssuanceLimit releases twenty link
-// requests for one address at once against the default limit of five: no more
-// than five links are stored and no more than five messages are sent.
+// requests for one address at once against the default limit of five: exactly
+// five links are stored and exactly five messages are sent.
 func TestRequest_ConcurrentBurstStaysWithinIssuanceLimit(t *testing.T) {
 	t.Parallel()
 
@@ -77,7 +77,7 @@ func TestRequest_ConcurrentBurstStaysWithinIssuanceLimit(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	assert.LessOrEqual(t, store.Len(), limit, "links issued")
-	assert.LessOrEqual(t, sender.Count(), limit, "emails sent")
+	assert.Equal(t, limit, store.Len(), "links issued")
+	assert.Equal(t, limit, sender.Count(), "emails sent")
 	assert.Equal(t, store.Len(), sender.Count(), "every issued link is sent, and nothing else")
 }

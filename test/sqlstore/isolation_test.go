@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -58,6 +59,9 @@ func isolationFixture(t *testing.T) storetest.IsolationFixture {
 		},
 		Identities: func(t *testing.T) identity.UserProvisioner { return newIdentityStore(t, db) },
 		OneTime:    func(t *testing.T) onetime.Store { return newOneTimeStore(t, db) },
+		Passkeys: func(t *testing.T) passkey.CredentialStore {
+			return newPasskeyCredentialStore(t, db, storefix.TestCipher(t))
+		},
 		Limiter: func(t *testing.T) ratelimit.Limiter {
 			l, err := sqlstore.NewLimiter(db, "isolation", 400, time.Hour,
 				sqlstore.WithLimiterOperationTimeout(5*time.Second))

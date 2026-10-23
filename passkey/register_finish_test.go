@@ -196,6 +196,22 @@ func TestFinishRegistration(t *testing.T) {
 			},
 		},
 		{
+			// WebAuthn Level 3 §6.1: a credential cannot be backed up without
+			// being eligible for backup. The core refuses it whatever the
+			// verifier accepted, before the consumer's check is asked.
+			name: "a backed-up state without backup eligibility is refused",
+			opts: []passkey.Option{passkey.WithRegistrationCheck(
+				func(context.Context, passkey.RegistrationFacts) error { return consumerErr })},
+			setup: func(_ *testing.T, f *fixture) {
+				f.adjustVerify("cred-a", func(nc *passkey.NewCredential) error {
+					nc.BackupEligible, nc.BackupState = false, true
+
+					return nil
+				})
+			},
+			assert: failed,
+		},
+		{
 			name: "a refused attestation is its own refusal",
 			setup: func(_ *testing.T, f *fixture) {
 				f.adjustVerify("cred-a", func(*passkey.NewCredential) error { return passkey.ErrAttestationRefused })

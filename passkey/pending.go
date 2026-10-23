@@ -43,7 +43,8 @@ func EmailConfirmThrottleKey(user identity.UserID) string {
 }
 
 // pendingPlan is what a registration finish settled about its passkey's
-// pending reasons before storing it.
+// pending reasons before storing it, and, once settled, the saved codes it
+// generated after.
 type pendingPlan struct {
 	reasons          PendingReason
 	codes            []string
@@ -51,28 +52,39 @@ type pendingPlan struct {
 	recoveryNotSetUp bool
 }
 
-// preparePending decides the pending reasons of s's new passkey and does what
-// each needs before the passkey is stored, in this order:
+// unsettledDeleteTimeout bounds the removal of a passkey whose finish failed
+// after storing it. The removal runs under a context the caller cannot cancel,
+// so a client that hangs up mid-finish does not leave the passkey behind; the
+// bound keeps a store that does not answer from holding the request forever.
+// It has no option: a removal that times out leaves a pending passkey the
+// user's next registration replaces, and nothing a consumer could tune changes
+// that.
+const unsettledDeleteTimeout = 5 * time.Second
+
+// planPending decides the pending reasons of s's new passkey and prepares,
+// before the passkey is stored, what has no effect a refused finish could
+// leave behind, in this order:
 //
 //  1. AwaitingEmailCode when s is enrolment-only and rc's email confirmation
 //     is on.
 //  2. AwaitingSavedCodes when saved codes are wired, the optional mode is off
 //     and the user has no other way back in (see hasWayBack). A failed check
 //     refuses. In the optional mode the answer is reported instead.
-//  3. With AwaitingSavedCodes, any passkey of the user still awaiting saved
-//     codes is deleted, so an abandoned registration is replaced. With
-//     AwaitingEmailCode, any passkey of the user still awaiting an emailed
-//     code is deleted: registering again is the only way to replace a lost
-//     or expired code.
-//  4. With AwaitingSavedCodes, a new set of saved codes is generated.
-//  5. With AwaitingEmailCode, the code is drawn and queued. A sender that
-//     refuses to queue it fails the finish.
+//  3. The user's abandoned registrations are deleted (see deleteAbandoned):
+//     with AwaitingSavedCodes, their pending passkeys awaiting saved codes;
+//     with AwaitingEmailCode, those awaiting an emailed code, since
+//     registering again is the only way to replace a lost or expired code. A
+//     passkey is abandoned only when it was created before issued, the
+//     instant this finish's registration challenge was issued. These run
+//     before the insert so the passkeys they replace no longer count against
+//     the limit.
+//  4. With AwaitingEmailCode, the code is drawn, and stored with the passkey.
 //
-// Codes are generated before the insert so a failed generation never leaves
-// a passkey awaiting codes nobody saw. The cost: a failure after it leaves the
-// user with a set they never saw, which the retry replaces.
-func (m *Manager) preparePending(
-	ctx context.Context, s *session.Session, rc RegistrationContext, now time.Time,
+// Generating saved codes and sending the emailed code wait for settlePending,
+// after the insert: a finish the limit refuses must neither replace the set
+// another finish showed its user nor send a code for a passkey never stored.
+func (m *Manager) planPending(
+	ctx context.Context, s *session.Session, rc RegistrationContext, now, issued time.Time,
 ) (*pendingPlan, error) {
 	var p pendingPlan
 
@@ -95,25 +107,8 @@ func (m *Manager) preparePending(
 		}
 	}
 
-	if p.reasons&AwaitingSavedCodes != 0 {
-		if _, err := m.credentials.DeleteAwaitingSavedCodes(ctx, s.UserID); err != nil {
-			return nil, diag.Wrap(err, "passkey: could not remove an abandoned registration")
-		}
-	}
-
-	if p.reasons&AwaitingEmailCode != 0 {
-		if err := m.deleteAwaitingEmailCode(ctx, s.UserID); err != nil {
-			return nil, err
-		}
-	}
-
-	if p.reasons&AwaitingSavedCodes != 0 {
-		codes, err := m.recovery.Codes.Generate(ctx, s.UserID)
-		if err != nil {
-			return nil, diag.Wrap(err, "passkey: could not generate saved recovery codes")
-		}
-
-		p.codes = codes
+	if err := m.deleteAbandoned(ctx, s.UserID, p.reasons, issued); err != nil {
+		return nil, err
 	}
 
 	if p.reasons&AwaitingEmailCode != 0 {
@@ -122,34 +117,88 @@ func (m *Manager) preparePending(
 			return nil, err
 		}
 
-		until := now.Add(emailCodeTTL)
-		if err := m.sendEmailCode(ctx, s.UserID, rc, code, until); err != nil {
-			return nil, err
-		}
-
-		p.emailCode = &EmailCode{Code: code, ExpiresAt: until}
+		p.emailCode = &EmailCode{Code: code, ExpiresAt: now.Add(emailCodeTTL)}
 	}
 
 	return &p, nil
 }
 
-// deleteAwaitingEmailCode deletes every pending passkey of user still
-// awaiting an emailed code. It lists, then deletes each by its own write, so a
-// concurrent finish for the same user may leave an extra pending passkey,
-// which the next registration removes.
-func (m *Manager) deleteAwaitingEmailCode(ctx context.Context, user identity.UserID) error {
+// settlePending does, once c is stored, what its pending reasons need that a
+// refused finish must not do, in this order:
+//
+//  1. With AwaitingSavedCodes, a new set of saved codes is generated,
+//     replacing the user's set, and kept in p for the response.
+//  2. With AwaitingEmailCode, the drawn code is queued. A sender that refuses
+//     to queue it fails the finish.
+//
+// A failure is returned for the caller to remove c, so no passkey is left
+// awaiting codes nobody saw. The cost: a failure after the codes are generated
+// leaves the user with a set they never saw, which the retry replaces.
+func (m *Manager) settlePending(ctx context.Context, c *Credential, rc RegistrationContext, p *pendingPlan) error {
+	if p.reasons&AwaitingSavedCodes != 0 {
+		codes, err := m.recovery.Codes.Generate(ctx, c.User)
+		if err != nil {
+			return diag.Wrap(err, "passkey: could not generate saved recovery codes")
+		}
+
+		p.codes = codes
+	}
+
+	if p.reasons&AwaitingEmailCode != 0 {
+		if err := m.sendEmailCode(ctx, c.User, rc, p.emailCode.Code, p.emailCode.ExpiresAt); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// removeUnsettled deletes c, stored by a finish that then failed to settle it,
+// under a context the caller cannot cancel, bounded by unsettledDeleteTimeout.
+// The context keeps the caller's values, so a consumer's transaction is still
+// joined. A removal that fails is logged by a fixed reason, not returned: the
+// finish already fails with the error that caused it, and the pending passkey
+// left behind is one the user's next registration replaces.
+func (m *Manager) removeUnsettled(ctx context.Context, c *Credential) {
+	dctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unsettledDeleteTimeout)
+	defer cancel()
+
+	if _, err := m.credentials.Delete(dctx, c.User, c.ID); err != nil {
+		attrs := append([]slog.Attr{credentialAttr(c.ID)}, diag.Failure("delete", err)...)
+		m.sampled(ctx, slog.LevelError, "delete|unsettled", msgUnsettledNotRemoved, attrs...)
+	}
+}
+
+// deleteAbandoned deletes every pending passkey of user awaiting any of
+// reasons that was created before issued, the instant the finishing
+// registration's challenge was issued: only such a passkey belongs to a
+// registration the user abandoned for this one. A pending passkey created at
+// or after that instant was stored by a ceremony running concurrently with
+// this one, possibly one whose finish has already returned its codes, and is
+// kept; when the limit then has no room, this finish is the one refused. With
+// no reasons it does nothing.
+//
+// It lists, then deletes each by its own write: a passkey a concurrent finish
+// deleted first is passed over, and the list never sees one stored after it.
+func (m *Manager) deleteAbandoned(
+	ctx context.Context, user identity.UserID, reasons PendingReason, issued time.Time,
+) error {
+	if reasons == 0 {
+		return nil
+	}
+
 	held, err := m.credentials.List(ctx, user)
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not list the user's passkeys")
 	}
 
 	for _, c := range held {
-		if c.State != StatePending || c.Pending&AwaitingEmailCode == 0 {
+		if c.State != StatePending || c.Pending&reasons == 0 || !c.CreatedAt.Before(issued) {
 			continue
 		}
 
 		if _, err := m.credentials.Delete(ctx, user, c.ID); err != nil {
-			return diag.Wrap(err, "passkey: could not remove a passkey awaiting a lost emailed code")
+			return diag.Wrap(err, "passkey: could not remove an abandoned registration")
 		}
 	}
 

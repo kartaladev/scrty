@@ -95,7 +95,9 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // Issuance is bounded, so a session past its first factor cannot grow the
 // store without limit. A user already issued the challenge limit for the
 // method within the manager's issuance window is refused as
-// mfa.ErrVerifyThrottled, and nothing is issued; a store that cannot count is
+// mfa.ErrVerifyThrottled, and nothing is issued. The count and the issue are
+// one decision of the store's (onetime.Manager.IssueWithin), so begins racing
+// for one user never together exceed the limit. A store that cannot decide is
 // a refusal too, behind fixed text, because a limit that lifted whenever the
 // store was down would be no limit. And at most once per issuance window,
 // begin sweeps the method's expired challenges out of the store, under the
@@ -119,17 +121,15 @@ func (i *mfaInterceptor) begin(ex *Exchange) error {
 
 	i.sweepExpired(ctx, method.Name(), mgr)
 
-	issued, err := mgr.IssuedCount(ctx, string(s.UserID))
-	if err != nil {
-		return diag.Wrap(err, msgChallengeNotIssued)
-	}
+	// One bounded issue, not a count and then an issue: of begins racing for
+	// one user, on this process or on another replica, no more than the limit
+	// are issued a challenge.
+	challenge, _, err := mgr.IssueWithin(ctx, string(s.UserID), i.challengeCap, onetime.WithBinding(s.ID))
 
-	if issued >= i.challengeCap {
+	switch {
+	case errors.Is(err, onetime.ErrIssueLimitReached):
 		return mfa.ErrVerifyThrottled
-	}
-
-	challenge, _, err := mgr.Issue(ctx, string(s.UserID), onetime.WithBinding(s.ID))
-	if err != nil {
+	case err != nil:
 		return diag.Wrap(err, msgChallengeNotIssued)
 	}
 
@@ -197,14 +197,17 @@ type sweepClock struct {
 	prev time.Time
 }
 
-// claim reports whether a sweep is due at now, the first ever or one a window
-// after the last, and claims it if so: of several begins asking at once,
-// exactly one is told to sweep. It returns the claim, which release takes.
+// claim reports whether a sweep is due at now, the first ever, one a window
+// after the last, or the first after the clock has stepped back behind the
+// last, and claims it if so: of several begins asking at once, exactly one is
+// told to sweep. It returns the claim, which release takes. Without the
+// backwards case, a clock set back would hold off every sweep for as long as
+// it was set back by.
 func (c *sweepClock) claim(now time.Time, window time.Duration) (time.Time, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.last.IsZero() && now.Sub(c.last) < window {
+	if !c.last.IsZero() && !now.Before(c.last) && now.Sub(c.last) < window {
 		return time.Time{}, false
 	}
 
@@ -318,7 +321,8 @@ func WithMFAChallengeTTL(d time.Duration) MFAOption {
 //
 // Begin counts each user's challenges in the store to enforce
 // WithMFAChallengeLimit, and sweeps each method's expired challenges from it
-// at most once per issuance window per method. The window is kept by each
+// at most once per issuance window per method, and again whenever the clock
+// has stepped back behind the last sweep. The window is kept by each
 // process on its own, so replicas sharing a store each sweep it once a window.
 // A sweep runs under the begin request's context; one that fails or is cut
 // short is logged and retried by the next begin. A store that does not
@@ -362,10 +366,9 @@ func WithMFABeginResponder(fn MFABeginResponder) MFAOption {
 // mfa.ErrVerifyThrottled and issues nothing.
 //
 // The limit is counted from the pending-challenge store, so it holds across
-// replicas sharing a store and across a user's sessions. Begins racing each
-// other are counted before any of them issues, so a burst of concurrent begins
-// may overshoot the limit by as many as raced; the limit bounds how fast a
-// user can fill the store, not a count exact to one.
+// replicas sharing a store and across a user's sessions. The count and the
+// issue are one decision of the store's, so begins racing each other never
+// together issue more than n.
 //
 // A limit of zero or less is refused: it would refuse every begin, and a
 // challenge method could never be verified.

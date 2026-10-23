@@ -287,9 +287,9 @@ func (m *Manager) matchHandle(ctx context.Context, c *Credential, handle []byte)
 // runs its two halves, checkAssertion and acceptAssertion, with the state
 // refusal between them.
 //
-// A verifier error that is not a context error, a missing user verification under UVRequired and a
-// backup-eligible flag that differs from the stored one are
-// authenticate.ErrAuthenticationFailed. The login check's error is returned
+// A verifier error that is not a context error, a missing user verification under UVRequired, a
+// backed-up state without backup eligibility and a backup-eligible flag that
+// differs from the stored one are authenticate.ErrAuthenticationFailed. The login check's error is returned
 // unchanged. A verifier error matching context.Canceled or
 // context.DeadlineExceeded is returned wrapped, still matchable with
 // errors.Is, and is not a refusal. Nothing is written on any refusal.
@@ -327,6 +327,11 @@ func (m *Manager) checkAssertion(
 		return nil, m.refused(ctx, "verify", c.ID)
 	case exp.UV == UVRequired && !res.UserVerified:
 		return nil, m.refused(ctx, "user-verification", c.ID)
+	case res.BackupState && !res.BackupEligible:
+		// WebAuthn Level 3 §6.1: a credential that is not eligible for
+		// backup cannot be backed up. Refused here, whatever the verifier
+		// accepted, so a consumer's verifier is held to it too.
+		return nil, m.refused(ctx, "backup-state", c.ID)
 	case res.BackupEligible != c.BackupEligible:
 		return nil, m.refused(ctx, "backup-eligibility", c.ID)
 	}

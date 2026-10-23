@@ -413,7 +413,7 @@ func TestMFABeginIssuance(t *testing.T) {
 		}
 	}
 
-	errCount := errors.New("mfabegin_test: challenge store unavailable for alice@example.com")
+	errIssue := errors.New("mfabegin_test: challenge store unavailable for alice@example.com")
 	errPurge := errors.New("mfabegin_test: challenge store unavailable")
 
 	window := time.Hour // the default issuance window of a one-time manager
@@ -641,17 +641,17 @@ func TestMFABeginIssuance(t *testing.T) {
 			},
 		},
 		{
-			// The count is what the limit rests on, so a store that cannot
-			// answer it refuses the begin rather than lifting the limit, and
-			// its own text stays out of the refusal.
-			name: "a store that cannot count refuses the begin",
+			// The bounded issue is what the limit rests on, so a store that
+			// cannot decide it refuses the begin rather than lifting the
+			// limit, and its own text stays out of the refusal.
+			name: "a store that cannot decide the issue refuses the begin",
 			store: func(clk *clockwork.FakeClock) onetime.Store {
-				return failingCount{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), err: errCount}
+				return failingIssue{MemoryStore: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk)), err: errIssue}
 			},
 			act: func(t *testing.T, b beginner) []served { return times(t, b.begin, 1) },
 			assert: func(t *testing.T, stub *challengeStub, _ onetime.Store, _ *capturingHandler, outs []served) {
 				require.Len(t, outs, 1)
-				require.ErrorIs(t, outs[0].err, errCount)
+				require.ErrorIs(t, outs[0].err, errIssue)
 				assert.NotContains(t, outs[0].err.Error(), "alice@example.com")
 				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(outs[0].err))
 				assert.Empty(t, stub.issuedAll(), "nothing is issued")
@@ -1078,16 +1078,19 @@ func newRecordingStore() *recordingStore {
 	return &recordingStore{MemoryStore: onetime.NewMemoryStore()}
 }
 
-func (s *recordingStore) Insert(ctx context.Context, tok onetime.Token) error {
-	if err := s.MemoryStore.Insert(ctx, tok); err != nil {
-		return err
+func (s *recordingStore) InsertWithin(
+	ctx context.Context, tok onetime.Token, since time.Time, limit int,
+) (bool, error) {
+	stored, err := s.MemoryStore.InsertWithin(ctx, tok, since, limit)
+	if err != nil || !stored {
+		return stored, err
 	}
 
 	s.mu.Lock()
 	s.inserted = append(s.inserted, tok.ID)
 	s.mu.Unlock()
 
-	return nil
+	return true, nil
 }
 
 // allConsumed reports whether at least one record was inserted and every one
@@ -1206,16 +1209,19 @@ type holdingReaper struct {
 	held    atomic.Bool
 }
 
-func (s *holdingReaper) Insert(ctx context.Context, tok onetime.Token) error {
-	if err := s.MemoryStore.Insert(ctx, tok); err != nil {
-		return err
+func (s *holdingReaper) InsertWithin(
+	ctx context.Context, tok onetime.Token, since time.Time, limit int,
+) (bool, error) {
+	stored, err := s.MemoryStore.InsertWithin(ctx, tok, since, limit)
+	if err != nil || !stored {
+		return stored, err
 	}
 
 	if s.inserts.Add(1) == s.others {
 		close(s.arrived)
 	}
 
-	return nil
+	return true, nil
 }
 
 func (s *holdingReaper) DeleteExpiredBefore(ctx context.Context, purpose string, retainSince time.Time) (int, error) {
@@ -1238,13 +1244,14 @@ type storeOnly struct {
 	onetime.Store
 }
 
-// failingCount is a consumer's challenge store that cannot count issuance.
-type failingCount struct {
+// failingIssue is a consumer's challenge store that cannot decide a bounded
+// issue: it can neither count the user's challenges nor store a new one.
+type failingIssue struct {
 	*onetime.MemoryStore
 
 	err error
 }
 
-func (s failingCount) CountRecentBySubject(context.Context, string, string, time.Time) (int, error) {
-	return 0, s.err
+func (s failingIssue) InsertWithin(context.Context, onetime.Token, time.Time, int) (bool, error) {
+	return false, s.err
 }

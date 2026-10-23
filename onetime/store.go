@@ -100,8 +100,11 @@ type Store interface {
 	// SQL, under a lock of the subject's own, held until the insert commits.
 	// Callers for different subjects do not wait for one another.
 	//
-	// An identifier already stored is an error, as for Insert, and the
-	// record's byte fields belong to the caller as they do there.
+	// Under the limit, an identifier already stored is an error, as for
+	// Insert. At the limit the insert is refused whatever the identifier, and
+	// a store may report that refusal as (false, nil) without having looked
+	// the identifier up. Either way nothing is written. The record's byte
+	// fields belong to the caller as they do for Insert.
 	InsertWithin(ctx context.Context, tok Token, since time.Time, limit int) (bool, error)
 }
 

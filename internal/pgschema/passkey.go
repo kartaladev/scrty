@@ -45,6 +45,19 @@ FROM passkey_credentials WHERE id = $1 AND user_id = $2`
 	PasskeyCredentialList = `SELECT ` + passkeyCredentialColumns + `
 FROM passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
 
+	// PasskeyCredentialLockUser takes the transaction-scoped advisory lock of
+	// user $1's passkey credentials, and is a bounded insert's first
+	// statement: the lock, then PasskeyCredentialCount, then
+	// PasskeyCredentialInsert, in one READ COMMITTED transaction. Without it,
+	// two bounded inserts for one user would both count the same credentials
+	// and both insert. The lock is held until the enclosing transaction ends,
+	// so the next bounded insert for the user counts only once this one's
+	// credential is committed or gone. The key is namespaced, apart from the
+	// one-time locks' keys. Two callers may still share a lock when their keys
+	// hash alike, or when a recovery-code lock's unprefixed user reference
+	// spells this key; either only serialises them.
+	PasskeyCredentialLockUser = `SELECT pg_advisory_xact_lock(hashtextextended('passkey:' || $1::text, 0))`
+
 	// PasskeyCredentialCount counts user $1's credentials in every state.
 	PasskeyCredentialCount = `SELECT count(*) FROM passkey_credentials WHERE user_id = $1` //nolint:gosec // G101: SQL text, not a credential
 

@@ -383,7 +383,7 @@ func RunOneTimeStoreSuite(
 			},
 		},
 		{
-			name: "bounded inserts for different subjects do not contend",
+			name: "bounded inserts count each subject on its own",
 			assert: func(t *testing.T, ctx context.Context, s onetime.Store, _ *clockwork.FakeClock) {
 				subjects := []string{"subject-a", "subject-b"}
 				stored := raceBoundedInserts(ctx, s, subjects, boundedRacers/2, boundedLimit)

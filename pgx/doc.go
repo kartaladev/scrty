@@ -51,7 +51,8 @@
 // record each run in a READ COMMITTED transaction of their own, so
 // the stores' guarantees hold whatever default_transaction_isolation the
 // database or the role sets. Inside a caller's transaction,
-// RecoveryCodeStore.ReplaceSet and AttemptStore.AddStreakFailure refuse an
+// RecoveryCodeStore.ReplaceSet, AttemptStore.AddStreakFailure,
+// OneTimeStore.InsertWithin and PasskeyCredentialStore.InsertWithin refuse an
 // isolation stronger than READ COMMITTED with ErrIsolationTooStrong, leaving
 // the transaction usable; every other operation joins it at any isolation.
 //

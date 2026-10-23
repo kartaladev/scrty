@@ -183,7 +183,7 @@ var portableVariants = []brokenVariant{
 	oneTimeVariant(oneTimeBoundedCountsThenInserts, "bounded inserts for one subject never exceed the limit"),
 	oneTimeVariant(oneTimeBoundedWritesRefused,
 		"a bounded insert counts as the recent-issue count does, and a refused one writes nothing"),
-	oneTimeVariant(oneTimeBoundedCountsEverySubject, "bounded inserts for different subjects do not contend"),
+	oneTimeVariant(oneTimeBoundedCountsEverySubject, "bounded inserts count each subject on its own"),
 	{
 		name: "onetime-reaper-required-but-missing",
 		run: func(t *testing.T) {

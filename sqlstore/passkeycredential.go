@@ -85,8 +85,19 @@ func NewPasskeyCredentialStore(db *sql.DB, c seal.Cipher, opts ...Option) (*Pass
 func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
 	const op = "insert passkey credential"
 
-	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
+	args, err := s.insertArgs(c)
+	if err != nil {
 		return failed(op, err)
+	}
+
+	return s.c.execOrRefuse(ctx, op, passkey.ErrDuplicateCredential, pgschema.PasskeyCredentialInsert, args...)
+}
+
+// insertArgs checks c is storable and returns PasskeyCredentialInsert's
+// arguments for it, its emailed code sealed.
+func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error) {
+	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
+		return nil, err
 	}
 	transports, err := pgschema.PasskeyTransportsText(c.Transports)
 	if err == nil {
@@ -98,7 +109,7 @@ func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credenti
 		)
 	}
 	if err != nil {
-		return failed(op, err)
+		return nil, err
 	}
 
 	var (
@@ -109,16 +120,95 @@ func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credenti
 	if c.EmailCode != nil {
 		sealed, err := s.cipher.Seal([]byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
 		if err != nil {
-			return failed(op, err)
+			return nil, err
 		}
 		code, codeUntil, attempts = storekit.SecretText(sealed), nullTs(c.EmailCode.ExpiresAt), c.EmailCode.Attempts
 	}
 
-	return s.c.execOrRefuse(ctx, op, passkey.ErrDuplicateCredential, pgschema.PasskeyCredentialInsert,
+	return []any{
 		c.ID, string(c.User), storekit.OrEmpty(c.CredentialID), storekit.OrEmpty(c.PublicKey), int64(c.SignCount),
 		c.BackupEligible, c.BackupState, transports, nullBytes(c.AAGUID), nullText(c.AttestationFormat),
 		nullBytes(c.AttestationStatement), c.Name, storekit.Time(c.CreatedAt), nullTs(c.LastUsedAt),
-		int16(c.State), int16(c.Pending), code, codeUntil, attempts)
+		int16(c.State), int16(c.Pending), code, codeUntil, attempts,
+	}, nil
+}
+
+// InsertWithin stores c only while its user holds fewer than limit
+// credentials, in every state, and reports whether it did. A refused insert
+// writes nothing. Under the limit, a credential ID or library identifier
+// already stored is refused with passkey.ErrDuplicateCredential, as Insert
+// refuses it.
+//
+// The decision is taken under the transaction-scoped advisory lock of c's
+// user: the lock, then the count, then the insert, in a READ COMMITTED
+// transaction of the store's own, so a racer for the same user, on this
+// process or on another replica, counts only after this one's credential is
+// committed. Racers for different users do not wait for one another.
+//
+// Inside a caller's transaction the three statements join it, and the lock
+// is held until the caller commits or rolls back. A caller's transaction
+// stronger than READ COMMITTED is refused with ErrIsolationTooStrong and
+// nothing is written: its snapshot would predate the lock, so the count could
+// miss a racer's committed credential.
+func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
+	const op = "insert passkey credential within a limit"
+
+	args, err := s.insertArgs(c)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	if limit < 1 {
+		return false, nil
+	}
+
+	var stored bool
+	decide := func(q DBTX) error {
+		if _, err := q.ExecContext(ctx, pgschema.PasskeyCredentialLockUser, string(c.User)); err != nil {
+			return err
+		}
+		var n int
+		if err := q.QueryRowContext(ctx, pgschema.PasskeyCredentialCount, string(c.User)).Scan(&n); err != nil {
+			return err
+		}
+		if n >= limit {
+			return nil
+		}
+		res, err := q.ExecContext(ctx, pgschema.PasskeyCredentialInsert, args...)
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return passkey.ErrDuplicateCredential
+		}
+		stored = true
+
+		return nil
+	}
+
+	q, _, ambient, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	if ambient {
+		if err = s.c.requireReadCommitted(ctx, q); err == nil {
+			err = decide(q)
+		}
+	} else {
+		err = s.c.readCommitted(ctx, func(tx *sql.Tx) error { return decide(tx) })
+	}
+
+	switch {
+	case errors.Is(err, passkey.ErrDuplicateCredential):
+		return false, passkey.ErrDuplicateCredential
+	case err != nil:
+		return false, failed(op, err)
+	}
+
+	return stored, nil
 }
 
 // FindByCredentialID returns the credential with credential ID credID, or
