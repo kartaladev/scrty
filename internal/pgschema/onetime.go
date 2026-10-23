@@ -1,8 +1,22 @@
 package pgschema
 
 // One-time token statements. Consumption is one conditional update: zero rows
-// affected is the refusal, and the first consumption time is kept.
+// affected is the refusal, and the first consumption time is kept. A bounded
+// insert is OneTimeLockSubject, then OneTimeCountRecent, then OneTimeInsert,
+// run together in one READ COMMITTED transaction.
 const (
+	// OneTimeLockSubject takes the transaction-scoped advisory lock of
+	// purpose $1 and subject $2, and is a bounded insert's first statement.
+	// Without it, two bounded inserts for one subject would both count the
+	// same records and both insert. The lock is held until the enclosing
+	// transaction ends, so the next bounded insert for the subject counts
+	// only once this one's record is committed or gone. The key is namespaced
+	// and length-prefixed, so no two (purpose, subject) pairs spell the same
+	// key; distinct pairs may still share a lock when their hashes collide,
+	// which only serialises them.
+	OneTimeLockSubject = `SELECT pg_advisory_xact_lock(hashtextextended(
+  'onetime:' || length($1::text) || ':' || $1::text || ':' || $2::text, 0))`
+
 	// OneTimeInsert stores a token: $1 id, $2 purpose, $3 subject,
 	// $4 secret_hash, $5 binding_hash (NULL when unbound), $6 issued_at,
 	// $7 expires_at, $8 consumed_at (NULL while unspent). Zero rows affected

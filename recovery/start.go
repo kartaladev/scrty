@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/notify"
+	"github.com/kartaladev/scrty/onetime"
 )
 
 // The messages Start writes. They are constants because a consumer may route
@@ -21,7 +22,6 @@ const (
 	msgStartLookupFailed  = "recovery: start failed: the username could not be resolved"
 	msgStartInactive      = "recovery: start ignored: the account is not active"
 	msgStartNoReference   = "recovery: start failed: the resolved account carries no user reference"
-	msgStartCountFailed   = "recovery: start failed: issuance count unavailable"
 	msgStartLimitReached  = "recovery: start ignored: issuance limit reached"
 	msgStartContactFailed = "recovery: start failed: the contact address could not be resolved"
 	msgStartIssueFailed   = "recovery: start failed: the code could not be issued"
@@ -43,8 +43,13 @@ const (
 // last step of a recovery that succeeds. With issued codes not enabled, Start
 // does nothing.
 //
-// A small timing difference remains: the issuance count and the token insert
-// run only for a username that resolves. The non-blocking sender removes the
+// The issuance limit is decided by one bounded insert, so a burst of starts
+// for one user issues no more codes than the limit allows. It is decided after
+// the contact address is resolved: a start whose address cannot be resolved
+// sends nothing and uses up none of the allowance.
+//
+// A small timing difference remains: the address resolution and the bounded
+// token insert run only for a username that resolves. The non-blocking sender removes the
 // largest part — the delivery — and the rest is stated rather than closed.
 func (r *Recoverer) Start(ctx context.Context, username string) {
 	if r.issued == nil {
@@ -60,18 +65,6 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 
 	subject := string(details.ID)
 
-	count, err := r.issued.IssuedCount(ctx, subject)
-	if err != nil {
-		r.logger.LogAttrs(ctx, slog.LevelError, msgStartCountFailed, diag.Failure("token-count", err)...)
-
-		return
-	}
-	if count >= r.issuedLimit {
-		r.logger.LogAttrs(ctx, slog.LevelDebug, msgStartLimitReached, slog.Int("limit", r.issuedLimit))
-
-		return
-	}
-
 	address, err := r.resolver(ctx, details)
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartContactFailed, diag.Failure("contact-resolver", err)...)
@@ -84,8 +77,17 @@ func (r *Recoverer) Start(ctx context.Context, username string) {
 		return
 	}
 
-	code, tok, err := r.issued.Issue(ctx, subject)
-	if err != nil {
+	// One bounded issue, not a count and then an issue: of a burst of starts
+	// for one user, on this process or on another replica, no more than the
+	// limit are issued a code. It runs after the address is resolved, so a
+	// start that could not be delivered uses up none of the user's allowance.
+	code, tok, err := r.issued.IssueWithin(ctx, subject, r.issuedLimit)
+	switch {
+	case errors.Is(err, onetime.ErrIssueLimitReached):
+		r.logger.LogAttrs(ctx, slog.LevelDebug, msgStartLimitReached, slog.Int("limit", r.issuedLimit))
+
+		return
+	case err != nil:
 		r.logger.LogAttrs(ctx, slog.LevelError, msgStartIssueFailed, diag.Failure("token-issue", err)...)
 
 		return

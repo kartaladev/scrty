@@ -120,6 +120,88 @@ func (s *OneTimeStore) CountRecentBySubject(
 		purpose, subject, storekit.Time(since))
 }
 
+// InsertWithin stores tok only while fewer than limit of its purpose's tokens
+// for its subject were issued at or after since, and reports whether it did. A
+// refused insert writes nothing.
+//
+// The decision is taken under the transaction-scoped advisory lock of tok's
+// purpose and subject: the lock, then the count, then the insert, in a READ
+// COMMITTED transaction of the store's own, so a racer for the same subject,
+// on this process or on another replica, counts only after this one's record
+// is committed. Racers for different subjects do not wait for one another.
+//
+// Inside a caller's transaction the three statements join it, and the lock
+// is held until the caller commits or rolls back. A caller's transaction
+// stronger than READ COMMITTED is refused with ErrIsolationTooStrong and
+// nothing is written: its snapshot would predate the lock, so the count could
+// miss a racer's committed record.
+func (s *OneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, since time.Time, limit int) (bool, error) {
+	const op = "insert one-time token within a limit"
+
+	if err := storekit.CheckStorable(
+		storekit.Text("purpose", tok.Purpose), storekit.Text("subject", tok.Subject),
+	); err != nil {
+		return false, failed(op, err)
+	}
+	if limit < 1 {
+		return false, nil
+	}
+
+	// An unbound token keeps its binding NULL, never an empty value.
+	var binding any
+	if tok.BindingHash != nil {
+		binding = tok.BindingHash
+	}
+
+	var stored bool
+	decide := func(q DBTX) error {
+		if _, err := q.ExecContext(ctx, pgschema.OneTimeLockSubject, tok.Purpose, tok.Subject); err != nil {
+			return err
+		}
+		var n int
+		if err := q.QueryRowContext(ctx, pgschema.OneTimeCountRecent,
+			tok.Purpose, tok.Subject, storekit.Time(since)).Scan(&n); err != nil {
+			return err
+		}
+		if n >= limit {
+			return nil
+		}
+		res, err := q.ExecContext(ctx, pgschema.OneTimeInsert, tok.ID, tok.Purpose, tok.Subject,
+			storekit.OrEmpty(tok.SecretHash), binding, storekit.Time(tok.IssuedAt),
+			storekit.Time(tok.ExpiresAt), nullTs(tok.ConsumedAt))
+		if err != nil {
+			return err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return errIdentifierInUse
+		}
+		stored = true
+
+		return nil
+	}
+
+	q, _, ambient, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	if ambient {
+		if err = s.c.requireReadCommitted(ctx, q); err == nil {
+			err = decide(q)
+		}
+	} else {
+		err = s.c.readCommitted(ctx, func(tx *sql.Tx) error { return decide(tx) })
+	}
+	if err != nil {
+		return false, failed(op, err)
+	}
+
+	return stored, nil
+}
+
 // DeleteExpiredBefore removes purpose's tokens expired by the store's clock
 // and issued strictly before retainSince. A zero retainSince is refused with
 // onetime.ErrRetainSinceRequired, and nothing is deleted.
@@ -136,6 +218,10 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 
 	return int(n), err
 }
+
+// errIdentifierInUse is why a bounded insert of an identifier already stored
+// fails.
+var errIdentifierInUse = errors.New("the identifier is already in use")
 
 var (
 	_ onetime.Store  = (*OneTimeStore)(nil)

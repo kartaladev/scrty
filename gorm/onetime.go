@@ -8,6 +8,7 @@ import (
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -59,22 +60,11 @@ func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 	if err != nil {
 		return failed(op, err)
 	}
-	row := oneTimeTokenRow{
-		ID:         tok.ID,
-		Purpose:    tok.Purpose,
-		Subject:    tok.Subject,
-		SecretHash: storekit.OrEmpty(tok.SecretHash),
-		// An unbound token keeps its binding NULL, never an empty value.
-		BindingHash: tok.BindingHash,
-		IssuedAt:    storekit.Time(tok.IssuedAt),
-		ExpiresAt:   storekit.Time(tok.ExpiresAt),
-		ConsumedAt:  nullTs(tok.ConsumedAt),
+	affected, err := insertOneTimeRow(q, tok)
+	if err != nil {
+		return failed(op, err)
 	}
-	res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row)
-	if res.Error != nil {
-		return failed(op, res.Error)
-	}
-	if res.RowsAffected == 0 {
+	if affected == 0 {
 		return errors.New("gorm: insert one-time token: the identifier is already in use")
 	}
 
@@ -159,6 +149,97 @@ func (s *OneTimeStore) CountRecentBySubject(
 	return int(n), nil
 }
 
+// InsertWithin stores tok only while fewer than limit of its purpose's tokens
+// for its subject were issued at or after since, and reports whether it did. A
+// refused insert writes nothing.
+//
+// The decision is taken under the transaction-scoped advisory lock of tok's
+// purpose and subject: the lock, then the count, then the insert, in a READ
+// COMMITTED transaction of the store's own, so a racer for the same subject,
+// on this process or on another replica, counts only after this one's record
+// is committed. Racers for different subjects do not wait for one another.
+//
+// Inside a caller's transaction the three statements join it, and the lock
+// is held until the caller commits or rolls back. A caller's transaction
+// stronger than READ COMMITTED is refused with ErrIsolationTooStrong and
+// nothing is written: its snapshot would predate the lock, so the count could
+// miss a racer's committed record.
+func (s *OneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, since time.Time, limit int) (bool, error) {
+	const op = "insert one-time token within a limit"
+
+	if err := storekit.CheckStorable(
+		storekit.Text("purpose", tok.Purpose), storekit.Text("subject", tok.Subject),
+	); err != nil {
+		return false, failed(op, err)
+	}
+	if limit < 1 {
+		return false, nil
+	}
+
+	var stored bool
+	decide := func(q *gormdb.DB) error {
+		if err := q.Exec(pgschema.OneTimeLockSubject, tok.Purpose, tok.Subject).Error; err != nil {
+			return err
+		}
+		var n int64
+		err := q.Model(&oneTimeTokenRow{}).
+			Where("purpose = ? AND subject = ? AND issued_at >= ?", tok.Purpose, tok.Subject, storekit.Time(since)).
+			Count(&n).Error
+		if err != nil {
+			return err
+		}
+		if n >= int64(limit) {
+			return nil
+		}
+		affected, err := insertOneTimeRow(q, tok)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return errIdentifierInUse
+		}
+		stored = true
+
+		return nil
+	}
+
+	q, ambient, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	if ambient {
+		if err = requireReadCommitted(ctx, q); err == nil {
+			err = decide(q)
+		}
+	} else {
+		err = readCommitted(ctx, q, decide)
+	}
+	if err != nil {
+		return false, failed(op, err)
+	}
+
+	return stored, nil
+}
+
+// insertOneTimeRow inserts tok on q, skipping an identifier already stored,
+// and reports how many rows it inserted.
+func insertOneTimeRow(q *gormdb.DB, tok onetime.Token) (int64, error) {
+	row := oneTimeTokenRow{
+		ID:         tok.ID,
+		Purpose:    tok.Purpose,
+		Subject:    tok.Subject,
+		SecretHash: storekit.OrEmpty(tok.SecretHash),
+		// An unbound token keeps its binding NULL, never an empty value.
+		BindingHash: tok.BindingHash,
+		IssuedAt:    storekit.Time(tok.IssuedAt),
+		ExpiresAt:   storekit.Time(tok.ExpiresAt),
+		ConsumedAt:  nullTs(tok.ConsumedAt),
+	}
+	res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(&row)
+
+	return res.RowsAffected, res.Error
+}
+
 // DeleteExpiredBefore removes purpose's tokens expired by the store's clock
 // and issued strictly before retainSince. A zero retainSince is refused with
 // onetime.ErrRetainSinceRequired, and nothing is deleted.
@@ -185,6 +266,10 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 
 	return int(res.RowsAffected), nil
 }
+
+// errIdentifierInUse is why a bounded insert of an identifier already stored
+// fails.
+var errIdentifierInUse = errors.New("the identifier is already in use")
 
 var (
 	_ onetime.Store  = (*OneTimeStore)(nil)

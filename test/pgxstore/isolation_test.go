@@ -8,14 +8,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/onetime"
 	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/storeerr"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
 )
@@ -60,6 +63,7 @@ func isolationFixture(t *testing.T) (storetest.IsolationFixture, *pgxpool.Pool) 
 			return s
 		},
 		Identities: func(t *testing.T) identity.UserProvisioner { return newIdentityStore(t, pool) },
+		OneTime:    func(t *testing.T) onetime.Store { return newOneTimeStore(t, pool) },
 		Limiter: func(t *testing.T) ratelimit.Limiter {
 			l, err := pgxstore.NewLimiter(pool, "isolation", 400, time.Hour,
 				pgxstore.WithLimiterOperationTimeout(5*time.Second))
@@ -109,4 +113,29 @@ func TestSessionDelete_SettlesUnderConcurrentCreates(t *testing.T) {
 			return newSessionStore(t, db.Pool, c)
 		})
 	})
+}
+
+// TestInsertWithin_RefusesCallerRepeatableReadTx: a bounded one-time insert
+// inside a caller's REPEATABLE READ transaction is refused with this backend's
+// isolation error, writes nothing, and leaves the transaction usable. Under
+// that snapshot the count would predate the subject's lock, so a silent
+// insert could over-issue.
+func TestInsertWithin_RefusesCallerRepeatableReadTx(t *testing.T) {
+	t.Parallel()
+
+	f, _ := isolationFixture(t)
+	s := f.OneTime(t)
+	tok := storefix.RaceToken(1)
+
+	tx := f.Begin(t, storetest.RepeatableRead)
+	stored, err := s.InsertWithin(tx.Ctx, tok, tok.IssuedAt.Add(-time.Hour), 5)
+
+	require.ErrorIs(t, err, pgxstore.ErrIsolationTooStrong)
+	require.ErrorIs(t, err, storeerr.ErrIsolationTooStrong)
+	assert.Contains(t, err.Error(), "repeatable read")
+	assert.False(t, stored)
+	require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
+	require.NoError(t, tx.Commit())
+	_, err = s.FindByID(t.Context(), tok.ID)
+	require.ErrorIs(t, err, onetime.ErrTokenNotFound, "the refused bounded insert stored its record")
 }

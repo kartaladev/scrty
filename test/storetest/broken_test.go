@@ -180,6 +180,10 @@ var portableVariants = []brokenVariant{
 		"consuming records when, expired or not, and changes nothing else"),
 	oneTimeVariant(oneTimeConsumeRefusesExpiredByStore,
 		"consuming records when, expired or not, and changes nothing else"),
+	oneTimeVariant(oneTimeBoundedCountsThenInserts, "bounded inserts for one subject never exceed the limit"),
+	oneTimeVariant(oneTimeBoundedWritesRefused,
+		"a bounded insert counts as the recent-issue count does, and a refused one writes nothing"),
+	oneTimeVariant(oneTimeBoundedCountsEverySubject, "bounded inserts for different subjects do not contend"),
 	{
 		name: "onetime-reaper-required-but-missing",
 		run: func(t *testing.T) {

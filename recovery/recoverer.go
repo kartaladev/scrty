@@ -229,7 +229,8 @@ func WithIssuedCodeStore(s onetime.Store) Option {
 // configuration error, since it would send nothing ever.
 //
 // A start past the limit sends nothing, and looks to its caller exactly like
-// any other start.
+// any other start. The limit holds under concurrent starts: the count and the
+// issue are one bounded write (onetime.Manager.IssueWithin).
 func WithIssuedCodeLimit(n int) Option {
 	return func(c *config) { c.issuedLimit = n }
 }

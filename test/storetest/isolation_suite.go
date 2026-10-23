@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -62,6 +64,8 @@ type IsolationFixture struct {
 	// Limiter returns a rate limiter on the database whose limit is well
 	// above the failures the suite records.
 	Limiter func(t *testing.T) ratelimit.Limiter
+	// OneTime returns a one-time token store on the database.
+	OneTime func(t *testing.T) onetime.Store
 	// Begin begins a caller-owned transaction on the database at isolation,
 	// and rolls it back at cleanup unless the case ended it.
 	Begin func(t *testing.T, isolation Isolation) CallerTx
@@ -86,6 +90,7 @@ func (f IsolationFixture) missing() []string {
 		input{"IsolationFixture.RecoveryCodes", f.RecoveryCodes != nil},
 		input{"IsolationFixture.Identities", f.Identities != nil},
 		input{"IsolationFixture.Limiter", f.Limiter != nil},
+		input{"IsolationFixture.OneTime", f.OneTime != nil},
 		input{"IsolationFixture.Begin", f.Begin != nil},
 		input{"IsolationFixture.Raw", f.Raw != nil},
 		input{"IsolationFixture.IsolationRefused", f.IsolationRefused != nil},
@@ -98,9 +103,12 @@ func (f IsolationFixture) missing() []string {
 // failure streaks count every concurrent failure, overlapping saved-code
 // replacements leave only the later set, concurrent provisions of one
 // username give one user, concurrent updates of one user all succeed, and
-// concurrent limiter records report no failure. Inside a caller's REPEATABLE
-// READ transaction, the operations that need READ COMMITTED refuse with an
-// error naming the level and leave the transaction usable.
+// concurrent limiter records report no failure, and concurrent bounded
+// one-time inserts for one subject store no more than their limit. Inside a
+// caller's REPEATABLE READ transaction, the operations that need READ
+// COMMITTED refuse with an error naming the level and leave the transaction
+// usable. Inside a caller's READ COMMITTED transaction, a bounded insert holds
+// its subject until the caller's transaction ends, and only its subject.
 //
 // A store that begins its own transactions, or runs a statement outside one,
 // at the database default fails the streak and the replacement cases.
@@ -227,6 +235,75 @@ func RunIsolationSuite(t *testing.T, f IsolationFixture) {
 			require.NoError(t, err)
 			assert.Zero(t, got.Failures, "the refused failure was counted")
 		}},
+		{"concurrent bounded inserts of one subject store no more than the limit", func(t *testing.T) {
+			s := f.OneTime(t)
+
+			stored := make([]bool, isolationRacers)
+			errs := raceAll(t.Context(), isolationRacers, func(ctx context.Context, i int) error {
+				var err error
+				stored[i], err = s.InsertWithin(ctx, isolationToken(i, "iso-bounded"), suiteStart, isolationLimit)
+				return err
+			})
+
+			assertNoErrors(t, errs, "a concurrent bounded insert")
+			won := 0
+			for _, ok := range stored {
+				if ok {
+					won++
+				}
+			}
+			assert.Equal(t, isolationLimit, won, "bounded inserts reported stored")
+			n, err := s.CountRecentBySubject(t.Context(), isolationPurpose, "iso-bounded", suiteStart)
+			require.NoError(t, err)
+			assert.Equal(t, isolationLimit, n, "records stored")
+		}},
+		{"a caller's repeatable-read transaction refuses a bounded insert", func(t *testing.T) {
+			s := f.OneTime(t)
+
+			tx := f.Begin(t, RepeatableRead)
+			stored, err := s.InsertWithin(tx.Ctx, isolationToken(100, "iso-bounded-refused"), suiteStart, isolationLimit)
+
+			assertIsolationRefused(t, f, err)
+			assert.False(t, stored)
+			require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")
+			require.NoError(t, tx.Commit())
+			n, err := s.CountRecentBySubject(t.Context(), isolationPurpose, "iso-bounded-refused", suiteStart)
+			require.NoError(t, err)
+			assert.Zero(t, n, "the refused bounded insert stored a record")
+		}},
+		{"a caller's read-committed transaction holds only its subject's bounded inserts until it ends", func(t *testing.T) {
+			s := f.OneTime(t)
+
+			tx := f.Begin(t, ReadCommitted)
+			stored, err := s.InsertWithin(tx.Ctx, isolationToken(200, "iso-bounded-held"), suiteStart, 1)
+			require.NoError(t, err)
+			require.True(t, stored, "the caller's bounded insert under its limit must be stored")
+
+			// Another subject is not held: it decides while the caller's
+			// transaction is still open.
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			stored, err = s.InsertWithin(ctx, isolationToken(201, "iso-bounded-other"), suiteStart, 1)
+			require.NoError(t, err, "a bounded insert of another subject waited on the caller's transaction")
+			assert.True(t, stored)
+
+			// The same subject is held, and once the caller commits it counts
+			// the caller's record and is refused.
+			type outcome struct {
+				stored bool
+				err    error
+			}
+			later := make(chan outcome, 1)
+			go func() {
+				ok, err := s.InsertWithin(t.Context(), isolationToken(202, "iso-bounded-held"), suiteStart, 1)
+				later <- outcome{ok, err}
+			}()
+			awaitAdvisoryWaiter(t, f.Raw)
+			require.NoError(t, tx.Commit())
+			got := <-later
+			require.NoError(t, got.err)
+			assert.False(t, got.stored, "the held bounded insert did not count the caller's committed record")
+		}},
 		{"a caller's read-committed transaction is joined", func(t *testing.T) {
 			codes, streaks := f.RecoveryCodes(t), f.Streaks(t)
 			user := identity.UserID("iso-codes-joined")
@@ -296,7 +373,7 @@ func assertIsolationRefused(t *testing.T, f IsolationFixture, err error) {
 }
 
 // awaitAdvisoryWaiter waits until one session of raw's database waits on an
-// advisory lock: the later replacement queued behind the earlier one.
+// advisory lock: the later caller queued behind the earlier one.
 func awaitAdvisoryWaiter(t *testing.T, raw *sql.DB) {
 	t.Helper()
 
@@ -306,5 +383,27 @@ func awaitAdvisoryWaiter(t *testing.T, raw *sql.DB) {
 WHERE locktype = 'advisory' AND NOT granted
   AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiting)
 		return err == nil && waiting == 1
-	}, 10*time.Second, 10*time.Millisecond, "the later replacement never waited on the earlier one")
+	}, 10*time.Second, 10*time.Millisecond, "the later caller never waited on the earlier one's advisory lock")
+}
+
+// The one-time records the isolation suite inserts: their purpose, and the
+// limit its bounded inserts are held to, well below isolationRacers.
+const (
+	isolationPurpose = "iso-purpose"
+	isolationLimit   = 5
+)
+
+// isolationToken returns the isolation suite's n-th one-time record, for
+// subject, issued at suiteStart. Each n is one identifier, so callers number
+// their records apart.
+func isolationToken(n int, subject string) onetime.Token {
+	h := sha256.Sum256([]byte(subject))
+	return onetime.Token{
+		ID:         suiteID(5000 + n),
+		Purpose:    isolationPurpose,
+		Subject:    subject,
+		SecretHash: h[:],
+		IssuedAt:   suiteStart,
+		ExpiresAt:  suiteStart.Add(oneTimeTTL),
+	}
 }

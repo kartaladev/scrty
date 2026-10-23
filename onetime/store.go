@@ -85,6 +85,24 @@ type Store interface {
 	// counted is how often the subject asked, not how many tokens they still
 	// hold.
 	CountRecentBySubject(ctx context.Context, purpose, subject string, since time.Time) (int, error)
+
+	// InsertWithin stores tok only while fewer than limit records of tok's
+	// purpose belonging to tok's subject were issued at or after since, as
+	// CountRecentBySubject counts them, and reports whether it stored it. A
+	// refused insert is (false, nil) and writes nothing; it is an outcome, not
+	// a failure. A limit below one refuses every insert.
+	//
+	// The count and the insert are one decision. Of several callers racing to
+	// insert for one subject, no more than limit are told they stored a
+	// record, on this process or on another replica: a count followed by an
+	// Insert would let every racer read the same count below the limit and
+	// all of them write. In memory the decision is taken under one lock; in
+	// SQL, under a lock of the subject's own, held until the insert commits.
+	// Callers for different subjects do not wait for one another.
+	//
+	// An identifier already stored is an error, as for Insert, and the
+	// record's byte fields belong to the caller as they do there.
+	InsertWithin(ctx context.Context, tok Token, since time.Time, limit int) (bool, error)
 }
 
 // Reaper is the optional half of Store: a store that can delete records it no

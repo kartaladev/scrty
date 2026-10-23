@@ -298,28 +298,22 @@ func (m *Manager) Request(ctx context.Context, address, next string) RequestResu
 	// for. An address is a reusable handle; a reference is not.
 	subject := string(details.ID)
 
-	count, err := m.tokens.IssuedCount(ctx, subject)
-	if err != nil {
-		m.logger.LogAttrs(ctx, slog.LevelError,
-			"magiclink: issuance count unavailable", diag.Failure("token-count", err)...)
-
-		return result
-	}
-
-	if count >= m.issuanceLimit {
-		m.logger.LogAttrs(ctx, slog.LevelDebug, "magiclink: issuance limit reached",
-			slog.Int("limit", m.issuanceLimit))
-
-		return result
-	}
-
 	var issueOpts []onetime.IssueOption
 	if result.BindingNonce != "" {
 		issueOpts = append(issueOpts, onetime.WithBinding(result.BindingNonce))
 	}
 
-	presented, _, err := m.tokens.Issue(ctx, subject, issueOpts...)
-	if err != nil {
+	// One bounded issue, not a count and then an issue: of a burst of
+	// requests for one user, on this process or on another replica, no more
+	// than the limit are issued a link.
+	presented, _, err := m.tokens.IssueWithin(ctx, subject, m.issuanceLimit, issueOpts...)
+	switch {
+	case errors.Is(err, onetime.ErrIssueLimitReached):
+		m.logger.LogAttrs(ctx, slog.LevelDebug, "magiclink: issuance limit reached",
+			slog.Int("limit", m.issuanceLimit))
+
+		return result
+	case err != nil:
 		m.logger.LogAttrs(ctx, slog.LevelError,
 			"magiclink: the link could not be issued", diag.Failure("token-issue", err)...)
 

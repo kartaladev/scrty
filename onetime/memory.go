@@ -92,6 +92,11 @@ func (s *MemoryStore) Insert(_ context.Context, tok Token) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.insertLocked(tok)
+}
+
+// insertLocked is Insert for a caller holding s.mu.
+func (s *MemoryStore) insertLocked(tok Token) error {
 	if _, exists := s.records[tok.ID]; exists {
 		return fmt.Errorf("onetime: a token with identifier %s is already stored", tok.ID)
 	}
@@ -145,6 +150,11 @@ func (s *MemoryStore) CountRecentBySubject(_ context.Context, purpose, subject s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.countLocked(purpose, subject, since), nil
+}
+
+// countLocked is CountRecentBySubject for a caller holding s.mu.
+func (s *MemoryStore) countLocked(purpose, subject string, since time.Time) int {
 	var n int
 	for _, rec := range s.records {
 		if rec.Purpose == purpose && rec.Subject == subject && !rec.IssuedAt.Before(since) {
@@ -152,7 +162,26 @@ func (s *MemoryStore) CountRecentBySubject(_ context.Context, purpose, subject s
 		}
 	}
 
-	return n, nil
+	return n
+}
+
+// InsertWithin stores tok only while fewer than limit of its purpose's records
+// for its subject were issued at or after since, and reports whether it did.
+//
+// The count and the insert happen under one lock, so of several callers
+// racing for one subject no more than limit are told they stored a record.
+func (s *MemoryStore) InsertWithin(_ context.Context, tok Token, since time.Time, limit int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.countLocked(tok.Purpose, tok.Subject, since) >= limit {
+		return false, nil
+	}
+	if err := s.insertLocked(tok); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 // DeleteExpiredBefore removes this purpose's records that are both expired by

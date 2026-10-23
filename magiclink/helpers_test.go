@@ -356,13 +356,17 @@ func (s consumeFailsStore) Consume(context.Context, id.ID, time.Time) error {
 	return errStoreDown
 }
 
-// insertFailsStore refuses to write a newly issued token.
+// insertFailsStore refuses to write a newly issued token, bounded or not.
 type insertFailsStore struct {
 	onetime.Store
 }
 
 func (s insertFailsStore) Insert(context.Context, onetime.Token) error {
 	return errStoreDown
+}
+
+func (s insertFailsStore) InsertWithin(context.Context, onetime.Token, time.Time, int) (bool, error) {
+	return false, errStoreDown
 }
 
 // failingReader is a random source that is down.

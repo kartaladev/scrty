@@ -153,6 +153,57 @@ const secretBytes = 32
 // insert are each reported, and none of them leaves a record behind or hands
 // back a token nobody would honour.
 func (m *Manager) Issue(ctx context.Context, subject string, opts ...IssueOption) (string, Token, error) {
+	presented, tok, err := m.mint(subject, opts)
+	if err != nil {
+		return "", Token{}, err
+	}
+
+	if err := m.store.Insert(ctx, tok); err != nil {
+		return "", Token{}, diag.Wrap(err, "onetime: store token")
+	}
+
+	return presented, tok, nil
+}
+
+// IssueWithin is Issue bounded by limit: it mints a token for subject only
+// while fewer than limit tokens were issued for subject within the manager's
+// issuance window, as IssuedCount counts them, and reports
+// ErrIssueLimitReached, storing nothing, once that many have been.
+//
+// The count and the issue are one decision, taken by the store's InsertWithin.
+// Of several callers racing for one subject, on this process or on another
+// replica, at most limit are issued a token, where a call to IssuedCount
+// followed by Issue would let every one of them read the same count and all
+// of them issue. A caller enforcing "at most n links an hour" uses this, not
+// that pair.
+//
+// The limit is the caller's, as it is the caller's policy; the window is the
+// manager's, for the reason IssuedCount gives. A limit below one refuses every
+// issue. Every other failure is reported as Issue reports it, and is never
+// ErrIssueLimitReached: a store that cannot answer is an outage, not a subject
+// who asked too often.
+func (m *Manager) IssueWithin(
+	ctx context.Context, subject string, limit int, opts ...IssueOption,
+) (string, Token, error) {
+	presented, tok, err := m.mint(subject, opts)
+	if err != nil {
+		return "", Token{}, err
+	}
+
+	stored, err := m.store.InsertWithin(ctx, tok, tok.IssuedAt.Add(-m.issuanceWindow), limit)
+	if err != nil {
+		return "", Token{}, diag.Wrap(err, "onetime: store token")
+	}
+	if !stored {
+		return "", Token{}, ErrIssueLimitReached
+	}
+
+	return presented, tok, nil
+}
+
+// mint draws a token for subject and returns its presented form and the
+// record to store, writing nothing.
+func (m *Manager) mint(subject string, opts []IssueOption) (string, Token, error) {
 	if subject == "" {
 		return "", Token{}, ErrSubjectRequired
 	}
@@ -186,10 +237,6 @@ func (m *Manager) Issue(ctx context.Context, subject string, opts ...IssueOption
 	}
 	if issue.binding != "" {
 		tok.BindingHash = hash(issue.binding)
-	}
-
-	if err := m.store.Insert(ctx, tok); err != nil {
-		return "", Token{}, diag.Wrap(err, "onetime: store token")
 	}
 
 	return tokenID.String() + secretSeparator + secret, tok, nil
@@ -358,7 +405,9 @@ func (m *Manager) Redeem(ctx context.Context, presented, binding string, checks 
 // The window is the manager's own and no caller may pass a different one. A
 // count is what a resend limit or a "too many links requested" rule is built
 // on, and a caller free to choose the window could choose one that counts
-// nothing.
+// nothing. To enforce such a limit, issue with IssueWithin: this count read
+// before Issue is not one decision with it, so concurrent callers can all read
+// a count below the limit and all issue.
 //
 // A store that cannot answer is reported. Returning zero on an outage would
 // quietly lift every limit resting on this number, at exactly the moment the

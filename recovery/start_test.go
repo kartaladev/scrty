@@ -176,36 +176,37 @@ func TestRecoverer_Start(t *testing.T) {
 			},
 		},
 		{
-			name: "an issuance count failure sends nothing and is logged",
+			name: "a token store that cannot decide the bounded issue sends nothing and is logged",
 			opts: func(f *fixture) []recovery.Option {
 				store := NewMockTokenStore(f.ctrl)
-				store.EXPECT().CountRecentBySubject(gomock.Any(), recovery.IssuedCodePurpose, string(anaID), gomock.Any()).Return(0, errOutage)
+				store.EXPECT().InsertWithin(gomock.Any(), gomock.Any(), gomock.Any(), 5).
+					DoAndReturn(func(_ context.Context, tok onetime.Token, _ time.Time, _ int) (bool, error) {
+						assert.Equal(t, recovery.IssuedCodePurpose, tok.Purpose)
+						assert.Equal(t, string(anaID), tok.Subject, "the subject is the user reference, never the username")
+
+						return false, errOutage
+					})
 
 				return f.opts(recovery.WithIssuedCodeStore(store))
 			},
 			setup: loadsAna,
 			assert: func(t *testing.T, f *fixture, r *recovery.Recoverer, run *startRun) {
 				sendsNothing(t, f, r, run)
-				logged(t, f, "token-count")
+				logged(t, f, "token-issue")
 			},
 		},
 		{
-			name: "a token store that cannot insert sends nothing and is logged",
+			name: "a store refusing the bounded issue at the limit sends nothing and is logged",
 			opts: func(f *fixture) []recovery.Option {
 				store := NewMockTokenStore(f.ctrl)
-				store.EXPECT().CountRecentBySubject(gomock.Any(), recovery.IssuedCodePurpose, string(anaID), gomock.Any()).Return(0, nil)
-				store.EXPECT().Insert(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, tok onetime.Token) error {
-					assert.Equal(t, string(anaID), tok.Subject, "the subject is the user reference, never the username")
-
-					return errOutage
-				})
+				store.EXPECT().InsertWithin(gomock.Any(), gomock.Any(), gomock.Any(), 5).Return(false, nil)
 
 				return f.opts(recovery.WithIssuedCodeStore(store))
 			},
 			setup: loadsAna,
-			assert: func(t *testing.T, f *fixture, _ *recovery.Recoverer, run *startRun) {
-				assert.Empty(t, run.sent)
-				logged(t, f, "token-issue")
+			assert: func(t *testing.T, f *fixture, r *recovery.Recoverer, run *startRun) {
+				sendsNothing(t, f, r, run)
+				logged(t, f, "issuance limit")
 			},
 		},
 		{
