@@ -50,7 +50,9 @@ type userLookup struct {
 	bySessionUser bool
 }
 
-// lookupByUsername reloads the user by username.
+// lookupByUsername reloads the user by username. The user it finds must still
+// be the one the session records (see ownActiveUser), so a username reissued
+// to another person does not carry the first one's session over to them.
 func lookupByUsername(username string) userLookup { return userLookup{username: username} }
 
 // lookupBySessionUser reloads the user by the reference the session records,
@@ -65,6 +67,32 @@ func (l userLookup) load(ctx context.Context, users identity.UserLoader, s *sess
 	}
 
 	return users.LoadByUsername(ctx, l.username)
+}
+
+// ownActiveUser refuses with ErrAuthenticationRequired unless details is the
+// active user s records.
+//
+// A loader that reported no error and no user has told us nothing, and a
+// request judged on no principal is an anonymous one wearing a credential.
+//
+// A user other than the one the session records is refused: a username is a
+// reusable handle, and a signed token naming one that has since been
+// reassigned would otherwise authenticate its new owner on the old owner's
+// session. A user who is not active is refused too, so disabling a user takes
+// effect at the next request rather than when the session ends.
+//
+// The refusal revokes nothing. What disabling means for the consumer's other
+// systems is the consumer's to decide, so a refused session stays stored and
+// authenticates again if its user is re-enabled before it expires; a consumer
+// that wants it gone calls the session store's DeleteByUser when disabling.
+// There is no option to relax either check: a session that authenticates
+// someone else, or a disabled user, is never a legitimate configuration.
+func ownActiveUser(s *session.Session, details *identity.Details) error {
+	if details == nil || details.ID != s.UserID || !details.Active {
+		return ErrAuthenticationRequired
+	}
+
+	return nil
 }
 
 // resolve resolves the session id names, and its user by, onto ex.
@@ -124,13 +152,11 @@ func (r *sessionResolver) resolve(ex *Exchange, id string, by userLookup) error 
 		return ErrAuthenticationRequired
 	}
 
-	principal := identity.PrincipalFromDetails(details)
-	if principal == nil {
-		// A loader that reported no error and no user has told us nothing, and
-		// a request judged on no principal is an anonymous one wearing a
-		// credential.
-		return ErrAuthenticationRequired
+	if err := ownActiveUser(s, details); err != nil {
+		return err
 	}
+
+	principal := identity.PrincipalFromDetails(details)
 
 	now := r.phase.now()
 

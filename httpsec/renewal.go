@@ -254,19 +254,20 @@ func (r *sessionRenewal) renewing(ex *Exchange) (*session.Session, error) {
 	return s, nil
 }
 
-// user reloads s's user by the reference s records.
+// user reloads s's user by the reference s records, and refuses unless it is
+// that user and active (ownActiveUser). A late renewal reaches here without
+// the resolution core having checked either, so the check is made here too.
 func (r *sessionRenewal) user(ctx context.Context, s *session.Session) (*identity.Details, *identity.Principal, error) {
 	details, err := r.users.LoadByUserID(ctx, s.UserID)
 	if err != nil {
 		return nil, nil, ErrAuthenticationRequired
 	}
 
-	principal := identity.PrincipalFromDetails(details)
-	if principal == nil {
-		return nil, nil, ErrAuthenticationRequired
+	if err := ownActiveUser(s, details); err != nil {
+		return nil, nil, err
 	}
 
-	return details, principal, nil
+	return details, identity.PrincipalFromDetails(details), nil
 }
 
 // judgeLate judges a session a late renewal is about to recover, which no gate

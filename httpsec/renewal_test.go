@@ -73,6 +73,9 @@ type renewalSetup struct {
 
 	// interceptors are consumer interceptors registered on the chain.
 	interceptors []httpsec.Option
+
+	// users replaces the default user loader, which answers u-1 active.
+	users identity.UserLoader
 }
 
 // renewalFixture is a session-reference chain with the renewal endpoint, over
@@ -123,8 +126,12 @@ func newRenewalFixture(t *testing.T, setup renewalSetup) *renewalFixture {
 
 	f.old = s.ID
 
-	users := NewMockUserLoader(gomock.NewController(t))
-	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+	users := setup.users
+	if users == nil {
+		defaults := NewMockUserLoader(gomock.NewController(t))
+		defaults.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+		users = defaults
+	}
 
 	opts := setup.opts
 	if setup.record {
