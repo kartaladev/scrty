@@ -47,7 +47,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 2. **A disabled user's logout** returns authentication-required and leaves the session in the store. That is the documented "refuse, don't revoke" behaviour, not a crash. Owner: task 4.1, the case `"disabled user's logout is refused and revokes nothing"`.
 3. **A recovery request naming a saved code plus email-MFA** must still succeed after M4. Owner: task 7.1, the case `"saved code with an emailed MFA code still recovers"`.
 4. **A verify-only replica that never calls `Start`** must still drop a past-lifetime key at construction. Owner: task 8.1, the case `"manager never started drops a past-lifetime key"`.
-5. **A cool-down marked on `/`** must not match every path once the trailing slash is trimmed. Owner: task 4.2, the case `"root route marked matches only root"`.
+5. **A cool-down marked on `/`** must not match every path once trailing slashes are trimmed. Owner: task 4.2, the case `"root route marked matches only root"`.
 
 ---
 
@@ -308,7 +308,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 - Produces: the unexported `func normalizeRoute(method, path string) Route`:
   - the method upper-cased, with `HEAD` becoming `GET`;
   - the path lower-cased in ASCII;
-  - one trailing `/` removed, unless the path is `/`.
+  - every trailing `/` removed, an empty result becoming `/`.
 
   It is applied at `EnableRecoveryCooldown` and per request.
 
@@ -318,7 +318,7 @@ These five failure modes are implied by the spec but no single task's tests exer
   - `POST /account/email/x` allowed;
   - `GET /account/email` allowed when POST is marked;
   - `"root route marked matches only root"` (Review Focus 5);
-  - `POST /MFA/verify` not exempted by the MFA gate.
+  - `POST /MFA/verify/totp` not exempted by the MFA gate.
 - [ ] **Step 2: Run it.** Expected: the variants allowed. If the `HEAD` case passes on HEAD, report it as not reproducing and keep it as a regression case.
 - [ ] **Step 3: Implement `normalizeRoute`.** Update the godoc: it states the over-match and the fiber caveat for consumer authorization rules.
 - [ ] **Step 4: Run `go test -race -count=1 -run 'Cooldown|Gate' ./httpsec/`.** Expected: PASS.

@@ -85,12 +85,13 @@ See `proposal.md` (Why) for the motivation, and the delta specs for the requirem
 - **Exactly one derivation.** Running both the stored and the reference match would make "wrong password" twice as slow as "unknown user", which is a new oracle.
 - **Recognition is optional.** It is an optional interface on the encoder, checked by type assertion; all three built-in encoders implement it.
   - **Default:** a consumer's encoder without it is treated as recognising every non-empty hash, so only an empty hash triggers the decoy. Recognition is how the consumer extends that.
+- **Logging.** The refusal is the bare `ErrAuthenticationFailed` to the caller. The sampled refusal log names it `no-password-hash` at Debug (a federated user trying the password form is routine) or `unrecognised-hash` at Warn (an operator must fix the stored hash or the encoder).
 - **The trap to avoid:** using the reference match's result. The reference password is a library constant, and a "match" must never admit. Tests assert that presenting it fails.
 - **Departure:** the established design spends the decoy only on a lookup miss.
 
 ### 4. Matching is broad where a match refuses, exact where a match exempts (H3)
 
-- **Cool-down only.** Only the recovery cool-down's marked routes are matched broadly: method upper-cased with `HEAD` treated as `GET`, path compared ignoring ASCII case and one trailing slash. Both sides are normalised: the marked routes at construction, the request at match time.
+- **Cool-down only.** Only the recovery cool-down's marked routes are matched broadly: method upper-cased with `HEAD` treated as `GET`, path compared ignoring ASCII case and any trailing slashes, `/` staying `/` (fiber's default routing strips every trailing slash, so trimming one would leave `//` reaching the marked route). Both sides are normalised: the marked routes at construction, the request at match time.
 - **Why it stops there.** The sweep's route table shows every other matcher exempts or answers. A gate that exempted a broadened path would call `next`, and the exact-matching endpoint would not claim it. On fiber the consumer's route would then run, which fails open. Every exemption and answer predicate therefore stays exact.
 - **Rejected:**
   - adapter-aware matching, which every future adapter would have to re-implement;

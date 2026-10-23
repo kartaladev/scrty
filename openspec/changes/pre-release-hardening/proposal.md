@@ -23,7 +23,7 @@ Each group fixes the reproduced defects and their siblings. A claim the audit co
   - bcrypt refuses passwords containing NUL. **BREAKING** for any stored password that contains NUL or exceeds the new caps.
 - **Login timing** (authentication): a known user with no usable password hash costs the same work as an unknown one. Encoders may report that they do not recognise a hash.
 - **Exact matching where exactness protects, broad matching where it denies** (http-security-chain, account-recovery):
-  - the recovery cool-down matches case-insensitively, ignores a trailing slash, and treats `HEAD` as `GET`;
+  - the recovery cool-down matches case-insensitively, ignores trailing slashes, and treats `HEAD` as `GET`;
   - every gate exemption and endpoint path stays exact.
 - **One recovery inbox is one factor** (account-recovery):
   - an issued code is never paired with an MFA method that is also delivered by email;

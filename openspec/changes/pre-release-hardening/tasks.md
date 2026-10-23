@@ -75,18 +75,18 @@
 
 ## 4. httpsec identity, cool-down and responses (lane A, D1, D4, D14, D15)
 
-- [ ] 4.1 Refuse a mismatched or inactive user in the shared resolve core and in `sessionRenewal.user()`, for both bearer modes and late renewal [H1, M1]. Fix the `TestRecoveryCodes` fixture that pairs mismatched IDs.
+- [x] 4.1 Refuse a mismatched or inactive user in the shared resolve core and in `sessionRenewal.user()`, for both bearer modes and late renewal [H1, M1]. Fix the `TestRecoveryCodes` fixture that pairs mismatched IDs.
   - **Red tests:**
     - `TestBearer_RefusesTokenWhenUsernameReassigned`;
     - `TestBearer_RefusesDisabledUser`;
     - a disabled-user renewal inside and after the grace window;
     - a re-enabled user authenticating again.
   - **Verify:** `go test -race -count=1 ./httpsec/` and `(cd test && go test -race -count=1 ./httpsecconformance/...)` pass.
-- [ ] 4.2 Match the recovery cool-down's marked routes broadly: case-insensitive, ignoring one trailing slash, `HEAD` as `GET`. Keep every gate exemption and endpoint predicate exact [H3]. The godoc states the over-match and the fiber caveat for consumer authorization rules.
+- [x] 4.2 Match the recovery cool-down's marked routes broadly: case-insensitive, ignoring trailing slashes, `HEAD` as `GET`. Keep every gate exemption and endpoint predicate exact [H3]. The godoc states the over-match and the fiber caveat for consumer authorization rules.
   - **Red tests:**
     - the case and trailing-slash variants refused;
     - `HEAD` on a marked `GET` route refused (`UNREPRODUCED` until this test fails on HEAD);
-    - `POST /MFA/verify` still not exempted.
+    - `POST /MFA/verify/totp` still not exempted.
   - **Verify:** `go test -race -count=1 -run 'Cooldown|Gate' ./httpsec/` passes.
 - [ ] 4.3 Set `Cache-Control: no-store` in the default login, magic-link, MFA verify, MFA begin and passkey login responders [L12].
   - **Red test:** `TestFormLogin_DefaultResponseIsNotCacheable`, plus a table over each responder.
@@ -110,7 +110,7 @@
 - [ ] 5.3 Panic at wiring on nil ownership checkers or extractors in the fibersec and ginsec guards [L13].
   - **Red test:** `TestFiber_OwnershipGuardWithNilCheckerFailsAtWiring`, plus the gin twin.
   - **Verify:** `(cd fibersec && go test -race -count=1 ./...)` and `(cd ginsec && go test -race -count=1 ./...)` pass.
-- [ ] 5.4 Add a fiber conformance case showing the cool-down holds for `/Account/Email` and `/account/email/` with fiber's default routing [H3 end-to-end].
+- [ ] 5.4 Add a fiber conformance case showing the cool-down holds for `/Account/Email`, `/account/email/` and `/account/email//` with fiber's default routing [H3 end-to-end].
   - **Red test:** `TestFiber_RecoveryCooldownHoldsForEveryPathFiberRoutesToTheMarkedRoute`, which passes once group 4.2 has landed.
   - **Verify:** `(cd fibersec && go test -race -count=1 ./...)` passes.
 - [ ] 5.5 Review (Sonnet) of group 5 against D16 and the `framework-adapters` delta.
@@ -162,21 +162,21 @@
 
 ## 8. Signing keys (lane H, D9)
 
-- [ ] 8.1 Share one publishing predicate across construction, reload and housekeeping: within the lifetime, or the newest key of a configured algorithm [M5]. Update the fixtures that pin the old construction behaviour (`housekeep_test.go:96`, `algs_test.go:83`) and the 25-hour duplicate in `boundary_test.go:382`.
+- [x] 8.1 Share one publishing predicate across construction, reload and housekeeping: within the lifetime, or the newest key of a configured algorithm [M5]. Update the fixtures that pin the old construction behaviour (`housekeep_test.go:96`, `algs_test.go:83`) and the 25-hour duplicate in `boundary_test.go:382`.
   - **Red tests:** `TestRestartedManager_RefusesTokensFromAKeyPastItsLifetime`, and a 3-day-old sole key kept with no replacement minted.
   - **Verify:** `go test -race -count=1 ./signingkey/` passes.
-- [ ] 8.2 Choose the current key only among keys not dated after now plus the reload interval, and retire non-current keys dated more than a lifetime ahead [M6]. Pass `WithClock` in `reload_test.go:88-108`.
+- [x] 8.2 Choose the current key only among keys not dated after now plus the reload interval, and retire non-current keys dated more than a lifetime ahead [M6]. Pass `WithClock` in `reload_test.go:88-108`.
   - **Red test:** `TestRotation_IsNotUndoneByAFutureDatedStoredKey`.
   - **Verify:** `go test -race -count=1 ./signingkey/` and `(cd test && go test -race -count=1 ./... -run SigningKey)` pass.
-- [ ] 8.3 Review (Opus) of group 8 against D9 and the `signing-keys` delta.
+- [x] 8.3 Review (Opus) of group 8 against D9 and the `signing-keys` delta.
   - **Verify:** the review is clean.
 
 ## 9. Policy and bounded memory (lane I, D12, D13, D14)
 
-- [ ] 9.1 Bound the default attempt store: retention from the owning policy, an inline sweep, a 100,000-identifier cap (`WithAttemptStoreCapacity`), digests over 256 bytes, holds kept, fail closed when full, purge supported [M8]. Update the purge-unsupported tests the spec delta changes.
+- [x] 9.1 Bound the default attempt store: retention from the owning policy, an inline sweep, a 100,000-identifier cap (`WithAttemptStoreCapacity`), digests over 256 bytes, holds kept, fail closed when full, purge supported [M8]. Update the purge-unsupported tests the spec delta changes.
   - **Red test:** `TestDefaultLockoutStore_ReleasesIdentifiersOutsideWindow` (50,001 held), plus the full-store denial and the consumer capacity.
   - **Verify:** `go test -race -count=1 ./policy/` passes.
-- [ ] 9.2 Deny a nil input in `Engine.EvaluatePhase`, and a zero `Now` in the idle, password-age and enrolment-path policies [M11, L13].
+- [x] 9.2 Deny a nil input in `Engine.EvaluatePhase`, and a zero `Now` in the idle, password-age and enrolment-path policies [M11, L13].
   - **Red tests:** `TestIdleTimeout_ZeroNowDoesNotAllowIdleSession`, `TestPasswordAge_ZeroNowDeniesStalePassword`, an enrolment-path twin, and `TestEngine_NilInputDeniesRatherThanPanics`.
   - **Verify:** `go test -race -count=1 ./policy/` passes.
 - [x] 9.3 Cap the outage hold, digest its long keys, answer exceeded when it is full, and re-arm its sweep after a backwards clock step [M9, L15].
@@ -185,7 +185,7 @@
 - [x] 9.4 Cap the log sampler's keys per window, with an overflow key [U5, `UNREPRODUCED`]. Refuse empty or `:`-bearing flow names in `NewSourceGuard` [U10].
   - **Red tests:** a one-million-key spray in one window, and a `login:2001` flow constructing.
   - **Verify:** `go test -race -count=1 ./pkg/logsample/ ./ratelimit/` passes.
-- [ ] 9.5 Review of group 9 against D12, D13, D14 and the `security-policy`, `rate-limiting` and `log-sampling` deltas. 9.1 gets Opus; the rest get Sonnet.
+- [x] 9.5 Review of group 9 against D12, D13, D14 and the `security-policy`, `rate-limiting` and `log-sampling` deltas. 9.1 gets Opus; the rest get Sonnet.
   - **Verify:** the review is clean.
 
 ## 10. Point fixes (lane J, D11, D14, D16, D17)

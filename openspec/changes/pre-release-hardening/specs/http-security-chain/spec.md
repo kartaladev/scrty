@@ -50,14 +50,14 @@ Building an ownership guard with a nil ownership checker or a nil identifier ext
 ## MODIFIED Requirements
 
 ### Requirement: The cool-down guard runs after authentication
-When the recovery cool-down is enabled, the chain SHALL register its guard after bearer authentication, so it sees the session's user. It SHALL act only on the requests the consumer marked, each marked by method and path. A request SHALL match a marked route when its method is the marked method, treating `HEAD` as `GET`, and its path equals the marked path ignoring ASCII letter case and one trailing slash, so that no framework's lenient routing can reach a marked route by a path the guard does not match. Matching SHALL be this broad only for the cool-down, whose matches refuse; every path the chain exempts from a gate or answers itself SHALL stay an exact match. It SHALL let requests without a session through for later interceptors to decide.
+When the recovery cool-down is enabled, the chain SHALL register its guard after bearer authentication, so it sees the session's user. It SHALL act only on the requests the consumer marked, each marked by method and path. A request SHALL match a marked route when its method is the marked method, treating `HEAD` as `GET`, and its path equals the marked path ignoring ASCII letter case and any trailing slashes (a marked or requested `/` stays `/`), so that no framework's lenient routing can reach a marked route by a path the guard does not match. Matching SHALL be this broad only for the cool-down, whose matches refuse; every path the chain exempts from a gate or answers itself SHALL stay an exact match. It SHALL let requests without a session through for later interceptors to decide.
 
 #### Scenario: Unauthenticated marked request
 - **WHEN** a request without a session posts to a marked route
 - **THEN** the cool-down guard does not refuse it, and authorization decides
 
 #### Scenario: Letter case and trailing slash
-- **WHEN** `POST /account/email` is marked and a recovered session inside its cool-down posts to `/Account/Email` or `/account/email/`
+- **WHEN** `POST /account/email` is marked and a recovered session inside its cool-down posts to `/Account/Email`, `/account/email/` or `/account/email//`
 - **THEN** the request is refused as it would be on `/account/email`
 
 #### Scenario: HEAD on a marked GET route
@@ -65,5 +65,5 @@ When the recovery cool-down is enabled, the chain SHALL register its guard after
 - **THEN** the request is refused
 
 #### Scenario: Gate exemptions stay exact
-- **WHEN** a session pending a second factor sends `POST /MFA/verify` to a chain whose verify path is `/mfa/verify`
+- **WHEN** a session pending a second factor sends `POST /MFA/verify/totp` to a chain whose verify prefix is `/mfa/verify`
 - **THEN** the MFA gate does not exempt it, and refuses it
