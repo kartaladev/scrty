@@ -93,8 +93,10 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 			// have returned, so the route would see "context canceled" while it
 			// is still writing. The route's context therefore reads values from
 			// the chain's context but its deadline and cancellation from
-			// fiber's original one, so an upstream timeout still bounds it.
-			fc.SetContext(routeContext{Context: outer, chain: ex.Context()})
+			// fiber's original one, so an upstream timeout still bounds it. The
+			// chain's side is WithoutCancel so the context package's cause
+			// lookup falls through to fiber's context, not the chain's cancel.
+			fc.SetContext(routeContext{Context: outer, chain: context.WithoutCancel(ex.Context())})
 
 			nextErr = fc.Next()
 
