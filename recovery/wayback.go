@@ -133,14 +133,18 @@ func NewWayBackCheck(deps WayBackDeps, opts ...WayBackOption) (*WayBackCheck, er
 //     authenticator of a registered kind, either of which pairs with an issued
 //     code. A kind implementing UsableLister is counted by what Usable lists,
 //     so a pending or suspended authenticator does not count; any other kind
-//     is counted by what Held lists;
+//     is counted by what Held lists. An authenticator whose Channel is
+//     factor.Email does not count, since a recovery refuses to pair it with
+//     an issued code, which arrives by email too;
 //   - a linked login would be admitted without a local second factor, as
 //     WayBackDeps.Admits answers. Provider assurance is never assumed.
 //
 // It checks in that order, cheapest first, and stops at the first yes. With
 // issued codes disabled it neither loads the user nor lists their
 // authenticators, since neither could count. Any lookup that fails, including
-// a user the loader does not find, is returned as an error, never as no.
+// a user the loader does not find, is returned as an error, never as no. A
+// loader that returns no user and no error is taken as a user with no
+// password; the other lookups still decide.
 //
 // Linked logins count only when WayBackDeps.LinkedLogins is supplied. The
 // identity-linking store cannot list a user's links, so with no lookup the
@@ -192,13 +196,15 @@ func admittedByKind(_ context.Context, _ identity.UserID, kind factor.Kind) (boo
 }
 
 // pairsWithIssuedCode reports whether user has a password or holds a usable
-// authenticator of a registered kind.
+// authenticator of a registered kind that does not travel over email, the
+// issued code's own channel. A loader that returns no user and no error is
+// taken as a user with no password.
 func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.UserID) (bool, error) {
 	d, err := c.users.LoadByUserID(ctx, user)
 	if err != nil {
 		return false, diag.Wrap(err, errTextWayBackUser)
 	}
-	if len(d.Password) > 0 {
+	if d != nil && len(d.Password) > 0 {
 		return true, nil
 	}
 
@@ -207,8 +213,10 @@ func (c *WayBackCheck) pairsWithIssuedCode(ctx context.Context, user identity.Us
 		if err != nil {
 			return false, diag.Wrap(err, errTextResetListing)
 		}
-		if len(refs) > 0 {
-			return true, nil
+		for _, r := range refs {
+			if r.Channel != factor.Email {
+				return true, nil
+			}
 		}
 	}
 

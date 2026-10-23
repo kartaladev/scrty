@@ -28,6 +28,7 @@ const (
 	faultTokensInsert      = "tokens.Insert"
 	faultTokensConsume     = "tokens.Consume"
 	faultRecordsNoComplete = "records.Complete=false"
+	faultRecordsFindNil    = "records.Find=nil"
 )
 
 // faults is a set of armed failures the wrapper stores below consult before
@@ -126,7 +127,8 @@ func (s faultySessionStore) Save(ctx context.Context, sess *session.Session) err
 
 // faultyRecordStore is a recovery record store that fails on demand. With
 // faultRecordsNoComplete armed, Complete reports that it lost the race without
-// writing anything.
+// writing anything; with faultRecordsFindNil armed, Find returns no record and
+// no error.
 type faultyRecordStore struct {
 	recovery.RecordStore
 
@@ -144,6 +146,9 @@ func (s faultyRecordStore) Insert(ctx context.Context, r recovery.Record) error 
 func (s faultyRecordStore) Find(ctx context.Context, rid id.ID) (*recovery.Record, error) {
 	if err := s.f.err(faultRecordsFind); err != nil {
 		return nil, err
+	}
+	if s.f.err(faultRecordsFindNil) != nil {
+		return nil, nil //nolint:nilnil // the fault is a store answering no record and no error
 	}
 
 	return s.RecordStore.Find(ctx, rid)

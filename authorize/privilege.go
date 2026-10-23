@@ -9,6 +9,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/origin"
 )
 
 // PrivilegeAuthorizer judges PrivilegeAttributes against the privileges the
@@ -41,9 +42,10 @@ type PrivilegeOption func(*PrivilegeAuthorizer)
 // letter case only, which suits role data entered by hand. It applies no
 // Unicode case mapping and trims no Unicode space, so a character that matches
 // an ASCII letter only under Unicode folding (the Kelvin sign for "k"), or a
-// no-break space around a name, never makes two different names equal. A consumer whose data is generated and
-// canonical may want exact comparison, and one whose data is normalised some
-// other way — a locale-aware fold, a prefix convention — supplies that instead.
+// no-break space around a name, never makes two different names equal. A
+// consumer whose data is generated and canonical may want exact comparison,
+// and one whose data is normalised some other way — a locale-aware fold, a
+// prefix convention — supplies that instead.
 // Replacing the comparison changes nothing else: the default remains what an
 // authorizer built without this option uses.
 //
@@ -96,32 +98,7 @@ func NewPrivilegeAuthorizer(roles identity.RoleLoader, opts ...PrivilegeOption) 
 // that a person reading them would tell apart. A consumer whose data needs a
 // wider rule supplies it through WithPrivilegeNameComparer.
 func equalNamesFolded(a, b string) bool {
-	a, b = strings.Trim(a, asciiSpace), strings.Trim(b, asciiSpace)
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := 0; i < len(a); i++ {
-		if asciiFold(a[i]) != asciiFold(b[i]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// asciiSpace is the whitespace the default comparison ignores around a name.
-const asciiSpace = " \t\n\v\f\r"
-
-// asciiFold lowercases c when it is an ASCII capital and leaves every other
-// byte alone. Working on bytes is safe: only ASCII bytes are rewritten, and
-// those never occur inside a multi-byte UTF-8 sequence.
-func asciiFold(c byte) byte {
-	if c >= 'A' && c <= 'Z' {
-		return c + 'a' - 'A'
-	}
-
-	return c
+	return origin.EqualFoldASCII(origin.TrimSpaceASCII(a), origin.TrimSpaceASCII(b))
 }
 
 // Authorize reports whether the subject's active role grants what attrs

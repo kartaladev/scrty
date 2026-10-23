@@ -1,6 +1,9 @@
 package origin
 
-import "net/url"
+import (
+	"net/url"
+	"strings"
+)
 
 // Same reports whether a and b have the same origin.
 //
@@ -86,4 +89,45 @@ func asciiLower(s string) string {
 	}
 
 	return string(b)
+}
+
+// EqualFoldASCII reports whether a and b are equal when only the letters A-Z
+// are folded to a-z. Every other byte, including every byte of a multi-byte
+// UTF-8 sequence, must match exactly, so U+212A (the Kelvin sign) never equals
+// "k" and U+017F never equals "s", as they do under strings.EqualFold.
+//
+// Folding byte-wise is safe in UTF-8: the only bytes rewritten are 'A' to 'Z',
+// and those never occur inside a multi-byte sequence.
+func EqualFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	for i := range len(a) {
+		if lowerByte(a[i]) != lowerByte(b[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// TrimSpaceASCII strips leading and trailing ASCII whitespace (space, tab,
+// newline, vertical tab, form feed, carriage return) from s. Unlike
+// strings.TrimSpace it leaves U+00A0 and every other Unicode space in place.
+func TrimSpaceASCII(s string) string {
+	return strings.Trim(s, asciiSpace)
+}
+
+// asciiSpace is the whitespace TrimSpaceASCII strips.
+const asciiSpace = " \t\n\v\f\r"
+
+// lowerByte folds an ASCII capital to lower case and returns every other byte
+// unchanged.
+func lowerByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+
+	return c
 }

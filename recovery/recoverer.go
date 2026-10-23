@@ -302,6 +302,12 @@ func WithPasswordCheck(check PasswordCheck) Option {
 // mfa.ChallengeMethod is eligible; others are not offered as a proof. A
 // challenge method cannot serve, because its begin step needs a session and a
 // recovery has none yet. The set is validated by mfa.LookupsFor.
+//
+// A method whose channel is factor.Email pairs only with a saved code. An
+// issued code is delivered by email too, so a request pairing the two is
+// refused as ErrMalformed before any proof is checked: one mailbox would
+// otherwise recover the account alone. This is a stated limit with no
+// override.
 func WithMFAMethods(methods ...mfa.Method) Option {
 	return func(c *config) { c.mfaMethods = slices.Clone(methods) }
 }

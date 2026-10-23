@@ -170,6 +170,8 @@ type completeEnv struct {
 	prior []string
 	// inactive makes ana's account inactive when loaded by reference.
 	inactive atomic.Bool
+	// otherUser makes loading ana by reference return another user's details.
+	otherUser atomic.Bool
 	// lookupErr, when set, is what loading ana by reference returns.
 	lookupErr atomic.Pointer[error]
 	// altCodes is the saved-code manager a case gave the recoverer in place
@@ -206,6 +208,9 @@ func newCompleteEnv(t *testing.T) *completeEnv {
 
 		d := anaDetails()
 		d.Active = !e.inactive.Load()
+		if e.otherUser.Load() {
+			d.ID = "u-2"
+		}
 
 		return d, nil
 	}).AnyTimes()

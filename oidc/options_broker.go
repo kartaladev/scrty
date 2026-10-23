@@ -118,8 +118,8 @@ func WithJITAllowUnverifiedEmail(provider string) BrokerOption {
 // WithJITEmailDomains restricts provisioning for provider to emails whose
 // domain exactly equals one of domains, ignoring ASCII letter case only (a
 // character that matches a letter only under Unicode folding, such as the
-// Kelvin sign, never matches it); a
-// subdomain does not match its parent. The default is no allowlist. Called
+// Kelvin sign, never matches it). A subdomain does not match its parent. The
+// default is no allowlist. Called
 // with no domains it configures an empty allowlist, which admits no one.
 // Repeated calls for one provider add to its list. An empty domain is refused,
 // and the provider must also be enabled with WithJIT, or NewBroker refuses it.
@@ -222,9 +222,11 @@ func WithPasswordEncoder(enc password.Encoder) BrokerOption {
 
 // WithPasswordClaimCostRange replaces the inclusive bcrypt cost band a mapped
 // password-hash claim must lie in. The default is 10 to 15. The band must lie
-// within bcrypt's own range of 4 to 31 with minCost not above maxCost, or it
-// is refused. A higher ceiling lets a federated user's claim buy more CPU on
-// every verification: cost 31 is about two million times the work of cost 10.
+// within 4 to 16 with minCost not above maxCost, or it is refused; 16 is the
+// bcrypt cost ceiling a stored record may carry, so a hash accepted at
+// provisioning can always be matched later. A higher ceiling lets a federated
+// user's claim buy more CPU on every verification: cost 16 is about sixty-four
+// times the work of cost 10.
 func WithPasswordClaimCostRange(minCost, maxCost int) BrokerOption {
 	return func(b *Broker) error {
 		if minCost < bcryptMinCost || maxCost > bcryptMaxCost || minCost > maxCost {

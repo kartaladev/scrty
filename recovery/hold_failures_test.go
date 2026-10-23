@@ -121,6 +121,18 @@ func TestRecoverer_FinishFailures(t *testing.T) {
 			assert: refusedThenRedeemable(refused),
 		},
 		{
+			name:   "a record store that finds no record and no error is refused as missing",
+			arm:    func(e *completeEnv) { e.faults.arm(faultRecordsFindNil, errStore) },
+			disarm: func(e *completeEnv) { e.faults.arm(faultRecordsFindNil, nil) },
+			assert: refusedThenRedeemable(refused),
+		},
+		{
+			name:   "a user loader answering for another user is refused, and the record stays pending",
+			arm:    func(e *completeEnv) { e.otherUser.Store(true) },
+			disarm: func(e *completeEnv) { e.otherUser.Store(false) },
+			assert: refusedThenRedeemable(refused),
+		},
+		{
 			name:   "a listing failure while planning is returned, and the record stays pending",
 			arm:    func(e *completeEnv) { e.held.failListing(errStore) },
 			disarm: func(e *completeEnv) { e.held.failListing(nil) },

@@ -234,6 +234,16 @@ func TestPlanner_Plan(t *testing.T) {
 			},
 		},
 		{
+			name:   "a policy ref carrying a channel is still removed",
+			mode:   recovery.ResetCustom,
+			policy: policyReturning(recovery.AuthenticatorRef{Kind: refEmail.Kind, ID: refEmail.ID, Channel: "a@example.test"}),
+			held:   []recovery.AuthenticatorRef{refTOTP, refEmail},
+			assert: func(t *testing.T, plan []recovery.AuthenticatorRef, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []recovery.AuthenticatorRef{refEmail}, plan)
+			},
+		},
+		{
 			name:   "a policy's unheld ref is ignored",
 			mode:   recovery.ResetCustom,
 			policy: policyReturning(refSMS, refEmail),

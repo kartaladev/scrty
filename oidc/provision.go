@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/origin"
 )
 
 // provision creates and links a user for ext, which has no link, when the
@@ -115,31 +116,9 @@ func (b *Broker) provisionOptions(ctx context.Context, ext ExternalIdentity) []i
 // not own.
 func containsFoldASCII(list []string, s string) bool {
 	for _, v := range list {
-		if equalFoldASCII(v, s) {
+		if origin.EqualFoldASCII(v, s) {
 			return true
 		}
 	}
 	return false
-}
-
-// equalFoldASCII reports whether a and b are the same bytes once A-Z is folded
-// to a-z. Every other byte, including every byte of a multi-byte sequence, must
-// match exactly; the bytes rewritten are ASCII and never occur inside one.
-func equalFoldASCII(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		if foldASCII(a[i]) != foldASCII(b[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func foldASCII(c byte) byte {
-	if c >= 'A' && c <= 'Z' {
-		return c + 'a' - 'A'
-	}
-	return c
 }
