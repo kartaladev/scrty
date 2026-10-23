@@ -154,7 +154,7 @@ func TestRefusalLogRecords(t *testing.T) {
 		},
 		{
 			name:       "a wrong password is a routine event, recorded at debug",
-			user:       &identity.Details{Username: "ada", Active: true},
+			user:       &identity.Details{Username: "ada", Password: stubHash, Active: true},
 			matches:    false,
 			wantRecord: true,
 			assert: func(t *testing.T, record map[string]any) {
@@ -166,7 +166,7 @@ func TestRefusalLogRecords(t *testing.T) {
 		},
 		{
 			name:       "the right password for a disabled account is worth an operator's attention",
-			user:       &identity.Details{Username: "ada", Active: false},
+			user:       &identity.Details{Username: "ada", Password: stubHash, Active: false},
 			matches:    true,
 			wantRecord: true,
 			assert: func(t *testing.T, record map[string]any) {
@@ -178,7 +178,7 @@ func TestRefusalLogRecords(t *testing.T) {
 		},
 		{
 			name:    "a success is not a refusal, and writes no refusal record",
-			user:    &identity.Details{Username: "ada", Active: true},
+			user:    &identity.Details{Username: "ada", Password: stubHash, Active: true},
 			matches: true,
 		},
 	}
@@ -309,3 +309,9 @@ func refusalRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
 
 	return records
 }
+
+// stubHash is the stored hash of a known user in the tables that verify through
+// a mock encoder. It only has to be non-empty: a mock encoder does not implement
+// password.Recognizer, so the provider trusts it with any non-empty hash, while
+// an empty one would send the user down the no-usable-hash refusal instead.
+var stubHash = []byte("$fake$stored")

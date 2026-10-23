@@ -47,7 +47,7 @@ func TestPasswordRefusalRecords(t *testing.T) {
 		},
 		{
 			name:      "a known user's wrong password is refused, and the record carries no username",
-			user:      &identity.Details{Username: "ada", Active: true},
+			user:      &identity.Details{Username: "ada", Password: stubHash, Active: true},
 			matches:   false,
 			usernames: []string{"ada"},
 			assert: func(t *testing.T, buf *bytes.Buffer) {

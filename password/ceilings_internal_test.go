@@ -62,8 +62,8 @@ func TestParseScrypt_RefusesParallelismBeyondFootprintCeiling(t *testing.T) {
 			assert: read,
 		},
 		{
-			name:   "working memory exactly at 1 GiB",
-			record: hostileScryptRecord(1<<20-16, 8, 16),
+			name:   "working memory just under 1 GiB",
+			record: hostileScryptRecord(1<<19, 15, 16),
 			assert: read,
 		},
 	}

@@ -292,3 +292,14 @@ func parseArgon2id(encoded []byte) (
 }
 
 var _ Encoder = (*argon2idEncoder)(nil)
+
+// Recognizes reports whether encoded is an Argon2id record Match would derive a
+// key from: well formed, and within the ceilings on what a record may demand.
+// It derives nothing.
+func (e *argon2idEncoder) Recognizes(encoded []byte) bool {
+	_, _, _, _, _, ok := parseArgon2id(encoded)
+
+	return ok
+}
+
+var _ Recognizer = (*argon2idEncoder)(nil)

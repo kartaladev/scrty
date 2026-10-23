@@ -138,3 +138,45 @@ func (e *bcryptEncoder) Match(input string, encoded []byte) bool {
 }
 
 var _ Encoder = (*bcryptEncoder)(nil)
+
+// Recognizes reports whether encoded is a bcrypt record whose cost Match would
+// run: one bcrypt can parse, with a salt in bcrypt's alphabet, at a cost no higher than the ceiling. It derives
+// nothing.
+//
+// It speaks only of the record. Match also refuses, unread, an input over 72
+// bytes or containing a NUL byte; that depends on the password the caller
+// presented, not on the stored hash, and is bcrypt's stated length exception.
+func (e *bcryptEncoder) Recognizes(encoded []byte) bool {
+	cost, err := bcrypt.Cost(encoded)
+	if err != nil || cost > maxRecordCost {
+		return false
+	}
+
+	// bcrypt refuses a salt outside its base64 alphabet before it derives
+	// anything, so such a record is no more usable than a malformed one.
+	if len(encoded) < bcryptSaltEnd {
+		return false
+	}
+
+	for _, c := range encoded[bcryptSaltStart:bcryptSaltEnd] {
+		if !bcryptAlphabet(c) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// The 22 salt characters of a bcrypt record follow its "$2a$NN$" prefix.
+const (
+	bcryptSaltStart = 7
+	bcryptSaltEnd   = bcryptSaltStart + 22
+)
+
+// bcryptAlphabet reports whether c is in bcrypt's base64 alphabet, which is
+// "./" followed by the letters and digits, not the standard one.
+func bcryptAlphabet(c byte) bool {
+	return c == '.' || c == '/' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9'
+}
+
+var _ Recognizer = (*bcryptEncoder)(nil)

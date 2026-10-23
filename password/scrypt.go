@@ -231,8 +231,9 @@ func parseScrypt(encoded []byte) (n, r, p int, salt, key []byte, ok bool) {
 	// to no match. It does not reason about a large power-of-two N: that clears
 	// its own guards and then fails inside make, which panics. So the record's
 	// demand is bounded here, by the footprint it implies rather than by N alone,
-	// since N and r multiply. Below 1 the derivation is meaningless.
-	if n < 1 || r < 1 || p < 1 || !scryptFootprintWithinCeiling(n, r, p) {
+	// since N and r multiply. N must also be a power of two above one, or scrypt.Key
+	// fails at once; below 1 the other parameters are meaningless.
+	if n < 2 || n&(n-1) != 0 || r < 1 || p < 1 || !scryptFootprintWithinCeiling(n, r, p) {
 		return 0, 0, 0, nil, nil, false
 	}
 
@@ -248,3 +249,14 @@ func parseScrypt(encoded []byte) (n, r, p int, salt, key []byte, ok bool) {
 }
 
 var _ Encoder = (*scryptEncoder)(nil)
+
+// Recognizes reports whether encoded is a scrypt record Match would derive a key
+// from: well formed, and within the ceilings on what a record may demand. It
+// derives nothing.
+func (e *scryptEncoder) Recognizes(encoded []byte) bool {
+	_, _, _, _, _, ok := parseScrypt(encoded)
+
+	return ok
+}
+
+var _ Recognizer = (*scryptEncoder)(nil)
