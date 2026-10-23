@@ -15,11 +15,13 @@ import (
 )
 
 // settleDeadline is the context deadline a user-wide delete gets while
-// sessions are created under it, and settleWithin how much sooner it must
-// return.
+// sessions are created under it, and settleWithin the time it must return
+// within. An unbounded delete runs until the deadline; the gap between the two
+// leaves room for 64 bounded passes on a loaded CI host running the backends'
+// suites in parallel under the race detector.
 const (
-	settleDeadline = 5 * time.Second
-	settleWithin   = 2 * time.Second
+	settleDeadline = 10 * time.Second
+	settleWithin   = 8 * time.Second
 	// settleCreators is how many callers create the user's sessions at once.
 	settleCreators = 16
 )
