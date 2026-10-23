@@ -8,6 +8,29 @@ func HeldLen(l ratelimit.Limiter) int {
 	return l.(*limiter).hold.len()
 }
 
+// HeldKeyBytes reports the length of the longest key l's refuse hold keeps.
+func HeldKeyBytes(l ratelimit.Limiter) int {
+	h := l.(*limiter).hold
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	longest := 0
+	for k := range h.until {
+		longest = max(longest, len(k))
+	}
+
+	return longest
+}
+
+// SetHoldCap lowers how many keys l's refuse hold keeps, so a test can fill it
+// without sending 250,000 keys.
+func SetHoldCap(l ratelimit.Limiter, n int) {
+	h := l.(*limiter).hold
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.maxKeys = n
+}
+
 // ReplaceLocal puts local in place of l's fall-back count, so a test can fill
 // one with a small cap rather than with the default's 250,000 keys.
 func ReplaceLocal(l ratelimit.Limiter, local *ratelimit.MemoryLimiter) {

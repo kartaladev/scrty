@@ -1,10 +1,13 @@
 package unavailable
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 
 	"github.com/kartaladev/scrty/pkg/clock"
+	"github.com/kartaladev/scrty/ratelimit"
 )
 
 // hold is the set of keys refuse mode answers as exceeded because a failure for
@@ -24,17 +27,38 @@ import (
 type hold struct {
 	clock  clock.Clock
 	window time.Duration
+	// maxKeys is the most keys held at once.
+	maxKeys int
 
 	mu sync.Mutex
 	// until maps a key to the instant its hold ends.
 	until   map[string]time.Time
 	sweptAt time.Time
+	// fullUntil is when the refusal of every key ends, set when a key could not
+	// be held because the set was full. Zero when no key was turned away.
+	fullUntil time.Time
+}
+
+// maxKeyBytes is the longest key held as it is. A longer one is held as its
+// digest, so the memory the hold uses is bounded in bytes as well as in keys.
+const maxKeyBytes = 64
+
+// holdKey is the form in which key is held: itself, or for a long one a digest
+// of it that is longer than maxKeyBytes, so it cannot equal a short key.
+func holdKey(key string) string {
+	if len(key) <= maxKeyBytes {
+		return key
+	}
+	sum := sha256.Sum256([]byte(key))
+
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func newHold(clk clock.Clock, window time.Duration) *hold {
 	return &hold{
 		clock:   clk,
 		window:  window,
+		maxKeys: ratelimit.DefaultMemoryLimiterMaxKeys,
 		until:   map[string]time.Time{},
 		sweptAt: clk.Now(),
 	}
@@ -42,7 +66,15 @@ func newHold(clk clock.Clock, window time.Duration) *hold {
 
 // add holds key for one window from now. A hold already running longer is
 // kept, so a clock stepped backwards cannot shorten one.
+//
+// A key the set has no room for is not held, and every key is answered as held
+// until one window from now instead: refuse mode fails closed, so a spray of
+// distinct keys can neither grow the set nor slip past it. The cap is the
+// in-memory limiter's default, ratelimit.DefaultMemoryLimiterMaxKeys. It has no
+// option: the hold is internal, and only bounds what a backend outage can make it
+// remember.
 func (h *hold) add(key string) {
+	key = holdKey(key)
 	now := h.clock.Now()
 	end := now.Add(h.window)
 
@@ -51,7 +83,14 @@ func (h *hold) add(key string) {
 
 	h.sweepLocked(now)
 
-	if current, ok := h.until[key]; !ok || end.After(current) {
+	current, ok := h.until[key]
+	switch {
+	case ok && !end.After(current):
+	case !ok && len(h.until) >= h.maxKeys:
+		if end.After(h.fullUntil) {
+			h.fullUntil = end
+		}
+	default:
 		h.until[key] = end
 	}
 }
@@ -60,6 +99,7 @@ func (h *hold) add(key string) {
 // the failure, matching the in-memory limiter, for which a stamp exactly one
 // window old no longer counts.
 func (h *hold) held(key string) bool {
+	key = holdKey(key)
 	now := h.clock.Now()
 
 	h.mu.Lock()
@@ -69,7 +109,7 @@ func (h *hold) held(key string) bool {
 
 	end, ok := h.until[key]
 
-	return ok && now.Before(end)
+	return (ok && now.Before(end)) || now.Before(h.fullUntil)
 }
 
 // len reports how many keys are held, ended holds not yet swept included.
@@ -81,7 +121,18 @@ func (h *hold) len() int {
 }
 
 // sweepLocked drops ended holds, at most once per window.
+//
+// A clock stepped back re-arms it from the earlier time, as the passkey login
+// purge does; waiting for the clock to catch up would leave ended holds in place
+// for as long as the step was long. The full-set refusal is capped to one window
+// from the new time for the same reason.
 func (h *hold) sweepLocked(now time.Time) {
+	if now.Before(h.sweptAt) {
+		h.sweptAt = now
+		if limit := now.Add(h.window); h.fullUntil.After(limit) {
+			h.fullUntil = limit
+		}
+	}
 	if now.Sub(h.sweptAt) < h.window {
 		return
 	}
