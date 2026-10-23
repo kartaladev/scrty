@@ -53,10 +53,10 @@
 
 ## 3. Atomic bounded issuance (lane E, D7; starts after groups 1 and 2)
 
-- [ ] 3.1 Add `onetime.Store.InsertWithin` and `Manager.IssueWithin` with `ErrIssueLimitReached`, implemented in memory, pgx, sqlstore and gorm. The SQL takes a per-(purpose, subject) advisory lock inside group 1's READ COMMITTED helper, and refuses a stronger caller transaction.
+- [x] 3.1 Add `onetime.Store.InsertWithin` and `Manager.IssueWithin` with `ErrIssueLimitReached`, implemented in memory, pgx, sqlstore and gorm. The SQL takes a per-(purpose, subject) advisory lock inside group 1's READ COMMITTED helper, and refuses a stronger caller transaction.
   - **Red test:** 20 concurrent bounded issues with a limit of 5 issue more than 5 when written as count-then-issue.
   - **Verify:** `go test -race -count=1 ./onetime/` and the storetest race and isolation cases for one-time tokens pass on all backends.
-- [ ] 3.2 Move magic-link request and recovery start onto `IssueWithin` [L6].
+- [x] 3.2 Move magic-link request and recovery start onto `IssueWithin` [L6].
   - **Red test:** `TestRequest_ConcurrentBurstStaysWithinIssuanceLimit` (20 against 5), plus the recovery-start twin.
   - **Verify:** `go test -race -count=1 ./magiclink/ ./recovery/` passes.
 - [ ] 3.3 Move MFA begin onto `IssueWithin` [N2]. This edits only the call site in `httpsec/mfabegin.go`, handed over from lane A for this one function, and starts after group 4 because 4.3 edits the same file. Also reset `sweepClock.claim` on a backwards clock step.

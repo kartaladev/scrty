@@ -141,6 +141,8 @@ See `proposal.md` (Why) for the motivation, and the delta specs for the requirem
 
 **Inside a caller's transaction.** The operation refuses at a stronger isolation (decision 8). Under a caller's REPEATABLE READ snapshot the count would predate the lock.
 
+**Recovery start's order.** The contact address is resolved before the bounded issue, so a start that cannot be delivered uses none of the allowance; the resolver therefore also runs for a user already at the limit. `Start` returns nothing either way, so this opens no oracle.
+
 **Return shape.** `(bool, error)`, not new sentinels. A refused insert is an outcome, not a failure.
 
 **Overrides:** the limits themselves stay replaceable exactly as before. The atomicity has none; it is the guarantee.
@@ -153,7 +155,7 @@ See `proposal.md` (Why) for the motivation, and the delta specs for the requirem
   - This covers identity, session supersede, recovery-code replace and the bounded inserts, in `pgx`, `sqlstore` and `gorm`.
   - A statement rather than a `TxOptions` field, so the `pgx` `base` interface (pool or tx) need not widen and the three drivers share one shape.
 - **Autocommit statements.** `StreakAdd` and the PostgreSQL limiter record each run in their own READ COMMITTED transaction. An autocommit statement inherits the session default.
-- **Inside a caller's transaction.** An operation whose guarantee depends on READ COMMITTED reads `current_setting('transaction_isolation')` once, in its savepoint (in the caller's transaction directly for `StreakAdd`, which has none), and refuses with an error naming the level when it is stronger. That covers recovery-code replace, the bounded inserts and `StreakAdd`. The error matches `storeerr.ErrIsolationTooStrong` on every backend: a new public root-module package `storeerr` holds it, and each backend's own name is an alias (user decision, 2026-10-23), so `httpsec` and a consumer can match it whichever backend runs, since `pgx` and `gorm` are separate modules.
+- **Inside a caller's transaction.** An operation whose guarantee depends on READ COMMITTED reads `current_setting('transaction_isolation')` once, in its savepoint (in the caller's transaction directly for `StreakAdd` and the bounded inserts, which take none: a failed statement there aborts the caller's transaction, as any failed statement in it does), and refuses with an error naming the level when it is stronger. That covers recovery-code replace, the bounded inserts and `StreakAdd`. The error matches `storeerr.ErrIsolationTooStrong` on every backend: a new public root-module package `storeerr` holds it, and each backend's own name is an alias (user decision, 2026-10-23), so `httpsec` and a consumer can match it whichever backend runs, since `pgx` and `gorm` are separate modules.
   - **Why not degrade silently:** the recovery-code case keeps both sets with no error.
   - **Why not override the caller's isolation:** a store cannot change it mid-transaction.
   - **Other operations** join a caller's transaction at any isolation, as today. Their guarantees come from conditional writes that recheck on the committed row; the sweep checked one-time consume under REPEATABLE READ.
