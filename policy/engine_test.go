@@ -753,3 +753,24 @@ func TestEngineIdleTimeouts(t *testing.T) {
 		})
 	}
 }
+
+// TestEngine_NilInputDeniesRatherThanPanics pins that a phase evaluated with
+// no input is refused by the engine itself, before any policy can either
+// dereference it or allow it.
+func TestEngine_NilInputDeniesRatherThanPanics(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	allowing := stubPolicy{
+		phases:  []policy.Phase{policy.PerRequest},
+		observe: func(*policy.Input) { called = true },
+	}
+	e, err := policy.NewEngine(allowing)
+	require.NoError(t, err)
+
+	var d policy.Decision
+	require.NotPanics(t, func() { d = e.EvaluatePhase(t.Context(), policy.PerRequest, nil) })
+	require.Equal(t, policy.Deny, d.Outcome, "a phase with no input was allowed")
+	require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+	assert.False(t, called, "a policy was handed a nil input")
+}

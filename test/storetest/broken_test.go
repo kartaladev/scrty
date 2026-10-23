@@ -202,7 +202,7 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
 				t.Helper()
-				return policy.NewMemoryAttemptStore()
+				return withoutAttemptReaper{policy.NewMemoryAttemptStore()}
 			}, storetest.RequireReaper())
 		},
 		failsCase: "a purge with a zero cutoff is refused and deletes nothing",
@@ -352,6 +352,10 @@ func (s saveInsertsStore) Save(ctx context.Context, sess *session.Session) error
 	}
 	return err
 }
+
+// withoutAttemptReaper hides the reaper of the attempt store it wraps, as a
+// store that never implemented one.
+type withoutAttemptReaper struct{ policy.AttemptStore }
 
 // withoutOneTimeReaper hides the reaper of the store it wraps, as a store
 // that never implemented one.

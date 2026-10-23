@@ -753,15 +753,15 @@ func TestLockoutCapPurge(t *testing.T) {
 			},
 		},
 		{
-			// The in-memory store keeps streaks but cannot purge its log: the
-			// purge is unsupported, as without a cap.
-			name: "with a cap a store that cannot purge its log reports the purge unsupported",
+			// The in-memory store purges its log and its streaks: with
+			// nothing recorded, the purge succeeds and removes nothing.
+			name: "with a cap the in-memory store purges",
 			opts: []policy.LockoutOption{policy.WithLockoutCap(policy.NISTLockoutCap)},
 			store: func(*testing.T) policy.AttemptStore {
 				return policy.NewMemoryAttemptStore()
 			},
 			assert: func(t *testing.T, removed int, err error) {
-				require.ErrorIs(t, err, policy.ErrReapUnsupported)
+				require.NoError(t, err)
 				assert.Zero(t, removed)
 			},
 		},
@@ -783,13 +783,6 @@ func TestLockoutCapPurge(t *testing.T) {
 	}
 }
 
-// memoryReaperStore is the in-memory store, whose streaks are real, given a
-// mocked log purge, so a purge can be run over streaks it really removes.
-type memoryReaperStore struct {
-	*policy.MemoryAttemptStore
-	*MockAttemptReaper
-}
-
 // TestLockoutCapPurgeKeepsHolds is the spec scenario "Inactive counts are
 // purged, holds are kept", run over real streaks rather than mocked ones, so
 // it shows what goes and what stays rather than which cutoff is passed.
@@ -797,10 +790,7 @@ func TestLockoutCapPurgeKeepsHolds(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(lockoutNow)
-	store := &memoryReaperStore{
-		MemoryAttemptStore: policy.NewMemoryAttemptStore(),
-		MockAttemptReaper:  NewMockAttemptReaper(gomock.NewController(t)),
-	}
+	store := policy.NewMemoryAttemptStore()
 	p, err := policy.NewAccountLockoutPolicy(
 		policy.WithAttemptStore(store),
 		policy.WithLockoutClock(clk),
@@ -811,7 +801,6 @@ func TestLockoutCapPurgeKeepsHolds(t *testing.T) {
 	failDaily(t, p, clk, "ada", 10)
 	failDaily(t, p, clk, "bob", 100)
 	clk.Advance(31 * 24 * time.Hour)
-	now := clk.Now()
 
 	// Read with a cutoff old enough to see the inactive count, so its removal
 	// is shown by the store and not by the read's own cutoff.
@@ -820,11 +809,9 @@ func TestLockoutCapPurgeKeepsHolds(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 10, before.Failures, "the seed is not what the scenario needs")
 
-	store.MockAttemptReaper.EXPECT().DeleteAttemptsBefore(gomock.Any(), now.Add(-24*time.Hour)).Return(110, nil)
-
 	removed, err := p.PurgeExpired(t.Context())
 	require.NoError(t, err)
-	assert.Equal(t, 111, removed, "the purge did not count one inactive streak")
+	assert.Equal(t, 111, removed, "the purge did not count the 110 aged-out failures and one inactive streak")
 
 	after, err := store.FailureStreak(t.Context(), "ada", longAgo)
 	require.NoError(t, err)

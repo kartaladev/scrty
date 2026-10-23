@@ -449,6 +449,12 @@ func TestEnrolmentPathUntil(t *testing.T) {
 			now: closesAt, assert: deniedForEnrolment,
 		},
 		{
+			// TestEnrolmentPath_ZeroNowIsClosed: a caller that forgot the time
+			// cannot keep a closed path open.
+			name: "a login with no evaluation time finds the path closed", until: &closesAt,
+			now: time.Time{}, assert: deniedForEnrolment,
+		},
+		{
 			name: "with no instant the path stays open",
 			now:  time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), assert: challengedForEnrolment,
 		},

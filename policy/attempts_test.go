@@ -198,13 +198,3 @@ func TestMemoryAttemptStoreIsSafeForConcurrentUse(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, writers*perWriter, count)
 }
-
-func TestMemoryAttemptStoreCannotReap(t *testing.T) {
-	t.Parallel()
-
-	// The limit is stated in the store's godoc, and a consumer who needs
-	// sweeping supplies a store that can: a silent zero from a sweep that never
-	// ran is exactly what ErrReapUnsupported exists to prevent.
-	_, reaps := any(policy.NewMemoryAttemptStore()).(policy.AttemptReaper)
-	assert.False(t, reaps, "the in-memory store claims it can purge, so a sweep over it would report a silent zero")
-}

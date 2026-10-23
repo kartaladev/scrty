@@ -347,6 +347,7 @@ var sentinelRegistry = map[string]map[string]error{
 	"github.com/kartaladev/scrty/policy": {
 		"policy.ErrAccountLocked":               policy.ErrAccountLocked,
 		"policy.ErrAccountHeld":                 policy.ErrAccountHeld,
+		"policy.ErrAttemptStoreFull":            policy.ErrAttemptStoreFull,
 		"policy.ErrConfig":                      policy.ErrConfig,
 		"policy.ErrFederatedAssuranceNotMet":    policy.ErrFederatedAssuranceNotMet,
 		"policy.ErrMFAEnrollmentRequired":       policy.ErrMFAEnrollmentRequired,
@@ -439,6 +440,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"ratelimit.ErrConfig":          "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
+		"policy.ErrAttemptStoreFull": "returned by a full in-memory attempt store; the lockout policy denies with ErrPolicyDenied",
 		"ratelimit.ErrLimiterFull": "returned by a full in-memory limiter, never by a flow: every built-in caller " +
 			"wraps or replaces it with a throttle or refusal sentinel before it leaves",
 		"ratelimit.ErrSourceUnattributable":     "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",

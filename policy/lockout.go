@@ -168,8 +168,10 @@ type AccountLockoutPolicy struct {
 type LockoutOption func(*AccountLockoutPolicy)
 
 // WithAttemptStore replaces where failures are counted. The default is
-// NewMemoryAttemptStore, which counts within one replica and does not survive
-// a restart.
+// NewMemoryAttemptStore, which counts within one replica, does not survive a
+// restart, and holds at most 100,000 identifiers, denying logins for new ones
+// while it is full. A MemoryAttemptStore passed here is told this policy's
+// retention, exactly as the default one is.
 //
 // A nil store is a configuration error rather than a silent fallback to
 // memory: a consumer who passed one meant to supply their own, and a lockout
@@ -388,8 +390,9 @@ func WithLockoutCapRetention(d time.Duration) LockoutOption {
 // Defaults: a threshold of 5 free failures (WithLockoutThreshold) in a window
 // of 24 hours (WithLockoutWindow); a wait of 30 seconds doubling up to 1 hour
 // (WithLockoutWait); a ceiling of 100 failures in the window
-// (WithLockoutCeiling); an in-memory store (WithAttemptStore) and the system
-// clock (WithLockoutClock); no lockout observer (WithLockoutObserver), and
+// (WithLockoutCeiling); a bounded in-memory store (WithAttemptStore), which
+// keeps failures only as long as this policy needs them (the window, or the
+// cap's retention when longer), and the system clock (WithLockoutClock); no lockout observer (WithLockoutObserver), and
 // slog.Default for its records (WithLockoutLogger). WithSlidingLockout replaces
 // the escalating wait with a sliding lock.
 //
@@ -485,6 +488,14 @@ func NewAccountLockoutPolicy(opts ...LockoutOption) (*AccountLockoutPolicy, erro
 	if p.setObserver && p.observer == nil {
 		return nil, fmt.Errorf("%w: lockout observer must not be nil: a consumer who passed "+
 			"one meant to be told, and would hear nothing", ErrConfig)
+	}
+
+	if mem, ok := p.store.(*MemoryAttemptStore); ok {
+		retention := p.window
+		if p.streaks != nil {
+			retention = max(retention, p.capRetention)
+		}
+		mem.retainFor(retention, p.clock)
 	}
 
 	p.attempts = p.store
@@ -782,10 +793,10 @@ func (p *AccountLockoutPolicy) Reset(ctx context.Context, username string) error
 // removed.
 //
 // Purging is a capability a store may not have, so it is a separate contract.
-// A store that does not implement AttemptReaper — the default in-memory one
-// among them — reports ErrReapUnsupported rather than a sweep that removed
-// nothing: in a metric those two are the same number, and only one of them
-// means the store is growing without bound.
+// The default in-memory store has it. A consumer's store that does not
+// implement AttemptReaper reports ErrReapUnsupported rather than a sweep that
+// removed nothing: in a metric those two are the same number, and only one of
+// them means the store is growing without bound.
 //
 // A reaper that cannot sweep has its own error returned behind fixed library
 // text; it stays reachable through errors.Is and errors.As, but its text

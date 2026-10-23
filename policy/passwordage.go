@@ -158,11 +158,19 @@ func (p *PasswordAgePolicy) Phases() []Phase { return []Phase{PostAuthentication
 //
 // An unknown change time — the zero time — is answered by the configured
 // UnknownPasswordAge, which allows unless the consumer chose otherwise.
+//
+// A known change time judged with no evaluation time — Input.Now left at the
+// zero time — denies with ErrPolicyDenied. There is no clock to fall back on,
+// and none is offered: the caller supplies the time, a forgotten one is a
+// caller bug, and measured from the zero time every password would look new.
 func (p *PasswordAgePolicy) Evaluate(_ context.Context, in *Input) Decision {
 	var overdue bool
-	if in.PasswordChangedAt.IsZero() {
+	switch {
+	case in.PasswordChangedAt.IsZero():
 		overdue = p.unknown == ChallengeUnknown
-	} else {
+	case in.Now.IsZero():
+		return noTimeDenied(p.Name())
+	default:
 		overdue = in.Now.Sub(in.PasswordChangedAt) > p.maxAge
 	}
 

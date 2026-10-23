@@ -133,9 +133,17 @@ func (p *IdleTimeoutPolicy) Phases() []Phase { return []Phase{PerRequest} }
 // A request carrying no session allows. There is nothing to have been idle, and
 // whether a request may proceed without a session is decided by whoever
 // establishes one, not by a rule about how long ago it was last used.
+//
+// A session judged with no evaluation time — Input.Now left at the zero time —
+// denies with ErrPolicyDenied. There is no clock to fall back on, and none is
+// offered: the caller supplies the time, a forgotten one is a caller bug, and
+// measured from the zero time every session would look fresh.
 func (p *IdleTimeoutPolicy) Evaluate(_ context.Context, in *Input) Decision {
 	if in.Session == nil || in.Session.LastAccessedAt.IsZero() {
 		return Decision{}
+	}
+	if in.Now.IsZero() {
+		return noTimeDenied(p.Name())
 	}
 
 	if in.Now.Sub(in.Session.LastAccessedAt) > p.idle {

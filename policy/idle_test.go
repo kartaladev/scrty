@@ -87,6 +87,17 @@ func TestIdleTimeoutPolicyEvaluate(t *testing.T) {
 			now:     idleLastAccess.Add(11 * time.Minute),
 			assert:  deniesAsIdle,
 		},
+		{
+			// TestIdleTimeout_ZeroNowDoesNotAllowIdleSession: a caller that
+			// forgot the time must not have a 48-hour-idle session let through.
+			name:    "a session idle for 48 hours with no evaluation time is denied",
+			session: &session.Session{LastAccessedAt: idleLastAccess.Add(-48 * time.Hour)},
+			now:     time.Time{},
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome, "a forgotten evaluation time let an idle session through")
+				require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+			},
+		},
 	}
 
 	for _, tc := range cases {

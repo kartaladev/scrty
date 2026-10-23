@@ -27,7 +27,10 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 		name      string
 		opts      []policy.PasswordAgeOption
 		changedAt time.Time
-		assert    func(t *testing.T, d policy.Decision)
+		// zeroNow leaves the evaluation time at its zero value, as a caller
+		// that forgot it would.
+		zeroNow bool
+		assert  func(t *testing.T, d policy.Decision)
 	}
 
 	allows := func(t *testing.T, d policy.Decision) {
@@ -90,6 +93,17 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 			changedAt: loginAt.Add(-31 * day),
 			assert:    challengesForANewPassword,
 		},
+		{
+			// TestPasswordAge_ZeroNowStillChallengesStalePassword: a year-old
+			// password is not let through because the caller forgot the time.
+			name:      "a year-old password with no evaluation time is denied",
+			changedAt: loginAt.Add(-365 * day),
+			zeroNow:   true,
+			assert: func(t *testing.T, d policy.Decision) {
+				require.Equal(t, policy.Deny, d.Outcome, "a forgotten evaluation time let a stale password through")
+				require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -100,6 +114,9 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 			require.NoError(t, err)
 
 			in := &policy.Input{PasswordChangedAt: tc.changedAt, Now: loginAt}
+			if tc.zeroNow {
+				in.Now = time.Time{}
+			}
 			tc.assert(t, p.Evaluate(t.Context(), in))
 		})
 	}
