@@ -178,7 +178,7 @@ These five failure modes are implied by the spec but no single task's tests exer
 **Files:** `seal/aad.go:47`, `seal/mfa.go` (callers and `enrolmentFailed` at :276); test `seal/mfa_aad_test.go`
 
 **Interfaces:**
-- Produces: `func MFASecretAAD(user identity.UserID, gen id.ID) []byte`.
+- Produces: `func MFASecretAAD(gen id.ID, user identity.UserID) []byte`.
 
 - [ ] **Step 1: Write `TestSealedEnrolment_RefusesSecretRestoredFromEarlierGeneration`.** Seal a G1 secret, re-enrol as G2, copy the G1 ciphertext onto the row, then `Get`. Assert an error.
 - [ ] **Step 2: Run it.** Expected: `Get` succeeds.

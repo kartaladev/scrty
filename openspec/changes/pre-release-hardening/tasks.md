@@ -36,19 +36,19 @@
 
 ## 2. TOTP enrolment generations (lane D, D10)
 
-- [ ] 2.1 Change the MFA store port so `Confirm` and `AcceptStep` take the enrolment generation, and update every implementer, generated mock and suite fake together [L4, L5]. The implementers are memory, pgx, sqlstore, gorm, the sealing wrapper and `internal/pgschema/mfa.go`.
+- [x] 2.1 Change the MFA store port so `Confirm` and `AcceptStep` take the enrolment generation, and update every implementer, generated mock and suite fake together [L4, L5]. The implementers are memory, pgx, sqlstore, gorm, the sealing wrapper and `internal/pgschema/mfa.go`.
   - **Red tests:**
     - `TestConfirmEnrolment_NeverConfirmsASecretTheCodeWasNotFor`, where a store wrapper forces the interleaving;
     - `TestVerify_RefusesCodeOfARemovedSecretAfterReEnrolment`;
     - the storetest generation cases.
   - **Verify:** `go test -race -count=1 ./mfa/ ./seal/` and `(cd test && go test -race -count=1 ./storetest/... ./pgxstore/ ./sqlstore/ ./gormstore/)` pass.
-- [ ] 2.2 Require a whole-second TOTP period of at least one second, and wrap every `NewTOTP` and `NewVerifyThrottle` error in `ErrConfig` [L3].
+- [x] 2.2 Require a whole-second TOTP period of at least one second, and wrap every `NewTOTP` and `NewVerifyThrottle` error in `ErrConfig` [L3].
   - **Red tests:** `TestNewTOTP_RefusesSubSecondPeriod`, which panics on HEAD, and a table of constructor errors that are not identifiable as `ErrConfig`.
   - **Verify:** `go test -race -count=1 ./mfa/` passes.
-- [ ] 2.3 Bind the sealed TOTP secret to its generation in `seal.MFASecretAAD`, and change `seal/mfa.go`'s sentinel `==` to `errors.Is` [U3, U12].
+- [x] 2.3 Bind the sealed TOTP secret to its generation in `seal.MFASecretAAD`, and change `seal/mfa.go`'s sentinel `==` to `errors.Is` [U3, U12].
   - **Red test:** a G1 sealed secret restored onto a G2 enrolment opens.
   - **Verify:** `go test -race -count=1 ./seal/` and the sealed-column suite pass. The godoc states the re-enrolment break.
-- [ ] 2.4 Review (Opus) of group 2 against D10 and the `multi-factor-auth`, `security-state-stores`, `secrets-at-rest` and `store-conformance` deltas.
+- [x] 2.4 Review (Opus) of group 2 against D10 and the `multi-factor-auth`, `security-state-stores`, `secrets-at-rest` and `store-conformance` deltas.
   - **Verify:** the review is clean.
 
 ## 3. Atomic bounded issuance (lane E, D7; starts after groups 1 and 2)
@@ -88,10 +88,10 @@
     - `HEAD` on a marked `GET` route refused (`UNREPRODUCED` until this test fails on HEAD);
     - `POST /MFA/verify/totp` still not exempted.
   - **Verify:** `go test -race -count=1 -run 'Cooldown|Gate' ./httpsec/` passes.
-- [ ] 4.3 Set `Cache-Control: no-store` in the default login, magic-link, MFA verify, MFA begin and passkey login responders [L12].
+- [x] 4.3 Set `Cache-Control: no-store` in the default login, magic-link, MFA verify, MFA begin and passkey login responders [L12].
   - **Red test:** `TestFormLogin_DefaultResponseIsNotCacheable`, plus a table over each responder.
   - **Verify:** the table passes.
-- [ ] 4.4 Panic at wiring on a nil ownership checker or extractor in the core guards [L13]. Bound the OIDC authorize `next` at 2048 bytes before it reaches the broker [M10, httpsec part].
+- [x] 4.4 Panic at wiring on a nil ownership checker or extractor in the core guards [L13]. Bound the OIDC authorize `next` at 2048 bytes before it reaches the broker [M10, httpsec part].
   - **Red tests:** `TestOwnershipGuard_NilCheckerFailsClosedWithoutPanic`, rewritten to expect a wiring panic, and an over-long `next` test.
   - **Verify:** `go test -race -count=1 ./httpsec/` passes.
 - [ ] 4.5 Add the sentinels other lanes hand over (`ErrRotationRefused`, `ErrIssueLimitReached`, the did-not-settle error, the isolation refusal) to `status.go` where they map, and to `TestStatusForErrorCoversEverySentinel`.
@@ -129,7 +129,7 @@
 - [x] 6.2 Refuse NUL in bcrypt `Encode` and `Match`, subsuming the 72-byte padding guard [L9].
   - **Red test:** `TestBcryptMatch_RefusesNulJoinedRepetitionOfPassword`.
   - **Verify:** `go test -race -count=1 ./password/` passes, including the existing NUL-suffix test.
-- [ ] 6.3 Add the optional recognition interface to the three encoders, and spend exactly one discarded reference verification for a user with an empty or unrecognised hash [M2]. Fix the three fixtures that use hashless users with stub encoders.
+- [x] 6.3 Add the optional recognition interface to the three encoders, and spend exactly one discarded reference verification for a user with an empty or unrecognised hash [M2]. Fix the three fixtures that use hashless users with stub encoders.
   - **Red tests:**
     - `TestPasswordProvider_PasswordlessUserCostsSameAsUnknownUser`;
     - the unrecognised-hash case (`UNREPRODUCED` until it fails on HEAD);
@@ -141,7 +141,7 @@
 - [x] 6.5 Cap the OIDC password-claim cost band at 16 (identity-linking delta).
   - **Red test:** a band of 10 to 20 constructs.
   - **Verify:** `go test -race -count=1 ./oidc/` passes. The `oidc/passwordclaim.go` change is handed to lane J for this one function.
-- [ ] 6.6 Review of group 6 against D2, D3, D17 and the `password-encoding`, `authentication` and `identity-linking` deltas. 6.1, 6.2, 6.4 and 6.5 get Sonnet; 6.3 gets Opus.
+- [x] 6.6 Review of group 6 against D2, D3, D17 and the `password-encoding`, `authentication` and `identity-linking` deltas. 6.1, 6.2, 6.4 and 6.5 get Sonnet; 6.3 gets Opus.
   - **Verify:** the review is clean.
 
 ## 7. Recovery channels (lane G, D5, D6)

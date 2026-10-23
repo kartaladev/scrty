@@ -228,7 +228,7 @@ This keeps "no replacement for an algorithm that already has a stored key" true,
 
 **The log sampler (U5).** It caps keys per window at 100,000 (option) and counts overflow under one key, so suppression accounting stays exact.
 
-**The OIDC `next` (M10).** A requested destination over 2048 bytes is not recorded, and the login proceeds as if none was requested. Allowlist entries over 2048 bytes fail construction. The bound is fixed, because no allowlist entry can exceed it.
+**The OIDC `next` (M10).** A requested destination over 2048 bytes is not recorded, and the login proceeds as if none was requested. OIDC allowlist entries over 2048 bytes fail construction; the bound is an option of the shared allowlist that only the OIDC wiring sets, so other allowlists (magic link) stay unbounded. The bound is fixed, because no allowlist entry can exceed it.
 
 **Departure** for M8: the established default store never forgot.
 
