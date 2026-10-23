@@ -70,6 +70,19 @@
 // (a tracing plugin, for example) still run on every store statement, and see
 // its bound values. A consumer registering one owns what it records.
 //
+// # Read replicas
+//
+// Limit, stated: the stores read and write through whatever *gorm.DB they are
+// given, and do not choose a connection themselves. A read/write-splitting
+// plugin registered on that *gorm.DB (gorm's dbresolver, for example) can send
+// a store's reads to a replica that lags the primary. A read served from a
+// lagging replica can return state that has since changed: a session that was
+// revoked, a one-time credential already consumed, an API key already
+// disabled. A consumer using such a plugin must route the stores' statements to
+// the primary, for instance by giving the stores a *gorm.DB that is not
+// split, or by forcing the write connection for them. This module takes no
+// dependency on any such plugin and does not detect one.
+//
 // # Rate limiting
 //
 // There is no gorm-native shared rate limiter. A gorm consumer builds the

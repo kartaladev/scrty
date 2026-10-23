@@ -286,6 +286,26 @@ func TestNewGeneratorValidation(t *testing.T) {
 			assert: refused("positive"),
 		},
 		{
+			// Expiry is recorded in whole seconds, so a fractional lifetime
+			// would issue tokens that expire at an instant nobody asked for.
+			name:   "a sub-second lifetime",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithLifetime(500 * time.Millisecond)},
+			assert: refused("whole number of seconds"),
+		},
+		{
+			name:   "a lifetime that is not a whole number of seconds",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithLifetime(1500 * time.Millisecond)},
+			assert: refused("whole number of seconds"),
+		},
+		{
+			name:   "a one-second lifetime is accepted",
+			keys:   reporting,
+			opts:   []token.GenerateOption{token.WithLifetime(time.Second)},
+			assert: constructed,
+		},
+		{
 			name:   "a lifetime that outlives the key",
 			keys:   reporting,
 			opts:   []token.GenerateOption{token.WithLifetime(24 * time.Hour)},

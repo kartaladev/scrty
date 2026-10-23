@@ -108,6 +108,19 @@ func TestSMTPSenderEncoding(t *testing.T) {
 			},
 		},
 		{
+			name: "a line starting with a dot after CR normalisation is dot-stuffed on the wire",
+			msg: notify.Message{
+				To:       "ada@example.com",
+				Subject:  "Sign in",
+				TextBody: "hello\r.\rMAIL FROM",
+			},
+			assert: func(t *testing.T, data string) {
+				// The scripted server records the transfer as sent, so the
+				// stuffed dot is visible and the lone "." never ends the data.
+				assert.Contains(t, data, "hello\r\n..\r\nMAIL FROM")
+			},
+		},
+		{
 			name: "the content type names UTF-8 plain text",
 			msg: notify.Message{
 				To:       "ada@example.com",

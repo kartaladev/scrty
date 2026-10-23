@@ -106,9 +106,10 @@ func WithAudience(aud string) GenerateOption { return GenerateOption(setAudience
 
 // WithLifetime sets how long an issued token is valid. Default: 15 minutes.
 //
-// A lifetime of zero or less fails construction, and so does one longer than
-// the window a key source that reports its own lifetimes can cover, because a
-// token must not outlive the key that signed it.
+// A lifetime below one second, or not a whole number of seconds, fails
+// construction, because expiry is recorded in whole seconds. So does one
+// longer than the window a key source that reports its own lifetimes can
+// cover, because a token must not outlive the key that signed it.
 func WithLifetime(d time.Duration) GenerateOption {
 	return func(c *config) { c.lifetime = d }
 }
@@ -259,6 +260,13 @@ func (c *config) validate() error {
 func (c *config) validateLifetime() error {
 	if c.lifetime <= 0 {
 		return fmt.Errorf("%w: lifetime must be positive, got %s", ErrConfig, c.lifetime)
+	}
+
+	// Expiry is recorded in whole seconds, so a fractional lifetime would issue
+	// tokens that expire at an instant the consumer did not ask for.
+	if c.lifetime%time.Second != 0 {
+		return fmt.Errorf("%w: lifetime must be a whole number of seconds, at least 1s, got %s",
+			ErrConfig, c.lifetime)
 	}
 
 	// A key source that reports its own lifetimes lets the cap be checked here.

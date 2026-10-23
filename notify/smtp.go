@@ -317,8 +317,14 @@ func build(from string, msg Message) []byte {
 	return b.Bytes()
 }
 
-// normalizeCRLF turns every bare LF into CRLF, leaving existing CRLF pairs
-// alone so a body that already uses them is not doubled.
+// normalizeCRLF turns every line ending into one CRLF: CRLF, a bare LF and a
+// bare CR alike. A bare CR must not reach the transfer, because servers differ
+// on whether it ends a line, and a body such as "\r.\r" would then end the data
+// on one and not on another (RFC 5321 section 2.3.8). A body that already uses
+// CRLF is not doubled.
 func normalizeCRLF(s string) string {
-	return strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\n", "\r\n")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
+	return strings.ReplaceAll(s, "\n", "\r\n")
 }
