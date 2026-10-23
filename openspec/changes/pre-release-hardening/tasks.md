@@ -59,18 +59,18 @@
 - [x] 3.2 Move magic-link request and recovery start onto `IssueWithin` [L6].
   - **Red test:** `TestRequest_ConcurrentBurstStaysWithinIssuanceLimit` (20 against 5), plus the recovery-start twin.
   - **Verify:** `go test -race -count=1 ./magiclink/ ./recovery/` passes.
-- [ ] 3.3 Move MFA begin onto `IssueWithin` [N2]. This edits only the call site in `httpsec/mfabegin.go`, handed over from lane A for this one function, and starts after group 4 because 4.3 edits the same file. Also reset `sweepClock.claim` on a backwards clock step.
+- [x] 3.3 Move MFA begin onto `IssueWithin` [N2]. This edits only the call site in `httpsec/mfabegin.go`, handed over from lane A for this one function, and starts after group 4 because 4.3 edits the same file. Also reset `sweepClock.claim` on a backwards clock step.
   - **Red test:** `TestMFABegin_ConcurrentBeginsDoNotExceedChallengeLimit` (12 against 3), and a backwards-clock sweep test.
   - **Verify:** `go test -race -count=1 -run 'MFABegin' ./httpsec/` passes.
-- [ ] 3.4 Add `passkey.CredentialStore.InsertWithin`, implemented on every backend, and move the passkey finish and registration begin onto the bounded calls [L7, passkey begin].
+- [x] 3.4 Add `passkey.CredentialStore.InsertWithin`, implemented on every backend, and move the passkey finish and registration begin onto the bounded calls [L7, passkey begin].
   - **Red test:** `TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit` (4 finishes against a limit of 1), plus the begin twin.
   - **Verify:** `go test -race -count=1 ./passkey/` and the passkey storetest race cases pass on all backends.
-- [ ] 3.5 Refuse a backed-up state without backup eligibility in the `passkey` core, for registration and assertion [L8].
+- [x] 3.5 Refuse a backed-up state without backup eligibility in the `passkey` core, for registration and assertion [L8].
   - **Red tests:** the two `BackupStateWithoutBackupEligible` tests.
   - **Verify:** `go test -race -count=1 ./passkey/...` passes.
 - [x] 3.6 Register `ErrIssueLimitReached` in the sentinel registry, through lane A's owner, and update the race-suite docs.
   - **Verify:** `go test -count=1 -run TestStatusForErrorCoversEverySentinel ./httpsec/` passes.
-- [ ] 3.7 Review (Opus) of group 3 against D7 and the `one-time-tokens`, `magic-link`, `account-recovery`, `multi-factor-auth`, `passkey-authentication`, `security-state-stores` and `store-conformance` deltas.
+- [x] 3.7 Review (Opus) of group 3 against D7 and the `one-time-tokens`, `magic-link`, `account-recovery`, `multi-factor-auth`, `passkey-authentication`, `security-state-stores` and `store-conformance` deltas.
   - **Verify:** the review is clean.
 
 ## 4. httpsec identity, cool-down and responses (lane A, D1, D4, D14, D15)
