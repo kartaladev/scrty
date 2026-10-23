@@ -30,6 +30,15 @@
 // logging or metrics, therefore goes before the chain, where it still observes
 // the response the chain wrote on the way back out.
 //
+// # Request cancellation
+//
+// The chain runs on a context derived from fiber's request context, which ends
+// when Middleware's handler returns, as net/http's request context ends when
+// ServeHTTP returns. On fiber a mid-request client disconnect is not detected:
+// fasthttp's RequestCtx.Done() fires only at server shutdown, so the chain's
+// context ends when the request's handling ends, not earlier. fiber's own
+// request context is never cancelled or replaced for code outside the chain.
+//
 // # Refusals
 //
 // A refused request returns a RefusalError from the chain's handler, so fiber's

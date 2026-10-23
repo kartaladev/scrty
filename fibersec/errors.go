@@ -1,6 +1,7 @@
 package fibersec
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gofiber/fiber/v3"
@@ -48,6 +49,10 @@ func newRefusal(err error) error {
 //
 //	app := fiber.New(fiber.Config{ErrorHandler: fibersec.ErrorHandler})
 //
+// An error that carries a fiber status and is not a refusal, such as a route's
+// own fiber.NewError(422, ...) or the router's 404, is answered with that
+// status, so the handler can stand as the app's only one.
+//
 // Default: without it, fiber's built-in handler answers the same status but
 // writes the status text as the body, because fiber owns that handler and this
 // library cannot make it write nothing. Either way no refusal's own text
@@ -58,6 +63,18 @@ func newRefusal(err error) error {
 // rendered body writes their own handler and calls MapError, or reads the
 // refusal with errors.Is and errors.As and renders from that.
 func ErrorHandler(c fiber.Ctx, err error) error {
+	var refusal *RefusalError
+
+	// An error carrying a fiber status that is not a refusal — a route's own
+	// 422, the router's 404 — keeps that status. A refusal wraps one too, but
+	// it is answered with the status the chain mapped.
+	var fe *fiber.Error
+	if !errors.As(err, &refusal) && errors.As(err, &fe) {
+		c.Status(fe.Code)
+
+		return nil
+	}
+
 	c.Status(httpsec.StatusForError(err))
 
 	return nil
