@@ -92,8 +92,8 @@ func TestMFABegin_ConcurrentBeginsDoNotExceedChallengeLimit(t *testing.T) {
 
 	var issued, throttled int
 	for _, out := range outs {
-		switch {
-		case out.err == nil:
+		switch out.err {
+		case nil:
 			assert.Equal(t, http.StatusOK, out.rec.Code)
 			issued++
 		default:

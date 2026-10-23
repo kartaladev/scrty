@@ -408,7 +408,7 @@ func TestBackend_RecordFailure(t *testing.T) {
 				c.Unavailable.Timeout = 400 * time.Millisecond
 				return c
 			},
-			script: func(ctrl *gomock.Controller, r *MockRunner) {
+			script: func(_ *gomock.Controller, r *MockRunner) {
 				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRecord,
 					backendNamespace, pgschema.LimiterKey("k"), backendLimit, backendWindowUS, testNow, "400ms").
 					Return(nil)
@@ -417,7 +417,7 @@ func TestBackend_RecordFailure(t *testing.T) {
 		},
 		{
 			name: "the database clock is a nil now", prefix: "sqlstore",
-			script: func(ctrl *gomock.Controller, r *MockRunner) {
+			script: func(_ *gomock.Controller, r *MockRunner) {
 				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRecord,
 					backendNamespace, pgschema.LimiterKey("k"), backendLimit, backendWindowUS, gomock.Nil(), "250ms").
 					Return(nil)

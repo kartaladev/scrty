@@ -63,6 +63,9 @@ func (f *faults) err(op string) error {
 	return f.errs[op]
 }
 
+// armed reports whether op is set to fail, without handing back its error.
+func (f *faults) armed(op string) bool { return f.err(op) != nil }
+
 // faultyCodeStore is a saved-code store that fails on demand.
 type faultyCodeStore struct {
 	recovery.CodeStore
@@ -147,7 +150,7 @@ func (s faultyRecordStore) Find(ctx context.Context, rid id.ID) (*recovery.Recor
 	if err := s.f.err(faultRecordsFind); err != nil {
 		return nil, err
 	}
-	if s.f.err(faultRecordsFindNil) != nil {
+	if s.f.armed(faultRecordsFindNil) {
 		return nil, nil //nolint:nilnil // the fault is a store answering no record and no error
 	}
 

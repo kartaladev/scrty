@@ -56,7 +56,7 @@ FROM passkey_credentials WHERE user_id = $1 ORDER BY created_at, id`
 	// one-time locks' keys. Two callers may still share a lock when their keys
 	// hash alike, or when a recovery-code lock's unprefixed user reference
 	// spells this key; either only serialises them.
-	PasskeyCredentialLockUser = `SELECT pg_advisory_xact_lock(hashtextextended('passkey:' || $1::text, 0))`
+	PasskeyCredentialLockUser = `SELECT pg_advisory_xact_lock(hashtextextended('passkey:' || $1::text, 0))` //nolint:gosec // G101: SQL text, not a credential
 
 	// PasskeyCredentialCount counts user $1's credentials in every state.
 	PasskeyCredentialCount = `SELECT count(*) FROM passkey_credentials WHERE user_id = $1` //nolint:gosec // G101: SQL text, not a credential

@@ -6,6 +6,7 @@ package passkey_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,7 +126,7 @@ func TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit(t *testing.
 
 	errs := race(racers, func(i int) error {
 		_, err := m.FinishRegistration(t.Context(), s,
-			regBody(challenges[i], "cred-"+string(rune('a'+i)), ""), passkey.RegistrationContext{})
+			regBody(challenges[i], "cred-"+strconv.Itoa(i), ""), passkey.RegistrationContext{})
 
 		return err
 	})
@@ -277,7 +278,7 @@ func TestFinishRegistration_RefusedFinishLeavesStoredFinishsCodesWorking(t *test
 	errs := race(len(challenges), func(i int) error {
 		var err error
 		results[i], err = m.FinishRegistration(t.Context(), s,
-			regBody(challenges[i], "cred-"+string(rune('a'+i)), ""), passkey.RegistrationContext{})
+			regBody(challenges[i], "cred-"+strconv.Itoa(i), ""), passkey.RegistrationContext{})
 
 		return err
 	})
@@ -430,7 +431,7 @@ func TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey(t *testing
 
 				var err error
 				results[i], err = e.m.FinishRegistration(ctx, e.s,
-					regBody(challenges[i], "cred-"+string(rune('a'+i)), ""), tc.rc)
+					regBody(challenges[i], "cred-"+strconv.Itoa(i), ""), tc.rc)
 
 				return err
 			})

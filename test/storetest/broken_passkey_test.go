@@ -54,13 +54,13 @@ const (
 	credDeleteAwaitingAll    credDefect = "delete-awaiting-all-users"
 	// A bounded insert counts, lets go of the lock, and then inserts, so
 	// racers for one user all read the same count and all store.
-	credBoundedCountsThenInserts credDefect = "bounded-counts-then-inserts"
+	credBoundedCountsThenInserts credDefect = "bounded-counts-then-inserts" //nolint:gosec // G101: a fixture string, not a credential
 	// A bounded insert at the limit reports the refusal but stores the
 	// credential.
-	credBoundedWritesRefused credDefect = "bounded-writes-refused"
+	credBoundedWritesRefused credDefect = "bounded-writes-refused" //nolint:gosec // G101: a fixture string, not a credential
 	// A bounded insert counts every user's credentials, so one user's
 	// passkeys use up another's allowance.
-	credBoundedCountsEveryUser credDefect = "bounded-counts-every-user"
+	credBoundedCountsEveryUser credDefect = "bounded-counts-every-user" //nolint:gosec // G101: a fixture string, not a credential
 )
 
 // credTable is the state the instances of one fake credential store share,
