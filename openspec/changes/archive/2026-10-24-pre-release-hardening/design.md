@@ -159,9 +159,9 @@ Limits that remain:
 
 ### 8. Stores pin READ COMMITTED, and refuse a caller's stronger transaction where it matters (M7, S4, S5, U2)
 
-- **Store-owned transactions.** Every transaction a store opens runs `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` as its first statement.
+- **Store-owned transactions.** Every transaction a store opens begins at READ COMMITTED, the isolation carried in the `BEGIN` itself (`pgx.TxOptions`, `sql.TxOptions`, gorm `Begin` with `sql.TxOptions`).
   - This covers identity, session supersede, recovery-code replace and the bounded inserts, in `pgx`, `sqlstore` and `gorm`.
-  - A statement rather than a `TxOptions` field, so the `pgx` `base` interface (pool or tx) need not widen and the three drivers share one shape.
+  - Revised after the PR review (user decision, 2026-10-24): the first implementation sent a separate `SET TRANSACTION` statement, which cost a round trip on every store-owned transaction, the limiter record included. Each backend begins on its concrete pool or handle, so no interface had to widen. A `database/sql` driver must implement `driver.ConnBeginTx` to honour the level; the PostgreSQL drivers do.
 - **Autocommit statements.** `StreakAdd` and the PostgreSQL limiter record each run in their own READ COMMITTED transaction. An autocommit statement inherits the session default.
 - **Inside a caller's transaction.** An operation whose guarantee depends on READ COMMITTED reads `current_setting('transaction_isolation')` once, in its savepoint (in the caller's transaction directly for `StreakAdd` and the bounded inserts, which take none: a failed statement there aborts the caller's transaction, as any failed statement in it does), and refuses with an error naming the level when it is stronger. That covers recovery-code replace, the bounded inserts and `StreakAdd`. The error matches `storeerr.ErrIsolationTooStrong` on every backend: a new public root-module package `storeerr` holds it, and each backend's own name is an alias (user decision, 2026-10-23), so `httpsec` and a consumer can match it whichever backend runs, since `pgx` and `gorm` are separate modules.
   - **Why not degrade silently:** the recovery-code case keeps both sets with no error.
