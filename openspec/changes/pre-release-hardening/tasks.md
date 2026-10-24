@@ -238,11 +238,11 @@
   - the email-pairing refusal;
   - the cool-down over-match.
   - **Verify:** every **BREAKING** item in `proposal.md` has an entry.
-- [ ] 11.2 Run `make check` on PostgreSQL 18, and the `test` module on PostgreSQL 15, plus `golangci-lint run ./...`, `govulncheck ./...` and `gofmt -l .` in every module.
+- [x] 11.2 Run `make check` on PostgreSQL 18, and the `test` module on PostgreSQL 15, plus `golangci-lint run ./...`, `govulncheck ./...` and `gofmt -l .` in every module.
   - **Verify:** all are green, with the outputs kept.
-- [ ] 11.3 Rerun every audit and sweep reproduction (`audit_*` and `sweep_*` tests in the scratch exports) against the branch.
+- [x] 11.3 Rerun every audit and sweep reproduction (`audit_*` and `sweep_*` tests in the scratch exports) against the branch.
   - **Verify:** each now passes, or is recorded as dropped because it was `UNREPRODUCED` and its red test passed on HEAD.
-- [ ] 11.4 Run a whole-branch review (Opus) against every requirement in the change's delta specs and every decision in `design.md`, then `openspec validate pre-release-hardening --strict`.
+- [x] 11.4 Run a whole-branch review (Opus) against every requirement in the change's delta specs and every decision in `design.md`, then `openspec validate pre-release-hardening --strict`.
   - **Verify:** both are clean.
 
 ## Workflow follow-up
