@@ -34,6 +34,9 @@ type hold struct {
 	// until maps a key to the instant its hold ends.
 	until   map[string]time.Time
 	sweptAt time.Time
+	// fullSweptAt is when a full set last swept to make room, zero before the
+	// first. It paces that sweep apart from sweptAt's.
+	fullSweptAt time.Time
 	// seenAt is the time of the latest call, so a step backwards is told from the
 	// clock merely running behind a sweep.
 	seenAt time.Time
@@ -90,12 +93,48 @@ func (h *hold) add(key string) {
 	current, ok := h.until[key]
 	switch {
 	case ok && !end.After(current):
-	case !ok && len(h.until) >= h.maxKeys:
+	case !ok && !h.roomLocked(now):
 		if end.After(h.fullUntil) {
 			h.fullUntil = end
 		}
 	default:
 		h.until[key] = end
+	}
+}
+
+// fullSweepInterval is the most often a full set sweeps again to make room, so
+// a spray of distinct keys cannot make every add a scan of the whole set.
+const fullSweepInterval = time.Minute
+
+// roomLocked reports whether the set can take one more key. A full set first
+// drops its ended holds, which the once-per-window sweep may not have reached,
+// and is full only if it is still at the cap. That sweep runs at most once per
+// fullSweepInterval, or per window when that is shorter, so the cost of a spray
+// stays one scan per interval; between scans a genuinely full set fails closed.
+func (h *hold) roomLocked(now time.Time) bool {
+	if len(h.until) < h.maxKeys {
+		return true
+	}
+
+	// A clock stepped back re-arms the pacing from now rather than waiting for
+	// the clock to catch up.
+	if now.Before(h.fullSweptAt) {
+		h.fullSweptAt = now
+	}
+	if h.fullSweptAt.IsZero() || now.Sub(h.fullSweptAt) >= min(fullSweepInterval, h.window) {
+		h.pruneLocked(now)
+		h.fullSweptAt = now
+	}
+
+	return len(h.until) < h.maxKeys
+}
+
+// pruneLocked drops the holds that have ended by now.
+func (h *hold) pruneLocked(now time.Time) {
+	for key, end := range h.until {
+		if !now.Before(end) {
+			delete(h.until, key)
+		}
 	}
 }
 
@@ -155,10 +194,6 @@ func (h *hold) sweepLocked(now time.Time) {
 		return
 	}
 
-	for key, end := range h.until {
-		if !now.Before(end) {
-			delete(h.until, key)
-		}
-	}
+	h.pruneLocked(now)
 	h.sweptAt = now
 }

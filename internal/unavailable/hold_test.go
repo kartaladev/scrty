@@ -150,3 +150,71 @@ func TestHold_ReleasesEndedHoldsWhenClockStepsBackwards(t *testing.T) {
 	assert.False(t, held, "an ended hold answered exceeded again after the clock stepped back")
 	assert.Equal(t, 0, unavailable.HeldLen(h.limiter), "ended holds were not released after the clock stepped back")
 }
+
+// TestHold_SweepsEndedHoldsBeforeDeclaringItselfFull covers the full check: holds
+// that have ended but are not yet swept must not count towards the cap, so the
+// refusal of every key does not start while fewer than the cap are live.
+func TestHold_SweepsEndedHoldsBeforeDeclaringItselfFull(t *testing.T) {
+	t.Parallel()
+
+	const capKeys = 5
+
+	tests := []struct {
+		name    string
+		arrange func(t *testing.T, h *harness)
+		assert  func(t *testing.T, h *harness)
+	}{
+		{
+			name: "ended holds waiting for the sweep make room",
+			arrange: func(t *testing.T, h *harness) {
+				h.clock.Advance(testWindow / 2)
+				for i := range capKeys - 1 {
+					h.recordN(t, "old-"+strconv.Itoa(i), 1)
+				}
+				// Runs the sweep that is due, so the next is a window away.
+				h.clock.Advance(testWindow / 2)
+				_, _ = h.limiter.Exceeded(t.Context(), "probe")
+				// The old holds have ended; no sweep is due.
+				h.clock.Advance(testWindow * 6 / 10)
+				for i := range capKeys {
+					h.recordN(t, "new-"+strconv.Itoa(i), 1)
+				}
+			},
+			assert: func(t *testing.T, h *harness) {
+				// A successful probe closes the breaker, so only the hold can refuse.
+				h.clock.Advance(defaultInterval)
+				_, err := h.limiter.Exceeded(t.Context(), otherKey)
+				require.NoError(t, err)
+
+				exceeded, err := h.limiter.Exceeded(t.Context(), "never-failed")
+				require.NoError(t, err)
+				assert.False(t, exceeded, "every key was refused with fewer than the cap of holds live")
+				assert.Equal(t, capKeys, unavailable.HeldLen(h.limiter))
+			},
+		},
+		{
+			name: "a hold set of live holds is still full",
+			arrange: func(t *testing.T, h *harness) {
+				for i := range capKeys + 1 {
+					h.recordN(t, "live-"+strconv.Itoa(i), 1)
+				}
+			},
+			assert: func(t *testing.T, h *harness) {
+				exceeded, err := h.limiter.Exceeded(t.Context(), "never-failed")
+				refusedUnavailable(t, exceeded, err)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHarness(t, ratelimit.UnavailableRefuse)
+			unavailable.SetHoldCap(h.limiter, capKeys)
+			h.writesFailReadsSucceed()
+			tt.arrange(t, h)
+			tt.assert(t, h)
+		})
+	}
+}
