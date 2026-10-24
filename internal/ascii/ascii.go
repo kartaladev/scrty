@@ -22,18 +22,18 @@ const space = " \t\n\v\f\r"
 // ToLower returns s with the letters A-Z folded to a-z and every other byte
 // unchanged. It returns s itself when there is nothing to fold.
 func ToLower(s string) string {
-	return shift(s, 'A', 'Z', 'a'-'A')
+	return flipCase(s, 'A', 'Z')
 }
 
 // ToUpper returns s with the letters a-z folded to A-Z and every other byte
 // unchanged. It returns s itself when there is nothing to fold.
 func ToUpper(s string) string {
-	return shift(s, 'a', 'z', -('a' - 'A'))
+	return flipCase(s, 'a', 'z')
 }
 
-// shift moves every byte in [lo, hi] by delta, allocating only once a byte in
-// range is found.
-func shift(s string, lo, hi byte, delta int) string {
+// flipCase flips the case bit (0x20) of every byte in [lo, hi], an ASCII
+// letter range, allocating only once a byte in range is found.
+func flipCase(s string, lo, hi byte) string {
 	for i := range len(s) {
 		if s[i] < lo || s[i] > hi {
 			continue
@@ -42,7 +42,7 @@ func shift(s string, lo, hi byte, delta int) string {
 		b := []byte(s)
 		for j := i; j < len(b); j++ {
 			if b[j] >= lo && b[j] <= hi {
-				b[j] = byte(int(b[j]) + delta)
+				b[j] ^= 0x20
 			}
 		}
 
