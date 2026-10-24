@@ -33,6 +33,12 @@ func (stubConn) Prepare(string) (driver.Stmt, error) {
 func (stubConn) Close() error              { return nil }
 func (stubConn) Begin() (driver.Tx, error) { return stubTx{}, nil }
 
+// BeginTx begins a stubTx at any isolation, as a PostgreSQL driver does: the
+// stores begin their own transactions at READ COMMITTED.
+func (stubConn) BeginTx(context.Context, driver.TxOptions) (driver.Tx, error) {
+	return stubTx{}, nil
+}
+
 // stubTx is a transaction of stubConn: its statements run as stubConn's do,
 // and committing or rolling it back always succeeds.
 type stubTx struct{}
@@ -51,6 +57,7 @@ func (stubConn) QueryContext(context.Context, string, []driver.NamedValue) (driv
 var (
 	_ driver.ExecerContext  = stubConn{}
 	_ driver.QueryerContext = stubConn{}
+	_ driver.ConnBeginTx    = stubConn{}
 )
 
 // stubDB opens a *sql.DB over stubDriver, through a connector so no driver

@@ -554,8 +554,8 @@ func TestNewRecoveryRecordStore(t *testing.T) {
 // TestRecoveryStores_Statements pins the statements the recovery stores'
 // single-statement operations send, a refused one included: exactly one
 // conditional write or read, no SELECT before a write and no BEGIN of gorm's
-// default transaction. A replacement runs in a transaction of its own, set
-// to READ COMMITTED first and serialized per user by an advisory lock: it
+// default transaction. A replacement runs in a transaction of its own, begun
+// at READ COMMITTED and serialized per user by an advisory lock: it
 // removes the user's codes and inserts each new one, then commits.
 func TestRecoveryStores_Statements(t *testing.T) {
 	t.Parallel()
@@ -612,8 +612,7 @@ func TestRecoveryStores_Statements(t *testing.T) {
 			name: "replacement",
 			run:  func(ctx context.Context) error { return codes.ReplaceSet(ctx, user+"-other", hashes, recoveryAt) },
 			expect: []string{
-				"BEGIN",
-				"SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+				beginReadCommittedStmt,
 				"SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
 				`DELETE FROM "recovery_codes" WHERE user_id = $1`,
 				`INSERT INTO "recovery_codes" ("id","user_id","code_hash","created_at","spent_at") VALUES ($1,$2,$3,$4,$5) ON CONFLICT ("user_id","code_hash") DO NOTHING`,

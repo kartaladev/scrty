@@ -40,9 +40,9 @@ type Runner interface {
 	// Exec runs a statement that returns no rows, and reports its Result.
 	Exec(ctx context.Context, sql string, args ...any) (Result, error)
 	// ExecReadCommitted runs a statement that returns no rows as the only
-	// statement of a transaction of its own, set to READ COMMITTED by
-	// pgschema.SetReadCommitted first, whatever the database's default
-	// isolation is, and commits it.
+	// statement of a transaction of its own, begun at READ COMMITTED (the
+	// isolation carried in the BEGIN, not a statement of its own), whatever
+	// the database's default isolation is, and commits it.
 	ExecReadCommitted(ctx context.Context, sql string, args ...any) error
 	// QueryRow runs a statement that returns at most one row. Its error, if
 	// any, is reported by the row's Scan.

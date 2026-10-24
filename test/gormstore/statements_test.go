@@ -85,15 +85,27 @@ func (p *recordingPool) QueryRowContext(ctx context.Context, query string, args 
 }
 
 // BeginTx makes recordingPool a gorm.ConnPoolBeginner: the transaction it
-// returns records its statements, and its end, to the same pool.
+// returns records its statements, and its end, to the same pool. The BEGIN
+// is recorded with the isolation opts asks for, as the driver sends it, so a
+// transaction begun at READ COMMITTED reads "BEGIN ISOLATION LEVEL READ
+// COMMITTED".
 func (p *recordingPool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gormdb.ConnPool, error) {
-	p.record("BEGIN")
+	p.record(beginStmt(opts))
 	tx, err := p.db.BeginTx(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
 	return &recordingTx{pool: p, tx: tx}, nil
+}
+
+// beginStmt is the BEGIN a transaction begun with opts is recorded as.
+func beginStmt(opts *sql.TxOptions) string {
+	if opts == nil || opts.Isolation == sql.LevelDefault {
+		return "BEGIN"
+	}
+
+	return "BEGIN ISOLATION LEVEL " + strings.ToUpper(opts.Isolation.String())
 }
 
 // recordingTx is a transaction recordingPool began: every statement gorm runs
@@ -330,12 +342,12 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`DELETE FROM "login_attempts" WHERE attempted_at < $1`)},
 		{name: "streak add of a new streak", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring2(s.attempts.AddStreakFailure(ctx, "stmt-streak-new", now, now.Add(-time.Hour), 5))
-		}), assert: statements(nil, "BEGIN", setReadCommittedStmt, streakAddStmt, "COMMIT")},
+		}), assert: statements(nil, beginReadCommittedStmt, streakAddStmt, "COMMIT")},
 		{name: "streak add to a stored streak", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, ignoring2(seed.attempts.AddStreakFailure(ctx, "stmt-streak-old", now, now.Add(-time.Hour), 5)))
 			started()
 			return ignoring2(counted.attempts.AddStreakFailure(ctx, "stmt-streak-old", now, now.Add(-time.Hour), 5))
-		}, assert: statements(nil, "BEGIN", setReadCommittedStmt, streakAddStmt, "COMMIT")},
+		}, assert: statements(nil, beginReadCommittedStmt, streakAddStmt, "COMMIT")},
 		{name: "streak read", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.FailureStreak(ctx, "stmt-streak-read", now.Add(-time.Hour)))
 		}), assert: one(`SELECT failures, newest_failure_at, held_at FROM login_failure_streaks WHERE username = $1 AND (held_at IS NOT NULL OR newest_failure_at > $2)`)},
@@ -573,10 +585,10 @@ const (
 	verifyChargeStmt = `UPDATE mfa_enrolments SET verify_attempts = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN 1 ELSE verify_attempts + 1 END, verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN $3 ELSE verify_window_until END WHERE user_id = $1 AND confirmed_at IS NOT NULL AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4) RETURNING verify_window_until`
 	// streakAddStmt is the streak upsert, whitespace collapsed: one statement
 	// whether it creates the streak or advances a stored one. It runs in a
-	// transaction of the store's own, set to READ COMMITTED first.
-	streakAddStmt        = `WITH prev AS ( SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
-	setReadCommittedStmt = `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`
-	verifyRefundStmt     = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
+	// transaction of the store's own, begun at READ COMMITTED.
+	streakAddStmt          = `WITH prev AS ( SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
+	beginReadCommittedStmt = `BEGIN ISOLATION LEVEL READ COMMITTED`
+	verifyRefundStmt       = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 )
 
 // proofs is s's enrolment store as the enrolment path's port.

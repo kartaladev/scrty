@@ -25,12 +25,11 @@ import (
 // runs these operations outside that transaction.
 var ErrIsolationTooStrong = storeerr.ErrIsolationTooStrong
 
-// beginReadCommitted begins a transaction of the store's own on its pool and
-// sets it to READ COMMITTED as its first statement, whatever the database's
-// or the role's default isolation is. A statement rather than
-// pgx.TxOptions, so every backend's stores share one shape. When the
-// statement fails, the transaction is rolled back and the error returned
-// as the driver gave it.
+// beginReadCommitted begins a transaction of the store's own on its pool at
+// READ COMMITTED, whatever the database's or the role's default isolation is.
+// The isolation travels in the BEGIN itself (BEGIN ISOLATION LEVEL READ
+// COMMITTED), so setting it costs no round trip of its own. A failure to
+// begin is returned as the driver gave it.
 func (c *config) beginReadCommitted(ctx context.Context) (pgxv5.Tx, error) {
 	return beginReadCommitted(ctx, c.base)
 }
@@ -38,16 +37,7 @@ func (c *config) beginReadCommitted(ctx context.Context) (pgxv5.Tx, error) {
 // beginReadCommitted is config.beginReadCommitted on pool, for the limiter,
 // which has no store config.
 func beginReadCommitted(ctx context.Context, pool *pgxpool.Pool) (pgxv5.Tx, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(ctx, pgschema.SetReadCommitted); err != nil {
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		return nil, err
-	}
-
-	return tx, nil
+	return pool.BeginTx(ctx, pgxv5.TxOptions{IsoLevel: pgxv5.ReadCommitted})
 }
 
 // readCommitted runs fn in a READ COMMITTED transaction of the store's own,

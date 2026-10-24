@@ -172,7 +172,7 @@ func (s *OneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, sinc
 			return err
 		}
 		if tag.RowsAffected() == 0 {
-			return errIdentifierInUse
+			return storekit.ErrIdentifierInUse
 		}
 		stored = true
 
@@ -213,10 +213,6 @@ func (s *OneTimeStore) DeleteExpiredBefore(ctx context.Context, purpose string, 
 
 	return int(n), err
 }
-
-// errIdentifierInUse is why a bounded insert of an identifier already stored
-// fails.
-var errIdentifierInUse = errors.New("the identifier is already in use")
 
 var (
 	_ onetime.Store  = (*OneTimeStore)(nil)

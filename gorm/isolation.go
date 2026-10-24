@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	gormdb "gorm.io/gorm"
@@ -25,25 +26,23 @@ import (
 var ErrIsolationTooStrong = storeerr.ErrIsolationTooStrong
 
 // beginReadCommitted begins a transaction of the store's own on db, a session
-// on the store's *gorm.DB carrying the call's context, and sets it to READ
-// COMMITTED as its first statement, whatever the database's or the role's
-// default isolation is. A statement rather than sql.TxOptions, so every
-// backend's stores share one shape. The statement runs as the savepoint
-// statements do, bypassing a prepared-statement connection. When it fails,
-// the transaction is rolled back and the error returned as the driver gave
-// it.
+// on the store's *gorm.DB carrying the call's context, at READ COMMITTED,
+// whatever the database's or the role's default isolation is. The isolation
+// travels in the BEGIN itself (the driver sends BEGIN ISOLATION LEVEL READ
+// COMMITTED), so setting it costs no round trip of its own. A failure to
+// begin is returned as the driver gave it.
 func beginReadCommitted(ctx context.Context, db *gormdb.DB) (*gormdb.DB, error) {
-	tx := db.Begin()
+	tx := db.WithContext(ctx).Begin(readCommittedTx)
 	if tx.Error != nil {
 		return nil, tx.Error
-	}
-	if err := savepointSession(ctx, tx).Exec(pgschema.SetReadCommitted).Error; err != nil {
-		tx.Rollback()
-		return nil, err
 	}
 
 	return tx, nil
 }
+
+// readCommittedTx are the options every transaction a store begins for
+// itself is begun with.
+var readCommittedTx = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 
 // readCommitted runs fn in a READ COMMITTED transaction of the store's own,
 // begun on db by beginReadCommitted, and commits it when fn succeeds. It is

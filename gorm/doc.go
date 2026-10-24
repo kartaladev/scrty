@@ -52,8 +52,8 @@
 // unexpected reason aborts that transaction, as PostgreSQL defines, a read
 // (for example one cancelled by a statement timeout) as much as a write.
 //
-// Isolation: every transaction a store begins for itself runs SET TRANSACTION
-// ISOLATION LEVEL READ COMMITTED first, and AddStreakFailure runs in a READ
+// Isolation: every transaction a store begins for itself is begun at READ
+// COMMITTED, the isolation carried in its BEGIN, and AddStreakFailure runs in a READ
 // COMMITTED transaction of its own, so
 // the stores' guarantees hold whatever default_transaction_isolation the
 // database or the role sets. Inside a caller's transaction,

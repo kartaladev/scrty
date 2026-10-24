@@ -365,9 +365,9 @@ func (s *sessionStore) DeleteByUser(ctx context.Context, user identity.UserID) e
 		return nil
 	}
 
-	_, err := untilSettled("delete user's sessions", func() (int, error) {
+	_, err := storekit.UntilSettled("delete user's sessions", func() (int, error) {
 		return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions", "user_id = ?", string(user))
-	})
+	}, failed)
 
 	return err
 }
@@ -408,13 +408,13 @@ func (s *sessionStore) DeleteByUserExcept(ctx context.Context, user identity.Use
 	}
 	digest := storekit.SessionDigest(keep)
 
-	return untilSettled(op, func() (int, error) {
+	return storekit.UntilSettled(op, func() (int, error) {
 		res := q.Exec(pgschema.SessionDeleteByUserExcept, string(user), digest)
 		if res.Error != nil {
 			return 0, failed(op, res.Error)
 		}
 		return int(res.RowsAffected), nil
-	})
+	}, failed)
 }
 
 // CountActiveByUser counts user's sessions unexpired by the store's clock and
@@ -496,11 +496,11 @@ func (s *sessionStore) DeleteByExternalSession(ctx context.Context, issuer, sess
 		return 0, nil
 	}
 
-	return untilSettled("delete provider session's sessions", func() (int, error) {
+	return storekit.UntilSettled("delete provider session's sessions", func() (int, error) {
 		return deleteWhere[sessionRow](ctx, s.c, "delete provider session's sessions",
 			"external_issuer = ? AND external_session_id = ? AND external_issuer <> '' AND external_session_id <> ''",
 			issuer, sessionID)
-	})
+	}, failed)
 }
 
 // DeleteByUserAndExternalIssuer removes user's sessions from issuer. An empty
@@ -526,10 +526,10 @@ func (s *sessionStore) DeleteByUserAndExternalIssuer(
 		return 0, nil
 	}
 
-	return untilSettled("delete user's sessions from issuer", func() (int, error) {
+	return storekit.UntilSettled("delete user's sessions from issuer", func() (int, error) {
 		return deleteWhere[sessionRow](ctx, s.c, "delete user's sessions from issuer",
 			"user_id = ? AND external_issuer = ? AND external_issuer <> ''", string(user), issuer)
-	})
+	}, failed)
 }
 
 // untilNone runs pass, a delete of sessions, until it removes nothing, and

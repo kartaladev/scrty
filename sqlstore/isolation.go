@@ -24,11 +24,10 @@ import (
 var ErrIsolationTooStrong = storeerr.ErrIsolationTooStrong
 
 // beginReadCommitted begins a transaction of the store's own on its *sql.DB
-// and sets it to READ COMMITTED as its first statement, whatever the
-// database's or the role's default isolation is. A statement rather than
-// sql.TxOptions, so every backend's stores share one shape. When the
-// statement fails, the transaction is rolled back and the error returned as
-// the driver gave it.
+// at READ COMMITTED, whatever the database's or the role's default isolation
+// is. The isolation travels in the BEGIN itself (the driver sends BEGIN
+// ISOLATION LEVEL READ COMMITTED), so setting it costs no round trip of its
+// own. A failure to begin is returned as the driver gave it.
 func (c *config) beginReadCommitted(ctx context.Context) (*sql.Tx, error) {
 	return beginReadCommitted(ctx, c.base)
 }
@@ -36,17 +35,12 @@ func (c *config) beginReadCommitted(ctx context.Context) (*sql.Tx, error) {
 // beginReadCommitted is config.beginReadCommitted on db, for the limiter,
 // which has no store config.
 func beginReadCommitted(ctx context.Context, db *sql.DB) (*sql.Tx, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, pgschema.SetReadCommitted); err != nil {
-		_ = tx.Rollback()
-		return nil, err
-	}
-
-	return tx, nil
+	return db.BeginTx(ctx, readCommittedTx)
 }
+
+// readCommittedTx are the options every transaction a store begins for
+// itself is begun with.
+var readCommittedTx = &sql.TxOptions{Isolation: sql.LevelReadCommitted}
 
 // readCommitted runs fn in a READ COMMITTED transaction of the store's own,
 // begun by beginReadCommitted, and commits it when fn succeeds. It is rolled

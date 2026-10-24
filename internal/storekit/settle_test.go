@@ -1,12 +1,14 @@
-package pgx
+package storekit_test
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -14,6 +16,7 @@ func TestUntilSettled(t *testing.T) {
 	t.Parallel()
 
 	errPass := errors.New("pass failed")
+	wrap := func(op string, err error) error { return fmt.Errorf("store: %s: %w", op, err) }
 
 	type testCase struct {
 		name string
@@ -38,13 +41,15 @@ func TestUntilSettled(t *testing.T) {
 			},
 		},
 		{
-			name:    "gives up after maxDeletePasses passes that each removed something",
+			name:    "gives up after MaxDeletePasses passes that each removed something",
 			removed: func(int) (int, error) { return 1, nil },
 			assert: func(t *testing.T, passes, total int, err error) {
 				require.ErrorIs(t, err, session.ErrDeleteDidNotSettle)
-				require.ErrorIs(t, err, ErrDeleteDidNotSettle)
-				assert.Equal(t, maxDeletePasses, passes)
-				assert.Equal(t, maxDeletePasses, total, "what the passes removed is reported")
+				assert.EqualError(t, err, "store: delete: "+session.ErrDeleteDidNotSettle.Error(),
+					"the refusal is wrapped by the adapter, with the operation")
+				assert.Equal(t, 64, storekit.MaxDeletePasses)
+				assert.Equal(t, storekit.MaxDeletePasses, passes)
+				assert.Equal(t, storekit.MaxDeletePasses, total, "what the passes removed is reported")
 			},
 		},
 		{
@@ -57,6 +62,7 @@ func TestUntilSettled(t *testing.T) {
 			},
 			assert: func(t *testing.T, passes, total int, err error) {
 				require.ErrorIs(t, err, errPass)
+				assert.EqualError(t, err, errPass.Error(), "a pass's error is returned as it is")
 				assert.NotErrorIs(t, err, session.ErrDeleteDidNotSettle)
 				assert.Equal(t, 3, passes)
 				assert.Equal(t, 10, total)
@@ -69,11 +75,11 @@ func TestUntilSettled(t *testing.T) {
 			t.Parallel()
 
 			passes := 0
-			total, err := untilSettled("delete", func() (int, error) {
+			total, err := storekit.UntilSettled("delete", func() (int, error) {
 				i := passes
 				passes++
 				return tc.removed(i)
-			})
+			}, wrap)
 			tc.assert(t, passes, total, err)
 		})
 	}
