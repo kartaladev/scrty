@@ -1,8 +1,9 @@
 package passkey_test
 
-// The two tests here race a registration step against its own per-user limit.
-// They share no setup beyond the fixture: one holds the passkey count, the
-// other the challenge count, at the moment every racer has read it.
+// The tests here race registration steps for one user against a per-user
+// limit. They share no setup beyond the fixture: each stages its racers with
+// its own store double, holding a count until every racer has read it or a
+// read until another racer has stored.
 
 import (
 	"context"
@@ -319,26 +320,19 @@ func racer(ctx context.Context) int {
 
 // lateListCredentials is a memory credential store that stages two racing
 // finishes for one user so the second reads the user's passkeys only once the
-// first has stored its own:
+// first has stored its own: every List of the second finish waits until the
+// first has inserted, and nothing else is held.
 //
-//   - Count answers once both have counted, so both pass the early count;
-//   - every List of the second finish waits until the first has inserted.
-//
-// The second finish therefore decides what its registration replaces while
-// the first finish's passkey is already stored. Every wait gives up after a
-// few seconds.
+// A finish lists the user's passkeys while it plans what its registration
+// replaces, before it counts them, so the second finish decides what it
+// replaces, and then counts, while the first finish's passkey is already
+// stored. The first finish is never held, so the staging needs no timeout to
+// complete; the wait gives up after a few seconds only so that a finish that
+// never lists fails the test rather than hanging it.
 type lateListCredentials struct {
 	*passkey.MemoryCredentialStore
 
-	counted       *barrier
 	firstInserted chan struct{}
-}
-
-func (s *lateListCredentials) Count(ctx context.Context, user identity.UserID) (int, error) {
-	n, err := s.MemoryCredentialStore.Count(ctx, user)
-	s.counted.wait(ctx)
-
-	return n, err
 }
 
 func (s *lateListCredentials) List(ctx context.Context, user identity.UserID) ([]*passkey.Credential, error) {
@@ -361,10 +355,12 @@ func (s *lateListCredentials) InsertWithin(ctx context.Context, c *passkey.Crede
 // TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey races two
 // finishes for u-1 against a passkey limit of one, the second deciding what
 // its registration replaces only once the first has stored its pending
-// passkey. That passkey was created after the second finish's challenge was
-// issued, so it belongs to a concurrent ceremony, not an abandoned one, and is
-// kept: the first finish stores, the second is refused with ErrLimitReached,
-// and the codes the first returned or sent confirm its own passkey.
+// passkey. That passkey was created at or after the instant the second
+// finish's challenge was issued, so it belongs to a concurrent ceremony, not an abandoned one, and is
+// kept. The second finish then counts a full limit and is refused with
+// ErrLimitReached before it inserts; the first finish stores, and the codes it
+// returned or sent confirm its own passkey. Were the kept passkey deleted
+// instead, the second finish would find room and store.
 func TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey(t *testing.T) {
 	t.Parallel()
 
@@ -415,15 +411,12 @@ func TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey(t *testing
 				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
 			}
 
-			creds := &lateListCredentials{
-				MemoryCredentialStore: f.creds, counted: newBarrier(2), firstInserted: make(chan struct{}),
-			}
+			creds := &lateListCredentials{MemoryCredentialStore: f.creds, firstInserted: make(chan struct{})}
 			f.deps.Credentials = creds
 			e := &env{f: f, m: f.manager(t, passkey.WithPasskeyLimit(1)), s: tc.session}
 
 			challenges := []string{f.begin(t, e.m, e.s), f.begin(t, e.m, e.s)}
 			f.clock.Advance(tc.advance)
-			creds.counted.armed.Store(true)
 
 			results := make([]*passkey.RegistrationResult, len(challenges))
 			errs := race(len(challenges), func(i int) error {
