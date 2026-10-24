@@ -118,6 +118,29 @@ func (s revokeFailsStore) Revoke(context.Context, id.ID, time.Time) (bool, error
 	return false, errStore
 }
 
+// errOldRevoke and errUndoRevoke tell apart the two failures of a rotation
+// whose old-key revoke and compensating revoke both fail.
+var (
+	errOldRevoke  = errors.New("revoke of the old key: deadline exceeded")
+	errUndoRevoke = errors.New("revoke of the replacement: connection reset")
+)
+
+// revokeFailsTwiceStore fails the first Revoke with errOldRevoke and every
+// later one with errUndoRevoke, so neither failure can pass for the other.
+type revokeFailsTwiceStore struct {
+	apikey.Store
+
+	calls atomic.Int32
+}
+
+func (s *revokeFailsTwiceStore) Revoke(context.Context, id.ID, time.Time) (bool, error) {
+	if s.calls.Add(1) == 1 {
+		return false, errOldRevoke
+	}
+
+	return false, errUndoRevoke
+}
+
 // touchFailsStore is a working store whose last-use write alone cannot succeed.
 type touchFailsStore struct {
 	apikey.Store
@@ -251,4 +274,34 @@ func emptyForLeadingZero(b []byte) []byte {
 	}
 
 	return sha256Of(b)
+}
+
+// failOldRevokeStore fails the first Revoke, the one that ends the key being
+// rotated, and lets every later one through to the store beneath, refusing a
+// cancelled context as a database driver does. When cancel is set the failure
+// is the caller hanging up: it cancels the caller's context and returns that
+// context's error instead of errStore.
+type failOldRevokeStore struct {
+	apikey.Store
+
+	cancel context.CancelFunc
+	calls  atomic.Int32
+}
+
+func (s *failOldRevokeStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error) {
+	if s.calls.Add(1) == 1 {
+		if s.cancel != nil {
+			s.cancel()
+
+			return false, ctx.Err()
+		}
+
+		return false, errStore
+	}
+
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
+	return s.Store.Revoke(ctx, keyID, at)
 }

@@ -59,11 +59,14 @@
 //
 // Rotation is not atomic. Rotate issues a replacement with the same principal,
 // name and scopes, and then revokes the old key, and outside a transaction the
-// caller has attached to the store those are two separate writes: a failure
-// between them leaves the new key issued and the old one still live. The error
-// says so and names both identifiers, neither of which is a secret, so an
-// operator can revoke the old one by hand. A store that carries a transaction
-// can make the pair atomic; this package neither opens one nor requires one.
+// caller has attached to the store those are two separate writes. When the
+// old key's revoke fails, Rotate revokes the replacement it just issued, on a
+// context the caller's cancellation cannot end, and returns the failure; the
+// old key may still be live. Only if that revoke fails too does the
+// replacement stay live, and the error then names both identifiers, neither of
+// which is a secret, so an operator can revoke them by hand. A store that
+// carries a transaction can make the pair atomic; this package neither opens
+// one nor requires one.
 //
 // Only a live key rotates: a revoked or expired one is ErrRotationRefused,
 // and nothing is issued for it. Concurrent rotations of one key are decided by

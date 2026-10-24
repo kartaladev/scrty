@@ -48,6 +48,25 @@ func TestManagerRotate(t *testing.T) {
 		}
 	}
 
+	// onlyOldLive fails unless exactly one key is live, which is the old one
+	// whose revoke failed: the replacement must have been ended.
+	onlyOldLive := func(t *testing.T, m *apikey.Manager) {
+		t.Helper()
+
+		keys, err := m.List(t.Context(), "svc-billing")
+		require.NoError(t, err)
+
+		live := 0
+
+		for _, k := range keys {
+			if k.RevokedAt == nil {
+				live++
+			}
+		}
+
+		assert.Equal(t, 1, live, "only the old key, whose revoke failed, may stay live")
+	}
+
 	sameKey := func(_ *testing.T, rec apikey.Key) id.ID { return rec.ID }
 
 	cases := []testCase{
@@ -132,6 +151,59 @@ func TestManagerRotate(t *testing.T) {
 				assert.ErrorIs(t, err, apikey.ErrRotationRefused)
 				assert.Empty(t, fresh)
 				noLiveReplacement(t, m)
+			},
+		},
+		{
+			name: "a store failure on the old key's revoke ends the replacement and keeps the old key",
+			store: func(inner apikey.Store, _ *clockwork.FakeClock, _ context.CancelFunc) apikey.Store {
+				return &failOldRevokeStore{Store: inner}
+			},
+			target: sameKey,
+			assert: func(t *testing.T, m *apikey.Manager, old, fresh string, _ apikey.Key, err error) {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, errStore, "the store failure stays identifiable")
+				assert.Empty(t, fresh)
+				onlyOldLive(t, m)
+
+				_, _, oldErr := m.Verify(t.Context(), old)
+				assert.NoError(t, oldErr, "the old key's revoke failed, so the old key is still live")
+			},
+		},
+		{
+			name: "both revokes failing wraps both failures and names the replacement",
+			store: func(inner apikey.Store, _ *clockwork.FakeClock, _ context.CancelFunc) apikey.Store {
+				return &revokeFailsTwiceStore{Store: inner}
+			},
+			target: sameKey,
+			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, old apikey.Key, err error) {
+				require.Error(t, err)
+				assert.Empty(t, fresh)
+				assert.ErrorIs(t, err, errOldRevoke)
+				assert.ErrorIs(t, err, errUndoRevoke)
+
+				keys, listErr := m.List(t.Context(), "svc-billing")
+				require.NoError(t, listErr)
+				require.Len(t, keys, 2)
+
+				for _, k := range keys {
+					if k.ID != old.ID {
+						assert.Contains(t, err.Error(), k.ID.String(),
+							"an operator needs the replacement's ID to revoke it by hand")
+					}
+				}
+			},
+		},
+		{
+			name: "a caller cancelled at the old key's revoke still ends the replacement",
+			store: func(inner apikey.Store, _ *clockwork.FakeClock, cancel context.CancelFunc) apikey.Store {
+				return &failOldRevokeStore{Store: inner, cancel: cancel}
+			},
+			target: sameKey,
+			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, _ apikey.Key, err error) {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, context.Canceled, "the revoke failure stays identifiable")
+				assert.Empty(t, fresh)
+				onlyOldLive(t, m)
 			},
 		},
 		{

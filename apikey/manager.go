@@ -411,12 +411,23 @@ func keyStoreFailed(err error, text string) error {
 // detached from its cancellation, bounded by a few seconds, so a caller that
 // hangs up mid-rotation cannot leave the replacement live.
 //
+// The same holds when revoking the old key fails outright, whether the store
+// errored or the caller's context ended at that write: the replacement is
+// revoked, and the error wraps the failure of the old key's revoke. The old key
+// may still be live: the failure says the revoke was not confirmed, not that it
+// did not happen, since a store can commit it and then report an error, as a
+// timeout after commit does. Check the old key rather than assume it. Should
+// revoking the replacement fail too, the error wraps both failures and names
+// the replacement, which an operator then revokes by hand, the replacement
+// being live until then.
+//
 // # Atomicity
 //
 // These are separate writes. Outside a transaction the caller has attached
-// to the store, a failure between them leaves the new key issued and the old
-// one still live; the error says so and names both identifiers, because an
-// operator reading it needs to know which key to revoke by hand. Neither
+// to the store, a failure between them leaves the old key live; the
+// replacement is revoked on the way out, and stays issued only when that
+// revoke fails too. The error says which, and names both identifiers, because
+// an operator reading it needs to know which key to revoke by hand. Neither
 // identifier is a secret. Inside a transaction the store carries, a rollback
 // undoes both, and whether that is available is the store implementation's to
 // say — this package neither opens nor requires one.
@@ -444,8 +455,19 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 	if existing.liveAt(at) {
 		revoked, err = m.store.Revoke(ctx, keyID, at)
 		if err != nil {
+			// The old key may still be live (the failed revoke may even have
+			// committed, then errored), and the replacement was handed to
+			// nobody: end it, detached from the caller, which may be the
+			// very reason the revoke failed.
+			if undoErr := m.revokeReplacement(ctx, rec.ID); undoErr != nil {
+				return "", Key{}, diag.Wrap(errors.Join(err, undoErr), fmt.Sprintf(
+					"apikey: rotated key %s was issued but %s could not be revoked, and the replacement could not be revoked either",
+					rec.ID, keyID))
+			}
+
 			return "", Key{}, diag.Wrap(err, fmt.Sprintf(
-				"apikey: rotated key %s was issued but %s could not be revoked", rec.ID, keyID))
+				"apikey: rotated key %s was issued but %s could not be revoked; the replacement was revoked, and the old key may still be live",
+				rec.ID, keyID))
 		}
 	}
 
@@ -455,10 +477,7 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 		// stay live. The caller may be gone by now, and a replacement left
 		// live for it would be a credential nobody was handed, so this write
 		// outlives the caller's cancellation, within a bound.
-		undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensatingRevokeTimeout)
-		defer cancel()
-
-		if _, err := m.store.Revoke(undoCtx, rec.ID, m.clock.Now()); err != nil {
+		if err := m.revokeReplacement(ctx, rec.ID); err != nil {
 			return "", Key{}, diag.Wrap(err, fmt.Sprintf(
 				"apikey: rotation of %s was refused, but its replacement %s could not be revoked", keyID, rec.ID),
 				ErrRotationRefused)
@@ -468,4 +487,16 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 	}
 
 	return presented, rec, nil
+}
+
+// revokeReplacement ends a replacement key that a failed or lost rotation must
+// not leave live. It runs detached from ctx's cancellation, within
+// compensatingRevokeTimeout, so a caller that has hung up cannot prevent it.
+func (m *Manager) revokeReplacement(ctx context.Context, replacement id.ID) error {
+	undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensatingRevokeTimeout)
+	defer cancel()
+
+	_, err := m.store.Revoke(undoCtx, replacement, m.clock.Now())
+
+	return err
 }

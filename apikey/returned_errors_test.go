@@ -190,7 +190,11 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 						return apikey.Key{ID: keyID, Principal: principal}, nil
 					})
 				s.EXPECT().Put(gomock.Any(), gomock.Any()).Return(nil)
-				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, errRedactionFixture)
+				gomock.InOrder(
+					s.EXPECT().Revoke(gomock.Any(), oldKeyID, gomock.Any()).Return(false, errRedactionFixture),
+					// The replacement is ended on the way out.
+					s.EXPECT().Revoke(gomock.Any(), gomock.Not(oldKeyID), gomock.Any()).Return(true, nil),
+				)
 				return s
 			},
 			call: func(t *testing.T, m *apikey.Manager) error {
