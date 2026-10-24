@@ -47,7 +47,14 @@ import (
 // The chain runs on a context derived from fiber's request context that ends
 // when this handler returns, so work an interceptor started on it stops with
 // the request, as it does under net/http. fiber's own request context is not
-// cancelled or replaced for code outside the chain.
+// cancelled for code outside the chain.
+//
+// After the chain returns, fiber's request context stays the one the route
+// read, so a fiber middleware mounted before the chain sees, through
+// c.Context() after c.Next(), the caller, the session and everything else the
+// chain published. Its deadline, cancellation and cause remain those of the
+// context that middleware set up, never the chain's end-of-request
+// cancellation.
 //
 // A route behind the chain reads a context that carries every value the chain
 // added, while its deadline and cancellation are those of fiber's own context
@@ -106,14 +113,13 @@ func Middleware(chain *httpsec.Chain) fiber.Handler {
 		// Seeded from fiber's own request context, so a value middleware outside
 		// the chain set survives it. The chain runs on a child of it that ends
 		// when this handler returns, as net/http ends r.Context() when
-		// ServeHTTP returns; fiber's own context is never cancelled, and it is
-		// put back before the cancel so what runs outside the chain reads it
-		// as it was.
+		// ServeHTTP returns. fiber's context is left as the route saw it: its
+		// values come from the chain, but Deadline, Done, Err and the cause
+		// come from outer, which the cancel below never reaches, so middleware
+		// outside the chain reads what the chain published after Next without
+		// seeing the chain's cancellation.
 		ctx, cancel := context.WithCancel(outer)
-		defer func() {
-			fc.SetContext(outer)
-			cancel()
-		}()
+		defer cancel()
 
 		ex := httpsec.NewExchange(ctx, request{c: fc}, &responseWriter{c: fc})
 

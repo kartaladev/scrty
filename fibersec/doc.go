@@ -37,7 +37,10 @@
 // ServeHTTP returns. On fiber a mid-request client disconnect is not detected:
 // fasthttp's RequestCtx.Done() fires only at server shutdown, so the chain's
 // context ends when the request's handling ends, not earlier. fiber's own
-// request context is never cancelled or replaced for code outside the chain.
+// request context is never cancelled for code outside the chain, and after the
+// chain returns it keeps the values the chain published, so middleware mounted
+// before the chain reads the caller and the session through c.Context() after
+// c.Next(), with the deadline and cancellation it set itself.
 // A route behind the chain reads the values the chain added through a context
 // whose deadline and cancellation are fiber's own, as found on entry. The
 // chain's end-of-request cancellation does not reach it, so a body it streams

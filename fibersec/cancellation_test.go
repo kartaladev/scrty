@@ -14,6 +14,8 @@ import (
 
 	"github.com/kartaladev/scrty/fibersec"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/session"
 )
 
 // TestFiber_ChainContextEndsWithTheRequest pins that the context the chain runs
@@ -218,3 +220,50 @@ func TestFiber_RouteContextStaysBoundedByWhatBoundedTheRequest(t *testing.T) {
 
 // cancelKey carries the upstream middleware's cancel function to the route.
 type cancelKey struct{}
+
+// TestFiber_OuterMiddlewareSeesWhatTheChainPublished pins that fiber middleware
+// mounted before the chain, which is where logging and metrics belong, still
+// reads the caller and the session the chain resolved once Next returns, and
+// that the context it reads is not cancelled by the chain's end-of-request
+// cancellation.
+func TestFiber_OuterMiddlewareSeesWhatTheChainPublished(t *testing.T) {
+	t.Parallel()
+
+	opts, live := authenticated(t)
+
+	var (
+		principal    *identity.Principal
+		hasPrincipal bool
+		sess         *session.Session
+		hasSession   bool
+		afterErr     error
+		afterCause   error
+	)
+
+	app := fiber.New()
+	app.Use(func(fc fiber.Ctx) error {
+		err := fc.Next()
+
+		ctx := fc.Context()
+		principal, hasPrincipal = identity.PrincipalFromContext(ctx)
+		sess, hasSession = httpsec.SessionFromContext(ctx)
+		afterErr = ctx.Err()
+		afterCause = context.Cause(ctx)
+
+		return err
+	})
+	app.Use(fibersec.Middleware(newChain(t, opts...)))
+	app.Get("/orders", func(fc fiber.Ctx) error {
+		return fc.SendStatus(http.StatusNoContent)
+	})
+
+	res := serve(t, app, bearerRequest(t.Context(), http.MethodGet, "/orders"))
+	require.Equal(t, http.StatusNoContent, res.status)
+
+	require.True(t, hasPrincipal, "the outer middleware reads the caller the chain published")
+	assert.Equal(t, identity.UserID("u-1"), principal.ID)
+	require.True(t, hasSession, "the outer middleware reads the session the chain published")
+	assert.Equal(t, live.ID, sess.ID)
+	assert.NoError(t, afterErr, "the context the outer middleware reads is not cancelled")
+	assert.NoError(t, afterCause, "no cause from the chain's cancellation reaches the outer middleware")
+}
