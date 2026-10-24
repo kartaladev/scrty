@@ -161,11 +161,12 @@ func (c *MockStorePutCall) DoAndReturn(f func(context.Context, apikey.Key) error
 }
 
 // Revoke mocks base method.
-func (m *MockStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
+func (m *MockStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Revoke", ctx, keyID, at)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // Revoke indicates an expected call of Revoke.
@@ -181,19 +182,19 @@ type MockStoreRevokeCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockStoreRevokeCall) Return(arg0 error) *MockStoreRevokeCall {
-	c.Call = c.Call.Return(arg0)
+func (c *MockStoreRevokeCall) Return(arg0 bool, arg1 error) *MockStoreRevokeCall {
+	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockStoreRevokeCall) Do(f func(context.Context, id.ID, time.Time) error) *MockStoreRevokeCall {
+func (c *MockStoreRevokeCall) Do(f func(context.Context, id.ID, time.Time) (bool, error)) *MockStoreRevokeCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockStoreRevokeCall) DoAndReturn(f func(context.Context, id.ID, time.Time) error) *MockStoreRevokeCall {
+func (c *MockStoreRevokeCall) DoAndReturn(f func(context.Context, id.ID, time.Time) (bool, error)) *MockStoreRevokeCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

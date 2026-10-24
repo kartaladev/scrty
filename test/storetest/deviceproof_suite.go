@@ -179,7 +179,7 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 			assert: func(t *testing.T, ctx context.Context, s DeviceProofEnrolmentStore, _ *clockwork.FakeClock) {
 				e := begunOn(ctx, t, s, g1)
 				at := suiteStart.Add(time.Hour)
-				confirmed, err := s.Confirm(ctx, mfaUser, 1000, at)
+				confirmed, err := s.Confirm(ctx, mfaUser, g1, 1000, at)
 				require.NoError(t, err)
 				require.True(t, confirmed)
 

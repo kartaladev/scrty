@@ -10,6 +10,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/signingkey"
 )
 
@@ -144,6 +145,12 @@ func keySet(keys []signingkey.PublicKey) (jwk.Set, error) {
 	set := jwk.NewSet()
 
 	for _, pk := range keys {
+		// A nil pointer inside the key interface is a key the source failed
+		// to build. The JOSE stack dereferences it, so it is refused here as
+		// the outage it is, in the same terms as a key it cannot read.
+		if nilcheck.IsNil(pk.Key) {
+			return nil, fmt.Errorf("token: obtain key set: key %q is nil", pk.Kid)
+		}
 		key, err := jwk.Import[jwk.Key](pk.Key)
 		if err != nil {
 			// An outage, not a rejection, and never a skip. Dropping the key

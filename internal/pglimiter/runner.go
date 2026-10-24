@@ -28,7 +28,7 @@ type Row interface {
 // RowsAffected only for a statement whose outcome depends on the count: the
 // prune's batch, whose count is what the prune reports and what ends its
 // loop, so an unreadable count fails the batch. The record and the probe's
-// statements never call it: their success is Exec's error alone.
+// statements never call it: their success is their call's error alone.
 type Result interface {
 	RowsAffected() (int64, error)
 }
@@ -39,6 +39,11 @@ type Result interface {
 type Runner interface {
 	// Exec runs a statement that returns no rows, and reports its Result.
 	Exec(ctx context.Context, sql string, args ...any) (Result, error)
+	// ExecReadCommitted runs a statement that returns no rows as the only
+	// statement of a transaction of its own, begun at READ COMMITTED (the
+	// isolation carried in the BEGIN, not a statement of its own), whatever
+	// the database's default isolation is, and commits it.
+	ExecReadCommitted(ctx context.Context, sql string, args ...any) error
 	// QueryRow runs a statement that returns at most one row. Its error, if
 	// any, is reported by the row's Scan.
 	QueryRow(ctx context.Context, sql string, args ...any) Row
@@ -93,10 +98,12 @@ func (b *backend) Exceeded(ctx context.Context, key string) (bool, error) {
 	return n >= b.limit, nil
 }
 
-// RecordFailure counts one failure for key. An error is wrapped as
+// RecordFailure counts one failure for key, in a READ COMMITTED transaction
+// of its own: at a stronger default isolation, records racing on one key
+// would fail with a serialization failure. An error is wrapped as
 // "<prefix>: rate-limit record".
 func (b *backend) RecordFailure(ctx context.Context, key string) error {
-	_, err := b.r.Exec(ctx, pgschema.LimiterRecord,
+	err := b.r.ExecReadCommitted(ctx, pgschema.LimiterRecord,
 		b.namespace, pgschema.LimiterKey(key), b.limit, b.windowUS, Now(b.clock), b.lockTimeout)
 	if err != nil {
 		return fmt.Errorf("%s: rate-limit record: %w", b.prefix, err)
@@ -138,7 +145,7 @@ func probe(ctx context.Context, r Runner, prefix string, now any, lockTimeout st
 	_, _ = rand.Read(buf[:]) // crypto/rand.Read never returns an error
 	key := "verify-" + hex.EncodeToString(buf[:])
 
-	if _, err := r.Exec(ctx, pgschema.LimiterRecord, "", key, 1, int64(1), now, lockTimeout); err != nil {
+	if err := r.ExecReadCommitted(ctx, pgschema.LimiterRecord, "", key, 1, int64(1), now, lockTimeout); err != nil {
 		return probeError(err, prefix, "record")
 	}
 	var n int

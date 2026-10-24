@@ -549,6 +549,15 @@ func TestLogin(t *testing.T) {
 			},
 		},
 		{
+			// WebAuthn Level 3 §6.1: a credential cannot be backed up without
+			// being eligible for backup. The stored credential is not
+			// backup-eligible either, so only this rule refuses it.
+			name:   "an assertion backed up without backup eligibility is refused",
+			opts:   []passkey.Option{passkey.WithLoginCheck(func(context.Context, passkey.LoginFacts) error { return consumerErr })},
+			body:   withBody(func(b *assertionBody) { b.BE, b.BS = false, true }),
+			assert: refused,
+		},
+		{
 			name:   "an assertion without user verification is refused under required",
 			body:   withBody(func(b *assertionBody) { b.UV = false }),
 			assert: refused,

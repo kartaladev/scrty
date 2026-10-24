@@ -39,10 +39,18 @@ type Store interface {
 	// Revoke marks the record revoked at, and reports ErrKeyNotFound when
 	// there is no such record.
 	//
+	// It reports true only when this call moved the record from live to
+	// revoked, and false, with no error, when the record was already revoked.
+	// That answer must come from the write itself, as a conditional write
+	// that succeeds only while the record is live, never from a read before
+	// it: of any number of concurrent calls for one live record, exactly one
+	// reports true. Rotation relies on it to decide which of two concurrent
+	// rotations of one key keeps its replacement.
+	//
 	// A record already revoked keeps the time first recorded. The first
 	// revocation is the one that happened, and a later call must not be able
 	// to rewrite when the key stopped being accepted.
-	Revoke(ctx context.Context, keyID id.ID, at time.Time) error
+	Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error)
 
 	// TouchLastUsed records that a verification of this key succeeded at, and
 	// reports ErrKeyNotFound when there is no such record.

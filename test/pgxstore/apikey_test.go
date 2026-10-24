@@ -176,7 +176,7 @@ func TestAPIKeyStore_Durable(t *testing.T) {
 			name: "a revocation under a cancelled context fails with the cancellation, never as not found",
 			ctx:  storefix.Cancelled,
 			assert: func(t *testing.T, ctx context.Context, db database) {
-				err := newAPIKeyStore(t, db.Pool).Revoke(ctx, storefix.APIKey(5, "").ID, time.Now())
+				_, err := newAPIKeyStore(t, db.Pool).Revoke(ctx, storefix.APIKey(5, "").ID, time.Now())
 				require.ErrorIs(t, err, context.Canceled)
 				assert.NotErrorIs(t, err, apikey.ErrKeyNotFound)
 			},

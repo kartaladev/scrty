@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -18,8 +19,9 @@ import (
 // creates. It implements apikey.Store, and is safe for concurrent use.
 //
 // A key is stored under its own identifier; only the secret's digest is
-// kept. Revoke is one statement that keeps the first revocation time, so a
-// later revocation never rewrites when the key stopped being accepted. Get
+// kept. Revoke is one conditional statement that keeps the first revocation
+// time, so a later revocation never rewrites when the key stopped being
+// accepted, and reports whether it was the call that revoked the key. Get
 // and List judge no expiry or revocation: that is the manager's to decide.
 type APIKeyStore struct{ c *config }
 
@@ -103,12 +105,29 @@ func (s *APIKeyStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error) 
 	return k, nil
 }
 
-// Revoke marks the key revoked at at, keeping an earlier revocation: one
-// UPDATE … SET revoked_at = COALESCE(revoked_at, ?), whose zero rows affected
-// is apikey.ErrKeyNotFound.
-func (s *APIKeyStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
-	return updateOrRefuse[apiKeyRow](ctx, s.c, "revoke API key", apikey.ErrKeyNotFound,
-		map[string]any{"revoked_at": gormdb.Expr("COALESCE(revoked_at, ?)", storekit.Time(at))}, "id = ?", keyID)
+// Revoke marks the key revoked at at, keeping an earlier revocation, and
+// reports whether this call revoked it. It is one statement, the shared
+// pgschema.APIKeyRevoke run raw because gorm's builder cannot return both
+// whether its conditional UPDATE changed the row and whether the row exists:
+// the UPDATE … WHERE revoked_at IS NULL decides a concurrent race, so of
+// concurrent calls for one live key exactly one reports true. A key that does
+// not exist is apikey.ErrKeyNotFound.
+func (s *APIKeyStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error) {
+	const op = "revoke API key"
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	var row struct{ Revoked, Present bool }
+	if err := q.Raw(pgschema.APIKeyRevoke, keyID, storekit.Time(at)).Scan(&row).Error; err != nil {
+		return false, failed(op, err)
+	}
+	if !row.Present {
+		return false, apikey.ErrKeyNotFound
+	}
+
+	return row.Revoked, nil
 }
 
 // TouchLastUsed records a successful verification of the key at at: one

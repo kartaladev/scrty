@@ -1,6 +1,7 @@
 package signingkey_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,6 +38,27 @@ func TestInMemoryKeyStore(t *testing.T) {
 				require.Len(t, got, 2)
 				assert.Equal(t, "a", got[0].Kid)
 				assert.Equal(t, "b", got[1].Kid)
+			},
+		},
+		{
+			// Many records, so that an order the store did not keep — such as
+			// a map's — cannot match the stored order by chance.
+			name: "records created at the same instant load in the order they were stored",
+			seed: tiedRecords(at(10), 16),
+			assert: func(t *testing.T, got []signingkey.Record, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, recordKids(tiedRecords(at(10), 16)), recordKids(got),
+					"a tie in creation time keeps the store order")
+			},
+		},
+		{
+			name: "storing an existing kid again keeps its place among tied records",
+			seed: append(tiedRecords(at(10), 3),
+				signingkey.Record{Kid: "tied-00", Alg: signingkey.RS256, CreatedAt: at(10), Private: []byte("again")}),
+			assert: func(t *testing.T, got []signingkey.Record, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"tied-00", "tied-01", "tied-02"}, recordKids(got))
+				assert.Equal(t, []byte("again"), got[0].Private)
 			},
 		},
 		{
@@ -82,4 +104,23 @@ func TestInMemoryKeyStore(t *testing.T) {
 			tc.assert(t, got, err)
 		})
 	}
+}
+
+// tiedRecords returns n RS256 records all created at the same instant, with
+// kids that sort in the order they are returned.
+func tiedRecords(at time.Time, n int) []signingkey.Record {
+	recs := make([]signingkey.Record, 0, n)
+	for i := range n {
+		recs = append(recs, signingkey.Record{Kid: fmt.Sprintf("tied-%02d", i), Alg: signingkey.RS256, CreatedAt: at})
+	}
+	return recs
+}
+
+// recordKids returns the kids of recs, in order.
+func recordKids(recs []signingkey.Record) []string {
+	kids := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		kids = append(kids, rec.Kid)
+	}
+	return kids
 }

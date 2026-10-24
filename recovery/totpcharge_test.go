@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 )
 
@@ -38,8 +39,9 @@ func TestRecoverer_TOTPProofIsCharged(t *testing.T) {
 
 	secret := []byte("recovery-totp-secret")
 	store := mfa.NewMemoryEnrolmentStore()
-	require.NoError(t, store.PutPending(ctx, mfa.Enrolment{User: anaID, Secret: secret}))
-	confirmed, err := store.Confirm(ctx, anaID, 0, e.clock.Now())
+	gen := id.MustParse("01920000-0000-7000-8000-0000000000f1")
+	require.NoError(t, store.PutPending(ctx, mfa.Enrolment{User: anaID, Secret: secret, Generation: gen}))
+	confirmed, err := store.Confirm(ctx, anaID, gen, 0, e.clock.Now())
 	require.NoError(t, err)
 	require.True(t, confirmed)
 

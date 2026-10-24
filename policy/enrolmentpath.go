@@ -145,7 +145,8 @@ func WithEnrolmentFirstFactors(kinds ...factor.Kind) EnrolmentPathOption {
 //
 // The instant is compared with Input.Now, the instant every policy in the phase
 // judges against, and not with the clock WithMFARequirementClock replaces,
-// which only samples records.
+// which only samples records. A login whose Input.Now is the zero time finds a
+// path with an instant closed.
 func WithEnrolmentPathUntil(t time.Time) EnrolmentPathOption {
 	return enrolmentPathOption(func(e *enrolmentPath) { e.until = t })
 }
@@ -185,7 +186,9 @@ func (e *enrolmentPath) admits(in *Input, phase Phase, methods []MFAMethodLookup
 		return false
 	}
 
-	if !e.until.IsZero() && !in.Now.Before(e.until) {
+	// A path that closes is closed to a caller that did not say when it is:
+	// measured from the zero time, every closing instant is still ahead.
+	if !e.until.IsZero() && (in.Now.IsZero() || !in.Now.Before(e.until)) {
 		return false
 	}
 

@@ -18,8 +18,9 @@ import (
 // creates. It implements apikey.Store, and is safe for concurrent use.
 //
 // A key is stored under its own identifier; only the secret's digest is
-// kept. Revoke is one statement that keeps the first revocation time, so a
-// later revocation never rewrites when the key stopped being accepted. Get
+// kept. Revoke is one conditional statement that keeps the first revocation
+// time, so a later revocation never rewrites when the key stopped being
+// accepted, and reports whether it was the call that revoked the key. Get
 // and List judge no expiry or revocation: that is the manager's to decide.
 type APIKeyStore struct{ c *config }
 
@@ -87,10 +88,22 @@ func (s *APIKeyStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error) 
 	return k, nil
 }
 
-// Revoke marks the key revoked at at, keeping an earlier revocation.
-func (s *APIKeyStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
-	return s.c.execOrRefuse(ctx, "revoke API key", apikey.ErrKeyNotFound, pgschema.APIKeyRevoke,
-		keyID, storekit.Time(at))
+// Revoke marks the key revoked at at, keeping an earlier revocation, and
+// reports whether this call revoked it: one statement whose conditional
+// UPDATE decides a concurrent race, so of concurrent calls for one live key
+// exactly one reports true. A key that does not exist is
+// apikey.ErrKeyNotFound.
+func (s *APIKeyStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error) {
+	var revoked, exists bool
+	if err := s.c.queryRow(ctx, "revoke API key", pgschema.APIKeyRevoke,
+		[]any{keyID, storekit.Time(at)}, &revoked, &exists); err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, apikey.ErrKeyNotFound
+	}
+
+	return revoked, nil
 }
 
 // TouchLastUsed records a successful verification of the key at at.

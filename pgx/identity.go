@@ -521,7 +521,7 @@ func (s *IdentityStore) atomically(ctx context.Context, op string, fn func(q DBT
 		return s.underSavepoint(ctx, q, op, fn)
 	}
 
-	tx, err := s.c.base.Begin(ctx)
+	tx, err := s.c.beginReadCommitted(ctx)
 	if err != nil {
 		return dbFailed(op, err)
 	}

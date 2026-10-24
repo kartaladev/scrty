@@ -19,18 +19,21 @@ import (
 // enrolments in the mfa_enrolments table the migrate package creates.
 //
 // Each secret is sealed with c before it is written and opened when it is
-// read, through seal.NewEnrolmentStore, bound to the user reference; the
-// column holds the sealed value base64url-encoded. There is no unsealed
-// variant, and a nil c, typed nil included, is a configuration error. A
-// secret that will not open, a stored value that is not base64url, and a
-// database failure are each an error with the found flag false, never an
-// absent enrolment, which a caller would read as "no second factor".
+// read, through seal.NewEnrolmentStore, bound to the enrolment generation and
+// the user reference; the column holds the sealed value base64url-encoded.
+// There is no unsealed variant, and a nil c, typed nil included, is a
+// configuration error. A secret that will not open, a stored value that is
+// not base64url, and a database failure are each an error with the found
+// flag false, never an absent enrolment, which a caller would read as "no
+// second factor".
 //
 // PutPending, Confirm and AcceptStep are each one conditional statement: a
 // begin over a confirmed enrolment is refused with mfa.ErrAlreadyEnrolled, a
-// second confirmation reports false, and a step at or below the recorded one
-// reports false, each without writing, so of concurrent verifications of one
-// step exactly one succeeds, on this process or on another replica.
+// second confirmation reports false, a confirmation or a step naming a
+// generation that is not the enrolment's reports false, and a step at or
+// below the recorded one reports false, each without writing, so of
+// concurrent verifications of one step exactly one succeeds, on this process
+// or on another replica.
 //
 // The returned store implements mfa.DeviceProofStore, so the enrolment path
 // runs over it. PutPending starts the enrolment's generation, clearing any
@@ -155,25 +158,29 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 		rowID, string(e.User), storekit.SecretText(e.Secret), storekit.Time(e.CreatedAt), nullID(e.Generation))
 }
 
-// Confirm confirms the user's pending enrolment at at, recording step.
-func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
+// Confirm confirms the user's pending enrolment on gen at at, recording step,
+// in one conditional update.
+func (s *enrolmentStore) Confirm(
+	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
+) (bool, error) {
 	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
-	n, err := s.c.exec(ctx, "confirm MFA enrolment", pgschema.EnrolmentConfirm, string(user), step, storekit.Time(at))
+	n, err := s.c.exec(ctx, "confirm MFA enrolment", pgschema.EnrolmentConfirm,
+		string(user), nullID(gen), step, storekit.Time(at))
 
 	return n > 0, err
 }
 
-// AcceptStep records step for user where the enrolment is confirmed and its
-// recorded step is lower.
-func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
+// AcceptStep records step for user where the enrolment is confirmed on gen
+// and its recorded step is lower, in one conditional update.
+func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
 	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
-	n, err := s.c.exec(ctx, "accept MFA time step", pgschema.EnrolmentAcceptStep, string(user), step)
+	n, err := s.c.exec(ctx, "accept MFA time step", pgschema.EnrolmentAcceptStep, string(user), nullID(gen), step)
 
 	return n > 0, err
 }

@@ -94,6 +94,12 @@ func TestNewSourceGuardRefusesAGuardThatCannotCount(t *testing.T) {
 			assert:  refused,
 		},
 		{
+			name:    "a flow name carrying a colon",
+			flow:    "login:2001",
+			limiter: workingLimiter,
+			assert:  refused,
+		},
+		{
 			name:    "a nil keyer",
 			flow:    testFlow,
 			limiter: workingLimiter,

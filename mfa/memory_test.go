@@ -26,10 +26,10 @@ func confirmed(
 	t.Helper()
 
 	require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{
-		User: user, Secret: []byte("secret"), CreatedAt: at,
+		User: user, Secret: []byte("secret"), CreatedAt: at, Generation: fixtureGen,
 	}))
 
-	ok, err := s.Confirm(t.Context(), user, step, at)
+	ok, err := s.Confirm(t.Context(), user, fixtureGen, step, at)
 	require.NoError(t, err)
 	require.True(t, ok)
 
@@ -133,7 +133,7 @@ func TestMemoryEnrolmentStore(t *testing.T) {
 		{
 			name: "confirming an absent enrolment reports false",
 			run: func(t *testing.T, s mfa.EnrolmentStore) (any, error) {
-				return s.Confirm(t.Context(), "nobody", 1, now)
+				return s.Confirm(t.Context(), "nobody", fixtureGen, 1, now)
 			},
 			assert: func(t *testing.T, got any, err error) {
 				require.NoError(t, err)
@@ -145,7 +145,7 @@ func TestMemoryEnrolmentStore(t *testing.T) {
 			run: func(t *testing.T, s mfa.EnrolmentStore) (any, error) {
 				confirmed(t, s, "u-1", 100, now)
 
-				return s.Confirm(t.Context(), "u-1", 101, now)
+				return s.Confirm(t.Context(), "u-1", fixtureGen, 101, now)
 			},
 			assert: func(t *testing.T, got any, err error) {
 				require.NoError(t, err)
@@ -156,9 +156,9 @@ func TestMemoryEnrolmentStore(t *testing.T) {
 			name: "AcceptStep refuses a pending enrolment",
 			run: func(t *testing.T, s mfa.EnrolmentStore) (any, error) {
 				require.NoError(t, s.PutPending(t.Context(),
-					mfa.Enrolment{User: "u-1", Secret: []byte("s")}))
+					mfa.Enrolment{User: "u-1", Secret: []byte("s"), Generation: fixtureGen}))
 
-				return s.AcceptStep(t.Context(), "u-1", 100)
+				return s.AcceptStep(t.Context(), "u-1", fixtureGen, 100)
 			},
 			assert: func(t *testing.T, got any, err error) {
 				require.NoError(t, err)
@@ -168,7 +168,7 @@ func TestMemoryEnrolmentStore(t *testing.T) {
 		{
 			name: "AcceptStep refuses an unknown user",
 			run: func(t *testing.T, s mfa.EnrolmentStore) (any, error) {
-				return s.AcceptStep(t.Context(), "nobody", 100)
+				return s.AcceptStep(t.Context(), "nobody", fixtureGen, 100)
 			},
 			assert: func(t *testing.T, got any, err error) {
 				require.NoError(t, err)
@@ -180,14 +180,14 @@ func TestMemoryEnrolmentStore(t *testing.T) {
 			run: func(t *testing.T, s mfa.EnrolmentStore) (any, error) {
 				s2 := confirmed(t, s, "u-1", 100, now)
 
-				first, err := s2.AcceptStep(t.Context(), "u-1", 101)
+				first, err := s2.AcceptStep(t.Context(), "u-1", fixtureGen, 101)
 				require.NoError(t, err)
 				require.True(t, first)
 
-				same, err := s2.AcceptStep(t.Context(), "u-1", 101)
+				same, err := s2.AcceptStep(t.Context(), "u-1", fixtureGen, 101)
 				require.NoError(t, err)
 
-				older, err := s2.AcceptStep(t.Context(), "u-1", 100)
+				older, err := s2.AcceptStep(t.Context(), "u-1", fixtureGen, 100)
 				require.NoError(t, err)
 
 				return []bool{same, older}, nil
@@ -288,7 +288,7 @@ func TestMemoryEnrolmentStoreAcceptStepRace(t *testing.T) {
 			defer wg.Done()
 			<-start
 
-			if got, stepErr := s.AcceptStep(ctx, "u-1", 101); stepErr == nil && got {
+			if got, stepErr := s.AcceptStep(ctx, "u-1", fixtureGen, 101); stepErr == nil && got {
 				accepted.Add(1)
 			}
 		}()
@@ -356,7 +356,7 @@ func TestPutPendingStartsGeneration(t *testing.T) {
 				require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{
 					User: "u-1", Secret: []byte("secret"), Generation: g1,
 				}))
-				ok, err := s.Confirm(t.Context(), "u-1", 100, now)
+				ok, err := s.Confirm(t.Context(), "u-1", g1, 100, now)
 				require.NoError(t, err)
 				require.True(t, ok)
 
@@ -609,7 +609,7 @@ func TestDeviceProofPort(t *testing.T) {
 			name: "ProveDevice refuses a confirmed enrolment",
 			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (result, error) {
 				pendingOn(t, s, "u-1", g1)
-				ok, err := s.Confirm(t.Context(), "u-1", 4, now)
+				ok, err := s.Confirm(t.Context(), "u-1", g1, 4, now)
 				require.NoError(t, err)
 				require.True(t, ok)
 
@@ -755,7 +755,7 @@ func TestDeviceProofPort(t *testing.T) {
 			name: "Confirm clears an outstanding emailed code and keeps the step forward",
 			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (result, error) {
 				provenOn(t, s, "u-1", g1, now)
-				ok, err := s.Confirm(t.Context(), "u-1", 4, later)
+				ok, err := s.Confirm(t.Context(), "u-1", g1, 4, later)
 
 				return result{ok: ok, e: stored(t, s, "u-1")}, err
 			},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,8 +87,11 @@ func assertOneTimeFound(ctx context.Context, t *testing.T, s onetime.Store, toks
 // binding included, and are the caller's own copies; Insert never replaces;
 // Consume succeeds once, whatever the record's expiry, keeps the first
 // consumption time, and refuses an unknown or zero identifier as not found;
-// and the recent-issue count is exact at its boundary and counts expired
-// records.
+// the recent-issue count is exact at its boundary and counts expired
+// records; and a bounded insert counts as that count does, writes nothing
+// when refused, refuses at a limit below one, and, raced by twenty callers
+// for one subject against a limit of five, stores exactly five, while racers
+// for different subjects each get their own five.
 //
 // When the store also implements onetime.Reaper, the suite checks that a zero
 // cutoff is refused and deletes nothing, and that a purge removes exactly the
@@ -308,6 +312,87 @@ func RunOneTimeStoreSuite(
 				assert.Zero(t, n)
 			},
 		},
+		{
+			name: "a bounded insert counts as the recent-issue count does, and a refused one writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s onetime.Store, _ *clockwork.FakeClock) {
+				since := suiteStart.Add(time.Hour)
+				otherSubject := oneTimeToken(4, since)
+				otherSubject.Subject = "alice@example.com"
+				otherPurpose := oneTimeToken(5, since)
+				otherPurpose.Purpose = "reset-password"
+				insertOneTime(ctx, t, s,
+					oneTimeToken(1, since.Add(-time.Second)),
+					oneTimeToken(2, since),
+					oneTimeToken(3, since.Add(time.Minute)),
+					otherSubject,
+					otherPurpose,
+				)
+				require.NoError(t, s.Consume(ctx, suiteID(3), since.Add(2*time.Minute)))
+
+				below := oneTimeToken(6, since.Add(3*time.Minute))
+				stored, err := s.InsertWithin(ctx, below, since, 3)
+				require.NoError(t, err)
+				assert.True(t, stored, "two records count against a limit of three, so the third is stored")
+				assertOneTimeFound(ctx, t, s, below)
+
+				refused := oneTimeToken(7, since.Add(4*time.Minute))
+				stored, err = s.InsertWithin(ctx, refused, since, 3)
+				require.NoError(t, err, "a refusal is an outcome, not an error")
+				assert.False(t, stored, "three records count against a limit of three")
+				_, err = s.FindByID(ctx, refused.ID)
+				require.ErrorIs(t, err, onetime.ErrTokenNotFound, "a refused bounded insert must write nothing")
+
+				n, err := s.CountRecentBySubject(ctx, oneTimePurpose, oneTimeSubject, since)
+				require.NoError(t, err)
+				assert.Equal(t, 3, n)
+			},
+		},
+		{
+			name: "a bounded insert with a limit below one is refused and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s onetime.Store, _ *clockwork.FakeClock) {
+				tok := oneTimeToken(1, suiteStart)
+				for _, limit := range []int{0, -1} {
+					stored, err := s.InsertWithin(ctx, tok, suiteStart, limit)
+					require.NoError(t, err)
+					assert.False(t, stored, "limit %d", limit)
+				}
+				_, err := s.FindByID(ctx, tok.ID)
+				require.ErrorIs(t, err, onetime.ErrTokenNotFound)
+			},
+		},
+		{
+			name: "a bounded insert of an identifier already stored errors and leaves the original unchanged",
+			assert: func(t *testing.T, ctx context.Context, s onetime.Store, _ *clockwork.FakeClock) {
+				original := oneTimeToken(1, suiteStart)
+				insertOneTime(ctx, t, s, original)
+				dup := original
+				dup.Subject = "someone-else"
+
+				stored, err := s.InsertWithin(ctx, dup, suiteStart, 5)
+				require.Error(t, err)
+				assert.False(t, stored)
+				assertOneTimeFound(ctx, t, s, original)
+			},
+		},
+		{
+			name: "bounded inserts for one subject never exceed the limit",
+			assert: func(t *testing.T, ctx context.Context, s onetime.Store, _ *clockwork.FakeClock) {
+				stored := raceBoundedInserts(ctx, s, []string{oneTimeSubject}, boundedRacers, boundedLimit)
+
+				assertBoundedOutcome(ctx, t, s, oneTimeSubject, stored[0])
+			},
+		},
+		{
+			name: "bounded inserts count each subject on its own",
+			assert: func(t *testing.T, ctx context.Context, s onetime.Store, _ *clockwork.FakeClock) {
+				subjects := []string{"subject-a", "subject-b"}
+				stored := raceBoundedInserts(ctx, s, subjects, boundedRacers/2, boundedLimit)
+
+				for i, subject := range subjects {
+					assertBoundedOutcome(ctx, t, s, subject, stored[i])
+				}
+			},
+		},
 		optionalCase(
 			cfg.requireReaper,
 			"a purge with a zero cutoff is refused and deletes nothing",
@@ -357,4 +442,67 @@ func RunOneTimeStoreSuite(
 	}
 
 	runSuite(t, cases, newStore)
+}
+
+// The bounded-insert races: racers callers for one subject released together
+// against a limit well below them, so a store that counts and then inserts
+// as two steps stores more than the limit.
+const (
+	boundedRacers = 20
+	boundedLimit  = 5
+)
+
+// boundedOutcome is what one subject's racers were told.
+type boundedOutcome struct {
+	stored int
+	errs   []error
+}
+
+// raceBoundedInserts releases racers bounded inserts for each subject at
+// once, each with a record of its own issued at suiteStart, against limit
+// counted from suiteStart, and returns what each subject's racers were told.
+func raceBoundedInserts(
+	ctx context.Context, s onetime.Store, subjects []string, racers, limit int,
+) []boundedOutcome {
+	out := make([]boundedOutcome, len(subjects))
+	var mu sync.Mutex
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, subject := range subjects {
+		for racer := range racers {
+			wg.Go(func() {
+				tok := oneTimeToken(1000+i*racers+racer, suiteStart)
+				tok.Subject = subject
+				<-start
+				stored, err := s.InsertWithin(ctx, tok, suiteStart, limit)
+				mu.Lock()
+				defer mu.Unlock()
+				if stored {
+					out[i].stored++
+				}
+				if err != nil {
+					out[i].errs = append(out[i].errs, err)
+				}
+			})
+		}
+	}
+	close(start)
+	wg.Wait()
+
+	return out
+}
+
+// assertBoundedOutcome requires subject's racers to have been told exactly
+// boundedLimit inserts were stored, with no error, and the store to hold
+// exactly that many of subject's records.
+func assertBoundedOutcome(ctx context.Context, t *testing.T, s onetime.Store, subject string, o boundedOutcome) {
+	t.Helper()
+
+	for _, err := range o.errs {
+		assert.NoError(t, err, "subject %q: a racing bounded insert failed", subject)
+	}
+	assert.Equal(t, boundedLimit, o.stored, "subject %q: bounded inserts reported stored", subject)
+	n, err := s.CountRecentBySubject(ctx, oneTimePurpose, subject, suiteStart)
+	require.NoError(t, err)
+	assert.Equal(t, boundedLimit, n, "subject %q: records stored", subject)
 }

@@ -179,11 +179,29 @@ func (l *Limiter) Policy() (limit int, window time.Duration) {
 func (l *Limiter) Verify(ctx context.Context) error { return l.check.verify(ctx) }
 
 // limiterRunner runs the shared limiter's statements on the *sql.DB, never
-// in a transaction.
+// in a caller's transaction.
 type limiterRunner struct{ db *sql.DB }
 
 func (r limiterRunner) Exec(ctx context.Context, q string, args ...any) (pglimiter.Result, error) {
 	return r.db.ExecContext(ctx, q, args...)
+}
+
+// ExecReadCommitted runs q as the only statement of a READ COMMITTED
+// transaction of its own on the *sql.DB, whatever the database's default
+// isolation is, and commits it. The transaction is rolled back on every other
+// way out.
+func (r limiterRunner) ExecReadCommitted(ctx context.Context, q string, args ...any) error {
+	tx, err := beginReadCommitted(ctx, r.db)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (r limiterRunner) QueryRow(ctx context.Context, q string, args ...any) pglimiter.Row {

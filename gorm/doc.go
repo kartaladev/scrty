@@ -52,6 +52,16 @@
 // unexpected reason aborts that transaction, as PostgreSQL defines, a read
 // (for example one cancelled by a statement timeout) as much as a write.
 //
+// Isolation: every transaction a store begins for itself is begun at READ
+// COMMITTED, the isolation carried in its BEGIN, and AddStreakFailure runs in a READ
+// COMMITTED transaction of its own, so
+// the stores' guarantees hold whatever default_transaction_isolation the
+// database or the role sets. Inside a caller's transaction,
+// RecoveryCodeStore.ReplaceSet, AttemptStore.AddStreakFailure,
+// OneTimeStore.InsertWithin and PasskeyCredentialStore.InsertWithin refuse an
+// isolation stronger than READ COMMITTED with ErrIsolationTooStrong, leaving
+// the transaction usable; every other operation joins it at any isolation.
+//
 // The identity store is the exception: provisioning, updating and retiring a
 // password are several statements. Outside a caller's transaction each runs
 // in a transaction the store begins and ends itself; inside one it runs under
@@ -69,6 +79,19 @@
 // Limit, stated: callbacks and plugins registered on the consumer's *gorm.DB
 // (a tracing plugin, for example) still run on every store statement, and see
 // its bound values. A consumer registering one owns what it records.
+//
+// # Read replicas
+//
+// Limit, stated: the stores read and write through whatever *gorm.DB they are
+// given, and do not choose a connection themselves. A read/write-splitting
+// plugin registered on that *gorm.DB (gorm's dbresolver, for example) can send
+// a store's reads to a replica that lags the primary. A read served from a
+// lagging replica can return state that has since changed: a session that was
+// revoked, a one-time credential already consumed, an API key already
+// disabled. A consumer using such a plugin must route the stores' statements to
+// the primary, for instance by giving the stores a *gorm.DB that is not
+// split, or by forcing the write connection for them. This module takes no
+// dependency on any such plugin and does not detect one.
 //
 // # Rate limiting
 //

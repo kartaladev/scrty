@@ -6,6 +6,7 @@ package origin
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,7 @@ func TestAllowlistConstruction(t *testing.T) {
 		name     string
 		entries  []string
 		declared []string
+		opts     []Option
 		assert   func(t *testing.T, list *Allowlist, err error)
 	}
 
@@ -69,6 +71,27 @@ func TestAllowlistConstruction(t *testing.T) {
 			name:    "a control character in an entry is refused",
 			entries: []string{"/a\tb"},
 			assert:  refused(strconv.Quote("/a\tb"), optEntries),
+		},
+		{
+			// The bound is on the entry's length in bytes. The refusal names
+			// the length rather than quoting the entry back.
+			name:    "an entry over the length bound is refused",
+			entries: []string{"/" + strings.Repeat("a", MaxEntryLen)},
+			opts:    []Option{WithMaxEntryLen(MaxEntryLen)},
+			assert:  refused("2049", optEntries),
+		},
+		{
+			name:    "an entry at the length bound is accepted",
+			entries: []string{"/" + strings.Repeat("a", MaxEntryLen-1)},
+			opts:    []Option{WithMaxEntryLen(MaxEntryLen)},
+			assert:  accepted,
+		},
+		{
+			// Unbounded is the default: the bound is a flow's own, not the
+			// allowlist's.
+			name:    "an entry over the bound is accepted when no bound was asked for",
+			entries: []string{"/" + strings.Repeat("a", MaxEntryLen)},
+			assert:  accepted,
 		},
 		{
 			name:    "an empty entry is refused",
@@ -167,7 +190,7 @@ func TestAllowlistConstruction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			list, err := NewAllowlist(tc.entries, tc.declared, optEntries, optOrigins)
+			list, err := NewAllowlist(tc.entries, tc.declared, optEntries, optOrigins, tc.opts...)
 			tc.assert(t, list, err)
 		})
 	}

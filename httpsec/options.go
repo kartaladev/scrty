@@ -41,6 +41,20 @@ func newConfigError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrConfig, fmt.Sprintf(format, args...))
 }
 
+// checkCookieTTL refuses a ceremony cookie whose lifetime, ttl, is not a whole
+// number of seconds. The cookie's Max-Age is whole seconds, so a fractional
+// lifetime would be truncated and the cookie would expire before what it
+// binds does. It checks nothing when set is false, because no cookie is
+// written then. The bound has no override: choose a lifetime in whole seconds.
+func checkCookieTTL(option, what string, ttl time.Duration, set bool) error {
+	if set && (ttl < time.Second || ttl%time.Second != 0) {
+		return newConfigError("%s binds a cookie to %s, %s, which must be a whole number of seconds, at least one",
+			option, what, ttl)
+	}
+
+	return nil
+}
+
 // defaultIPv6SourcePrefix is the prefix length IPv6 clients are counted by. It
 // matches the rate-limiting default, so a consumer who configures neither gets
 // one consistent answer about what "one source" means.
@@ -1991,7 +2005,9 @@ type MagicLinkOption func(*magicLinkInterceptor) error
 // Whether links are bound to the requesting device is read from the manager,
 // never configured here: an interceptor that could be told one thing while the
 // manager was told another would emit cookies for links that carry no binding,
-// or issue bound links nothing ever answers.
+// or issue bound links nothing ever answers. With binding on, the cookie lives
+// as long as the link, so a manager whose link lifetime is not a whole number
+// of seconds, at least one, is refused; that bound has no override.
 //
 // The token generator is required, because a redeemed link establishes a
 // session the caller then has to be able to present. The session manager is

@@ -32,3 +32,16 @@ var MintFederatedForTest = assurance.NewFederated
 // FederatedMetForTest exposes the one rule both MFA policies decide federated
 // assurance by, so its refusals to ask the source can be pinned directly.
 var FederatedMetForTest = federatedMet
+
+// IdentifiersForTest reports how many distinct identifiers the store holds,
+// so a test can show what a sweep released.
+func (s *MemoryAttemptStore) IdentifiersForTest() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.entries)
+}
+
+// StoreForTest exposes the store a policy counts in, so a test of the default
+// store can reach the one the policy built for itself.
+func (p *AccountLockoutPolicy) StoreForTest() AttemptStore { return p.store }

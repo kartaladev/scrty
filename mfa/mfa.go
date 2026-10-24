@@ -73,7 +73,8 @@ const (
 
 // ErrConfig reports a configuration this package refuses: a dependency an
 // operation needs and was not given, where an explicit option is the way to
-// do without it.
+// do without it, or a parameter outside what the operation accepts. Every
+// construction failure of NewTOTP and NewVerifyThrottle matches it.
 var ErrConfig = errors.New("mfa: invalid configuration")
 
 // ErrEmailCodeInvalid refuses an emailed enrolment code: a wrong one, a

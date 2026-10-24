@@ -84,9 +84,74 @@ func (p *recordingPool) QueryRowContext(ctx context.Context, query string, args 
 	return p.db.QueryRowContext(ctx, query, args...)
 }
 
-func (p *recordingPool) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
-	p.record("BEGIN")
-	return p.db.BeginTx(ctx, opts)
+// BeginTx makes recordingPool a gorm.ConnPoolBeginner: the transaction it
+// returns records its statements, and its end, to the same pool. The BEGIN
+// is recorded with the isolation opts asks for, as the driver sends it, so a
+// transaction begun at READ COMMITTED reads "BEGIN ISOLATION LEVEL READ
+// COMMITTED".
+func (p *recordingPool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gormdb.ConnPool, error) {
+	p.record(beginStmt(opts))
+	tx, err := p.db.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	return &recordingTx{pool: p, tx: tx}, nil
+}
+
+// beginStmt is the BEGIN a transaction begun with opts is recorded as.
+func beginStmt(opts *sql.TxOptions) string {
+	if opts == nil || opts.Isolation == sql.LevelDefault {
+		return "BEGIN"
+	}
+
+	return "BEGIN ISOLATION LEVEL " + strings.ToUpper(opts.Isolation.String())
+}
+
+// recordingTx is a transaction recordingPool began: every statement gorm runs
+// in it, and its COMMIT or ROLLBACK, is recorded to pool. A Rollback after
+// the transaction has ended does nothing, and is not recorded.
+type recordingTx struct {
+	pool *recordingPool
+	tx   *sql.Tx
+}
+
+var _ gormdb.TxCommitter = (*recordingTx)(nil)
+
+func (r *recordingTx) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
+	r.pool.record("PREPARE " + query)
+	return r.tx.PrepareContext(ctx, query)
+}
+
+func (r *recordingTx) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	r.pool.record(query)
+	return r.tx.ExecContext(ctx, query, args...)
+}
+
+func (r *recordingTx) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	r.pool.record(query)
+	return r.tx.QueryContext(ctx, query, args...)
+}
+
+func (r *recordingTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	r.pool.record(query)
+	return r.tx.QueryRowContext(ctx, query, args...)
+}
+
+func (r *recordingTx) Commit() error {
+	err := r.tx.Commit()
+	if !errors.Is(err, sql.ErrTxDone) {
+		r.pool.record("COMMIT")
+	}
+	return err
+}
+
+func (r *recordingTx) Rollback() error {
+	err := r.tx.Rollback()
+	if !errors.Is(err, sql.ErrTxDone) {
+		r.pool.record("ROLLBACK")
+	}
+	return err
 }
 
 // storeSet is one of each gorm store, on one handle.
@@ -174,6 +239,8 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 			return op(ctx, counted)
 		}
 	}
+	// apiKeyRevokeStmt is the shared conditional revocation, run raw.
+	apiKeyRevokeStmt := `WITH revoked AS ( UPDATE api_keys SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL RETURNING id ) SELECT EXISTS (SELECT 1 FROM revoked) AS revoked, EXISTS (SELECT 1 FROM api_keys WHERE id = $1) AS present`
 	// ignoring drops a result an operation returns beside its error.
 	ignoring := func(_ any, err error) error { return err }
 	// ignoring2 drops the two results an operation returns beside its error.
@@ -275,12 +342,12 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`DELETE FROM "login_attempts" WHERE attempted_at < $1`)},
 		{name: "streak add of a new streak", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring2(s.attempts.AddStreakFailure(ctx, "stmt-streak-new", now, now.Add(-time.Hour), 5))
-		}), assert: one(streakAddStmt)},
+		}), assert: statements(nil, beginReadCommittedStmt, streakAddStmt, "COMMIT")},
 		{name: "streak add to a stored streak", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, ignoring2(seed.attempts.AddStreakFailure(ctx, "stmt-streak-old", now, now.Add(-time.Hour), 5)))
 			started()
 			return ignoring2(counted.attempts.AddStreakFailure(ctx, "stmt-streak-old", now, now.Add(-time.Hour), 5))
-		}, assert: one(streakAddStmt)},
+		}, assert: statements(nil, beginReadCommittedStmt, streakAddStmt, "COMMIT")},
 		{name: "streak read", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.attempts.FailureStreak(ctx, "stmt-streak-read", now.Add(-time.Hour)))
 		}), assert: one(`SELECT failures, newest_failure_at, held_at FROM login_failure_streaks WHERE username = $1 AND (held_at IS NOT NULL OR newest_failure_at > $2)`)},
@@ -316,7 +383,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}), assert: one(`INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
 		{name: "MFA begin over a confirmed enrolment", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-confirmed", storefix.EnrolmentGen, 1000, now)))
 			started()
 			return counted.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirmed", "TOTP-OTHER"))
 		}, assert: refused(mfa.ErrAlreadyEnrolled, `INSERT INTO "mfa_enrolments" ("id","user_id","secret","confirmed_at","last_step","created_at","generation","device_proven_at","email_code","email_code_until","email_code_attempts","verify_attempts","verify_window_until") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT ("user_id") DO UPDATE SET "secret"="excluded"."secret","created_at"="excluded"."created_at","generation"="excluded"."generation","last_step"=$14,"device_proven_at"=$15,"email_code"=$16,"email_code_until"=$17,"email_code_attempts"=$18,"verify_attempts"=$19,"verify_window_until"=$20 WHERE mfa_enrolments.confirmed_at IS NULL`)},
@@ -328,20 +395,20 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		{name: "MFA confirm", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-confirm", "TOTP")))
 			started()
-			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", 1000, now))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND confirmed_at IS NULL`)},
+			return flag(counted.enrolments.Confirm(ctx, "stmt-mfa-confirm", storefix.EnrolmentGen, 1000, now))
+		}, assert: one(`UPDATE "mfa_enrolments" SET "confirmed_at"=$1,"email_code"=$2,"last_step"=GREATEST(last_step, $3) WHERE user_id = $4 AND generation = $5 AND confirmed_at IS NULL`)},
 		{name: "MFA accept step", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-step", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1000, now)))
 			started()
-			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-step", 1001))
-		}, assert: one(`UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND confirmed_at IS NOT NULL AND last_step < $3`)},
+			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-step", storefix.EnrolmentGen, 1001))
+		}, assert: one(`UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
 		{name: "MFA accept of a step already accepted", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-stale", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-stale", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-stale", storefix.EnrolmentGen, 1000, now)))
 			started()
-			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", 1000))
-		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND confirmed_at IS NOT NULL AND last_step < $3`)},
+			return flag(counted.enrolments.AcceptStep(ctx, "stmt-mfa-stale", storefix.EnrolmentGen, 1000))
+		}, assert: refused(errNotStored, `UPDATE "mfa_enrolments" SET "last_step"=$1 WHERE user_id = $2 AND generation = $3 AND confirmed_at IS NOT NULL AND last_step < $4`)},
 		{name: "MFA device proof", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			gen := begunOn(ctx, t, seed, "stmt-mfa-prove")
 			started()
@@ -371,7 +438,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: refused(errNotStored, chargeStmt)},
 		{name: "MFA verification charge", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vcharge", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vcharge", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vcharge", storefix.EnrolmentGen, 1000, now)))
 			started()
 			_, ok, err := counted.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vcharge", now, 5, 15*time.Minute)
 			return flag(ok, err)
@@ -384,7 +451,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: refused(errNotStored, verifyChargeStmt)},
 		{name: "MFA verification give-back", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.enrolments.PutPending(ctx, storefix.Pending("stmt-mfa-vrefund", "TOTP")))
-			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vrefund", 1000, now)))
+			require.NoError(t, flag(seed.enrolments.Confirm(ctx, "stmt-mfa-vrefund", storefix.EnrolmentGen, 1000, now)))
 			until, _, err := seed.enrolments.ChargeVerifyAttempt(ctx, "stmt-mfa-vrefund", now, 5, 15*time.Minute)
 			require.NoError(t, err)
 			started()
@@ -408,11 +475,23 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		{name: "API key revoke", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.apiKeys.Put(ctx, storefix.APIKey(0x502, "stmt-svc")))
 			started()
-			return counted.apiKeys.Revoke(ctx, storefix.APIKey(0x502, "").ID, now)
-		}, assert: one(`UPDATE "api_keys" SET "revoked_at"=COALESCE(revoked_at, $1) WHERE id = $2`)},
+			return flag(counted.apiKeys.Revoke(ctx, storefix.APIKey(0x502, "").ID, now))
+		}, assert: one(apiKeyRevokeStmt)},
+		{name: "API key revoke of a revoked key: the same one statement, reporting no revocation", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
+			require.NoError(t, seed.apiKeys.Put(ctx, storefix.APIKey(0x505, "stmt-svc")))
+			revoked, err := seed.apiKeys.Revoke(ctx, storefix.APIKey(0x505, "").ID, now)
+			require.NoError(t, err)
+			require.True(t, revoked)
+			started()
+			again, err := counted.apiKeys.Revoke(ctx, storefix.APIKey(0x505, "").ID, now)
+			if err == nil && again {
+				return errors.New("a second revoke reported that it revoked the key")
+			}
+			return err
+		}, assert: one(apiKeyRevokeStmt)},
 		{name: "API key revoke of an unknown key", run: with(func(ctx context.Context, s storeSet) error {
-			return s.apiKeys.Revoke(ctx, storefix.APIKey(0x503, "").ID, now)
-		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "revoked_at"=COALESCE(revoked_at, $1) WHERE id = $2`)},
+			return ignoring(s.apiKeys.Revoke(ctx, storefix.APIKey(0x503, "").ID, now))
+		}), assert: refused(apikey.ErrKeyNotFound, apiKeyRevokeStmt)},
 		{name: "API key touch", run: with(func(ctx context.Context, s storeSet) error {
 			return s.apiKeys.TouchLastUsed(ctx, storefix.APIKey(0x504, "").ID, now)
 		}), assert: refused(apikey.ErrKeyNotFound, `UPDATE "api_keys" SET "last_used_at"=$1 WHERE id = $2`)},
@@ -489,8 +568,8 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		require.NoError(t, recorded.WithContext(t.Context()).Transaction(func(tx *gormdb.DB) error {
 			return tx.Exec("SELECT 1").Error
 		}))
-		assert.Equal(t, []string{"BEGIN"}, normalized(pool.take()),
-			"statements inside a transaction run on it, so the pool sees only its BEGIN")
+		assert.Equal(t, []string{"BEGIN", "SELECT 1", "COMMIT"}, normalized(pool.take()),
+			"a transaction's statements and its end are recorded on it")
 		require.NoError(t, recorded.WithContext(t.Context()).Exec("SELECT 1").Error)
 		assert.Equal(t, []string{"SELECT 1"}, normalized(pool.take()))
 	})
@@ -505,9 +584,11 @@ const (
 	// statements, so they are pinned as written there.
 	verifyChargeStmt = `UPDATE mfa_enrolments SET verify_attempts = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN 1 ELSE verify_attempts + 1 END, verify_window_until = CASE WHEN verify_window_until IS NULL OR verify_window_until <= $2 THEN $3 ELSE verify_window_until END WHERE user_id = $1 AND confirmed_at IS NOT NULL AND (verify_window_until IS NULL OR verify_window_until <= $2 OR verify_attempts < $4) RETURNING verify_window_until`
 	// streakAddStmt is the streak upsert, whitespace collapsed: one statement
-	// whether it creates the streak or advances a stored one.
-	streakAddStmt    = `WITH prev AS ( SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
-	verifyRefundStmt = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
+	// whether it creates the streak or advances a stored one. It runs in a
+	// transaction of the store's own, begun at READ COMMITTED.
+	streakAddStmt          = `WITH prev AS ( SELECT id, held_at FROM login_failure_streaks WHERE username = $2::text FOR UPDATE ), advanced AS ( UPDATE login_failure_streaks AS s SET failures = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END, newest_failure_at = CASE WHEN s.held_at IS NULL AND s.newest_failure_at <= $4::timestamptz THEN $3::timestamptz ELSE GREATEST(s.newest_failure_at, $3::timestamptz) END, held_at = CASE WHEN s.held_at IS NOT NULL THEN s.held_at WHEN (CASE WHEN s.newest_failure_at <= $4::timestamptz THEN 1 ELSE s.failures + 1 END) >= $5::integer THEN $3::timestamptz END FROM prev WHERE s.id = prev.id RETURNING s.failures, s.newest_failure_at, s.held_at, prev.held_at IS NULL AND s.held_at IS NOT NULL AS set_hold ), created AS ( INSERT INTO login_failure_streaks (id, username, failures, newest_failure_at, held_at) SELECT $1::uuid, $2::text, 1, $3::timestamptz, CASE WHEN 1 >= $5::integer THEN $3::timestamptz END WHERE NOT EXISTS (SELECT 1 FROM prev) ON CONFLICT (username) DO NOTHING RETURNING failures, newest_failure_at, held_at, held_at IS NOT NULL AS set_hold ) SELECT failures, newest_failure_at, held_at, set_hold FROM advanced UNION ALL SELECT failures, newest_failure_at, held_at, set_hold FROM created`
+	beginReadCommittedStmt = `BEGIN ISOLATION LEVEL READ COMMITTED`
+	verifyRefundStmt       = `UPDATE mfa_enrolments SET verify_attempts = verify_attempts - 1 WHERE user_id = $1 AND verify_window_until = $2 AND verify_attempts > 0`
 )
 
 // proofs is s's enrolment store as the enrolment path's port.

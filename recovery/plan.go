@@ -159,9 +159,12 @@ func (p planner) planOver(
 			if r.Kind != name || r.ID == "" || strings.Contains(r.ID, "\n") {
 				return nil, diag.Wrap(errHeldRefInvalid, errTextResetListing, errListingFailed)
 			}
-		}
 
-		held = append(held, refs...)
+			// The channel is not part of a reference's identity: reported
+			// losses and proven authenticators carry none, so the plan
+			// compares by kind and identifier alone.
+			held = append(held, AuthenticatorRef{Kind: r.Kind, ID: r.ID})
+		}
 	}
 
 	switch p.mode {
@@ -171,11 +174,11 @@ func (p planner) planOver(
 		}
 
 		for _, r := range reported {
-			if slices.Contains(proven, r) {
+			if hasRef(proven, r) {
 				return nil, fmt.Errorf("%w: a reported loss was proven in the same recovery", ErrMalformed)
 			}
 
-			if !dropUnheld && !slices.Contains(held, r) {
+			if !dropUnheld && !hasRef(held, r) {
 				return nil, fmt.Errorf("%w: a reported loss is not held", ErrMalformed)
 			}
 		}
@@ -196,14 +199,22 @@ func (p planner) planOver(
 		return keep(held, chosen), nil
 
 	default:
-		return slices.DeleteFunc(held, func(r AuthenticatorRef) bool { return slices.Contains(proven, r) }), nil
+		return slices.DeleteFunc(held, func(r AuthenticatorRef) bool { return hasRef(proven, r) }), nil
 	}
+}
+
+// hasRef reports whether refs holds r, comparing by kind and identifier alone.
+// The channel is a display hint, not part of a reference's identity, so a ref a
+// consumer's policy or a request returns with one set still names the same
+// authenticator.
+func hasRef(refs []AuthenticatorRef, r AuthenticatorRef) bool {
+	return slices.ContainsFunc(refs, func(o AuthenticatorRef) bool { return o.Kind == r.Kind && o.ID == r.ID })
 }
 
 // keep returns the refs of held that are in chosen, in held's order, so a ref
 // that is not held is dropped and a ref named twice is removed once.
 func keep(held, chosen []AuthenticatorRef) []AuthenticatorRef {
-	return slices.DeleteFunc(held, func(r AuthenticatorRef) bool { return !slices.Contains(chosen, r) })
+	return slices.DeleteFunc(held, func(r AuthenticatorRef) bool { return !hasRef(chosen, r) })
 }
 
 // execute removes the planned authenticators, one Remove per kind in

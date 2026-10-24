@@ -178,7 +178,7 @@ func TestMFAReturnedErrors(t *testing.T) {
 				d.store.EXPECT().Get(gomock.Any(), user).Return(confirmed(d), true, nil)
 				d.store.EXPECT().ChargeVerifyAttempt(gomock.Any(), user, gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(time.Now(), true, nil)
-				d.store.EXPECT().AcceptStep(gomock.Any(), user, gomock.Any()).Return(false, errMFAFixture)
+				d.store.EXPECT().AcceptStep(gomock.Any(), user, gomock.Any(), gomock.Any()).Return(false, errMFAFixture)
 			},
 			act: func(t *testing.T, ctx context.Context, d *returnedErrorsDeps) error {
 				return d.method.Verify(ctx, user, []byte(d.code(t)))
@@ -244,7 +244,7 @@ func TestMFAReturnedErrors(t *testing.T) {
 			name: "confirm: the enrolment store cannot confirm",
 			arrange: func(_ *testing.T, d *returnedErrorsDeps) {
 				d.store.EXPECT().Get(gomock.Any(), user).Return(pending(d), true, nil)
-				d.store.EXPECT().Confirm(gomock.Any(), user, gomock.Any(), gomock.Any()).Return(false, errMFAFixture)
+				d.store.EXPECT().Confirm(gomock.Any(), user, gomock.Any(), gomock.Any(), gomock.Any()).Return(false, errMFAFixture)
 			},
 			act: func(t *testing.T, ctx context.Context, d *returnedErrorsDeps) error {
 				return d.method.ConfirmEnrolment(ctx, user, d.code(t))

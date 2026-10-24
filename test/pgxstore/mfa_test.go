@@ -131,7 +131,7 @@ func TestEnrolmentStore_SealedColumns(t *testing.T) {
 				return newEnrolmentStore(t, pool, c)
 			})
 		storetest.RunSealedColumns(t, h, codes)
-		storefix.RunEmailCodeBindings(t, db.DB, codes)
+		storefix.RunEnrolmentBindings(t, db.DB, codes)
 	})
 }
 
@@ -438,7 +438,7 @@ func TestEnrolmentStore_Durable(t *testing.T) {
 					`UPDATE mfa_enrolments SET last_step = 2000 WHERE user_id = 'step-kept'`)
 				require.NoError(t, err)
 
-				ok, err := s.Confirm(ctx, "step-kept", 1000, storefix.EnrolmentBegun.Add(time.Minute))
+				ok, err := s.Confirm(ctx, "step-kept", storefix.EnrolmentGen, 1000, storefix.EnrolmentBegun.Add(time.Minute))
 				require.NoError(t, err)
 				require.True(t, ok)
 

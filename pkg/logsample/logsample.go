@@ -6,6 +6,10 @@
 // key in a window is written and carries how many events for that key were
 // suppressed since its previous written record.
 //
+// A window tracks at most DefaultMaxKeys distinct keys (WithMaxKeys). Events for
+// keys beyond that are sampled together under OverflowKey, so a flood of
+// distinct keys cannot grow memory and no suppressed event goes uncounted.
+//
 // By default there is no reporter, and a key that does not recur before its counts
 // age out has them discarded: suppressed counts are then a lower bound. With
 // WithReporter, every suppressed event is counted exactly once, either on a later
@@ -31,6 +35,7 @@ type Sampler struct {
 	mu          sync.Mutex
 	window      time.Duration
 	report      func(key string, suppressed int)
+	maxKeys     int
 	windowStart time.Time
 	current     map[string]int
 	previous    map[string]int
@@ -45,6 +50,21 @@ func WithReporter(fn func(key string, suppressed int)) Option {
 	return func(s *Sampler) { s.report = fn }
 }
 
+// DefaultMaxKeys is how many distinct keys a Sampler tracks in one window.
+const DefaultMaxKeys = 100_000
+
+// OverflowKey is the key under which events for keys beyond the cap are
+// counted, written and reported together.
+const OverflowKey = "logsample: overflow"
+
+// WithMaxKeys sets how many distinct keys one window tracks. Events for further
+// keys are sampled together under OverflowKey, so the count of what was
+// suppressed stays exact while memory stays bounded. A value of zero or less
+// keeps the default. Default: DefaultMaxKeys.
+func WithMaxKeys(n int) Option {
+	return func(s *Sampler) { s.maxKeys = n }
+}
+
 // New returns a Sampler with fixed windows of the given length.
 func New(window time.Duration, opts ...Option) *Sampler {
 	s := &Sampler{
@@ -56,6 +76,9 @@ func New(window time.Duration, opts ...Option) *Sampler {
 		if opt != nil {
 			opt(s)
 		}
+	}
+	if s.maxKeys <= 0 {
+		s.maxKeys = DefaultMaxKeys
 	}
 	return s
 }
@@ -85,6 +108,12 @@ func (s *Sampler) Allow(key string, now time.Time) (write bool, suppressed int) 
 	for range int(min(now.Sub(s.windowStart)/s.window, 2)) {
 		evicted = s.rotate(evicted)
 		s.windowStart = now
+	}
+
+	// A key the window has no room for is sampled with every other such key, so
+	// its suppressed events are still counted, under OverflowKey.
+	if _, seen := s.current[key]; !seen && len(s.current) >= s.maxKeys {
+		key = OverflowKey
 	}
 
 	if _, seen := s.current[key]; !seen {

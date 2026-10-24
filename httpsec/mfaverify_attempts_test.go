@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -123,8 +124,9 @@ func TestMFAVerify_ConcurrentWrongCodesComparedExactlyTheLimit(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC))
 
 	store := mfa.NewMemoryEnrolmentStore()
-	require.NoError(t, store.PutPending(t.Context(), mfa.Enrolment{User: testMFAUser, Secret: secret}))
-	ok, err := store.Confirm(t.Context(), testMFAUser, 0, clk.Now())
+	gen := id.MustParse("01920000-0000-7000-8000-0000000000f1")
+	require.NoError(t, store.PutPending(t.Context(), mfa.Enrolment{User: testMFAUser, Secret: secret, Generation: gen}))
+	ok, err := store.Confirm(t.Context(), testMFAUser, gen, 0, clk.Now())
 	require.NoError(t, err)
 	require.True(t, ok)
 

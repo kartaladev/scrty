@@ -48,10 +48,13 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	clk := newClock()
 	store := signingkey.NewInMemoryKeyStore()
 
-	// A replica configured for ES256 shares the store: one key past the
-	// lifetime, one inside it.
-	stale := realRecordFor(t, signingkey.ES256, epoch.Add(-25*time.Hour))
+	// A replica configured for ES256 shares the store: one key already past
+	// the lifetime, one exactly at it, which passes it one second in, and one
+	// well inside it.
+	expired := realRecordFor(t, signingkey.ES256, epoch.Add(-25*time.Hour))
+	stale := realRecordFor(t, signingkey.ES256, epoch.Add(-24*time.Hour))
 	fresh := realRecordFor(t, signingkey.ES256, epoch)
+	require.NoError(t, store.Store(t.Context(), expired))
 	require.NoError(t, store.Store(t.Context(), stale))
 	require.NoError(t, store.Store(t.Context(), fresh))
 
@@ -81,6 +84,9 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	require.True(t, publishes(km, fresh.Kid),
 		"another replica's key is published, so the tokens it signed verify here")
 	require.True(t, publishes(km, stale.Kid))
+	require.False(t, publishes(km, expired.Kid),
+		"a foreign key is never the newest of a configured algorithm, so construction "+
+			"publishes none past its lifetime")
 
 	require.NoError(t, km.Start(t.Context()))
 

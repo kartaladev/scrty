@@ -25,9 +25,13 @@
 // are two different passwords, as are "hunter2" and " hunter2".
 //
 // Every encoder's parameters have a floor, taken from the OWASP password-storage
-// minimums; see [ErrWeakParameters]. The floors are the only limit on how a
-// consumer configures an encoder — anything at or above them is accepted,
-// including parameters far stronger than the defaults.
+// minimums; see [ErrWeakParameters]. They also have a ceiling, far above any
+// plausible deployment, because the same limits bound what a stored record may
+// ask Match to do on the login path; see [ErrInvalidParameters]. Between the two
+// anything is accepted, including parameters far stronger than the defaults.
+// The ceilings are not options: a bound the consumer could raise would reopen
+// the process-killing allocation they exist to prevent. A stored record above a
+// ceiling is not recognised and never matches.
 //
 // Memory is the parameter worth planning for, because verification costs as much
 // of it as encoding does and concurrent logins multiply it; see
@@ -91,6 +95,29 @@ type Encoder interface {
 	// to do with the difference, and treating it as an error invites a branch
 	// that accidentally admits the user.
 	Match(input string, encoded []byte) bool
+}
+
+// Recognizer is implemented by an encoder that can tell whether a stored hash
+// is one its Match would actually verify: in its own format, well formed, and
+// within the limits on the work a record may demand. A record whose parameters
+// are above an encoder's ceilings is not recognised.
+//
+// It is optional and checked by type assertion. The Argon2id, bcrypt and scrypt
+// encoders all implement it. Its consumer is a login path that must spend the
+// same work whether or not a user's stored hash is usable: Match reports no
+// match for a hash it does not recognise without deriving anything, so a caller
+// that learns in advance the hash is unusable can spend a full verification
+// against a hash of its own instead, and keep the two refusals equally slow.
+//
+// An encoder that does not implement it is treated by scrty as recognising every
+// non-empty hash. That is the default for a consumer's own encoder; implementing
+// Recognizer is how such an encoder extends the equal-cost guarantee to the
+// hashes it would reject without work.
+type Recognizer interface {
+	// Recognizes reports whether Match would derive a key from encoded, rather
+	// than refuse it unread. It derives nothing itself and never reports on any
+	// password.
+	Recognizes(encoded []byte) bool
 }
 
 // isNilReader reports whether r is nil, or a non-nil interface holding a nil

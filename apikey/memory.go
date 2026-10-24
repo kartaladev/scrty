@@ -90,27 +90,32 @@ func (s *MemoryStore) Get(_ context.Context, keyID id.ID) (Key, error) {
 	return copyKey(rec), nil
 }
 
-// Revoke marks the record revoked at, or reports ErrKeyNotFound.
+// Revoke marks the record revoked at, or reports ErrKeyNotFound, and reports
+// true only when this call found the record live. The check and the write
+// happen under one lock, so of concurrent calls for one live record exactly
+// one reports true.
 //
 // A record already revoked keeps the time first recorded: the first revocation
 // is the one that happened, and a later call must not be able to rewrite when
 // the key stopped being accepted.
-func (s *MemoryStore) Revoke(_ context.Context, keyID id.ID, at time.Time) error {
+func (s *MemoryStore) Revoke(_ context.Context, keyID id.ID, at time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rec, found := s.records[keyID]
 	if !found {
-		return ErrKeyNotFound
+		return false, ErrKeyNotFound
 	}
 
-	if rec.RevokedAt == nil {
-		revoked := at
-		rec.RevokedAt = &revoked
-		s.records[keyID] = rec
+	if rec.RevokedAt != nil {
+		return false, nil
 	}
 
-	return nil
+	revoked := at
+	rec.RevokedAt = &revoked
+	s.records[keyID] = rec
+
+	return true, nil
 }
 
 // TouchLastUsed records that a verification of this key succeeded at, or

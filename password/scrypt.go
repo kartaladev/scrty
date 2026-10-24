@@ -40,16 +40,34 @@ type ScryptOption func(*scryptEncoder)
 // WithScryptN sets the CPU and memory cost. Default: 32768.
 //
 // It must be a power of two, and it is the dial that makes cracking expensive.
+//
+// Construction refuses a value below 32768 with [ErrWeakParameters], and a value
+// that is not a power of two, or that takes the footprint over the ceiling,
+// with [ErrInvalidParameters]. The ceilings are N a power of two of at least 2,
+// and (N+p)*128*r at most 1 GiB. They have no override, because a configurable
+// ceiling would reopen the process-kill they exist to prevent; a stored record
+// above them never matches.
 func WithScryptN(n int) ScryptOption {
 	return func(e *scryptEncoder) { e.n = n }
 }
 
 // WithScryptR sets the block size. Default: 8.
+//
+// It counts toward the footprint ceiling of (N+p)*128*r at most 1 GiB. Construction
+// refuses a value over it with [ErrInvalidParameters], a stored record over it
+// never matches, and there is no override: a configurable ceiling would reopen
+// the process-kill it exists to prevent.
 func WithScryptR(r int) ScryptOption {
 	return func(e *scryptEncoder) { e.r = r }
 }
 
 // WithScryptP sets the parallelisation factor. Default: 1.
+//
+// The ceiling is 16, and p also counts toward the footprint ceiling of
+// (N+p)*128*r at most 1 GiB. Construction refuses a value over either with
+// [ErrInvalidParameters], a stored record over either never matches, and there
+// is no override: a configurable ceiling would reopen the process-kill it exists
+// to prevent.
 func WithScryptP(p int) ScryptOption {
 	return func(e *scryptEncoder) { e.p = p }
 }
@@ -132,6 +150,11 @@ func (e *scryptEncoder) validate() error {
 		return fmt.Errorf("%w: p=%d; need at least %d", ErrWeakParameters, e.p, defaultScryptP)
 	}
 
+	if !scryptFootprintWithinCeiling(e.n, e.r, e.p) {
+		return fmt.Errorf("%w: N=%d, r=%d, p=%d; p is at most %d and (N+p)*128*r at most %d bytes",
+			ErrInvalidParameters, e.n, e.r, e.p, maxRecordParallelism, maxRecordFootprint)
+	}
+
 	if e.saltLength < defaultScryptSaltLength {
 		return fmt.Errorf("%w: salt length %d bytes; need at least %d",
 			ErrWeakParameters, e.saltLength, defaultScryptSaltLength)
@@ -181,16 +204,23 @@ func (e *scryptEncoder) Match(input string, encoded []byte) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-// maxRecordFootprint bounds the memory a stored scrypt record may demand, on the
-// same reasoning as Argon2id's maxRecordMemory: a record's parameters are data
-// this package did not write, and Match is the login path.
-const maxRecordFootprint = 1024 * 1024 * 1024 // 1 GiB
+// The ceilings on what a stored scrypt record may demand, on the same reasoning
+// as Argon2id's: a record's parameters are data this package did not write, and
+// Match is the login path. They are a stated limit with no override.
+const (
+	// maxRecordFootprint bounds the working memory of one derivation, 1 GiB.
+	maxRecordFootprint = 1024 * 1024 * 1024
+	// maxRecordParallelism bounds p, which multiplies both the work and, in the
+	// working memory, the term that N alone does not account for.
+	maxRecordParallelism = 16
+)
 
-// scryptFootprintWithinCeiling reports whether deriving at N and r stays within
-// maxRecordFootprint. scrypt allocates about 128*N*r bytes, and the check is
-// written as a division so the product itself can never overflow.
-func scryptFootprintWithinCeiling(n, r int) bool {
-	return n <= maxRecordFootprint/128/r
+// scryptFootprintWithinCeiling reports whether deriving at N, r and p stays
+// within maxRecordFootprint. scrypt allocates about (N+p)*128*r bytes, and the
+// check is written as a division so the product itself can never overflow. The
+// caller has already established n, r and p are positive.
+func scryptFootprintWithinCeiling(n, r, p int) bool {
+	return p <= maxRecordParallelism && n <= maxRecordFootprint/128/r-p
 }
 
 // parseScrypt reads an encoded record, reporting false for anything it does not
@@ -219,8 +249,9 @@ func parseScrypt(encoded []byte) (n, r, p int, salt, key []byte, ok bool) {
 	// to no match. It does not reason about a large power-of-two N: that clears
 	// its own guards and then fails inside make, which panics. So the record's
 	// demand is bounded here, by the footprint it implies rather than by N alone,
-	// since N and r multiply. Below 1 the derivation is meaningless.
-	if n < 1 || r < 1 || p < 1 || !scryptFootprintWithinCeiling(n, r) {
+	// since N and r multiply. N must also be a power of two above one, or scrypt.Key
+	// fails at once; below 1 the other parameters are meaningless.
+	if n < 2 || n&(n-1) != 0 || r < 1 || p < 1 || !scryptFootprintWithinCeiling(n, r, p) {
 		return 0, 0, 0, nil, nil, false
 	}
 
@@ -236,3 +267,14 @@ func parseScrypt(encoded []byte) (n, r, p int, salt, key []byte, ok bool) {
 }
 
 var _ Encoder = (*scryptEncoder)(nil)
+
+// Recognizes reports whether encoded is a scrypt record Match would derive a key
+// from: well formed, and within the ceilings on what a record may demand. It
+// derives nothing.
+func (e *scryptEncoder) Recognizes(encoded []byte) bool {
+	_, _, _, _, _, ok := parseScrypt(encoded)
+
+	return ok
+}
+
+var _ Recognizer = (*scryptEncoder)(nil)

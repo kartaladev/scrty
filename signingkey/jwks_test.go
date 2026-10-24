@@ -240,9 +240,12 @@ func TestJWKSPublishesTheDocumentAnEndpointServes(t *testing.T) {
 				store := signingkey.NewInMemoryKeyStore()
 				require.NoError(t, store.Store(t.Context(), foreign))
 
+				// The manager reads the time the record is dated at, or the
+				// record would be dated years ahead and not published at all.
 				km, err := signingkey.NewKeyManager(t.Context(),
 					signingkey.WithKeyStore(store),
 					signingkey.WithAlgs(signingkey.RS256),
+					signingkey.WithClock(newClock()),
 				)
 				require.NoError(t, err)
 

@@ -30,6 +30,9 @@ const (
 // as an error, never taken as holding nothing, so a recovery is refused rather
 // than planned over an incomplete list.
 //
+// It also implements UsableLister: Usable lists what Held lists, with each
+// reference's Channel set to its method's declared channel.
+//
 // Remove removes each named enrolment through that method's
 // mfa.EnrolmentRemover, in the order of the references, and stops at the first
 // error. A reference to a method not in the set is ignored.
@@ -69,6 +72,19 @@ type mfaKind struct {
 func (mfaKind) Kind() string { return MFAKind }
 
 func (k mfaKind) Held(ctx context.Context, user identity.UserID) ([]AuthenticatorRef, error) {
+	return k.enrolled(ctx, user, false)
+}
+
+// Usable lists the same enrolments as Held, every one of which can
+// authenticate, each with Channel set to its method's declared channel, so the
+// way-back check can tell an email-channel method from the rest.
+func (k mfaKind) Usable(ctx context.Context, user identity.UserID) ([]AuthenticatorRef, error) {
+	return k.enrolled(ctx, user, true)
+}
+
+// enrolled lists user's confirmed enrolments in configuration order, with each
+// method's channel when withChannel is set.
+func (k mfaKind) enrolled(ctx context.Context, user identity.UserID, withChannel bool) ([]AuthenticatorRef, error) {
 	var refs []AuthenticatorRef
 
 	for _, m := range k.methods {
@@ -78,7 +94,12 @@ func (k mfaKind) Held(ctx context.Context, user identity.UserID) ([]Authenticato
 		}
 
 		if enrolled {
-			refs = append(refs, AuthenticatorRef{Kind: MFAKind, ID: m.Name()})
+			ref := AuthenticatorRef{Kind: MFAKind, ID: m.Name()}
+			if withChannel {
+				ref.Channel = m.Channel()
+			}
+
+			refs = append(refs, ref)
 		}
 	}
 

@@ -212,9 +212,9 @@ func (m *Manager) RotateWithGrace(ctx context.Context, s *Session, grace time.Du
 			ErrConfig, r.lifetime, m.maxLifetime)
 	}
 
-	old, err := m.store.Load(ctx, s.ID)
+	old, err := m.loadStored(ctx, s.ID, "session: the session to renew could not be loaded")
 	if err != nil {
-		return nil, 0, storeFailed(err, "session: the session to renew could not be loaded")
+		return nil, 0, err
 	}
 
 	now := m.clock.Now()

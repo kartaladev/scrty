@@ -23,6 +23,8 @@ const (
 	msgRefused          = "passkey: assertion refused"
 	msgClone            = "passkey: suspected clone"
 	msgSessionsNotEnded = "passkey: the user's sessions could not all be ended"
+
+	msgUnsettledNotRemoved = "passkey: a passkey whose registration failed after it was stored could not be removed"
 )
 
 // sampled writes the record msg at level under key when the manager's sampler

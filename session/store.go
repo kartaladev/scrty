@@ -62,6 +62,16 @@ var ErrSuccessorAdvanced = errors.New("session: the session's successor has move
 // is how a recovery committed between a load and its mark is caught.
 var ErrSessionSuperseded = errors.New("session: the session has been superseded")
 
+// ErrDeleteDidNotSettle is wrapped by the error a durable store's user-wide
+// delete (DeleteByUser, DeleteByUserExcept, DeleteByExternalSession and
+// DeleteByUserAndExternalIssuer) returns when each of its 64 passes removed
+// sessions, because sessions it matches were being created as fast as it
+// removed them. The sessions its passes removed stay removed. A caller that
+// must see none left stops what creates them, then retries. Each backend's
+// own name for it is an alias of this value, so errors.Is matches it
+// whichever backend runs.
+var ErrDeleteDidNotSettle = errors.New("session: the user-wide session delete did not settle")
+
 // Supersession is one atomic supersession: Store.Supersede marks Old
 // superseded by Successor and inserts Successor, provided Old's current
 // successor is still the one the caller observed.
@@ -278,6 +288,11 @@ type Store interface {
 	//
 	// The nil family, id.Nil, is refused with an error and nothing is
 	// deleted: it names no family, and Create stores no session in it.
+	//
+	// A durable store repeats the delete until a pass removes nothing, with
+	// no bound: a family gains a member only when its current member is
+	// superseded, and the delete removes that member, so concurrent work
+	// cannot keep refilling it.
 	DeleteFamily(ctx context.Context, family id.ID) (int, error)
 
 	// MarkPresented records at as the session's FirstPresentedAt, only when
@@ -324,6 +339,10 @@ type Store interface {
 
 	// DeleteByUser removes every session of this user, expired ones included.
 	// The reference is matched exactly as the consumer supplied it.
+	//
+	// A durable store repeats the delete until a pass removes nothing, at
+	// most 64 times; when every pass removed sessions, it stops with an error
+	// wrapping ErrDeleteDidNotSettle rather than running until ctx ends.
 	DeleteByUser(ctx context.Context, user identity.UserID) error
 
 	// DeleteByUserExcept removes every session of this user except the one with
@@ -340,6 +359,10 @@ type Store interface {
 	// A keep that names another user's session, or none, is left untouched and
 	// does not stop the user's sessions from being removed; an empty keep
 	// removes them all.
+	//
+	// A durable store repeats the delete until a pass removes nothing, at
+	// most 64 times; when every pass removed sessions, it stops with an error
+	// wrapping ErrDeleteDidNotSettle rather than running until ctx ends.
 	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
 
 	// CountActiveByUser counts this user's unexpired sessions. Expired ones
@@ -363,12 +386,20 @@ type Store interface {
 	// error. An empty issuer that matched everything would let one provider's
 	// logout end sessions established at another, and an empty session
 	// identifier would match every session that provider issued without one.
+	//
+	// A durable store repeats the delete until a pass removes nothing, at
+	// most 64 times; when every pass removed sessions, it stops with an error
+	// wrapping ErrDeleteDidNotSettle rather than running until ctx ends.
 	DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error)
 
 	// DeleteByUserAndExternalIssuer removes this user's sessions from this
 	// issuer, and reports how many went. An empty issuer matches nothing and
 	// is not an error, so a caller with no issuer to hand cannot end that
 	// user's password sessions by accident.
+	//
+	// A durable store repeats the delete until a pass removes nothing, at
+	// most 64 times; when every pass removed sessions, it stops with an error
+	// wrapping ErrDeleteDidNotSettle rather than running until ctx ends.
 	DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error)
 }
 

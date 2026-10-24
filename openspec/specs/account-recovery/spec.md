@@ -172,7 +172,9 @@ The completion endpoint SHALL match only POST requests to its path, `/recovery/c
 - a saved code and an issued code;
 - a saved code or an issued code, together with an authenticator the user holds: the user's password, or a code for an MFA method the user is enrolled on.
 
-A request with one proof, with more than two, with two of the same kind, or with no recovery code SHALL be refused as a malformed recovery before any proof is checked. Each proof kind SHALL be enabled separately by the consumer, and a proof of a kind that is not enabled SHALL be refused as a malformed recovery. Only an MFA method whose response is a single form field and which has no begin step SHALL serve as a proof. The documentation SHALL state that a challenge method cannot serve as a proof. A password proof SHALL be subject to the pre-authentication policy phase, which includes lockout, and SHALL be verified by the same password authenticator as form login, recording a failed attempt as login does. An unknown username, a disabled user, and any refused proof, including a password proof refused because the account is locked, SHALL all be refused with the same recovery-refused error, unless the consumer has chosen to disclose locks.
+The two proofs SHALL NOT share a delivery channel. An issued code is delivered by email, so it SHALL NOT be paired with an MFA method whose code is delivered by email. This is a stated limit with no override, because accepting it would let one mailbox recover the account alone.
+
+A request with one proof, with more than two, with two of the same kind, with two proofs sharing a delivery channel, or with no recovery code SHALL be refused as a malformed recovery before any proof is checked. Each proof kind SHALL be enabled separately by the consumer, and a proof of a kind that is not enabled SHALL be refused as a malformed recovery. Only an MFA method whose response is a single form field and which has no begin step SHALL serve as a proof. The documentation SHALL state that a challenge method cannot serve as a proof. A password proof SHALL be subject to the pre-authentication policy phase, which includes lockout, and SHALL be verified by the same password authenticator as form login, recording a failed attempt as login does. An unknown username, a disabled user, and any refused proof, including a password proof refused because the account is locked, SHALL all be refused with the same recovery-refused error, unless the consumer has chosen to disclose locks.
 
 #### Scenario: Saved and issued codes
 - **WHEN** `u-1` posts a valid saved code and a valid issued code
@@ -205,6 +207,14 @@ A request with one proof, with more than two, with two of the same kind, or with
 #### Scenario: Unknown and wrong look alike
 - **WHEN** one recovery names an unknown username and another names `u-1` with a wrong saved code
 - **THEN** both are refused with the same recovery-refused error
+
+#### Scenario: Issued code and an emailed MFA code
+- **WHEN** `u-1`, enrolled on an MFA method whose codes are sent by email, posts a valid issued code and a valid code for that method
+- **THEN** it is refused as a malformed recovery and nothing is checked or spent
+
+#### Scenario: Saved code and an emailed MFA code
+- **WHEN** `u-1`, enrolled on an MFA method whose codes are sent by email, posts a valid saved code and a valid code for that method
+- **THEN** the recovery succeeds
 
 ### Requirement: Every proof is checked before any is spent
 A recovery SHALL proceed in this order:
@@ -399,11 +409,11 @@ A consumer SHALL be able to enable a cool-down: for a duration they state after 
 
 ### Requirement: The library reports whether a user has another way back in
 The library SHALL export a check that reports whether a user has a way back into the account other than saved codes they have yet to generate. It SHALL report yes when any of these holds:
-- the user has a password or a usable authenticator, and issued codes are enabled, so it can pair with an issued code. An authenticator is usable when it can authenticate now: an enrolled MFA method, or an active passkey. A pending or suspended passkey is not usable;
+- the user has a password or a usable authenticator that does not share the issued code's delivery channel, and issued codes are enabled, so it can pair with an issued code. An authenticator is usable when it can authenticate now: an enrolled MFA method, or an active passkey. A pending or suspended passkey is not usable. An MFA method whose codes are delivered by email does not pair with an issued code;
 - the user holds at least one unspent saved code;
 - the user has a linked federated identity whose login would be admitted without a local second factor whatever the provider asserts, as decided by the MFA requirement policy the login itself is evaluated by: the policy is in the exempt federated-assurance mode, the exemption rule marks `oidc` exempt, or the user is not required to use MFA. Provider assurance SHALL NOT be assumed, because it is known only at a login.
 
-Linked identities SHALL be read through a lookup the consumer supplies. With none supplied they SHALL NOT count, and the documentation SHALL say so. Kinds of authenticator added later SHALL feed the check through the authenticator-reset port. A kind that holds authenticators that cannot authenticate SHALL report only its usable ones to the check, while still listing every one it holds for the reset. A failed lookup SHALL return an error and SHALL NOT report no.
+Linked identities SHALL be read through a lookup the consumer supplies. With none supplied they SHALL NOT count, and the documentation SHALL say so. Kinds of authenticator added later SHALL feed the check through the authenticator-reset port. A kind that holds authenticators that cannot authenticate SHALL report only its usable ones to the check, while still listing every one it holds for the reset. A kind SHALL report each usable authenticator's delivery channel where it has one. A failed lookup SHALL return an error and SHALL NOT report no. A lookup that returns no user and no error SHALL be treated as a user with nothing, never dereferenced.
 
 #### Scenario: Password with issued codes
 - **WHEN** issued codes are enabled and `u-1` has a password and no saved codes
@@ -445,6 +455,14 @@ Linked identities SHALL be read through a lookup the consumer supplies. With non
 - **WHEN** the enrolment lookup fails during the check
 - **THEN** the check returns an error
 
+#### Scenario: Only an emailed MFA method with issued codes
+- **WHEN** issued codes are enabled and `u-1` has no password, no saved codes, and only an MFA method whose codes are sent by email
+- **THEN** the check reports no
+
+#### Scenario: Loader returns no user
+- **WHEN** the user loader returns no user and no error for `u-1`
+- **THEN** the check reports from the remaining lookups and does not panic
+
 ### Requirement: Recovery is off by default, and its wiring mistakes fail at construction
 No recovery endpoint SHALL exist until the consumer enables recovery on the chain. Saved codes, issued codes, the password proof and the MFA-method proof SHALL each be enabled separately. Construction SHALL fail with a configuration error when:
 - no recovery code kind is enabled;
@@ -463,4 +481,22 @@ No recovery endpoint SHALL exist until the consumer enables recovery on the chai
 
 #### Scenario: Path collision
 - **WHEN** the start path is set to the logout path
+- **THEN** construction fails with a configuration error
+
+### Requirement: The issued-code limit holds under concurrent starts
+The per-user issuance limit for issued recovery codes SHALL be decided by one atomic count-and-issue, so that no number of concurrent starts for one user issues more codes within the window than the limit allows.
+
+#### Scenario: Concurrent starts
+- **WHEN** 20 recoveries for `u-1` start concurrently with the default limit of 5
+- **THEN** at most 5 issued codes exist for `u-1` within the window, and at most 5 messages are sent
+
+### Requirement: A cancel link may use plain http only on a loopback host
+A held recovery's cancel link SHALL be refused at construction when it uses `http` on a host other than a loopback host. The comparison with `localhost` SHALL fold ASCII letter case only, so a host that matches `localhost` only under Unicode case folding is not a loopback host.
+
+#### Scenario: Plain http on localhost
+- **WHEN** the cancel link is configured as `http://LOCALHOST:8080/recovery/cancel`
+- **THEN** construction succeeds
+
+#### Scenario: Look-alike of localhost
+- **WHEN** the cancel link is configured as `http://localhoſt/recovery/cancel`, with U+017F in place of `s`
 - **THEN** construction fails with a configuration error

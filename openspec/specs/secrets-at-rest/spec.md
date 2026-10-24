@@ -30,7 +30,7 @@ The emailed enrolment code is short-lived, but it is sealed rather than digested
 - **THEN** the two stored values differ
 
 ### Requirement: A sealed value is bound to its row
-A sealed value SHALL open only for the record it was sealed for: an MFA secret for its user reference, an emailed enrolment code for its user reference and enrolment generation, a session ID token for its session identifier, and a signing key's private material for its key id, each within its own table. The emailed code's binding SHALL differ from the MFA secret's, so neither opens in the other's column. Opening a value that was copied to another record or another column, moved to another table, or whose record now names a different user, generation or key id SHALL fail. Opening a value whose stored bytes were altered SHALL fail.
+A sealed value SHALL open only for the record it was sealed for: an MFA secret for its user reference and enrolment generation, an emailed enrolment code for its user reference and enrolment generation, a session ID token for its session identifier, and a signing key's private material for its key id, each within its own table. The emailed code's binding SHALL differ from the MFA secret's, so neither opens in the other's column. Opening a value that was copied to another record or another column, moved to another table, or whose record now names a different user, generation or key id SHALL fail. Opening a value whose stored bytes were altered SHALL fail. An MFA secret sealed before its binding included the generation SHALL NOT open; the documentation SHALL state that upgrading across this change requires affected users to enrol again.
 
 #### Scenario: Secret copied to another user's row
 - **WHEN** the sealed MFA secret of user `victim` is copied, out of band, into the enrolment of user `attacker`
@@ -59,6 +59,10 @@ A sealed value SHALL open only for the record it was sealed for: an MFA secret f
 #### Scenario: Tampered byte
 - **WHEN** a byte in the ciphertext of a stored sealed value is changed
 - **THEN** reading the record returns an error
+
+#### Scenario: Replaced MFA secret restored
+- **WHEN** `alice`'s sealed MFA secret from generation G1 is copied, out of band, back onto her enrolment after she re-enrolled as generation G2
+- **THEN** reading the enrolment returns an error
 
 ### Requirement: A value that cannot be opened fails closed
 When a stored sealed value cannot be opened (wrong key, missing key, altered bytes, wrong binding, or a value that is not a sealed value), the store SHALL return an error. It SHALL NOT report the secret as absent, the emailed code as not issued, the user as not enrolled, or the record as not found. An emailed enrolment code whose expiry has passed is the one exception: it can no longer be charged or redeemed, so the store SHALL NOT open it, and SHALL read it back as no code while still reporting its expiry, which records that it was issued. Such a code therefore never fails a read, whatever key it was sealed under. A missing key SHALL be distinguishable from other open failures. Loading signing keys SHALL fail as a whole when any stored key cannot be opened. A secret SHALL be treated as absent only when nothing is stored.

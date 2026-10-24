@@ -180,6 +180,10 @@ func authenticationRequired() error {
 // because that is a route whose wiring is incomplete rather than one whose
 // caller has been cleared.
 func (g *Guards) RequireAuthenticated() gin.HandlerFunc {
+	if g == nil {
+		panic("ginsec: RequireAuthenticated needs non-nil Guards")
+	}
+
 	return g.guard(func(context.Context, httpsec.Request, authorize.Authorizer) error { return nil })
 }
 
@@ -197,6 +201,10 @@ type PrivilegeGuard struct {
 // group and resource are spelled as the consumer's own role data spells them:
 // the library compares them and never parses them.
 func (g *Guards) ResourcePrivileges(group, resource string) *PrivilegeGuard {
+	if g == nil {
+		panic("ginsec: ResourcePrivileges needs non-nil Guards")
+	}
+
 	return &PrivilegeGuard{guards: g, group: group, resource: resource}
 }
 
@@ -256,11 +264,25 @@ type OwnershipGuard[ID any] struct {
 // It is a function rather than a method because a method cannot introduce a
 // type parameter of its own, and the identifier type belongs to the consumer's
 // records rather than to the guards as a whole.
+//
+// It panics with "ginsec: ResourceOwnerships needs non-nil Guards" when g is nil,
+// and with "ginsec: ResourceOwnerships needs a non-nil checker" when checker is
+// nil. The checker has no default and no guard can work without it, so a nil
+// one is a wiring mistake that must surface when the route is wired, not as a
+// refusal of every request once traffic arrives. There is no override: a
+// consumer who wants no ownership check does not build an ownership guard.
 func ResourceOwnerships[ID any](
 	g *Guards,
 	group, resource string,
 	checker httpsec.OwnershipChecker[ID],
 ) *OwnershipGuard[ID] {
+	if g == nil {
+		panic("ginsec: ResourceOwnerships needs non-nil Guards")
+	}
+	if checker == nil {
+		panic("ginsec: ResourceOwnerships needs a non-nil checker")
+	}
+
 	return &OwnershipGuard[ID]{guards: g, group: group, resource: resource, checker: checker}
 }
 
@@ -271,9 +293,16 @@ func ResourceOwnerships[ID any](
 // cannot be identified is not a caller who may not act, and the consumer sees
 // which of the two happened. It runs before the authorizer is asked anything,
 // so a malformed request costs no ownership lookup.
+//
+// It panics with "ginsec: ForResource needs a non-nil extractor" when extract
+// is nil, for the reason ResourceOwnerships panics on a nil checker.
 func (o *OwnershipGuard[ID]) ForResource(
 	extract func(httpsec.Request) (ID, error),
 ) gin.HandlerFunc {
+	if extract == nil {
+		panic("ginsec: ForResource needs a non-nil extractor")
+	}
+
 	return o.guards.guard(func(
 		ctx context.Context, req httpsec.Request, az authorize.Authorizer,
 	) error {

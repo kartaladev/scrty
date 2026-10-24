@@ -50,6 +50,13 @@ const (
 	// principal, without echoing it. The contract allows it, so this
 	// conforms.
 	apiKeyPutRefusesText apiKeyDefect = "put-refuses-unstorable-text"
+	// Revoke reports that it revoked a key already revoked, as an
+	// unconditional UPDATE counting the rows it matched would.
+	apiKeyRevokeReportsEvery apiKeyDefect = "revoke-reports-every-call"
+	// Revoke reads the key, waits until every concurrent caller has read it,
+	// then writes unconditionally, as a read-then-write over two statements
+	// would.
+	apiKeyRevokeReadsThenWrites apiKeyDefect = "revoke-reads-then-writes"
 )
 
 // unstorableAPIKeyText reports whether rec holds, in a scope, its name or its
@@ -99,12 +106,26 @@ type apiKeyStore struct {
 
 	mu      sync.Mutex
 	records map[id.ID]apikey.Key
+
+	// readers and gate hold the revokes of apiKeyRevokeReadsThenWrites
+	// between their read and their write.
+	readers int
+	gate    chan struct{}
 }
+
+const (
+	// revokeRaceParties is how many concurrent revokes the defect waits for:
+	// the caller count of the suite's concurrent-revoke case.
+	revokeRaceParties = 8
+	// revokeRaceWait bounds the wait, so a lone revoke in another case is
+	// only delayed, never stuck.
+	revokeRaceWait = 250 * time.Millisecond
+)
 
 var _ apikey.Store = (*apiKeyStore)(nil)
 
 func newAPIKeyStore(defect apiKeyDefect) *apiKeyStore {
-	return &apiKeyStore{defect: defect, records: make(map[id.ID]apikey.Key)}
+	return &apiKeyStore{defect: defect, records: make(map[id.ID]apikey.Key), gate: make(chan struct{})}
 }
 
 func cloneKey(k apikey.Key) apikey.Key {
@@ -157,19 +178,53 @@ func (s *apiKeyStore) Get(_ context.Context, keyID id.ID) (apikey.Key, error) {
 	return cloneKey(rec), nil
 }
 
-func (s *apiKeyStore) Revoke(_ context.Context, keyID id.ID, at time.Time) error {
+func (s *apiKeyStore) revokeReadingFirst(keyID id.ID, at time.Time) (bool, error) {
+	s.mu.Lock()
+	rec, ok := s.records[keyID]
+	if !ok {
+		s.mu.Unlock()
+		return false, apikey.ErrKeyNotFound
+	}
+	live := rec.RevokedAt == nil
+	s.readers++
+	if s.readers == revokeRaceParties {
+		close(s.gate)
+	}
+	s.mu.Unlock()
+
+	select {
+	case <-s.gate:
+	case <-time.After(revokeRaceWait):
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if live {
+		rec.RevokedAt = &at
+		s.records[keyID] = rec
+	}
+	return live, nil
+}
+
+func (s *apiKeyStore) Revoke(_ context.Context, keyID id.ID, at time.Time) (bool, error) {
+	if s.defect == apiKeyRevokeReadsThenWrites {
+		return s.revokeReadingFirst(keyID, at)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	rec, ok := s.records[keyID]
 	if !ok {
-		return apikey.ErrKeyNotFound
+		return false, apikey.ErrKeyNotFound
 	}
-	if rec.RevokedAt == nil {
-		rec.RevokedAt = &at
-		s.records[keyID] = rec
+	if rec.RevokedAt != nil {
+		return s.defect == apiKeyRevokeReportsEvery, nil
 	}
-	return nil
+	rec.RevokedAt = &at
+	s.records[keyID] = rec
+	return true, nil
 }
 
 func (s *apiKeyStore) TouchLastUsed(_ context.Context, keyID id.ID, at time.Time) error {

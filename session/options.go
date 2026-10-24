@@ -400,6 +400,8 @@ func WithReuseObserver(fn ReuseObserver) ManagerOption {
 //     was presented, renewed or removed makes the renewal reuse.
 //   - A successor knocked out by a recovery or a re-rotation has no successor
 //     of its own to recover into, so presenting it is reuse as before.
+//   - A first-use write that fails, other than as a refusal, fails the load
+//     (ErrStore) instead of serving the session unmarked.
 //
 // The trade-off: theft is still detected, but later. A stale identifier
 // replayed only on ordinary requests is refused, not detected, until someone

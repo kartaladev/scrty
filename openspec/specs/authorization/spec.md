@@ -60,7 +60,7 @@ The privilege authorizer SHALL load the privileges of the subject's active role 
 - A privilege present but not granted SHALL NOT count.
 - No matching group and resource SHALL deny.
 
-By default, group, resource and privilege names SHALL be compared ignoring surrounding whitespace and letter case. A consumer SHALL be able to replace the comparison.
+By default, group, resource and privilege names SHALL be compared ignoring surrounding ASCII whitespace and ASCII letter case only, so a character that matches an ASCII letter only under Unicode case folding, or Unicode whitespace around a name, never makes two names equal. A consumer SHALL be able to replace the comparison.
 
 #### Scenario: Any-of
 - **WHEN** the active role grants `read` on `billing/invoice` and the attributes require any of `read` or `write`
@@ -80,6 +80,14 @@ By default, group, resource and privilege names SHALL be compared ignoring surro
 
 #### Scenario: Consumer exact comparison
 - **WHEN** the authorizer is configured with an exact name comparison, and the same request is made
+- **THEN** access is denied
+
+#### Scenario: Unicode look-alike names
+- **WHEN** the active role grants `ſign` on `Keys/Vault`, with U+017F in place of `s`, and the attributes require `sign` on `keys/vault`
+- **THEN** access is denied
+
+#### Scenario: Unicode whitespace around a name
+- **WHEN** the active role grants `read` followed by a no-break space on `billing/invoice`, and the attributes require `read`
 - **THEN** access is denied
 
 ### Requirement: A super role bypasses privilege checks

@@ -25,6 +25,12 @@ var ErrInvalidToken = errors.New("onetime: invalid token")
 // refused rather than stored.
 var ErrSubjectRequired = errors.New("onetime: a subject is required")
 
+// ErrIssueLimitReached is returned by IssueWithin when the subject has already
+// been issued as many tokens within the manager's issuance window as the limit
+// allows. Nothing was stored. It is the subject asking too often, never an
+// outage: a store that cannot answer is reported as the failure it is.
+var ErrIssueLimitReached = errors.New("onetime: issuance limit reached")
+
 // Token is one issued credential as a store holds it. It carries no secret: the
 // secret exists only in the string Issue returned to the caller, and only the
 // hashes below are ever written down.

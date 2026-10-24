@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
@@ -99,11 +100,11 @@ type SourceGuard struct {
 //
 // The flow name becomes part of every key the guard reads and writes, so a
 // source that exhausts one flow's allowance still has its own in another. It is
-// joined to the canonical source with a colon; a consumer sharing one limiter
-// between flows keeps its flow names free of colons so that two flows cannot
-// compose the same key.
+// joined to the canonical source with a colon, so a flow name carrying a colon
+// is refused: two flows sharing one limiter could otherwise compose the same
+// key. There is no option to allow one.
 //
-// An empty flow name, or a missing limiter — including an interface holding a
+// An empty flow name, a flow name carrying a colon, or a missing limiter — including an interface holding a
 // nil pointer, which is what an unchecked constructor result looks like — is a
 // configuration error wrapping ErrConfig. A guard without a limiter would let
 // every attempt through while reading, at the call site, exactly like one that
@@ -141,6 +142,11 @@ func NewSourceGuard(flow string, limiter Limiter, opts ...GuardOption) (*SourceG
 		return nil, fmt.Errorf(
 			"%w: a guard needs a flow name, or its counts would be indistinguishable from "+
 				"every other flow sharing the limiter", ErrConfig)
+	}
+	if strings.Contains(g.flow, ":") {
+		return nil, fmt.Errorf(
+			"%w: the flow name %q carries a colon, so another flow's keys could compose the same "+
+				"key and share its count", ErrConfig, g.flow)
 	}
 	if nilcheck.IsNil(g.limiter) {
 		return nil, fmt.Errorf(

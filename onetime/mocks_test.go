@@ -197,6 +197,45 @@ func (c *MockStoreInsertCall) DoAndReturn(f func(context.Context, onetime.Token)
 	return c
 }
 
+// InsertWithin mocks base method.
+func (m *MockStore) InsertWithin(ctx context.Context, tok onetime.Token, since time.Time, limit int) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "InsertWithin", ctx, tok, since, limit)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// InsertWithin indicates an expected call of InsertWithin.
+func (mr *MockStoreMockRecorder) InsertWithin(ctx, tok, since, limit any) *MockStoreInsertWithinCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertWithin", reflect.TypeOf((*MockStore)(nil).InsertWithin), ctx, tok, since, limit)
+	return &MockStoreInsertWithinCall{Call: call}
+}
+
+// MockStoreInsertWithinCall wrap *gomock.Call
+type MockStoreInsertWithinCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockStoreInsertWithinCall) Return(arg0 bool, arg1 error) *MockStoreInsertWithinCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockStoreInsertWithinCall) Do(f func(context.Context, onetime.Token, time.Time, int) (bool, error)) *MockStoreInsertWithinCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockStoreInsertWithinCall) DoAndReturn(f func(context.Context, onetime.Token, time.Time, int) (bool, error)) *MockStoreInsertWithinCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockReaper is a mock of Reaper interface.
 type MockReaper struct {
 	ctrl     *gomock.Controller

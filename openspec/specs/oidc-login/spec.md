@@ -269,7 +269,7 @@ The handoff store SHALL refuse to delete expired codes with a zero cutoff time. 
 - **THEN** redemption is refused with the invalid-handoff outcome
 
 ### Requirement: The post-login destination is allowlisted
-The destination requested when a login starts SHALL be recorded untrusted, and SHALL be used only when it exactly matches an entry of the redirect allowlist. Otherwise the destination SHALL be `/`. The allowlist SHALL be empty by default. Each entry, and each origin the consumer declares, SHALL be validated at construction by the rules of the `outbound-http-confinement` capability's requirement that browser redirect targets are host-relative or declared; an invalid entry or origin SHALL fail construction. The destination SHALL be checked again against the allowlist when it is used. The OIDC allowlist SHALL be configured separately from any other flow's.
+The destination requested when a login starts SHALL be recorded untrusted, and SHALL be used only when it exactly matches an entry of the redirect allowlist. Otherwise the destination SHALL be `/`. A requested destination longer than 2048 bytes SHALL NOT be recorded, and the login SHALL proceed as if none was requested, because no allowlist entry can be that long. The allowlist SHALL be empty by default. Each entry, and each origin the consumer declares, SHALL be validated at construction by the rules of the `outbound-http-confinement` capability's requirement that browser redirect targets are host-relative or declared; an invalid entry or origin SHALL fail construction. An allowlist entry longer than 2048 bytes SHALL fail construction. The destination SHALL be checked again against the allowlist when it is used. The OIDC allowlist SHALL be configured separately from any other flow's.
 
 #### Scenario: Unlisted destination
 - **WHEN** a login starts with destination `https://evil.example/` and completes
@@ -286,6 +286,10 @@ The destination requested when a login starts SHALL be recorded untrusted, and S
 #### Scenario: Absolute entry on an undeclared origin
 - **WHEN** the allowlist contains `https://partner.example/landing` and no origin is declared
 - **THEN** construction fails with a configuration error
+
+#### Scenario: Over-long destination
+- **WHEN** a login starts with a destination of 1 MiB
+- **THEN** the flow records no destination, and the completed login redirects to `/`
 
 ### Requirement: A consumer can replace the callback's conveyance
 A consumer SHALL be able to supply a callback success handler. When one is supplied, it SHALL be called after the flow is completed, the ID token is verified and the identity is resolved, with the resolved principal, the provider session details, the asserted `amr` and `acr`, and the validated destination. No handoff code SHALL then be issued. Everything before that point SHALL still be performed by the library. The documentation SHALL state that a handler which creates a session itself must record the asserted values on it, or the session carries no assurance and required users are challenged or refused.
@@ -561,3 +565,14 @@ A consumer SHALL be able to supply an assurance evaluator that replaces the matc
 - **WHEN** the consumer evaluator returns an error during the redemption of a required user's valid code
 - **THEN** redemption is refused with that error as the reason
 - **AND** the code is not consumed
+
+### Requirement: The clock-skew leeway is bounded
+Construction SHALL fail with a configuration error when the clock-skew leeway is longer than 5 minutes, because a longer leeway accepts tokens expired by that much.
+
+#### Scenario: Leeway of an hour
+- **WHEN** the OIDC manager is configured with a one-hour clock-skew leeway
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Consumer leeway within the bound
+- **WHEN** the OIDC manager is configured with a 2-minute clock-skew leeway
+- **THEN** construction succeeds and tokens are judged with that leeway

@@ -89,8 +89,113 @@ func NewPasskeyCredentialStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (*P
 func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
 	const op = "insert passkey credential"
 
-	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
+	row, err := s.insertRow(c)
+	if err != nil {
 		return failed(op, err)
+	}
+
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return failed(op, err)
+	}
+	affected, err := insertCredentialRow(q, row)
+	if err != nil {
+		return failed(op, err)
+	}
+	if affected == 0 {
+		return passkey.ErrDuplicateCredential
+	}
+
+	return nil
+}
+
+// insertCredentialRow inserts row on q, skipping a credential ID or library
+// identifier already stored, and reports how many rows it inserted.
+func insertCredentialRow(q *gormdb.DB, row *passkeyCredentialRow) (int64, error) {
+	res := q.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
+
+	return res.RowsAffected, res.Error
+}
+
+// InsertWithin stores c only while its user holds fewer than limit
+// credentials, in every state, and reports whether it did. A refused insert
+// writes nothing. Under the limit, a credential ID or library identifier
+// already stored is refused with passkey.ErrDuplicateCredential, as Insert
+// refuses it.
+//
+// The decision is taken under the transaction-scoped advisory lock of c's
+// user: the lock, then the count, then the insert, in a READ COMMITTED
+// transaction of the store's own, so a racer for the same user, on this
+// process or on another replica, counts only after this one's credential is
+// committed. Racers for different users do not wait for one another.
+//
+// Inside a caller's transaction the three statements join it, and the lock
+// is held until the caller commits or rolls back. A caller's transaction
+// stronger than READ COMMITTED is refused with ErrIsolationTooStrong and
+// nothing is written: its snapshot would predate the lock, so the count could
+// miss a racer's committed credential.
+func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
+	const op = "insert passkey credential within a limit"
+
+	row, err := s.insertRow(c)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	if limit < 1 {
+		return false, nil
+	}
+
+	var stored bool
+	decide := func(q *gormdb.DB) error {
+		if err := q.Exec(pgschema.PasskeyCredentialLockUser, string(c.User)).Error; err != nil {
+			return err
+		}
+		var n int64
+		if err := q.Model(&passkeyCredentialRow{}).Where("user_id = ?", string(c.User)).Count(&n).Error; err != nil {
+			return err
+		}
+		if n >= int64(limit) {
+			return nil
+		}
+		affected, err := insertCredentialRow(q, row)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return passkey.ErrDuplicateCredential
+		}
+		stored = true
+
+		return nil
+	}
+
+	q, ambient, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	if ambient {
+		if err = requireReadCommitted(ctx, q); err == nil {
+			err = decide(q)
+		}
+	} else {
+		err = readCommitted(ctx, q, decide)
+	}
+
+	switch {
+	case errors.Is(err, passkey.ErrDuplicateCredential):
+		return false, passkey.ErrDuplicateCredential
+	case err != nil:
+		return false, failed(op, err)
+	}
+
+	return stored, nil
+}
+
+// insertRow checks c is storable and returns its row, its emailed code
+// sealed.
+func (s *PasskeyCredentialStore) insertRow(c *passkey.Credential) (*passkeyCredentialRow, error) {
+	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
+		return nil, err
 	}
 	transports, err := pgschema.PasskeyTransportsText(c.Transports)
 	if err == nil {
@@ -102,10 +207,10 @@ func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credenti
 		)
 	}
 	if err != nil {
-		return failed(op, err)
+		return nil, err
 	}
 
-	row := passkeyCredentialRow{
+	row := &passkeyCredentialRow{
 		ID:                   c.ID,
 		UserID:               string(c.User),
 		CredentialID:         storekit.OrEmpty(c.CredentialID),
@@ -126,26 +231,14 @@ func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credenti
 	if c.EmailCode != nil {
 		sealed, err := s.cipher.Seal([]byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
 		if err != nil {
-			return failed(op, err)
+			return nil, err
 		}
 		text := storekit.SecretText(sealed)
 		row.EmailCode, row.EmailCodeExpiresAt = &text, nullTs(c.EmailCode.ExpiresAt)
 		row.EmailCodeAttempts = int64(c.EmailCode.Attempts)
 	}
 
-	q, _, err := s.c.conn(ctx)
-	if err != nil {
-		return failed(op, err)
-	}
-	res := q.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
-	if res.Error != nil {
-		return failed(op, res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return passkey.ErrDuplicateCredential
-	}
-
-	return nil
+	return row, nil
 }
 
 // FindByCredentialID returns the credential with credential ID credID, or

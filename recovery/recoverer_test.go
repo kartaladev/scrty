@@ -346,6 +346,17 @@ func TestNewRecoverer(t *testing.T) {
 			assert: ok,
 		},
 		{
+			name:   "a cancel link over http to LOCALHOST, folded in ASCII",
+			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://LOCALHOST:8080/recovery/cancel")),
+			assert: ok,
+		},
+		{
+			// U+017F folds to "s" only under Unicode case folding.
+			name:   "a cancel link over http to a Unicode-folded look-alike of localhost",
+			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://localhoſt/recovery/cancel")),
+			assert: configError,
+		},
+		{
 			name:   "a cancel link over http to 127.0.0.1",
 			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://127.0.0.1:3000/cancel")),
 			assert: ok,

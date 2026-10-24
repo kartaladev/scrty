@@ -180,6 +180,10 @@ var portableVariants = []brokenVariant{
 		"consuming records when, expired or not, and changes nothing else"),
 	oneTimeVariant(oneTimeConsumeRefusesExpiredByStore,
 		"consuming records when, expired or not, and changes nothing else"),
+	oneTimeVariant(oneTimeBoundedCountsThenInserts, "bounded inserts for one subject never exceed the limit"),
+	oneTimeVariant(oneTimeBoundedWritesRefused,
+		"a bounded insert counts as the recent-issue count does, and a refused one writes nothing"),
+	oneTimeVariant(oneTimeBoundedCountsEverySubject, "bounded inserts count each subject on its own"),
 	{
 		name: "onetime-reaper-required-but-missing",
 		run: func(t *testing.T) {
@@ -202,7 +206,7 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
 				t.Helper()
-				return policy.NewMemoryAttemptStore()
+				return withoutAttemptReaper{policy.NewMemoryAttemptStore()}
 			}, storetest.RequireReaper())
 		},
 		failsCase: "a purge with a zero cutoff is refused and deletes nothing",
@@ -264,6 +268,8 @@ var portableVariants = []brokenVariant{
 	apiKeyVariant(apiKeyPutRefusesNoScopes, "a key with nil or empty scopes is stored and found with none"),
 	apiKeyVariant(apiKeyPutAltersText, "a scope holding invalid UTF-8 is refused or round-trips, never altered"),
 	apiKeyVariant(apiKeyPutRefusesText, ""),
+	apiKeyVariant(apiKeyRevokeReportsEvery, "revoke reports whether this call revoked the key"),
+	apiKeyVariant(apiKeyRevokeReadsThenWrites, "concurrent revokes of one live key report a revocation exactly once"),
 }
 
 func sessionVariant(d sessionDefect, failsCase string) brokenVariant {
@@ -353,6 +359,10 @@ func (s saveInsertsStore) Save(ctx context.Context, sess *session.Session) error
 	return err
 }
 
+// withoutAttemptReaper hides the reaper of the attempt store it wraps, as a
+// store that never implemented one.
+type withoutAttemptReaper struct{ policy.AttemptStore }
+
 // withoutOneTimeReaper hides the reaper of the store it wraps, as a store
 // that never implemented one.
 type withoutOneTimeReaper struct{ onetime.Store }
@@ -365,7 +375,7 @@ func (s putPendingVerbatimStore) PutPending(ctx context.Context, e mfa.Enrolment
 	if err := s.MemoryEnrolmentStore.PutPending(ctx, e); err != nil || e.ConfirmedAt.IsZero() {
 		return err
 	}
-	_, err := s.Confirm(ctx, e.User, e.LastStep, e.ConfirmedAt)
+	_, err := s.Confirm(ctx, e.User, e.Generation, e.LastStep, e.ConfirmedAt)
 	return err
 }
 
@@ -388,13 +398,14 @@ func (s putPendingOverwritesStore) PutPending(ctx context.Context, e mfa.Enrolme
 // later revoke.
 type revokeMovesTimeStore struct{ *apikey.MemoryStore }
 
-func (s revokeMovesTimeStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) error {
+func (s revokeMovesTimeStore) Revoke(ctx context.Context, keyID id.ID, at time.Time) (bool, error) {
 	rec, err := s.Get(ctx, keyID)
 	if err != nil {
-		return err
+		return false, err
 	}
+	live := rec.RevokedAt == nil
 	rec.RevokedAt = &at
-	return s.Put(ctx, rec)
+	return live, s.Put(ctx, rec)
 }
 
 // TestBrokenStoreConformance runs one suite against the broken variant named

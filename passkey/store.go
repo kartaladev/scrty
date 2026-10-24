@@ -27,6 +27,26 @@ type CredentialStore interface {
 	// write decides, so of concurrent inserts of one credential ID exactly one
 	// succeeds.
 	Insert(ctx context.Context, c *Credential) error
+	// InsertWithin stores c only while c's user holds fewer than limit
+	// credentials in every state, as Count counts them, and reports whether
+	// it stored it. A refused insert is (false, nil) and writes nothing; it is
+	// an outcome, not a failure. A limit below one refuses every insert.
+	//
+	// The count and the insert are one decision. Of several callers racing to
+	// insert for one user, the user never ends up holding more than limit
+	// credentials through them, on this process or on another replica: a
+	// Count followed by an Insert would let every racer read the same count
+	// below the limit and all of them write. In memory the decision is taken
+	// under one lock; in SQL, under a lock of the user's own, held until the
+	// insert commits. Callers for different users do not wait for one another.
+	//
+	// Under the limit, a credential ID or library ID already stored is
+	// ErrDuplicateCredential, as for Insert. At the limit the insert is refused
+	// whatever its identifiers, and a store may report that refusal as
+	// (false, nil) without having looked them up. The library uses it for a
+	// registration finish; Insert stays for seeding and import, where no
+	// limit applies.
+	InsertWithin(ctx context.Context, c *Credential, limit int) (bool, error)
 	// FindByCredentialID returns the credential with the WebAuthn credential
 	// ID credID, or ErrNotFound.
 	FindByCredentialID(ctx context.Context, credID []byte) (*Credential, error)

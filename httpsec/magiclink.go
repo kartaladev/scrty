@@ -238,6 +238,11 @@ func (i *magicLinkInterceptor) resolve(c *config) error {
 
 	i.redirects = allow
 
+	if err := checkCookieTTL("EnableMagicLink", "the magic link's lifetime", i.manager.TTL(),
+		i.manager.BindingEnabled()); err != nil {
+		return err
+	}
+
 	guard, err := c.resolveSourceGuard("EnableMagicLink", magicLinkFlow, i.limiter,
 		defaultMagicLinkFailureLimit, defaultMagicLinkFailureWindow, c.refusalInterval)
 	if err != nil {

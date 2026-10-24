@@ -74,15 +74,18 @@ func WithChallengeTTL(d time.Duration) Option {
 
 // WithRegistrationChallengeLimit replaces how many registration challenges one
 // user may be issued within the issuance window of one hour. The default is
-// 10; the next begin is refused with ErrRegistrationThrottled. Zero or less is
-// a configuration error.
+// 10; the next begin is refused with ErrRegistrationThrottled. The count and
+// the issue are one decision of the challenge store's, so begins racing for
+// one user never together exceed it. Zero or less is a configuration error.
 func WithRegistrationChallengeLimit(n int) Option {
 	return func(m *Manager) { m.issueLimit = n }
 }
 
 // WithPasskeyLimit replaces how many passkeys one user may hold, counting
 // every state. The default is 25; a registration beyond it is refused with
-// ErrLimitReached. Zero or less is a configuration error.
+// ErrLimitReached. The limit is decided by the credential store's bounded
+// insert (CredentialStore.InsertWithin), so finishes racing for one user never
+// leave it holding more. Zero or less is a configuration error.
 func WithPasskeyLimit(n int) Option {
 	return func(m *Manager) { m.passkeyLimit = n }
 }

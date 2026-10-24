@@ -472,11 +472,11 @@ func redisClientViolations(dir string, reqs []requirement) []violation {
 	return vs
 }
 
-// workspaceModules returns the directory of every module go.work uses,
-// relative to the repository root.
-func workspaceModules(t *testing.T) []string {
+// workspaceModules returns the directory of every module the go.work file at
+// root uses, relative to root.
+func workspaceModules(t *testing.T, root string) []string {
 	t.Helper()
-	data, err := os.ReadFile("go.work")
+	data, err := os.ReadFile(filepath.Join(root, "go.work")) //nolint:gosec // G304: test-constructed path
 	require.NoError(t, err)
 	var dirs []string
 	inBlock := false
@@ -492,4 +492,33 @@ func workspaceModules(t *testing.T) []string {
 		}
 	}
 	return dirs
+}
+
+// workspaceViolations runs the file checks and the test-module go.mod check on
+// every module the go.work file at root lists, except the test module at ./test.
+// A nested module may require the integrations it adapts, so the integration
+// requirement rule stays with the core module (checkModule). Each violation's
+// location is prefixed with its module's directory.
+func workspaceViolations(t *testing.T, root string) []violation {
+	t.Helper()
+	var vs []violation
+	for _, dir := range workspaceModules(t, root) {
+		if dir == "test" {
+			continue
+		}
+		modDir := filepath.Join(root, dir)
+		found := fileViolations(t, modDir)
+		for _, r := range readRequires(t, filepath.Join(modDir, "go.mod")) {
+			if r.Path == testModule || strings.HasPrefix(r.Path, testModule+"/") {
+				found = append(found, violation{Where: "go.mod", What: "requires " + r.Path})
+			}
+		}
+		for _, v := range found {
+			if dir != "." {
+				v.Where = filepath.ToSlash(filepath.Join(dir, v.Where))
+			}
+			vs = append(vs, v)
+		}
+	}
+	return vs
 }

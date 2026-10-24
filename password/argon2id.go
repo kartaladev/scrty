@@ -42,6 +42,11 @@ type Argon2idOption func(*argon2idEncoder)
 //
 // Memory is the parameter that makes parallel cracking expensive, so it is the
 // one worth raising first.
+//
+// The ceiling is 1 GiB (1048576 KiB). Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override: a configurable ceiling would reopen the process-kill, a fatal
+// allocation failure, that it exists to prevent.
 func WithArgon2idMemory(kib uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.memory = kib }
 }
@@ -51,21 +56,39 @@ func WithArgon2idMemory(kib uint32) Argon2idOption {
 // Iterations buy strength when memory cannot be raised — on a host that cannot
 // spare 46 MiB per concurrent verification, two iterations at 19 MiB is the
 // accepted trade.
+//
+// The ceiling is 16. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override: a configurable ceiling would reopen the unbounded login-path work it
+// exists to prevent.
 func WithArgon2idIterations(n uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.iterations = n }
 }
 
 // WithArgon2idThreads sets the parallelism. Default: 4.
+//
+// The ceiling is 16. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override: a configurable ceiling would reopen the unbounded login-path work it
+// exists to prevent.
 func WithArgon2idThreads(n uint8) Argon2idOption {
 	return func(e *argon2idEncoder) { e.threads = n }
 }
 
 // WithArgon2idSaltLength sets the salt length in bytes. Default: 16.
+//
+// The ceiling is 64 bytes. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override.
 func WithArgon2idSaltLength(n int) Argon2idOption {
 	return func(e *argon2idEncoder) { e.saltLength = n }
 }
 
 // WithArgon2idKeyLength sets the derived key length in bytes. Default: 32.
+//
+// The ceiling is 64 bytes. Construction refuses a value over it with
+// [ErrInvalidParameters], a stored record over it never matches, and there is no
+// override.
 func WithArgon2idKeyLength(n uint32) Argon2idOption {
 	return func(e *argon2idEncoder) { e.keyLength = n }
 }
@@ -98,6 +121,9 @@ func WithArgon2idRandom(r io.Reader) Argon2idOption {
 const (
 	maxRecordMemory     uint64 = 1024 * 1024 // 1 GiB, expressed in KiB
 	maxRecordIterations uint64 = 16
+	maxRecordThreads    uint64 = 16
+	maxRecordSaltLen           = 64 // bytes
+	maxRecordKeyLen            = 64 // bytes
 )
 
 // The OWASP floors for Argon2id. Memory and iterations trade against each other,
@@ -144,6 +170,26 @@ func (e *argon2idEncoder) validate() error {
 	if e.keyLength < floorArgon2idKeyLength {
 		return fmt.Errorf("%w: derived key length %d bytes; need at least %d",
 			ErrWeakParameters, e.keyLength, floorArgon2idKeyLength)
+	}
+
+	return e.validateCeilings()
+}
+
+// validateCeilings refuses a configuration above the ceilings a stored record is
+// held to, so the encoder never writes a hash that [Encoder.Match] would refuse.
+func (e *argon2idEncoder) validateCeilings() error {
+	switch {
+	case uint64(e.memory) > maxRecordMemory:
+		return fmt.Errorf("%w: memory %d KiB; at most %d KiB", ErrInvalidParameters, e.memory, maxRecordMemory)
+	case uint64(e.iterations) > maxRecordIterations:
+		return fmt.Errorf("%w: iterations %d; at most %d", ErrInvalidParameters, e.iterations, maxRecordIterations)
+	case uint64(e.threads) > maxRecordThreads:
+		return fmt.Errorf("%w: threads %d; at most %d", ErrInvalidParameters, e.threads, maxRecordThreads)
+	case e.saltLength > maxRecordSaltLen:
+		return fmt.Errorf("%w: salt length %d bytes; at most %d", ErrInvalidParameters, e.saltLength, maxRecordSaltLen)
+	case e.keyLength > maxRecordKeyLen:
+		return fmt.Errorf("%w: derived key length %d bytes; at most %d",
+			ErrInvalidParameters, e.keyLength, maxRecordKeyLen)
 	}
 
 	return nil
@@ -249,17 +295,17 @@ func parseArgon2id(encoded []byte) (
 	}
 
 	threads64, err := strconv.ParseUint(parts[3], 10, 8)
-	if err != nil || threads64 < 1 {
+	if err != nil || threads64 < 1 || threads64 > maxRecordThreads {
 		return 0, 0, 0, nil, nil, false
 	}
 
 	salt, err = b64.DecodeString(parts[4])
-	if err != nil || len(salt) == 0 {
+	if err != nil || len(salt) == 0 || len(salt) > maxRecordSaltLen {
 		return 0, 0, 0, nil, nil, false
 	}
 
 	key, err = b64.DecodeString(parts[5])
-	if err != nil || len(key) == 0 {
+	if err != nil || len(key) == 0 || len(key) > maxRecordKeyLen {
 		return 0, 0, 0, nil, nil, false
 	}
 
@@ -269,3 +315,14 @@ func parseArgon2id(encoded []byte) (
 }
 
 var _ Encoder = (*argon2idEncoder)(nil)
+
+// Recognizes reports whether encoded is an Argon2id record Match would derive a
+// key from: well formed, and within the ceilings on what a record may demand.
+// It derives nothing.
+func (e *argon2idEncoder) Recognizes(encoded []byte) bool {
+	_, _, _, _, _, ok := parseArgon2id(encoded)
+
+	return ok
+}
+
+var _ Recognizer = (*argon2idEncoder)(nil)

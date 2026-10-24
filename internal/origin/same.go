@@ -1,6 +1,10 @@
 package origin
 
-import "net/url"
+import (
+	"net/url"
+
+	"github.com/kartaladev/scrty/internal/ascii"
+)
 
 // Same reports whether a and b have the same origin.
 //
@@ -49,14 +53,14 @@ func Normalize(raw string) (scheme, host, port string, ok bool) {
 		return "", "", "", false
 	}
 
-	scheme = asciiLower(u.Scheme)
+	scheme = ascii.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return "", "", "", false
 	}
 
 	// Hostname drops userinfo, the port and the brackets around an IPv6
 	// literal, which is exactly the part an origin is made of.
-	host = asciiLower(u.Hostname())
+	host = ascii.ToLower(u.Hostname())
 	if host == "" {
 		return "", "", "", false
 	}
@@ -67,23 +71,4 @@ func Normalize(raw string) (scheme, host, port string, ok bool) {
 	}
 
 	return scheme, host, port, true
-}
-
-// asciiLower folds only A-Z.
-//
-// strings.ToLower applies Unicode case mapping, which maps U+0130 to "i" and
-// U+212A to "k". A host spelled with either would then equal one an allowlist
-// declared, so the fold here stays inside ASCII.
-//
-// Working on bytes is safe because the only bytes it rewrites are in the ASCII
-// range, and those never appear inside a multi-byte UTF-8 sequence.
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-		}
-	}
-
-	return string(b)
 }

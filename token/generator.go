@@ -40,9 +40,10 @@ type generator struct{ cfg *config }
 // Construction fails when no key source is supplied — including a non-nil
 // interface holding a nil pointer, which is what an unchecked constructor
 // error hands over — when the signing algorithm is one this library's key
-// sources cannot produce, when the lifetime is zero or less, and when a key
-// source that reports its own key lifetime and rotation interval could not
-// keep a key published for as long as the tokens would live.
+// sources cannot produce, when the lifetime is zero or less or is not a whole
+// number of seconds, and when a key source that reports its own key lifetime
+// and rotation interval could not keep a key published for as long as the
+// tokens would live.
 func NewGenerator(keys signingkey.KeySource, opts ...GenerateOption) (Generator, error) {
 	cfg := newConfig()
 	cfg.keys = keys

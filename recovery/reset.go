@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 )
 
@@ -16,13 +17,23 @@ import (
 //
 // Neither part is ever empty, and neither contains a newline. The kind never
 // contains a colon; the identifier may.
+//
+// Channel is the medium the authenticator's codes travel over, where it has
+// one, such as factor.Email for an MFA method that mails its codes. It is
+// reported by a kind's UsableLister for the way-back check, which does not
+// pair an email-channel authenticator with an issued code, since both would
+// arrive in one mailbox. MFAEnrolments fills it from each method's declared
+// channel; it is empty for a password or a passkey. It is not part of the
+// reference's identity: String omits it, a parsed reference has none, and the
+// recovery reset compares references by Kind and ID alone.
 type AuthenticatorRef struct {
-	Kind string
-	ID   string
+	Kind    string
+	ID      string
+	Channel factor.Channel
 }
 
 // String returns the reference as "kind:id", the form a recovery request names
-// a reported loss in and a durable record stores.
+// a reported loss in and a durable record stores. Channel is not included.
 func (r AuthenticatorRef) String() string { return r.Kind + ":" + r.ID }
 
 // ParseAuthenticatorRef reads a "kind:id" reference. The kind ends at the first
@@ -74,17 +85,20 @@ type AuthenticatorKind interface {
 
 // UsableLister is implemented by an AuthenticatorKind that can hold
 // authenticators which cannot authenticate now, such as a passkey awaiting
-// confirmation or one suspended as a suspected clone.
+// confirmation or one suspended as a suspected clone, or that reports each
+// usable authenticator's delivery channel in AuthenticatorRef.Channel.
 //
 // The way-back check counts what Usable lists, so an authenticator the user
 // cannot sign in with is never their way back in. The recovery reset keeps
 // using Held, so it still removes every authenticator the user holds, usable
 // or not. A kind that does not implement it has every held authenticator
-// counted as usable, which is right for a kind whose authenticators all
-// authenticate, such as MFAEnrolments.
+// counted as usable, with no channel. MFAEnrolments implements it to report
+// each enrolled method's channel, so an email-channel method is not counted as
+// pairing with an issued code.
 type UsableLister interface {
 	// Usable lists the authenticators user holds that can authenticate now,
-	// each with Kind set to this kind. A lookup that fails is an error, never
-	// an empty list, so the check never reports no on a failed lookup.
+	// each with Kind set to this kind and Channel set where the authenticator
+	// has a delivery channel. A lookup that fails is an error, never an empty
+	// list, so the check never reports no on a failed lookup.
 	Usable(ctx context.Context, user identity.UserID) ([]AuthenticatorRef, error)
 }

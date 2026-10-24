@@ -43,6 +43,19 @@
 // commit or roll back a transaction they did not open; the identity store
 // rolls back only to a savepoint of its own, as below.
 //
+// Isolation: every transaction a store begins for itself is begun at READ
+// COMMITTED, the isolation carried in its BEGIN, and AddStreakFailure and the limiter's
+// record each run in a READ COMMITTED transaction of their own, so
+// the stores' guarantees hold whatever default_transaction_isolation the
+// database or the role sets. Inside a caller's transaction,
+// RecoveryCodeStore.ReplaceSet, AttemptStore.AddStreakFailure,
+// OneTimeStore.InsertWithin and PasskeyCredentialStore.InsertWithin refuse an
+// isolation stronger than READ COMMITTED with ErrIsolationTooStrong, leaving
+// the transaction usable; every other operation joins it at any isolation.
+// The driver must implement driver.ConnBeginTx to begin at a chosen isolation,
+// as the PostgreSQL drivers (pgx's stdlib, lib/pq) do; one that does not fails
+// every transaction a store begins for itself.
+//
 // Refusals — an already-consumed token, a duplicate link, a replayed time step
 // — are reported without a failed statement, so they leave a caller's
 // transaction usable. The limit, for the security-state stores: any statement

@@ -193,6 +193,7 @@ func TestFormLogin(t *testing.T) {
 					"a login is this library's own endpoint, so the application never sees it")
 				assert.Equal(t, http.StatusOK, s.rec.Code)
 				assert.Equal(t, "application/json", s.rec.Header().Get("Content-Type"))
+				assert.Equal(t, "no-store", s.rec.Header().Get("Cache-Control"))
 
 				var body loginBody
 				require.NoError(t, json.Unmarshal(s.rec.Body.Bytes(), &body))
@@ -762,6 +763,8 @@ func TestFormLoginResponse(t *testing.T) {
 				require.NoError(t, s.err)
 				assert.Equal(t, http.StatusOK, s.rec.Code)
 				assert.Equal(t, "application/json", s.rec.Header().Get("Content-Type"))
+				assert.Equal(t, "no-store", s.rec.Header().Get("Cache-Control"),
+					"the response carries the access token, so no cache may keep it")
 
 				var body loginBody
 				require.NoError(t, json.Unmarshal(s.rec.Body.Bytes(), &body))
@@ -797,6 +800,7 @@ func TestFormLoginResponse(t *testing.T) {
 			assert: func(t *testing.T, opened *session.Session, s served) {
 				require.NoError(t, s.err)
 				assert.Equal(t, "text/plain", s.rec.Header().Get("Content-Type"))
+				assert.Empty(t, s.rec.Header().Get("Cache-Control"), "a consumer responder owns its headers")
 				require.NotNil(t, opened)
 				assert.Equal(t, "token=issued-token session="+opened.ID, s.rec.Body.String(),
 					"the responder is handed both the token and the session it belongs to")

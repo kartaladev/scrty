@@ -42,6 +42,14 @@ const (
 	oneTimeConsumeRefusesExpiredBySystem oneTimeDefect = "consume-refuses-expired-by-system-clock"
 	// Consume refuses a record expired by the store's clock.
 	oneTimeConsumeRefusesExpiredByStore oneTimeDefect = "consume-refuses-expired-by-store-clock"
+	// A bounded insert counts, lets go of the lock, and then inserts, so
+	// racers for one subject all read the same count and all store.
+	oneTimeBoundedCountsThenInserts oneTimeDefect = "bounded-counts-then-inserts"
+	// A bounded insert at the limit reports the refusal but stores the record.
+	oneTimeBoundedWritesRefused oneTimeDefect = "bounded-writes-refused"
+	// A bounded insert counts every subject's records of the purpose, so one
+	// subject's issues use up another's allowance.
+	oneTimeBoundedCountsEverySubject oneTimeDefect = "bounded-counts-every-subject"
 )
 
 // oneTimeStore is a one-time token store and reaper over process memory,
@@ -117,6 +125,41 @@ func (s *oneTimeStore) Consume(_ context.Context, tokenID id.ID, at time.Time) e
 	tok.ConsumedAt = at
 	s.records[tokenID] = tok
 	return nil
+}
+
+func (s *oneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, since time.Time, limit int) (bool, error) {
+	if s.defect == oneTimeBoundedCountsThenInserts {
+		n, _ := s.CountRecentBySubject(ctx, tok.Purpose, tok.Subject, since)
+		// The pause stands in for the round trip between the two statements
+		// of a count-then-insert written against a database.
+		time.Sleep(20 * time.Millisecond)
+		if n >= limit {
+			return false, nil
+		}
+		return true, s.Insert(ctx, tok)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+	for _, rec := range s.records {
+		sameSubject := rec.Subject == tok.Subject || s.defect == oneTimeBoundedCountsEverySubject
+		if rec.Purpose == tok.Purpose && sameSubject && !rec.IssuedAt.Before(since) {
+			n++
+		}
+	}
+	if _, exists := s.records[tok.ID]; exists {
+		return false, errors.New("identifier already stored")
+	}
+	if n >= limit {
+		if s.defect == oneTimeBoundedWritesRefused {
+			s.records[tok.ID] = cloneToken(tok)
+		}
+		return false, nil
+	}
+	s.records[tok.ID] = cloneToken(tok)
+	return true, nil
 }
 
 func (s *oneTimeStore) CountRecentBySubject(_ context.Context, purpose, subject string, since time.Time) (int, error) {

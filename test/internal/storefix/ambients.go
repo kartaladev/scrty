@@ -165,7 +165,7 @@ func EnrolmentAmbient() storetest.Ambient[mfa.EnrolmentStore] {
 			if err := s.PutPending(ctx, Pending("ambient-confirmed", "TOTP-SECRET")); err != nil {
 				return err
 			}
-			if _, err := s.Confirm(ctx, "ambient-confirmed", 1000, EnrolmentBegun); err != nil {
+			if _, err := s.Confirm(ctx, "ambient-confirmed", EnrolmentGen, 1000, EnrolmentBegun); err != nil {
 				return err
 			}
 			return s.PutPending(ctx, Pending("ambient-confirmed", "TOTP-OTHER"))
@@ -183,7 +183,8 @@ func APIKeyAmbient[S apikey.Store]() storetest.Ambient[S] {
 		},
 		Present: APIKeyPresent,
 		Refuse: func(ctx context.Context, s S) error {
-			return s.Revoke(ctx, APIKey(999, "").ID, time.Now())
+			_, err := s.Revoke(ctx, APIKey(999, "").ID, time.Now())
+			return err
 		},
 		Refusal: apikey.ErrKeyNotFound,
 	}

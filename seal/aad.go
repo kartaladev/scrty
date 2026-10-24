@@ -21,7 +21,9 @@ const (
 	// AADSigningKeyPrefix is followed by the signing key's id.
 	AADSigningKeyPrefix = "scrty/signingkey:private:"
 
-	// AADMFASecretPrefix is followed by the enrolled user's reference.
+	// AADMFASecretPrefix is followed by the enrolment's generation, in its
+	// canonical 36-character text form, a ':' and the enrolled user's
+	// reference, byte for byte.
 	AADMFASecretPrefix = "scrty/mfa:secret:" //nolint:gosec // G101: an additional-data prefix, not a credential
 
 	// AADMFAEmailCodePrefix is followed by the enrolment's generation, in its
@@ -42,10 +44,19 @@ func SigningKeyAAD(kid string) []byte {
 }
 
 // MFASecretAAD returns the additional data a user's MFA secret is sealed
-// against: AADMFASecretPrefix followed by the user reference, byte for byte,
-// never trimmed or case-folded.
-func MFASecretAAD(user identity.UserID) []byte {
-	return []byte(AADMFASecretPrefix + string(user))
+// against: AADMFASecretPrefix followed by the enrolment generation gen and the
+// user reference, byte for byte, never trimmed or case-folded. The
+// fixed-length generation precedes the free-form user reference, so no two
+// (generation, user) pairs share additional data.
+//
+// Binding the generation is what keeps a secret the user gave up, by removing
+// the enrolment or beginning again, from opening if its ciphertext is copied
+// back onto the same user's later enrolment. A secret sealed before the
+// generation was part of this binding, against the user reference alone, does
+// not open under it: a user whose enrolment was sealed that way must enrol
+// again.
+func MFASecretAAD(gen id.ID, user identity.UserID) []byte {
+	return []byte(AADMFASecretPrefix + gen.String() + ":" + string(user))
 }
 
 // MFAEmailCodeAAD returns the additional data an emailed enrolment code is

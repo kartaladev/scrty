@@ -43,6 +43,13 @@ import (
 // replacement of the same user elsewhere waits for that, which is the
 // intended serialisation, and the caller should keep such a transaction
 // short.
+//
+// Isolation: the later replacement sees the earlier one's set only at READ
+// COMMITTED, so the store's own transaction is set to READ COMMITTED whatever
+// the database's default is. Inside a caller's transaction stronger than READ
+// COMMITTED, ReplaceSet refuses with an error wrapping ErrIsolationTooStrong
+// and naming the isolation, writes nothing and leaves the transaction
+// usable: there, a replacement waiting on another would keep both sets.
 type RecoveryCodeStore struct {
 	c *config
 
@@ -174,8 +181,9 @@ func (s *RecoveryCodeStore) DeleteUser(ctx context.Context, user identity.UserID
 }
 
 // atomically runs fn as one unit on the handle ctx resolves to: under a
-// savepoint inside a caller's transaction, otherwise in a transaction of the
-// store's own begun on its *gorm.DB.
+// savepoint inside a caller's transaction at READ COMMITTED, refusing a
+// stronger one, otherwise in a READ COMMITTED transaction of the store's own
+// begun on its *gorm.DB.
 func (s *RecoveryCodeStore) atomically(ctx context.Context, op string, fn func(q *gormdb.DB) error) error {
 	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
@@ -183,12 +191,18 @@ func (s *RecoveryCodeStore) atomically(ctx context.Context, op string, fn func(q
 	}
 
 	if ambient {
-		return s.underSavepoint(ctx, q, op, fn)
+		return s.underSavepoint(ctx, q, op, func(q *gormdb.DB) error {
+			if err := requireReadCommitted(ctx, q); err != nil {
+				return failed(op, err)
+			}
+
+			return fn(q)
+		})
 	}
 
-	tx := q.Begin()
-	if tx.Error != nil {
-		return failed(op, tx.Error)
+	tx, err := beginReadCommitted(ctx, q)
+	if err != nil {
+		return failed(op, err)
 	}
 	// Rolled back on every way out but a commit, a panic in fn included, so
 	// the transaction, its advisory lock and the row locks it holds never

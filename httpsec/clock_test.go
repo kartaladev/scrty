@@ -46,12 +46,12 @@ type expiryStore struct {
 	last onetime.Token
 }
 
-func (s *expiryStore) Insert(ctx context.Context, tok onetime.Token) error {
+func (s *expiryStore) InsertWithin(ctx context.Context, tok onetime.Token, since time.Time, limit int) (bool, error) {
 	s.mu.Lock()
 	s.last = tok
 	s.mu.Unlock()
 
-	return s.MemoryStore.Insert(ctx, tok)
+	return s.MemoryStore.InsertWithin(ctx, tok, since, limit)
 }
 
 func (s *expiryStore) lastExpiry() time.Time {

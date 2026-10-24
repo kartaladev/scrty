@@ -191,6 +191,10 @@ func concurrently(t *testing.T, n int, f func() (bool, error)) int {
 //   - a credential ID or library ID already stored is refused with
 //     passkey.ErrDuplicateCredential, whatever its user, and the stored
 //     credential is unchanged;
+//   - a bounded insert stores only while the user holds fewer credentials, in
+//     every state, than its limit, and of 20 concurrent bounded inserts for
+//     one user against a limit of 5 exactly 5 store, each user counted on its
+//     own; a refused one writes nothing;
 //   - every state change is decided by the write: of 8 concurrent recordings
 //     of one counter exactly one wins, and of 20 concurrent charges against
 //     one emailed code exactly passkey.MaxEmailCodeAttempts do;
@@ -296,6 +300,75 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 					}
 				}
 				assert.Equal(t, 1, stored, "credentials stored under the contested credential ID")
+			},
+		},
+		{
+			name: "a bounded insert counts every state of the user, and a refused one writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
+				insertCredentials(ctx, t, s,
+					passkeyCredential(1, "u-1", "C1"),
+					passkeyPending(passkeyCredential(2, "u-1", "C2"), passkeyBoth),
+					passkeySuspended(passkeyCredential(3, "u-1", "C3")),
+					passkeyCredential(4, "u-2", "C4"),
+				)
+
+				below := passkeyCredential(5, "u-1", "C5")
+				stored, err := s.InsertWithin(ctx, below, 4)
+				require.NoError(t, err)
+				assert.True(t, stored, "three credentials count against a limit of four, so the fourth is stored")
+				assertCredential(t, below, storedCredential(ctx, t, s, "C5"))
+
+				stored, err = s.InsertWithin(ctx, passkeyCredential(6, "u-1", "C6"), 4)
+				require.NoError(t, err, "a refusal is an outcome, not an error")
+				assert.False(t, stored, "four credentials count against a limit of four")
+				_, err = s.FindByCredentialID(ctx, []byte("C6"))
+				require.ErrorIs(t, err, passkey.ErrNotFound, "a refused bounded insert must write nothing")
+
+				requireCount(ctx, t, s, "u-1", 4)
+				requireCount(ctx, t, s, "u-2", 1)
+			},
+		},
+		{
+			name: "a bounded insert with a limit below one is refused and writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
+				for _, limit := range []int{0, -1} {
+					stored, err := s.InsertWithin(ctx, passkeyCredential(1, "u-1", "C"), limit)
+					require.NoError(t, err)
+					assert.False(t, stored, "limit %d", limit)
+				}
+				requireCount(ctx, t, s, "u-1", 0)
+			},
+		},
+		{
+			name: "a bounded insert of a credential ID already stored is a duplicate, and the stored one is unchanged",
+			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
+				insertCredentials(ctx, t, s, passkeyCredential(1, "u-2", "C"))
+
+				stored, err := s.InsertWithin(ctx, passkeyCredential(2, "u-1", "C"), 5)
+				require.ErrorIs(t, err, passkey.ErrDuplicateCredential)
+				assert.False(t, stored)
+
+				assertCredential(t, passkeyCredential(1, "u-2", "C"), storedCredential(ctx, t, s, "C"))
+				requireCount(ctx, t, s, "u-1", 0)
+			},
+		},
+		{
+			name: "bounded inserts for one user never exceed the limit",
+			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
+				stored := raceBoundedCredentials(ctx, s, []identity.UserID{"u-1"}, boundedRacers, boundedLimit)
+
+				assertBoundedCredentials(ctx, t, s, "u-1", stored[0])
+			},
+		},
+		{
+			name: "bounded inserts count each user on its own",
+			assert: func(t *testing.T, ctx context.Context, s passkey.CredentialStore, _ *clockwork.FakeClock) {
+				users := []identity.UserID{"u-a", "u-b"}
+				stored := raceBoundedCredentials(ctx, s, users, boundedRacers/2, boundedLimit)
+
+				for i, user := range users {
+					assertBoundedCredentials(ctx, t, s, user, stored[i])
+				}
 			},
 		},
 		{
@@ -848,4 +921,53 @@ func RunPasskeyCredentialStoreSuite(t *testing.T, newStore func(t *testing.T) pa
 	}
 
 	runSuite(t, cases, withoutClock(newStore))
+}
+
+// raceBoundedCredentials releases racers bounded inserts for each user at
+// once, each of a credential of its own, against limit, and returns what each
+// user's racers were told.
+func raceBoundedCredentials(
+	ctx context.Context, s passkey.CredentialStore, users []identity.UserID, racers, limit int,
+) []boundedOutcome {
+	out := make([]boundedOutcome, len(users))
+	var mu sync.Mutex
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, user := range users {
+		for racer := range racers {
+			wg.Go(func() {
+				n := 1000 + i*racers + racer
+				c := passkeyCredential(n, user, fmt.Sprintf("bounded-%d", n))
+				<-start
+				stored, err := s.InsertWithin(ctx, c, limit)
+				mu.Lock()
+				defer mu.Unlock()
+				if stored {
+					out[i].stored++
+				}
+				if err != nil {
+					out[i].errs = append(out[i].errs, err)
+				}
+			})
+		}
+	}
+	close(start)
+	wg.Wait()
+
+	return out
+}
+
+// assertBoundedCredentials requires user's racers to have been told exactly
+// boundedLimit inserts were stored, with no error, and the store to hold
+// exactly that many of user's credentials.
+func assertBoundedCredentials(
+	ctx context.Context, t *testing.T, s passkey.CredentialStore, user identity.UserID, o boundedOutcome,
+) {
+	t.Helper()
+
+	for _, err := range o.errs {
+		assert.NoError(t, err, "user %q: a racing bounded insert failed", user)
+	}
+	assert.Equal(t, boundedLimit, o.stored, "user %q: bounded inserts reported stored", user)
+	requireCount(ctx, t, s, user, boundedLimit)
 }

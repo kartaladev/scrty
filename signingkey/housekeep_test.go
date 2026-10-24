@@ -3,9 +3,11 @@
 package signingkey_test
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,12 +25,16 @@ import (
 // asserting anything else. That is the only observable proof that housekeeping
 // ran, so a claim about what it kept cannot pass merely because nothing
 // happened.
+//
+// Construction publishes no non-current key already past its lifetime, so the
+// key the case waits on is created exactly one lifetime before the start: still
+// within the lifetime when the manager is built, past it one second later.
 func TestHousekeeping(t *testing.T) {
 	type testCase struct {
 		name string
 		// seed returns the stored keys, oldest first. The last one is the
-		// current key, and the first is the expired non-current key the case
-		// waits on.
+		// current key, and the first is the non-current key the case waits on,
+		// which expires one second in.
 		seed   func(t *testing.T) []signingkey.Record
 		assert func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, current string)
 	}
@@ -38,7 +44,7 @@ func TestHousekeeping(t *testing.T) {
 			name: "a non-current key past its lifetime stops being published",
 			seed: func(t *testing.T) []signingkey.Record {
 				return []signingkey.Record{
-					realRecord(t, epoch.Add(-25*time.Hour)),
+					realRecord(t, epoch.Add(-24*time.Hour)),
 					realRecord(t, epoch),
 				}
 			},
@@ -56,15 +62,18 @@ func TestHousekeeping(t *testing.T) {
 			name: "the current key is kept however old it is",
 			seed: func(t *testing.T) []signingkey.Record {
 				// Rotation is six hours away, so the newest stored key is
-				// still current at twenty-five hours old.
+				// still current once it is past its lifetime. The two are
+				// created at the same instant, and the tie goes to the one the
+				// store lists later; an older non-current key would never be
+				// published at all.
 				return []signingkey.Record{
-					realRecord(t, epoch.Add(-30*time.Hour)),
-					realRecord(t, epoch.Add(-25*time.Hour)),
+					realRecord(t, epoch.Add(-24*time.Hour)),
+					realRecord(t, epoch.Add(-24*time.Hour)),
 				}
 			},
 			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, current string) {
 				assert.True(t, publishes(km, current),
-					"a current key created 25 hours ago is still published")
+					"a current key past its lifetime is still published")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256),
 					"and is still the key that signs")
 			},
@@ -93,7 +102,8 @@ func TestHousekeeping(t *testing.T) {
 
 			expired, current := seed[0].Kid, seed[len(seed)-1].Kid
 			require.Equal(t, current, currentKid(t, km, signingkey.RS256))
-			require.True(t, publishes(km, expired), "the expired key is published to begin with")
+			require.True(t, publishes(km, expired),
+				"a key exactly one lifetime old is published to begin with")
 
 			require.NoError(t, km.Start(t.Context()))
 
@@ -187,4 +197,51 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	advance(t, clk, sweep, loopCount)
 	assert.False(t, publishes(km, boundary.Kid), "and one a sweep older has")
 	assert.True(t, publishes(km, newest.Kid), "the current key is kept throughout")
+}
+
+// steppedClock is a controlled clock whose reading can be stepped back, as a
+// host clock corrected by NTP is. Its waits still run on the fake clock, so a
+// test advances the loops as usual.
+type steppedClock struct {
+	*clockwork.FakeClock
+	back atomic.Int64 // nanoseconds subtracted from every reading
+}
+
+func (c *steppedClock) Now() time.Time {
+	return c.FakeClock.Now().Add(-time.Duration(c.back.Load()))
+}
+
+// TestHousekeep_RetiresFarFutureKey pins that a held key now dated more than
+// one lifetime ahead stops being published. A key that far ahead would
+// otherwise never age out, so it would verify tokens forever.
+func TestHousekeep_RetiresFarFutureKey(t *testing.T) {
+	clk := &steppedClock{FakeClock: newClock()}
+	store := signingkey.NewInMemoryKeyStore()
+	ahead := realRecord(t, epoch.Add(-time.Hour))
+	current := realRecord(t, epoch)
+	require.NoError(t, store.Store(t.Context(), ahead))
+	require.NoError(t, store.Store(t.Context(), current))
+
+	km, err := signingkey.NewKeyManager(t.Context(),
+		signingkey.WithKeyStore(store),
+		signingkey.WithClock(clk),
+		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithHousekeepingInterval(time.Second),
+		signingkey.WithReloadInterval(30*time.Minute),
+		signingkey.WithRotateInterval(6*time.Hour),
+	)
+	require.NoError(t, err)
+	stopAndVerify(t, km)
+	require.True(t, publishes(km, ahead.Kid), "the non-current key is published to begin with")
+	require.NoError(t, km.Start(t.Context()))
+
+	// The clock steps back two days: the non-current key is now dated nearly
+	// two days ahead, more than one lifetime.
+	clk.back.Store(int64(48 * time.Hour))
+	advance(t, clk.FakeClock, time.Second, loopCount)
+
+	assert.False(t, publishes(km, ahead.Kid),
+		"a non-current key dated more than one lifetime ahead stops being published")
+	assert.True(t, publishes(km, current.Kid), "the current key is kept")
+	assert.Equal(t, current.Kid, currentKid(t, km, signingkey.RS256))
 }

@@ -283,3 +283,82 @@ func TestVerifyNeverDiscloseThePresentedKey(t *testing.T) {
 		})
 	}
 }
+
+func TestVerify_EmptyDigestDoesNotAcceptAnySecret(t *testing.T) {
+	t.Parallel()
+
+	// A well-formed secret whose first byte is zero, so emptyForLeadingZero
+	// returns nothing for it.
+	zeroSecret := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+
+	type testCase struct {
+		name   string
+		digest func([]byte) []byte
+		stored []byte
+		assert func(t *testing.T, p identity.Principal, err error)
+	}
+
+	refused := func(t *testing.T, p identity.Principal, err error) {
+		assert.ErrorIs(t, err, apikey.ErrVerificationFailed)
+		assert.Empty(t, p.ID, "a refusal names no principal")
+	}
+
+	cases := []testCase{
+		{
+			name:   "a digest returning nothing for the secret, against a record stored with no digest",
+			digest: emptyForLeadingZero,
+			stored: nil,
+			assert: refused,
+		},
+		{
+			name:   "a digest returning nothing for the secret, against a record stored with an empty digest",
+			digest: emptyForLeadingZero,
+			stored: []byte{},
+			assert: refused,
+		},
+		{
+			name:   "the default digest against a record stored with no digest",
+			stored: nil,
+			assert: refused,
+		},
+		{
+			name:   "a digest returning nothing for the secret, against a record with a digest",
+			digest: emptyForLeadingZero,
+			stored: sha256Of([]byte("some other secret")),
+			assert: refused,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+
+			store := apikey.NewMemoryStore()
+			opts := []apikey.Option{apikey.WithStore(store)}
+			if tc.digest != nil {
+				opts = append(opts, apikey.WithDigest(tc.digest))
+			}
+
+			m, err := apikey.NewManager(opts...)
+			require.NoError(t, err)
+
+			keyID, err := newID()
+			require.NoError(t, err)
+
+			// The record reaches the store directly, as one written by an
+			// earlier deployment or another writer would.
+			require.NoError(t, store.Put(ctx, apikey.Key{
+				ID:           keyID,
+				Principal:    "svc-admin",
+				Scopes:       []string{"admin"},
+				SecretDigest: tc.stored,
+				CreatedAt:    time.Now(),
+			}))
+
+			p, _, verifyErr := m.Verify(ctx, "sk_"+keyID.String()+"."+zeroSecret)
+			tc.assert(t, p, verifyErr)
+		})
+	}
+}

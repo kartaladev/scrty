@@ -28,6 +28,10 @@ func WithConfirmPath(path string) Option {
 // The default is 5. A limit below 1 fails construction with ErrConfig: it
 // would refuse every request, which is a wiring mistake rather than a policy.
 //
+// The limit holds under a burst of concurrent requests, on one process or
+// across replicas: it is decided by one bounded insert in the token store
+// (onetime.Store.InsertWithin), not by a count followed by an issue.
+//
 // The window itself belongs to the token manager, configured there with
 // onetime.WithIssuanceWindow, so a one-time credential's timing is set in one
 // place.

@@ -2,13 +2,11 @@ package magiclink_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,15 +19,6 @@ import (
 // errStoreFailure is the dependency error every row proves against: a store's own
 // text, quoting a username and a user reference the record must never repeat.
 var errStoreFailure = errors.New("store: Key (username)=(alice@example.com) for user u-123")
-
-// countFailsStore reads like any other store and fails the issuance count.
-type countFailsStore struct {
-	onetime.Store
-}
-
-func (countFailsStore) CountRecentBySubject(context.Context, string, string, time.Time) (int, error) {
-	return 0, errStoreFailure
-}
 
 // failingRandomSource is a consumer-supplied WithRandom port that is down. Its
 // error carries the same store text every other row proves against, so the
@@ -98,30 +87,6 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 	known := &identity.Details{ID: "u-1", Username: "ada@example.com", Active: true}
 
 	cases := []testCase{
-		{
-			name: "the issuance count is unavailable",
-			assert: func(t *testing.T, recs []map[string]any) {
-				assertReasonRecorded(t, recs, "token-count")
-			},
-			run: func(t *testing.T) *bytes.Buffer {
-				t.Helper()
-
-				var buf bytes.Buffer
-				logger := slog.New(slog.NewJSONHandler(&buf, nil))
-
-				tokens := tokensWithStore(t, countFailsStore{Store: onetime.NewMemoryStore()})
-
-				loader := stubLoader{byUsername: map[string]*identity.Details{"ada@example.com": known}}
-
-				m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
-					magiclink.WithLogger(logger))
-				require.NoError(t, err)
-
-				m.Request(t.Context(), "ada@example.com", "/")
-
-				return &buf
-			},
-		},
 		{
 			name: "the link cannot be issued",
 			assert: func(t *testing.T, recs []map[string]any) {

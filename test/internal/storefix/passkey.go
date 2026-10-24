@@ -248,9 +248,10 @@ func passkeyAmbientCredential(i int) *passkey.Credential {
 
 // PasskeyCredentialAmbient is the ambient suite's view of the credential
 // store: record i is an inserted credential, and the refusal, through one
-// context, a recording of a counter that goes backwards and then an insert of
-// a credential ID already stored. Both must leave the caller's transaction
-// usable.
+// context, a bounded insert at its user's limit, which counts the credential
+// just inserted through that context, a recording of a counter that goes
+// backwards, and then an insert of a credential ID already stored. Each must
+// leave the caller's transaction usable.
 func PasskeyCredentialAmbient[S passkey.CredentialStore]() storetest.Ambient[S] {
 	return storetest.Ambient[S]{
 		Write: func(ctx context.Context, s S, i int) error {
@@ -264,6 +265,15 @@ func PasskeyCredentialAmbient[S passkey.CredentialStore]() storetest.Ambient[S] 
 			c := passkeyAmbientCredential(999)
 			if err := s.Insert(ctx, c); err != nil {
 				return err
+			}
+			second := passkeyAmbientCredential(997)
+			second.User = c.User
+			stored, err := s.InsertWithin(ctx, second, 1)
+			if err != nil {
+				return err
+			}
+			if stored {
+				return errors.New("storefix: a bounded insert did not count a credential its transaction holds")
 			}
 			ok, err := s.RecordAssertion(ctx, c.ID, PasskeyRaceCount-1, false, RaceAttemptAt)
 			if err != nil {

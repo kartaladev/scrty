@@ -93,6 +93,60 @@ func TestModuleLayout(t *testing.T) {
 	}
 }
 
+func TestModuleLayoutEveryWorkspaceModule(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name    string
+		fixture string // empty means the real repository tree
+		assert  func(t *testing.T, vs []violation)
+	}
+
+	cases := []testCase{
+		{
+			name: "real workspace has no violations",
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+		{
+			name:    "nested module production file declares an exported mock",
+			fixture: "testdata/layout/wsmock",
+			assert:  hasViolation("nested/app/app.go", "MockStore"),
+		},
+		{
+			name:    "nested module imports the test module",
+			fixture: "testdata/layout/wstestimport",
+			assert:  hasViolation("nested/app/app_test.go", testModule),
+		},
+		{
+			name:    "nested module go.mod requires the test module",
+			fixture: "testdata/layout/wstestimport",
+			assert:  hasViolation("nested/go.mod", testModule),
+		},
+		{
+			name:    "the test module itself is not scanned",
+			fixture: "testdata/layout/wsskiptest",
+			assert: func(t *testing.T, vs []violation) {
+				assert.Empty(t, vs)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			root := "."
+			if tc.fixture != "" {
+				root = copyFixture(t, tc.fixture)
+			}
+
+			tc.assert(t, workspaceViolations(t, root))
+		})
+	}
+}
+
 func TestConsumerModuleGraph(t *testing.T) {
 	t.Parallel()
 
@@ -287,7 +341,7 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 			name: "no workspace module outside redis and test requires the client",
 			check: func(t *testing.T) []violation {
 				var vs []violation
-				for _, dir := range workspaceModules(t) {
+				for _, dir := range workspaceModules(t, ".") {
 					vs = append(vs, redisClientViolations(dir, readRequires(t, filepath.Join(dir, "go.mod")))...)
 				}
 				return vs

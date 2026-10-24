@@ -164,6 +164,43 @@ func TestOIDCAuthorize(t *testing.T) {
 			},
 		},
 		{
+			name: "a destination over 2048 bytes is dropped and the login proceeds without one",
+			request: get(corp + "?" + url.Values{
+				httpsec.DefaultOIDCNextParam: {"/" + strings.Repeat("a", 4095)},
+			}.Encode()),
+			assert: func(t *testing.T, h *oidcHarness, out served) {
+				require.NoError(t, out.err)
+				require.Equal(t, http.StatusFound, out.rec.Code)
+
+				cookie := cookieNamed(out.rec, httpsec.DefaultOIDCFlowCookieName)
+				require.NotNil(t, cookie)
+				loc, err := url.Parse(out.rec.Header().Get("Location"))
+				require.NoError(t, err)
+
+				f, err := h.flows.Complete(t.Context(), cookie.Value, testOIDCProvider, loc.Query().Get("state"))
+				require.NoError(t, err)
+				assert.Empty(t, f.Next, "an over-long destination never reaches the broker")
+			},
+		},
+		{
+			name: "a destination of exactly 2048 bytes is kept",
+			request: get(corp + "?" + url.Values{
+				httpsec.DefaultOIDCNextParam: {"/" + strings.Repeat("a", 2047)},
+			}.Encode()),
+			assert: func(t *testing.T, h *oidcHarness, out served) {
+				require.NoError(t, out.err)
+
+				cookie := cookieNamed(out.rec, httpsec.DefaultOIDCFlowCookieName)
+				require.NotNil(t, cookie)
+				loc, err := url.Parse(out.rec.Header().Get("Location"))
+				require.NoError(t, err)
+
+				f, err := h.flows.Complete(t.Context(), cookie.Value, testOIDCProvider, loc.Query().Get("state"))
+				require.NoError(t, err)
+				assert.Len(t, f.Next, 2048)
+			},
+		},
+		{
 			name:        "a flow expiry already passed clamps Max-Age to 1",
 			managerOpts: []oidc.ManagerOption{oidc.WithClock(clockwork.NewFakeClockAt(time.Now().Add(-oidc.DefaultFlowTTL)))},
 			request:     get(corp),

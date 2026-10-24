@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/onetime"
@@ -172,8 +173,13 @@ func parseCancelLink(raw string) (*url.URL, error) {
 }
 
 // loopbackHost reports whether host is localhost or a loopback address.
+//
+// The name is compared folding ASCII letters only. strings.EqualFold applies
+// Unicode simple folding, under which U+017F folds to "s", so a host that only
+// looks like localhost would be let through on plain http. There is no
+// override: it is a security comparison with one correct answer.
 func loopbackHost(host string) bool {
-	if strings.EqualFold(host, "localhost") {
+	if ascii.EqualFold(host, "localhost") {
 		return true
 	}
 
@@ -288,7 +294,8 @@ func (r *Recoverer) cancelURL(token string) string {
 // that is unknown, cancelled or already completed is ErrRefused; before the
 // record's NotBefore it is ErrNotYetCompletable, spending nothing, so the same
 // token works once the hold is over; the user must still have an active
-// account, or it is ErrRefused; the reset is planned again, from the proofs
+// account, and the loader must answer for the user the record names, or it
+// is ErrRefused; the reset is planned again, from the proofs
 // and reported losses the record kept, over what the user holds now, and in
 // the reported mode a reported loss the user no longer holds is dropped rather
 // than refused, since its loss is already remedied; a listing failure is
@@ -324,6 +331,12 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgFinishUserInactive)
 
 		return nil, ErrRefused
+	case err == nil && details.ID != rec.User:
+		// A defence against a loader that answers for someone else: the
+		// recovery completes only for the user its record names.
+		r.logger.LogAttrs(ctx, slog.LevelError, msgFinishRefused, slog.String("reason", "user-mismatch"))
+
+		return nil, ErrRefused
 	case err != nil:
 		r.logger.LogAttrs(ctx, slog.LevelError, msgFinishLookupFailed, diag.Failure("user-loader", err)...)
 
@@ -357,8 +370,9 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 }
 
 // findHeld checks a hold token with m, spending nothing, and finds the pending
-// record it names. A token that is not good, a record that is unknown and one
-// that is no longer pending are all ErrRefused; a record store outage is
+// record it names. A token that is not good, a record that is unknown (a store
+// answering no record and no error included) and one that is no longer
+// pending are all ErrRefused; a record store outage is
 // returned behind fixed text. refused is the message a refusal is logged
 // under.
 func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Manager, token, refused string) (onetime.Checked, *Record, error) {
@@ -379,7 +393,7 @@ func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Manager, token, ref
 	rec, err := r.records.Find(ctx, rid)
 
 	switch {
-	case errors.Is(err, ErrRecordNotFound):
+	case errors.Is(err, ErrRecordNotFound), err == nil && rec == nil:
 		r.logger.LogAttrs(ctx, slog.LevelDebug, refused, slog.String("reason", "record-not-found"))
 
 		return onetime.Checked{}, nil, ErrRefused

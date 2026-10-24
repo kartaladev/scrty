@@ -2,7 +2,9 @@ package apikey_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +35,33 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 	// oldKeyID is fixed, rather than minted per case, so the
 	// "keeps both identifiers" row below can assert it appears in the text.
 	oldKeyID := newKeyID(t)
+
+	// lostRace is a store on which Rotate reads oldKeyID live and issues its
+	// replacement, then finds the old key already revoked by a concurrent
+	// writer, in that order; revokeReplacement answers the revoke of the
+	// replacement, and replacement receives its identifier.
+	lostRace := func(ctrl *gomock.Controller, replacement *id.ID, revokeReplacement func() (bool, error)) apikey.Store {
+		s := NewMockStore(ctrl)
+		gomock.InOrder(
+			s.EXPECT().Get(gomock.Any(), oldKeyID).Return(apikey.Key{ID: oldKeyID, Principal: principal}, nil),
+			s.EXPECT().Put(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, rec apikey.Key) error {
+				*replacement = rec.ID
+				return nil
+			}),
+			s.EXPECT().Revoke(gomock.Any(), oldKeyID, gomock.Any()).Return(false, nil),
+			s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, keyID id.ID, _ time.Time) (bool, error) {
+					if keyID != *replacement {
+						return false, errors.New("revoked something other than the replacement")
+					}
+					return revokeReplacement()
+				}),
+		)
+		return s
+	}
+
+	// Each lost-race row writes its own replacement identifier.
+	var revokedReplacement, unrevokedReplacement id.ID
 
 	type testCase struct {
 		name   string
@@ -98,7 +127,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 			store: func(t *testing.T, ctrl *gomock.Controller) apikey.Store {
 				t.Helper()
 				s := NewMockStore(ctrl)
-				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(errRedactionFixture)
+				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, errRedactionFixture)
 				return s
 			},
 			call: func(t *testing.T, m *apikey.Manager) error {
@@ -112,7 +141,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 			store: func(t *testing.T, ctrl *gomock.Controller) apikey.Store {
 				t.Helper()
 				s := NewMockStore(ctrl)
-				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(apikey.ErrKeyNotFound)
+				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, apikey.ErrKeyNotFound)
 				return s
 			},
 			call: func(t *testing.T, m *apikey.Manager) error {
@@ -161,7 +190,11 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 						return apikey.Key{ID: keyID, Principal: principal}, nil
 					})
 				s.EXPECT().Put(gomock.Any(), gomock.Any()).Return(nil)
-				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(errRedactionFixture)
+				gomock.InOrder(
+					s.EXPECT().Revoke(gomock.Any(), oldKeyID, gomock.Any()).Return(false, errRedactionFixture),
+					// The replacement is ended on the way out.
+					s.EXPECT().Revoke(gomock.Any(), gomock.Not(oldKeyID), gomock.Any()).Return(true, nil),
+				)
 				return s
 			},
 			call: func(t *testing.T, m *apikey.Manager) error {
@@ -174,6 +207,45 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 
 				wrapped(t, err)
 				assert.Contains(t, err.Error(), oldKeyID.String(), "the old key's identifier stays, for an operator to revoke by hand")
+			},
+		},
+		{
+			name: "Rotate finds the old key already revoked, revokes its replacement and is refused",
+			store: func(t *testing.T, ctrl *gomock.Controller) apikey.Store {
+				t.Helper()
+				return lostRace(ctrl, &revokedReplacement, func() (bool, error) { return true, nil })
+			},
+			call: func(t *testing.T, m *apikey.Manager) error {
+				t.Helper()
+				fresh, _, err := m.Rotate(t.Context(), oldKeyID, 0)
+				assert.Empty(t, fresh, "a refused rotation returns no key")
+				return err
+			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+				assert.ErrorIs(t, err, apikey.ErrRotationRefused)
+			},
+		},
+		{
+			name: "Rotate loses the race and cannot revoke its replacement, naming it for an operator",
+			store: func(t *testing.T, ctrl *gomock.Controller) apikey.Store {
+				t.Helper()
+				return lostRace(ctrl, &unrevokedReplacement, func() (bool, error) { return false, errRedactionFixture })
+			},
+			call: func(t *testing.T, m *apikey.Manager) error {
+				t.Helper()
+				fresh, _, err := m.Rotate(t.Context(), oldKeyID, 0)
+				assert.Empty(t, fresh, "a refused rotation returns no key")
+				return err
+			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				assert.ErrorIs(t, err, apikey.ErrRotationRefused)
+				assert.NotContains(t, err.Error(), "alice@example.com")
+				assert.ErrorIs(t, err, errRedactionFixture, "the store's own error is still reachable")
+				assert.Contains(t, err.Error(), unrevokedReplacement.String(),
+					"the replacement left live is named, for an operator to revoke by hand")
 			},
 		},
 	}

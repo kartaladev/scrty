@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/mfa"
@@ -233,7 +234,8 @@ func refusedByCheck(err error) error {
 
 // shape checks the request's form: a username, exactly two proofs of
 // different, enabled kinds with at least one recovery code, an MFA method named
-// with its code and able to serve, and well-formed reported losses. In the
+// with its code and able to serve, no issued code paired with an MFA method
+// delivered by email, and well-formed reported losses. In the
 // reported mode it also needs at least one reported loss, none of them the MFA
 // method presented as a proof. Anything else is ErrMalformed.
 func (r *Recoverer) shape(req Request) ([]ProofKind, mfa.Method, []AuthenticatorRef, error) {
@@ -276,6 +278,14 @@ func (r *Recoverer) shape(req Request) ([]ProofKind, mfa.Method, []Authenticator
 		m, ok := r.mfaMethods[req.MFAMethod]
 		if !ok {
 			return nil, nil, nil, fmt.Errorf("%w: the MFA method named cannot serve as a recovery proof", ErrMalformed)
+		}
+
+		// An issued code is delivered by email, so pairing it with an MFA
+		// code delivered by email would let one mailbox supply both proofs.
+		// A stated limit with no override: it would void the two-proof
+		// guarantee. A saved code still pairs with such a method.
+		if present[ProofIssued] && m.Channel() == factor.Email {
+			return nil, nil, nil, fmt.Errorf("%w: an issued code cannot pair with an MFA method delivered by email", ErrMalformed)
 		}
 
 		method = m

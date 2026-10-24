@@ -82,7 +82,13 @@ func WithPrefix(p string) Option { return func(m *Manager) { m.prefix = p } }
 // then use it.
 //
 // A nil function is a configuration error: there is no safe reading of "store
-// the secret under no digest at all".
+// the secret under no digest at all". The digest stays the consumer's choice,
+// but NewManager calls it once on each of two different inputs and refuses,
+// with ErrConfig, one that returns an empty value or the same value for both:
+// such a digest would let any secret verify. The probe refuses only a digest
+// that cannot work; it judges nothing about one that can. A digest that
+// returns an empty value only for some inputs is caught at Issue, which then
+// stores nothing, and at Verify, which refuses.
 func WithDigest(d func([]byte) []byte) Option { return func(m *Manager) { m.digest = d } }
 
 // WithIDGenerator replaces the source of record identifiers. The default is

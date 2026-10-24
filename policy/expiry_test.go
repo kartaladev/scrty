@@ -7,6 +7,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/policy"
@@ -78,11 +79,12 @@ func TestLockoutExpiryTask(t *testing.T) {
 			},
 		},
 		{
-			name: "the default in-memory store reports purge unsupported, never zero and nil",
+			name: "a consumer store that cannot purge reports purge unsupported, never zero and nil",
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				p, err := policy.NewAccountLockoutPolicy(
 					policy.WithLockoutClock(clockwork.NewFakeClockAt(lockoutNow)),
 					policy.WithLockoutWindow(15*time.Minute),
+					policy.WithAttemptStore(NewMockAttemptStore(gomock.NewController(t))),
 				)
 				require.NoError(t, err)
 
@@ -92,6 +94,29 @@ func TestLockoutExpiryTask(t *testing.T) {
 				require.ErrorIs(t, err, expiry.ErrPurgeUnsupported)
 				require.ErrorIs(t, err, policy.ErrReapUnsupported)
 				assert.Zero(t, removed)
+			},
+		},
+		{
+			name: "the default in-memory store purges what left the window",
+			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
+				p, err := policy.NewAccountLockoutPolicy(
+					policy.WithLockoutClock(clockwork.NewFakeClockAt(lockoutNow)),
+					policy.WithLockoutWindow(15*time.Minute),
+				)
+				require.NoError(t, err)
+				for _, d := range []time.Duration{5 * time.Minute, 20 * time.Minute} {
+					require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow.Add(-d)))
+				}
+
+				return policy.LockoutExpiryTask(p), func(t *testing.T) {
+					count, err := p.Attempts().FailureCount(t.Context(), "ada", lockoutCutoff)
+					require.NoError(t, err)
+					assert.Equal(t, 1, count, "the purge took a failure the window still counts")
+				}
+			},
+			assert: func(t *testing.T, _ expiry.Task, removed int, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 1, removed)
 			},
 		},
 		{

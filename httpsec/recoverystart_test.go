@@ -148,9 +148,8 @@ func TestRecoveryStart(t *testing.T) {
 			name: "the token store fails",
 			arrange: func(t *testing.T, h *recoveryHarness) {
 				store := NewMockOnetimeStore(gomock.NewController(t))
-				store.EXPECT().CountRecentBySubject(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-					Return(0, errRecoveryTokens).AnyTimes()
-				store.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(errRecoveryTokens).AnyTimes()
+				store.EXPECT().InsertWithin(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(false, errRecoveryTokens).AnyTimes()
 				h.coreOpts = append(h.coreOpts, recovery.WithIssuedCodeStore(store))
 			},
 			request: form(e2eAddress),

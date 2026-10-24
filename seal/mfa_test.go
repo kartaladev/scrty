@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -39,6 +40,20 @@ const mfaSentinel = "TOTP-SENTINEL-shared-secret"
 // must be kept byte for byte.
 const userRef identity.UserID = "Alice "
 
+// fixedGen is the generation of the enrolments whose cases must name the
+// additional data a mock cipher is called with before the enrolment exists.
+var fixedGen = id.MustParse("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
+
+// pendingOnFixedGen is pendingEnrolment on fixedGen.
+func pendingOnFixedGen(t *testing.T, user identity.UserID) mfa.Enrolment {
+	t.Helper()
+
+	e := pendingEnrolment(t, user)
+	e.Generation = fixedGen
+
+	return e
+}
+
 // pendingEnrolment returns a pending enrolment of user on a new generation.
 func pendingEnrolment(t *testing.T, user identity.UserID) mfa.Enrolment {
 	t.Helper()
@@ -59,7 +74,7 @@ func pendingEnrolment(t *testing.T, user identity.UserID) mfa.Enrolment {
 func putSealed(t *testing.T, inner mfa.EnrolmentStore, c seal.Cipher, e mfa.Enrolment) []byte {
 	t.Helper()
 
-	sealed, err := c.Seal(e.Secret, seal.MFASecretAAD(e.User))
+	sealed, err := c.Seal(e.Secret, seal.MFASecretAAD(e.Generation, e.User))
 	require.NoError(t, err)
 
 	e.Secret = sealed
@@ -309,7 +324,7 @@ func TestEnrolmentStore_PutPending(t *testing.T) {
 				require.True(t, ok)
 				assert.NotContains(t, string(got.Secret), mfaSentinel)
 
-				opened, keyID, err := cs.k2Only.Open(got.Secret, seal.MFASecretAAD(userRef))
+				opened, keyID, err := cs.k2Only.Open(got.Secret, seal.MFASecretAAD(e.Generation, userRef))
 				require.NoError(t, err)
 				assert.Equal(t, "k2", keyID)
 				assert.Equal(t, e.Secret, opened)
@@ -322,7 +337,7 @@ func TestEnrolmentStore_PutPending(t *testing.T) {
 			name: "a consumer cipher that fails to seal stores nothing",
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Seal([]byte(mfaSentinel+string(userRef)), seal.MFASecretAAD(userRef)).
+				c.EXPECT().Seal([]byte(mfaSentinel+string(userRef)), seal.MFASecretAAD(fixedGen, userRef)).
 					Return(nil, errCipherDown)
 
 				return c
@@ -339,13 +354,27 @@ func TestEnrolmentStore_PutPending(t *testing.T) {
 		{
 			name: "a confirmed enrolment is refused with the store's own sentinel",
 			setup: func(t *testing.T, inner mfa.EnrolmentStore) {
-				putSealed(t, inner, cs.current, pendingEnrolment(t, userRef))
-				ok, err := inner.Confirm(t.Context(), userRef, 1, time.Now())
+				e := pendingEnrolment(t, userRef)
+				putSealed(t, inner, cs.current, e)
+				ok, err := inner.Confirm(t.Context(), userRef, e.Generation, 1, time.Now())
 				require.NoError(t, err)
 				require.True(t, ok)
 			},
 			assert: func(t *testing.T, _ mfa.EnrolmentStore, _ mfa.Enrolment, err error) {
 				assert.Same(t, mfa.ErrAlreadyEnrolled, err, "the bare sentinel comes back as itself")
+			},
+		},
+		{
+			name: "a store's own error wrapping the already-enrolled sentinel comes back as the bare sentinel",
+			inner: func(ctrl *gomock.Controller) mfa.EnrolmentStore {
+				inner := NewMockEnrolmentStore(ctrl)
+				inner.EXPECT().PutPending(gomock.Any(), gomock.Any()).
+					Return(fmt.Errorf("enrolment of %q: %w", userRef, mfa.ErrAlreadyEnrolled))
+
+				return inner
+			},
+			assert: func(t *testing.T, _ mfa.EnrolmentStore, _ mfa.Enrolment, err error) {
+				assert.Same(t, mfa.ErrAlreadyEnrolled, err, "the outcome callers match on, with no store text")
 			},
 		},
 		{
@@ -389,7 +418,7 @@ func TestEnrolmentStore_PutPending(t *testing.T) {
 			store, err := seal.NewEnrolmentStore(inner, NewMockEnrolmentResealer(ctrl), c)
 			require.NoError(t, err)
 
-			e := pendingEnrolment(t, userRef)
+			e := pendingOnFixedGen(t, userRef)
 			tc.assert(t, inner, e, store.PutPending(ctx, e))
 		})
 	}
@@ -446,7 +475,7 @@ func TestEnrolmentStore_ProveDevice(t *testing.T) {
 				for name, aad := range map[string][]byte{
 					"another generation": seal.MFAEmailCodeAAD(other, userRef),
 					"another user":       seal.MFAEmailCodeAAD(f.gen, "victim"),
-					"the user's secret":  seal.MFASecretAAD(userRef),
+					"the user's secret":  seal.MFASecretAAD(f.gen, userRef),
 					"no additional data": nil,
 				} {
 					_, _, err := cs.current.Open(e.EmailCode, aad)
@@ -563,8 +592,9 @@ func TestEnrolmentStore_Get(t *testing.T) {
 		{
 			name: "an enrolment loads with its secret and every other field",
 			setup: func(t *testing.T, f enrolmentFixture) {
-				require.NoError(t, f.store.PutPending(t.Context(), pendingEnrolment(t, userRef)))
-				ok, err := f.store.Confirm(t.Context(), userRef, 7, time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC))
+				e := pendingEnrolment(t, userRef)
+				require.NoError(t, f.store.PutPending(t.Context(), e))
+				ok, err := f.store.Confirm(t.Context(), userRef, e.Generation, 7, time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC))
 				require.NoError(t, err)
 				require.True(t, ok)
 			},
@@ -623,10 +653,11 @@ func TestEnrolmentStore_Get(t *testing.T) {
 		{
 			name: "a secret sealed under the retired key is re-sealed under the active key",
 			setup: func(t *testing.T, f enrolmentFixture) {
-				old := putSealed(t, f.inner, cs.retired, pendingEnrolment(t, userRef))
+				e := pendingEnrolment(t, userRef)
+				old := putSealed(t, f.inner, cs.retired, e)
 				f.resealer.EXPECT().ResealEnrolmentSecret(gomock.Any(), userRef, old, gomock.Any()).DoAndReturn(
 					func(_ context.Context, _ identity.UserID, _, resealed []byte) error {
-						opened, keyID, err := cs.k2Only.Open(resealed, seal.MFASecretAAD(userRef))
+						opened, keyID, err := cs.k2Only.Open(resealed, seal.MFASecretAAD(e.Generation, userRef))
 						require.NoError(t, err)
 						assert.Equal(t, "k2", keyID)
 						assert.Equal(t, secret, opened)
@@ -661,7 +692,7 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			assert: func(t *testing.T, f enrolmentFixture, e mfa.Enrolment, found bool, err error) {
 				opened(t, f, e, found, err)
 
-				_, keyID, err := cs.retired.Open(innerSecret(t, f.inner, userRef), seal.MFASecretAAD(userRef))
+				_, keyID, err := cs.retired.Open(innerSecret(t, f.inner, userRef), seal.MFASecretAAD(e.Generation, userRef))
 				require.NoError(t, err)
 				assert.Equal(t, "k1", keyID)
 			},
@@ -670,13 +701,13 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			name: "a cipher that cannot name its active key skips the re-seal, not the read",
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(userRef)).Return(secret, "k1", nil)
+				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(fixedGen, userRef)).Return(secret, "k1", nil)
 				c.EXPECT().ActiveKeyID().Return("", errCipherDown)
 
 				return c
 			},
 			setup: func(t *testing.T, f enrolmentFixture) {
-				putSealed(t, f.inner, cs.retired, pendingEnrolment(t, userRef))
+				putSealed(t, f.inner, cs.retired, pendingOnFixedGen(t, userRef))
 			},
 			assert: opened,
 		},
@@ -684,14 +715,14 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			name: "a failed re-seal Seal does not call the resealer",
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(userRef)).Return(secret, "k1", nil)
+				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(fixedGen, userRef)).Return(secret, "k1", nil)
 				c.EXPECT().ActiveKeyID().Return("k2", nil)
-				c.EXPECT().Seal(secret, seal.MFASecretAAD(userRef)).Return(nil, errCipherDown)
+				c.EXPECT().Seal(secret, seal.MFASecretAAD(fixedGen, userRef)).Return(nil, errCipherDown)
 
 				return c
 			},
 			setup: func(t *testing.T, f enrolmentFixture) {
-				putSealed(t, f.inner, cs.retired, pendingEnrolment(t, userRef))
+				putSealed(t, f.inner, cs.retired, pendingOnFixedGen(t, userRef))
 			},
 			assert: opened,
 		},
@@ -751,13 +782,13 @@ func TestEnrolmentStore_Get(t *testing.T) {
 			opts: []seal.Option{seal.WithClock(clockAt(codeUntil))},
 			cipher: func(ctrl *gomock.Controller) seal.Cipher {
 				c := NewMockCipher(ctrl)
-				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(userRef)).Return(secret, "k2", nil)
+				c.EXPECT().Open(gomock.Any(), seal.MFASecretAAD(fixedGen, userRef)).Return(secret, "k2", nil)
 				c.EXPECT().ActiveKeyID().Return("k2", nil)
 
 				return c
 			},
 			setup: func(t *testing.T, f enrolmentFixture) {
-				e := pendingEnrolment(t, userRef)
+				e := pendingOnFixedGen(t, userRef)
 				putSealed(t, f.inner, cs.current, e)
 				p, _ := f.inner.(mfa.DeviceProofStore)
 				ok, err := p.ProveDevice(t.Context(), userRef, e.Generation, 9, []byte("not a sealed value"),
@@ -929,7 +960,7 @@ func TestEnrolmentStore_PassThrough(t *testing.T) {
 	confirmed := func(t *testing.T, inner *mfa.MemoryEnrolmentStore) id.ID {
 		t.Helper()
 		gen := pending(t, inner)
-		ok, err := inner.Confirm(t.Context(), userRef, 3, at)
+		ok, err := inner.Confirm(t.Context(), userRef, gen, 3, at)
 		require.NoError(t, err)
 		require.True(t, ok)
 
@@ -947,8 +978,8 @@ func TestEnrolmentStore_PassThrough(t *testing.T) {
 		{
 			name:  "Confirm confirms the pending enrolment",
 			setup: pending,
-			run: func(t *testing.T, store mfa.EnrolmentStore, inner *mfa.MemoryEnrolmentStore, _ id.ID) {
-				ok, err := store.Confirm(t.Context(), userRef, 3, at)
+			run: func(t *testing.T, store mfa.EnrolmentStore, inner *mfa.MemoryEnrolmentStore, gen id.ID) {
+				ok, err := store.Confirm(t.Context(), userRef, gen, 3, at)
 				require.NoError(t, err)
 				assert.True(t, ok)
 
@@ -959,8 +990,8 @@ func TestEnrolmentStore_PassThrough(t *testing.T) {
 		},
 		{
 			name: "Confirm reports no pending enrolment",
-			run: func(t *testing.T, store mfa.EnrolmentStore, _ *mfa.MemoryEnrolmentStore, _ id.ID) {
-				ok, err := store.Confirm(t.Context(), userRef, 3, at)
+			run: func(t *testing.T, store mfa.EnrolmentStore, _ *mfa.MemoryEnrolmentStore, gen id.ID) {
+				ok, err := store.Confirm(t.Context(), userRef, gen, 3, at)
 				require.NoError(t, err)
 				assert.False(t, ok)
 			},
@@ -968,12 +999,12 @@ func TestEnrolmentStore_PassThrough(t *testing.T) {
 		{
 			name:  "AcceptStep accepts a later step once",
 			setup: confirmed,
-			run: func(t *testing.T, store mfa.EnrolmentStore, _ *mfa.MemoryEnrolmentStore, _ id.ID) {
-				ok, err := store.AcceptStep(t.Context(), userRef, 4)
+			run: func(t *testing.T, store mfa.EnrolmentStore, _ *mfa.MemoryEnrolmentStore, gen id.ID) {
+				ok, err := store.AcceptStep(t.Context(), userRef, gen, 4)
 				require.NoError(t, err)
 				assert.True(t, ok)
 
-				ok, err = store.AcceptStep(t.Context(), userRef, 4)
+				ok, err = store.AcceptStep(t.Context(), userRef, gen, 4)
 				require.NoError(t, err)
 				assert.False(t, ok)
 			},
@@ -1039,6 +1070,7 @@ func TestEnrolmentStore_PassThroughFailure(t *testing.T) {
 	t.Parallel()
 
 	c := newCiphers(t).current
+	gen := pendingEnrolment(t, userRef).Generation
 
 	type testCase struct {
 		name   string
@@ -1057,10 +1089,10 @@ func TestEnrolmentStore_PassThroughFailure(t *testing.T) {
 		{
 			name: "Confirm",
 			expect: func(inner *MockEnrolmentStore) {
-				inner.EXPECT().Confirm(gomock.Any(), userRef, int64(1), gomock.Any()).Return(false, errCipherDown)
+				inner.EXPECT().Confirm(gomock.Any(), userRef, gen, int64(1), gomock.Any()).Return(false, errCipherDown)
 			},
 			run: func(ctx context.Context, store mfa.EnrolmentStore) error {
-				_, err := store.Confirm(ctx, userRef, 1, time.Now())
+				_, err := store.Confirm(ctx, userRef, gen, 1, time.Now())
 
 				return err
 			},
@@ -1069,10 +1101,10 @@ func TestEnrolmentStore_PassThroughFailure(t *testing.T) {
 		{
 			name: "AcceptStep",
 			expect: func(inner *MockEnrolmentStore) {
-				inner.EXPECT().AcceptStep(gomock.Any(), userRef, int64(1)).Return(false, errCipherDown)
+				inner.EXPECT().AcceptStep(gomock.Any(), userRef, gen, int64(1)).Return(false, errCipherDown)
 			},
 			run: func(ctx context.Context, store mfa.EnrolmentStore) error {
-				_, err := store.AcceptStep(ctx, userRef, 1)
+				_, err := store.AcceptStep(ctx, userRef, gen, 1)
 
 				return err
 			},

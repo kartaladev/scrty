@@ -784,10 +784,11 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 		assert.Equal(t, 1, store.held("ada"), "the sweep took a failure the 24-hour window still counts")
 	})
 
-	t.Run("the default in-memory store reports unsupported rather than a silent zero", func(t *testing.T) {
+	t.Run("a consumer store that cannot purge reports unsupported rather than a silent zero", func(t *testing.T) {
 		t.Parallel()
 
-		p := lockoutWith(t)
+		// The mock expects no call: a store without AttemptReaper is never asked.
+		p := lockoutWith(t, policy.WithAttemptStore(NewMockAttemptStore(gomock.NewController(t))))
 
 		removed, err := p.PurgeExpired(t.Context())
 		require.ErrorIs(t, err, policy.ErrReapUnsupported,

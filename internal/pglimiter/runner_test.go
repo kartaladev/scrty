@@ -114,8 +114,8 @@ func expectProbe(ctrl *gomock.Controller, r *MockRunner, now any, lockTimeout, f
 
 	calls := []any{
 		r.EXPECT().QueryRow(gomock.Any(), pgschema.LimiterServerFacts).Return(factsRow(ctrl, healthyFacts)),
-		r.EXPECT().Exec(gomock.Any(), pgschema.LimiterRecord, "", key.first(), 1, int64(1), now, lockTimeout).
-			Return(uncounted(ctrl), errAt("record")),
+		r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRecord, "", key.first(), 1, int64(1), now, lockTimeout).
+			Return(errAt("record")),
 	}
 	if failing != "record" {
 		calls = append(calls, r.EXPECT().QueryRow(gomock.Any(), pgschema.LimiterCheck, "", key.same(), int64(1), now).
@@ -408,27 +408,27 @@ func TestBackend_RecordFailure(t *testing.T) {
 				c.Unavailable.Timeout = 400 * time.Millisecond
 				return c
 			},
-			script: func(ctrl *gomock.Controller, r *MockRunner) {
-				r.EXPECT().Exec(gomock.Any(), pgschema.LimiterRecord,
+			script: func(_ *gomock.Controller, r *MockRunner) {
+				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRecord,
 					backendNamespace, pgschema.LimiterKey("k"), backendLimit, backendWindowUS, testNow, "400ms").
-					Return(uncounted(ctrl), nil)
+					Return(nil)
 			},
 			assert: accepted,
 		},
 		{
 			name: "the database clock is a nil now", prefix: "sqlstore",
-			script: func(ctrl *gomock.Controller, r *MockRunner) {
-				r.EXPECT().Exec(gomock.Any(), pgschema.LimiterRecord,
+			script: func(_ *gomock.Controller, r *MockRunner) {
+				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRecord,
 					backendNamespace, pgschema.LimiterKey("k"), backendLimit, backendWindowUS, gomock.Nil(), "250ms").
-					Return(uncounted(ctrl), nil)
+					Return(nil)
 			},
 			assert: accepted,
 		},
 		{
 			name: "a record error is wrapped with the prefix", prefix: "sqlstore",
 			script: func(_ *gomock.Controller, r *MockRunner) {
-				r.EXPECT().Exec(gomock.Any(), pgschema.LimiterRecord, gomock.Any(), gomock.Any(), gomock.Any(),
-					gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, errRecord)
+				r.EXPECT().ExecReadCommitted(gomock.Any(), pgschema.LimiterRecord, gomock.Any(), gomock.Any(), gomock.Any(),
+					gomock.Any(), gomock.Any(), gomock.Any()).Return(errRecord)
 			},
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, errRecord)

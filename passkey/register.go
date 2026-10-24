@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/mfa"
@@ -30,7 +33,10 @@ import (
 // the passkey step-up. A nil entry in rc.MFAMethods is ErrConfig, whatever the
 // session's MFA state. A user issued the registration challenge limit
 // within the hour is refused with ErrRegistrationThrottled, as is one the
-// challenge store cannot count for. Nothing is issued on any refusal.
+// challenge store cannot decide the issue for. The count and the issue are one
+// decision of the challenge store's (onetime.Manager.IssueWithin), so begins
+// racing for one user never together exceed the limit. Nothing is issued on
+// any refusal.
 //
 // The user's one handle is assigned on their first begin and reused on every
 // later one. The challenge is a one-time token of the purpose
@@ -50,18 +56,13 @@ func (m *Manager) BeginRegistration(
 
 	user := s.UserID
 
-	count, err := m.registration.IssuedCount(ctx, string(user))
-	if err != nil {
-		return nil, diag.Wrap(err, "passkey: could not count registration challenges", ErrRegistrationThrottled)
-	}
-
-	if count >= m.issueLimit {
-		return nil, ErrRegistrationThrottled
-	}
-
 	details, err := m.users.LoadByUserID(ctx, user)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not load the user")
+	}
+
+	if details == nil {
+		return nil, fmt.Errorf("passkey: the user loader returned no details and no error: %w", identity.ErrUserNotFound)
 	}
 
 	name, display, err := m.names(ctx, details)
@@ -81,12 +82,23 @@ func (m *Manager) BeginRegistration(
 
 	exclude := make([]Descriptor, 0, len(held))
 	for _, c := range held {
+		if c == nil {
+			continue
+		}
+
 		exclude = append(exclude, Descriptor{ID: c.CredentialID, Transports: c.Transports})
 	}
 
-	challenge, _, err := m.registration.Issue(ctx, string(user), onetime.WithBinding(s.ID))
-	if err != nil {
-		return nil, diag.Wrap(err, "passkey: could not issue a registration challenge")
+	// One bounded issue, not a count and then an issue: of begins racing for
+	// one user, on this process or on another replica, no more than the limit
+	// are issued a challenge.
+	challenge, _, err := m.registration.IssueWithin(ctx, string(user), m.issueLimit, onetime.WithBinding(s.ID))
+
+	switch {
+	case errors.Is(err, onetime.ErrIssueLimitReached):
+		return nil, ErrRegistrationThrottled
+	case err != nil:
+		return nil, diag.Wrap(err, "passkey: could not issue a registration challenge", ErrRegistrationThrottled)
 	}
 
 	return m.verifier.CreationOptions(ctx, CreationInput{
@@ -188,15 +200,42 @@ type RegistrationResult struct {
 //     response is verified, whatever happens next, so of racing finishes
 //     presenting one challenge at most one is verified.
 //  3. Verify the response against the relying party and the user-verification
-//     requirement. A refused attestation is ErrAttestationRefused.
+//     requirement. A refused attestation is ErrAttestationRefused. Authenticator
+//     data reporting the backup state without backup eligibility, which
+//     WebAuthn Level 3 rules out, is refused whatever the verifier accepted.
 //  4. Run the consumer's registration check; its error is returned unchanged.
-//  5. Refuse a user holding the passkey limit, counting every state, with
-//     ErrLimitReached.
-//  6. Store the credential. A credential ID already registered, to anyone, is
+//  5. Decide the passkey's pending reasons, remove the user's passkeys left
+//     pending by an abandoned registration that the new one replaces, and draw
+//     the emailed code when one is needed. Nothing is generated or sent yet.
+//     A pending passkey awaiting the same reason counts as abandoned only when
+//     it was created before this finish's challenge was issued: the user
+//     began this registration after leaving it. One created at or after that
+//     instant was stored by a registration racing this one, whose finish may
+//     already have returned its codes, and is kept; when the limit then has no
+//     room, this finish is refused in step 7. The removals stand even when the
+//     finish is refused later.
+//  6. Refuse a user still holding the passkey limit, counting every state,
+//     with ErrLimitReached. It runs after the removals above so the passkeys
+//     they replaced no longer count: a user whose only passkey is an abandoned
+//     one registers again at a limit of one. This early count spares a user
+//     plainly at the limit the work below; it does not decide.
+//  7. Store the credential through the store's bounded insert, which decides
+//     the limit by the write: of finishes racing for one user, the user never
+//     ends up holding more than the limit, and the others are refused with
+//     ErrLimitReached. A credential ID already registered, to anyone, is
 //     refused, leaving the existing record unchanged.
+//  8. Only once it is stored, generate the saved codes and queue the emailed
+//     code the passkey awaits. When either fails, the stored passkey is
+//     removed again, under a context the caller cannot cancel, and the
+//     failure is returned. A removal that itself fails is logged, and leaves
+//     a pending passkey the user's next registration replaces.
 //
-// Every other refusal of the ceremony is authenticate.ErrAuthenticationFailed,
-// and no refusal stores anything.
+// Every other refusal of the ceremony is authenticate.ErrAuthenticationFailed.
+// No refusal stores a passkey, replaces the user's saved codes or sends an
+// emailed code, so the saved codes a finish that stored its passkey returned
+// are not replaced by a racing finish the limit refused. A failure in step 8
+// after the codes were generated leaves the user with a set they never saw,
+// which registering again replaces.
 //
 // The passkey is named by the response's proposed name, normalised by
 // NormaliseName: a name that is too long or holds a control or format
@@ -221,7 +260,7 @@ func (m *Manager) FinishRegistration(
 		return nil, ErrMalformedResponse
 	}
 
-	challenge, err := m.spendRegistration(ctx, s, parsed.Challenge())
+	challenge, issued, err := m.spendRegistration(ctx, s, parsed.Challenge())
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +275,11 @@ func (m *Manager) FinishRegistration(
 	case nc == nil:
 		return nil, authenticate.ErrAuthenticationFailed
 	case m.uv == UVRequired && !nc.UserVerified:
+		return nil, authenticate.ErrAuthenticationFailed
+	case nc.BackupState && !nc.BackupEligible:
+		// WebAuthn Level 3 §6.1: a credential that is not eligible for
+		// backup cannot be backed up. Refused here, whatever the verifier
+		// accepted, so a consumer's verifier is held to it too.
 		return nil, authenticate.ErrAuthenticationFailed
 	}
 
@@ -252,6 +296,13 @@ func (m *Manager) FinishRegistration(
 		}
 	}
 
+	now := m.clock.Now()
+
+	plan, err := m.planPending(ctx, s, rc, now, issued)
+	if err != nil {
+		return nil, err
+	}
+
 	held, err := m.credentials.Count(ctx, s.UserID)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not count the user's passkeys")
@@ -259,13 +310,6 @@ func (m *Manager) FinishRegistration(
 
 	if held >= m.passkeyLimit {
 		return nil, ErrLimitReached
-	}
-
-	now := m.clock.Now()
-
-	plan, err := m.preparePending(ctx, s, rc, now)
-	if err != nil {
-		return nil, err
 	}
 
 	cid, err := m.ids.NewID()
@@ -296,12 +340,21 @@ func (m *Manager) FinishRegistration(
 		c.State = StatePending
 	}
 
-	if err := m.credentials.Insert(ctx, c); err != nil {
-		if errors.Is(err, ErrDuplicateCredential) {
-			return nil, authenticate.ErrAuthenticationFailed
-		}
+	stored, err := m.credentials.InsertWithin(ctx, c, m.passkeyLimit)
 
+	switch {
+	case errors.Is(err, ErrDuplicateCredential):
+		return nil, authenticate.ErrAuthenticationFailed
+	case err != nil:
 		return nil, diag.Wrap(err, "passkey: could not store the passkey")
+	case !stored:
+		return nil, ErrLimitReached
+	}
+
+	if err := m.settlePending(ctx, c, rc, plan); err != nil {
+		m.removeUnsettled(ctx, c)
+
+		return nil, err
 	}
 
 	activated := c.State == StateActive
@@ -336,7 +389,7 @@ func (m *Manager) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 	}
 
 	for _, h := range held {
-		if h.State == StateActive && h.BackupEligible {
+		if h != nil && h.State == StateActive && h.BackupEligible {
 			return false
 		}
 	}
@@ -345,30 +398,34 @@ func (m *Manager) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 }
 
 // spendRegistration checks and spends the registration challenge presented,
-// as clientDataJSON carries it, for s, and returns its token string. It must
-// be one this manager issued for s's user, bound to s's ID. A challenge bound
-// to s's ID is spent before its user is compared, so an attempt for another
-// user spends it too. Every refusal is authenticate.ErrAuthenticationFailed.
-func (m *Manager) spendRegistration(ctx context.Context, s *session.Session, presented string) (string, error) {
+// as clientDataJSON carries it, for s, and returns its token string and the
+// instant it was issued. It must be one this manager issued for s's user,
+// bound to s's ID. A challenge bound to s's ID is spent before its user is
+// compared, so an attempt for another user spends it too. Every refusal is
+// authenticate.ErrAuthenticationFailed.
+func (m *Manager) spendRegistration(
+	ctx context.Context, s *session.Session, presented string,
+) (string, time.Time, error) {
 	challenge, err := DecodeChallenge(presented)
 	if err != nil || challenge == "" {
-		return "", authenticate.ErrAuthenticationFailed
+		return "", time.Time{}, authenticate.ErrAuthenticationFailed
 	}
 
 	checked, err := m.registration.Check(ctx, challenge, s.ID)
 	if err != nil {
-		return "", authenticate.ErrAuthenticationFailed
+		return "", time.Time{}, authenticate.ErrAuthenticationFailed
 	}
 
 	// Spent before the subject is compared: any attempt that presents a
 	// challenge bound to s's ID spends it, whatever its outcome.
 	if err := m.registration.Consume(ctx, checked); err != nil {
-		return "", authenticate.ErrAuthenticationFailed
+		return "", time.Time{}, authenticate.ErrAuthenticationFailed
 	}
 
-	if checked.Token().Subject != string(s.UserID) {
-		return "", authenticate.ErrAuthenticationFailed
+	tok := checked.Token()
+	if tok.Subject != string(s.UserID) {
+		return "", time.Time{}, authenticate.ErrAuthenticationFailed
 	}
 
-	return challenge, nil
+	return challenge, tok.IssuedAt, nil
 }

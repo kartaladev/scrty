@@ -170,18 +170,22 @@ func emailCodeColumn(t *testing.T, raw *sql.DB, owner string) sql.NullString {
 	return col
 }
 
-// RunEmailCodeBindings holds the emailed code to the two bindings the
-// sealed-column suite's copy to another record does not reach, by copying it
-// out of band through raw:
-//   - into its owner's secret column, where it must not open as the secret,
-//     because the two are sealed against different additional data;
-//   - back onto the same user after a new begin, where it must not open,
-//     because it is bound to the generation it was issued on.
+// RunEnrolmentBindings holds the emailed code and the secret to the bindings
+// the sealed-column suite's copy to another record does not reach, by copying
+// them out of band through raw:
+//   - the emailed code into its owner's secret column, where it must not open
+//     as the secret, because the two are sealed against different additional
+//     data;
+//   - the emailed code back onto the same user after a new begin, where it
+//     must not open, because it is bound to the generation it was issued on;
+//   - the secret of a removed enrolment back onto the same user's
+//     re-enrolment, where it must not open, because it is bound to the
+//     generation it was begun on.
 //
 // Each read must fail with seal.ErrDecryptionFailed, never read as absent.
 // codes is the view SealedEmailCodes returns; its stores seal under a key the
 // run generates.
-func RunEmailCodeBindings(t *testing.T, raw *sql.DB, codes storetest.Sealed[mfa.EnrolmentStore]) {
+func RunEnrolmentBindings(t *testing.T, raw *sql.DB, codes storetest.Sealed[mfa.EnrolmentStore]) {
 	t.Helper()
 
 	key := make([]byte, seal.KeySize)
@@ -227,6 +231,27 @@ SET email_code = $2, device_proven_at = $3, email_code_until = $4 WHERE user_id 
 		require.NoError(t, err)
 
 		refused(t, s, "code-carried", "the emailed code of an earlier generation opened on a new one")
+	})
+
+	t.Run("Replaced MFA secret restored", func(t *testing.T) {
+		const user identity.UserID = "secret-restored"
+		s := codes.NewWithKeyring(t, kr)
+		require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{
+			User: user, Secret: []byte("TOTP-removed"), CreatedAt: EnrolmentBegun,
+			Generation: id.MustParse("01926a4e-0000-7000-8000-00000000c1a1"),
+		}))
+		removed := SecretColumn(t.Context(), t, raw, user)
+		require.NoError(t, s.Delete(t.Context(), user))
+
+		require.NoError(t, s.PutPending(t.Context(), mfa.Enrolment{
+			User: user, Secret: []byte("TOTP-renewed"), CreatedAt: EnrolmentBegun,
+			Generation: id.MustParse("01926a4e-0000-7000-8000-00000000c1a2"),
+		}))
+		_, err := raw.ExecContext(t.Context(),
+			`UPDATE mfa_enrolments SET secret = $2 WHERE user_id = $1`, string(user), removed)
+		require.NoError(t, err)
+
+		refused(t, s, string(user), "the secret of a removed generation opened on the re-enrolment")
 	})
 }
 

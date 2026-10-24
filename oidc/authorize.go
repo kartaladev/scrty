@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/origin"
 )
 
 // Authorization is where to send a browser to start a login, and the flow it
@@ -34,7 +35,10 @@ type Authorization struct {
 // provider's scopes, the state, the nonce and an S256 code challenge, plus
 // acr_values when the provider's Assurance lists RequestACR (none by default;
 // see WithProviderAssurance). The verifier never leaves the flow store. Next
-// is stored verbatim and untrusted; allowlisting it is the caller's job.
+// is stored verbatim and untrusted; allowlisting it is the caller's job. A next
+// longer than 2048 bytes is not stored: no allowlist entry can be that long,
+// so the login proceeds as if none was requested and ends at the default
+// destination. The bound is fixed.
 //
 // A name the registry does not hold is ErrUnknownProvider, and an unusable
 // provider is ErrDiscoveryFailed; neither stores a flow. A flow store
@@ -53,6 +57,10 @@ func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authori
 	endpoint, err := url.Parse(md.AuthorizationEndpoint)
 	if err != nil {
 		return Authorization{}, fmt.Errorf("%w: provider %q: unusable authorization endpoint", ErrDiscoveryFailed, p.Name)
+	}
+
+	if len(next) > origin.MaxEntryLen {
+		next = ""
 	}
 
 	var secrets [3]string // state, nonce, verifier

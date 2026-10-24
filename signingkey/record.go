@@ -52,12 +52,23 @@ type KeyStore interface {
 type inMemoryKeyStore struct {
 	mu      sync.RWMutex
 	records map[string]Record
+	// order holds each kid once, in the order it was first stored. LoadAll
+	// lists from it rather than from the map, whose iteration order is
+	// random, so that records created at the same instant are listed the
+	// same way every time; the key manager gives such a tie to the record
+	// listed later.
+	order []string
 }
 
 // NewInMemoryKeyStore returns a KeyStore that keeps records in process memory.
 // It is the default, and it is not durable: a new process starts with no keys,
 // so every token signed by the previous process stops verifying. Supply a
 // durable store through WithKeyStore to keep tokens valid across a restart.
+//
+// LoadAll lists records oldest first, and records created at the same instant
+// in the order their kids were first stored; storing a kid again replaces its
+// record in place. The key manager gives such a tie to the record listed
+// later, so the key stored last of a tied pair is the one that signs.
 func NewInMemoryKeyStore() KeyStore {
 	return &inMemoryKeyStore{records: make(map[string]Record)}
 }
@@ -80,6 +91,9 @@ func (s *inMemoryKeyStore) Store(_ context.Context, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, ok := s.records[rec.Kid]; !ok {
+		s.order = append(s.order, rec.Kid)
+	}
 	s.records[rec.Kid] = copyRecord(rec)
 
 	return nil
@@ -89,9 +103,9 @@ func (s *inMemoryKeyStore) LoadAll(_ context.Context) ([]Record, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	out := make([]Record, 0, len(s.records))
-	for _, rec := range s.records {
-		out = append(out, copyRecord(rec))
+	out := make([]Record, 0, len(s.order))
+	for _, kid := range s.order {
+		out = append(out, copyRecord(s.records[kid]))
 	}
 	slices.SortStableFunc(out, func(a, b Record) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out, nil

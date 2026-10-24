@@ -634,6 +634,7 @@ func TestPasswordless(t *testing.T) {
 				require.NoError(t, out.err)
 				assert.False(t, out.handlerRan)
 				assert.Equal(t, http.StatusOK, out.rec.Code)
+				assert.Equal(t, "no-store", out.rec.Header().Get("Cache-Control"))
 				clearedCookie(t, out, httpsec.DefaultPasswordlessCookieName, passwordlessFinishPath)
 
 				var doc loginBody

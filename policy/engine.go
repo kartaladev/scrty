@@ -272,7 +272,19 @@ func (e *Engine) FlushRefusalLogs() {
 // already saying it. A consumer whose call path cannot reach the context
 // replaces how a phase-sensitive policy learns the phase through that policy's
 // own option — see WithMFARequirementPhaseSource.
+//
+// A nil input denies, with ErrPolicyDenied as the reason, before any policy is
+// asked: a policy handed nil either dereferences it or has nothing to object
+// to, and neither a panic nor an allow is an answer to a caller's wiring
+// mistake.
 func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Decision {
+	if in == nil {
+		return Decision{
+			Outcome: Deny,
+			Reason:  fmt.Errorf("%w: the policy engine was given no request to judge", ErrPolicyDenied),
+		}
+	}
+
 	// A policy that answers differently per phase has no other way to tell one
 	// from another: Input's fields are fixed and carry no phase, and Evaluate is
 	// handed nothing else. Such a policy must fail closed when it cannot
@@ -325,4 +337,15 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 	}
 
 	return held
+}
+
+// noTimeDenied is the refusal of a policy, named by name, that was asked to
+// compare a deadline with an evaluation time the caller left at the zero time.
+// It denies rather than falls back on a clock: the caller supplies the time,
+// and a forgotten one is a caller bug that an allow would hide.
+func noTimeDenied(name string) Decision {
+	return Decision{
+		Outcome: Deny,
+		Reason:  fmt.Errorf("%w: the %s policy was given no evaluation time", ErrPolicyDenied, name),
+	}
 }

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/origin"
 )
 
@@ -172,19 +173,7 @@ func (c *Client) PostForm(ctx context.Context, rawURL string, form url.Values, h
 // check every request passes, so a component can refuse at construction a URL
 // the client would refuse at request time.
 func (c *Client) AllowsScheme(scheme string) bool {
-	return slices.Contains(c.schemes, asciiLower(scheme))
-}
-
-// asciiLower folds only A-Z. Unicode case mapping would fold a look-alike
-// letter onto an allowed scheme that url.Parse never produces.
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i, ch := range b {
-		if 'A' <= ch && ch <= 'Z' {
-			b[i] = ch + ('a' - 'A')
-		}
-	}
-	return string(b)
+	return slices.Contains(c.schemes, ascii.ToLower(scheme))
 }
 
 // checkTarget refuses a URL before a connection is opened.

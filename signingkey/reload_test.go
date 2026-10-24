@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -42,6 +43,10 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 	t.Parallel()
 
 	at := func(h int) time.Time { return time.Date(2030, 1, 1, h, 0, 0, 0, time.UTC) }
+	// Every manager here reads the time as noon on the day the records are
+	// dated, so none of them is dated ahead of the present by accident. A
+	// clockwork clock only read, never advanced, is safe to share.
+	noon := signingkey.WithClock(clockwork.NewFakeClockAt(at(12)))
 
 	type testCase struct {
 		name   string
@@ -54,7 +59,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 			name: "a restart adopts the stored key and mints no replacement",
 			setup: func(t *testing.T) (signingkey.KeyStore, string) {
 				store := signingkey.NewInMemoryKeyStore()
-				first, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
+				first, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store), noon)
 				require.NoError(t, err)
 				kid, _, ok := first.GetSigner(signingkey.RS256)
 				require.True(t, ok)
@@ -108,6 +113,49 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				assert.Equal(t, wantKid, kid, "the tie goes to the record the store listed later")
 			},
 		},
+		{
+			name: "a key dated a year ahead is neither current nor published",
+			setup: func(t *testing.T) (signingkey.KeyStore, string) {
+				present := realRecord(t, at(12))
+				future := realRecord(t, at(12).Add(365*24*time.Hour))
+				return &listingStore{recs: []signingkey.Record{present, future}}, present.Kid
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, wantKid string) {
+				assert.Equal(t, wantKid, currentKid(t, km, signingkey.RS256),
+					"the current key is the one created now")
+				published, err := km.VerificationKeys()
+				require.NoError(t, err)
+				assert.Equal(t, []string{wantKid}, kidsOf(published),
+					"a key dated more than one lifetime ahead is not published")
+				assert.Zero(t, store.(*listingStore).stored, "nothing is minted")
+			},
+		},
+		{
+			name: "a key ahead by less than the reload interval is current",
+			setup: func(t *testing.T) (signingkey.KeyStore, string) {
+				present := realRecord(t, at(12))
+				skewed := realRecord(t, at(12).Add(30*time.Second))
+				return &listingStore{recs: []signingkey.Record{present, skewed}}, skewed.Kid
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, wantKid string) {
+				assert.Equal(t, wantKid, currentKid(t, km, signingkey.RS256),
+					"a key a slightly fast replica just minted is adopted")
+			},
+		},
+		{
+			name: "a key ahead by more than the reload interval is published but not current",
+			setup: func(t *testing.T) (signingkey.KeyStore, string) {
+				present := realRecord(t, at(12))
+				ahead := realRecord(t, at(14))
+				return &listingStore{recs: []signingkey.Record{present, ahead}}, ahead.Kid
+			},
+			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, ahead string) {
+				assert.NotEqual(t, ahead, currentKid(t, km, signingkey.RS256),
+					"a key dated beyond the reload interval does not sign yet")
+				assert.True(t, publishes(km, ahead),
+					"but it is within one lifetime, so the tokens it signed still verify")
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -116,7 +164,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 
 			store, wantKid := tc.setup(t)
 
-			km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
+			km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store), noon)
 			require.NoError(t, err)
 
 			tc.assert(t, km, store, wantKid)

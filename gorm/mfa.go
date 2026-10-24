@@ -22,18 +22,21 @@ import (
 // enrolments in the mfa_enrolments table the migrate package creates.
 //
 // Each secret is sealed with c before it is written and opened when it is
-// read, through seal.NewEnrolmentStore, bound to the user reference; the
-// column holds the sealed value base64url-encoded. There is no unsealed
-// variant, and a nil c, typed nil included, is a configuration error. A
-// secret that will not open, a stored value that is not base64url, and a
-// database failure are each an error with the found flag false, never an
-// absent enrolment, which a caller would read as "no second factor".
+// read, through seal.NewEnrolmentStore, bound to the enrolment generation and
+// the user reference; the column holds the sealed value base64url-encoded.
+// There is no unsealed variant, and a nil c, typed nil included, is a
+// configuration error. A secret that will not open, a stored value that is
+// not base64url, and a database failure are each an error with the found
+// flag false, never an absent enrolment, which a caller would read as "no
+// second factor".
 //
 // PutPending, Confirm and AcceptStep are each one conditional statement: a
 // begin over a confirmed enrolment is refused with mfa.ErrAlreadyEnrolled, a
-// second confirmation reports false, and a step at or below the recorded one
-// reports false, each without writing, so of concurrent verifications of one
-// step exactly one succeeds, on this process or on another replica.
+// second confirmation reports false, a confirmation or a step naming a
+// generation that is not the enrolment's reports false, and a step at or
+// below the recorded one reports false, each without writing, so of
+// concurrent verifications of one step exactly one succeeds, on this process
+// or on another replica.
 //
 // The returned store implements mfa.DeviceProofStore, so the enrolment path
 // runs over it. PutPending starts the enrolment's generation, clearing any
@@ -190,11 +193,13 @@ func (s *enrolmentStore) PutPending(ctx context.Context, e mfa.Enrolment) error 
 	return nil
 }
 
-// Confirm confirms the user's pending enrolment at at, recording step and
-// never moving the recorded step backwards, and clears its emailed code,
+// Confirm confirms the user's pending enrolment on gen at at, recording step
+// and never moving the recorded step backwards, and clears its emailed code,
 // keeping the code's expiry: one conditional UPDATE, whose zero rows affected
 // reports false.
-func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step int64, at time.Time) (bool, error) {
+func (s *enrolmentStore) Confirm(
+	ctx context.Context, user identity.UserID, gen id.ID, step int64, at time.Time,
+) (bool, error) {
 	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
@@ -205,22 +210,23 @@ func (s *enrolmentStore) Confirm(ctx context.Context, user identity.UserID, step
 			"last_step":    gormdb.Expr("GREATEST(last_step, ?)", step),
 			"email_code":   nil,
 		},
-		"user_id = ? AND confirmed_at IS NULL", string(user))
+		"user_id = ? AND generation = ? AND confirmed_at IS NULL", string(user), genArg(gen))
 
 	return n > 0, err
 }
 
-// AcceptStep records step for user where the enrolment is confirmed and its
-// recorded step is strictly lower: one conditional UPDATE, whose zero rows
-// affected reports false.
-func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, step int64) (bool, error) {
+// AcceptStep records step for user where the enrolment is confirmed on gen
+// and its recorded step is strictly lower: one conditional UPDATE, whose zero
+// rows affected reports false.
+func (s *enrolmentStore) AcceptStep(ctx context.Context, user identity.UserID, gen id.ID, step int64) (bool, error) {
 	if !storekit.Storable(string(user)) {
 		return false, nil
 	}
 
 	n, err := updateWhere[enrolmentRow](ctx, s.c, "accept MFA time step",
 		map[string]any{"last_step": step},
-		"user_id = ? AND confirmed_at IS NOT NULL AND last_step < ?", string(user), step)
+		"user_id = ? AND generation = ? AND confirmed_at IS NOT NULL AND last_step < ?",
+		string(user), genArg(gen), step)
 
 	return n > 0, err
 }

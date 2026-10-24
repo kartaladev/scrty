@@ -39,6 +39,12 @@ type PasswordOption func(*passwordAuthenticator)
 // parameters. Supply this when the stored hashes were produced by another
 // algorithm, or by the same one with different parameters.
 //
+// An encoder that also implements password.Recognizer makes a stored hash it
+// does not recognise cost the same as an unknown username: one verification,
+// against the reference hash. Without it only an empty hash does, and any
+// other hash is handed to the encoder as it stands. The built-in encoders
+// implement it.
+//
 // A nil encoder is a configuration error rather than a silent return to the
 // default: a caller passing one meant to supply an encoder, and hashing under
 // an algorithm they did not choose would fail to verify every credential their
@@ -128,6 +134,11 @@ const (
 	reasonUserLoadFailed  = "user-loader"
 	reasonWrongPassword   = "wrong-password"
 	reasonAccountInactive = "account-inactive"
+	// reasonNoPasswordHash and reasonUnrecognisedHash name a known user whose
+	// stored hash the encoder cannot verify: none at all, or one it does not
+	// recognise.
+	reasonNoPasswordHash   = "no-password-hash"
+	reasonUnrecognisedHash = "unrecognised-hash"
 )
 
 // defaultRefusalLogInterval is how often one refusal reason is recorded when no
@@ -247,6 +258,21 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 // path measurably faster than the wrong-password one, which turns the login
 // endpoint into a way to enumerate accounts without ever guessing a password.
 //
+// So is a known user without a usable hash: one whose stored hash is empty, or
+// one the encoder reports it does not recognise through password.Recognizer.
+// Match refuses either without deriving anything, so it would be as fast, and
+// as telling, as an early return. The provider spends exactly one verification
+// against the reference hash instead — never that and the stored one, which
+// would make a wrong password twice as slow as an unknown user — and refuses
+// whatever its verdict: the reference password is a constant, and matching it
+// admits no one.
+//
+// By default only an empty hash is unusable for a consumer's encoder, which is
+// trusted with every non-empty hash. Implementing password.Recognizer on that
+// encoder is the override: hashes it reports unrecognised then cost the
+// reference verification too. scrty's Argon2id, bcrypt and scrypt encoders
+// implement it.
+//
 // Only *identity.UsernamePassword is handled; anything else is skipped. That is
 // the stated limit: a consumer whose transport carries a password in a type of
 // its own converts to identity.NewUsernamePassword, or writes an Authenticator
@@ -255,7 +281,9 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 // it, and a wrong guess there leaves the password resident after a success.
 func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	creds, ok := c.(*identity.UsernamePassword)
-	if !ok {
+	if !ok || creds == nil {
+		// A typed nil is not credentials of any kind: dereferencing it panics, so
+		// it is refused as unsupported like any kind this provider does not handle.
 		return nil, ErrUnsupportedCredentials
 	}
 
@@ -285,6 +313,18 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 			a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
 				diag.Failure(reasonUserLoadFailed, err)...)
 		}
+
+		return nil, ErrAuthenticationFailed
+	}
+
+	if reason, level, usable := a.usableHash(details.Password); !usable {
+		// Deliberately unused, and never consulted: the reference password is a
+		// library constant, so admitting on this verdict would let anyone who
+		// reads the source into every account without a usable hash. One
+		// verification, as an unknown username costs, and not two.
+		_ = a.enc.Match(presented, a.reference)
+
+		a.refuse(ctx, level, reason, creds.Username, slog.String("reason", reason))
 
 		return nil, ErrAuthenticationFailed
 	}
@@ -336,6 +376,35 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 		Time:              time.Now(),
 		PasswordChangedAt: details.PasswordChangedAt,
 	}, nil
+}
+
+// usableHash reports whether the stored hash is one the encoder would verify,
+// and when it is not, the refusal reason and level to record it under.
+//
+// An empty hash is unusable: the user has no password, typically because the
+// account was created by federated login. A non-empty hash is unusable when the
+// encoder implements password.Recognizer and does not recognise it — a hash in
+// another algorithm's format, malformed, or demanding more work than the
+// encoder allows. An encoder without Recognizer is trusted with every non-empty
+// hash, so for it only an empty hash is unusable.
+//
+// Either way Match would refuse without deriving anything, and the refusal
+// would be measurably faster than a wrong password; the caller spends the
+// reference verification instead.
+func (a *passwordAuthenticator) usableHash(stored []byte) (reason string, level slog.Level, usable bool) {
+	if len(stored) == 0 {
+		// Routine: a federated user tried the password form.
+		return reasonNoPasswordHash, slog.LevelDebug, false
+	}
+
+	if r, ok := a.enc.(password.Recognizer); ok && !r.Recognizes(stored) {
+		// Not routine: the store holds a hash the configured encoder cannot
+		// verify, so this user cannot log in until an operator migrates it or
+		// configures the matching encoder.
+		return reasonUnrecognisedHash, slog.LevelWarn, false
+	}
+
+	return "", 0, true
 }
 
 // refuse records one refusal, through the sampler.
@@ -403,7 +472,7 @@ var _ RefusalLogFlusher = (*passwordAuthenticator)(nil)
 // without any hashing.
 func (a *passwordAuthenticator) VerifyDecoy(_ context.Context, c identity.Credentials) bool {
 	creds, ok := c.(*identity.UsernamePassword)
-	if !ok {
+	if !ok || creds == nil {
 		return false
 	}
 

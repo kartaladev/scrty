@@ -375,8 +375,9 @@ func TestClone(t *testing.T) {
 		{
 			name:   "signal only still records backup state and last use, keeping the counter",
 			opts:   []passkey.Option{passkey.WithCloneResponse(passkey.CloneSignalOnly)},
+			seed:   func(c *passkey.Credential) { c.BackupEligible = true },
 			count:  41,
-			adjust: func(b *assertionBody) { b.BS = true },
+			adjust: func(b *assertionBody) { b.BE, b.BS = true, true },
 			assert: ignoreSessions(recordedUse),
 		},
 		{
@@ -384,8 +385,9 @@ func TestClone(t *testing.T) {
 			opts: []passkey.Option{passkey.WithClonePolicy(func(context.Context, passkey.CloneSignal) passkey.CloneAction {
 				return passkey.CloneAllow
 			})},
+			seed:   func(c *passkey.Credential) { c.BackupEligible = true },
 			count:  41,
-			adjust: func(b *assertionBody) { b.BS = true },
+			adjust: func(b *assertionBody) { b.BE, b.BS = true, true },
 			assert: ignoreSessions(recordedUse),
 		},
 		{

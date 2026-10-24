@@ -18,18 +18,19 @@ import (
 // catch a store that folds or trims the reference.
 const mfaUser identity.UserID = "Alice@Example.COM "
 
-// pendingEnrolment returns a pending enrolment for user on generation n,
-// carrying secret.
+// pendingEnrolment returns the nth pending enrolment for user, carrying secret
+// and begun on the enrolment generation suiteID(n).
 func pendingEnrolment(user identity.UserID, secret string, n int) mfa.Enrolment {
 	return mfa.Enrolment{
-		User:      user,
-		Secret:    []byte(secret),
-		CreatedAt: suiteStart.Add(time.Duration(n) * time.Minute),
+		User:       user,
+		Secret:     []byte(secret),
+		CreatedAt:  suiteStart.Add(time.Duration(n) * time.Minute),
+		Generation: suiteID(n),
 	}
 }
 
-// pendingOn returns a pending enrolment for user on generation n, carrying
-// secret and begun on the enrolment generation gen.
+// pendingOn returns the nth pending enrolment for user, carrying secret and
+// begun on the enrolment generation gen.
 func pendingOn(user identity.UserID, secret string, n int, gen id.ID) mfa.Enrolment {
 	e := pendingEnrolment(user, secret, n)
 	e.Generation = gen
@@ -258,7 +259,7 @@ func confirmEnrolment(
 	e := pendingEnrolment(user, "secret-of-"+string(user), 1)
 	require.NoError(t, s.PutPending(ctx, e))
 	at := suiteStart.Add(time.Hour)
-	confirmed, err := s.Confirm(ctx, user, step, at)
+	confirmed, err := s.Confirm(ctx, user, e.Generation, step, at)
 	require.NoError(t, err)
 	require.True(t, confirmed, "a pending enrolment must confirm")
 
@@ -308,14 +309,14 @@ func assertConfirmKeepsStep(
 	e := proveDevice(ctx, t, p, suiteID(1), 1001, emailCode)
 
 	at := suiteStart.Add(time.Hour)
-	confirmed, err := s.Confirm(ctx, mfaUser, 1000, at)
+	confirmed, err := s.Confirm(ctx, mfaUser, suiteID(1), 1000, at)
 	require.NoError(t, err)
 	require.True(t, confirmed, "Confirmation keeps a later device-proof step: Confirm must report true")
 
 	e.ConfirmedAt, e.EmailCode = at, nil
 	assertEnrolment(ctx, t, s, e)
 
-	accepted, err := s.AcceptStep(ctx, mfaUser, 1001)
+	accepted, err := s.AcceptStep(ctx, mfaUser, suiteID(1), 1001)
 	require.NoError(t, err)
 	assert.False(t, accepted, "the device-proof step 1001 is spent and must not be accepted again")
 }
@@ -326,7 +327,10 @@ func assertConfirmKeepsStep(
 // given; a pending enrolment is replaced by the next begin, and a
 // confirmed one is never replaced; Confirm succeeds once and records its time
 // and step; AcceptStep succeeds only on a confirmed enrolment and only for a
-// step strictly after the recorded one; users are matched byte for byte; and
+// step strictly after the recorded one; Confirm and AcceptStep write only on
+// the generation they name, so neither lands on an enrolment a later begin or
+// a re-enrolment replaced, and naming no generation writes nothing; users are
+// matched byte for byte; and
 // deleting is not an error when there is nothing to delete.
 //
 // It also holds the store to charging TOTP verification attempts: only a
@@ -401,7 +405,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 				confirmed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
 				assertEnrolment(ctx, t, s, confirmed)
 
-				again, err := s.Confirm(ctx, mfaUser, 2000, suiteStart.Add(2*time.Hour))
+				again, err := s.Confirm(ctx, mfaUser, confirmed.Generation, 2000, suiteStart.Add(2*time.Hour))
 				require.NoError(t, err)
 				assert.False(t, again, "a confirmed enrolment has nothing pending to confirm")
 
@@ -411,7 +415,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 		{
 			name: "confirming with no enrolment is refused and enrols no one",
 			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
-				confirmed, err := s.Confirm(ctx, mfaUser, 1000, suiteStart)
+				confirmed, err := s.Confirm(ctx, mfaUser, suiteID(1), 1000, suiteStart)
 				require.NoError(t, err)
 				assert.False(t, confirmed)
 
@@ -425,7 +429,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 				require.NoError(t, s.PutPending(ctx, e))
 
 				for _, user := range []identity.UserID{mfaUser, "nobody"} {
-					accepted, err := s.AcceptStep(ctx, user, 1001)
+					accepted, err := s.AcceptStep(ctx, user, e.Generation, 1001)
 					require.NoError(t, err)
 					assert.False(t, accepted, "no confirmed enrolment for %q", user)
 				}
@@ -453,7 +457,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 					{1001, false, 1001},
 					{1002, true, 1002},
 				} {
-					accepted, err := s.AcceptStep(ctx, mfaUser, call.step)
+					accepted, err := s.AcceptStep(ctx, mfaUser, e.Generation, call.step)
 					require.NoError(t, err)
 					assert.Equal(t, call.want, accepted, "step %d", call.step)
 
@@ -469,7 +473,7 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 				begun.CreatedAt = preciseStart
 				require.NoError(t, s.PutPending(ctx, begun))
 				at := preciseStart.Add(time.Minute)
-				confirmed, err := s.Confirm(ctx, mfaUser, 1000, at)
+				confirmed, err := s.Confirm(ctx, mfaUser, begun.Generation, 1000, at)
 				require.NoError(t, err)
 				require.True(t, confirmed)
 
@@ -506,6 +510,68 @@ func RunEnrolmentStoreSuite(t *testing.T, newStore func(t *testing.T) mfa.Enrolm
 				assertEnrolment(ctx, t, s, other)
 				require.NoError(t, s.PutPending(ctx, pendingEnrolment(mfaUser, "secret-3", 3)),
 					"a deleted enrolment no longer blocks a begin")
+			},
+		},
+		{
+			name: "confirm naming a replaced generation is refused",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				require.NoError(t, s.PutPending(ctx, pendingEnrolment(mfaUser, "secret-1", 1)))
+				next := pendingEnrolment(mfaUser, "secret-2", 2)
+				require.NoError(t, s.PutPending(ctx, next))
+
+				confirmed, err := s.Confirm(ctx, mfaUser, suiteID(1), 1000, suiteStart.Add(time.Hour))
+				require.NoError(t, err)
+				assert.False(t, confirmed, "a confirmation naming the replaced generation confirms nothing")
+
+				assertEnrolment(ctx, t, s, next)
+			},
+		},
+		{
+			name: "accept naming a removed generation is refused",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				removed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				require.NoError(t, s.Delete(ctx, mfaUser))
+
+				renewed := pendingEnrolment(mfaUser, "secret-2", 2)
+				require.NoError(t, s.PutPending(ctx, renewed))
+				at := suiteStart.Add(2 * time.Hour)
+				confirmed, err := s.Confirm(ctx, mfaUser, renewed.Generation, 999, at)
+				require.NoError(t, err)
+				require.True(t, confirmed, "the re-enrolment must confirm on its own generation")
+
+				accepted, err := s.AcceptStep(ctx, mfaUser, removed.Generation, 1001)
+				require.NoError(t, err)
+				assert.False(t, accepted, "a step checked against the removed generation must not be accepted")
+
+				renewed.ConfirmedAt, renewed.LastStep = at, 999
+				assertEnrolment(ctx, t, s, renewed)
+			},
+		},
+		{
+			name: "a zero generation writes nothing",
+			assert: func(t *testing.T, ctx context.Context, s mfa.EnrolmentStore, _ *clockwork.FakeClock) {
+				// Naming no generation confirms no pending enrolment, whether
+				// it is on a generation or on none.
+				onNone := pendingOn("bob", "secret-of-bob", 1, id.Nil)
+				require.NoError(t, s.PutPending(ctx, onNone))
+				e := pendingEnrolment(mfaUser, "secret-1", 1)
+				require.NoError(t, s.PutPending(ctx, e))
+
+				for _, user := range []identity.UserID{"bob", mfaUser} {
+					confirmed, err := s.Confirm(ctx, user, id.Nil, 1000, suiteStart.Add(time.Hour))
+					require.NoError(t, err)
+					assert.False(t, confirmed, "a confirmation of %q naming no generation confirms nothing", user)
+				}
+				assertEnrolment(ctx, t, s, onNone)
+				assertEnrolment(ctx, t, s, e)
+
+				// Naming no generation accepts no step on a confirmed one.
+				require.NoError(t, s.Delete(ctx, mfaUser))
+				confirmed := confirmEnrolment(ctx, t, s, mfaUser, 1000)
+				accepted, err := s.AcceptStep(ctx, mfaUser, id.Nil, 1001)
+				require.NoError(t, err)
+				assert.False(t, accepted, "a step naming no generation is not accepted")
+				assertEnrolment(ctx, t, s, confirmed)
 			},
 		},
 		optionalCase(false, newGenerationCase, assertNewGeneration),

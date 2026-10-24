@@ -170,6 +170,8 @@ func TestPending(t *testing.T) {
 	codeStoreErr := errors.New("code store down")
 	limiterErr := errors.New("limiter store down")
 
+	var early string // a challenge begun before the run's own, by the case that needs one
+
 	cases := []testCase{
 		{
 			name:   "a first passkey with no way back waits for saved codes",
@@ -244,6 +246,9 @@ func TestPending(t *testing.T) {
 				awaitingCodes(t, e, res, err)
 				old := onlyCredential(t, e.f, "u-1")
 
+				// The user begins again after leaving the first registration:
+				// only a passkey created before the new challenge is abandoned.
+				e.f.clock.Advance(time.Second)
 				challenge := e.f.begin(t, e.m, e.s)
 				res2, err := e.m.FinishRegistration(t.Context(), e.s, regBody(challenge, "cred-b", ""), e.rc)
 				require.NoError(t, err)
@@ -254,6 +259,34 @@ func TestPending(t *testing.T) {
 				assert.NotEqual(t, old.ID, c.ID)
 				assert.Equal(t, []byte("cred-b"), c.CredentialID)
 				assert.Equal(t, passkey.AwaitingSavedCodes, c.Pending)
+			},
+		},
+		{
+			name:  "a pending passkey created after this finish's challenge was issued is kept",
+			codes: true,
+			setup: func(t *testing.T, e *env) {
+				early = e.f.begin(t, e.m, fullSession("sess-a", "u-1"))
+			},
+			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
+				awaitingCodes(t, e, res, err)
+				first := onlyCredential(t, e.f, "u-1")
+
+				// The early challenge was issued before the first passkey was
+				// created, so that passkey is not one its user abandoned.
+				res2, err := e.m.FinishRegistration(t.Context(), e.s, regBody(early, "cred-b", ""), e.rc)
+				require.NoError(t, err)
+				require.Len(t, res2.RecoveryCodes, 10)
+
+				held, err := e.f.creds.List(t.Context(), "u-1")
+				require.NoError(t, err)
+				require.Len(t, held, 2, "passkeys u-1 holds")
+				assert.Equal(t, first.ID, held[0].ID)
+				assert.Equal(t, res2.Credential.ID, held[1].ID)
+
+				// The cost of two finishes both stored under a limit above
+				// one: the later set of saved codes replaced the earlier.
+				_, err = e.m.ConfirmSavedCode(t.Context(), e.s, res.RecoveryCodes[0], e.rc)
+				require.ErrorIs(t, err, mfa.ErrInvalidCode)
 			},
 		},
 		{

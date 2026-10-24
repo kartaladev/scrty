@@ -26,7 +26,10 @@ func WithDigits(n int) TOTPOption {
 }
 
 // WithPeriod sets the length of one time step, replacing the default of 30
-// seconds. A period of zero or less is a construction error.
+// seconds. The period must be a whole number of seconds, at least one: RFC
+// 6238 counts steps in seconds and a provisioning URI carries the period as
+// whole seconds, so any other period is a construction error matching
+// ErrConfig rather than one silently truncated.
 //
 // 30 seconds is what authenticator apps assume when a provisioning URI omits
 // the period. A deployment that changes it is relying on the app reading the

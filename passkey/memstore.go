@@ -54,6 +54,11 @@ func (s *MemoryCredentialStore) Insert(_ context.Context, c *Credential) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.insertLocked(cp)
+}
+
+// insertLocked stores cp, the caller's own copy, for a caller holding s.mu.
+func (s *MemoryCredentialStore) insertLocked(cp *Credential) error {
 	if _, ok := s.index[string(cp.CredentialID)]; ok {
 		return ErrDuplicateCredential
 	}
@@ -66,6 +71,27 @@ func (s *MemoryCredentialStore) Insert(_ context.Context, c *Credential) error {
 	s.index[string(cp.CredentialID)] = cp.ID
 
 	return nil
+}
+
+// InsertWithin stores a copy of c only while c's user holds fewer than limit
+// credentials, in every state, and reports whether it did. The count and the
+// insert happen under one lock, so of several callers racing for one user no
+// more than limit are told they stored a credential. Under the limit, a
+// credential ID or library ID already stored is ErrDuplicateCredential.
+func (s *MemoryCredentialStore) InsertWithin(_ context.Context, c *Credential, limit int) (bool, error) {
+	cp := copyCredential(c)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.countLocked(cp.User) >= limit {
+		return false, nil
+	}
+	if err := s.insertLocked(cp); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 // FindByCredentialID returns a copy of the credential with credential ID
@@ -122,6 +148,11 @@ func (s *MemoryCredentialStore) Count(_ context.Context, user identity.UserID) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	return s.countLocked(user), nil
+}
+
+// countLocked is Count for a caller holding s.mu.
+func (s *MemoryCredentialStore) countLocked(user identity.UserID) int {
 	n := 0
 
 	for _, c := range s.byID {
@@ -130,7 +161,7 @@ func (s *MemoryCredentialStore) Count(_ context.Context, user identity.UserID) (
 		}
 	}
 
-	return n, nil
+	return n
 }
 
 // RecordAssertion records the counter, backup state and last use of an
