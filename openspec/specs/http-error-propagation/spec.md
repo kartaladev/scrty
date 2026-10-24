@@ -93,18 +93,19 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 
 | Refusal | Status |
 |---|---|
-| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), session idle, throttled source, throttled saved-code presentation | 401 |
+| authentication required (this capability's, and the authorization capability's own), authentication failed (including a refused account recovery and a refused passkey ceremony), refused magic-link redemption, session idle, throttled source, throttled saved-code presentation | 401 |
 | challenge of kind password change, challenge of kind second-factor enrolment, challenge of kind account recovery | 403 |
 | challenge of any other kind | 401 |
 | invalid second-factor code, throttled second-factor verification or enrolment, throttled passkey registration begin | 401 |
 | access denied, refused by policy without a reason (the security-policy capability's own error), second factor required or unsatisfiable, second-factor enrolment required, second factor on the same channel as the first, already enrolled, MFA method not usable by the session's user, no MFA challenge pending, request refused during a recovery cool-down, reauthentication required for a saved-code regeneration, reauthentication required for a passkey registration or removal, passkey suspected to be a clone, passkey suspended, passkey still pending, passkey refused by the attestation policy, passkey limit reached | 403 |
 | malformed login, malformed recovery, invalid federated logout token | 400 |
-| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found | 404 |
+| unknown identity provider named in a federated login or logout path, unknown MFA method named in a second-factor path, passkey not found, API key not found | 404 |
 | request too large | 413 |
 | new password matches a recent password (the password-encoding capability's password-reused error) | 422 |
-| account locked, too many sessions, session renewal throttled for its family | 429 |
+| account locked, too many sessions, session renewal throttled for its family, one-time issuance limit reached | 429 |
 | held recovery presented before its hold ends | 409 |
 | session renewal that lost a concurrent renewal | 409 |
+| API key rotation refused (the key is revoked or expired, or a concurrent rotation won) | 409 |
 | any other error | 500 |
 
 A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.
@@ -258,6 +259,22 @@ Federated login refusals that are authentication failures (an invalid flow, an i
 #### Scenario: Concealed account lock
 - **WHEN** the error joins the authentication failure refusal with the account-locked refusal
 - **THEN** the mapping returns 401
+
+#### Scenario: Refused magic-link redemption
+- **WHEN** a magic-link redemption is refused, for an invalid token or a throttled source
+- **THEN** the mapping returns 401
+
+#### Scenario: Issuance limit reached
+- **WHEN** an error wraps the one-time issuance-limit-reached refusal
+- **THEN** the mapping returns 429
+
+#### Scenario: Rotation refused
+- **WHEN** an error wraps the API key rotation-refused refusal
+- **THEN** the mapping returns 409
+
+#### Scenario: Unknown API key
+- **WHEN** an error wraps the API key not-found refusal
+- **THEN** the mapping returns 404
 
 ### Requirement: A challenge takes precedence over a sentinel
 When an error is, or wraps, a challenge error, the mapping SHALL use the challenge's status even if the error also wraps a refusal sentinel.

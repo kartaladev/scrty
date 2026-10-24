@@ -27,7 +27,7 @@ A message SHALL carry a recipient address, a sender address, a subject and a pla
 - **THEN** sending fails with the unsafe-header-value error
 
 ### Requirement: Message content is encoded faithfully
-The SMTP sender SHALL send the plain-text body as UTF-8 with CRLF line endings. It SHALL encode a subject containing non-ASCII characters so that it arrives unchanged. It SHALL add no header naming scrty or any product.
+The SMTP sender SHALL send the plain-text body as UTF-8 with CRLF line endings. A bare carriage return, a bare line feed and a CRLF in the body SHALL each become one CRLF, so no bare carriage return reaches the transfer. It SHALL encode a subject containing non-ASCII characters so that it arrives unchanged. It SHALL add no header naming scrty or any product.
 
 #### Scenario: Non-ASCII subject
 - **WHEN** a message with subject `Masuk ke akun Anda — tautan` is delivered to a test SMTP server
@@ -40,6 +40,10 @@ The SMTP sender SHALL send the plain-text body as UTF-8 with CRLF line endings. 
 #### Scenario: No product header
 - **WHEN** any message is delivered through the SMTP sender
 - **THEN** no received header value contains `scrty`
+
+#### Scenario: Bare carriage returns normalised
+- **WHEN** a message whose body contains `hello\r.\r\nMAIL FROM` is delivered
+- **THEN** the transfer carries no bare carriage return, and the body's lines are separated by CRLF with the leading dot escaped
 
 ### Requirement: SMTP wiring mistakes fail at construction
 Constructing the SMTP sender SHALL fail with a configuration error when no server host is given, when the port is outside 1 to 65535, or when the deadline is zero or less. The default port SHALL be 587. A message that names no sender address SHALL use the configured default sender address. A message with neither SHALL fail to send with an error, before any network activity.

@@ -199,7 +199,7 @@ A consumer SHALL be able to supply a registration check. It SHALL be given the u
 ### Requirement: A first passkey waits for saved recovery codes when the user has no other way back in
 When saved recovery codes are wired to registration, finish SHALL ask the account-recovery capability's other-way-back-in check about the session's user before storing the credential. A failed check SHALL refuse the finish, and nothing SHALL be stored. When the check reports no way back:
 - the credential SHALL be stored in the pending state, awaiting saved codes;
-- a new set of saved codes SHALL be generated for the user, replacing any set they held;
+- a new set of saved codes SHALL be generated for the user, replacing any set they held, only after the credential is stored, so a finish refused by the passkey limit replaces no codes;
 - the codes SHALL be returned in the finish response, once, with `Cache-Control: no-store`.
 
 The credential SHALL become active only when the user posts one of those codes to the registration confirm endpoint. That endpoint SHALL:
@@ -207,7 +207,7 @@ The credential SHALL become active only when the user posts one of those codes t
 - check the code with the saved-code check, which spends nothing and is throttled per user;
 - clear the pending reason by one conditional write on the user's credential awaiting codes.
 
-A wrong code SHALL leave the credential pending. The registration confirm endpoint SHALL accept only the session's own user's credential. A new registration finish for a user who holds a credential awaiting codes SHALL delete that credential before storing the new one. A user who already has another way back in SHALL register without this step.
+A wrong code SHALL leave the credential pending. The registration confirm endpoint SHALL accept only the session's own user's credential. A new registration finish for a user who holds a credential awaiting codes, created before this finish's registration challenge was issued, SHALL delete that credential before storing the new one, and that credential SHALL NOT count against the passkey limit. A credential awaiting codes created at or after that instant belongs to a concurrent registration and SHALL be kept. If generating the codes fails after the credential is stored, the finish SHALL fail and SHALL remove the credential it stored. A user who already has another way back in SHALL register without this step.
 
 A consumer SHALL be able to choose the optional mode instead. Finish then SHALL store the credential active at once, and SHALL report in its response that recovery is not set up, for the consumer's interface to prompt. The documentation SHALL state that the optional mode allows accounts that only the operator can recover.
 
@@ -226,7 +226,7 @@ A consumer SHALL be able to choose the optional mode instead. Finish then SHALL 
 - **THEN** the credential stays pending
 
 #### Scenario: Abandoned registration is replaced
-- **WHEN** `u-1` holds a credential awaiting codes and finishes a new registration
+- **WHEN** `u-1` holds a credential awaiting codes from an earlier registration, and begins and finishes a new one, with a passkey limit of 1
 - **THEN** the earlier credential no longer exists, and the new one is pending with a new set of codes
 
 #### Scenario: User with a way back
@@ -240,6 +240,10 @@ A consumer SHALL be able to choose the optional mode instead. Finish then SHALL 
 #### Scenario: Check failure
 - **WHEN** the way-back check fails because the saved-code store is unavailable
 - **THEN** the finish is refused and nothing is stored
+
+#### Scenario: A concurrent registration's credential is kept
+- **WHEN** `u-1` begins two registrations, finishes the first, then finishes the second, with a passkey limit of 1
+- **THEN** the first credential is kept and its codes confirm it, and the second finish is refused at the limit and replaces no codes
 
 ### Requirement: A passkey bound from an enrolment-only session proves the mailbox first, by default
 When the MFA enrolment path's email confirmation is on, its default, a registration finished on an enrolment-only session SHALL store the credential in the pending state, awaiting the emailed code. It SHALL generate a 6-digit code from the cryptographically secure random source. The code SHALL be kept on the credential, sealed, with an expiry 10 minutes later, and sent to the user's contact address. The registration emailed-code endpoint SHALL read the code from the `code` form field and SHALL, in order:
@@ -712,3 +716,47 @@ Sessions SHALL be ended only when a credential is suspended: signal-only mode, a
 #### Scenario: Client disconnects before the suspension
 - **WHEN** an assertion is a suspected clone and the requesting client's context is cancelled before the credential is suspended
 - **THEN** the clone-suspected refusal is returned, the credential is still suspended, and the user's sessions are still deleted
+
+### Requirement: Passkey limits are decided by the write
+The per-user passkey limit SHALL be decided by one atomic bounded insert, so that registration finishes for one user that race SHALL NOT together store more passkeys than the limit. The per-user registration-challenge limit SHALL likewise be decided by one atomic bounded issue, so begins that race SHALL NOT together issue more challenges than the limit.
+
+#### Scenario: Concurrent finishes at the limit
+- **WHEN** the passkey limit is 1, `u-1` holds no passkey, and four registration finishes for `u-1` run concurrently
+- **THEN** exactly one stores a passkey and the others are refused with the passkey-limit refusal
+
+#### Scenario: Concurrent registration begins
+- **WHEN** 20 registration begins for `u-1` run concurrently and none were issued in the window before
+- **THEN** no more challenges are issued than the registration-challenge limit allows
+
+### Requirement: A backed-up state without backup eligibility is refused
+Registration and assertion SHALL be refused with the authentication-failed refusal when the authenticator data reports the backup state as set while backup eligibility is not set, as WebAuthn Level 3 requires, whatever verifier the consumer supplies.
+
+#### Scenario: Registration reporting backed up but not eligible
+- **WHEN** `u-1` finishes a registration whose authenticator data has the backup-state flag set and the backup-eligible flag clear
+- **THEN** the finish is refused with the authentication-failed refusal and nothing is stored
+
+#### Scenario: Assertion reporting backed up but not eligible
+- **WHEN** a passwordless finish presents an assertion whose authenticator data has the backup-state flag set and the backup-eligible flag clear
+- **THEN** the login is refused with the authentication-failed refusal
+
+### Requirement: The relying party identifier is a valid DNS name
+Construction SHALL fail with a configuration error when the relying party identifier is not a lowercase DNS name: each label 1 to 63 characters of lowercase ASCII letters, digits and hyphens, not starting or ending with a hyphen, and the whole at most 253 characters. `localhost` SHALL be accepted.
+
+#### Scenario: Uppercase identifier
+- **WHEN** the relying party identifier is configured as `Example.com`
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Label with a leading hyphen
+- **WHEN** the relying party identifier is configured as `-login.example.com`
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Valid identifier
+- **WHEN** the relying party identifier is configured as `login.example.com`
+- **THEN** construction succeeds
+
+### Requirement: A user lookup with no result is refused, not dereferenced
+When the user loader returns no user and no error, a registration begin SHALL be refused, and the default display-name resolver SHALL return an error, rather than panic. A credential list containing an empty entry SHALL treat that entry as missing rather than panic.
+
+#### Scenario: Loader returns no user
+- **WHEN** a session of `u-1` begins a registration and the user loader returns no user and no error
+- **THEN** the begin is refused and no challenge is issued

@@ -98,10 +98,10 @@ Deleting external identity links by user reference SHALL remove every link belon
 - **THEN** the deletion reports 0 and no link is removed
 
 ### Requirement: MFA enrolment confirmation is recorded once
-An MFA enrolment SHALL start unconfirmed. Confirming it SHALL record the confirmation time and the confirming time step only if the enrolment is still unconfirmed, and SHALL report whether this call confirmed it. Confirming SHALL clear any emailed enrolment code outstanding on the enrolment, and SHALL NOT lower the recorded time step: where a device proof already recorded a later step, that step SHALL be kept. Storing a new pending enrolment SHALL replace an unconfirmed enrolment's secret, clear its accepted time step, start a new enrolment generation, and clear its device proof, its emailed code, that code's expiry and its attempt count. It SHALL be refused with the already-enrolled outcome when the user's enrolment is confirmed, leaving that enrolment unchanged. The check and the write SHALL be a single conditional write.
+An MFA enrolment SHALL start unconfirmed. Confirming it SHALL record the confirmation time and the confirming time step only if the enrolment is still unconfirmed and is still on the enrolment generation the caller names, and SHALL report whether this call confirmed it. A caller naming no generation SHALL confirm nothing. Confirming SHALL clear any emailed enrolment code outstanding on the enrolment, and SHALL NOT lower the recorded time step: where a device proof already recorded a later step, that step SHALL be kept. Storing a new pending enrolment SHALL replace an unconfirmed enrolment's secret, clear its accepted time step, start a new enrolment generation, and clear its device proof, its emailed code, that code's expiry and its attempt count. It SHALL be refused with the already-enrolled outcome when the user's enrolment is confirmed, leaving that enrolment unchanged. The check and the write SHALL be a single conditional write.
 
 #### Scenario: First confirmation
-- **WHEN** a new enrolment is confirmed at time T
+- **WHEN** a new enrolment on generation G1 is confirmed at time T naming G1
 - **THEN** the confirmation succeeds and the enrolment reads as confirmed at T
 
 #### Scenario: Second confirmation
@@ -127,8 +127,12 @@ An MFA enrolment SHALL start unconfirmed. Confirming it SHALL record the confirm
 - **THEN** the confirmation succeeds and the recorded step is 1001
 - **AND** the enrolment reads with no emailed code
 
+#### Scenario: Confirmation naming a replaced generation
+- **WHEN** a pending enrolment on generation G1 is replaced by one on G2, and a confirmation naming G1 is made
+- **THEN** the confirmation is refused and the enrolment reads as unconfirmed on G2
+
 ### Requirement: A TOTP time step is accepted at most once, in increasing order
-Recording an accepted TOTP time step for an enrolment SHALL succeed only when the enrolment is confirmed and the step is greater than the last accepted step. The check and the update SHALL be a single conditional write. Concurrent attempts to record the same step SHALL result in exactly one success. A refused attempt SHALL leave the last accepted step unchanged.
+Recording an accepted TOTP time step for an enrolment SHALL succeed only when the enrolment is confirmed, is still on the enrolment generation the caller names, and the step is greater than the last accepted step. A caller naming no generation SHALL record nothing. The check and the update SHALL be a single conditional write. Concurrent attempts to record the same step SHALL result in exactly one success. A refused attempt SHALL leave the last accepted step unchanged.
 
 #### Scenario: Replayed step
 - **WHEN** step 1000 is accepted and step 1000 is recorded again
@@ -145,6 +149,10 @@ Recording an accepted TOTP time step for an enrolment SHALL succeed only when th
 #### Scenario: Concurrent verifications of one step
 - **WHEN** 8 callers record step 1002 for the same enrolment at the same time
 - **THEN** exactly one succeeds
+
+#### Scenario: Step for a removed generation
+- **WHEN** a code was checked against the secret of generation G1, the enrolment is reset and re-enrolled as G2 and confirmed, and the step is then recorded naming G1
+- **THEN** the attempt is refused
 
 ### Requirement: User references are opaque and need no identity tables
 Durable stores SHALL store user references as text, and SHALL return them byte for byte as supplied, without parsing, trimming, case-folding or validating them as identifiers. Durable stores SHALL NOT require any identity table to exist, SHALL NOT declare foreign keys to identity tables, and SHALL NOT join with them.
@@ -773,3 +781,47 @@ Deleting every session of a user except a named one SHALL keep the named session
 #### Scenario: Named session is the family's current one
 - **WHEN** `u-1`'s session O is superseded by S1 with a window still open, and `u-1`'s sessions except S1 are deleted
 - **THEN** S1 still loads and O does not
+
+### Requirement: Store guarantees hold at the database's weaker default isolations
+Every transaction a durable store opens for itself SHALL run at READ COMMITTED whatever the database's or role's default isolation is. A statement the store runs outside a transaction whose guarantee depends on READ COMMITTED, as the failure-streak add and the PostgreSQL rate-limiter record do, SHALL run in a READ COMMITTED transaction of its own; other single statements keep the default, since each takes its own snapshot.
+
+#### Scenario: Repeatable-read database default
+- **WHEN** the database's default isolation is REPEATABLE READ and 16 failed logins for one username are recorded concurrently
+- **THEN** every failure is counted and none is reported as a database failure
+
+#### Scenario: Overlapping recovery-code replacements under a repeatable-read default
+- **WHEN** the database's default isolation is REPEATABLE READ and two replacements of `u-1`'s saved-code set overlap
+- **THEN** only the later set's codes exist afterwards, and no code of the earlier set matches
+
+#### Scenario: Concurrent provisioning under a repeatable-read default
+- **WHEN** the database's default isolation is REPEATABLE READ and 8 provisions of the same username run concurrently
+- **THEN** exactly one succeeds and the other 7 report that the user exists
+
+### Requirement: An operation that needs READ COMMITTED refuses a caller's stronger transaction
+An operation whose guarantee depends on READ COMMITTED SHALL refuse to run inside a caller's transaction at a stronger isolation, with an error that names the isolation found, rather than silently weakening the guarantee. Operations whose guarantees hold at any isolation SHALL join a caller's transaction at any isolation.
+
+#### Scenario: Caller's repeatable-read transaction
+- **WHEN** a caller attaches a REPEATABLE READ transaction and replaces `u-1`'s saved-code set inside it
+- **THEN** the replacement is refused with an error naming the isolation level, and the caller's transaction is left usable
+
+### Requirement: A bounded insert is decided under a per-subject lock
+The one-time token store and the passkey credential store SHALL offer an insert bounded by a limit: it SHALL count the subject's matching records within the window and insert only while the count is below the limit, as one atomic operation serialised per subject and purpose, and SHALL report whether it inserted. Of any number of concurrent bounded inserts for one subject, the number that succeed SHALL NOT take the count past the limit. A refused insert SHALL write nothing.
+
+#### Scenario: Concurrent bounded inserts
+- **WHEN** 20 bounded inserts for one subject and purpose run concurrently with a limit of 5 and no existing records
+- **THEN** exactly 5 report inserted and 5 records exist
+
+#### Scenario: Different subjects do not contend
+- **WHEN** bounded inserts for `u-1` and `u-2` run concurrently, each with a limit of 1
+- **THEN** both insert
+
+#### Scenario: Limit already reached
+- **WHEN** a subject already holds 5 records within the window and a bounded insert with a limit of 5 is made
+- **THEN** it reports not inserted and no record is written
+
+### Requirement: Deleting a user's sessions ends in a bounded number of passes
+Deleting every session of a user, every session of a user but one, every session of an external session, or every session of a user from an external issuer SHALL finish within a bounded number of passes even while sessions for that user are being created concurrently. When the bound is reached, it SHALL return an error that matches `session.ErrDeleteDidNotSettle` on every backend, and SHALL NOT loop until its context ends.
+
+#### Scenario: Concurrent logins during a revoke-all
+- **WHEN** sessions for `u-1` are created in a tight loop while every session of `u-1` is deleted
+- **THEN** the deletion returns, either having settled or with the did-not-settle error, well before its context deadline

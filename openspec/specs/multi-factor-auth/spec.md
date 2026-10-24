@@ -59,7 +59,7 @@ Constructing the TOTP method SHALL fail with a configuration error when no issue
 - **THEN** the provisioning URI names the issuer `Example Payroll`
 
 ### Requirement: TOTP codes follow RFC 6238
-The TOTP method SHALL verify codes as RFC 6238 specifies, with HMAC-SHA-1. It SHALL accept a code for the current time step or for one step on either side. The defaults SHALL be 6 digits and a 30-second step. A consumer SHALL be able to choose 8 digits and another step length. Constructing the method with a digit count other than 6 or 8, or a step of zero or less, SHALL fail with a configuration error. A wrong code SHALL fail with an invalid-code error. Codes SHALL be compared in constant time.
+The TOTP method SHALL verify codes as RFC 6238 specifies, with HMAC-SHA-1. It SHALL accept a code for the current time step or for one step on either side. The defaults SHALL be 6 digits and a 30-second step. A consumer SHALL be able to choose 8 digits and another step length of a whole number of seconds. Constructing the method with a digit count other than 6 or 8, or a step shorter than one second or not a whole number of seconds, SHALL fail with a configuration error. A wrong code SHALL fail with an invalid-code error. Codes SHALL be compared in constant time.
 
 #### Scenario: RFC test vector
 - **WHEN** a method configured with 8 digits verifies code `94287082` against the RFC 6238 SHA-1 test secret at Unix time 59
@@ -79,6 +79,14 @@ The TOTP method SHALL verify codes as RFC 6238 specifies, with HMAC-SHA-1. It SH
 
 #### Scenario: Invalid digit count
 - **WHEN** a TOTP method is constructed with 7 digits
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Sub-second step
+- **WHEN** a TOTP method is constructed with a 500-millisecond step
+- **THEN** construction fails with a configuration error
+
+#### Scenario: Fractional step
+- **WHEN** a TOTP method is constructed with a 45.5-second step
 - **THEN** construction fails with a configuration error
 
 ### Requirement: Each time step is accepted at most once per user
@@ -664,7 +672,7 @@ At verification of a challenge method, after the response is read, the library S
 
 A begin path naming a method that has no begin step SHALL be refused as an unknown MFA method.
 
-Begin SHALL be refused as throttled, issuing nothing, once the user has been issued as many challenges for that method within the pending-challenge store's issuance window as the challenge limit allows: 10 within one hour by default, the limit replaceable by an option, and a limit of zero or less a configuration error. Because the count and the issue are separate steps, begins that race may together exceed the limit by the number that raced; the documentation SHALL state this. The library SHALL remove a method's expired challenges from the store at most once per issuance window, as part of a begin, so the default store does not grow without bound; a failed removal SHALL NOT refuse the begin.
+Begin SHALL be refused as throttled, issuing nothing, once the user has been issued as many challenges for that method within the pending-challenge store's issuance window as the challenge limit allows: 10 within one hour by default, the limit replaceable by an option, and a limit of zero or less a configuration error. The count and the issue SHALL be one atomic bounded issue, so begins that race SHALL NOT together exceed the limit. The library SHALL remove a method's expired challenges from the store at most once per issuance window, as part of a begin, so the default store does not grow without bound, and SHALL keep doing so after the clock steps backwards; a failed removal SHALL NOT refuse the begin.
 
 #### Scenario: Begin then verify
 - **WHEN** a pending session begins a challenge method, and posts a response answering the issued challenge
@@ -701,6 +709,14 @@ Begin SHALL be refused as throttled, issuing nothing, once the user has been iss
 #### Scenario: Begin for a method without a begin step
 - **WHEN** a pending session posts to the begin path of the TOTP method
 - **THEN** it is refused as an unknown MFA method
+
+#### Scenario: Concurrent begins
+- **WHEN** the challenge limit is set to 3 and 12 begins of the same method for `u-1` run concurrently
+- **THEN** at most 3 challenges are issued
+
+#### Scenario: Removal after the clock steps backwards
+- **WHEN** the clock steps back by an hour after a removal, and challenges then expire and more than an issuance window passes before another begin
+- **THEN** the expired challenges are removed at that begin
 
 ### Requirement: A recovery-pending session enrols a new second factor through the enrolment path
 When the enrolment path is enabled, its begin, confirm and emailed-code endpoints SHALL serve a session in the recovery-pending state exactly as they serve an enrolment-only session, on that session's own user, with the same refusals, limits and notification. Confirming the enrolment SHALL move the session to the MFA pending state, keeping its confinement marker and its recovery time. The MFA verify endpoint SHALL then resolve the challenge, restore the session's deadlines and rotate it, as for a session that entered through the enrolment path. The enrolment path SHALL NOT be the only way such a session is served: the recovery gate decides which endpoints it reaches.
@@ -824,3 +840,21 @@ A verification refused because its charge was refused SHALL NOT be recorded as a
 #### Scenario: Store failure while charging
 - **WHEN** the enrolment store fails while charging an attempt for `u-1`
 - **THEN** the verification is refused with an error that is neither an invalid code nor the throttled error
+
+### Requirement: A TOTP code counts only for the secret it was checked against
+Confirming a TOTP enrolment and accepting a verified code SHALL each record their outcome only for the enrolment generation whose secret the code was checked against. When the enrolment was replaced, reset or re-enrolled between the check and the write, the confirmation or verification SHALL fail with the invalid-code error and SHALL NOT confirm or accept anything on the newer generation.
+
+#### Scenario: Enrolment begun again during a confirmation
+- **WHEN** a confirmation checks a valid code against pending secret A, and before its write a new enrolment replaces A with secret B
+- **THEN** the confirmation fails with the invalid-code error and the enrolment reads as unconfirmed with secret B
+
+#### Scenario: Re-enrolled during a verification
+- **WHEN** a verification checks a code against the confirmed secret of generation G1, and before its write the enrolment is reset and re-enrolled and confirmed as G2
+- **THEN** the verification fails with the invalid-code error
+
+### Requirement: MFA configuration errors are identifiable as configuration errors
+Every construction failure of an MFA method or verification throttle SHALL be identifiable as the MFA configuration error, whatever parameter caused it.
+
+#### Scenario: Missing store
+- **WHEN** a TOTP method is constructed without a store
+- **THEN** the error is identifiable as the MFA configuration error

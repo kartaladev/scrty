@@ -32,7 +32,7 @@ When a generator is configured with an audience, issued tokens SHALL carry it. A
 - **THEN** verification succeeds
 
 ### Requirement: Issuing requires a key and a valid lifetime
-Constructing a generator with a lifetime of zero or less SHALL fail. Constructing a generator whose lifetime is longer than the key source's key lifetime minus its rotation interval SHALL fail with a configuration error, when the key source reports both. Issuing when no key is current for the configured algorithm SHALL return an error and SHALL NOT produce a token.
+Constructing a generator with a lifetime shorter than one second, or not a whole number of seconds, SHALL fail, because expiry is recorded in whole seconds. Constructing a generator whose lifetime is longer than the key source's key lifetime minus its rotation interval SHALL fail with a configuration error, when the key source reports both. Issuing when no key is current for the configured algorithm SHALL return an error and SHALL NOT produce a token.
 
 #### Scenario: Non-positive lifetime
 - **WHEN** a generator is constructed with a lifetime of zero
@@ -45,6 +45,10 @@ Constructing a generator with a lifetime of zero or less SHALL fail. Constructin
 #### Scenario: No key for the algorithm
 - **WHEN** a generator configured for EdDSA issues a token over a key source holding only RS256 keys
 - **THEN** issuing returns an error and no token
+
+#### Scenario: Sub-second lifetime
+- **WHEN** a generator is constructed with a 500-millisecond lifetime
+- **THEN** construction fails
 
 ### Requirement: A verifier requires a key source
 Constructing a verifier without a key source SHALL fail. A generator SHALL also verify tokens, using its own key source, issuer and audience.
@@ -151,3 +155,10 @@ The generator and the verifier SHALL each read the current time from a configura
 - **WHEN** generator and verifier share a time source fixed at 2030-01-01T00:00:00Z, a token is issued, and the source advances by 16 minutes before verification
 - **THEN** the token's `iat` is 2030-01-01T00:00:00Z
 - **AND** verification rejects it as invalid
+
+### Requirement: A verification key that is a nil pointer is an outage, not a panic
+When the consumer's key source returns a key whose value is a nil pointer, verification SHALL fail with the error it returns for a key set that cannot be used, and SHALL NOT panic.
+
+#### Scenario: Typed-nil RSA key
+- **WHEN** a consumer key source returns an RS256 key whose public key is a nil RSA public key pointer, and a token is verified
+- **THEN** verification returns an error and does not panic
