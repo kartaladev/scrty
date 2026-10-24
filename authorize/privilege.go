@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/origin"
 )
 
 // PrivilegeAuthorizer judges PrivilegeAttributes against the privileges the
@@ -98,7 +98,7 @@ func NewPrivilegeAuthorizer(roles identity.RoleLoader, opts ...PrivilegeOption) 
 // that a person reading them would tell apart. A consumer whose data needs a
 // wider rule supplies it through WithPrivilegeNameComparer.
 func equalNamesFolded(a, b string) bool {
-	return origin.EqualFoldASCII(origin.TrimSpaceASCII(a), origin.TrimSpaceASCII(b))
+	return ascii.EqualFold(ascii.TrimSpace(a), ascii.TrimSpace(b))
 }
 
 // Authorize reports whether the subject's active role grants what attrs

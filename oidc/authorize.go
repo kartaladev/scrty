@@ -8,10 +8,8 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/internal/origin"
 )
-
-// maxNextBytes is the longest requested destination Authorize records.
-const maxNextBytes = 2048
 
 // Authorization is where to send a browser to start a login, and the flow it
 // started.
@@ -61,7 +59,7 @@ func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authori
 		return Authorization{}, fmt.Errorf("%w: provider %q: unusable authorization endpoint", ErrDiscoveryFailed, p.Name)
 	}
 
-	if len(next) > maxNextBytes {
+	if len(next) > origin.MaxEntryLen {
 		next = ""
 	}
 

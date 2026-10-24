@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/recovery"
 )
@@ -46,42 +47,17 @@ type Route struct{ Method, Path string }
 // and the path lower-cased in ASCII with every trailing slash removed, a path
 // left empty becoming "/".
 func normalizeRoute(method, path string) Route {
-	method = asciiUpper(method)
+	method = ascii.ToUpper(method)
 	if method == http.MethodHead {
 		method = http.MethodGet
 	}
 
-	path = strings.TrimRight(asciiLower(path), "/")
+	path = strings.TrimRight(ascii.ToLower(path), "/")
 	if path == "" {
 		path = "/"
 	}
 
 	return Route{Method: method, Path: path}
-}
-
-// asciiUpper and asciiLower fold only the ASCII letters. A Unicode fold would
-// equate letters a router keeps apart, such as the Kelvin sign and "k", and
-// rewriting only ASCII bytes leaves every multi-byte UTF-8 sequence intact.
-func asciiUpper(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'a' && c <= 'z' {
-			b[i] = c - ('a' - 'A')
-		}
-	}
-
-	return string(b)
-}
-
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + ('a' - 'A')
-		}
-	}
-
-	return string(b)
 }
 
 // EnableRecoveryCooldown refuses the routes the consumer marks as sensitive,

@@ -2,7 +2,8 @@ package origin
 
 import (
 	"net/url"
-	"strings"
+
+	"github.com/kartaladev/scrty/internal/ascii"
 )
 
 // Same reports whether a and b have the same origin.
@@ -52,14 +53,14 @@ func Normalize(raw string) (scheme, host, port string, ok bool) {
 		return "", "", "", false
 	}
 
-	scheme = asciiLower(u.Scheme)
+	scheme = ascii.ToLower(u.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return "", "", "", false
 	}
 
 	// Hostname drops userinfo, the port and the brackets around an IPv6
 	// literal, which is exactly the part an origin is made of.
-	host = asciiLower(u.Hostname())
+	host = ascii.ToLower(u.Hostname())
 	if host == "" {
 		return "", "", "", false
 	}
@@ -70,64 +71,4 @@ func Normalize(raw string) (scheme, host, port string, ok bool) {
 	}
 
 	return scheme, host, port, true
-}
-
-// asciiLower folds only A-Z.
-//
-// strings.ToLower applies Unicode case mapping, which maps U+0130 to "i" and
-// U+212A to "k". A host spelled with either would then equal one an allowlist
-// declared, so the fold here stays inside ASCII.
-//
-// Working on bytes is safe because the only bytes it rewrites are in the ASCII
-// range, and those never appear inside a multi-byte UTF-8 sequence.
-func asciiLower(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-		}
-	}
-
-	return string(b)
-}
-
-// EqualFoldASCII reports whether a and b are equal when only the letters A-Z
-// are folded to a-z. Every other byte, including every byte of a multi-byte
-// UTF-8 sequence, must match exactly, so U+212A (the Kelvin sign) never equals
-// "k" and U+017F never equals "s", as they do under strings.EqualFold.
-//
-// Folding byte-wise is safe in UTF-8: the only bytes rewritten are 'A' to 'Z',
-// and those never occur inside a multi-byte sequence.
-func EqualFoldASCII(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range len(a) {
-		if lowerByte(a[i]) != lowerByte(b[i]) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// TrimSpaceASCII strips leading and trailing ASCII whitespace (space, tab,
-// newline, vertical tab, form feed, carriage return) from s. Unlike
-// strings.TrimSpace it leaves U+00A0 and every other Unicode space in place.
-func TrimSpaceASCII(s string) string {
-	return strings.Trim(s, asciiSpace)
-}
-
-// asciiSpace is the whitespace TrimSpaceASCII strips.
-const asciiSpace = " \t\n\v\f\r"
-
-// lowerByte folds an ASCII capital to lower case and returns every other byte
-// unchanged.
-func lowerByte(c byte) byte {
-	if c >= 'A' && c <= 'Z' {
-		return c + 'a' - 'A'
-	}
-
-	return c
 }

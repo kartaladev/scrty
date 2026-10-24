@@ -7,7 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/internal/origin"
+	"github.com/kartaladev/scrty/internal/ascii"
 )
 
 // provision creates and links a user for ext, which has no link, when the
@@ -116,7 +116,7 @@ func (b *Broker) provisionOptions(ctx context.Context, ext ExternalIdentity) []i
 // not own.
 func containsFoldASCII(list []string, s string) bool {
 	for _, v := range list {
-		if origin.EqualFoldASCII(v, s) {
+		if ascii.EqualFold(v, s) {
 			return true
 		}
 	}

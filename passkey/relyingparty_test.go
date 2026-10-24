@@ -62,6 +62,7 @@ func TestRelyingParty_Validate(t *testing.T) {
 		},
 		{name: "no origins", rp: rp("example.com"), assert: refused("origins")},
 		{name: "origin outside the relying party", rp: rp("example.com", "https://example.org"), assert: refused("origin")},
+		{name: "Kelvin sign host is not the ASCII ID", rp: rp("market.com", "https://mar\u212aet.com"), assert: refused("origin")},
 		{name: "origin merely ending with the ID", rp: rp("example.com", "https://badexample.com"), assert: refused("origin")},
 		{name: "plain http outside loopback", rp: rp("example.com", "http://example.com"), assert: refused("origin")},
 		{name: "loopback IP origin for localhost", rp: rp("localhost", "http://127.0.0.1:3000"), assert: refused("origin")},

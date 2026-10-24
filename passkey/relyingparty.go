@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/kartaladev/scrty/internal/ascii"
 )
 
 // RelyingParty is the WebAuthn relying party. None of its fields has a
@@ -112,7 +114,7 @@ func validateOrigin(origin, rpID string) error {
 		return errors.New("must be written as scheme://host[:port], with no empty port or fragment and no default port")
 	}
 
-	host := strings.ToLower(u.Hostname())
+	host := ascii.ToLower(u.Hostname())
 	if host != rpID && !strings.HasSuffix(host, "."+rpID) {
 		return errors.New("is outside the relying-party ID")
 	}

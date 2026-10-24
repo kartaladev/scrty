@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -179,7 +179,7 @@ func parseCancelLink(raw string) (*url.URL, error) {
 // looks like localhost would be let through on plain http. There is no
 // override: it is a security comparison with one correct answer.
 func loopbackHost(host string) bool {
-	if origin.EqualFoldASCII(host, "localhost") {
+	if ascii.EqualFold(host, "localhost") {
 		return true
 	}
 

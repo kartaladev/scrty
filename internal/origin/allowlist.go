@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/kartaladev/scrty/internal/ascii"
 )
 
 // ErrConfig is the refusal every check in this package wraps. A redirect
@@ -217,7 +219,7 @@ func validateDeclaredOrigin(declared, originOption string) error {
 				"a host and an optional port", ErrConfig, originOption, declared)
 	}
 
-	switch scheme := asciiLower(u.Scheme); {
+	switch scheme := ascii.ToLower(u.Scheme); {
 	case scheme == "https":
 		return nil
 	case scheme == "http" && isLoopback(u.Hostname()):
