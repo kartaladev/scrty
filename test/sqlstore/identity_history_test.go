@@ -422,8 +422,10 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 
 	t.Cleanup(func() {
 		cctx := context.WithoutCancel(ctx)
-		_, _ = db.ExecContext(cctx, `DROP TRIGGER IF EXISTS `+name+` ON password_history`)
-		_, _ = db.ExecContext(cctx, `DROP FUNCTION IF EXISTS `+name+`()`)
+		_, err := db.ExecContext(cctx, `DROP TRIGGER `+name+` ON password_history`)
+		assert.NoError(t, err)
+		_, err = db.ExecContext(cctx, `DROP FUNCTION `+name+`()`)
+		assert.NoError(t, err)
 	})
 }
 

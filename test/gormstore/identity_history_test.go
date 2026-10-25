@@ -411,8 +411,10 @@ WHEN (OLD.user_id = '`+string(user)+`') EXECUTE FUNCTION `+name+`()`)
 		// ctx is done by now; its values are kept, its cancellation is not.
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, _ = db.ExecContext(cleanupCtx, `DROP TRIGGER IF EXISTS `+name+` ON password_history`)
-		_, _ = db.ExecContext(cleanupCtx, `DROP FUNCTION IF EXISTS `+name+`()`)
+		_, err := db.ExecContext(cleanupCtx, `DROP TRIGGER `+name+` ON password_history`)
+		assert.NoError(t, err)
+		_, err = db.ExecContext(cleanupCtx, `DROP FUNCTION `+name+`()`)
+		assert.NoError(t, err)
 	})
 }
 
