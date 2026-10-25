@@ -67,8 +67,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 	type testCase struct {
 		name string
 		// ownDB gives the case a migrated database of its own. Cases that
-		// run DDL on a shared table (a trigger, a rename) need it: two
-		// concurrent DDL statements on one table deadlock.
+		// run DDL on a shared table (a trigger, a rename) need it: that DDL
+		// blocks concurrent cases, and two trigger drops on one table deadlock.
 		ownDB  bool
 		assert func(t *testing.T, ctx context.Context, conn test.PostgresConn)
 	}
