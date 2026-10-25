@@ -76,7 +76,8 @@ Nothing is tagged yet and there are no consumers, so moving and renaming public 
   - consistent construction errors for in-memory stores;
   - one lifecycle convention;
   - the exported mutable `oidc.DefaultScopes`.
-- **Any new feature, and any edit to a test assertion.**
+- **Any new feature.**
+- **Any change to what a test asserts.** Assertions move unchanged when tests become table cases. The only text that may change is an error-message prefix, which follows its new package name.
 
 ### Order
 
@@ -115,7 +116,9 @@ No other requirement changes. Behaviour specs that use "manager" as plain Englis
   `release-readiness`'s tag prefixes change to match.
 - **Proof of no regression:**
   - the set of test names is the same before and after, mapped through the renames;
-  - test diffs touch only import paths, identifiers and file placement;
+  - every former test survives, as itself or as a named table case;
+  - no package's coverage drops;
+  - test diffs touch only import paths, identifiers, file placement, error-message prefixes, and assertions moved unchanged into table cases;
   - an old-to-new map of every exported identifier is checked against an API diff, so nothing disappears without a successor;
   - `make check`, including the Docker-backed suites, is green in CI.
 - **Dependencies, migrations, stored data:** unchanged.
