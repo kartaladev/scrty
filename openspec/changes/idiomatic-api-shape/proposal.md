@@ -38,7 +38,7 @@ Every one of these is a public API or behaviour change. Nothing is tagged yet, s
   - `Shutdown(ctx)` waits no longer than its context allows. It is terminal and idempotent.
   - `Stop()` and `Close(ctx)` are replaced by `Shutdown(ctx)`.
 - **Guards state where their authorizer comes from.** `NewGuards` in `httpsec`, `ginsec` and `fibersec` returns `(*Guards, error)`. It refuses a nil authorizer unless the consumer opts in to the chain's authorizer with an explicit option. The builder methods keep panicking at wiring time on a nil receiver, checker or extractor.
-- **`fibersec` guards take `GuardOption`,** including a replaceable error handler, as `ginsec` guards already do.
+- **`fibersec` guards take `GuardOption`,** for the option that declares reliance on the chain's authorizer. Refusal rendering stays with `fiber.Config.ErrorHandler`, the specified override on fiber, so no guard error-handler option is added.
 - **A nil context is refused, never substituted.**
   - A function that returns an error refuses a nil context with an invalid-argument error.
   - A function that cannot return an error panics.
@@ -72,7 +72,7 @@ None.
 - `security-policy`: the default attempt store refuses a capacity of zero or less with a configuration error instead of panicking.
 - `one-time-tokens`: the in-memory store refuses a nil clock at construction instead of keeping the default.
 - `http-security-chain`: a guard is built with an authorizer, or with an explicit opt-in to the chain's authorizer. Building one with neither is a configuration error.
-- `framework-adapters`: gin and fiber guards follow the same construction rule, and fiber guards accept a replaceable error handler.
+- `framework-adapters`: gin and fiber guards follow the same construction rule. On fiber, refusals stay rendered by fiber's error handler.
 
 The return types, `logsample.Flusher`, the nil-context rule, the `Deps` rule and `DefaultScopes()` are API shape that no spec requirement states. They are decided in `design.md` and need no spec delta. Each requirement above is confirmed against its full text when the spec deltas are written.
 
