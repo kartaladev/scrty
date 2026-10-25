@@ -67,7 +67,11 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 	d := migratedIdentityDB(t)
 
 	type testCase struct {
-		name   string
+		name string
+		// ownDB gives the case a migrated database of its own. Cases that
+		// run DDL on a shared table (a trigger, a rename) need it: two
+		// concurrent DDL statements on one table deadlock.
+		ownDB  bool
 		assert func(t *testing.T, ctx context.Context, d database)
 	}
 
@@ -205,7 +209,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "an unavailable table fails every call with no hash, no reference and no driver error",
+			name:  "an unavailable table fails every call with no hash, no reference and no driver error",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newIdentityStore(t, d.db)
 				user := newHistoryUser(t)
@@ -271,7 +276,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a prune failing after the insert, outside a caller's transaction, undoes the insert",
+			name:  "a prune failing after the insert, outside a caller's transaction, undoes the insert",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newIdentityStore(t, d.db)
 				user := newHistoryUser(t)
@@ -287,7 +293,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a prune failing after the insert, inside a caller's transaction, undoes only its own writes",
+			name:  "a prune failing after the insert, inside a caller's transaction, undoes only its own writes",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, d database) {
 				s := newIdentityStore(t, d.db)
 				user, before, after := newHistoryUser(t), newHistoryUser(t), newHistoryUser(t)
@@ -355,7 +362,12 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, t.Context(), d)
+			db := d
+			if tc.ownDB {
+				db = migratedIdentityDB(t)
+			}
+
+			tc.assert(t, t.Context(), db)
 		})
 	}
 }

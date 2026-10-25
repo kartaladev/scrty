@@ -66,7 +66,11 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 	db := migratedIdentity(t)
 
 	type testCase struct {
-		name   string
+		name string
+		// ownDB gives the case a migrated database of its own. Cases that
+		// run DDL on a shared table (a trigger, a rename) need it: two
+		// concurrent DDL statements on one table deadlock.
+		ownDB  bool
 		assert func(t *testing.T, ctx context.Context, pool *pgxpool.Pool)
 	}
 
@@ -204,7 +208,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "an unavailable table fails every call with no hash, no reference and no driver error",
+			name:  "an unavailable table fails every call with no hash, no reference and no driver error",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 				s := newIdentityStore(t, pool)
 				user := newHistoryUser(t)
@@ -285,7 +290,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a retire whose prune fails, outside a caller's transaction, keeps no new entry",
+			name:  "a retire whose prune fails, outside a caller's transaction, keeps no new entry",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 				s := newIdentityStore(t, pool)
 				user := newHistoryUser(t)
@@ -300,7 +306,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a retire whose prune fails, inside a caller's transaction, keeps no new entry and leaves it usable",
+			name:  "a retire whose prune fails, inside a caller's transaction, keeps no new entry and leaves it usable",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 				s := newIdentityStore(t, pool)
 				user, other := newHistoryUser(t), newHistoryUser(t)
@@ -363,7 +370,12 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, t.Context(), db.Pool)
+			pool := db.Pool
+			if tc.ownDB {
+				pool = migratedIdentity(t).Pool
+			}
+
+			tc.assert(t, t.Context(), pool)
 		})
 	}
 }

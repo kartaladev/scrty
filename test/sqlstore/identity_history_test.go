@@ -65,7 +65,11 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 	conn := migratedIdentityDB(t)
 
 	type testCase struct {
-		name   string
+		name string
+		// ownDB gives the case a migrated database of its own. Cases that
+		// run DDL on a shared table (a trigger, a rename) need it: two
+		// concurrent DDL statements on one table deadlock.
+		ownDB  bool
 		assert func(t *testing.T, ctx context.Context, conn test.PostgresConn)
 	}
 
@@ -203,7 +207,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "an unavailable table fails every call with no hash, no reference and no driver error",
+			name:  "an unavailable table fails every call with no hash, no reference and no driver error",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
 				s := newIdentityStore(t, conn.DB)
 				user := newHistoryUser(t)
@@ -287,7 +292,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed prune outside a caller's transaction undoes the retire's insert",
+			name:  "a failed prune outside a caller's transaction undoes the retire's insert",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
 				s := newIdentityStore(t, conn.DB)
 				user := newHistoryUser(t)
@@ -304,7 +310,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed prune inside a caller's transaction undoes the retire's insert and leaves it usable",
+			name:  "a failed prune inside a caller's transaction undoes the retire's insert and leaves it usable",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
 				s := newIdentityStore(t, conn.DB)
 				user, other := newHistoryUser(t), newHistoryUser(t)
@@ -372,7 +379,12 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, t.Context(), conn)
+			c := conn
+			if tc.ownDB {
+				c = migratedIdentityDB(t)
+			}
+
+			tc.assert(t, t.Context(), c)
 		})
 	}
 }
