@@ -392,8 +392,10 @@ func newHistoryUser(t *testing.T) identity.UserID {
 }
 
 // refuseHistoryDeletes installs, until t ends, a trigger that refuses to
-// delete any password_history row of user, and only of user, so cases
-// sharing the database are untouched.
+// delete any password_history row of user, and only of user, so the case's
+// other users are unaffected. The cases that call it run on a database of
+// their own: DDL on a shared table blocks concurrent cases, and two trigger
+// drops on one table deadlock.
 func refuseHistoryDeletes(ctx context.Context, t *testing.T, pool *pgxpool.Pool, user identity.UserID) {
 	t.Helper()
 
@@ -411,7 +413,11 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		end := context.WithoutCancel(ctx)
+		// ctx is done by now; its values are kept, its cancellation is not. The
+		// bound makes a lock left held on password_history fail the case
+		// instead of hanging the package.
+		end, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
 		_, err := pool.Exec(end, `DROP TRIGGER `+name+` ON password_history`)
 		assert.NoError(t, err)
 		_, err = pool.Exec(end, `DROP FUNCTION `+name+`()`)

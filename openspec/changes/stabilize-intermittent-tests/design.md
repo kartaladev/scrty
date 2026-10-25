@@ -69,7 +69,7 @@ The `sqlstore` and `gorm` twins get the same fix, since they share the pattern e
 
 The twins' trigger cleanup also stops discarding its errors, and checks them the way the `pgx` case does. A discarded cleanup error is why the twins' deadlocks went unseen (see Findings). With the isolation in place, a cleanup failure has no expected cause, so one that happens must fail the test rather than leave a trigger behind.
 
-**Redis (if the warm-up's budget is the cause).** The warm-up proves only that a pooled connection exists, and that the limiter's first-call work is done. It runs on a second limiter over the same client, built without the 250 ms hung-check budget, so it fills the pool the hung check will draw from without spending that budget. Keep `hungTimeout` for the measured call only. Every case using `cutOff` benefits. The hung-check assertions (the cut-off happens within `hungTimeout + hungMargin`, and the control is not cut off) are not loosened.
+**Redis (if the warm-up's budget is the cause).** The warm-up proves only that a pooled connection exists, and that the limiter's first-call work is done. It runs on a second limiter over the same client, built without the 250 ms hung-check budget, so it fills the pool the hung check will draw from without spending that budget. Keep `hungTimeout` for the measured call only. After the warm-up, the budgeted limiter answers one call on the still-healthy server before the hang, on the pool the warm-up filled, so the cut-off the test measures is that limiter's operation timeout acting, not a limiter that never worked. Every case using `cutOff` benefits. The hung-check assertions (the cut-off happens within `hungTimeout + hungMargin`, and the control is not cut off) are not loosened.
 
 The `hang` helper's probe, which waits for the server to stop answering once `DEBUG SLEEP` is sent, is a setup step too. Its wait is sized for setup rather than for an idle host: long enough for a starved scheduler to start the sleep, and short enough that the remaining sleep (`hungFor`, 5 s) still covers the measured call, including the control's wait of more than a second. That wait is not an assertion about the limiter, so lengthening it loosens nothing the test exists to check.
 
@@ -137,6 +137,16 @@ Only then is the fix written test-first, with the reproduction as its red step. 
 ### Gate (task 5.1)
 
 Run on 2026-10-25 at `2b45bbf`, with no other load on the host: five consecutive `make check` runs on PostgreSQL 18 (exit 0 each, 287 to 332 s, 56 packages `ok`, no `FAIL`), then `(cd test && SCRTY_TEST_POSTGRES_IMAGE=postgres:15.19-alpine go test -race -count=1 ./...)` (exit 0, 203 s, no `FAIL`). None of the unrelated failures seen during the reproduction runs (`TestKeycloak`'s container start, `TestPGLimiter_HeldRow`, the migration rollback's teardown timeout) recurred, so none is proposed as its own change. They stay `UNREPRODUCED`. The `session_supersede_test.go` cleanup pattern listed under the history findings is still proposed separately, since it is a gap rather than a failure.
+
+### Pull request review (2026-10-26)
+
+A review of the pull request raised findings against the fixed path, each `UNREPRODUCED` as a defect. Three were folded here under decision 2's exception for the code path this change fixes:
+
+- **The budgeted limiter was no longer shown to work.** Once the warm-up moved to a second limiter, a budgeted limiter that failed at once without I/O would still pass the hung case. `cutOff` now has it answer one call on the healthy server before the hang (decision 2). Red step: with that limiter built with a 1 ns operation timeout, the hung case passed without the new call and failed at it with the call. Under the harsher load of task 4.1, 200 runs passed: the extra call is one round trip on a warm pool, inside the 250 ms budget.
+- **The `pgx` and `sqlstore` trigger cleanups had no deadline**, unlike gorm's 10 s. With their errors now checked, a lock left held on `password_history` would hang the package until `go test`'s timeout. Both now take the same 10 s bound. Red step, on `pgx`: with a transaction holding `ROW EXCLUSIVE` on the table until after the cleanup, the run hit `panic: test timed out after 1m30s` before the change, and failed the case in 10.5 s at the cleanup's `assert.NoError` after it.
+- **Comments**: `refuseHistoryDeletes` no longer says its callers share a database, and the `hang` probe's comment no longer claims the wait uses up part of the sleep.
+
+History scenarios passed on PostgreSQL 18 and 15 in all three drivers afterwards. Not folded, and proposed as their own changes under the non-goals: `TestIdentityStore_Scenarios` in all three drivers still renames tables on its shared database in parallel cases. The review also suggested warming the pool with a `PING` and building the budgeted limiter inside `cutOff`, and a shared helper for the `ownDB` switch. Both are simplifications, not fixes, and are left as they are.
 
 ## Risks / Trade-offs
 

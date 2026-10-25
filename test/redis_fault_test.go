@@ -70,12 +70,15 @@ func hang(t *testing.T, conn RedisConn) {
 		_ = sleeper.Close()
 	})
 
-	// The sleep has begun once the server stops answering a PING. The wait
-	// is setup-sized, half the sleep: on a starved host the sleeper's
-	// command can reach the server late. Whatever the wait uses, at least
-	// hungFor/2 (2.5 s) of the sleep is left, which covers the hung check
-	// (it is cut off within hungTimeout+hungMargin) and the control, which
-	// must still be waiting past a second when it is measured.
+	// The sleep has begun once the server stops answering a PING (any probe
+	// error is taken as that). The wait, half the sleep, bounds how late
+	// the sleeper's command may reach the server on a starved host. The
+	// sleep starts when the server receives it, so time spent waiting
+	// first uses none of it: the probe notices within about one poll (10
+	// ms) plus its 20 ms ReadTimeout, and nearly all of hungFor remains
+	// for the measured call, the hung check (cut off within
+	// hungTimeout+hungMargin) and the control, which must still be
+	// waiting past a second.
 	probe := redis.NewClient(&redis.Options{Addr: opts.Addr, Dialer: opts.Dialer, ReadTimeout: 20 * time.Millisecond, MaxRetries: -1})
 	defer func() { _ = probe.Close() }()
 	require.Eventually(t, func() bool { return probe.Ping(context.Background()).Err() != nil },
@@ -190,6 +193,12 @@ func TestRedisLimiter_Fault(t *testing.T) {
 		// script loaded, so the check below is one round trip, as before.
 		_, err := warm.Exceeded(t.Context(), faultSource)
 		require.NoError(t, err)
+
+		// l proves itself on the healthy server, so the cut-off below is
+		// its operation timeout acting, not a limiter that never worked.
+		// The pool is warm, so this does not dial inside the budget.
+		_, err = l.Exceeded(t.Context(), faultSource)
+		require.NoError(t, err, "the limiter failed against a healthy server")
 		hang(t, e.conn)
 
 		start := time.Now()

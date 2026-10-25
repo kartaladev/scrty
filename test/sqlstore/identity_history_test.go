@@ -401,8 +401,10 @@ func newHistoryUser(t *testing.T) identity.UserID {
 }
 
 // refuseHistoryDeletes installs, until the test ends, a trigger refusing
-// every delete of user's history rows, and only of user's, so cases sharing
-// the database are unaffected. The names derive from user, a generated UUID,
+// every delete of user's history rows, and only of user's, so the case's
+// other users are unaffected. The cases that call it run on a database of
+// their own: DDL on a shared table blocks concurrent cases, and two trigger
+// drops on one table deadlock. The names derive from user, a generated UUID,
 // never from input.
 func refuseHistoryDeletes(ctx context.Context, t *testing.T, db *sql.DB, user identity.UserID) {
 	t.Helper()
@@ -421,7 +423,10 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		cctx := context.WithoutCancel(ctx)
+		// The bound makes a lock left held on password_history fail the case
+		// instead of hanging the package.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
 		_, err := db.ExecContext(cctx, `DROP TRIGGER `+name+` ON password_history`)
 		assert.NoError(t, err)
 		_, err = db.ExecContext(cctx, `DROP FUNCTION `+name+`()`)
