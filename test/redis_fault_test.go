@@ -70,11 +70,16 @@ func hang(t *testing.T, conn RedisConn) {
 		_ = sleeper.Close()
 	})
 
-	// The sleep has begun once the server stops answering a PING.
+	// The sleep has begun once the server stops answering a PING. The wait
+	// is setup-sized, half the sleep: on a starved host the sleeper's
+	// command can reach the server late. Whatever the wait uses, at least
+	// hungFor/2 (2.5 s) of the sleep is left, which covers the hung check
+	// (it is cut off within hungTimeout+hungMargin) and the control, which
+	// must still be waiting past a second when it is measured.
 	probe := redis.NewClient(&redis.Options{Addr: opts.Addr, Dialer: opts.Dialer, ReadTimeout: 20 * time.Millisecond, MaxRetries: -1})
 	defer func() { _ = probe.Close() }()
 	require.Eventually(t, func() bool { return probe.Ping(context.Background()).Err() != nil },
-		time.Second, 10*time.Millisecond, "the server kept answering")
+		hungFor/2, 10*time.Millisecond, "the server kept answering")
 }
 
 // commandCounter is a client hook counting the commands the client sends, so
@@ -172,13 +177,18 @@ func TestRedisLimiter_Fault(t *testing.T) {
 	}
 
 	// cutOff hangs the server under l, then checks once: it returns how long
-	// the check took, its answer and its error.
-	cutOff := func(t *testing.T, e env, l *scrtyredis.Limiter) (time.Duration, bool, error) {
+	// the check took, its answer and its error. warm is a limiter over the
+	// same client as l, built without the hung-check budget.
+	cutOff := func(t *testing.T, e env, warm, l *scrtyredis.Limiter) (time.Duration, bool, error) {
 		t.Helper()
 
 		// A pooled connection, so the check below waits on a read rather
-		// than on a dial.
-		_, err := l.Exceeded(t.Context(), faultSource)
+		// than on a dial. It runs on warm, outside hungTimeout: the pool is
+		// empty here, go-redis bounds a dial by the caller's context, and a
+		// dial slower than the budget on a starved host would fail the test
+		// before the server is hung. Another limiter's call also leaves the
+		// script loaded, so the check below is one round trip, as before.
+		_, err := warm.Exceeded(t.Context(), faultSource)
 		require.NoError(t, err)
 		hang(t, e.conn)
 
@@ -193,7 +203,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 			args: debugArgs,
 			assert: func(t *testing.T, e env) {
 				l := e.build(scrtyredis.WithOperationTimeout(hungTimeout))
-				elapsed, exceeded, err := cutOff(t, e, l)
+				elapsed, exceeded, err := cutOff(t, e, e.build(), l)
 				assert.Less(t, elapsed, hungTimeout+hungMargin, "the check waited past the operation timeout")
 				assert.True(t, exceeded)
 				require.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
@@ -241,7 +251,8 @@ func TestRedisLimiter_Fault(t *testing.T) {
 				client := redis.NewClient(&opts)
 				t.Cleanup(func() { _ = client.Close() })
 
-				elapsed, _, _ := cutOff(t, e, e.buildOn(uninspectedClient{client}, scrtyredis.WithOperationTimeout(hungTimeout)))
+				hidden := uninspectedClient{client}
+				elapsed, _, _ := cutOff(t, e, e.buildOn(hidden), e.buildOn(hidden, scrtyredis.WithOperationTimeout(hungTimeout)))
 				assert.Greater(t, elapsed, time.Second, "the check was cut off although the client ignores context deadlines")
 			},
 		},
