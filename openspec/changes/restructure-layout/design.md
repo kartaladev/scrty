@@ -92,7 +92,7 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 | `WithLockoutCap`, `…CapRetention`, `…Ceiling`, `…Clock`, `…Threshold`, `…Wait`, `…Window`, `…Logger`, `…Observer` | `WithCap`, `WithCapRetention`, `WithCeiling`, `WithClock`, `WithThreshold`, `WithWait`, `WithWindow`, `WithLogger`, `WithObserver` |
 | `WithSlidingLockout`, `WithAttemptStore` | `WithSliding`, `WithAttemptStore` |
 | `LockoutError`, `LockoutObserver`, `LockoutReport`, `LockoutReportKind` | `Error`, `Observer`, `Report`, `ReportKind` |
-| `LockoutAtCeiling`, `LockoutCleared`, `LockoutHeld`, `LockoutReleased` | `ReportAtCeiling`, `ReportCleared`, `ReportHeld`, `ReportReleased` |
+| `LockoutLocked`, `LockoutAtCeiling`, `LockoutCleared`, `LockoutHeld`, `LockoutReleased` | `ReportLocked`, `ReportAtCeiling`, `ReportCleared`, `ReportHeld`, `ReportReleased` |
 | `NISTLockoutCap`, `LockoutExpiryTask` | `NISTCap`, `ExpiryTask` |
 | `AttemptStore`, `AttemptReaper`, `FailureStreak`, `FailureStreakStore`, `MemoryAttemptStore`, `NewMemoryAttemptStore`, `MemoryAttemptOption`, `WithAttemptStoreCapacity`, `ErrAccountLocked`, `ErrAccountHeld`, `ErrAttemptStoreFull`, `ErrReapUnsupported`, `ErrRetainSinceRequired` | same names in `lockout` |
 
