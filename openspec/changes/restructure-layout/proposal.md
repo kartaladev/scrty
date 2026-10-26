@@ -97,7 +97,11 @@ None.
 
 - `module-layout`:
   - the WebAuthn adapter's module path becomes `github.com/kartaladev/scrty/authenticate/passkey/webauthn`;
-  - the nested integration modules are named at their new paths.
+  - the nested integration modules are named at their new paths;
+  - the list of modules the core must never require gains the four that the layout guard already refuses (`github.com/redis/go-redis`, `github.com/pressly/goose`, and the testcontainers `postgres` and `redis` modules);
+  - the supported Go release becomes 1.27 only, matching every `go.mod` and the CI matrix.
+
+  The last two only bring the spec in line with what the code and CI already enforce.
 
 No other requirement changes. Behaviour specs that use "manager" as plain English, not as an identifier, keep their wording.
 

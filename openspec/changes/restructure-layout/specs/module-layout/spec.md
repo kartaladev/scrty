@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Framework and driver integrations are separate modules
-Integrations with third-party frameworks, drivers, containers and protocol libraries SHALL be published as modules nested under `github.com/kartaladev/scrty/`, so importing the core module does not add them to a consumer's module graph. The core module SHALL NOT require `github.com/gin-gonic/gin`, `github.com/gofiber/fiber`, `gorm.io/gorm`, `github.com/jackc/pgx`, `github.com/go-co-op/gocron`, `github.com/samber/do`, `github.com/go-webauthn/webauthn`, `github.com/fxamacker/cbor` or `github.com/google/go-tpm`. WebAuthn verification SHALL live in the nested module `github.com/kartaladev/scrty/authenticate/passkey/webauthn`, which implements the core's passkey verification port. No type of the WebAuthn library SHALL appear in that module's exported API, nor in the core module's.
+Integrations with third-party frameworks, drivers, containers and protocol libraries SHALL be published as modules nested under `github.com/kartaladev/scrty/`, so importing the core module does not add them to a consumer's module graph. The core module SHALL NOT require `github.com/gin-gonic/gin`, `github.com/gofiber/fiber`, `gorm.io/gorm`, `github.com/jackc/pgx`, `github.com/go-co-op/gocron`, `github.com/samber/do`, `github.com/go-webauthn/webauthn`, `github.com/fxamacker/cbor`, `github.com/google/go-tpm`, `github.com/redis/go-redis`, `github.com/pressly/goose`, `github.com/testcontainers/testcontainers-go/modules/postgres` or `github.com/testcontainers/testcontainers-go/modules/redis`. WebAuthn verification SHALL live in the nested module `github.com/kartaladev/scrty/authenticate/passkey/webauthn`, which implements the core's passkey verification port. No type of the WebAuthn library SHALL appear in that module's exported API, nor in the core module's.
 
 #### Scenario: Consumer imports only the core
 - **WHEN** a consumer module requires `github.com/kartaladev/scrty` and builds a program importing its packages
@@ -20,6 +20,13 @@ Integrations with third-party frameworks, drivers, containers and protocol libra
 #### Scenario: WebAuthn types stay inside the adapter
 - **WHEN** the exported API of `github.com/kartaladev/scrty/authenticate/passkey/webauthn` is listed
 - **THEN** no exported function, method, field or type refers to a type of `github.com/go-webauthn/webauthn`
+
+### Requirement: Supported Go releases
+Every scrty module SHALL declare Go 1.27 as its minimum version, and SHALL build and pass its tests on the latest patch release of Go 1.27.
+
+#### Scenario: Continuous integration matrix
+- **WHEN** a change is proposed to the repository
+- **THEN** every module is built and tested on the latest patch release of Go 1.27, and a failure fails the run
 
 ## ADDED Requirements
 
