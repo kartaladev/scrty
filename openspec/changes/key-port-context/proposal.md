@@ -30,7 +30,7 @@ Nothing is tagged, so this is the last point at which the ports can change witho
   - so is an error matching the new `session.ErrCipherUnavailable`, which a remote cipher wraps around its retryable failures;
   - `seal` gains `ErrUnavailable`, and `seal.SessionCipher` translates it to `session.ErrCipherUnavailable`;
   - every other open failure stays the unreadable-session error.
-- **Session resolution answers an outage as an outage.** When a session store or cipher outage keeps `httpsec` from loading a session, the request fails with the store's error, which the default mapping answers with 500. It is not answered with the authentication-required error, and it is not logged as an undecryptable session. Missing, expired, undecryptable and reused sessions keep their refusals. This matches the renewal endpoint and the dependency-failure rule `http-error-propagation` already states.
+- **Session resolution answers an outage as an outage.** When a session store or cipher outage keeps `httpsec` from loading a session, the request fails with the store's error, which the default mapping answers with 500. It is not answered with the authentication-required error, and it is not logged as an undecryptable session. Missing, expired, undecryptable and reused sessions keep their refusals. The user reload that follows has the same split: a user who no longer exists is still refused, and a user store outage fails the request. This matches the renewal endpoint and the dependency-failure rule `http-error-propagation` already states.
 - **The in-memory implementations ignore the context.** These are `seal.StaticKeyring`, `seal.AEADCipher` and `signingkey.Keys`. They perform no input or output, so they succeed whatever state the context is in.
 
 ### Not in this change
@@ -55,7 +55,7 @@ None.
 - `token-issuance`: "Issuing requires a key and a valid lifetime". Issuing passes its context to the key source, and an outage fails issuing with the source's error rather than as a missing key.
 - `sessions`: "A sealing store protects the provider ID token at rest". An open that failed because of an outage fails the load as a store failure, not as the unreadable-session error.
 - `secrets-at-rest`: "The cipher is replaceable". The consumer's cipher receives the caller's context, and can mark an outage so it is not mistaken for a value that does not open.
-- `http-security-chain`: "Bearer tokens authenticate against a live session and a live user". A failure to load the session that is not a refusal fails the request as a dependency failure, not with the authentication-required error. Session-reference bearers follow the same rule, because they resolve as signed bearers do.
+- `http-security-chain`: "Bearer tokens authenticate against a live session and a live user". A failure to load the session, or to reload its user, that is not a refusal fails the request as a dependency failure, not with the authentication-required error. Session-reference bearers follow the same rule, because they resolve as signed bearers do.
 
 ## Impact
 

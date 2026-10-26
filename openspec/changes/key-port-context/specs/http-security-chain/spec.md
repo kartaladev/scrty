@@ -8,7 +8,7 @@ When enabled, bearer token authentication SHALL handle requests whose `Authoriza
 For each handled request it SHALL:
 1. verify the token, refusing a failure with the authentication failure error and keeping the cause available for logging;
 2. load the session the token names, refusing with the authentication-required error when the session is missing, expired or cannot be decrypted, and, when the session manager reports reuse of a superseded identifier, with a refusal that is identifiable both as the authentication-required error and as the reused-session error. Any other failure to load the session, such as a session store or cipher outage, is a dependency failure, not a refusal: it SHALL fail the request with the session manager's error and SHALL NOT be answered with the authentication-required error;
-3. reload the user the token names, so roles are current, refusing with the authentication-required error when the user no longer exists;
+3. reload the user the token names, so roles are current, refusing with the authentication-required error when the user no longer exists. Any other failure to reload the user, such as a user store outage, is a dependency failure: it SHALL fail the request with the loader's error and SHALL NOT be answered with the authentication-required error;
 4. add the principal, authentication result and session to the context;
 5. evaluate the per-request policy phase, telling it whether the session has satisfied its second factor.
 
@@ -60,6 +60,11 @@ An undecryptable session SHALL also be logged at ERROR. A dependency failure whi
 - **THEN** the request fails with an error wrapping the store's error, which the default status mapping answers with 500
 - **AND** the error does not match the authentication-required error
 - **AND** no undecryptable-session ERROR record is written
+
+#### Scenario: User store outage
+- **WHEN** a request carries a valid bearer token for a live session, and the user loader fails with an error that is not identifiable as "user not found"
+- **THEN** the request fails with an error wrapping the loader's error, which the default status mapping answers with 500
+- **AND** the error does not match the authentication-required error
 
 #### Scenario: Session-reference bearer during a store outage
 - **WHEN** session-reference authentication is enabled, a request carries a well-formed session identifier, and the session store fails to load it with an error that is not a refusal

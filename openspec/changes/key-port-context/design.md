@@ -58,7 +58,7 @@ type KeySource interface { // token/signingkey
   - the passkey row helpers take the context of the method that calls them.
 - **No caller substitutes a context of its own, or imposes a deadline of its own.** This is the rule `signing-keys` already sets for construction over a key store.
 - **The in-memory implementations ignore the context.** `*seal.StaticKeyring`, `*seal.AEADCipher` and `signingkey.Keys` perform no input or output, so they succeed whatever state the context is in. This follows the `signing-keys` precedent for the in-memory key store.
-- **The nil-context rule of `idiomatic-api-shape` applies to scrty's own implementations.** Each method here returns an error, so it refuses a nil context with an invalid-argument error.
+- **No nil-context check is added.** `idiomatic-api-shape` D6 adds none to functions that merely pass a context along, and the in-memory implementations do not use theirs. A nil context fails at first use, as in the standard library.
 - **Godoc of each port:**
   - an implementation over a remote service should honour the context;
   - a remote service's quotas make a call per seal, open or signature impractical at scale, so such an implementation is expected to cache, or to use envelope encryption. `VerificationKeys` already says so.
@@ -122,6 +122,8 @@ Resolution classifies a failed load:
 | renewal required, on the renewal endpoint's own request | goes on unauthenticated, as today |
 | anything else | fails with the session manager's error, which the default mapping answers with 500; no undecryptable-session record |
 
+(The user reload that follows has the same split; see the end of this decision.)
+
 **Pending reproduction.** That resolution answers a store outage with the authentication-required error is `UNREPRODUCED`, and rests on a code reading. Its failing test comes first: a bearer request whose session store fails with an error that is not a refusal must not match the authentication-required error.
 
 **Default and override:** the default status mapping answers the failure with 500, as for any dependency failure. A consumer who wants another answer to an outage replaces the error handler, the override `http-error-propagation` already specifies. No new option is added.
@@ -132,7 +134,11 @@ Resolution classifies a failed load:
 - **Keep answering every load error with authentication-required.** A key service or database blip would log every active user out, and resolution would stay inconsistent with renewal.
 - **A separate change after this one.** D3 would ship only half effective until that change landed.
 
-**Not changed here:** a failure to reload the user (step 3 of the bearer requirement) is still answered with the authentication-required error. Whether a user-store outage should also be a dependency failure is outside this change's scope, and is put to the user rather than decided here.
+**The user reload follows the same rule.** After the session loads, resolution reloads its user, and today answers every reload error with the authentication-required error as well. Under this decision:
+- an error matching `identity.ErrUserNotFound` is refused with the authentication-required error, as today;
+- any other reload error fails the request with the loader's error.
+
+The `identity-model` spec already requires a loader to report a miss as "user not found" and any other failure as an error that is not, so resolution relies on a contract that is already settled, and the `identity` ports need no change. The same pending-reproduction rule applies: a bearer request whose user loader fails with an error that is not "user not found" must not match the authentication-required error.
 
 ### D5. The established design is not consulted in this change
 
@@ -195,7 +201,7 @@ None. Nothing is tagged, there are no consumers, and stored values are unchanged
 
 ### D4. Dependency failures at session resolution
 
-Reasoned from scrty's own settled specs: `http-error-propagation` ("One public table maps refusals to a status": any other error is 500, and a dependency failure is not a refusal) and `http-security-chain` (the bearer and session-reference requirements); and from the code of `httpsec`'s resolution and renewal endpoint.
+Reasoned from scrty's own settled specs: `http-error-propagation` ("One public table maps refusals to a status": any other error is 500, and a dependency failure is not a refusal) `http-security-chain` (the bearer and session-reference requirements); and `identity-model` (a loader reports a miss as "user not found" and any other failure as an error that is not); and from the code of `httpsec`'s resolution and renewal endpoint.
 
 ### D5. The established design
 
