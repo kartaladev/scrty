@@ -99,7 +99,7 @@ The sealing session store classifies a failed open:
 - **`session.ErrCipherUnavailable` is the marker.** A cipher over a remote service wraps its retryable failures with it, for example with `errors.Join`. The service's own retryable-versus-invalid distinction maps onto it: AWS KMS, for example, separates `InvalidCiphertextException` from its retryable timeout, internal and key-unavailable errors.
 - **`seal.ErrUnavailable` is the same marker in `seal`.** `seal.SessionCipher` translates it to `session.ErrCipherUnavailable`, so a remote `seal.Cipher` marks its outages once, and `session` keeps not importing `seal`. Context errors pass through the adapter unchanged.
 - **Neither sentinel matches `seal.ErrDecryptionFailed`, `seal.ErrUnknownKeyID` or `session.ErrUnreadable`.**
-- **What `httpsec` does with the store failure.** `httpsec` no longer logs the outage as a retired sealing key. On session resolution, however, it answers every load error, a store failure included, with the authentication-required error (`httpsec/resolve.go`). The renewal endpoint instead returns a store failure unchanged, which maps to 500. Whether resolution should answer an outage as an outage is an open scope question for the user, and this design does not settle it yet.
+- **What `httpsec` does with the store failure** is D4.
 
 **Default and override:** an error nobody classified stays `session.ErrUnreadable`. That is the safer default. A value that truly does not open still ends the session and lets the user log in again. Treating such a value as an outage would instead fail every request on that session until it expired. A consumer opts their cipher's outages out of that default by wrapping them with the marker. Cancellation and deadlines are classified with no work from the implementer.
 
@@ -109,11 +109,36 @@ The sealing session store classifies a failed open:
 - **Context errors only.** A remote service's timeout or throttling that is not a context error would still log users out.
 - **A sentinel for "does not open", with every other error treated as an outage.** A consumer cipher that reports a corrupt value with an error of its own would leave that session failing every request until it expired. Every consumer cipher would also have to adopt the sentinel to keep today's behaviour.
 
-### D4. The established design is not consulted in this change
+### D4. Session resolution answers a dependency failure as one
 
-The read-only reference snapshot was not available when this design was made. Whether the established design gave these ports a context, and how it classified a cipher outage, has not been checked. D1 to D3 rest on the research below and on scrty's own settled specs.
+Today `httpsec`'s session resolution answers every load error with the authentication-required error, a store failure included (`httpsec/resolve.go`). Signed and session-reference bearers share that resolution. D3 alone would therefore stop the false retired-key record, but a key service or database outage would still answer "log in again". The renewal endpoint, by contrast, already returns a store failure unchanged, and `http-error-propagation` maps any unrecognised error, a dependency failure included, to 500.
 
-**Pending:** before implementation starts, compare D1 to D3 with the established design. Record any departure as `legacy-reference.md` requires, or revise the decision if the established design is the better default.
+Resolution classifies a failed load:
+
+| The session manager's error | The request |
+|---|---|
+| not found, expired, or unreadable | refused with the authentication-required error; unreadable also writes its ERROR record |
+| reused superseded identifier | refused as both authentication-required and reused, as today |
+| renewal required, on the renewal endpoint's own request | goes on unauthenticated, as today |
+| anything else | fails with the session manager's error, which the default mapping answers with 500; no undecryptable-session record |
+
+**Pending reproduction.** That resolution answers a store outage with the authentication-required error is `UNREPRODUCED`, and rests on a code reading. Its failing test comes first: a bearer request whose session store fails with an error that is not a refusal must not match the authentication-required error.
+
+**Default and override:** the default status mapping answers the failure with 500, as for any dependency failure. A consumer who wants another answer to an outage replaces the error handler, the override `http-error-propagation` already specifies. No new option is added.
+
+**Trade-off recorded.** A cipher outage can only arise after an existing session has loaded, since the store opens the token of a record it found. While a cipher outage lasts, someone holding a session identifier could therefore tell a live session (500) from a missing one (401). Session identifiers are secret credentials, and unknown references are throttled per source, so this design accepts that exposure. The existing reason for answering missing, expired and unreadable alike, which is not to report whether a session ever existed, still holds for every refusal.
+
+**Alternatives considered:**
+- **Keep answering every load error with authentication-required.** A key service or database blip would log every active user out, and resolution would stay inconsistent with renewal.
+- **A separate change after this one.** D3 would ship only half effective until that change landed.
+
+**Not changed here:** a failure to reload the user (step 3 of the bearer requirement) is still answered with the authentication-required error. Whether a user-store outage should also be a dependency failure is outside this change's scope, and is put to the user rather than decided here.
+
+### D5. The established design is not consulted in this change
+
+The read-only reference snapshot was not available when this design was made. Whether the established design gave these ports a context, and how it classified a cipher outage, has not been checked. D1 to D4 rest on the research below and on scrty's own settled specs.
+
+**Pending:** before implementation starts, compare D1 to D4 with the established design. Record any departure as `legacy-reference.md` requires, or revise the decision if the established design is the better default.
 
 ## Risks / Trade-offs
 
@@ -168,6 +193,10 @@ None. Nothing is tagged, there are no consumers, and stored values are unchanged
 - [errors](https://pkg.go.dev/errors): `errors.Is` and `errors.Join`.
 - [context](https://pkg.go.dev/context): `Canceled` and `DeadlineExceeded`.
 
-### D4. The established design
+### D4. Dependency failures at session resolution
+
+Reasoned from scrty's own settled specs: `http-error-propagation` ("One public table maps refusals to a status": any other error is 500, and a dependency failure is not a refusal) and `http-security-chain` (the bearer and session-reference requirements); and from the code of `httpsec`'s resolution and renewal endpoint.
+
+### D5. The established design
 
 Reasoned from scrty's own settled specs; the comparison with the established design is pending.
