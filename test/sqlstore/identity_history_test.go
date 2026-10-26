@@ -65,7 +65,11 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 	conn := migratedIdentityDB(t)
 
 	type testCase struct {
-		name   string
+		name string
+		// ownDB gives the case a migrated database of its own. Cases that
+		// run DDL on a shared table (a trigger, a rename) need it: that DDL
+		// blocks concurrent cases, and two trigger drops on one table deadlock.
+		ownDB  bool
 		assert func(t *testing.T, ctx context.Context, conn test.PostgresConn)
 	}
 
@@ -203,7 +207,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "an unavailable table fails every call with no hash, no reference and no driver error",
+			name:  "an unavailable table fails every call with no hash, no reference and no driver error",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
 				s := newIdentityStore(t, conn.DB)
 				user := newHistoryUser(t)
@@ -287,7 +292,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed prune outside a caller's transaction undoes the retire's insert",
+			name:  "a failed prune outside a caller's transaction undoes the retire's insert",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
 				s := newIdentityStore(t, conn.DB)
 				user := newHistoryUser(t)
@@ -304,7 +310,8 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 			},
 		},
 		{
-			name: "a failed prune inside a caller's transaction undoes the retire's insert and leaves it usable",
+			name:  "a failed prune inside a caller's transaction undoes the retire's insert and leaves it usable",
+			ownDB: true,
 			assert: func(t *testing.T, ctx context.Context, conn test.PostgresConn) {
 				s := newIdentityStore(t, conn.DB)
 				user, other := newHistoryUser(t), newHistoryUser(t)
@@ -372,7 +379,12 @@ func TestIdentityStore_HistoryScenarios(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, t.Context(), conn)
+			c := conn
+			if tc.ownDB {
+				c = migratedIdentityDB(t)
+			}
+
+			tc.assert(t, t.Context(), c)
 		})
 	}
 }
@@ -389,8 +401,10 @@ func newHistoryUser(t *testing.T) identity.UserID {
 }
 
 // refuseHistoryDeletes installs, until the test ends, a trigger refusing
-// every delete of user's history rows, and only of user's, so cases sharing
-// the database are unaffected. The names derive from user, a generated UUID,
+// every delete of user's history rows, and only of user's, so the case's
+// other users are unaffected. The cases that call it run on a database of
+// their own: DDL on a shared table blocks concurrent cases, and two trigger
+// drops on one table deadlock. The names derive from user, a generated UUID,
 // never from input.
 func refuseHistoryDeletes(ctx context.Context, t *testing.T, db *sql.DB, user identity.UserID) {
 	t.Helper()
@@ -409,9 +423,14 @@ FOR EACH ROW EXECUTE FUNCTION `+name+`()`)
 	require.NoError(t, err)
 
 	t.Cleanup(func() {
-		cctx := context.WithoutCancel(ctx)
-		_, _ = db.ExecContext(cctx, `DROP TRIGGER IF EXISTS `+name+` ON password_history`)
-		_, _ = db.ExecContext(cctx, `DROP FUNCTION IF EXISTS `+name+`()`)
+		// The bound makes a lock left held on password_history fail the case
+		// instead of hanging the package.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		_, err := db.ExecContext(cctx, `DROP TRIGGER `+name+` ON password_history`)
+		assert.NoError(t, err)
+		_, err = db.ExecContext(cctx, `DROP FUNCTION `+name+`()`)
+		assert.NoError(t, err)
 	})
 }
 
