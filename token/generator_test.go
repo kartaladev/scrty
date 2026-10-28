@@ -1,6 +1,10 @@
 package token_test
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"io"
 	"testing"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
+// Standalone: a table of its own: its rows vary the clock-driven options and assert against the key source, unlike TestGenerateRefusesRatherThanIssuingAnUnusableToken's.
 func TestGenerateClaims(t *testing.T) {
 	t.Parallel()
 
@@ -112,6 +117,7 @@ func TestGenerateClaims(t *testing.T) {
 // verifier configured with the same audience accepts. The two halves are
 // configured independently, so a generator that cannot set aud fails here even
 // though both sides are configured identically.
+// Standalone: it issues with one construction and verifies with a second, independently configured verifier.
 func TestAudienceRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -344,6 +350,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 // no failure on the issue path is identifiable as ErrInvalid: that is the
 // verdict on a token a caller presented, and a consumer who maps it to
 // "credential refused" must not see it from a failed issue.
+// Standalone: a table of its own: its rows vary the identifier and principal, and every row carries a shared refusal assertion.
 func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 	t.Parallel()
 
@@ -426,6 +433,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 // TestGeneratorVerifiesItsOwnTokens pins that one construction issues and
 // verifies under the same key source, issuer, audience and clock, and that the
 // clock really is the one both halves read.
+// Standalone: it advances one clock across three verifications of a single token.
 func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 	t.Parallel()
 
@@ -466,6 +474,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 // shape a KMS-backed or HSM-backed source takes — issues and verifies with no
 // Keys involved, and that a source which cannot report its lifetimes
 // simply gets no lifetime cap.
+// Standalone: it issues and verifies through a hand-written consumer key source, then through a second generator on it.
 func TestConsumerSuppliedKeySource(t *testing.T) {
 	t.Parallel()
 
@@ -495,4 +504,97 @@ func TestConsumerSuppliedKeySource(t *testing.T) {
 
 	_, err = esGen.Generate(t.Context(), "s-2", alice())
 	require.Error(t, err)
+}
+
+// failingSigner wraps a real crypto.Signer's Public key but fails every Sign
+// call with err, so a test can drive a consumer key source's crypto.Signer
+// into failing without a mock — jwt.Sign inspects the signer's public key
+// before it ever calls Sign, so the wrapped key must be genuine.
+type failingSigner struct {
+	crypto.Signer
+	err error
+}
+
+func (f *failingSigner) Sign(io.Reader, []byte, crypto.SignerOpts) ([]byte, error) {
+	return nil, f.err
+}
+
+// failingSignerKeySource is a signingkey.KeySource whose current key signs
+// with failingSigner, so Generate reaches the consumer key source's own
+// signing failure.
+type failingSignerKeySource struct {
+	kid    string
+	signer crypto.Signer
+}
+
+var _ signingkey.KeySource = (*failingSignerKeySource)(nil)
+
+func (s *failingSignerKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
+	if alg != signingkey.RS256 {
+		return "", nil, false
+	}
+	return s.kid, s.signer, true
+}
+
+func (s *failingSignerKeySource) VerificationKeys() ([]signingkey.PublicKey, error) {
+	return nil, nil
+}
+
+func newFailingSignerKeySource(t *testing.T, err error) *failingSignerKeySource {
+	t.Helper()
+
+	private, genErr := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, genErr)
+
+	return &failingSignerKeySource{
+		kid:    "failing-key-1",
+		signer: &failingSigner{Signer: private, err: err},
+	}
+}
+
+// TestGeneratorReturnedErrors pins the diagnostic-redaction requirement for
+// Generate's own returned error (design decision 8): a consumer key source's
+// crypto.Signer failing to sign comes back as fixed library text, with the
+// signer's own error still reachable by identity.
+// Standalone: it issues through a key source whose signer fails, a source no other generator table builds.
+func TestGeneratorReturnedErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		run    func(t *testing.T) error
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "the key source's signer fails to sign",
+			run: func(t *testing.T) error {
+				t.Helper()
+
+				keys := newFailingSignerKeySource(t, errKeySourceFixture)
+				gen, err := token.NewGenerator(keys)
+				require.NoError(t, err)
+
+				_, genErr := gen.Generate(t.Context(), "jti-1", &identity.Principal{Username: "alice"})
+				return genErr
+			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "alice@example.com",
+					"the returned error quoted the signer's own text")
+				assert.NotContains(t, err.Error(), "u-123",
+					"the returned error quoted the signer's own text")
+				assert.ErrorIs(t, err, errKeySourceFixture, "the signer's own error is no longer reachable")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.run(t))
+		})
+	}
 }

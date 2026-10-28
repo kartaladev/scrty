@@ -3,12 +3,14 @@ package token
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -27,6 +29,44 @@ type Generator interface {
 
 	Verifier
 }
+
+// Option configures a Generator. Every default NewGenerator applies has
+// an option here that replaces it.
+type Option func(*config)
+
+// WithIssuer sets the iss claim of issued tokens, and the issuer the generator
+// enforces when it verifies. Default: none, and iss is then neither set nor
+// checked.
+func WithIssuer(iss string) Option { return Option(setIssuer(iss)) }
+
+// WithAudience sets the aud claim of issued tokens, and the audience the
+// generator enforces when it verifies. Default: none, and aud is then neither
+// set nor checked.
+func WithAudience(aud string) Option { return Option(setAudience(aud)) }
+
+// WithLifetime sets how long an issued token is valid. Default: 15 minutes.
+//
+// A lifetime below one second, or not a whole number of seconds, fails
+// construction, because expiry is recorded in whole seconds. So does one
+// longer than the window a key source that reports its own lifetimes can
+// cover, because a token must not outlive the key that signed it.
+func WithLifetime(d time.Duration) Option {
+	return func(c *config) { c.lifetime = d }
+}
+
+// WithSigningAlg sets the algorithm to sign with. Default: RS256. The key
+// source must hold a current key for it at issue time; there is no fallback to
+// another algorithm and none to an unsigned token.
+func WithSigningAlg(alg signingkey.Alg) Option {
+	return func(c *config) { c.alg = alg }
+}
+
+// WithClock sets the time source for iat, exp and the generator's own
+// verification. Default: clock.System().
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// generator with no clock could not stamp iat or exp at all.
+func WithClock(clk clock.Clock) Option { return Option(setClock(clk)) }
 
 type generator struct{ cfg *config }
 

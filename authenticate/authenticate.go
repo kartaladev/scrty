@@ -9,7 +9,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-//go:generate mockgen -source=authenticate.go -package=authenticate_test -destination=mocks_test.go -typed
+//go:generate mockgen -source=authenticate.go -package=authenticate_test -destination=mocks_test.go -typed -exclude_interfaces=DecoyVerifier
 
 // ErrConfig is wrapped by every error a constructor in this package returns for
 // a configuration it will not accept.

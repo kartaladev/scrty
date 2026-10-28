@@ -46,7 +46,7 @@ var ErrRetainSinceRequired = errors.New("onetime: a retain-since cutoff is requi
 // must be indivisible: see its own contract below, which is what makes a token
 // single-use rather than usually-single-use.
 //
-//go:generate mockgen -source=store.go -package=onetime_test -destination=mocks_test.go -typed
+//go:generate mockgen -source=store.go -package=onetime_test -destination=store_mock_test.go -typed
 type Store interface {
 	// Insert stores tok. An identifier that is already stored is an error
 	// rather than a replacement: overwriting would silently invalidate a

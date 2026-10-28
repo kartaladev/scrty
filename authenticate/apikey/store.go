@@ -24,7 +24,7 @@ import (
 // slice fields it keeps or returns: a caller that writes to what it read must
 // not be able to change what is stored.
 //
-//go:generate mockgen -source=store.go -package=apikey_test -destination=mocks_test.go -typed
+//go:generate mockgen -source=store.go -package=apikey_test -destination=store_mock_test.go -typed
 type Store interface {
 	// Put stores rec. The record's identifier is freshly minted by the
 	// manager, so an implementation may insert without checking for one

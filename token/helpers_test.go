@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -206,3 +207,8 @@ func verificationKeySet(t *testing.T, source signingkey.KeySource) jwk.Set {
 
 	return set
 }
+
+// errKeySourceFixture is the fixture every leak row in this change is proven
+// against: a dependency's error quoting an address and a user reference the
+// returned error must never repeat.
+var errKeySourceFixture = errors.New("store: Key (username)=(alice@example.com) for user u-123")

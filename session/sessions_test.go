@@ -1348,36 +1348,63 @@ func TestTouch_WritesExactlyOneIntervalAfterTheLastAccess(t *testing.T) {
 
 // A request that loaded a session before another request confined it must not
 // undo the confinement when it records its own activity.
-// Standalone: it touches a stale copy after another copy was confined and saved.
-func TestTouch_KeepsAConcurrentlyLoweredDeadline(t *testing.T) {
+func TestTouch_AfterAnotherCopyIsConfined(t *testing.T) {
 	t.Parallel()
 
-	clk := clockwork.NewFakeClockAt(createdAt)
-	m, _ := managerOnClock(t, clk)
+	type testCase struct {
+		name string
+		// assert receives the confined copy and the session as stored after the stale touch.
+		assert func(t *testing.T, b, got *session.Session)
+	}
 
-	s, err := m.Create(t.Context(), testUser)
-	require.NoError(t, err)
+	cases := []testCase{
+		{
+			name: "keeps a concurrently lowered deadline",
+			assert: func(t *testing.T, b, got *session.Session) {
+				require.False(t, b.EnrolmentOriginDeadline.IsZero())
+				assert.Equal(t, b.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "absolute deadline")
+				assert.Equal(t, b.EnrolmentOriginDeadline, got.EnrolmentOriginDeadline, "enrolment-origin marker")
+				assert.Equal(t, session.MFAEnrolmentPending, got.MFA, "second-factor state")
+			},
+		},
+		{
+			name: "stale copy never leaves idle after absolute",
+			assert: func(t *testing.T, _, got *session.Session) {
+				assert.False(t, got.IdleExpiresAt.After(got.AbsoluteExpiresAt),
+					"stored idle %s is after stored absolute %s", got.IdleExpiresAt, got.AbsoluteExpiresAt)
+			},
+		},
+	}
 
-	// Request A loads its copy.
-	a, err := m.Load(t.Context(), s.ID)
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Request B, on the same session, confines it to enrolment and saves.
-	b, err := m.Load(t.Context(), s.ID)
-	require.NoError(t, err)
-	m.MarkEnrolmentPending(b, 15*time.Minute)
-	require.NoError(t, m.Save(t.Context(), b))
-	require.False(t, b.EnrolmentOriginDeadline.IsZero())
+			clk := clockwork.NewFakeClockAt(createdAt)
+			m, _ := managerOnClock(t, clk)
 
-	// Request A finishes with its stale copy.
-	clk.Advance(time.Minute)
-	require.NoError(t, m.Touch(t.Context(), a))
+			s, err := m.Create(t.Context(), testUser)
+			require.NoError(t, err)
 
-	got, err := m.Load(t.Context(), s.ID)
-	require.NoError(t, err)
-	assert.Equal(t, b.AbsoluteExpiresAt, got.AbsoluteExpiresAt, "absolute deadline")
-	assert.Equal(t, b.EnrolmentOriginDeadline, got.EnrolmentOriginDeadline, "enrolment-origin marker")
-	assert.Equal(t, session.MFAEnrolmentPending, got.MFA, "second-factor state")
+			// Request A loads its copy.
+			a, err := m.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+
+			// Request B, on the same session, confines it to enrolment and saves.
+			b, err := m.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			m.MarkEnrolmentPending(b, 15*time.Minute)
+			require.NoError(t, m.Save(t.Context(), b))
+
+			// Request A finishes with its stale copy.
+			clk.Advance(time.Minute)
+			require.NoError(t, m.Touch(t.Context(), a))
+
+			got, err := m.Load(t.Context(), s.ID)
+			require.NoError(t, err)
+			tc.assert(t, b, got)
+		})
+	}
 }
 
 // Standalone: it renews one sign-in three times before counting.
@@ -1398,30 +1425,6 @@ func TestCountActive_RenewedSignInCountsOnce(t *testing.T) {
 	n, err := m.CountActiveByUser(t.Context(), testUser)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n, "one sign-in renewed three times holds one live session")
-}
-
-// Standalone: it touches a stale copy after another copy was confined and saved.
-func TestTouch_StaleCopyNeverLeavesIdleAfterAbsolute(t *testing.T) {
-	t.Parallel()
-
-	clk := clockwork.NewFakeClockAt(createdAt)
-	m, _ := managerOnClock(t, clk)
-	s, err := m.Create(t.Context(), testUser)
-	require.NoError(t, err)
-	stale, err := m.Load(t.Context(), s.ID)
-	require.NoError(t, err)
-	other, err := m.Load(t.Context(), s.ID)
-	require.NoError(t, err)
-	m.MarkEnrolmentPending(other, 15*time.Minute)
-	require.NoError(t, m.Save(t.Context(), other))
-	clk.Advance(time.Minute)
-
-	require.NoError(t, m.Touch(t.Context(), stale))
-
-	got, err := m.Load(t.Context(), s.ID)
-	require.NoError(t, err)
-	assert.False(t, got.IdleExpiresAt.After(got.AbsoluteExpiresAt),
-		"stored idle %s is after stored absolute %s", got.IdleExpiresAt, got.AbsoluteExpiresAt)
 }
 
 func TestSaveNeverRecreatesADeletedSession(t *testing.T) {
@@ -2310,21 +2313,53 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 	}
 }
 
-// Standalone: it creates two sessions and compares their families.
-func TestCreate_StartsAFamilyOfItsOwn(t *testing.T) {
+func TestCreate_Family(t *testing.T) {
 	t.Parallel()
 
-	clk := clockwork.NewFakeClockAt(createdAt)
-	m, _ := managerOnClock(t, clk)
+	type testCase struct {
+		name string
+		// assert receives two sessions created one after the other, and the store they were written to.
+		assert func(t *testing.T, first, second *session.Session, store *session.MemoryStore)
+	}
 
-	a, err := m.Create(t.Context(), testUser)
-	require.NoError(t, err)
-	b, err := m.Create(t.Context(), testUser)
-	require.NoError(t, err)
+	cases := []testCase{
+		{
+			name: "starts a family of its own",
+			assert: func(t *testing.T, a, b *session.Session, _ *session.MemoryStore) {
+				assert.NotEqual(t, a.FamilyID, b.FamilyID)
+				assert.False(t, a.FamilyID.IsZero())
+				assert.Equal(t, a.CreatedAt, a.FamilyCreatedAt)
+			},
+		},
+		{
+			name: "starts a family",
+			assert: func(t *testing.T, first, second *session.Session, store *session.MemoryStore) {
+				assert.NotEqual(t, id.Nil, first.FamilyID, "a new session starts a family")
+				assert.NotEqual(t, first.FamilyID, second.FamilyID, "every sign-in starts a family of its own")
+				assert.Equal(t, first.CreatedAt, first.FamilyCreatedAt, "the family starts when its first session is created")
+				stored, err := store.Load(t.Context(), first.ID)
+				require.NoError(t, err)
+				assert.Equal(t, first.FamilyID, stored.FamilyID, "the family is stored by the creating write")
+				assert.Equal(t, first.FamilyCreatedAt, stored.FamilyCreatedAt)
+			},
+		},
+	}
 
-	assert.NotEqual(t, a.FamilyID, b.FamilyID)
-	assert.False(t, a.FamilyID.IsZero())
-	assert.Equal(t, a.CreatedAt, a.FamilyCreatedAt)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			clk := clockwork.NewFakeClockAt(createdAt)
+			m, store := managerOnClock(t, clk)
+
+			first, err := m.Create(t.Context(), testUser)
+			require.NoError(t, err)
+			second, err := m.Create(t.Context(), testUser)
+			require.NoError(t, err)
+
+			tc.assert(t, first, second, store)
+		})
+	}
 }
 
 // Standalone: it rotates twice in sequence and compares every successor's family.
@@ -2378,33 +2413,56 @@ func TestRevokeFamily(t *testing.T) {
 	require.NoError(t, err, "revoking one family took another family of the same user")
 }
 
-// Standalone: it revokes through a mock store that fails, unlike TestRevokeFamily's real family.
-func TestRevokeFamily_StoreFailure(t *testing.T) {
+// Standalone from TestRevokeFamily: these revoke through a mock store, not a real family.
+func TestRevokeFamily_OnAMockStore(t *testing.T) {
 	t.Parallel()
 
-	store := NewMockStore(gomock.NewController(t))
-	family := id.MustParse("01926a4e-0000-7000-8000-0000000000aa")
-	store.EXPECT().DeleteFamily(gomock.Any(), family).Return(0, errStoreWrite)
-	m := managerFor(t, session.WithStore(store))
+	type testCase struct {
+		name   string
+		family id.ID
+		// expect sets what the store is called with; nil expects no call.
+		expect func(store *MockStore, family id.ID)
+		assert func(t *testing.T, n int, err error)
+	}
 
-	_, err := m.RevokeFamily(t.Context(), family)
+	cases := []testCase{
+		{
+			name:   "store failure",
+			family: id.MustParse("01926a4e-0000-7000-8000-0000000000aa"),
+			expect: func(store *MockStore, family id.ID) {
+				store.EXPECT().DeleteFamily(gomock.Any(), family).Return(0, errStoreWrite)
+			},
+			assert: func(t *testing.T, _ int, err error) {
+				require.ErrorIs(t, err, errStoreWrite)
+			},
+		},
+		{
+			// The mock expects no call: the nil family never reaches the store.
+			name:   "refuses the nil family",
+			family: id.Nil,
+			assert: func(t *testing.T, n int, err error) {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "nil family")
+				assert.Zero(t, n)
+			},
+		},
+	}
 
-	require.ErrorIs(t, err, errStoreWrite)
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-// Standalone: it revokes the nil family through a mock store that expects no call.
-func TestRevokeFamily_RefusesTheNilFamily(t *testing.T) {
-	t.Parallel()
+			store := NewMockStore(gomock.NewController(t))
+			if tc.expect != nil {
+				tc.expect(store, tc.family)
+			}
+			m := managerFor(t, session.WithStore(store))
 
-	// The mock expects no call: the nil family never reaches the store.
-	store := NewMockStore(gomock.NewController(t))
-	m := managerFor(t, session.WithStore(store))
+			n, err := m.RevokeFamily(t.Context(), tc.family)
 
-	n, err := m.RevokeFamily(t.Context(), id.Nil)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "nil family")
-	assert.Zero(t, n)
+			tc.assert(t, n, err)
+		})
+	}
 }
 
 type failingGenerator struct{ err error }
@@ -3012,27 +3070,6 @@ func TestRotate_TakesTheFamilyFromTheStoredRecord(t *testing.T) {
 	stored, err := store.Load(t.Context(), rotated.ID)
 	require.NoError(t, err)
 	assert.Equal(t, s.FamilyID, stored.FamilyID)
-}
-
-// Standalone: it creates two sessions and reads the first one's family back from the store.
-func TestCreateStartsAFamily(t *testing.T) {
-	t.Parallel()
-
-	clk := clockwork.NewFakeClockAt(createdAt)
-	m, store := managerOnClock(t, clk)
-
-	first, err := m.Create(t.Context(), testUser)
-	require.NoError(t, err)
-	second, err := m.Create(t.Context(), testUser)
-	require.NoError(t, err)
-
-	assert.NotEqual(t, id.Nil, first.FamilyID, "a new session starts a family")
-	assert.NotEqual(t, first.FamilyID, second.FamilyID, "every sign-in starts a family of its own")
-	assert.Equal(t, first.CreatedAt, first.FamilyCreatedAt, "the family starts when its first session is created")
-	stored, err := store.Load(t.Context(), first.ID)
-	require.NoError(t, err)
-	assert.Equal(t, first.FamilyID, stored.FamilyID, "the family is stored by the creating write")
-	assert.Equal(t, first.FamilyCreatedAt, stored.FamilyCreatedAt)
 }
 
 // returnedErrorsID is a session identifier shaped like the ones the manager

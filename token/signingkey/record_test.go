@@ -2,6 +2,7 @@ package signingkey_test
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -123,4 +124,40 @@ func recordKids(recs []signingkey.Record) []string {
 		kids = append(kids, rec.Kid)
 	}
 	return kids
+}
+
+// F5 — the default store keeps no copy of the private bytes it is handed, so
+// the caller's slice and every loaded slice alias one backing array.
+// Standalone: it is not parallel, unlike TestInMemoryKeyStore, and writes to the bytes it handed over.
+func TestInMemoryStoreCopiesPrivateBytes(t *testing.T) {
+	ctx := t.Context()
+	store := signingkey.NewMemoryKeyStore()
+
+	secret := []byte{1, 2, 3, 4, 5, 6, 7, 8}
+	want := slices.Clone(secret)
+
+	require.NoError(t, store.Store(ctx, signingkey.Record{
+		Kid: "k", Alg: signingkey.RS256, Private: secret,
+		CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
+	}))
+
+	for i := range secret {
+		secret[i] = 0 // the caller wipes its own copy after handing it off
+	}
+
+	got, err := store.LoadAll(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, want, got[0].Private,
+		"the store persists the bytes it was given, not a window onto the caller's slice")
+
+	first, err := store.LoadAll(ctx)
+	require.NoError(t, err)
+	for i := range first[0].Private {
+		first[0].Private[i] = 0xAA
+	}
+	second, err := store.LoadAll(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, want, second[0].Private,
+		"one reader must not be able to overwrite the key another reader loads")
 }

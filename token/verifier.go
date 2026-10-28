@@ -11,6 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
@@ -34,6 +35,53 @@ type Verifier interface {
 	// this.
 	Verify(ctx context.Context, token string) (*Claims, error)
 }
+
+// VerifyOption configures a Verifier. Every default NewVerifier applies has an
+// option here that replaces it, except the key source, which has no default.
+type VerifyOption func(*config)
+
+// WithVerifyKeySource sets where verification keys come from. Required: there
+// is no default, because something has to hold the keys, so constructing a
+// verifier without it is a configuration error.
+func WithVerifyKeySource(keys signingkey.KeySource) VerifyOption {
+	return func(c *config) { c.keys = keys }
+}
+
+// WithVerifyIssuer enforces iss. Default: none, and iss is then not checked.
+// When set, a token whose issuer is absent or different is rejected.
+//
+// Enforcement depends on this option having been given, never on the
+// configured value being non-empty.
+func WithVerifyIssuer(iss string) VerifyOption { return VerifyOption(setIssuer(iss)) }
+
+// WithVerifyAudience enforces aud. Default: none, and aud is then not checked.
+// When set, a token whose audience is absent or does not contain it is
+// rejected.
+//
+// Enforcement depends on this option having been given, never on the
+// configured value being non-empty.
+func WithVerifyAudience(aud string) VerifyOption { return VerifyOption(setAudience(aud)) }
+
+// WithVerifyMaxTokenSize sets the largest token, in bytes, that Verify will
+// look at. Default: 8192, which is generous for a compact JWS carrying an
+// RS256 signature.
+//
+// A longer string is refused as an invalid token before anything is decoded
+// and before the key source is consulted, so the work an unauthenticated
+// request can buy stays bounded. Raise it for a consumer whose own claims are
+// large; a size of zero or less fails construction, because a verifier that
+// accepts nothing is a wiring mistake rather than a policy.
+func WithVerifyMaxTokenSize(size int) VerifyOption {
+	return func(c *config) { c.maxTokenSize = size }
+}
+
+// WithVerifyClock sets the time source for every time check. Default:
+// clock.System(). No clock skew is tolerated, so this is the only way to move
+// the instant a token is judged against.
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// verifier with no clock could not judge exp, nbf or iat at all.
+func WithVerifyClock(clk clock.Clock) VerifyOption { return VerifyOption(setClock(clk)) }
 
 type verifier struct{ cfg *config }
 

@@ -2,8 +2,11 @@ package password_test
 
 import (
 	"bytes"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +81,22 @@ func TestScryptEncode(t *testing.T) {
 				assert.False(t, enc.Match("hunter2", []byte("scrypt$32768$8$1$!!!$AAAA")))
 				assert.False(t, enc.Match("hunter2", []byte("scrypt$32768$8")))
 				assert.False(t, enc.Match("hunter2", nil))
+			},
+		},
+		{
+			name: "record parallelism bounds derivation time",
+			assert: func(t *testing.T, enc password.Encoder) {
+				salt := base64.RawStdEncoding.EncodeToString(make([]byte, 16))
+				key := base64.RawStdEncoding.EncodeToString(make([]byte, 32))
+				record := fmt.Appendf(nil, "scrypt$32768$8$128$%s$%s", salt, key)
+
+				start := time.Now()
+				matched := enc.Match("hunter2", record)
+				elapsed := time.Since(start)
+
+				assert.False(t, matched)
+				assert.Less(t, elapsed, fastMatch,
+					"p=128 at N=32768 is over a hundred derivations; the record must be refused unread")
 			},
 		},
 	}
