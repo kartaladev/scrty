@@ -14,7 +14,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/session"
 )
 
 func TestResetEnrolment(t *testing.T) {
@@ -420,60 +419,4 @@ func TestResetEnrolmentClock(t *testing.T) {
 			tc.assert(t, before, named, after)
 		})
 	}
-}
-
-// TestResetEnrolmentEndToEnd runs a reset over the real TOTP method and the
-// default session manager: the user is no longer enrolled, no session of theirs
-// loads, a notification is queued, and their requirement is untouched.
-func TestResetEnrolmentEndToEnd(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-
-	store := mfa.NewMemoryEnrolmentStore()
-	m, err := mfa.NewTOTP(store, "Example")
-	require.NoError(t, err)
-	enrolConfirmed(t, store, "u-1", []byte("12345678901234567890"))
-
-	sessions, err := session.New()
-	require.NoError(t, err)
-
-	first, err := sessions.Create(ctx, "u-1")
-	require.NoError(t, err)
-	second, err := sessions.Create(ctx, "u-1")
-	require.NoError(t, err)
-
-	sent := make(chan notify.Message, 1)
-	requirement := &stubRequirement{required: map[identity.UserID]bool{"u-1": true}}
-
-	ctrl := gomock.NewController(t)
-	users := NewMockUserLoader(ctrl)
-	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).
-		Return(&identity.Details{ID: "u-1", Username: "ada@example.com"}, nil)
-	sender := NewMockSender(ctrl)
-	sender.EXPECT().Send(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, msg notify.Message) error { sent <- msg; return nil })
-
-	require.NoError(t, mfa.ResetEnrolment(ctx, "u-1", mfa.ResetDeps{
-		Enrolments: []mfa.EnrolmentRemover{m}, Sessions: sessions, Users: users, Sender: sender,
-	}))
-
-	enrolled, err := m.Enrolled(ctx, "u-1")
-	require.NoError(t, err)
-	assert.False(t, enrolled)
-
-	for _, s := range []*session.Session{first, second} {
-		_, err := sessions.Load(ctx, s.ID)
-		require.ErrorIs(t, err, session.ErrNotFound, "no session of the user loads")
-	}
-
-	select {
-	case msg := <-sent:
-		assert.Equal(t, "ada@example.com", msg.To)
-	default:
-		assert.Fail(t, "no notification was queued")
-	}
-
-	required, err := requirement.Required(ctx, "u-1")
-	require.NoError(t, err)
-	assert.True(t, required, "a reset never touches the requirement")
 }

@@ -80,3 +80,65 @@ func (c_2 *MockAuthenticatorAuthenticateCall) DoAndReturn(f func(context.Context
 	c_2.Call = c_2.Call.DoAndReturn(f)
 	return c_2
 }
+
+// MockDecoyVerifier is a mock of DecoyVerifier interface.
+type MockDecoyVerifier struct {
+	ctrl     *gomock.Controller
+	recorder *MockDecoyVerifierMockRecorder
+	isgomock struct{}
+}
+
+// MockDecoyVerifierMockRecorder is the mock recorder for MockDecoyVerifier.
+type MockDecoyVerifierMockRecorder struct {
+	mock *MockDecoyVerifier
+}
+
+// NewMockDecoyVerifier creates a new mock instance.
+func NewMockDecoyVerifier(ctrl *gomock.Controller) *MockDecoyVerifier {
+	mock := &MockDecoyVerifier{ctrl: ctrl}
+	mock.recorder = &MockDecoyVerifierMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockDecoyVerifier) EXPECT() *MockDecoyVerifierMockRecorder {
+	return m.recorder
+}
+
+// VerifyDecoy mocks base method.
+func (m *MockDecoyVerifier) VerifyDecoy(ctx context.Context, creds identity.Credentials) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "VerifyDecoy", ctx, creds)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// VerifyDecoy indicates an expected call of VerifyDecoy.
+func (mr *MockDecoyVerifierMockRecorder) VerifyDecoy(ctx, creds any) *MockDecoyVerifierVerifyDecoyCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "VerifyDecoy", reflect.TypeOf((*MockDecoyVerifier)(nil).VerifyDecoy), ctx, creds)
+	return &MockDecoyVerifierVerifyDecoyCall{Call: call}
+}
+
+// MockDecoyVerifierVerifyDecoyCall wrap *gomock.Call
+type MockDecoyVerifierVerifyDecoyCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockDecoyVerifierVerifyDecoyCall) Return(handled bool) *MockDecoyVerifierVerifyDecoyCall {
+	c.Call = c.Call.Return(handled)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockDecoyVerifierVerifyDecoyCall) Do(f func(context.Context, identity.Credentials) bool) *MockDecoyVerifierVerifyDecoyCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockDecoyVerifierVerifyDecoyCall) DoAndReturn(f func(context.Context, identity.Credentials) bool) *MockDecoyVerifierVerifyDecoyCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}

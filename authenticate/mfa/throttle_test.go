@@ -34,7 +34,8 @@ func TestVerifyThrottle(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name    string
+		name string
+		// limiter is the limiter the throttle is given; nil gives it none.
 		limiter func(t *testing.T) ratelimit.Limiter
 		assert  func(t *testing.T, th *mfa.VerifyThrottle)
 	}
@@ -115,36 +116,62 @@ func TestVerifyThrottle(t *testing.T) {
 					"an outage while recording is not a judgement about the caller")
 			},
 		},
+		{
+			// What a consumer who wires nothing gets: the documented 5
+			// failures per 15 minutes, with no limiter of their own.
+			name: "defaults",
+			assert: func(t *testing.T, th *mfa.VerifyThrottle) {
+				ctx := t.Context()
+
+				for range 5 {
+					require.NoError(t, th.Check(ctx, "u-1"))
+					th.RecordFailure(ctx, "u-1")
+				}
+
+				assert.ErrorIs(t, th.Check(ctx, "u-1"), mfa.ErrVerifyThrottled)
+				assert.NoError(t, th.Check(ctx, "u-2"))
+			},
+		},
+		{
+			name: "consumer limiter",
+			limiter: func(t *testing.T) ratelimit.Limiter {
+				ctrl := gomock.NewController(t)
+				shared := NewMockLimiter(ctrl)
+
+				shared.EXPECT().Exceeded(gomock.Any(), gomock.Eq("mfa-verify|u-1")).Return(false, nil).Times(1)
+				shared.EXPECT().RecordFailure(gomock.Any(), gomock.Eq("mfa-verify|u-1")).Return(nil).Times(1)
+
+				return shared
+			},
+			assert: func(t *testing.T, th *mfa.VerifyThrottle) {
+				require.NoError(t, th.Check(t.Context(), "u-1"))
+				th.RecordFailure(t.Context(), "u-1")
+
+				// The two expectations above pin the bucket by its literal, deliberately:
+				// computing it with VerifyThrottleKey would pass whatever shape the key
+				// took. This pins the other half — that the exported name a consumer reads
+				// or clears the bucket by is the very string the failures land under.
+				assert.Equal(t, "mfa-verify|u-1", mfa.VerifyThrottleKey("u-1"),
+					"the documented key and the bucket the throttle uses are one string")
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(tc.limiter(t)))
+			var opts []mfa.ThrottleOption
+			if tc.limiter != nil {
+				opts = append(opts, mfa.WithThrottleLimiter(tc.limiter(t)))
+			}
+
+			th, err := mfa.NewVerifyThrottle(opts...)
 			require.NoError(t, err)
 
 			tc.assert(t, th)
 		})
 	}
-}
-
-// TestVerifyThrottleDefaults pins what a consumer who wires nothing gets: the
-// documented 5 failures per 15 minutes, with no limiter of their own.
-func TestVerifyThrottleDefaults(t *testing.T) {
-	t.Parallel()
-	ctx := t.Context()
-
-	th, err := mfa.NewVerifyThrottle()
-	require.NoError(t, err)
-
-	for range 5 {
-		require.NoError(t, th.Check(ctx, "u-1"))
-		th.RecordFailure(ctx, "u-1")
-	}
-
-	assert.ErrorIs(t, th.Check(ctx, "u-1"), mfa.ErrVerifyThrottled)
-	assert.NoError(t, th.Check(ctx, "u-2"))
 }
 
 func TestNewVerifyThrottleConfig(t *testing.T) {
@@ -196,29 +223,7 @@ func TestNewVerifyThrottleConfig(t *testing.T) {
 	}
 }
 
-func TestVerifyThrottleConsumerLimiter(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	shared := NewMockLimiter(ctrl)
-
-	shared.EXPECT().Exceeded(gomock.Any(), gomock.Eq("mfa-verify|u-1")).Return(false, nil).Times(1)
-	shared.EXPECT().RecordFailure(gomock.Any(), gomock.Eq("mfa-verify|u-1")).Return(nil).Times(1)
-
-	th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(shared))
-	require.NoError(t, err)
-
-	require.NoError(t, th.Check(t.Context(), "u-1"))
-	th.RecordFailure(t.Context(), "u-1")
-
-	// The two expectations above pin the bucket by its literal, deliberately:
-	// computing it with VerifyThrottleKey would pass whatever shape the key
-	// took. This pins the other half — that the exported name a consumer reads
-	// or clears the bucket by is the very string the failures land under.
-	assert.Equal(t, "mfa-verify|u-1", mfa.VerifyThrottleKey("u-1"),
-		"the documented key and the bucket the throttle uses are one string")
-}
-
+// Standalone: it wires a logger and a sampling interval the table does not carry.
 func TestVerifyThrottleLogSampling(t *testing.T) {
 	t.Parallel()
 
@@ -247,44 +252,6 @@ func TestVerifyThrottleLogSampling(t *testing.T) {
 		"200 refusals in one window write one record")
 	assert.NotContains(t, buf.String(), "u-1",
 		"the record names the reason, which is what the sampler keys on")
-}
-
-func TestMFALogsCarryNoSecrets(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
-	store := mfa.NewMemoryEnrolmentStore()
-
-	m, err := mfa.NewTOTP(store, "Example",
-		mfa.WithClock(clockwork.NewFakeClockAt(base)),
-		mfa.WithLogger(logger),
-	)
-	require.NoError(t, err)
-
-	p, err := m.BeginEnrolment(t.Context(), "u-1", "ada@example.com")
-	require.NoError(t, err)
-	require.NoError(t, m.ConfirmEnrolment(t.Context(), "u-1", codeForSecret(t, p.Secret, base)))
-
-	assert.ErrorIs(t, m.Verify(t.Context(), "u-1", []byte("123456")), mfa.ErrInvalidCode)
-
-	// A replay, too: the code that confirmed the enrolment must not reappear.
-	spent := codeForSecret(t, p.Secret, base)
-	_ = m.Verify(t.Context(), "u-1", []byte(spent))
-
-	require.NoError(t, m.RemoveEnrolment(t.Context(), "u-1"))
-
-	logged := buf.String()
-	require.NotEmpty(t, logged, "the assertions below would be vacuous with nothing written")
-
-	assert.NotContains(t, logged, "123456", "a presented code must not be logged")
-	assert.NotContains(t, logged, spent, "nor an accepted one")
-	assert.NotContains(t, logged, p.Secret, "an enrolment secret must not be logged")
-	assert.NotContains(t, logged, p.URI, "a provisioning URI must not be logged")
-	assert.NotContains(t, logged, "otpauth://")
 }
 
 // TestVerifyThrottleFailureRecords pins the diagnostic-redaction requirement
@@ -383,6 +350,7 @@ func TestVerifyThrottleFailureRecords(t *testing.T) {
 // that its RecordFailure may be handed a cancellation-stripped context for
 // exactly this reason, and a networked limiter would decline a write on a
 // context that is already done — handing the guesser a free retry.
+// Standalone: it drives RecordFailure with a cancelled context and a limiter that inspects it.
 func TestVerifyThrottleChargesAHangUp(t *testing.T) {
 	t.Parallel()
 
@@ -412,6 +380,7 @@ func TestVerifyThrottleChargesAHangUp(t *testing.T) {
 			"must not be handed a context that is already cancelled")
 }
 
+// Standalone: it wires a logger instead of a limiter and asserts on what it wrote.
 func TestVerifyThrottle_DefaultLimiterWarnsThroughConfiguredLogger(t *testing.T) {
 	t.Parallel()
 

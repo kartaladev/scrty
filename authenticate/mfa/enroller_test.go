@@ -3,7 +3,6 @@ package mfa_test
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"io"
 	"log/slog"
@@ -20,28 +19,6 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 )
-
-// failAfterReader serves n bytes from the secure source, then fails. Beginning
-// an enrolment reads the 20-byte secret, so n = 20 lets a begin succeed and
-// makes drawing the emailed code the read that fails.
-type failAfterReader struct {
-	mu sync.Mutex
-	n  int
-}
-
-func (r *failAfterReader) Read(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.n <= 0 {
-		return 0, errors.New("entropy pool exhausted")
-	}
-
-	p = p[:min(len(p), r.n)]
-	r.n -= len(p)
-
-	return rand.Read(p)
-}
 
 // scriptedReader serves a 20-byte enrolment secret, then the bytes a case
 // scripts, so a test fixes what rand.Int draws for the emailed code.
@@ -934,6 +911,7 @@ func TestTOTPEnroller(t *testing.T) {
 // A store written against EnrolmentStore alone cannot serve the enrolment
 // path; the method says so, and every path operation refuses rather than
 // panics or pretends.
+// Standalone: it builds TOTP over a store without the device-proof port, which the fixture always has.
 func TestTOTPEnrollerWithoutDeviceProofPort(t *testing.T) {
 	t.Parallel()
 
@@ -964,6 +942,7 @@ func TestTOTPEnrollerWithoutDeviceProofPort(t *testing.T) {
 // TestTOTPEnrollerLogs runs a begin, a device proof and a refused emailed code,
 // and finds none of the secret, the provisioning URI, the device code or the
 // emailed code in any record.
+// Standalone: it wires a logger the fixture does not, and asserts on every record written.
 func TestTOTPEnrollerLogs(t *testing.T) {
 	t.Parallel()
 
@@ -994,19 +973,6 @@ func TestTOTPEnrollerLogs(t *testing.T) {
 	} {
 		assert.NotContains(t, logs, secret, "a record carries the %s", name)
 	}
-}
-
-// lockedWriter serialises writes from concurrent records.
-type lockedWriter struct {
-	mu sync.Mutex
-	w  io.Writer
-}
-
-func (l *lockedWriter) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return l.w.Write(p)
 }
 
 // errChargeOutage is the failure of a store that cannot charge an attempt.
