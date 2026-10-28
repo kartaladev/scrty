@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
@@ -47,7 +47,7 @@ type PasskeyHandleStore struct {
 // Limit, stated: PostgreSQL text cannot hold a NUL byte or invalid UTF-8. An
 // assignment for a user reference holding either is refused with an error
 // that names the field, never the value, and nothing is written.
-func NewPasskeyHandleStore(db *gormdb.DB, opts ...Option) (*PasskeyHandleStore, error) {
+func NewPasskeyHandleStore(db *gorm.DB, opts ...Option) (*PasskeyHandleStore, error) {
 	c, err := newConfig(db, opts, optIDGenerator)
 	if err != nil {
 		return nil, err

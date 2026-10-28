@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strconv"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 // dbFailed wraps err, a failure of a database call the identity store made,
@@ -26,7 +26,7 @@ func dbFailed(op string, err error) error {
 // connection, a statement the server refused) is wrapped exactly as dbFailed
 // would wrap it, since none of those carry a scanned value.
 func scanFailed(op string, err error) error {
-	var argErr pgxv5.ScanArgError
+	var argErr pgx.ScanArgError
 	if !errors.As(err, &argErr) {
 		return dbFailed(op, err)
 	}
@@ -42,8 +42,8 @@ func scanFailed(op string, err error) error {
 var detachedKept = []error{
 	context.Canceled,
 	context.DeadlineExceeded,
-	pgxv5.ErrTxClosed,
-	pgxv5.ErrTxCommitRollback,
+	pgx.ErrTxClosed,
+	pgx.ErrTxCommitRollback,
 }
 
 // detachedError is a database failure cut from the driver's error: fixed

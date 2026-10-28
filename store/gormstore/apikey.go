@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/identity"
@@ -36,7 +36,7 @@ type APIKeyStore struct{ c *config }
 // value is never altered. Listing such a principal matches nothing. A key
 // with no scopes, nil or empty, loads with an empty list. Stored times are
 // UTC, truncated to the microsecond.
-func NewAPIKeyStore(db *gormdb.DB, opts ...Option) (*APIKeyStore, error) {
+func NewAPIKeyStore(db *gorm.DB, opts ...Option) (*APIKeyStore, error) {
 	c, err := newConfig(db, opts)
 	if err != nil {
 		return nil, err

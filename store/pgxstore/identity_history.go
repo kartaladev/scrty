@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -107,7 +107,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 	return s.atomically(ctx, op, func(q DBTX) error {
 		var newest []byte
 		err := q.QueryRow(ctx, pgschema.NewestHistory, uuidArg(uid)).Scan(&newest)
-		none := errors.Is(err, pgxv5.ErrNoRows)
+		none := errors.Is(err, pgx.ErrNoRows)
 		if err != nil && !none {
 			return scanFailed(op, err)
 		}

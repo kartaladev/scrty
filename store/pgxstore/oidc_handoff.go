@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -103,7 +103,7 @@ func (s *HandoffStore) FindByTokenID(ctx context.Context, tokenID string) (*oidc
 	err := s.c.queryRow(ctx, op, pgschema.HandoffSelect, []any{tokenID},
 		&recID, &rec.SecretHash, &user, &rec.Provider, &rec.Issuer, &rec.SessionID, &rec.IDToken, &rec.Next,
 		&expires, &created, &consumed, &amr, &rec.ACR)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, oidc.ErrHandoffNotFound
 	}
 	if err != nil {

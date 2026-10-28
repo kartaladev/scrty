@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -101,7 +101,7 @@ func (s *RecoveryRecordStore) Find(ctx context.Context, rid id.ID) (*recovery.Re
 	)
 	err := s.c.queryRow(ctx, op, pgschema.RecoveryRecordSelect, []any{uuidArg(rid)},
 		&user, &started, &notBefore, &completed, &cancel, &proven, &reported, &r.SavedSpent)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, recovery.ErrRecordNotFound
 	}
 	if err != nil {

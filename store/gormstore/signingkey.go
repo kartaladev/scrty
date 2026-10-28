@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/internal/storekit"
@@ -38,7 +38,7 @@ import (
 // key whose kid or algorithm holds either is refused with an error that names
 // the field, never the value, and nothing is written. Stored times are UTC,
 // truncated to the microsecond.
-func NewSigningKeyStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (signingkey.KeyStore, error) {
+func NewSigningKeyStore(db *gorm.DB, c seal.Cipher, opts ...Option) (signingkey.KeyStore, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optResealOnRead)
 	if err != nil {
 		return nil, err

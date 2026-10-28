@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +15,7 @@ import (
 
 // fakeTx stands in for a caller's pgx transaction. It is only ever compared
 // by identity: resolution never runs a statement.
-type fakeTx struct{ pgxv5.Tx }
+type fakeTx struct{ pgx.Tx }
 
 // foreignTxKey is the kind of key another backend attaches its transaction
 // under; these stores must never see a transaction attached that way.
@@ -58,8 +58,8 @@ func TestConfigConn(t *testing.T) {
 		assert.Nil(t, q, "no handle is resolved when the resolver's is nil")
 		assert.False(t, ambient)
 	}
-	resolver := func(tx pgxv5.Tx, ok bool) []Option {
-		return []Option{WithTxResolver(func(context.Context) (pgxv5.Tx, bool) { return tx, ok })}
+	resolver := func(tx pgx.Tx, ok bool) []Option {
+		return []Option{WithTxResolver(func(context.Context) (pgx.Tx, bool) { return tx, ok })}
 	}
 
 	cases := []testCase{
@@ -133,7 +133,7 @@ func TestConfigConn(t *testing.T) {
 		},
 		{
 			name: "the resolver is asked with the operation's context",
-			opts: []Option{WithTxResolver(func(ctx context.Context) (pgxv5.Tx, bool) {
+			opts: []Option{WithTxResolver(func(ctx context.Context) (pgx.Tx, bool) {
 				v, ok := ctx.Value(foreignTxKey{}).(*fakeTx)
 				return v, ok
 			})},

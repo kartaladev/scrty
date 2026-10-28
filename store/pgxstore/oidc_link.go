@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -65,7 +65,7 @@ func (s *LinkStore) FindByExternal(ctx context.Context, provider, issuer, subjec
 	)
 	err := s.c.queryRow(ctx, op, pgschema.LinkSelect, []any{provider, issuer, subject},
 		&linkID, &user, &l.Username, &l.Email, &created)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, oidc.ErrLinkNotFound
 	}
 	if err != nil {

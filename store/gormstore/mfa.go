@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
@@ -74,7 +74,7 @@ import (
 //     step, device proof, completion, charge or deletion for such a
 //     reference matches nothing.
 //   - Stored times are UTC, truncated to the microsecond.
-func NewEnrolmentStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (mfa.EnrolmentStore, error) {
+func NewEnrolmentStore(db *gorm.DB, c seal.Cipher, opts ...Option) (mfa.EnrolmentStore, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optClock, optResealOnRead)
 	if err != nil {
 		return nil, err
@@ -207,7 +207,7 @@ func (s *enrolmentStore) Confirm(
 	n, err := updateWhere[enrolmentRow](ctx, s.c, "confirm MFA enrolment",
 		map[string]any{
 			"confirmed_at": storekit.Time(at),
-			"last_step":    gormdb.Expr("GREATEST(last_step, ?)", step),
+			"last_step":    gorm.Expr("GREATEST(last_step, ?)", step),
 			"email_code":   nil,
 		},
 		"user_id = ? AND generation = ? AND confirmed_at IS NULL", string(user), genArg(gen))
@@ -315,7 +315,7 @@ func (s *enrolmentStore) ChargeEmailCode(
 			" AND device_proven_at IS NOT NULL AND email_code IS NOT NULL"+
 			" AND email_code_until > ? AND email_code_attempts < ?",
 			string(user), genArg(gen), storekit.Time(at), mfa.MaxEmailCodeAttempts).
-		Updates(map[string]any{"email_code_attempts": gormdb.Expr("email_code_attempts + 1")})
+		Updates(map[string]any{"email_code_attempts": gorm.Expr("email_code_attempts + 1")})
 	if res.Error != nil {
 		return 0, false, failed(op, res.Error)
 	}

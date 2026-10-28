@@ -55,6 +55,8 @@ func TestUUIDHelpers(t *testing.T) {
 	}
 }
 
+// TestScanIDRefusesNull stands apart from TestUUIDHelpers: it scans a NULL,
+// which no identifier's argument produces.
 func TestScanIDRefusesNull(t *testing.T) {
 	t.Parallel()
 

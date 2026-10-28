@@ -10,7 +10,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/pkg/id"
 )
@@ -48,15 +48,15 @@ func TestNewConfig(t *testing.T) {
 
 	// A zero *gorm.DB is never used: construction must not touch the database,
 	// and would panic here if it tried.
-	base := new(gormdb.DB)
+	base := new(gorm.DB)
 	errBegin := errors.New("begin failed")
-	errored := &gormdb.DB{Error: errBegin}
+	errored := &gorm.DB{Error: errBegin}
 	gen := &fixedGenerator{}
 	fixed := time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)
 
 	type testCase struct {
 		name    string
-		base    *gormdb.DB
+		base    *gorm.DB
 		opts    []Option
 		honours []optionKind
 		assert  func(t *testing.T, c *config, err error)
@@ -81,7 +81,7 @@ func TestNewConfig(t *testing.T) {
 			base:    base,
 			honours: []optionKind{optIDGenerator, optClock, optResealOnRead},
 			opts: []Option{
-				WithTxResolver(func(context.Context) (*gormdb.DB, bool) { return nil, false }),
+				WithTxResolver(func(context.Context) (*gorm.DB, bool) { return nil, false }),
 				WithIDGenerator(gen),
 				WithClock(clockwork.NewFakeClockAt(fixed)),
 				WithResealOnRead(false),
@@ -168,7 +168,7 @@ func TestNewConfig(t *testing.T) {
 			base: base,
 			opts: []Option{
 				WithTxResolver(nil),
-				WithTxResolver(func(context.Context) (*gormdb.DB, bool) { return nil, false }),
+				WithTxResolver(func(context.Context) (*gorm.DB, bool) { return nil, false }),
 			},
 			assert: refusedWith("the transaction resolver is nil"),
 		},
@@ -223,7 +223,7 @@ func TestNewConfig(t *testing.T) {
 func TestNewConfigHonouredOptions(t *testing.T) {
 	t.Parallel()
 
-	base := new(gormdb.DB)
+	base := new(gorm.DB)
 
 	// What each store will declare to newConfig. WithTxResolver is honoured by
 	// every store without being declared.
@@ -247,7 +247,7 @@ func TestNewConfigHonouredOptions(t *testing.T) {
 		kind optionKind // zero for an option every store honours
 		opt  Option
 	}{
-		{"WithTxResolver", 0, WithTxResolver(func(context.Context) (*gormdb.DB, bool) { return nil, false })},
+		{"WithTxResolver", 0, WithTxResolver(func(context.Context) (*gorm.DB, bool) { return nil, false })},
 		{"WithIDGenerator", optIDGenerator, WithIDGenerator(&fixedGenerator{})},
 		{"WithClock", optClock, WithClock(clockwork.NewRealClock())},
 		{"WithResealOnRead", optResealOnRead, WithResealOnRead(false)},

@@ -105,7 +105,7 @@ func TestUnavailable_RefuseHoldIsBoundedUnderKeySpray(t *testing.T) {
 // clock stepped back must not leave the sweep waiting for the clock to catch up
 // (the sweep's re-arming), and a hold seen to have ended, but not yet swept, is
 // released by the next sweep after the step, not held again for as long as the
-// step was long (the scenario as written).
+// step was long.
 func TestHold_ClockStepsBackwards(t *testing.T) {
 	t.Parallel()
 

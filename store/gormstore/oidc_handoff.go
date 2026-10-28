@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
@@ -36,7 +36,7 @@ type HandoffStore struct{ c *config }
 // lookup or consumption by such a token id is oidc.ErrHandoffNotFound. The ID
 // token is single-use and short-lived, and is not sealed. Stored times are
 // UTC, truncated to the microsecond.
-func NewHandoffStore(db *gormdb.DB, opts ...Option) (*HandoffStore, error) {
+func NewHandoffStore(db *gorm.DB, opts ...Option) (*HandoffStore, error) {
 	c, err := newConfig(db, opts)
 	if err != nil {
 		return nil, err

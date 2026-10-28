@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -119,7 +119,7 @@ func (s *enrolmentStore) Get(ctx context.Context, user identity.UserID) (mfa.Enr
 	)
 	err := s.c.queryRow(ctx, op, pgschema.EnrolmentGet, []any{string(user)},
 		&secret, &confirmed, &e.LastStep, &created, &gen, &proven, &code, &codeUntil, &attempts, &verifyN, &verifyEnd)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return mfa.Enrolment{}, false, nil
 	}
 	if err != nil {
@@ -257,7 +257,7 @@ func (s *enrolmentStore) ChargeEmailCode(
 	var attempts int64
 	err := s.c.queryRow(ctx, "charge emailed MFA code", pgschema.EnrolmentChargeEmailCode,
 		[]any{string(user), nullID(gen), storekit.Time(at), mfa.MaxEmailCodeAttempts}, &attempts)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}
 	if err != nil {
@@ -295,7 +295,7 @@ func (s *enrolmentStore) ChargeVerifyAttempt(
 	err := s.c.queryRow(ctx, "charge TOTP verification attempt", pgschema.EnrolmentChargeVerifyAttempt,
 		[]any{string(user), storekit.Time(at), storekit.Time(at.Add(window).Truncate(time.Microsecond)), limit},
 		&until)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {

@@ -101,6 +101,7 @@ func (f fakePruner) Prune(context.Context) (int, error) { return f.removed, f.er
 
 // TestExpiryTask_ReportsPruner pins that the task reports what its pruner
 // reports, count and error alike.
+//
 // It stands apart from TestExpiryTask: it runs the task directly over a fake pruner.
 func TestExpiryTask_ReportsPruner(t *testing.T) {
 	t.Parallel()
@@ -142,6 +143,7 @@ func TestExpiryTask_ReportsPruner(t *testing.T) {
 }
 
 // TestExpiryTask pins the task's identity and what it reports through a runner.
+//
 // It stands apart from TestExpiryTask_ReportsPruner: it runs a real limiter through a runner.
 func TestExpiryTask(t *testing.T) {
 	t.Parallel()

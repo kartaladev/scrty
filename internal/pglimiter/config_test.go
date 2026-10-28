@@ -462,10 +462,10 @@ func TestRegistryClaim(t *testing.T) {
 // TestRegistryClaim_ConcurrentPolicies stands apart from TestRegistryClaim: it races two
 // claims from two goroutines, where the table makes its claims one after another.
 //
-// It pins that a claim's build runs under
-// the registry's lock: while the first claim of a namespace is still
-// building, a claim of the same namespace with another policy waits, and once
-// the first build has claimed the namespace, the second is refused.
+// It pins that a claim's build runs under the registry's lock: while the first
+// claim of a namespace is still building, a claim of the same namespace with
+// another policy waits, and once the first build has claimed the namespace,
+// the second is refused.
 func TestRegistryClaim_ConcurrentPolicies(t *testing.T) {
 	t.Parallel()
 

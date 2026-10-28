@@ -3,7 +3,7 @@ package gormstore
 import (
 	"fmt"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
@@ -25,7 +25,7 @@ const (
 // config is what every store in this package shares: the handle it was
 // constructed with and the options applied over the defaults.
 type config struct {
-	base         *gormdb.DB
+	base         *gorm.DB
 	resolver     TxResolver
 	ids          id.Generator
 	clock        clock.Clock
@@ -172,7 +172,7 @@ func WithResealOnRead(on bool) Option {
 // store does not honour with an error wrapping ErrConfig that names the first
 // problem and never a value; a base's own error is wrapped beside ErrConfig.
 // It never touches the database.
-func newConfig(base *gormdb.DB, opts []Option, honours ...optionKind) (*config, error) {
+func newConfig(base *gorm.DB, opts []Option, honours ...optionKind) (*config, error) {
 	if base == nil {
 		return nil, fmt.Errorf("%w: the database handle is nil", ErrConfig)
 	}

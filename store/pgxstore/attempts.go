@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -161,9 +161,9 @@ func (s *AttemptStore) AddStreakFailure(
 		if ambient {
 			err = run(q)
 		} else {
-			err = s.c.readCommitted(ctx, func(tx pgxv5.Tx) error { return run(tx) })
+			err = s.c.readCommitted(ctx, func(tx pgx.Tx) error { return run(tx) })
 		}
-		if errors.Is(err, pgxv5.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) {
 			continue
 		}
 		if err != nil {
@@ -196,7 +196,7 @@ func (s *AttemptStore) FailureStreak(ctx context.Context, username string, since
 	)
 	err := s.c.queryRow(ctx, op, pgschema.StreakRead,
 		[]any{username, storekit.Time(since)}, &got.Failures, &got.Newest, &heldAt)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return lockout.FailureStreak{}, nil
 	}
 	if err != nil {

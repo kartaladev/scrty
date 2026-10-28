@@ -3,7 +3,7 @@ package gormstore
 import (
 	"context"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
@@ -35,7 +35,7 @@ type LinkStore struct{ c *config }
 // value, and nothing is written; a lookup or deletion by such a value matches
 // nothing. Username and email are kept for operators and never used for a
 // lookup. Stored times are UTC, truncated to the microsecond.
-func NewLinkStore(db *gormdb.DB, opts ...Option) (*LinkStore, error) {
+func NewLinkStore(db *gorm.DB, opts ...Option) (*LinkStore, error) {
 	c, err := newConfig(db, opts)
 	if err != nil {
 		return nil, err

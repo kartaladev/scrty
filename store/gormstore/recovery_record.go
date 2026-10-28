@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/identity"
@@ -46,7 +46,7 @@ type RecoveryRecordStore struct{ c *config }
 // a colon in its kind, an empty part), is refused with an error that names
 // the field, never the value, and nothing is written. Stored times are UTC,
 // truncated to the microsecond.
-func NewRecoveryRecordStore(db *gormdb.DB, opts ...Option) (*RecoveryRecordStore, error) {
+func NewRecoveryRecordStore(db *gorm.DB, opts ...Option) (*RecoveryRecordStore, error) {
 	c, err := newConfig(db, opts)
 	if err != nil {
 		return nil, err

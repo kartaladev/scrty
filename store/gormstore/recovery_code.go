@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/identity"
@@ -70,7 +70,7 @@ type RecoveryCodeStore struct {
 // that names the field, never the value, and nothing is written; a match,
 // spend, count or delete by such a reference finds nothing. Stored times are
 // UTC, truncated to the microsecond.
-func NewRecoveryCodeStore(db *gormdb.DB, opts ...Option) (*RecoveryCodeStore, error) {
+func NewRecoveryCodeStore(db *gorm.DB, opts ...Option) (*RecoveryCodeStore, error) {
 	c, err := newConfig(db, opts, optIDGenerator)
 	if err != nil {
 		return nil, err
@@ -88,7 +88,7 @@ func (s *RecoveryCodeStore) ReplaceSet(ctx context.Context, user identity.UserID
 		return failed(op, err)
 	}
 
-	return s.atomically(ctx, op, func(q *gormdb.DB) error {
+	return s.atomically(ctx, op, func(q *gorm.DB) error {
 		if err := q.Exec(pgschema.RecoveryCodeLockUser, string(user)).Error; err != nil {
 			return failed(op, err)
 		}
@@ -184,14 +184,14 @@ func (s *RecoveryCodeStore) DeleteUser(ctx context.Context, user identity.UserID
 // savepoint inside a caller's transaction at READ COMMITTED, refusing a
 // stronger one, otherwise in a READ COMMITTED transaction of the store's own
 // begun on its *gorm.DB.
-func (s *RecoveryCodeStore) atomically(ctx context.Context, op string, fn func(q *gormdb.DB) error) error {
+func (s *RecoveryCodeStore) atomically(ctx context.Context, op string, fn func(q *gorm.DB) error) error {
 	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
 		return failed(op, err)
 	}
 
 	if ambient {
-		return s.underSavepoint(ctx, q, op, func(q *gormdb.DB) error {
+		return s.underSavepoint(ctx, q, op, func(q *gorm.DB) error {
 			if err := requireReadCommitted(ctx, q); err != nil {
 				return failed(op, err)
 			}
@@ -232,7 +232,7 @@ func (s *RecoveryCodeStore) atomically(ctx context.Context, op string, fn func(q
 // connection. The statements that close the savepoint run even when ctx is
 // done, since leaving it open would leave the caller's transaction aborted,
 // or commit fn's writes with the caller's.
-func (s *RecoveryCodeStore) underSavepoint(ctx context.Context, q *gormdb.DB, op string, fn func(q *gormdb.DB) error) error {
+func (s *RecoveryCodeStore) underSavepoint(ctx context.Context, q *gorm.DB, op string, fn func(q *gorm.DB) error) error {
 	name := "scrty_recovery_codes_" + strconv.FormatUint(s.savepoints.Add(1), 10)
 
 	if err := savepointSession(ctx, q).Exec("SAVEPOINT " + name).Error; err != nil {

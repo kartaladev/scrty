@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -40,7 +40,7 @@ type FlowStore struct{ c *config }
 // before a Begin would be a second statement and a race, so it is bounded by
 // DeleteExpired and by the consumer's rate limiting of the authorize
 // endpoint.
-func NewFlowStore(db *gormdb.DB, opts ...Option) (*FlowStore, error) {
+func NewFlowStore(db *gorm.DB, opts ...Option) (*FlowStore, error) {
 	c, err := newConfig(db, opts, optIDGenerator, optClock)
 	if err != nil {
 		return nil, err

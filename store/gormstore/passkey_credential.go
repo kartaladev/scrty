@@ -1,13 +1,13 @@
-package pgxstore
+package gormstore
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
@@ -27,10 +27,11 @@ import (
 // of concurrent charges against one emailed code no more than
 // passkey.MaxEmailCodeAttempts do. A refused write changes nothing and
 // reports false with a nil error. Insert refuses a credential ID or library
-// identifier already stored with passkey.ErrDuplicateCredential, decided by
-// the table's unique indexes without failing a statement, so the refusal
-// never aborts a caller's transaction. A database failure is returned wrapped
-// with the operation's name, never as a refusal or as absence.
+// identifier already stored with passkey.ErrDuplicateCredential: one INSERT …
+// ON CONFLICT DO NOTHING, decided by the table's unique indexes without
+// failing a statement, so the refusal never aborts a caller's transaction. A
+// database failure is returned wrapped with the operation's name, never as a
+// refusal or as absence.
 //
 // Limit, stated: the refusal never aborting a caller's transaction holds under
 // READ COMMITTED, the PostgreSQL default. Under a caller-owned REPEATABLE READ
@@ -50,9 +51,9 @@ type PasskeyCredentialStore struct {
 	cipher seal.Cipher
 }
 
-// NewPasskeyCredentialStore returns a durable passkey credential store on
-// pool, sealing emailed codes with c. There is no unsealed variant, and a nil
-// c, typed nil included, is a configuration error.
+// NewPasskeyCredentialStore returns a durable passkey credential store on db,
+// sealing emailed codes with c. There is no unsealed variant, and a nil c,
+// typed nil included, is a configuration error.
 //
 // It honours WithTxResolver and refuses any other option: a credential
 // carries its own library identifier, so WithIDGenerator does not apply, and
@@ -67,8 +68,8 @@ type PasskeyCredentialStore struct {
 //   - A transport that is empty or holds a line break is refused the same
 //     way, since the column holds one transport per line.
 //   - Stored times are UTC, truncated to the microsecond.
-func NewPasskeyCredentialStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option) (*PasskeyCredentialStore, error) {
-	cfg, err := newConfig(pool, opts)
+func NewPasskeyCredentialStore(db *gorm.DB, c seal.Cipher, opts ...Option) (*PasskeyCredentialStore, error) {
+	cfg, err := newConfig(db, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -88,53 +89,32 @@ func NewPasskeyCredentialStore(pool *pgxpool.Pool, c seal.Cipher, opts ...Option
 func (s *PasskeyCredentialStore) Insert(ctx context.Context, c *passkey.Credential) error {
 	const op = "insert passkey credential"
 
-	args, err := s.insertArgs(c)
+	row, err := s.insertRow(c)
 	if err != nil {
 		return failed(op, err)
 	}
 
-	return s.c.execOrRefuse(ctx, op, passkey.ErrDuplicateCredential, pgschema.PasskeyCredentialInsert, args...)
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return failed(op, err)
+	}
+	affected, err := insertCredentialRow(q, row)
+	if err != nil {
+		return failed(op, err)
+	}
+	if affected == 0 {
+		return passkey.ErrDuplicateCredential
+	}
+
+	return nil
 }
 
-// insertArgs checks c is storable and returns PasskeyCredentialInsert's
-// arguments for it, its emailed code sealed.
-func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error) {
-	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
-		return nil, err
-	}
-	transports, err := pgschema.PasskeyTransportsText(c.Transports)
-	if err == nil {
-		err = storekit.CheckStorable(
-			storekit.Text("user", string(c.User)),
-			storekit.Text("name", c.Name),
-			storekit.Text("attestation format", c.AttestationFormat),
-			storekit.Text("transports", transports),
-		)
-	}
-	if err != nil {
-		return nil, err
-	}
+// insertCredentialRow inserts row on q, skipping a credential ID or library
+// identifier already stored, and reports how many rows it inserted.
+func insertCredentialRow(q *gorm.DB, row *passkeyCredentialRow) (int64, error) {
+	res := q.Clauses(clause.OnConflict{DoNothing: true}).Create(row)
 
-	var (
-		code      pgtype.Text
-		codeUntil pgtype.Timestamptz
-		attempts  int16
-	)
-	if c.EmailCode != nil {
-		sealed, err := s.cipher.Seal([]byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
-		if err != nil {
-			return nil, err
-		}
-		code = pgtype.Text{String: storekit.SecretText(sealed), Valid: true}
-		codeUntil, attempts = nullTs(c.EmailCode.ExpiresAt), int16(c.EmailCode.Attempts) //nolint:gosec // G115: at most a few
-	}
-
-	return []any{
-		uuidArg(c.ID), string(c.User), storekit.OrEmpty(c.CredentialID), storekit.OrEmpty(c.PublicKey),
-		int64(c.SignCount), c.BackupEligible, c.BackupState, transports, c.AAGUID, nullText(c.AttestationFormat),
-		c.AttestationStatement, c.Name, storekit.Time(c.CreatedAt), nullTs(c.LastUsedAt),
-		int16(c.State), int16(c.Pending), code, codeUntil, attempts,
-	}, nil
+	return res.RowsAffected, res.Error
 }
 
 // InsertWithin stores c only while its user holds fewer than limit
@@ -157,7 +137,7 @@ func (s *PasskeyCredentialStore) insertArgs(c *passkey.Credential) ([]any, error
 func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Credential, limit int) (bool, error) {
 	const op = "insert passkey credential within a limit"
 
-	args, err := s.insertArgs(c)
+	row, err := s.insertRow(c)
 	if err != nil {
 		return false, failed(op, err)
 	}
@@ -166,22 +146,22 @@ func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Cr
 	}
 
 	var stored bool
-	decide := func(q DBTX) error {
-		if _, err := q.Exec(ctx, pgschema.PasskeyCredentialLockUser, string(c.User)); err != nil {
+	decide := func(q *gorm.DB) error {
+		if err := q.Exec(pgschema.PasskeyCredentialLockUser, string(c.User)).Error; err != nil {
 			return err
 		}
-		var n int
-		if err := q.QueryRow(ctx, pgschema.PasskeyCredentialCount, string(c.User)).Scan(&n); err != nil {
+		var n int64
+		if err := q.Model(&passkeyCredentialRow{}).Where("user_id = ?", string(c.User)).Count(&n).Error; err != nil {
 			return err
 		}
-		if n >= limit {
+		if n >= int64(limit) {
 			return nil
 		}
-		tag, err := q.Exec(ctx, pgschema.PasskeyCredentialInsert, args...)
+		affected, err := insertCredentialRow(q, row)
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() == 0 {
+		if affected == 0 {
 			return passkey.ErrDuplicateCredential
 		}
 		stored = true
@@ -194,11 +174,11 @@ func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Cr
 		return false, failed(op, err)
 	}
 	if ambient {
-		if err = s.c.requireReadCommitted(ctx, q); err == nil {
+		if err = requireReadCommitted(ctx, q); err == nil {
 			err = decide(q)
 		}
 	} else {
-		err = s.c.readCommitted(ctx, func(tx pgxv5.Tx) error { return decide(tx) })
+		err = readCommitted(ctx, q, decide)
 	}
 
 	switch {
@@ -211,10 +191,60 @@ func (s *PasskeyCredentialStore) InsertWithin(ctx context.Context, c *passkey.Cr
 	return stored, nil
 }
 
+// insertRow checks c is storable and returns its row, its emailed code
+// sealed.
+func (s *PasskeyCredentialStore) insertRow(c *passkey.Credential) (*passkeyCredentialRow, error) {
+	if err := storekit.CheckID(c.ID, "passkey credential"); err != nil {
+		return nil, err
+	}
+	transports, err := pgschema.PasskeyTransportsText(c.Transports)
+	if err == nil {
+		err = storekit.CheckStorable(
+			storekit.Text("user", string(c.User)),
+			storekit.Text("name", c.Name),
+			storekit.Text("attestation format", c.AttestationFormat),
+			storekit.Text("transports", transports),
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	row := &passkeyCredentialRow{
+		ID:                   c.ID,
+		UserID:               string(c.User),
+		CredentialID:         storekit.OrEmpty(c.CredentialID),
+		PublicKey:            storekit.OrEmpty(c.PublicKey),
+		SignCount:            int64(c.SignCount),
+		BackupEligible:       c.BackupEligible,
+		BackupState:          c.BackupState,
+		Transports:           transports,
+		AAGUID:               c.AAGUID,
+		AttestationFormat:    nullText(c.AttestationFormat),
+		AttestationStatement: c.AttestationStatement,
+		Name:                 c.Name,
+		CreatedAt:            storekit.Time(c.CreatedAt),
+		LastUsedAt:           nullTs(c.LastUsedAt),
+		State:                int64(c.State),
+		Pending:              int64(c.Pending),
+	}
+	if c.EmailCode != nil {
+		sealed, err := s.cipher.Seal([]byte(c.EmailCode.Code), seal.PasskeyEmailCodeAAD(c.ID, c.User))
+		if err != nil {
+			return nil, err
+		}
+		text := storekit.SecretText(sealed)
+		row.EmailCode, row.EmailCodeExpiresAt = &text, nullTs(c.EmailCode.ExpiresAt)
+		row.EmailCodeAttempts = int64(c.EmailCode.Attempts)
+	}
+
+	return row, nil
+}
+
 // FindByCredentialID returns the credential with credential ID credID, or
 // passkey.ErrNotFound.
 func (s *PasskeyCredentialStore) FindByCredentialID(ctx context.Context, credID []byte) (*passkey.Credential, error) {
-	return s.one(ctx, "find passkey credential", pgschema.PasskeyCredentialByCredentialID, storekit.OrEmpty(credID))
+	return s.one(ctx, "credential_id = ?", storekit.OrEmpty(credID))
 }
 
 // Find returns user's credential cid, or passkey.ErrNotFound.
@@ -223,99 +253,91 @@ func (s *PasskeyCredentialStore) Find(ctx context.Context, user identity.UserID,
 		return nil, passkey.ErrNotFound
 	}
 
-	return s.one(ctx, "find passkey credential", pgschema.PasskeyCredentialFind, uuidArg(cid), string(user))
+	return s.one(ctx, "id = ? AND user_id = ?", cid, string(user))
 }
 
-// one reads the single credential query selects, or passkey.ErrNotFound.
-func (s *PasskeyCredentialStore) one(ctx context.Context, op, query string, args ...any) (*passkey.Credential, error) {
-	list, err := s.list(ctx, op, query, args...)
+// one reads the single credential matching query, or passkey.ErrNotFound.
+func (s *PasskeyCredentialStore) one(ctx context.Context, query string, args ...any) (*passkey.Credential, error) {
+	const op = "find passkey credential"
+
+	row, found, err := takeWhere[passkeyCredentialRow](ctx, s.c, op, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	if len(list) == 0 {
+	if !found {
 		return nil, passkey.ErrNotFound
 	}
+	c, err := s.fromRow(row)
+	if err != nil {
+		return nil, failed(op, err)
+	}
 
-	return list[0], nil
+	return c, nil
 }
 
 // List returns user's credentials in every state, oldest first, ties in
 // library identifier order.
 func (s *PasskeyCredentialStore) List(ctx context.Context, user identity.UserID) ([]*passkey.Credential, error) {
+	const op = "list passkey credentials"
+
 	if !storekit.Storable(string(user)) {
 		return nil, nil
 	}
 
-	return s.list(ctx, "list passkey credentials", pgschema.PasskeyCredentialList, string(user))
-}
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return nil, failed(op, err)
+	}
+	var rows []passkeyCredentialRow
+	if err := q.Where("user_id = ?", string(user)).Order("created_at, id").Find(&rows).Error; err != nil {
+		return nil, failed(op, err)
+	}
 
-// list runs query and scans every credential it selects, opening each
-// emailed code.
-func (s *PasskeyCredentialStore) list(ctx context.Context, op, query string, args ...any) ([]*passkey.Credential, error) {
 	var out []*passkey.Credential
-	err := s.c.query(ctx, op, query, args, func(rows pgxv5.Rows) error {
-		c, err := s.scan(rows)
+	for _, row := range rows {
+		c, err := s.fromRow(row)
 		if err != nil {
-			return err
+			return nil, failed(op, err)
 		}
 		out = append(out, c)
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
 
 	return out, nil
 }
 
-// scan reads one credential row, in the column order of the selects.
-func (s *PasskeyCredentialStore) scan(rows pgxv5.Rows) (*passkey.Credential, error) {
-	var (
-		c                   passkey.Credential
-		rowID               pgtype.UUID
-		user, transports    string
-		signCount           int64
-		format, code        pgtype.Text
-		created             pgtype.Timestamptz
-		lastUsed, codeUntil pgtype.Timestamptz
-		state, pending      int16
-		attempts            int16
-	)
-	if err := rows.Scan(&rowID, &user, &c.CredentialID, &c.PublicKey, &signCount, &c.BackupEligible,
-		&c.BackupState, &transports, &c.AAGUID, &format, &c.AttestationStatement, &c.Name, &created, &lastUsed,
-		&state, &pending, &code, &codeUntil, &attempts); err != nil {
-		return nil, err
+// fromRow is the credential row holds, its emailed code opened.
+func (s *PasskeyCredentialStore) fromRow(row passkeyCredentialRow) (*passkey.Credential, error) {
+	c := &passkey.Credential{
+		ID:                   row.ID,
+		User:                 identity.UserID(row.UserID),
+		CredentialID:         row.CredentialID,
+		PublicKey:            row.PublicKey,
+		SignCount:            uint32(row.SignCount), //nolint:gosec // G115: the column only ever holds a uint32
+		BackupEligible:       row.BackupEligible,
+		BackupState:          row.BackupState,
+		Transports:           pgschema.ParsePasskeyTransports(row.Transports),
+		AAGUID:               row.AAGUID,
+		AttestationStatement: row.AttestationStatement,
+		Name:                 row.Name,
+		CreatedAt:            row.CreatedAt.UTC(),
+		LastUsedAt:           fromNull(row.LastUsedAt),
+		State:                passkey.State(row.State),           //nolint:gosec // G115: a small enum
+		Pending:              passkey.PendingReason(row.Pending), //nolint:gosec // G115: a small enum
 	}
-
-	var err error
-	if c.ID, err = scanID(rowID); err != nil {
-		return nil, err
+	if row.AttestationFormat != nil {
+		c.AttestationFormat = *row.AttestationFormat
 	}
-	if c.CreatedAt, err = fromNull(created); err != nil {
-		return nil, err
-	}
-	if c.LastUsedAt, err = fromNull(lastUsed); err != nil {
-		return nil, err
-	}
-	c.User = identity.UserID(user)
-	c.SignCount = uint32(signCount) //nolint:gosec // G115: the column only ever holds a uint32
-	c.Transports = pgschema.ParsePasskeyTransports(transports)
-	c.AttestationFormat = format.String
-	c.State, c.Pending = passkey.State(state), passkey.PendingReason(pending) //nolint:gosec // G115: small enums
-
-	if code.Valid {
-		until, err := fromNull(codeUntil)
+	if row.EmailCode != nil {
+		code, err := s.open(*row.EmailCode, c.ID, c.User)
 		if err != nil {
 			return nil, err
 		}
-		opened, err := s.open(code.String, c.ID, c.User)
-		if err != nil {
-			return nil, err
+		c.EmailCode = &passkey.EmailCode{
+			Code: code, ExpiresAt: fromNull(row.EmailCodeExpiresAt), Attempts: int(row.EmailCodeAttempts),
 		}
-		c.EmailCode = &passkey.EmailCode{Code: opened, ExpiresAt: until, Attempts: int(attempts)}
 	}
 
-	return &c, nil
+	return c, nil
 }
 
 // open opens the emailed code of user's credential cid, stored as text.
@@ -334,11 +356,55 @@ func (s *PasskeyCredentialStore) open(text string, cid id.ID, user identity.User
 
 // Count counts user's credentials in every state.
 func (s *PasskeyCredentialStore) Count(ctx context.Context, user identity.UserID) (int, error) {
+	const op = "count passkey credentials"
+
 	if !storekit.Storable(string(user)) {
 		return 0, nil
 	}
 
-	return s.c.count(ctx, "count passkey credentials", pgschema.PasskeyCredentialCount, string(user))
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return 0, failed(op, err)
+	}
+	var n int64
+	if err := q.Model(&passkeyCredentialRow{}).Where("user_id = ?", string(user)).Count(&n).Error; err != nil {
+		return 0, failed(op, err)
+	}
+
+	return int(n), nil
+}
+
+// exec runs one conditional statement on the handle ctx resolves to, and
+// reports how many rows it affected.
+func (s *PasskeyCredentialStore) exec(ctx context.Context, op, query string, args ...any) (int64, error) {
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return 0, failed(op, err)
+	}
+	res := q.Exec(query, args...)
+	if res.Error != nil {
+		return 0, failed(op, res.Error)
+	}
+
+	return res.RowsAffected, nil
+}
+
+// returning runs one conditional statement whose RETURNING row scans into
+// dest. It reports false, with no error, when the statement returned no row.
+func (s *PasskeyCredentialStore) returning(ctx context.Context, op, query string, args []any, dest ...any) (bool, error) {
+	q, _, err := s.c.conn(ctx)
+	if err != nil {
+		return false, failed(op, err)
+	}
+	err = q.Raw(query, args...).Row().Scan(dest...)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, failed(op, err)
+	}
+
+	return true, nil
 }
 
 // RecordAssertion records the counter, backup state and last use of active
@@ -347,8 +413,8 @@ func (s *PasskeyCredentialStore) Count(ctx context.Context, user identity.UserID
 func (s *PasskeyCredentialStore) RecordAssertion(
 	ctx context.Context, cid id.ID, signCount uint32, backupState bool, at time.Time,
 ) (bool, error) {
-	n, err := s.c.exec(ctx, "record passkey assertion", pgschema.PasskeyRecordAssertion,
-		uuidArg(cid), int64(signCount), backupState, storekit.Time(at))
+	n, err := s.exec(ctx, "record passkey assertion", pgschema.PasskeyRecordAssertion,
+		cid, int64(signCount), backupState, storekit.Time(at))
 
 	return n > 0, err
 }
@@ -356,8 +422,7 @@ func (s *PasskeyCredentialStore) RecordAssertion(
 // RecordUse records the backup state and last use of active credential cid,
 // leaving its counter, in one conditional update.
 func (s *PasskeyCredentialStore) RecordUse(ctx context.Context, cid id.ID, backupState bool, at time.Time) (bool, error) {
-	n, err := s.c.exec(ctx, "record passkey use", pgschema.PasskeyRecordUse,
-		uuidArg(cid), backupState, storekit.Time(at))
+	n, err := s.exec(ctx, "record passkey use", pgschema.PasskeyRecordUse, cid, backupState, storekit.Time(at))
 
 	return n > 0, err
 }
@@ -365,7 +430,7 @@ func (s *PasskeyCredentialStore) RecordUse(ctx context.Context, cid id.ID, backu
 // Suspend moves active credential cid to suspended, in one conditional
 // update.
 func (s *PasskeyCredentialStore) Suspend(ctx context.Context, cid id.ID) (bool, error) {
-	n, err := s.c.exec(ctx, "suspend passkey credential", pgschema.PasskeySuspend, uuidArg(cid))
+	n, err := s.exec(ctx, "suspend passkey credential", pgschema.PasskeySuspend, cid)
 
 	return n > 0, err
 }
@@ -380,13 +445,10 @@ func (s *PasskeyCredentialStore) ClearReason(
 		return 0, false, nil
 	}
 
-	var state int16
-	err := s.c.queryRow(ctx, "clear passkey pending reason", pgschema.PasskeyClearReason,
-		[]any{uuidArg(cid), string(user), int16(r)}, &state)
-	if errors.Is(err, pgxv5.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
+	var state int64
+	ok, err := s.returning(ctx, "clear passkey pending reason", pgschema.PasskeyClearReason,
+		[]any{cid, string(user), int64(r)}, &state)
+	if !ok || err != nil {
 		return 0, false, err
 	}
 
@@ -409,29 +471,21 @@ func (s *PasskeyCredentialStore) ChargeEmailAttempt(
 
 	var (
 		text     string
-		until    pgtype.Timestamptz
-		attempts int16
+		until    time.Time
+		attempts int64
 	)
-	err := s.c.queryRow(ctx, op, pgschema.PasskeyChargeEmailAttempt,
-		[]any{uuidArg(cid), string(user), storekit.Time(at), int16(passkey.MaxEmailCodeAttempts)},
-		&text, &until, &attempts)
-	if errors.Is(err, pgxv5.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
+	ok, err := s.returning(ctx, op, pgschema.PasskeyChargeEmailAttempt,
+		[]any{cid, string(user), storekit.Time(at), passkey.MaxEmailCodeAttempts}, &text, &until, &attempts)
+	if !ok || err != nil {
 		return nil, false, err
 	}
 
-	expires, err := fromNull(until)
-	if err != nil {
-		return nil, false, failed(op, err)
-	}
 	code, err := s.open(text, cid, user)
 	if err != nil {
 		return nil, false, failed(op, err)
 	}
 
-	return &passkey.EmailCode{Code: code, ExpiresAt: expires, Attempts: int(attempts)}, true, nil
+	return &passkey.EmailCode{Code: code, ExpiresAt: until.UTC(), Attempts: int(attempts)}, true, nil
 }
 
 // Rename sets the name of user's credential cid.
@@ -445,7 +499,7 @@ func (s *PasskeyCredentialStore) Rename(ctx context.Context, user identity.UserI
 		return false, failed(op, err)
 	}
 
-	n, err := s.c.exec(ctx, op, pgschema.PasskeyRename, uuidArg(cid), string(user), name)
+	n, err := s.exec(ctx, op, pgschema.PasskeyRename, cid, string(user), name)
 
 	return n > 0, err
 }
@@ -456,7 +510,8 @@ func (s *PasskeyCredentialStore) Delete(ctx context.Context, user identity.UserI
 		return false, nil
 	}
 
-	n, err := s.c.exec(ctx, "delete passkey credential", pgschema.PasskeyDelete, uuidArg(cid), string(user))
+	n, err := deleteWhere[passkeyCredentialRow](ctx, s.c, "delete passkey credential",
+		"id = ? AND user_id = ?", cid, string(user))
 
 	return n > 0, err
 }
@@ -468,7 +523,7 @@ func (s *PasskeyCredentialStore) DeleteAwaitingSavedCodes(ctx context.Context, u
 		return 0, nil
 	}
 
-	n, err := s.c.exec(ctx, "delete passkey credentials awaiting saved codes",
+	n, err := s.exec(ctx, "delete passkey credentials awaiting saved codes",
 		pgschema.PasskeyDeleteAwaitingSavedCodes, string(user))
 
 	return int(n), err
@@ -480,14 +535,17 @@ func (s *PasskeyCredentialStore) DeleteUser(ctx context.Context, user identity.U
 		return 0, nil
 	}
 
-	n, err := s.c.exec(ctx, "delete passkey credentials", pgschema.PasskeyDeleteUser, string(user))
-
-	return int(n), err
+	return deleteWhere[passkeyCredentialRow](ctx, s.c, "delete passkey credentials", "user_id = ?", string(user))
 }
 
-// nullText is v as stored in a nullable text column: NULL for the empty text.
-func nullText(v string) pgtype.Text {
-	return pgtype.Text{String: v, Valid: v != ""}
+// nullText is v as stored in a nullable text column: nil, NULL, for the empty
+// text.
+func nullText(v string) *string {
+	if v == "" {
+		return nil
+	}
+
+	return &v
 }
 
 var _ passkey.CredentialStore = (*PasskeyCredentialStore)(nil)

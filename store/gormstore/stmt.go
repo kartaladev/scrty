@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/storekit"
 )
@@ -64,7 +64,7 @@ func takeWhere[T any](ctx context.Context, c *config, op, query string, args ...
 		return row, false, failed(op, err)
 	}
 	err = q.Where(query, args...).Take(&row).Error
-	if errors.Is(err, gormdb.ErrRecordNotFound) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return row, false, nil
 	}
 	if err != nil {
@@ -121,7 +121,7 @@ func resealWhere[T any](ctx context.Context, c *config, op string, values map[st
 
 // update runs one UPDATE of the rows of model T matching query and args,
 // setting values, on q, and reports how many it changed.
-func update[T any](q *gormdb.DB, op string, values map[string]any, query string, args ...any) (int64, error) {
+func update[T any](q *gorm.DB, op string, values map[string]any, query string, args ...any) (int64, error) {
 	res := q.Model(new(T)).Where(query, args...).Updates(values)
 	if res.Error != nil {
 		return 0, failed(op, res.Error)

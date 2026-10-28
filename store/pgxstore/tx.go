@@ -2,19 +2,23 @@ package pgxstore
 
 import (
 	"context"
+	"fmt"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
+	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/store"
 )
 
 // DBTX is the subset of *pgxpool.Pool and pgx.Tx a store runs its statements
 // on. Both satisfy it.
 type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-	Query(ctx context.Context, sql string, args ...any) (pgxv5.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgxv5.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // TxResolver reports the transaction a store should run an operation on, given
@@ -31,7 +35,7 @@ type DBTX interface {
 // A consumer whose transaction manager already carries the current
 // transaction in the context supplies one with WithTxResolver, so the
 // transaction needs no second attachment through WithTx.
-type TxResolver func(ctx context.Context) (pgxv5.Tx, bool)
+type TxResolver func(ctx context.Context) (pgx.Tx, bool)
 
 // txKey is the context key WithTx attaches under. It is unexported and belongs
 // to this package alone, so a transaction another backend attaches (the
@@ -59,7 +63,7 @@ type txKey struct{}
 // PostgreSQL defines: a read (for example one cancelled by a statement timeout)
 // as much as a write. Every later statement in tx then fails, and tx can only
 // be rolled back.
-func WithTx(ctx context.Context, tx pgxv5.Tx) context.Context {
+func WithTx(ctx context.Context, tx pgx.Tx) context.Context {
 	if nilcheck.IsNil(tx) {
 		return ctx
 	}
@@ -92,9 +96,74 @@ func (c *config) conn(ctx context.Context) (q DBTX, ambient bool, err error) {
 		return tx, true, nil
 	}
 
-	if tx, ok := ctx.Value(txKey{}).(pgxv5.Tx); ok {
+	if tx, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
 		return tx, true, nil
 	}
 
 	return c.base, false, nil
+}
+
+// ErrIsolationTooStrong is wrapped by the error an operation returns when it
+// is run inside a caller's transaction whose isolation is stronger than READ
+// COMMITTED, and its guarantee depends on READ COMMITTED. It is
+// store.ErrIsolationTooStrong under this package's name, so errors.Is
+// matches either, and the error names the isolation it found. The operation
+// writes nothing, and the caller's transaction stays usable. The operations
+// that refuse are RecoveryCodeStore.ReplaceSet, AttemptStore.AddStreakFailure,
+// OneTimeStore.InsertWithin and PasskeyCredentialStore.InsertWithin;
+// every other operation joins a caller's transaction at any isolation. There
+// is no option to relax it: a store cannot change a transaction's isolation
+// once it has begun, so a consumer whose own work needs a stronger isolation
+// runs these operations outside that transaction.
+var ErrIsolationTooStrong = store.ErrIsolationTooStrong
+
+// beginReadCommitted begins a transaction of the store's own on its pool at
+// READ COMMITTED, whatever the database's or the role's default isolation is.
+// The isolation travels in the BEGIN itself (BEGIN ISOLATION LEVEL READ
+// COMMITTED), so setting it costs no round trip of its own. A failure to
+// begin is returned as the driver gave it.
+func (c *config) beginReadCommitted(ctx context.Context) (pgx.Tx, error) {
+	return beginReadCommitted(ctx, c.base)
+}
+
+// beginReadCommitted is config.beginReadCommitted on pool, for the limiter,
+// which has no store config.
+func beginReadCommitted(ctx context.Context, pool *pgxpool.Pool) (pgx.Tx, error) {
+	return pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+}
+
+// readCommitted runs fn in a READ COMMITTED transaction of the store's own,
+// begun by beginReadCommitted, and commits it when fn succeeds. It is rolled
+// back on every other way out, a panic in fn included, even when ctx is done,
+// so the transaction and its locks never outlive the call. fn's error is
+// returned as it is; a failure to begin or commit as the driver gave it.
+func (c *config) readCommitted(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := c.beginReadCommitted(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+// requireReadCommitted reads the isolation of q, a caller's transaction, and
+// refuses one stronger than READ COMMITTED with an error wrapping
+// ErrIsolationTooStrong and naming the isolation found. The read is a plain
+// SELECT, so a refusal leaves the transaction usable. A failure to read is
+// returned as the driver gave it.
+func (c *config) requireReadCommitted(ctx context.Context, q DBTX) error {
+	var level string
+	if err := q.QueryRow(ctx, pgschema.CurrentIsolation).Scan(&level); err != nil {
+		return err
+	}
+	if !pgschema.ReadCommittedOrWeaker(level) {
+		return fmt.Errorf("%w: it runs at %s", ErrIsolationTooStrong, level)
+	}
+
+	return nil
 }

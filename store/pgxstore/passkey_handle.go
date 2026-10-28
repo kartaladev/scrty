@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
@@ -84,7 +84,7 @@ func (s *PasskeyHandleStore) Assign(ctx context.Context, user identity.UserID, o
 
 	var held []byte
 	err = s.c.queryRow(ctx, op, pgschema.PasskeyHandleOfUser, []any{string(user)}, &held)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, failed(op, errPasskeyHandleHeld)
 	}
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *PasskeyHandleStore) UserFor(ctx context.Context, handle []byte) (identi
 	var user string
 	err := s.c.queryRow(ctx, "find passkey user handle", pgschema.PasskeyHandleUser,
 		[]any{storekit.OrEmpty(handle)}, &user)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {

@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -91,7 +91,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 	}
 
 	if keep == 0 {
-		return s.atomically(ctx, op, func(q *gormdb.DB) error {
+		return s.atomically(ctx, op, func(q *gorm.DB) error {
 			return forgetHistory(q, op, uid)
 		})
 	}
@@ -104,7 +104,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 	}
 	now := storekit.Time(s.c.clock.Now())
 
-	return s.atomically(ctx, op, func(q *gormdb.DB) error {
+	return s.atomically(ctx, op, func(q *gorm.DB) error {
 		var newest []byte
 		found, err := queryRow(q, op, pgschema.NewestHistory, []any{uid}, &newest)
 		if err != nil {
@@ -148,7 +148,7 @@ func (s *IdentityStore) ForgetPasswords(ctx context.Context, ref identity.UserID
 }
 
 // forgetHistory removes every history entry of uid through q.
-func forgetHistory(q *gormdb.DB, op string, uid id.ID) error {
+func forgetHistory(q *gorm.DB, op string, uid id.ID) error {
 	if err := q.Exec(pgschema.ForgetHistory, uid).Error; err != nil {
 		return dbFailed(op, err)
 	}
