@@ -15,7 +15,7 @@ func TestManagerTouchInterval(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []session.ManagerOption
+		opts   []session.Option
 		assert func(t *testing.T, got time.Duration)
 	}
 
@@ -26,7 +26,7 @@ func TestManagerTouchInterval(t *testing.T) {
 		},
 		{
 			name:   "reports what WithTouchInterval configured",
-			opts:   []session.ManagerOption{session.WithTouchInterval(time.Minute)},
+			opts:   []session.Option{session.WithTouchInterval(time.Minute)},
 			assert: func(t *testing.T, got time.Duration) { assert.Equal(t, time.Minute, got) },
 		},
 	}
@@ -35,7 +35,7 @@ func TestManagerTouchInterval(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := session.NewManager(append([]session.ManagerOption{session.WithStore(session.NewMemoryStore())}, tc.opts...)...)
+			m, err := session.New(append([]session.Option{session.WithStore(session.NewMemoryStore())}, tc.opts...)...)
 			require.NoError(t, err)
 
 			tc.assert(t, m.TouchInterval())

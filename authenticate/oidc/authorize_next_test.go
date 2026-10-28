@@ -44,7 +44,7 @@ func TestAuthorize_BoundsUntrustedNextLength(t *testing.T) {
 			reg, err := oidc.NewRegistry(p.Provider("corp"))
 			require.NoError(t, err)
 
-			m, err := oidc.NewManager(reg, stubBroker{}, oidc.WithOutboundClient(p.Outbound(t)))
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, oidc.WithOutboundClient(p.Outbound(t)))
 			require.NoError(t, err)
 
 			got, err := m.Authorize(t.Context(), "corp", tc.next)

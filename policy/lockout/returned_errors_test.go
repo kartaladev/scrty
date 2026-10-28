@@ -55,7 +55,7 @@ func TestLockoutReturnedErrors(t *testing.T) {
 			"a store outage must not read as a retain-since cutoff being required")
 		assert.NotErrorIs(t, err, lockout.ErrReapUnsupported,
 			"a store outage must not read as the store lacking reap support")
-		assert.NotErrorIs(t, err, policy.ErrPolicyDenied,
+		assert.NotErrorIs(t, err, policy.ErrDenied,
 			"a store outage must not read as the policy's own denial reason")
 	}
 

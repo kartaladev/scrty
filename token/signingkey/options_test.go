@@ -17,11 +17,11 @@ func TestNewKeyManagerValidation(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []signingkey.Option
-		assert func(t *testing.T, km *signingkey.KeyManager, err error)
+		assert func(t *testing.T, km *signingkey.Keys, err error)
 	}
 
-	refused := func(mentions string) func(t *testing.T, km *signingkey.KeyManager, err error) {
-		return func(t *testing.T, km *signingkey.KeyManager, err error) {
+	refused := func(mentions string) func(t *testing.T, km *signingkey.Keys, err error) {
+		return func(t *testing.T, km *signingkey.Keys, err error) {
 			require.ErrorIs(t, err, signingkey.ErrConfig,
 				"a wiring mistake is a configuration error, identifiable without matching text")
 			assert.Nil(t, km, "a refused configuration yields no manager")
@@ -29,10 +29,10 @@ func TestNewKeyManagerValidation(t *testing.T) {
 		}
 	}
 
-	accepted := func(t *testing.T, km *signingkey.KeyManager, err error) {
+	accepted := func(t *testing.T, km *signingkey.Keys, err error) {
 		require.NoError(t, err)
 		require.NotNil(t, km)
-		_, _, ok := km.GetSigner(signingkey.RS256)
+		_, _, ok := km.Signer(signingkey.RS256)
 		assert.True(t, ok)
 	}
 
@@ -140,10 +140,10 @@ func TestNewKeyManagerValidation(t *testing.T) {
 			t.Parallel()
 
 			opts := append([]signingkey.Option{
-				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+				signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 			}, tc.opts...)
 
-			km, err := signingkey.NewKeyManager(t.Context(), opts...)
+			km, err := signingkey.New(t.Context(), opts...)
 			tc.assert(t, km, err)
 		})
 	}

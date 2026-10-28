@@ -159,7 +159,7 @@ func TestMarkEnrolmentPending(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		opts    []session.ManagerOption
+		opts    []session.Option
 		created time.Time
 		// prepare adjusts the created session before the mark. nil does
 		// nothing.
@@ -221,7 +221,7 @@ func TestMarkEnrolmentPending(t *testing.T) {
 		},
 		{
 			name:    "an idle deadline already earlier is not raised",
-			opts:    []session.ManagerOption{session.WithIdleTimeout(10 * time.Minute)},
+			opts:    []session.Option{session.WithIdleTimeout(10 * time.Minute)},
 			created: at(9, 0),
 			markAt:  at(9, 0),
 			assert: func(t *testing.T, s *session.Session, err error) {
@@ -259,7 +259,7 @@ func TestMarkEnrolmentPending(t *testing.T) {
 			markAt:  at(9, 0),
 			loadAt:  at(9, 15),
 			assert: func(t *testing.T, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 	}
@@ -327,7 +327,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 		restoreAt time.Time
 		// restorerOpts, when set, restores through a second manager over the
 		// same store and clock, configured with these options.
-		restorerOpts []session.ManagerOption
+		restorerOpts []session.Option
 		rotate       bool
 		// assert receives the persisted session when the restore succeeded,
 		// and the in-memory session when it failed.
@@ -387,7 +387,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 			created:      at(9, 0),
 			markAt:       at(9, 0),
 			restoreAt:    at(9, 9),
-			restorerOpts: []session.ManagerOption{session.WithAbsoluteTimeout(24 * time.Hour)},
+			restorerOpts: []session.Option{session.WithAbsoluteTimeout(24 * time.Hour)},
 			assert: func(t *testing.T, s *session.Session, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, at(21, 0), s.AbsoluteExpiresAt, "the deadline held before the mark, not creation plus 24 hours")
@@ -400,7 +400,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 			markAt:    at(9, 0),
 			restoreAt: at(9, 20),
 			assert: func(t *testing.T, s *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 				assert.Equal(t, at(9, 15), s.AbsoluteExpiresAt)
 				assert.Equal(t, at(9, 15), s.IdleExpiresAt)
 				assert.Equal(t, at(21, 0), s.EnrolmentOriginDeadline)
@@ -416,7 +416,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 			markAt:    at(9, 0),
 			restoreAt: at(9, 12),
 			assert: func(t *testing.T, s *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 				assert.Equal(t, at(9, 15), s.AbsoluteExpiresAt)
 				assert.Equal(t, at(9, 10), s.IdleExpiresAt)
 			},
@@ -479,7 +479,7 @@ func TestSatisfyRestoresEnrolmentDeadline(t *testing.T) {
 
 			restorer := m
 			if tc.restorerOpts != nil {
-				restorer = managerFor(t, append([]session.ManagerOption{
+				restorer = managerFor(t, append([]session.Option{
 					session.WithStore(store),
 					session.WithClock(clk),
 				}, tc.restorerOpts...)...)

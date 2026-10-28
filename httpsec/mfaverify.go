@@ -58,7 +58,7 @@ type mfaInterceptor struct {
 	byName  map[string]mfa.Method
 	lookups []policy.MFAMethodLookup
 
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 	throttle *mfa.VerifyThrottle
 
@@ -88,7 +88,7 @@ type mfaInterceptor struct {
 	beginRespond   MFABeginResponder
 	challengeTTL   time.Duration
 	challengeStore onetime.Store
-	challenges     map[string]*onetime.Manager
+	challenges     map[string]*onetime.Tokens
 
 	// challengeCap is how many challenges begin issues a user for one method
 	// within the store's issuance window (WithMFAChallengeLimit), and sweeps
@@ -492,9 +492,9 @@ func (i *mfaInterceptor) resolve(ex *Exchange, s *session.Session) error {
 // Anything else, a store failure, comes back as the manager worded it.
 func rotationRefusal(err error) error {
 	switch {
-	case errors.Is(err, session.ErrSessionRenewalConflict):
+	case errors.Is(err, session.ErrRenewalConflict):
 		return ErrSessionRenewalConflict
-	case errors.Is(err, session.ErrSessionExpired), errors.Is(err, session.ErrSessionNotFound):
+	case errors.Is(err, session.ErrExpired), errors.Is(err, session.ErrNotFound):
 		return errors.Join(ErrAuthenticationRequired, err)
 	default:
 		return err

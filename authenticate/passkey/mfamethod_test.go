@@ -80,7 +80,7 @@ func addCredential(t *testing.T, e *loginEnv, user identity.UserID, credID strin
 		State:        st,
 	}
 	if st == passkey.StatePending {
-		c.Pending = passkey.AwaitingSavedCodes
+		c.Pending = passkey.PendingSavedCodes
 	}
 
 	require.NoError(t, e.f.creds.Insert(t.Context(), c))
@@ -137,7 +137,7 @@ func TestMFAMethodEnrolled(t *testing.T) {
 			name: "only a pending passkey is not enrolled",
 			user: "u-1",
 			seed: func(c *passkey.Credential) {
-				c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes
+				c.State, c.Pending = passkey.StatePending, passkey.PendingSavedCodes
 			},
 			assert: notEnrolled,
 		},
@@ -220,7 +220,7 @@ func TestMFAMethodUsableMethods(t *testing.T) {
 		{
 			name: "only pending passkeys are not offered after a password",
 			seed: func(c *passkey.Credential) {
-				c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes
+				c.State, c.Pending = passkey.StatePending, passkey.PendingSavedCodes
 			},
 			first: factor.Password,
 			assert: func(t *testing.T, usable []policy.MFAMethodLookup, err error) {
@@ -278,7 +278,7 @@ func TestMFAMethodBeginChallenge(t *testing.T) {
 				require.Len(t, e.requested, 1)
 				in := e.requested[0]
 				assert.Equal(t, slotChallenge, in.Challenge)
-				assert.Equal(t, passkey.UVRequired, in.UV)
+				assert.Equal(t, passkey.UserVerificationRequired, in.UV)
 				assert.Equal(t, 5*time.Minute, in.Timeout)
 				assert.ElementsMatch(t, []passkey.Descriptor{
 					{ID: []byte("key-1")},
@@ -289,12 +289,12 @@ func TestMFAMethodBeginChallenge(t *testing.T) {
 		{
 			name: "user verification and the timeout follow the configuration",
 			user: "u-1",
-			opts: []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred), passkey.WithChallengeTTL(time.Minute)},
+			opts: []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred), passkey.WithChallengeTTL(time.Minute)},
 			assert: func(t *testing.T, e *loginEnv, _ json.RawMessage, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				require.Len(t, e.requested, 1)
-				assert.Equal(t, passkey.UVPreferred, e.requested[0].UV)
+				assert.Equal(t, passkey.UserVerificationPreferred, e.requested[0].UV)
 				assert.Equal(t, time.Minute, e.requested[0].Timeout)
 			},
 		},
@@ -484,7 +484,7 @@ func TestMFAMethodVerify(t *testing.T) {
 			name: "a pending credential is an invalid code, and nothing is verified",
 			user: "u-1",
 			seed: func(c *passkey.Credential) {
-				c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes
+				c.State, c.Pending = passkey.StatePending, passkey.PendingSavedCodes
 			},
 			body: assertion(slotChallenge, nil),
 			assert: func(t *testing.T, e *loginEnv, err error) {
@@ -509,7 +509,7 @@ func TestMFAMethodVerify(t *testing.T) {
 		{
 			name: "user presence only is accepted under preferred user verification",
 			user: "u-1",
-			opts: []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred)},
+			opts: []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred)},
 			body: assertion(slotChallenge, func(b *assertionBody) { b.UV = false }),
 			assert: func(t *testing.T, e *loginEnv, err error) {
 				t.Helper()

@@ -317,7 +317,7 @@ func (s *familyStore) Supersede(ctx context.Context, op session.Supersession) er
 	err := s.write(ctx, s.defect == familySupersedeOwnTx, func(st session.Store) error {
 		return st.Supersede(ctx, op)
 	})
-	if inTx && s.defect == familyConflictAborts && errors.Is(err, session.ErrSessionRenewalConflict) {
+	if inTx && s.defect == familyConflictAborts && errors.Is(err, session.ErrRenewalConflict) {
 		tx.aborted = true
 	}
 	return err

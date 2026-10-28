@@ -126,7 +126,7 @@ func (c *keyCache) fresh(e *cacheEntry, now time.Time) bool {
 // metadataFor returns the named provider's metadata: the pinned endpoints when
 // all three are pinned, with no request, and otherwise the cached discovery
 // document, refetched when it is older than the TTL.
-func (m *Manager) metadataFor(ctx context.Context, provider string) (metadata, error) {
+func (m *RelyingParty) metadataFor(ctx context.Context, provider string) (metadata, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return metadata{}, fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
@@ -155,7 +155,7 @@ func (m *Manager) metadataFor(ctx context.Context, provider string) (metadata, e
 // until the refetch cooldown ends. A set that still lacks the kid is refused
 // with errUnknownSigningKey, which is a refusal of the token, not a provider
 // failure.
-func (m *Manager) keysFor(ctx context.Context, provider, kid string) (jwk.Set, error) {
+func (m *RelyingParty) keysFor(ctx context.Context, provider, kid string) (jwk.Set, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownProvider, provider)
@@ -226,7 +226,7 @@ func hasKeyID(set jwk.Set, kid string) bool {
 // When that fails and a stale window is configured, an expired entry no older
 // than the TTL plus the window is served instead, provided usable (nil means
 // always) accepts it, with a warning for every such use.
-func (m *Manager) cached(ctx context.Context, key string, fetch func(context.Context) (cacheEntry, error), usable func(cacheEntry) bool) (cacheEntry, error) {
+func (m *RelyingParty) cached(ctx context.Context, key string, fetch func(context.Context) (cacheEntry, error), usable func(cacheEntry) bool) (cacheEntry, error) {
 	c := &m.cache
 
 	c.mu.Lock()
@@ -247,7 +247,7 @@ func (m *Manager) cached(ctx context.Context, key string, fetch func(context.Con
 // than the stale window ago and usable accepts it, and returns err otherwise.
 // It is reached only from an expired entry's refetch, never from a refetch
 // for an unknown key id, so a fresh entry is never served in place of one.
-func (m *Manager) staleOr(ctx context.Context, key string, e *cacheEntry, usable func(cacheEntry) bool, err error) (cacheEntry, error) {
+func (m *RelyingParty) staleOr(ctx context.Context, key string, e *cacheEntry, usable func(cacheEntry) bool, err error) (cacheEntry, error) {
 	c := &m.cache
 
 	c.mu.Lock()
@@ -283,7 +283,7 @@ func (m *Manager) staleOr(ctx context.Context, key string, e *cacheEntry, usable
 // the current entry with errCooledDown, marked not attempted.
 //
 // A failed fetch that reached the network opens a backoff window.
-func (m *Manager) shared(ctx context.Context, key string, e *cacheEntry, fetch func(context.Context) (cacheEntry, error), forKid bool) (cacheEntry, error) {
+func (m *RelyingParty) shared(ctx context.Context, key string, e *cacheEntry, fetch func(context.Context) (cacheEntry, error), forKid bool) (cacheEntry, error) {
 	if err := ctx.Err(); err != nil {
 		return cacheEntry{}, err
 	}
@@ -364,7 +364,7 @@ func (c *keyCache) settled(e *cacheEntry, now time.Time) (cacheEntry, bool, erro
 // warrants, and whether one is warranted at all, instead of writing the log
 // itself: the caller logs after releasing mu, so a slow slog handler stalls
 // no other provider's lookups.
-func (m *Manager) recordFailure(key string, e *cacheEntry, err error) ([]slog.Attr, bool) {
+func (m *RelyingParty) recordFailure(key string, e *cacheEntry, err error) ([]slog.Attr, bool) {
 	if errors.Is(err, errNotAttempted) {
 		return nil, false
 	}
@@ -393,7 +393,7 @@ func resourceName(kind string) string {
 // fetchKeys fetches and parses the provider's key set through the outbound
 // client, keeping only the keys its signing algorithms can use. Every failure
 // wraps ErrDiscoveryFailed and carries no part of the provider's answer.
-func (m *Manager) fetchKeys(ctx context.Context, p Provider, md metadata) (jwk.Set, error) {
+func (m *RelyingParty) fetchKeys(ctx context.Context, p Provider, md metadata) (jwk.Set, error) {
 	fail := func(format string, args ...any) (jwk.Set, error) {
 		return nil, fmt.Errorf("%w: provider %q: key set: %s", ErrDiscoveryFailed, p.Name, fmt.Sprintf(format, args...))
 	}
@@ -473,7 +473,7 @@ func signsWith(k jwk.Key, algs []string) bool {
 // consumer who would rather find an unreachable provider at start-up calls
 // Prefetch then. It starts no background work: entries still expire after the
 // TTL and are refetched on demand.
-func (m *Manager) Prefetch(ctx context.Context) error {
+func (m *RelyingParty) Prefetch(ctx context.Context) error {
 	for _, name := range m.registry.Names() {
 		if err := ctx.Err(); err != nil {
 			return err

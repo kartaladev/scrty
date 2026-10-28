@@ -64,7 +64,7 @@ func TestRotateWithGrace_ConcurrentRenewalsProduceOneSuccessor(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(createdAt)
 			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 			store := newLoadBarrierStore(inner)
-			managers := make([]*session.Manager, tc.managers)
+			managers := make([]*session.Sessions, tc.managers)
 			for i := range managers {
 				managers[i] = managerFor(t, session.WithStore(store), session.WithClock(clk))
 			}
@@ -91,7 +91,7 @@ func TestRotateWithGrace_ConcurrentRenewalsProduceOneSuccessor(t *testing.T) {
 			}
 			loser := 1 - won
 			require.NoError(t, errs[won])
-			require.ErrorIs(t, errs[loser], session.ErrSessionRenewalConflict, "both renewals produced a successor")
+			require.ErrorIs(t, errs[loser], session.ErrRenewalConflict, "both renewals produced a successor")
 			assert.Nil(t, successors[loser])
 
 			assert.Equal(t, 2, inner.Len(), "the family holds the old session and exactly one successor")

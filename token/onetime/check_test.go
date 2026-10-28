@@ -255,7 +255,7 @@ func TestCheck(t *testing.T) {
 				onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
 			}, tc.opts...)
 
-			m, err := onetime.NewManager("magic-link", opts...)
+			m, err := onetime.New("magic-link", opts...)
 			require.NoError(t, err)
 
 			c, err := m.Check(t.Context(), tc.presented, tc.binding)
@@ -292,7 +292,7 @@ func TestCheckRefusesMalformedTokensWithoutReadingTheStore(t *testing.T) {
 			store := NewMockStore(ctrl)
 
 			clk := clockwork.NewFakeClockAt(issuedAt)
-			m, err := onetime.NewManager("magic-link",
+			m, err := onetime.New("magic-link",
 				onetime.WithStore(store), onetime.WithClock(clk))
 			require.NoError(t, err)
 
@@ -315,7 +315,7 @@ func TestCheckingRepeatedlyWritesNothingAndKeepsSucceeding(t *testing.T) {
 	store.EXPECT().FindByID(gomock.Any(), checkTokenID).Return(&rec, nil).Times(3)
 
 	clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))
-	m, err := onetime.NewManager("magic-link",
+	m, err := onetime.New("magic-link",
 		onetime.WithStore(store), onetime.WithClock(clk))
 	require.NoError(t, err)
 

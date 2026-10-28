@@ -68,7 +68,7 @@ func TestSigningkeyReturnedErrors(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			_, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(tc.store(t, ctrl)))
+			_, err := signingkey.New(t.Context(), signingkey.WithKeyStore(tc.store(t, ctrl)))
 			tc.assert(t, err)
 		})
 	}

@@ -326,7 +326,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 		{
 			name: "fall back while stopped, and recover",
 			assert: func(t *testing.T, e env) {
-				l := e.build(redisstore.WithOnUnavailable(ratelimit.UnavailableFallBackToLocal))
+				l := e.build(redisstore.WithOnUnavailable(ratelimit.UnavailableFallbackToLocal))
 				e.conn.Stop(t)
 
 				for range faultLimit {

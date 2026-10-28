@@ -57,7 +57,7 @@ func mfaRequirementPolicyOver(
 ) policy.Policy {
 	t.Helper()
 
-	p, err := policy.NewMFARequirementPolicy(required, methods,
+	p, err := policy.NewMFARequirement(required, methods,
 		append([]policy.MFARequirementOption{
 			policy.WithMFARequirementLogger(mfaLogger(&bytes.Buffer{})),
 		}, opts...)...)
@@ -303,7 +303,7 @@ func TestNewMFARequirementPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewMFARequirementPolicy(tc.lookup, tc.methods, tc.opts...)
+			p, err := policy.NewMFARequirement(tc.lookup, tc.methods, tc.opts...)
 			tc.assert(t, p, err)
 		})
 	}
@@ -415,7 +415,7 @@ func TestMFARequirementEvaluationOrder(t *testing.T) {
 			kind: factor.Password, phase: policy.PerRequest,
 			consulted: true, required: true,
 			channel: factor.AuthenticatorApp, enrolled: false,
-			assert: denies(policy.ErrMFAEnrollmentRequired,
+			assert: denies(policy.ErrMFAEnrolmentRequired,
 				"a required user with nothing to be challenged on was let through"),
 		},
 		{
@@ -423,7 +423,7 @@ func TestMFARequirementEvaluationOrder(t *testing.T) {
 			kind: factor.MagicLink, phase: policy.PostAuthentication,
 			consulted: true, required: true,
 			channel: factor.Email, enrolled: true,
-			assert: denies(policy.ErrMFAEnrollmentRequired,
+			assert: denies(policy.ErrMFAEnrolmentRequired,
 				"one factor counted twice because it arrived under two names"),
 		},
 		{
@@ -431,7 +431,7 @@ func TestMFARequirementEvaluationOrder(t *testing.T) {
 			kind: factor.Password, phase: policy.PostAuthentication, satisfied: true,
 			consulted: true, required: true,
 			channel: factor.AuthenticatorApp, enrolled: false,
-			assert: denies(policy.ErrMFAEnrollmentRequired,
+			assert: denies(policy.ErrMFAEnrolmentRequired,
 				"the login talked the policy out of its requirement"),
 		},
 		{
@@ -565,7 +565,7 @@ func TestMFARequirementLookupFailureLogging(t *testing.T) {
 			t.Parallel()
 
 			buf := &bytes.Buffer{}
-			p, err := policy.NewMFARequirementPolicy(
+			p, err := policy.NewMFARequirement(
 				mfaRequirementLookup(t, true, false, errRequirementStore),
 				mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 				policy.WithMFARequirementLogger(mfaLogger(buf)))
@@ -592,7 +592,7 @@ func TestMFARequirementLookupFailureKeyIsSharedByEveryUser(t *testing.T) {
 	t.Parallel()
 
 	buf := &bytes.Buffer{}
-	p, err := policy.NewMFARequirementPolicy(
+	p, err := policy.NewMFARequirement(
 		mfaRequirementLookup(t, true, false, errRequirementStore),
 		mfaMethods(mfaMethod(t, factor.AuthenticatorApp, true, nil)),
 		policy.WithMFARequirementLogger(mfaLogger(buf)))
@@ -819,7 +819,7 @@ func TestMFARequirementPolicyOverASet(t *testing.T) {
 			assert: func(t *testing.T, d policy.Decision) {
 				require.Equal(t, policy.Deny, d.Outcome)
 				assert.ErrorIs(t, d.Reason, errEnrolmentStore)
-				assert.NotErrorIs(t, d.Reason, policy.ErrMFAEnrollmentRequired)
+				assert.NotErrorIs(t, d.Reason, policy.ErrMFAEnrolmentRequired)
 			},
 		},
 		{

@@ -60,7 +60,7 @@ type inMemoryKeyStore struct {
 	order []string
 }
 
-// NewInMemoryKeyStore returns a KeyStore that keeps records in process memory.
+// NewMemoryKeyStore returns a KeyStore that keeps records in process memory.
 // It is the default, and it is not durable: a new process starts with no keys,
 // so every token signed by the previous process stops verifying. Supply a
 // durable store through WithKeyStore to keep tokens valid across a restart.
@@ -69,7 +69,7 @@ type inMemoryKeyStore struct {
 // in the order their kids were first stored; storing a kid again replaces its
 // record in place. The key manager gives such a tie to the record listed
 // later, so the key stored last of a tied pair is the one that signs.
-func NewInMemoryKeyStore() KeyStore {
+func NewMemoryKeyStore() KeyStore {
 	return &inMemoryKeyStore{records: make(map[string]Record)}
 }
 

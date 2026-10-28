@@ -39,7 +39,7 @@ var allProvisionFields = []identity.Field{
 // provisionFieldValue returns u's value for f, in the shape the matcher
 // compares. Roles is clipped to a fresh backing array so two equal-content
 // slices with different capacities still compare equal.
-func provisionFieldValue(u *identity.NewUser, f identity.Field) any {
+func provisionFieldValue(u *identity.UserChange, f identity.Field) any {
 	switch f {
 	case identity.FieldName:
 		return u.Name
@@ -61,7 +61,7 @@ func provisionFieldValue(u *identity.NewUser, f identity.Field) any {
 // brokerUserOptionsMatcher matches the variadic options of a Provision call
 // by what they name: it applies both sides with identity.ApplyUserOptions and
 // compares every field's IsSet flag and, where set, its value.
-type brokerUserOptionsMatcher struct{ want *identity.NewUser }
+type brokerUserOptionsMatcher struct{ want *identity.UserChange }
 
 // provisionedWith matches Provision options naming exactly opts.
 func provisionedWith(opts ...identity.UserOption) gomock.Matcher {

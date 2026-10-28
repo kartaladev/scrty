@@ -39,7 +39,7 @@ func ExampleNewLimiterFactory() {
 	// than refuse every sign-in, so they take a factory of their own over the
 	// same handle.
 	secondFactor, err := sqlstore.NewLimiterFactory(db,
-		sqlstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallBackToLocal),
+		sqlstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallbackToLocal),
 		sqlstore.WithLimiterOperationTimeout(100*time.Millisecond),
 	)
 	if err != nil {

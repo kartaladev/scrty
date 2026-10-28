@@ -256,7 +256,7 @@ func (s *enrolmentStore) ChargeEmailCode(
 
 	var attempts int64
 	err := s.c.queryRow(ctx, "charge emailed MFA code", pgschema.EnrolmentChargeEmailCode,
-		[]any{string(user), nullID(gen), storekit.Time(at), mfa.MaxEmailCodeFailures}, &attempts)
+		[]any{string(user), nullID(gen), storekit.Time(at), mfa.MaxEmailCodeAttempts}, &attempts)
 	if errors.Is(err, pgxv5.ErrNoRows) {
 		return 0, false, nil
 	}

@@ -140,7 +140,7 @@ func TestRefusalSentinelsAreDistinct(t *testing.T) {
 func TestSessionRenewalConflictIsTheSessionCoresRefusal(t *testing.T) {
 	t.Parallel()
 
-	require.ErrorIs(t, httpsec.ErrSessionRenewalConflict, session.ErrSessionRenewalConflict)
+	require.ErrorIs(t, httpsec.ErrSessionRenewalConflict, session.ErrRenewalConflict)
 	assert.Contains(t, httpsec.ErrSessionRenewalConflict.Error(), "httpsec: ")
 }
 
@@ -169,9 +169,9 @@ func TestReuseRefusalIsDistinguishable(t *testing.T) {
 
 	out := serve(t, chain, bearerRequest(t.Context(), "Bearer "+f.session.ID))
 
-	require.ErrorIs(t, out.err, session.ErrSessionReused)
+	require.ErrorIs(t, out.err, session.ErrReused)
 	require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
-	require.ErrorIs(t, out.err, session.ErrSessionExpired)
+	require.ErrorIs(t, out.err, session.ErrExpired)
 
 	text := out.err.Error()
 	assert.NotContains(t, text, f.session.ID)

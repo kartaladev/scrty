@@ -49,7 +49,7 @@ func SealedSessions[H any](
 		},
 		Get: func(ctx context.Context, s session.Store, owner string) ([]byte, bool, error) {
 			sess, err := s.Load(ctx, owner)
-			if errors.Is(err, session.ErrSessionNotFound) {
+			if errors.Is(err, session.ErrNotFound) {
 				return nil, false, nil
 			}
 			if err != nil {

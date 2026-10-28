@@ -34,7 +34,7 @@ func (fixedTokens) Generate(context.Context, string, *identity.Principal) (strin
 }
 
 func (fixedTokens) Verify(context.Context, string) (*token.Claims, error) {
-	return nil, token.ErrTokenInvalid
+	return nil, token.ErrInvalid
 }
 
 var _ token.Generator = fixedTokens{}
@@ -108,7 +108,7 @@ func TestLoginOwnLimiterUnderRedisFactory(t *testing.T) {
 			factory, err := redisstore.NewLimiterFactory(client)
 			require.NoError(t, err)
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
 			attempts := lockout.NewMemoryAttemptStore()

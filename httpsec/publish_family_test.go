@@ -39,9 +39,9 @@ func TestPublishSession_Family(t *testing.T) {
 		assert.NotErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
 
 		for _, sentinel := range []error{
-			session.ErrSessionNotFound, session.ErrSessionExpired, session.ErrSessionUnreadable,
-			session.ErrSessionReused, session.ErrSessionRenewalRequired, session.ErrSessionRenewalConflict,
-			session.ErrSuccessorAdvanced, session.ErrSessionSuperseded, session.ErrConfig,
+			session.ErrNotFound, session.ErrExpired, session.ErrUnreadable,
+			session.ErrReused, session.ErrRenewalRequired, session.ErrRenewalConflict,
+			session.ErrSuccessorAdvanced, session.ErrSuperseded, session.ErrConfig,
 		} {
 			assert.NotErrorIs(t, out.err, sentinel)
 		}
@@ -126,7 +126,7 @@ func TestPublishSession_Family(t *testing.T) {
 			})
 
 			chain, err := httpsec.New(
-				httpsec.WithSessionManager(f.sessions),
+				httpsec.WithSessions(f.sessions),
 				httpsec.RegisterInterceptor(consumer, httpsec.OrderBearerToken),
 			)
 			require.NoError(t, err)

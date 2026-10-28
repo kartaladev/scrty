@@ -25,7 +25,7 @@ func (exampleUsers) LoadByUserID(context.Context, identity.UserID) (*identity.De
 
 // exampleManager is the OIDC manager the examples use as the source of
 // provider assurance. It implements policy.FederatedAssuranceSource.
-func exampleManager() *oidc.Manager {
+func exampleManager() *oidc.RelyingParty {
 	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a placeholder secret in an example, not a credential
 		Name:         "corp",
 		Issuer:       "https://idp.example.com",
@@ -42,7 +42,7 @@ func exampleManager() *oidc.Manager {
 		panic(err)
 	}
 
-	manager, err := oidc.NewManager(registry, broker)
+	manager, err := oidc.NewRelyingParty(registry, broker)
 	if err != nil {
 		panic(err)
 	}
@@ -83,7 +83,7 @@ func ExampleWithFederatedAssurance() {
 	} {
 		source := policy.WithFederatedAssuranceSource(manager)
 
-		requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+		requirement, err := policy.NewMFARequirement(nil, lookups,
 			policy.WithMFARequiredForAll(),
 			policy.WithFederatedAssurance(mode),
 			source,
@@ -123,10 +123,10 @@ func ExampleWithFederatedChallengeWhenUnmet() {
 		panic(err)
 	}
 
-	_, err = policy.NewMFAPolicy(lookups, policy.WithFederatedChallengeWhenUnmet(true))
+	_, err = policy.NewMFA(lookups, policy.WithFederatedChallengeWhenUnmet(true))
 	fmt.Println(err != nil)
 
-	_, err = policy.NewMFAPolicy(lookups,
+	_, err = policy.NewMFA(lookups,
 		policy.WithFederatedChallengeWhenUnmet(true),
 		policy.WithFederatedAssuranceSource(exampleManager()),
 	)

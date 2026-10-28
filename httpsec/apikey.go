@@ -39,7 +39,7 @@ const (
 // apiKeyInterceptor authenticates a machine caller by key and establishes no
 // session.
 type apiKeyInterceptor struct {
-	keys *apikey.Manager
+	keys *apikey.Keys
 
 	engine  *policy.Engine
 	log     *slog.Logger

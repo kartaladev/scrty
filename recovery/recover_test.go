@@ -31,7 +31,7 @@ type recoverEnv struct {
 	*fixture
 
 	tokens *onetime.MemoryStore
-	mint   *onetime.Manager
+	mint   *onetime.Tokens
 	saved  []string
 	issued string
 	// issuedU2 is an issued code minted for another user, u-2.
@@ -53,7 +53,7 @@ func newRecoverEnv(t *testing.T) *recoverEnv {
 	e := &recoverEnv{fixture: f, tokens: onetime.NewMemoryStore(), limiter: NewMockLimiter(f.ctrl)}
 	e.totp = formMethod(f.ctrl, "totp")
 
-	mint, err := onetime.NewManager(recovery.IssuedCodePurpose, onetime.WithStore(e.tokens), onetime.WithClock(f.clock))
+	mint, err := onetime.New(recovery.IssuedCodePurpose, onetime.WithStore(e.tokens), onetime.WithClock(f.clock))
 	require.NoError(t, err)
 	e.mint = mint
 

@@ -160,7 +160,7 @@ func (i *oidcInterceptor) endBackchannelSessions(
 		return errNilLink
 	}
 
-	if i.scope == AllSessions {
+	if i.scope == BackchannelLogoutScopeAll {
 		if err := i.sessions.DeleteByUser(ctx, link.UserID); err != nil {
 			return err
 		}

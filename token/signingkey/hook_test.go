@@ -30,7 +30,7 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	const attempts = 3
 
 	var (
-		km     *signingkey.KeyManager
+		km     *signingkey.Keys
 		report = &failureReport{}
 		reads  atomic.Int32
 	)
@@ -38,7 +38,7 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	// hook does everything WithErrorHook's godoc names as safe from the hook,
 	// and counts the times all of it answered.
 	hook := func(err error) {
-		kid, signer, ok := km.GetSigner(signingkey.EdDSA)
+		kid, signer, ok := km.Signer(signingkey.EdDSA)
 		published, keysErr := km.VerificationKeys()
 		if ok && signer != nil && kid != "" &&
 			keysErr == nil && len(published) > 0 &&
@@ -51,7 +51,7 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 	clk := newClock()
 
 	var err error
-	km, err = signingkey.NewKeyManager(t.Context(),
+	km, err = signingkey.New(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, report, opRotate)),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),

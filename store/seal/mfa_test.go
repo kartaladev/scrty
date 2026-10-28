@@ -155,7 +155,7 @@ func TestNewEnrolmentStore(t *testing.T) {
 	memory := func(*gomock.Controller) mfa.EnrolmentStore { return mfa.NewMemoryEnrolmentStore() }
 	refused := func(t *testing.T, store mfa.EnrolmentStore, err error) {
 		t.Helper()
-		require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+		require.ErrorIs(t, err, seal.ErrConfig)
 		assert.Nil(t, store)
 	}
 

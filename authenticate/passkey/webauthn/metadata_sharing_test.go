@@ -76,7 +76,7 @@ func (r *gatedRegistrar) body(t *testing.T) []byte {
 }
 
 type outcome struct {
-	nc  *passkey.NewCredential
+	nc  *passkey.CredentialInput
 	err error
 }
 
@@ -87,7 +87,7 @@ func (r *gatedRegistrar) register(ctx context.Context, body []byte) outcome {
 	if err != nil {
 		return outcome{err: err}
 	}
-	nc, err := r.v.VerifyRegistration(ctx, p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+	nc, err := r.v.VerifyRegistration(ctx, p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 	return outcome{nc: nc, err: err}
 }
 

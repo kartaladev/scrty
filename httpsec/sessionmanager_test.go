@@ -13,10 +13,10 @@ import (
 
 // otherManager is a session manager over a store of its own, standing in for
 // the manager a built-in was wired to when it is not the chain's.
-func otherManager(t *testing.T, f resolveFixture) *session.Manager {
+func otherManager(t *testing.T, f resolveFixture) *session.Sessions {
 	t.Helper()
 
-	m, err := session.NewManager(session.WithClock(f.clk), session.WithStore(
+	m, err := session.New(session.WithClock(f.clk), session.WithStore(
 		session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))))
 	require.NoError(t, err)
 
@@ -67,7 +67,7 @@ func TestWithSessionManager(t *testing.T) {
 		{
 			name: "explicit manager alone",
 			options: func(_ *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{httpsec.WithSessionManager(f.sessions)}
+				return []httpsec.Option{httpsec.WithSessions(f.sessions)}
 			},
 			assert: recorded,
 		},
@@ -75,7 +75,7 @@ func TestWithSessionManager(t *testing.T) {
 			name: "explicit manager before a built-in with another",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
 				return []httpsec.Option{
-					httpsec.WithSessionManager(f.sessions),
+					httpsec.WithSessions(f.sessions),
 					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: otherManager(t, f)}),
 				}
 			},
@@ -86,7 +86,7 @@ func TestWithSessionManager(t *testing.T) {
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
 				return []httpsec.Option{
 					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: otherManager(t, f)}),
-					httpsec.WithSessionManager(f.sessions),
+					httpsec.WithSessions(f.sessions),
 				}
 			},
 			assert: recorded,
@@ -115,11 +115,11 @@ func TestWithSessionManager(t *testing.T) {
 func TestWithSessionManager_RefusesNil(t *testing.T) {
 	t.Parallel()
 
-	for name, m := range map[string]*session.Manager{"nil": nil} {
+	for name, m := range map[string]*session.Sessions{"nil": nil} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			chain, err := httpsec.New(httpsec.WithSessionManager(m))
+			chain, err := httpsec.New(httpsec.WithSessions(m))
 			require.ErrorIs(t, err, httpsec.ErrConfig)
 			assert.Nil(t, chain)
 		})
@@ -154,7 +154,7 @@ func TestWithSessionManager_MustBeTheBearers(t *testing.T) {
 		assert.NotNil(t, chain)
 	}
 
-	signed := func(t *testing.T, m *session.Manager) httpsec.Option {
+	signed := func(t *testing.T, m *session.Sessions) httpsec.Option {
 		t.Helper()
 
 		ctrl := gomock.NewController(t)
@@ -164,7 +164,7 @@ func TestWithSessionManager_MustBeTheBearers(t *testing.T) {
 		})
 	}
 
-	reference := func(t *testing.T, m *session.Manager) httpsec.Option {
+	reference := func(t *testing.T, m *session.Sessions) httpsec.Option {
 		t.Helper()
 
 		ctrl := gomock.NewController(t)
@@ -176,49 +176,49 @@ func TestWithSessionManager_MustBeTheBearers(t *testing.T) {
 		{
 			name: "signed-token bearer, explicit manager after, another",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{signed(t, f.sessions), httpsec.WithSessionManager(otherManager(t, f))}
+				return []httpsec.Option{signed(t, f.sessions), httpsec.WithSessions(otherManager(t, f))}
 			},
 			assert: refused,
 		},
 		{
 			name: "signed-token bearer, explicit manager before, another",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{httpsec.WithSessionManager(otherManager(t, f)), signed(t, f.sessions)}
+				return []httpsec.Option{httpsec.WithSessions(otherManager(t, f)), signed(t, f.sessions)}
 			},
 			assert: refused,
 		},
 		{
 			name: "session-reference bearer, explicit manager after, another",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{reference(t, f.sessions), httpsec.WithSessionManager(otherManager(t, f))}
+				return []httpsec.Option{reference(t, f.sessions), httpsec.WithSessions(otherManager(t, f))}
 			},
 			assert: refused,
 		},
 		{
 			name: "session-reference bearer, explicit manager before, another",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{httpsec.WithSessionManager(otherManager(t, f)), reference(t, f.sessions)}
+				return []httpsec.Option{httpsec.WithSessions(otherManager(t, f)), reference(t, f.sessions)}
 			},
 			assert: refused,
 		},
 		{
 			name: "signed-token bearer, the same manager",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{signed(t, f.sessions), httpsec.WithSessionManager(f.sessions)}
+				return []httpsec.Option{signed(t, f.sessions), httpsec.WithSessions(f.sessions)}
 			},
 			assert: built,
 		},
 		{
 			name: "session-reference bearer, the same manager, manager before bearer",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{httpsec.WithSessionManager(f.sessions), reference(t, f.sessions)}
+				return []httpsec.Option{httpsec.WithSessions(f.sessions), reference(t, f.sessions)}
 			},
 			assert: built,
 		},
 		{
 			name: "session-reference bearer, the same manager, bearer before manager",
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
-				return []httpsec.Option{reference(t, f.sessions), httpsec.WithSessionManager(f.sessions)}
+				return []httpsec.Option{reference(t, f.sessions), httpsec.WithSessions(f.sessions)}
 			},
 			assert: built,
 		},
@@ -227,7 +227,7 @@ func TestWithSessionManager_MustBeTheBearers(t *testing.T) {
 			options: func(t *testing.T, f resolveFixture) []httpsec.Option {
 				return []httpsec.Option{
 					httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: f.sessions}),
-					httpsec.WithSessionManager(otherManager(t, f)),
+					httpsec.WithSessions(otherManager(t, f)),
 				}
 			},
 			assert: built,

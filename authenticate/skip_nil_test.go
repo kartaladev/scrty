@@ -22,13 +22,13 @@ func TestManager_NestedManagerThatSkipsLetsOuterTryNextDelegate(t *testing.T) {
 
 	// skipping returns a manager whose only provider skips every credential, so
 	// its own answer is ErrNoEligibleAuthenticator.
-	skipping := func(t *testing.T, ctrl *gomock.Controller) *authenticate.Manager {
+	skipping := func(t *testing.T, ctrl *gomock.Controller) *authenticate.FirstOf {
 		t.Helper()
 
 		inner := NewMockAuthenticator(ctrl)
 		inner.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Return(nil, authenticate.ErrUnsupportedCredentials)
 
-		nested, err := authenticate.NewManager(inner)
+		nested, err := authenticate.NewFirstOf(inner)
 		require.NoError(t, err)
 
 		return nested
@@ -76,7 +76,7 @@ func TestManager_NestedManagerThatSkipsLetsOuterTryNextDelegate(t *testing.T) {
 				inner := NewMockAuthenticator(ctrl)
 				inner.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Return(nil, errBackendDown)
 
-				nested, err := authenticate.NewManager(inner)
+				nested, err := authenticate.NewFirstOf(inner)
 				require.NoError(t, err)
 
 				// No EXPECT: an outage must not be retried by a later delegate.
@@ -96,7 +96,7 @@ func TestManager_NestedManagerThatSkipsLetsOuterTryNextDelegate(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			outer, err := authenticate.NewManager(tc.build(t, ctrl)...)
+			outer, err := authenticate.NewFirstOf(tc.build(t, ctrl)...)
 			require.NoError(t, err)
 
 			got, err := outer.Authenticate(t.Context(), credentials(t))

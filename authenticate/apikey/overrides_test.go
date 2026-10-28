@@ -30,7 +30,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		ctx := t.Context()
 
-		def, err := apikey.NewManager()
+		def, err := apikey.New()
 		require.NoError(t, err)
 
 		underDefault, _, err := def.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -38,7 +38,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		store := &countingKeyStore{Store: apikey.NewMemoryStore()}
 
-		acme, err := apikey.NewManager(apikey.WithPrefix("acme"), apikey.WithStore(store))
+		acme, err := apikey.New(apikey.WithPrefix("acme"), apikey.WithStore(store))
 		require.NoError(t, err)
 
 		underAcme, _, err := acme.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -65,7 +65,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		store := apikey.NewMemoryStore()
 
-		m, err := apikey.NewManager(apikey.WithStore(store), apikey.WithDigest(digest))
+		m, err := apikey.New(apikey.WithStore(store), apikey.WithDigest(digest))
 		require.NoError(t, err)
 
 		presented, rec, err := m.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -91,7 +91,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		store := apikey.NewMemoryStore()
 
-		m, err := apikey.NewManager(apikey.WithStore(store))
+		m, err := apikey.New(apikey.WithStore(store))
 		require.NoError(t, err)
 
 		presented, rec, err := m.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -117,7 +117,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		store := &countingKeyStore{Store: apikey.NewMemoryStore()}
 
-		m, err := apikey.NewManager(apikey.WithStore(store))
+		m, err := apikey.New(apikey.WithStore(store))
 		require.NoError(t, err)
 
 		presented, rec, err := m.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -144,7 +144,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		want := id.MustParse("01930000-0000-7000-8000-0000000000aa")
 
-		m, err := apikey.NewManager(apikey.WithIDGenerator(fixedIDs{want}))
+		m, err := apikey.New(apikey.WithIDGenerator(fixedIDs{want}))
 		require.NoError(t, err)
 
 		presented, rec, err := m.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -161,7 +161,7 @@ func TestAPIKeyConsumerOverrides(t *testing.T) {
 
 		at := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 
-		m, err := apikey.NewManager(apikey.WithClock(clockwork.NewFakeClockAt(at)))
+		m, err := apikey.New(apikey.WithClock(clockwork.NewFakeClockAt(at)))
 		require.NoError(t, err)
 
 		_, rec, err := m.Issue(ctx, "svc-billing", "k", nil, time.Hour)

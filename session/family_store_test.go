@@ -78,10 +78,10 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 				require.NoError(t, sealing.Supersede(ctx, firstRotation("old", storedSession("first"))))
 
 				err := sealing.Supersede(ctx, firstRotation("old", storedSession("second")))
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
 
 				err = sealing.Supersede(ctx, firstRotation("missing", storedSession("third")))
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 			},
 		},
 		{
@@ -95,7 +95,7 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 				stored, err := inner.Load(ctx, "s")
 				require.NoError(t, err)
 				assert.Equal(t, at, stored.LastAccessedAt)
-				require.ErrorIs(t, sealing.RecordActivity(ctx, "missing", at, at, at), session.ErrSessionNotFound)
+				require.ErrorIs(t, sealing.RecordActivity(ctx, "missing", at, at, at), session.ErrNotFound)
 			},
 		},
 		{
@@ -108,7 +108,7 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 				stored, err := inner.Load(ctx, "s")
 				require.NoError(t, err)
 				assert.Equal(t, createdAt, stored.FirstPresentedAt)
-				require.ErrorIs(t, sealing.MarkPresented(ctx, "missing", createdAt), session.ErrSessionNotFound)
+				require.ErrorIs(t, sealing.MarkPresented(ctx, "missing", createdAt), session.ErrNotFound)
 			},
 		},
 		{
@@ -119,7 +119,7 @@ func TestEncryptedStoreFamilyOperations(t *testing.T) {
 
 				err := sealing.MarkPresented(ctx, "old", createdAt)
 
-				require.Equal(t, session.ErrSessionSuperseded, err) //nolint:errorlint // the sentinel bare, as a store returns it
+				require.Equal(t, session.ErrSuperseded, err) //nolint:errorlint // the sentinel bare, as a store returns it
 				stored, err := inner.Load(ctx, "old")
 				require.NoError(t, err)
 				assert.True(t, stored.FirstPresentedAt.IsZero(), "a superseded session was marked presented")
@@ -166,13 +166,13 @@ func TestEncryptedStoreSupersedeReturnsSentinelsBare(t *testing.T) {
 	cases := []testCase{
 		{
 			name:     "renewal conflict",
-			sentinel: session.ErrSessionRenewalConflict,
-			assert:   isBare(session.ErrSessionRenewalConflict),
+			sentinel: session.ErrRenewalConflict,
+			assert:   isBare(session.ErrRenewalConflict),
 		},
 		{
 			name:     "not found",
-			sentinel: session.ErrSessionNotFound,
-			assert:   isBare(session.ErrSessionNotFound),
+			sentinel: session.ErrNotFound,
+			assert:   isBare(session.ErrNotFound),
 		},
 	}
 
@@ -212,8 +212,8 @@ func TestSupersedeRefusesANilSuccessor(t *testing.T) {
 		err := store.Supersede(ctx, nilSuccessor)
 
 		require.Error(t, err)
-		require.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
-		require.NotErrorIs(t, err, session.ErrSessionNotFound)
+		require.NotErrorIs(t, err, session.ErrRenewalConflict)
+		require.NotErrorIs(t, err, session.ErrNotFound)
 		old, err := store.Load(ctx, "old")
 		require.NoError(t, err)
 		assert.True(t, old.SupersededAt.IsZero(), "a refused supersession marked the session")
@@ -358,8 +358,8 @@ func TestSupersedeRefusals(t *testing.T) {
 		t.Helper()
 
 		require.Error(t, err)
-		require.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
-		require.NotErrorIs(t, err, session.ErrSessionNotFound)
+		require.NotErrorIs(t, err, session.ErrRenewalConflict)
+		require.NotErrorIs(t, err, session.ErrNotFound)
 		require.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
 		assert.Equal(t, 1, store.Len(), "a refused supersession inserted something")
 		stored, err := store.Load(t.Context(), old.ID)
@@ -464,6 +464,6 @@ func TestEncryptedStoreCreatePassesOnTheNilFamilyRefusal(t *testing.T) {
 	err := sealing.Create(t.Context(), orphan)
 
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+	assert.NotErrorIs(t, err, session.ErrNotFound)
 	assert.Zero(t, inner.Len(), "a refused session was stored")
 }

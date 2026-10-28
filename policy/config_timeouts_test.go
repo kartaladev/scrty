@@ -32,7 +32,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "an idle timeout of zero",
 			construct: func() (policy.Policy, error) {
-				return policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyTimeout(0))
+				return policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(0))
 			},
 			names:       "idle timeout must be positive",
 			consequence: "refuse every request",
@@ -40,7 +40,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a negative idle timeout",
 			construct: func() (policy.Policy, error) {
-				return policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyTimeout(-time.Minute))
+				return policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(-time.Minute))
 			},
 			names:       "idle timeout must be positive",
 			consequence: "refuse every request",
@@ -48,7 +48,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "an absolute timeout of zero",
 			construct: func() (policy.Policy, error) {
-				return policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyAbsoluteTimeout(0))
+				return policy.NewIdleTimeout(policy.WithIdlePolicyAbsoluteTimeout(0))
 			},
 			names:       "absolute timeout must be positive",
 			consequence: "already past its final deadline",
@@ -56,7 +56,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a maximum password age of zero",
 			construct: func() (policy.Policy, error) {
-				return policy.NewPasswordAgePolicy(policy.WithMaxPasswordAge(0))
+				return policy.NewPasswordAge(policy.WithMaxPasswordAge(0))
 			},
 			names:       "maximum password age must be positive",
 			consequence: "challenge every login",
@@ -64,7 +64,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a negative maximum password age",
 			construct: func() (policy.Policy, error) {
-				return policy.NewPasswordAgePolicy(policy.WithMaxPasswordAge(-time.Hour))
+				return policy.NewPasswordAge(policy.WithMaxPasswordAge(-time.Hour))
 			},
 			names:       "maximum password age must be positive",
 			consequence: "challenge every login",
@@ -75,7 +75,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 			// not a decision anybody made.
 			name: "an unknown-change-time mode naming neither choice",
 			construct: func() (policy.Policy, error) {
-				return policy.NewPasswordAgePolicy(policy.WithUnknownPasswordAge(policy.UnknownPasswordAge(7)))
+				return policy.NewPasswordAge(policy.WithUnknownPasswordAge(policy.UnknownAgeMode(7)))
 			},
 			names:       "unknown-password-age mode",
 			consequence: "AllowUnknown nor ChallengeUnknown",
@@ -85,7 +85,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 			// user already holds at least none.
 			name: "a maximum of zero sessions",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessionPolicy(session.NewMemoryStore(), 0)
+				return policy.NewConcurrentSessions(session.NewMemoryStore(), 0)
 			},
 			names:       "maximum number of sessions must be positive",
 			consequence: "refuse every login",
@@ -93,7 +93,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a negative maximum of sessions",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessionPolicy(session.NewMemoryStore(), -1)
+				return policy.NewConcurrentSessions(session.NewMemoryStore(), -1)
 			},
 			names:       "maximum number of sessions must be positive",
 			consequence: "refuse every login",
@@ -101,7 +101,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "no session counter at all",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessionPolicy(nil, 3)
+				return policy.NewConcurrentSessions(nil, 3)
 			},
 			names:       "session counter must not be nil",
 			consequence: "no count can be made",
@@ -109,7 +109,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a session counter held by a nil pointer",
 			construct: func() (policy.Policy, error) {
-				return policy.NewConcurrentSessionPolicy(absentStore, 3)
+				return policy.NewConcurrentSessions(absentStore, 3)
 			},
 			names:       "session counter must not be nil",
 			consequence: "no count can be made",

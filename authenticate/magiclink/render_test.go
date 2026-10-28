@@ -15,7 +15,7 @@ func TestDefaultRenderer(t *testing.T) {
 
 	sender := &recordingSender{}
 
-	m, err := magiclink.NewManager(testTokens(t), activeLoader(), sender, "https://app.example.com")
+	m, err := magiclink.New(testTokens(t), activeLoader(), sender, "https://app.example.com")
 	require.NoError(t, err)
 
 	m.Request(t.Context(), "ada@example.com", "/")

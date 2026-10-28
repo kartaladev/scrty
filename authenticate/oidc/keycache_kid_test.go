@@ -18,7 +18,7 @@ func TestKeyCacheUnknownKid(t *testing.T) {
 
 	type testCase struct {
 		name string
-		opts []oidc.ManagerOption
+		opts []oidc.Option
 		// act runs with the "corp" key set (provider a) already cached.
 		act    func(t *testing.T, a, b *testProvider, keys func(ctx context.Context, provider, kid string) keysResult)
 		assert func(t *testing.T, a, b *testProvider)
@@ -83,7 +83,7 @@ func TestKeyCacheUnknownKid(t *testing.T) {
 		},
 		{
 			name: "a consumer cooldown replaces the default",
-			opts: []oidc.ManagerOption{oidc.WithJWKSRefetchCooldown(5 * time.Second)},
+			opts: []oidc.Option{oidc.WithJWKSRefetchCooldown(5 * time.Second)},
 			act: func(t *testing.T, a, _ *testProvider, keys func(context.Context, string, string) keysResult) {
 				require.ErrorIs(t, keys(t.Context(), "corp", "nope").err, oidc.ErrUnknownSigningKeyForTest)
 				a.Rotate(t, "k2")
@@ -119,7 +119,7 @@ func TestKeyCacheUnknownKid(t *testing.T) {
 			// A long cooldown puts a cooldown refusal just before the set
 			// expires; the expiry refetch that follows must still be sent.
 			name: "a cooldown refusal does not open a backoff window",
-			opts: []oidc.ManagerOption{oidc.WithJWKSRefetchCooldown(time.Hour)},
+			opts: []oidc.Option{oidc.WithJWKSRefetchCooldown(time.Hour)},
 			act: func(t *testing.T, _ *testProvider, _ *testProvider, keys func(context.Context, string, string) keysResult) {
 				require.ErrorIs(t, keys(t.Context(), "corp", "x1").err, oidc.ErrUnknownSigningKeyForTest)
 				time.Sleep(oidc.DefaultDiscoveryTTL - 500*time.Millisecond)
@@ -141,8 +141,8 @@ func TestKeyCacheUnknownKid(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				reg, err := oidc.NewRegistry(a.Provider("corp"), b.Provider("other"))
 				require.NoError(t, err)
-				opts := append([]oidc.ManagerOption{oidc.WithOutboundClient(inMemoryOutbound(t, a, b))}, tc.opts...)
-				m, err := oidc.NewManager(reg, stubBroker{}, opts...)
+				opts := append([]oidc.Option{oidc.WithOutboundClient(inMemoryOutbound(t, a, b))}, tc.opts...)
+				m, err := oidc.NewRelyingParty(reg, stubBroker{}, opts...)
 				require.NoError(t, err)
 
 				keys := func(ctx context.Context, provider, kid string) keysResult {

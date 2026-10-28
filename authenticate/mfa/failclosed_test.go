@@ -41,7 +41,7 @@ func TestRequiredUserFailsClosed(t *testing.T) {
 				return healthy
 			},
 			assert: func(t *testing.T, d policy.Decision) {
-				assert.ErrorIs(t, d.Reason, policy.ErrMFAEnrollmentRequired)
+				assert.ErrorIs(t, d.Reason, policy.ErrMFAEnrolmentRequired)
 			},
 		},
 		{
@@ -90,7 +90,7 @@ func TestRequiredUserFailsClosed(t *testing.T) {
 
 			required := &stubRequirement{required: map[identity.UserID]bool{"u-1": true}}
 
-			pol, err := policy.NewMFARequirementPolicy(required, lookups)
+			pol, err := policy.NewMFARequirement(required, lookups)
 			require.NoError(t, err)
 
 			engine, err := policy.NewEngine(pol)
@@ -130,7 +130,7 @@ func TestRequireForAllLocksOutUnenrolled(t *testing.T) {
 
 	// Required of everyone, and this user never enrolled. There is no per-user
 	// requirement lookup at all, which is what require-for-all permits.
-	pol, err := policy.NewMFARequirementPolicy(nil, lookups, policy.WithMFARequiredForAll())
+	pol, err := policy.NewMFARequirement(nil, lookups, policy.WithMFARequiredForAll())
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(pol)
@@ -145,5 +145,5 @@ func TestRequireForAllLocksOutUnenrolled(t *testing.T) {
 
 	assert.Equal(t, policy.Deny, d.Outcome)
 	require.Error(t, d.Reason)
-	assert.ErrorIs(t, d.Reason, policy.ErrMFAEnrollmentRequired)
+	assert.ErrorIs(t, d.Reason, policy.ErrMFAEnrolmentRequired)
 }

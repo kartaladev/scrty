@@ -10,15 +10,15 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
-// Manager resolves credentials by offering them to ordered providers.
+// FirstOf resolves credentials by offering them to ordered providers.
 //
 // It is safe for concurrent use: the provider list is fixed at construction and
 // never written afterwards.
-type Manager struct {
+type FirstOf struct {
 	delegates []Authenticator
 }
 
-// NewManager returns a Manager that offers credentials to delegates in the
+// NewFirstOf returns a Manager that offers credentials to delegates in the
 // order given.
 //
 // There is no default list. Which methods a deployment accepts, and in which
@@ -34,7 +34,7 @@ type Manager struct {
 // hands over. Skipping it would run fewer providers than the consumer wrote,
 // silently; keeping it would panic on the first request, where the mistake
 // looks like a runtime fault rather than a line of wiring.
-func NewManager(delegates ...Authenticator) (*Manager, error) {
+func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 	if len(delegates) == 0 {
 		return nil, fmt.Errorf("%w: a manager with no delegates authenticates nobody", ErrConfig)
 	}
@@ -46,7 +46,7 @@ func NewManager(delegates ...Authenticator) (*Manager, error) {
 
 	// Cloned so a caller that keeps and rewrites the slice it passed cannot
 	// change which providers run, or in which order, after construction.
-	return &Manager{delegates: slices.Clone(delegates)}, nil
+	return &FirstOf{delegates: slices.Clone(delegates)}, nil
 }
 
 // Authenticate offers c to each delegate in turn and returns the first answer
@@ -66,7 +66,7 @@ func NewManager(delegates ...Authenticator) (*Manager, error) {
 // choke point that lets every caller read Principal after a nil error without
 // checking it; leaving the check to each provider would let the next provider
 // written reopen it for everyone.
-func (m *Manager) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
+func (m *FirstOf) Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error) {
 	for _, d := range m.delegates {
 		a, err := d.Authenticate(ctx, c)
 		if errors.Is(err, ErrUnsupportedCredentials) || errors.Is(err, ErrNoEligibleAuthenticator) {
@@ -85,7 +85,7 @@ func (m *Manager) Authenticate(ctx context.Context, c identity.Credentials) (*Au
 	return nil, ErrNoEligibleAuthenticator
 }
 
-var _ Authenticator = (*Manager)(nil)
+var _ Authenticator = (*FirstOf)(nil)
 
 // VerifyDecoy offers c to each delegate that implements DecoyVerifier, in
 // order, and stops at the first that reports it handled c. It returns false
@@ -93,7 +93,7 @@ var _ Authenticator = (*Manager)(nil)
 //
 // Delegates that do not implement DecoyVerifier are skipped, and no delegate's
 // Authenticate is called.
-func (m *Manager) VerifyDecoy(ctx context.Context, c identity.Credentials) bool {
+func (m *FirstOf) VerifyDecoy(ctx context.Context, c identity.Credentials) bool {
 	for _, d := range m.delegates {
 		if v, ok := d.(DecoyVerifier); ok && v.VerifyDecoy(ctx, c) {
 			return true
@@ -103,7 +103,7 @@ func (m *Manager) VerifyDecoy(ctx context.Context, c identity.Credentials) bool 
 	return false
 }
 
-var _ DecoyVerifier = (*Manager)(nil)
+var _ DecoyVerifier = (*FirstOf)(nil)
 
 // OffersDecoy reports whether any delegate offers a decoy verification, so a
 // caller can tell whether VerifyDecoy will ever spend any work: a Manager
@@ -114,7 +114,7 @@ var _ DecoyVerifier = (*Manager)(nil)
 // reports OffersDecoy, as a nested Manager does, that reports true. It is
 // answered from the delegates' types alone, and calls neither VerifyDecoy nor
 // Authenticate.
-func (m *Manager) OffersDecoy() bool {
+func (m *FirstOf) OffersDecoy() bool {
 	return slices.ContainsFunc(m.delegates, offersDecoy)
 }
 

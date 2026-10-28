@@ -24,7 +24,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 		window time.Duration
 		// advance is how far the clock moves after issuing.
 		advance time.Duration
-		assert  func(t *testing.T, m *onetime.Manager, token string, purged int, err error)
+		assert  func(t *testing.T, m *onetime.Tokens, token string, purged int, err error)
 	}
 
 	cases := []testCase{
@@ -33,7 +33,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			offset:  365 * 24 * time.Hour,
 			window:  time.Hour,
 			advance: 2 * time.Hour,
-			assert: func(t *testing.T, _ *onetime.Manager, _ string, purged int, err error) {
+			assert: func(t *testing.T, _ *onetime.Tokens, _ string, purged int, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 1, purged)
 			},
@@ -43,7 +43,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			offset:  -365 * 24 * time.Hour,
 			window:  10 * time.Minute,
 			advance: 12 * time.Minute,
-			assert: func(t *testing.T, m *onetime.Manager, token string, purged int, err error) {
+			assert: func(t *testing.T, m *onetime.Tokens, token string, purged int, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, purged, "a token inside its lifetime must not be purged")
 				_, checkErr := m.Check(t.Context(), token, "")
@@ -58,7 +58,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			},
 			window:  time.Hour,
 			advance: 2 * time.Hour,
-			assert: func(t *testing.T, _ *onetime.Manager, _ string, purged int, err error) {
+			assert: func(t *testing.T, _ *onetime.Tokens, _ string, purged int, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, purged, "the consumer's store judges expiry on its own clock")
 			},
@@ -78,7 +78,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			if tc.store != nil {
 				opts = append(opts, tc.store(fc))
 			}
-			m, err := onetime.NewManager("email-change", opts...)
+			m, err := onetime.New("email-change", opts...)
 			require.NoError(t, err)
 
 			ctx := t.Context()

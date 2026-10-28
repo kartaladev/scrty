@@ -73,9 +73,9 @@ func TestRevokeFamily(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, n, "the superseded session and its successor are the family")
 	_, err = m.Load(ctx, one.ID)
-	require.ErrorIs(t, err, session.ErrSessionNotFound, "the superseded session survived its family's revocation")
+	require.ErrorIs(t, err, session.ErrNotFound, "the superseded session survived its family's revocation")
 	_, err = m.Load(ctx, oneRenewed.ID)
-	require.ErrorIs(t, err, session.ErrSessionNotFound)
+	require.ErrorIs(t, err, session.ErrNotFound)
 	_, err = m.Load(ctx, other.ID)
 	require.NoError(t, err, "revoking one family took another family of the same user")
 }

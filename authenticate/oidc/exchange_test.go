@@ -201,7 +201,7 @@ func TestExchange(t *testing.T) {
 			require.NoError(t, err)
 
 			var logs bytes.Buffer
-			m, err := oidc.NewManager(reg, stubBroker{},
+			m, err := oidc.NewRelyingParty(reg, stubBroker{},
 				oidc.WithOutboundClient(p.Outbound(t)), oidc.WithLogger(testTextLogger(&logs)))
 			require.NoError(t, err)
 			// Discovery first, on a live context, so the canceled-context row

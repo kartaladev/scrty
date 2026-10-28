@@ -56,7 +56,7 @@ type LogoutClaims struct {
 // that failed and never a claim value. A name the registry does not hold is
 // ErrUnknownProvider, a key set that could not be fetched is
 // ErrDiscoveryFailed, and a context error is returned as itself.
-func (m *Manager) VerifyLogoutToken(ctx context.Context, provider, raw string) (LogoutClaims, error) {
+func (m *RelyingParty) VerifyLogoutToken(ctx context.Context, provider, raw string) (LogoutClaims, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return LogoutClaims{}, ErrUnknownProvider
@@ -71,7 +71,7 @@ func (m *Manager) VerifyLogoutToken(ctx context.Context, provider, raw string) (
 	return c, nil
 }
 
-func (m *Manager) checkLogoutToken(ctx context.Context, p Provider, raw string) (LogoutClaims, error) {
+func (m *RelyingParty) checkLogoutToken(ctx context.Context, p Provider, raw string) (LogoutClaims, error) {
 	tok, err := m.parseProviderJWT(ctx, p, raw, false)
 	if err != nil {
 		return LogoutClaims{}, err

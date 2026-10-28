@@ -51,22 +51,22 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 	type testCase struct {
 		name   string
 		setup  func(t *testing.T) (store signingkey.KeyStore, wantKid string)
-		assert func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, wantKid string)
+		assert func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string)
 	}
 
 	cases := []testCase{
 		{
 			name: "a restart adopts the stored key and mints no replacement",
 			setup: func(t *testing.T) (signingkey.KeyStore, string) {
-				store := signingkey.NewInMemoryKeyStore()
-				first, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store), noon)
+				store := signingkey.NewMemoryKeyStore()
+				first, err := signingkey.New(t.Context(), signingkey.WithKeyStore(store), noon)
 				require.NoError(t, err)
-				kid, _, ok := first.GetSigner(signingkey.RS256)
+				kid, _, ok := first.Signer(signingkey.RS256)
 				require.True(t, ok)
 				return store, kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, wantKid string) {
-				kid, _, ok := km.GetSigner(signingkey.RS256)
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string) {
+				kid, _, ok := km.Signer(signingkey.RS256)
 				require.True(t, ok)
 				assert.Equal(t, wantKid, kid, "the second manager signs with the stored key")
 
@@ -87,8 +87,8 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				// 11:00 is listed before 10:00.
 				return &listingStore{recs: []signingkey.Record{newer, older}}, newer.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, wantKid string) {
-				kid, _, ok := km.GetSigner(signingkey.RS256)
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string) {
+				kid, _, ok := km.Signer(signingkey.RS256)
 				require.True(t, ok)
 				assert.Equal(t, wantKid, kid, "the current key is the latest CreatedAt")
 
@@ -107,8 +107,8 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				require.NotEqual(t, first.Kid, second.Kid)
 				return &listingStore{recs: []signingkey.Record{first, second}}, second.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, wantKid string) {
-				kid, _, ok := km.GetSigner(signingkey.RS256)
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, wantKid string) {
+				kid, _, ok := km.Signer(signingkey.RS256)
 				require.True(t, ok)
 				assert.Equal(t, wantKid, kid, "the tie goes to the record the store listed later")
 			},
@@ -120,7 +120,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				future := realRecord(t, at(12).Add(365*24*time.Hour))
 				return &listingStore{recs: []signingkey.Record{present, future}}, present.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, wantKid string) {
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, wantKid string) {
 				assert.Equal(t, wantKid, currentKid(t, km, signingkey.RS256),
 					"the current key is the one created now")
 				published, err := km.VerificationKeys()
@@ -137,7 +137,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				skewed := realRecord(t, at(12).Add(30*time.Second))
 				return &listingStore{recs: []signingkey.Record{present, skewed}}, skewed.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, wantKid string) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, wantKid string) {
 				assert.Equal(t, wantKid, currentKid(t, km, signingkey.RS256),
 					"a key a slightly fast replica just minted is adopted")
 			},
@@ -149,7 +149,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 				ahead := realRecord(t, at(14))
 				return &listingStore{recs: []signingkey.Record{present, ahead}}, ahead.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, ahead string) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, ahead string) {
 				assert.NotEqual(t, ahead, currentKid(t, km, signingkey.RS256),
 					"a key dated beyond the reload interval does not sign yet")
 				assert.True(t, publishes(km, ahead),
@@ -164,7 +164,7 @@ func TestKeyManagerAdoptsStoredKeys(t *testing.T) {
 
 			store, wantKid := tc.setup(t)
 
-			km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store), noon)
+			km, err := signingkey.New(t.Context(), signingkey.WithKeyStore(store), noon)
 			require.NoError(t, err)
 
 			tc.assert(t, km, store, wantKid)

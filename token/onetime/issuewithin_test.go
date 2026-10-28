@@ -19,7 +19,7 @@ func TestIssueWithin(t *testing.T) {
 	t.Parallel()
 
 	type env struct {
-		m     *onetime.Manager
+		m     *onetime.Tokens
 		store *onetime.MemoryStore
 		clk   *clockwork.FakeClock
 	}
@@ -201,7 +201,7 @@ func TestIssueWithin_StoreDecision(t *testing.T) {
 
 			store := NewMockStore(gomock.NewController(t))
 			tc.expect(store)
-			m, err := onetime.NewManager("magic-link",
+			m, err := onetime.New("magic-link",
 				onetime.WithStore(store), onetime.WithClock(clockwork.NewFakeClockAt(issuedAt)))
 			require.NoError(t, err)
 

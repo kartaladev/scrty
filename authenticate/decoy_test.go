@@ -169,7 +169,7 @@ func TestManager_VerifyDecoy(t *testing.T) {
 			t.Parallel()
 
 			delegates, decoys := tc.build()
-			m, err := authenticate.NewManager(delegates...)
+			m, err := authenticate.NewFirstOf(delegates...)
 			require.NoError(t, err)
 
 			v, ok := any(m).(authenticate.DecoyVerifier)
@@ -204,7 +204,7 @@ func TestManager_OffersDecoy(t *testing.T) {
 	manager := func(t *testing.T, delegates ...authenticate.Authenticator) authenticate.Authenticator {
 		t.Helper()
 
-		m, err := authenticate.NewManager(delegates...)
+		m, err := authenticate.NewFirstOf(delegates...)
 		require.NoError(t, err)
 
 		return m
@@ -256,7 +256,7 @@ func TestManager_OffersDecoy(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 
-			m, err := authenticate.NewManager(tc.delegates(t, ctrl)...)
+			m, err := authenticate.NewFirstOf(tc.delegates(t, ctrl)...)
 			require.NoError(t, err)
 
 			tc.assert(t, m.OffersDecoy())

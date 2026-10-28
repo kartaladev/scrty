@@ -28,7 +28,7 @@ import (
 // error: there is nothing to end at the provider, and local logout must not
 // fail for it. A discovery document that cannot be fetched is
 // ErrDiscoveryFailed. No error repeats the ID token or the state.
-func (m *Manager) EndSessionURL(ctx context.Context, provider, idTokenHint, state string) (string, error) {
+func (m *RelyingParty) EndSessionURL(ctx context.Context, provider, idTokenHint, state string) (string, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return "", nil
@@ -75,14 +75,14 @@ func (m *Manager) EndSessionURL(ctx context.Context, provider, idTokenHint, stat
 //
 // The returned value satisfies the http-security chain's end-session
 // dependency, which httpsec.EnableOIDCLogin supplies by default.
-func (m *Manager) EndSessionBuilder() interface {
+func (m *RelyingParty) EndSessionBuilder() interface {
 	EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error)
 } {
 	return sessionEndSession{m: m}
 }
 
 // sessionEndSession adapts Manager.EndSessionURL to a session.
-type sessionEndSession struct{ m *Manager }
+type sessionEndSession struct{ m *RelyingParty }
 
 func (b sessionEndSession) EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error) {
 	if s == nil || s.ExternalProvider == "" {

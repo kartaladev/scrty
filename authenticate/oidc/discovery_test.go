@@ -165,7 +165,7 @@ func TestDiscovery(t *testing.T) {
 			p, other := newTestProvider(t), newTestProvider(t)
 			reg, err := oidc.NewRegistry(tc.setup(t, p, other))
 			require.NoError(t, err)
-			m, err := oidc.NewManager(reg, stubBroker{}, oidc.WithOutboundClient(p.Outbound(t)))
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, oidc.WithOutboundClient(p.Outbound(t)))
 			require.NoError(t, err)
 
 			md, err := oidc.MetadataForTest(m, t.Context(), "corp")

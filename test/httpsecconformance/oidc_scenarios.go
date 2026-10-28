@@ -53,8 +53,8 @@ type OIDCFixture struct {
 	// IDP is the in-process provider, Manager and Handoffs the managers the
 	// chain was given.
 	IDP      *oidctest.IdentityProvider
-	Manager  *oidc.Manager
-	Handoffs *oidc.HandoffManager
+	Manager  *oidc.RelyingParty
+	Handoffs *oidc.Handoff
 
 	// FlowHandle is the flow cookie's value for a login Build started, and
 	// CallbackPath the genuine callback, path and query, the provider sent the
@@ -91,10 +91,10 @@ func newOIDCFixture(t *testing.T, e *Effects) *OIDCFixture {
 	registry, err := oidc.NewRegistry(idp.Provider(OIDCProvider, oidc.ClientSecretPost))
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(idp.Outbound(t)))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(idp.Outbound(t)))
 	require.NoError(t, err)
 
-	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), fixtureUsers{})
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), fixtureUsers{})
 	require.NoError(t, err)
 
 	fx := &OIDCFixture{IDP: idp, Manager: manager, Handoffs: handoffs}

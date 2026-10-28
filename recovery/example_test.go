@@ -130,7 +130,7 @@ func ExampleWayBackDeps_admits() {
 		panic(err)
 	}
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+	requirement, err := policy.NewMFARequirement(nil, lookups,
 		policy.WithMFARequiredForAll(),
 		policy.WithFederatedAssurance(policy.FederatedAssuranceExempt),
 	)

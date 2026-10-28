@@ -43,14 +43,14 @@ func TestSessionTouchHonoursTheManagersInterval(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []session.ManagerOption
+		opts   []session.Option
 		assert func(t *testing.T, afterSecond, afterThird int32)
 	}
 
 	cases := []testCase{
 		{
 			name: "a one-minute interval persists two requests ten seconds apart once, and a third a minute later again",
-			opts: []session.ManagerOption{session.WithTouchInterval(time.Minute)},
+			opts: []session.Option{session.WithTouchInterval(time.Minute)},
 			assert: func(t *testing.T, afterSecond, afterThird int32) {
 				assert.EqualValues(t, 1, afterSecond)
 				assert.EqualValues(t, 2, afterThird)
@@ -72,7 +72,7 @@ func TestSessionTouchHonoursTheManagersInterval(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 			store := &activityCountingStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk))}
 
-			sessions, err := session.NewManager(append([]session.ManagerOption{
+			sessions, err := session.New(append([]session.Option{
 				session.WithClock(clk), session.WithStore(store),
 			}, tc.opts...)...)
 			require.NoError(t, err)

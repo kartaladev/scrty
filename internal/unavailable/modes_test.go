@@ -54,7 +54,7 @@ func TestUnavailable_Modes(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "fall back: the limit's worth of local failures exceeds, and one ERROR says so",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(t *testing.T, h *harness) {
 				h.down()
 				for _, err := range h.recordN(t, testKey, testLimit) {
@@ -70,7 +70,7 @@ func TestUnavailable_Modes(t *testing.T) {
 		},
 		{
 			name: "fall back: short of the limit is not exceeded, and the outage is logged once",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(t *testing.T, h *harness) {
 				h.down()
 				h.recordN(t, testKey, testLimit-1)
@@ -86,7 +86,7 @@ func TestUnavailable_Modes(t *testing.T) {
 		},
 		{
 			name: "fall back: recovery is logged once at WARN",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(t *testing.T, h *harness) {
 				h.openBreaker(t)
 				h.clock.Advance(defaultInterval)
@@ -276,7 +276,7 @@ func TestUnavailable_GuardOverWrappedLimiter(t *testing.T) {
 		},
 		{
 			name: "fall-back mode: the guard admits a source under its local limit",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			assert: func(t *testing.T, h *harness, src ratelimit.Source, err error) {
 				require.NoError(t, err)
 				assert.NotEmpty(t, src.Key())
@@ -356,7 +356,7 @@ func TestUnavailable_FullLocalCount(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newHarness(t, ratelimit.UnavailableFallBackToLocal)
+			h := newHarness(t, ratelimit.UnavailableFallbackToLocal)
 			local, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
 				ratelimit.WithMemoryLimiterClock(h.clock),
 				ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)),

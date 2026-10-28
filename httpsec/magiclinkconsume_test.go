@@ -241,7 +241,7 @@ func TestMagicLinkPolicyCheck(t *testing.T) {
 				return denyingEngine(t, nil)
 			},
 			assert: func(t *testing.T, h *magicLinkHarness, _ *httpsec.Chain, _, _ string, out served) {
-				require.ErrorIs(t, out.err, policy.ErrPolicyDenied,
+				require.ErrorIs(t, out.err, policy.ErrDenied,
 					"a nil reason would read as no refusal and spend the link")
 				assert.Zero(t, h.activeSessions(t))
 			},

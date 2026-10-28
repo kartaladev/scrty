@@ -186,7 +186,7 @@ func TestNewLimiter(t *testing.T) {
 			opts: []redisstore.Option{
 				redisstore.WithKeyPrefix("app:rl:"),
 				redisstore.WithLimiterClock(clockwork.NewFakeClock()),
-				redisstore.WithOnUnavailable(ratelimit.UnavailableFallBackToLocal),
+				redisstore.WithOnUnavailable(ratelimit.UnavailableFallbackToLocal),
 				redisstore.WithOperationTimeout(time.Second),
 				redisstore.WithUnavailableProbeInterval(5 * time.Second),
 				redisstore.WithUnavailableLogInterval(10 * time.Second),

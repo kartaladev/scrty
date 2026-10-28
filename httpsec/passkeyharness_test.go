@@ -106,12 +106,12 @@ func newPasskeyVerifierStub(t *testing.T) *passkeyVerifierStub {
 			return p, nil
 		})
 	v.mock.EXPECT().VerifyRegistration(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-		DoAndReturn(func(_ context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.NewCredential, error) {
+		DoAndReturn(func(_ context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.CredentialInput, error) {
 			if p.Challenge() != encodeChallenge(exp.Challenge) {
 				return nil, errors.New("stub: challenge mismatch")
 			}
 
-			return &passkey.NewCredential{
+			return &passkey.CredentialInput{
 				CredentialID:   p.CredentialID(),
 				PublicKey:      append([]byte("cose-"), p.CredentialID()...),
 				UserVerified:   true,
@@ -238,7 +238,7 @@ type passkeyHarness struct {
 	withoutEnrolment bool
 	withRecoveryGate bool
 
-	manager *passkey.Manager
+	manager *passkey.Passkeys
 }
 
 func newPasskeyHarness(t *testing.T) *passkeyHarness {

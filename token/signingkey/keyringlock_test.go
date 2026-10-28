@@ -46,13 +46,13 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	store := &blockingStore{
-		inner:   signingkey.NewInMemoryKeyStore(),
+		inner:   signingkey.NewMemoryKeyStore(),
 		writing: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
 
 	clk := newClock()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -76,7 +76,7 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 	// is a failed assertion rather than a hung test.
 	served := make(chan string, 1)
 	go func() {
-		kid, signer, ok := km.GetSigner(signingkey.EdDSA)
+		kid, signer, ok := km.Signer(signingkey.EdDSA)
 		if !ok || signer == nil || !publishes(km, kid) {
 			kid = ""
 		}

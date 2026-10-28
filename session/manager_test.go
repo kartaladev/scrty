@@ -16,7 +16,7 @@ import (
 
 // configError is the assertion every wiring mistake shares: construction
 // fails, it fails as a configuration error, and nothing usable comes back.
-func configError(t *testing.T, m *session.Manager, err error) {
+func configError(t *testing.T, m *session.Sessions, err error) {
 	t.Helper()
 
 	require.ErrorIs(t, err, session.ErrConfig)
@@ -32,7 +32,7 @@ func TestManagerLogger(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		_, err := session.NewManager(session.WithSessionLogger(logger))
+		_, err := session.New(session.WithSessionLogger(logger))
 		require.NoError(t, err)
 
 		// The stated limit of the default store, said out loud once: behind a
@@ -47,7 +47,7 @@ func TestManagerLogger(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		_, err := session.NewManager(
+		_, err := session.New(
 			session.WithStore(session.NewMemoryStore()),
 			session.WithSessionLogger(logger))
 		require.NoError(t, err)
@@ -61,7 +61,7 @@ func TestManagerLogger(t *testing.T) {
 		// Refusing a nil logger would make logging mandatory; ignoring it
 		// leaves the caller on slog.Default(), which is what "do not
 		// configure this" reasonably means.
-		m, err := session.NewManager(session.WithSessionLogger(nil))
+		m, err := session.New(session.WithSessionLogger(nil))
 		require.NoError(t, err)
 		require.NotNil(t, m)
 
@@ -128,14 +128,14 @@ func TestNewManager(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []session.ManagerOption
-		assert func(t *testing.T, m *session.Manager, err error)
+		opts   []session.Option
+		assert func(t *testing.T, m *session.Sessions, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "defaults to an in-memory store, 30m idle and 12h absolute",
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 				assert.Equal(t, 30*time.Minute, m.IdleTimeout())
@@ -144,11 +144,11 @@ func TestNewManager(t *testing.T) {
 		},
 		{
 			name: "consumer timeouts replace the defaults",
-			opts: []session.ManagerOption{
+			opts: []session.Option{
 				session.WithIdleTimeout(5 * time.Minute),
 				session.WithAbsoluteTimeout(time.Hour),
 			},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 				assert.Equal(t, 5*time.Minute, m.IdleTimeout())
@@ -157,27 +157,27 @@ func TestNewManager(t *testing.T) {
 		},
 		{
 			name:   "a zero idle timeout is refused, because it expires every session on creation",
-			opts:   []session.ManagerOption{session.WithIdleTimeout(0)},
+			opts:   []session.Option{session.WithIdleTimeout(0)},
 			assert: configError,
 		},
 		{
 			name:   "a negative idle timeout is refused",
-			opts:   []session.ManagerOption{session.WithIdleTimeout(-time.Second)},
+			opts:   []session.Option{session.WithIdleTimeout(-time.Second)},
 			assert: configError,
 		},
 		{
 			name:   "a zero absolute timeout is refused",
-			opts:   []session.ManagerOption{session.WithAbsoluteTimeout(0)},
+			opts:   []session.Option{session.WithAbsoluteTimeout(0)},
 			assert: configError,
 		},
 		{
 			name:   "a negative absolute timeout is refused",
-			opts:   []session.ManagerOption{session.WithAbsoluteTimeout(-time.Second)},
+			opts:   []session.Option{session.WithAbsoluteTimeout(-time.Second)},
 			assert: configError,
 		},
 		{
 			name:   "a nil store is refused rather than silently kept in memory",
-			opts:   []session.ManagerOption{session.WithStore(nil)},
+			opts:   []session.Option{session.WithStore(nil)},
 			assert: configError,
 		},
 		{
@@ -185,7 +185,7 @@ func TestNewManager(t *testing.T) {
 			// passing a clock meant to inject one, and the wall clock would
 			// make a test that never advances look like one that does.
 			name:   "a nil clock is refused",
-			opts:   []session.ManagerOption{session.WithClock(nil)},
+			opts:   []session.Option{session.WithClock(nil)},
 			assert: configError,
 		},
 		{
@@ -193,28 +193,28 @@ func TestNewManager(t *testing.T) {
 			// pointer inside the interface would otherwise pass construction
 			// and panic, or read nonsense, at the first Create.
 			name:   "a typed-nil clock is refused like an untyped one",
-			opts:   []session.ManagerOption{session.WithClock((*nilClock)(nil))},
+			opts:   []session.Option{session.WithClock((*nilClock)(nil))},
 			assert: configError,
 		},
 		{
 			name: "a consumer clock with only Now is accepted",
-			opts: []session.ManagerOption{session.WithClock(fixedClock{at: createdAt})},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			opts: []session.Option{session.WithClock(fixedClock{at: createdAt})},
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 			},
 		},
 		{
 			name:   "a nil random source is refused",
-			opts:   []session.ManagerOption{session.WithRandom(nil)},
+			opts:   []session.Option{session.WithRandom(nil)},
 			assert: configError,
 		},
 		{
 			// A nil logger has an obvious safe reading — do not log from this
 			// component — and refusing it would make logging mandatory.
 			name: "a nil logger is ignored rather than refused",
-			opts: []session.ManagerOption{session.WithSessionLogger(nil)},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			opts: []session.Option{session.WithSessionLogger(nil)},
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			},
@@ -225,7 +225,7 @@ func TestNewManager(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := session.NewManager(tc.opts...)
+			m, err := session.New(tc.opts...)
 			tc.assert(t, m, err)
 		})
 	}

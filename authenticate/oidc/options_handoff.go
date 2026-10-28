@@ -17,7 +17,7 @@ import (
 // a consumer who passed one meant to replace it. A nil option is ignored.
 //
 // There is deliberately no option for the code's lifetime; see HandoffTTL.
-type HandoffOption func(*HandoffManager) error
+type HandoffOption func(*Handoff) error
 
 // WithHandoffRandom replaces the source the token id and the secret of every
 // code are drawn from. The default is crypto/rand.Reader. A nil reader,
@@ -27,7 +27,7 @@ type HandoffOption func(*HandoffManager) error
 // reason to replace it, and a source that is not cryptographically secure
 // makes every code guessable.
 func WithHandoffRandom(r io.Reader) HandoffOption {
-	return func(h *HandoffManager) error {
+	return func(h *Handoff) error {
 		if nilcheck.IsNil(r) {
 			return fmt.Errorf("%w: WithHandoffRandom was given nil", ErrConfig)
 		}
@@ -40,7 +40,7 @@ func WithHandoffRandom(r io.Reader) HandoffOption {
 // expiry and consumption by. The default is clock.System(). A nil clock, typed
 // nil included, is a configuration error.
 func WithHandoffClock(clk clock.Clock) HandoffOption {
-	return func(h *HandoffManager) error {
+	return func(h *Handoff) error {
 		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: WithHandoffClock was given nil", ErrConfig)
 		}
@@ -56,7 +56,7 @@ func WithHandoffClock(clk clock.Clock) HandoffOption {
 // The record ID names the record for the store; it is not part of the code,
 // which carries its own random token id.
 func WithHandoffIDGenerator(g id.Generator) HandoffOption {
-	return func(h *HandoffManager) error {
+	return func(h *Handoff) error {
 		if nilcheck.IsNil(g) {
 			return fmt.Errorf("%w: WithHandoffIDGenerator was given nil", ErrConfig)
 		}
@@ -73,7 +73,7 @@ func WithHandoffIDGenerator(g id.Generator) HandoffOption {
 // DEBUG, a store or loader failure at ERROR. No record carries the code, its
 // secret, the ID token or a claim value.
 func WithHandoffLogger(l *slog.Logger) HandoffOption {
-	return func(h *HandoffManager) error {
+	return func(h *Handoff) error {
 		if l == nil {
 			return fmt.Errorf("%w: WithHandoffLogger was given nil", ErrConfig)
 		}

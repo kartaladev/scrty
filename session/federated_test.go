@@ -18,14 +18,14 @@ func TestFederatedAssurance(t *testing.T) {
 		name string
 		// act drives the manager and returns the session as the store now
 		// holds it.
-		act    func(t *testing.T, m *session.Manager) *session.Session
+		act    func(t *testing.T, m *session.Sessions) *session.Session
 		assert func(t *testing.T, got *session.Session, writes storeWrites)
 	}
 
 	cases := []testCase{
 		{
 			name: "recorded at creation in one write",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFirstFactor(factor.OIDC),
 					session.WithFederatedAssurance([]string{"mfa"}, "urn:corp:loa:2"))
@@ -47,7 +47,7 @@ func TestFederatedAssurance(t *testing.T) {
 		},
 		{
 			name: "rotation keeps it after the challenge resolves",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFirstFactor(factor.OIDC),
 					session.WithFederatedAssurance([]string{"pwd", "mfa"}, "urn:corp:loa:2"))
@@ -73,7 +73,7 @@ func TestFederatedAssurance(t *testing.T) {
 		},
 		{
 			name: "a rotated copy shares no backing array with the original",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFederatedAssurance([]string{"mfa"}, ""))
 				require.NoError(t, err)
@@ -92,7 +92,7 @@ func TestFederatedAssurance(t *testing.T) {
 		},
 		{
 			name: "the stored copy is unreachable through a returned session",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFederatedAssurance([]string{"mfa"}, ""))
 				require.NoError(t, err)
@@ -117,7 +117,7 @@ func TestFederatedAssurance(t *testing.T) {
 		},
 		{
 			name: "the option copies the caller's slice",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				amr := []string{"mfa"}
 				s, err := m.Create(t.Context(), testUser, session.WithFederatedAssurance(amr, ""))
 				require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestFederatedAssurance(t *testing.T) {
 		},
 		{
 			name: "consumer data cannot forge it",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
 				require.NoError(t, err)
 
@@ -152,7 +152,7 @@ func TestFederatedAssurance(t *testing.T) {
 		},
 		{
 			name: "not recorded by default",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
 				require.NoError(t, err)
 

@@ -46,7 +46,7 @@ var (
 //
 // A failed listing is an error, never an empty list. A passkey is never a
 // recovery proof.
-func (m *Manager) RecoveryKind() recovery.AuthenticatorKind { return NewRecoveryKind(m.credentials) }
+func (m *Passkeys) RecoveryKind() recovery.AuthenticatorKind { return NewRecoveryKind(m.credentials) }
 
 // NewRecoveryKind returns the passkey authenticator kind over credentials, the
 // same kind (*Manager).RecoveryKind reports, without needing a Manager.

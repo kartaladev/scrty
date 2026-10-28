@@ -24,13 +24,13 @@ const (
 	fieldCount // not a field; keeps the set array in step with the list above
 )
 
-// NewUser carries the fields a Provision or Update call named, and which of them
+// UserChange carries the fields a Provision or Update call named, and which of them
 // were named at all.
 //
 // Implementations decide what to write from IsSet, never from a value being
 // empty: naming a field with an empty value is a request to clear it, while not
 // naming it at all is a request to leave it alone, and the two are different.
-type NewUser struct {
+type UserChange struct {
 	Name         string
 	Email        string
 	Roles        []string
@@ -43,7 +43,7 @@ type NewUser struct {
 }
 
 // IsSet reports whether the caller named f.
-func (u *NewUser) IsSet(f Field) bool {
+func (u *UserChange) IsSet(f Field) bool {
 	if f >= fieldCount {
 		return false
 	}
@@ -51,19 +51,19 @@ func (u *NewUser) IsSet(f Field) bool {
 	return u.set[f]
 }
 
-func (u *NewUser) mark(f Field) {
+func (u *UserChange) mark(f Field) {
 	if f < fieldCount {
 		u.set[f] = true
 	}
 }
 
 // UserOption names one field of a Provision or Update call.
-type UserOption func(*NewUser)
+type UserOption func(*UserChange)
 
 // WithUserName names the display name. Unnamed, it is left unchanged by Update
 // and empty by Provision.
 func WithUserName(name string) UserOption {
-	return func(u *NewUser) { u.Name = name; u.mark(FieldName) }
+	return func(u *UserChange) { u.Name = name; u.mark(FieldName) }
 }
 
 // WithUserEmail names the email address.
@@ -72,7 +72,7 @@ func WithUserName(name string) UserOption {
 // a user: matching on it would let a caller take over an existing account by
 // claiming its address.
 func WithUserEmail(email string) UserOption {
-	return func(u *NewUser) { u.Email = email; u.mark(FieldEmail) }
+	return func(u *UserChange) { u.Email = email; u.mark(FieldEmail) }
 }
 
 // WithUserRoles names the role names, the first of which is the primary role.
@@ -80,13 +80,13 @@ func WithUserEmail(email string) UserOption {
 // Naming no roles at all still counts as naming the field, which is what lets
 // Update tell "leave the grants alone" apart from "these are the grants now".
 func WithUserRoles(roles ...string) UserOption {
-	return func(u *NewUser) { u.Roles = roles; u.mark(FieldRoles) }
+	return func(u *UserChange) { u.Roles = roles; u.mark(FieldRoles) }
 }
 
 // WithUserOrganization names the organization. A nil organization names the
 // field, clearing it.
 func WithUserOrganization(org *Organization) UserOption {
-	return func(u *NewUser) { u.Organization = org; u.mark(FieldOrganization) }
+	return func(u *UserChange) { u.Organization = org; u.mark(FieldOrganization) }
 }
 
 // WithUserPassword names the already-hashed password.
@@ -100,7 +100,7 @@ func WithUserOrganization(org *Organization) UserOption {
 // change: use WithUserPasswordChange there, or the user is never challenged by
 // password-age policy.
 func WithUserPassword(hash []byte) UserOption {
-	return func(u *NewUser) { u.Password = hash; u.mark(FieldPassword) }
+	return func(u *UserChange) { u.Password = hash; u.mark(FieldPassword) }
 }
 
 // WithUserPasswordChangedAt names when the password was last changed.
@@ -113,7 +113,7 @@ func WithUserPassword(hash []byte) UserOption {
 // on every federated login cannot keep a user permanently fresh. Naming the zero
 // time clears it.
 func WithUserPasswordChangedAt(t time.Time) UserOption {
-	return func(u *NewUser) { u.PasswordChangedAt = t; u.mark(FieldPasswordChangedAt) }
+	return func(u *UserChange) { u.PasswordChangedAt = t; u.mark(FieldPasswordChangedAt) }
 }
 
 // WithUserPasswordChange names a local password change: the already-hashed
@@ -124,7 +124,7 @@ func WithUserPasswordChangedAt(t time.Time) UserOption {
 // from an identity provider is named with WithUserPassword alone, so it never
 // moves the time.
 func WithUserPasswordChange(hash []byte, at time.Time) UserOption {
-	return func(u *NewUser) {
+	return func(u *UserChange) {
 		WithUserPassword(hash)(u)
 		WithUserPasswordChangedAt(at)(u)
 	}
@@ -135,8 +135,8 @@ func WithUserPasswordChange(hash []byte, at time.Time) UserOption {
 // Implementations of UserProvisioner call it to learn which fields the caller
 // named. A nil option is skipped, so a caller building an option slice
 // conditionally need not filter it first.
-func ApplyUserOptions(opts ...UserOption) *NewUser {
-	u := &NewUser{}
+func ApplyUserOptions(opts ...UserOption) *UserChange {
+	u := &UserChange{}
 
 	for _, opt := range opts {
 		if opt != nil {

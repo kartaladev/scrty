@@ -47,12 +47,12 @@ func ExampleWithProviderAssurance() {
 		panic(err)
 	}
 
-	manager, err := oidc.NewManager(registry, broker,
+	manager, err := oidc.NewRelyingParty(registry, broker,
 		oidc.WithProviderAssurance("corp", oidc.Assurance{
 			AcceptedAMR: []string{"mfa", "hwk"},
 			AcceptedACR: []string{"gold"},
 			RequestACR:  []string{"gold"},
-			Match:       oidc.MatchAny,
+			Match:       oidc.AssuranceMatchAny,
 		}),
 	)
 	if err != nil {
@@ -63,7 +63,7 @@ func ExampleWithProviderAssurance() {
 
 	// A configuration for a provider that is not registered fails at
 	// construction, not at the first login.
-	_, err = oidc.NewManager(registry, broker,
+	_, err = oidc.NewRelyingParty(registry, broker,
 		oidc.WithProviderAssurance("elsewhere", oidc.Assurance{AcceptedAMR: []string{"mfa"}}),
 	)
 	fmt.Println(errors.Is(err, oidc.ErrConfig))
@@ -111,7 +111,7 @@ func ExampleWithAssuranceEvaluator() {
 
 	evaluator := adminsNeedAHardwareKey{admins: []identity.UserID{"root"}}
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
 	if err != nil {
 		panic(err)
 	}

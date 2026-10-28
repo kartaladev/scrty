@@ -59,7 +59,7 @@ const pwlMaxPasswordAge = 24 * time.Hour
 // the stub verifier. Only the user store and the token generator are
 // doubles.
 type pwlDeployment struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    *MockUserLoader
 	tokens   *MockGenerator
 	totp     *mfa.TOTP
@@ -123,7 +123,7 @@ type pwlDeployment struct {
 	// slots are the slot markers a request passed, in order.
 	slots []string
 
-	manager *passkey.Manager
+	manager *passkey.Passkeys
 	chain   *httpsec.Chain
 }
 
@@ -132,7 +132,7 @@ func newPwlDeployment(t *testing.T) *pwlDeployment {
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	d := &pwlDeployment{
@@ -237,15 +237,15 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 	lookups, err := mfa.LookupsFor(methods...)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(d.required, lookups)
+	requirement, err := policy.NewMFARequirement(d.required, lookups)
 	require.NoError(t, err)
 
 	policies := []policy.Policy{challenge, requirement}
 	if d.passwordAge {
-		age, err := policy.NewPasswordAgePolicy(policy.WithMaxPasswordAge(pwlMaxPasswordAge))
+		age, err := policy.NewPasswordAge(policy.WithMaxPasswordAge(pwlMaxPasswordAge))
 		require.NoError(t, err)
 
 		policies = append(policies, age)
@@ -465,7 +465,7 @@ func (d *pwlDeployment) sessionGone(t *testing.T, sid, msg string) {
 	t.Helper()
 
 	_, err := d.sessions.Load(t.Context(), sid)
-	assert.ErrorIs(t, err, session.ErrSessionNotFound, msg)
+	assert.ErrorIs(t, err, session.ErrNotFound, msg)
 }
 
 // namesNoCredentialOrChallenge asserts a refusal's text carries neither a
@@ -1032,10 +1032,10 @@ func TestPasswordless(t *testing.T) {
 			setup: func(t *testing.T, d *pwlDeployment) {
 				d.required.on.Store(false)
 
-				onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
+				onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
 				require.NoError(t, err)
 
-				links, err := magiclink.NewManager(onetimes, d.users, d.notices, "https://app.example.com")
+				links, err := magiclink.New(onetimes, d.users, d.notices, "https://app.example.com")
 				require.NoError(t, err)
 
 				d.extra = append(d.extra, httpsec.EnableMagicLink(links,
@@ -1129,7 +1129,7 @@ func TestPasswordless(t *testing.T) {
 				return d.login(t, "cred-1", d.seed(t, e2eUser, "cred-1", passkey.StateActive))
 			},
 			assert: func(t *testing.T, d *pwlDeployment, out served) {
-				require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+				require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 				assert.Zero(t, d.sessionCount(t, out))
 			},
 		},
@@ -1138,7 +1138,7 @@ func TestPasswordless(t *testing.T) {
 			setup: func(_ *testing.T, d *pwlDeployment) {
 				d.withoutPasskeyMFA = true
 				d.required.on.Store(false)
-				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UVPreferred))
+				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UserVerificationPreferred))
 				d.verifier.notUserVerified.Store(true)
 			},
 			act: func(t *testing.T, d *pwlDeployment) served {
@@ -1154,7 +1154,7 @@ func TestPasswordless(t *testing.T) {
 		{
 			name: "relaxed user verification with the passkey method on the slot is refused as the same channel",
 			setup: func(_ *testing.T, d *pwlDeployment) {
-				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UVPreferred))
+				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UserVerificationPreferred))
 				d.verifier.notUserVerified.Store(true)
 			},
 			act: func(t *testing.T, d *pwlDeployment) served {

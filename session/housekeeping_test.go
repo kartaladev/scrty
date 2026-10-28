@@ -326,7 +326,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 					session.WithMemoryStoreClock(clk),
 					session.WithHousekeepingInterval(time.Hour),
 				)
-				m, err := session.NewManager(session.WithClock(clk), session.WithStore(store))
+				m, err := session.New(session.WithClock(clk), session.WithStore(store))
 				require.NoError(t, err)
 
 				s, err := m.Create(t.Context(), testUser)
@@ -339,10 +339,10 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 
 				clk.Advance(31 * time.Minute)
 
-				require.ErrorIs(t, m.Touch(t.Context(), s), session.ErrSessionExpired,
+				require.ErrorIs(t, m.Touch(t.Context(), s), session.ErrExpired,
 					"the manager did not judge the session expired at the shared instant")
 				_, err = m.Load(t.Context(), s.ID)
-				require.ErrorIs(t, err, session.ErrSessionExpired,
+				require.ErrorIs(t, err, session.ErrExpired,
 					"the store did not judge the session expired at the shared instant")
 				require.Equal(t, 1, store.Len(), "housekeeping swept before its interval")
 

@@ -25,11 +25,11 @@ type recoveryFixture struct {
 	observed int
 }
 
-func newRecoveryFixture(t *testing.T, opts ...session.ManagerOption) *recoveryFixture {
+func newRecoveryFixture(t *testing.T, opts ...session.Option) *recoveryFixture {
 	t.Helper()
 
 	f := &recoveryFixture{}
-	all := append([]session.ManagerOption{
+	all := append([]session.Option{
 		session.WithAbsoluteTimeout(72 * time.Hour),
 		session.WithIdleTimeout(48 * time.Hour),
 		session.WithReuseObserver(func(context.Context, session.ReuseReport) { f.observed++ }),
@@ -42,11 +42,11 @@ func newRecoveryFixture(t *testing.T, opts ...session.ManagerOption) *recoveryFi
 func TestUnusedSuccessorRecovery(t *testing.T) {
 	t.Parallel()
 
-	recovery := []session.ManagerOption{session.WithUnusedSuccessorRecovery()}
+	recovery := []session.Option{session.WithUnusedSuccessorRecovery()}
 
 	type testCase struct {
 		name string
-		opts []session.ManagerOption
+		opts []session.Option
 		// act rotates O into S1 at 09:00 with a 30-second grace, runs the
 		// case's steps, and returns what its last step returned.
 		act    func(ctx context.Context, t *testing.T, f *recoveryFixture, s1 *session.Session) (*session.Session, session.RenewalKind, error)
@@ -59,7 +59,7 @@ func TestUnusedSuccessorRecovery(t *testing.T) {
 	assertFamilyRevoked := func(t *testing.T, f *recoveryFixture, got *session.Session, err error) {
 		t.Helper()
 
-		require.ErrorIs(t, err, session.ErrSessionReused)
+		require.ErrorIs(t, err, session.ErrReused)
 		assert.Nil(t, got)
 		assert.Zero(t, f.store.Len(), "the family was not revoked")
 		assert.Equal(t, 1, f.observed, "the observer was not told once")
@@ -102,7 +102,7 @@ func TestUnusedSuccessorRecovery(t *testing.T) {
 				return s2, kind, err
 			},
 			assert: func(t *testing.T, f *recoveryFixture, _ *session.Session, _ session.RenewalKind, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused, "the knocked-out successor has nothing to recover into")
+				require.ErrorIs(t, err, session.ErrReused, "the knocked-out successor has nothing to recover into")
 				assert.Zero(t, f.store.Len(), "the family was not revoked")
 				assert.Equal(t, 1, f.observed)
 			},
@@ -167,9 +167,9 @@ func TestUnusedSuccessorRecovery(t *testing.T) {
 				return got, 0, err
 			},
 			assert: func(t *testing.T, f *recoveryFixture, got *session.Session, _ session.RenewalKind, err error) {
-				require.ErrorIs(t, err, session.ErrSessionRenewalRequired)
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				require.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrRenewalRequired)
+				require.ErrorIs(t, err, session.ErrExpired)
+				require.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 				assert.Equal(t, 2, f.store.Len(), "an ordinary request revoked the family")
 				assert.Zero(t, f.observed, "an ordinary request was reported as reuse")
@@ -181,7 +181,7 @@ func TestUnusedSuccessorRecovery(t *testing.T) {
 			act: func(ctx context.Context, t *testing.T, f *recoveryFixture, s1 *session.Session) (*session.Session, session.RenewalKind, error) {
 				f.clk.Advance(nextDay)
 				_, err := f.m.Load(ctx, f.o.ID)
-				require.ErrorIs(t, err, session.ErrSessionRenewalRequired)
+				require.ErrorIs(t, err, session.ErrRenewalRequired)
 				got, err := f.m.Load(ctx, s1.ID)
 				return got, 0, err
 			},
@@ -199,7 +199,7 @@ func TestUnusedSuccessorRecovery(t *testing.T) {
 				return got, 0, err
 			},
 			assert: func(t *testing.T, f *recoveryFixture, got *session.Session, _ session.RenewalKind, err error) {
-				require.ErrorIs(t, err, session.ErrSessionRenewalRequired)
+				require.ErrorIs(t, err, session.ErrRenewalRequired)
 				assert.Nil(t, got)
 				assert.Equal(t, 2, f.store.Len(), "a refused strict rotation wrote")
 			},
@@ -267,7 +267,7 @@ func TestRenewalKind_String(t *testing.T) {
 
 // recoveryManager is a manager with recovery on over store, on clk, whose
 // sessions outlive a day.
-func recoveryManager(t *testing.T, store session.Store, clk *clockwork.FakeClock) *session.Manager {
+func recoveryManager(t *testing.T, store session.Store, clk *clockwork.FakeClock) *session.Sessions {
 	t.Helper()
 
 	return managerFor(t, session.WithStore(store), session.WithClock(clk),
@@ -284,7 +284,7 @@ func TestKnockedOutSuccessor_IsReuseWhateverTheReaderClock(t *testing.T) {
 	t.Parallel()
 
 	type fixture struct {
-		reader, writer       *session.Manager
+		reader, writer       *session.Sessions
 		readerClk, writerClk *clockwork.FakeClock
 		store                *session.MemoryStore
 		o, s1                *session.Session
@@ -302,7 +302,7 @@ func TestKnockedOutSuccessor_IsReuseWhateverTheReaderClock(t *testing.T) {
 	assertReuse := func(t *testing.T, f *fixture, err error) {
 		t.Helper()
 
-		require.ErrorIs(t, err, session.ErrSessionReused)
+		require.ErrorIs(t, err, session.ErrReused)
 		assert.Zero(t, f.store.Len(), "the family was not revoked")
 	}
 	reRotate := func(ctx context.Context, t *testing.T, f *fixture) {
@@ -360,8 +360,8 @@ func TestKnockedOutSuccessor_IsReuseWhateverTheReaderClock(t *testing.T) {
 				writerClk: clockwork.NewFakeClockAt(createdAt),
 			}
 			f.store = session.NewMemoryStore(session.WithMemoryStoreClock(f.readerClk))
-			managerOn := func(clk *clockwork.FakeClock) *session.Manager {
-				opts := []session.ManagerOption{
+			managerOn := func(clk *clockwork.FakeClock) *session.Sessions {
+				opts := []session.Option{
 					session.WithStore(f.store), session.WithClock(clk),
 					session.WithAbsoluteTimeout(72 * time.Hour), session.WithIdleTimeout(48 * time.Hour),
 				}

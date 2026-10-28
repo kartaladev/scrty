@@ -55,7 +55,7 @@ func TestNormaliseName(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, passkey.NormaliseName(tc.raw, created))
+			tc.assert(t, passkey.NormalizeName(tc.raw, created))
 		})
 	}
 }

@@ -24,14 +24,14 @@ import (
 // reading message text.
 var ErrConfig = errors.New("policy: invalid configuration")
 
-// ErrPolicyDenied is the reason an Engine substitutes when a policy denies
+// ErrDenied is the reason an Engine substitutes when a policy denies
 // without giving one.
 //
 // A caller that refuses a request by returning the decision's reason as its own
 // error returns nil for a reasonless deny, and so completes the very request it
 // was refusing. Every deny therefore leaves the engine carrying a reason, and
 // this is the one used when the policy supplied none.
-var ErrPolicyDenied = errors.New("policy: denied by policy")
+var ErrDenied = errors.New("policy: denied by policy")
 
 // DefaultLogInterval is how long one written refusal record suppresses further
 // records about the same thing, for the policies here that sample their logs.

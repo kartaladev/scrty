@@ -28,14 +28,14 @@ func TestExpiryTask(t *testing.T) {
 		store func(clock *clockwork.FakeClock) onetime.Store
 		// age is how long ago carol's one token was issued.
 		age    time.Duration
-		assert func(t *testing.T, task expiry.Task, tokens *onetime.Manager, removed int, err error)
+		assert func(t *testing.T, task expiry.Task, tokens *onetime.Tokens, removed int, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "a token expired but inside the issuance window is kept and still counted",
 			age:  30 * time.Minute,
-			assert: func(t *testing.T, _ expiry.Task, tokens *onetime.Manager, removed int, err error) {
+			assert: func(t *testing.T, _ expiry.Task, tokens *onetime.Tokens, removed int, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, removed)
 
@@ -47,7 +47,7 @@ func TestExpiryTask(t *testing.T) {
 		{
 			name: "a token expired and past the issuance window is deleted",
 			age:  2 * time.Hour,
-			assert: func(t *testing.T, _ expiry.Task, _ *onetime.Manager, removed int, err error) {
+			assert: func(t *testing.T, _ expiry.Task, _ *onetime.Tokens, removed int, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 1, removed)
 			},
@@ -55,7 +55,7 @@ func TestExpiryTask(t *testing.T) {
 		{
 			name: "the task is named magiclink-tokens and sets no interval",
 			age:  time.Minute,
-			assert: func(t *testing.T, task expiry.Task, _ *onetime.Manager, _ int, err error) {
+			assert: func(t *testing.T, task expiry.Task, _ *onetime.Tokens, _ int, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "magiclink-tokens", task.Name)
 				assert.Zero(t, task.Interval)
@@ -67,7 +67,7 @@ func TestExpiryTask(t *testing.T) {
 				return noPurgeStore{Store: onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clock))}
 			},
 			age: 2 * time.Hour,
-			assert: func(t *testing.T, _ expiry.Task, _ *onetime.Manager, removed int, err error) {
+			assert: func(t *testing.T, _ expiry.Task, _ *onetime.Tokens, removed int, err error) {
 				require.ErrorIs(t, err, expiry.ErrPurgeUnsupported)
 				require.ErrorIs(t, err, onetime.ErrReapUnsupported)
 				assert.Zero(t, removed)
@@ -85,7 +85,7 @@ func TestExpiryTask(t *testing.T) {
 				store = tc.store(clk)
 			}
 
-			tokens, err := onetime.NewManager("magic-link",
+			tokens, err := onetime.New("magic-link",
 				onetime.WithStore(store), onetime.WithClock(clk),
 				onetime.WithTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
 			require.NoError(t, err)
@@ -94,7 +94,7 @@ func TestExpiryTask(t *testing.T) {
 			require.NoError(t, err)
 			clk.Advance(tc.age)
 
-			m, err := magiclink.NewManager(tokens, stubLoader{}, &recordingSender{}, "https://app.example.com")
+			m, err := magiclink.New(tokens, stubLoader{}, &recordingSender{}, "https://app.example.com")
 			require.NoError(t, err)
 
 			task := magiclink.ExpiryTask(m)
@@ -111,7 +111,7 @@ func TestManager_PurgeExpired(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
-	tokens, err := onetime.NewManager("magic-link",
+	tokens, err := onetime.New("magic-link",
 		onetime.WithStore(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))),
 		onetime.WithClock(clk), onetime.WithTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestManager_PurgeExpired(t *testing.T) {
 	require.NoError(t, err)
 	clk.Advance(2 * time.Hour)
 
-	m, err := magiclink.NewManager(tokens, stubLoader{}, &recordingSender{}, "https://app.example.com")
+	m, err := magiclink.New(tokens, stubLoader{}, &recordingSender{}, "https://app.example.com")
 	require.NoError(t, err)
 
 	removed, err := m.PurgeExpired(t.Context())

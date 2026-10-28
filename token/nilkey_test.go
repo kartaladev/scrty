@@ -38,7 +38,7 @@ func TestVerify_NilPublicKeyIsAnUnusableKeySet(t *testing.T) {
 
 	unusable := func(t *testing.T, claims *token.Claims, err error) {
 		require.Error(t, err)
-		assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+		assert.NotErrorIs(t, err, token.ErrInvalid,
 			"an unusable key set is an outage, not a verdict on the token")
 		assert.Nil(t, claims)
 	}
@@ -70,7 +70,7 @@ func TestVerify_NilPublicKeyIsAnUnusableKeySet(t *testing.T) {
 			raw, err := gen.Generate(t.Context(), "s-1", alice())
 			require.NoError(t, err)
 
-			ver, err := token.NewVerifier(token.VerifyWithKeySource(tc.source))
+			ver, err := token.NewVerifier(token.WithVerifyKeySource(tc.source))
 			require.NoError(t, err)
 
 			var (

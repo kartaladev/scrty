@@ -210,7 +210,7 @@ func sealedKeysVariant(d sealedDefect, failsCase string) brokenVariant {
 	return brokenVariant{
 		name: "sealed-keys-" + string(d),
 		run: func(t *testing.T) {
-			table := signingkey.NewInMemoryKeyStore()
+			table := signingkey.NewMemoryKeyStore()
 			h := fakeHarness(func(*testing.T) signingkey.KeyStore { return table })
 			storetest.RunSealedColumns(t, h, sealedKeysFake(table, d))
 		},

@@ -145,7 +145,7 @@ func TestOIDCRedeem(t *testing.T) {
 		t.Helper()
 
 		for range 10 {
-			require.ErrorIs(t, redeemFrom(t, c, oidcTestSource, code).err, policy.ErrPolicyDenied)
+			require.ErrorIs(t, redeemFrom(t, c, oidcTestSource, code).err, policy.ErrDenied)
 		}
 
 		return redeemFrom(t, c, oidcTestSource, code)
@@ -332,7 +332,7 @@ func TestOIDCRedeem(t *testing.T) {
 				return out
 			},
 			assert: func(t *testing.T, h *oidcHarness, code string, out served) {
-				requireRefused(t, h, out, policy.ErrPolicyDenied, http.StatusForbidden)
+				requireRefused(t, h, out, policy.ErrDenied, http.StatusForbidden)
 				requireRedeemable(t, h, code)
 			},
 		},
@@ -342,7 +342,7 @@ func TestOIDCRedeem(t *testing.T) {
 			name: "an implementation that skips the checks is refused",
 			opts: withRedeemer(reportsSuccess(false)),
 			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
-				requireRefused(t, h, out, policy.ErrPolicyDenied, http.StatusForbidden)
+				requireRefused(t, h, out, policy.ErrDenied, http.StatusForbidden)
 			},
 		},
 		{
@@ -370,7 +370,7 @@ func TestOIDCRedeem(t *testing.T) {
 				return engineOf(t, p)
 			},
 			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
-				requireRefused(t, h, out, policy.ErrPolicyDenied, http.StatusForbidden)
+				requireRefused(t, h, out, policy.ErrDenied, http.StatusForbidden)
 			},
 		},
 		{
@@ -389,7 +389,7 @@ func TestOIDCRedeem(t *testing.T) {
 			engine: switchablePolicy,
 			act:    tenDenialsThenOneMore,
 			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
-				requireRefused(t, h, out, policy.ErrPolicyDenied, http.StatusForbidden)
+				requireRefused(t, h, out, policy.ErrDenied, http.StatusForbidden)
 			},
 		},
 		{

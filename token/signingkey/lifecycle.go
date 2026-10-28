@@ -28,7 +28,7 @@ import (
 // (WithClock) waits for all three to be waiting before advancing it — with
 // clockwork's fake, BlockUntilContext(ctx, 3) — or its advance may land before
 // a loop starts counting and never fire that loop.
-func (km *KeyManager) Start(ctx context.Context) error {
+func (km *Keys) Start(ctx context.Context) error {
 	km.lifecycle.Lock()
 	defer km.lifecycle.Unlock()
 
@@ -64,7 +64,7 @@ func (km *KeyManager) Start(ctx context.Context) error {
 // runningLocked reports whether the loops of the last run launched are still
 // live, which is true until that run's context is cancelled. Callers hold
 // km.lifecycle.
-func (km *KeyManager) runningLocked() bool {
+func (km *Keys) runningLocked() bool {
 	if km.runDone == nil {
 		return false
 	}
@@ -82,7 +82,7 @@ func (km *KeyManager) runningLocked() bool {
 // Waiting under the lifecycle lock is safe, and is what makes concurrent Start
 // and Stop race-free: no loop ever takes this lock, so none of them can be
 // blocked on it while the wait is in progress.
-func (km *KeyManager) reapLocked() {
+func (km *Keys) reapLocked() {
 	if km.cancel == nil {
 		return
 	}
@@ -100,7 +100,7 @@ func (km *KeyManager) reapLocked() {
 //
 // It ends with return, never with break: a break inside the select would leave
 // the select but not the for.
-func (km *KeyManager) loop(ctx context.Context, every time.Duration, step func(context.Context)) {
+func (km *Keys) loop(ctx context.Context, every time.Duration, step func(context.Context)) {
 	defer km.wg.Done()
 	// Flushing here rather than in Stop accounts for the suppressed failures
 	// on every shutdown path, including a caller who only cancels the context.
@@ -124,7 +124,7 @@ func (km *KeyManager) loop(ctx context.Context, every time.Duration, step func(c
 //
 // It is idempotent, and returns at once for a manager that was never started. A
 // stopped manager stays stopped: a later Start launches nothing.
-func (km *KeyManager) Stop() error {
+func (km *Keys) Stop() error {
 	km.lifecycle.Lock()
 	defer km.lifecycle.Unlock()
 

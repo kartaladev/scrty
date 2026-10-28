@@ -31,7 +31,7 @@ func TestFormLogin_Lifetime(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		manager []session.ManagerOption
+		manager []session.Option
 		opts    []httpsec.LoginOption
 		req     func(t *testing.T) *http.Request
 		// mockStore builds the manager over a mock store that expects no
@@ -41,7 +41,7 @@ func TestFormLogin_Lifetime(t *testing.T) {
 	}
 
 	remember := []httpsec.LoginOption{httpsec.WithLoginLifetime(rememberLifetime)}
-	long := []session.ManagerOption{session.WithMaxAbsoluteLifetime(30 * day)}
+	long := []session.Option{session.WithMaxAbsoluteLifetime(30 * day)}
 
 	json := func(body string) func(*testing.T) *http.Request {
 		return func(t *testing.T) *http.Request { return jsonRequest(t.Context(), "/login", body) }
@@ -124,7 +124,7 @@ func TestFormLogin_Lifetime(t *testing.T) {
 
 			var err error
 
-			h.sessions, err = session.NewManager(append([]session.ManagerOption{
+			h.sessions, err = session.New(append([]session.Option{
 				session.WithClock(clk),
 				session.WithStore(store),
 				session.WithAbsoluteTimeout(12 * time.Hour),

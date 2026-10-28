@@ -10,7 +10,7 @@ import "github.com/kartaladev/scrty/expiry"
 // deployment knows its cadence, and it accepts no cutoff: the manager uses its
 // own clock's now. It never deletes a flow that has not expired, and it never
 // touches OIDC links or identity records.
-func FlowExpiryTask(m *Manager) expiry.Task {
+func FlowExpiryTask(m *RelyingParty) expiry.Task {
 	return expiry.Task{Name: "oidc-flows", Run: m.PurgeExpiredFlows}
 }
 
@@ -22,6 +22,6 @@ func FlowExpiryTask(m *Manager) expiry.Task {
 // the deployment knows its cadence, and it accepts no cutoff: the manager uses
 // its own clock's now. It never deletes a code that has not expired, and it
 // never touches OIDC links, sessions or identity records.
-func HandoffExpiryTask(h *HandoffManager) expiry.Task {
+func HandoffExpiryTask(h *Handoff) expiry.Task {
 	return expiry.Task{Name: "oidc-handoffs", Run: h.PurgeExpired}
 }

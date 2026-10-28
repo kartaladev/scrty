@@ -362,7 +362,7 @@ func TestPasskeyEnrolmentSharedSettings(t *testing.T) {
 
 				c := h.credential(t)
 				assert.Equal(t, passkey.StatePending, c.State)
-				assert.Equal(t, passkey.AwaitingEmailCode, c.Pending)
+				assert.Equal(t, passkey.PendingEmailCode, c.Pending)
 				assert.Equal(t, session.MFAEnrolmentPending, h.stored(t, s.ID).MFA)
 
 				msg := h.notices.last(t)
@@ -550,10 +550,10 @@ func TestPasskeyEnrolmentEndToEnd(t *testing.T) {
 	lookups, err := mfa.LookupsFor(d.totp, method)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(d.required, lookups, policy.WithMFAEnrolmentPath())
+	requirement, err := policy.NewMFARequirement(d.required, lookups, policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 
 	authn, err := authenticate.NewUsernamePasswordAuthenticator(d.users,

@@ -290,7 +290,7 @@ func runCutRace[S session.Store](t *testing.T, h DurableHarness[S]) {
 						round, sessionID, err)
 				}
 			}
-			if _, err := stores[0].Load(t.Context(), unrelated.ID); !errors.Is(err, session.ErrSessionNotFound) {
+			if _, err := stores[0].Load(t.Context(), unrelated.ID); !errors.Is(err, session.ErrNotFound) {
 				t.Errorf("round %d: the unrelated session %s must be gone, got %v", round, unrelated.ID, err)
 			}
 		}
@@ -339,7 +339,7 @@ func sessionSupersessionRace[S session.Store](racers int) Race[S] {
 			switch {
 			case err == nil:
 				return true, nil
-			case errors.Is(err, session.ErrSessionRenewalConflict):
+			case errors.Is(err, session.ErrRenewalConflict):
 				return false, nil
 			default:
 				return false, err
@@ -363,7 +363,7 @@ func sessionSupersessionRace[S session.Store](racers int) Race[S] {
 					if !bytes.Equal(old.SuccessorDigest, sessionDigest(successor)) {
 						t.Errorf("session %s: a stored successor is not the one the superseded session names", key)
 					}
-				case !errors.Is(err, session.ErrSessionNotFound):
+				case !errors.Is(err, session.ErrNotFound):
 					t.Errorf("session %s: loading a successor: %v", key, err)
 				}
 			}
@@ -394,7 +394,7 @@ var (
 	chargeRule    = raceRule{
 		name:   "exactly the allowed number of charges win per code",
 		noun:   "charge",
-		wins:   mfa.MaxEmailCodeFailures,
+		wins:   mfa.MaxEmailCodeAttempts,
 		racers: defaultChargeRacers,
 	}
 	verifyChargeRule = raceRule{

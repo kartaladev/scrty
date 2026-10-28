@@ -266,7 +266,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 		return failed(op, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 
 	return nil
@@ -287,14 +287,14 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	var row sessionRow
 	err = q.Where("id_digest = ?", storekit.SessionDigest(sessionID)).Take(&row).Error
 	if errors.Is(err, gormdb.ErrRecordNotFound) {
-		return nil, session.ErrSessionNotFound
+		return nil, session.ErrNotFound
 	}
 	if err != nil {
 		return nil, failed(op, err)
 	}
 
 	if row.stale(s.c.clock.Now()) {
-		return nil, session.ErrSessionExpired
+		return nil, session.ErrExpired
 	}
 
 	sess := session.Session{
@@ -845,7 +845,7 @@ func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string)
 	err = q.Raw(pgschema.SessionSuccessorPresented,
 		storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())).Row().Scan(&used)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, session.ErrSessionNotFound
+		return false, session.ErrNotFound
 	}
 	if err != nil {
 		return false, failed(op, err)

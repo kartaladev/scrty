@@ -78,8 +78,8 @@ func TestNotFoundUnless(t *testing.T) {
 		{
 			name: "not stored",
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
-				assert.Same(t, session.ErrSessionNotFound, err, "returned bare")
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Same(t, session.ErrNotFound, err, "returned bare")
 			},
 		},
 		{
@@ -117,8 +117,8 @@ func TestSupersedeRefusal(t *testing.T) {
 			name:  "missing",
 			cause: pgschema.SupersedeRefusalMissing,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
-				assert.Same(t, session.ErrSessionNotFound, err, "returned bare")
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Same(t, session.ErrNotFound, err, "returned bare")
 			},
 		},
 		{
@@ -133,16 +133,16 @@ func TestSupersedeRefusal(t *testing.T) {
 			name:  "successor or supersession",
 			cause: pgschema.SupersedeRefusalOther,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
-				assert.Same(t, session.ErrSessionRenewalConflict, err, "returned bare")
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Same(t, session.ErrRenewalConflict, err, "returned bare")
 			},
 		},
 		{
 			name:  "an unknown cause is a conflict",
 			cause: 7,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
-				assert.Same(t, session.ErrSessionRenewalConflict, err, "returned bare")
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
+				assert.Same(t, session.ErrRenewalConflict, err, "returned bare")
 			},
 		},
 	}
@@ -177,8 +177,8 @@ func TestPresentationRefusal(t *testing.T) {
 		{
 			name: "not stored",
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
-				assert.Same(t, session.ErrSessionNotFound, err, "returned bare")
+				require.ErrorIs(t, err, session.ErrNotFound)
+				assert.Same(t, session.ErrNotFound, err, "returned bare")
 			},
 		},
 		{
@@ -186,8 +186,8 @@ func TestPresentationRefusal(t *testing.T) {
 			exists:    true,
 			supersede: true,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionSuperseded)
-				assert.Same(t, session.ErrSessionSuperseded, err, "returned bare")
+				require.ErrorIs(t, err, session.ErrSuperseded)
+				assert.Same(t, session.ErrSuperseded, err, "returned bare")
 			},
 		},
 		{

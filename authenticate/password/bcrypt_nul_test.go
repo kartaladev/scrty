@@ -43,7 +43,7 @@ func TestBcryptMatch_RefusesNulJoinedRepetitionOfPassword(t *testing.T) {
 			assert: func(t *testing.T, enc password.Encoder) {
 				encoded, err := enc.Encode("hunter2\x00hunter2")
 
-				require.ErrorIs(t, err, password.ErrPasswordContainsNUL)
+				require.ErrorIs(t, err, password.ErrContainsNUL)
 				assert.Nil(t, encoded)
 			},
 		},

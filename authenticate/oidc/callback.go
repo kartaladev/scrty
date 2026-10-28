@@ -39,7 +39,7 @@ var errForeignFlow = fmt.Errorf("%w: the flow store completed another provider's
 // completed a flow of another provider, ErrDiscoveryFailed,
 // ErrExchangeFailed, ErrInvalidIDToken, or the broker's error as the broker
 // returned it (ErrNoLinkedAccount, ErrProvisioningRefused, or a failure).
-func (m *Manager) Callback(ctx context.Context, provider, code, state, handle string) (CallbackResult, error) {
+func (m *RelyingParty) Callback(ctx context.Context, provider, code, state, handle string) (CallbackResult, error) {
 	unspent := func(err error) (CallbackResult, error) {
 		return CallbackResult{}, errors.Join(err, ErrFlowUnspent)
 	}
@@ -121,7 +121,7 @@ func (m *Manager) Callback(ctx context.Context, provider, code, state, handle st
 // ErrUnknownProvider, and a store fault comes back wrapped with fixed library
 // text, still matching the store's own error by identity; neither ends the
 // flow.
-func (m *Manager) AbortFlow(ctx context.Context, provider, state, handle string) (bool, error) {
+func (m *RelyingParty) AbortFlow(ctx context.Context, provider, state, handle string) (bool, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return false, ErrUnknownProvider
@@ -147,7 +147,7 @@ func (m *Manager) AbortFlow(ctx context.Context, provider, state, handle string)
 // other store error is a fault, logged at ERROR and returned wrapped with
 // fixed library text; a consumer who wants its own detail logs it inside
 // their own implementation of FlowStore.
-func (m *Manager) completeFlow(ctx context.Context, provider, state, handle string) (Flow, error) {
+func (m *RelyingParty) completeFlow(ctx context.Context, provider, state, handle string) (Flow, error) {
 	f, err := m.flows.Complete(ctx, handle, provider, state)
 	switch {
 	case errors.Is(err, ErrInvalidState):
@@ -165,9 +165,9 @@ func (m *Manager) completeFlow(ctx context.Context, provider, state, handle stri
 // by reason and provider. cause is the library's own error text — never a
 // consumer dependency's: an invalid ID token's verification failure is the
 // only caller, and its text is a deliberate exception operators keep (see
-// [Manager]'s package doc). Neither carries a token, a state, a nonce or a
+// [RelyingParty]'s package doc). Neither carries a token, a state, a nonce or a
 // claim value.
-func (m *Manager) logCallbackRefusal(ctx context.Context, level slog.Level, reason, provider string, cause error) {
+func (m *RelyingParty) logCallbackRefusal(ctx context.Context, level slog.Level, reason, provider string, cause error) {
 	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
 	if !write {
 		return
@@ -184,7 +184,7 @@ func (m *Manager) logCallbackRefusal(ctx context.Context, level slog.Level, reas
 // diag.Failure's fixed reason and the error's type, never the store's own
 // text, so a consumer who wants that detail logs it inside their own
 // implementation of FlowStore.
-func (m *Manager) logCallbackFailure(ctx context.Context, provider, reason string, err error) {
+func (m *RelyingParty) logCallbackFailure(ctx context.Context, provider, reason string, err error) {
 	write, suppressed := m.sampler.Allow("oidc.callback:"+reason+":"+provider, m.clock.Now())
 	if !write {
 		return
@@ -207,7 +207,7 @@ const malformedAssuranceReason = "malformed-assurance-claim"
 // provider and the claim, never the claim's value. Warnings share the key
 // "oidc.callback:malformed-assurance-claim:<provider>", so a provider whose
 // every token is malformed writes one record per sampling window.
-func (m *Manager) logMalformedAssurance(ctx context.Context, provider, claim string) {
+func (m *RelyingParty) logMalformedAssurance(ctx context.Context, provider, claim string) {
 	write, suppressed := m.sampler.Allow("oidc.callback:"+malformedAssuranceReason+":"+provider, m.clock.Now())
 	if !write {
 		return

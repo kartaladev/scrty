@@ -113,10 +113,10 @@ type Redeemer interface {
 
 // magicLinkInterceptor answers both magic-link endpoints.
 type magicLinkInterceptor struct {
-	manager  *magiclink.Manager
+	manager  *magiclink.Links
 	redeemer Redeemer
 	respond  MagicLinkResponder
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 	checks   []magiclink.Check
 

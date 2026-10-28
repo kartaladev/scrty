@@ -265,7 +265,7 @@ func TestSessionBearer(t *testing.T) {
 			name:   "a missing session",
 			header: "Bearer " + testReference,
 			wire: func(h *authHarness) {
-				h.store.EXPECT().Load(gomock.Any(), testReference).Return(nil, session.ErrSessionNotFound)
+				h.store.EXPECT().Load(gomock.Any(), testReference).Return(nil, session.ErrNotFound)
 			},
 			assert: refused,
 		},
@@ -334,12 +334,12 @@ func TestSessionBearerRefusesReusedReference(t *testing.T) {
 			after: 31 * time.Second,
 			assert: func(t *testing.T, f resolveFixture, successor *session.Session, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
-				require.ErrorIs(t, s.err, session.ErrSessionReused)
+				require.ErrorIs(t, s.err, session.ErrReused)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 				assert.False(t, s.handlerRan)
 
 				_, err := f.sessions.Load(t.Context(), successor.ID)
-				require.ErrorIs(t, err, session.ErrSessionNotFound,
+				require.ErrorIs(t, err, session.ErrNotFound,
 					"the family is revoked, its live successor with it")
 			},
 		},
@@ -680,7 +680,7 @@ func TestSessionBearerIssuesSessionReferences(t *testing.T) {
 			name: "password login",
 			issue: func(t *testing.T) (*httpsec.Chain, issued) {
 				h := newAuthHarness(t)
-				sessions, err := session.NewManager()
+				sessions, err := session.New()
 				require.NoError(t, err)
 
 				h.expectAuthenticated(testPrincipal())
@@ -853,7 +853,7 @@ func TestSessionBearerIssuesSessionReferences(t *testing.T) {
 
 // issuedFromBody reads the credential an endpoint with no responder hook
 // wrote into its JSON document, and the session it names from sessions.
-func issuedFromBody(t *testing.T, sessions *session.Manager, out served) issued {
+func issuedFromBody(t *testing.T, sessions *session.Sessions, out served) issued {
 	t.Helper()
 
 	var doc loginBody

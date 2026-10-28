@@ -22,7 +22,7 @@ func TestGenerateClaims(t *testing.T) {
 		name   string
 		algs   []signingkey.Alg
 		opts   func(clock *clockwork.FakeClock) []token.GenerateOption
-		assert func(t *testing.T, keys *signingkey.KeyManager, raw string, err error)
+		assert func(t *testing.T, keys *signingkey.Keys, raw string, err error)
 	}
 
 	cases := []testCase{
@@ -34,13 +34,13 @@ func TestGenerateClaims(t *testing.T) {
 					token.WithClock(clock),
 				}
 			},
-			assert: func(t *testing.T, keys *signingkey.KeyManager, raw string, err error) {
+			assert: func(t *testing.T, keys *signingkey.Keys, raw string, err error) {
 				require.NoError(t, err)
 
 				header := decodeHeader(t, raw)
 				assert.Equal(t, "RS256", header["alg"])
 
-				wantKid, _, ok := keys.GetSigner(signingkey.RS256)
+				wantKid, _, ok := keys.Signer(signingkey.RS256)
 				require.True(t, ok)
 				assert.Equal(t, wantKid, header["kid"])
 
@@ -63,13 +63,13 @@ func TestGenerateClaims(t *testing.T) {
 					token.WithClock(clock),
 				}
 			},
-			assert: func(t *testing.T, keys *signingkey.KeyManager, raw string, err error) {
+			assert: func(t *testing.T, keys *signingkey.Keys, raw string, err error) {
 				require.NoError(t, err)
 
 				header := decodeHeader(t, raw)
 				assert.Equal(t, "ES256", header["alg"])
 
-				wantKid, _, ok := keys.GetSigner(signingkey.ES256)
+				wantKid, _, ok := keys.Signer(signingkey.ES256)
 				require.True(t, ok)
 				assert.Equal(t, wantKid, header["kid"])
 
@@ -85,7 +85,7 @@ func TestGenerateClaims(t *testing.T) {
 					token.WithClock(clock),
 				}
 			},
-			assert: func(t *testing.T, _ *signingkey.KeyManager, raw string, err error) {
+			assert: func(t *testing.T, _ *signingkey.Keys, raw string, err error) {
 				require.NoError(t, err)
 				assert.Contains(t, decodeClaims(t, raw)["aud"], "api")
 			},
@@ -124,8 +124,8 @@ func TestAudienceRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	ver, err := token.NewVerifier(
-		token.VerifyWithKeySource(keys),
-		token.VerifyWithAudience("api"),
+		token.WithVerifyKeySource(keys),
+		token.WithVerifyAudience("api"),
 	)
 	require.NoError(t, err)
 
@@ -190,7 +190,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// then read off a nil receiver.
 			name: "a typed-nil key source",
 			keys: func(_ *testing.T) signingkey.KeySource {
-				var missing *signingkey.KeyManager
+				var missing *signingkey.Keys
 
 				return missing
 			},
@@ -417,7 +417,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 
 			raw, err := gen.Generate(t.Context(), tc.id, tc.principal())
 			tc.assert(t, raw, err)
-			assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+			assert.NotErrorIs(t, err, token.ErrInvalid,
 				"a failure to issue is not the verdict on a presented token")
 		})
 	}
@@ -459,7 +459,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 	// Two more minutes and it is past its expiry.
 	clock.Advance(2 * time.Minute)
 	_, err = gen.Verify(t.Context(), raw)
-	require.ErrorIs(t, err, token.ErrTokenInvalid)
+	require.ErrorIs(t, err, token.ErrInvalid)
 }
 
 // TestConsumerSuppliedKeySource pins that a key source a consumer wrote — the
@@ -482,7 +482,7 @@ func TestConsumerSuppliedKeySource(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "consumer-owned-key-1", decodeHeader(t, raw)["kid"])
 
-	ver, err := token.NewVerifier(token.VerifyWithKeySource(external))
+	ver, err := token.NewVerifier(token.WithVerifyKeySource(external))
 	require.NoError(t, err)
 
 	claims, err := ver.Verify(t.Context(), raw)

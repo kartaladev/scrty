@@ -157,10 +157,10 @@ func TestExpiryTasks(t *testing.T) {
 		name string
 		// open builds one adapter's stores over conn.
 		open   func(t *testing.T, conn test.PostgresConn, c seal.Cipher, clk clock.Clock) expiryStores
-		assert func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Manager, report expiry.Report, issuedBefore int)
+		assert func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Tokens, report expiry.Report, issuedBefore int)
 	}
 
-	assertSwept := func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Manager, report expiry.Report, issuedBefore int) {
+	assertSwept := func(t *testing.T, db *sql.DB, st expiryStores, mgr *onetime.Tokens, report expiry.Report, issuedBefore int) {
 		t.Helper()
 
 		// Every task ran, in the order declared, and reported what it removed.
@@ -185,7 +185,7 @@ func TestExpiryTasks(t *testing.T) {
 		_, err := st.sessions.Load(t.Context(), "live-session")
 		assert.NoError(t, err, "the live session still loads")
 		_, err = st.sessions.Load(t.Context(), "expired-session")
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "the expired session is gone, not merely expired")
+		assert.ErrorIs(t, err, session.ErrNotFound, "the expired session is gone, not merely expired")
 
 		// One-time tokens: the one past its expiry and its window is gone; the
 		// one expired but inside the window and the live one remain, and so does
@@ -226,7 +226,7 @@ func TestExpiryTasks(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(start)
 			st := tc.open(t, conn, storefix.TestCipher(t), clk)
 
-			mgr, err := onetime.NewManager(tokenPurpose, onetime.WithStore(st.oneTime), onetime.WithClock(clk))
+			mgr, err := onetime.New(tokenPurpose, onetime.WithStore(st.oneTime), onetime.WithClock(clk))
 			require.NoError(t, err)
 			lockoutPolicy, err := lockout.New(
 				lockout.WithAttemptStore(st.attempts),

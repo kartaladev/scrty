@@ -280,7 +280,7 @@ func assertSessionsGone(ctx context.Context, t *testing.T, s session.Store, ids 
 
 	for _, sessionID := range ids {
 		_, err := s.Load(ctx, sessionID)
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "session %s must be gone", sessionID)
+		assert.ErrorIs(t, err, session.ErrNotFound, "session %s must be gone", sessionID)
 	}
 }
 
@@ -804,7 +804,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				require.NoError(t, s.Create(ctx, sess))
 				require.NoError(t, s.Delete(ctx, "sess-a"))
 
-				require.ErrorIs(t, s.Save(ctx, sess), session.ErrSessionNotFound,
+				require.ErrorIs(t, s.Save(ctx, sess), session.ErrNotFound,
 					"a save must never insert: a revoked session would come back")
 				assertSessionsGone(ctx, t, s, "sess-a")
 			},
@@ -812,7 +812,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 		{
 			name: "saving a session never created is not found",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
-				require.ErrorIs(t, s.Save(ctx, sessionRecord("sess-a", "u-1")), session.ErrSessionNotFound)
+				require.ErrorIs(t, s.Save(ctx, sessionRecord("sess-a", "u-1")), session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, "sess-a")
 			},
 		},
@@ -849,7 +849,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 
 				clock.Advance((sess.IdleExpiresAt).Sub(clock.Now()))
 				_, err := s.Load(ctx, "sess-a")
-				require.ErrorIs(t, err, session.ErrSessionExpired, "the idle deadline is judged by the store's clock")
+				require.ErrorIs(t, err, session.ErrExpired, "the idle deadline is judged by the store's clock")
 			},
 		},
 		{
@@ -865,7 +865,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 
 				clock.Advance((sess.AbsoluteExpiresAt).Sub(clock.Now()))
 				_, err := s.Load(ctx, "sess-a")
-				require.ErrorIs(t, err, session.ErrSessionExpired, "either deadline ends a session")
+				require.ErrorIs(t, err, session.ErrExpired, "either deadline ends a session")
 			},
 		},
 		{
@@ -941,7 +941,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 
 				assert.Equal(t, 2, n, "the kept session is not counted, expired or not")
 				_, err = s.Load(ctx, "sess-k1")
-				assert.ErrorIs(t, err, session.ErrSessionExpired, "the kept session stays stored and stays expired, not gone")
+				assert.ErrorIs(t, err, session.ErrExpired, "the kept session stays stored and stays expired, not gone")
 				clock.Advance((suiteStart).Sub(clock.Now()))
 				assertSessionsGone(ctx, t, s, "sess-k2", "sess-k3")
 			},
@@ -1112,7 +1112,7 @@ func RunSessionStoreSuite(t *testing.T, newStore func(t *testing.T, clk clock.Cl
 				clk.Advance(2 * time.Minute)
 
 				_, err := s.Load(ctx, "sess-a")
-				require.ErrorIs(t, err, session.ErrSessionExpired,
+				require.ErrorIs(t, err, session.ErrExpired,
 					"the store's clock must be the one the suite advances")
 			},
 		},
@@ -1194,7 +1194,7 @@ func sessionActivityCases() []suiteCase[session.Store] {
 				for _, sessionID := range []string{"sess-a", "sess-never"} {
 					err := s.RecordActivity(ctx, sessionID,
 						suiteStart.Add(5*time.Minute), suiteStart.Add(35*time.Minute), suiteStart.Add(4*time.Minute))
-					require.ErrorIs(t, err, session.ErrSessionNotFound, "session %s", sessionID)
+					require.ErrorIs(t, err, session.ErrNotFound, "session %s", sessionID)
 				}
 				assertSessionsGone(ctx, t, s, "sess-a", "sess-never")
 			},
@@ -1315,7 +1315,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 						Old: old.ID, ObservedSuccessor: observed, AcceptUntil: suiteStart.Add(2 * time.Minute),
 						RetainUntil: sessionRetainUntil, Successor: late, Now: suiteStart.Add(time.Minute),
 					})
-					require.ErrorIs(t, err, session.ErrSessionRenewalConflict, "observed %x", observed)
+					require.ErrorIs(t, err, session.ErrRenewalConflict, "observed %x", observed)
 				}
 
 				assertSessionsGone(ctx, t, s, late.ID)
@@ -1433,7 +1433,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 					AcceptUntil: again.Add(30 * time.Second), RetainUntil: sessionRetainUntil, Successor: late, Now: again,
 				})
 
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
 				assertSessionsGone(ctx, t, s, late.ID)
 			},
 		},
@@ -1742,7 +1742,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 		{
 			name: "first presentation of a missing session is not found and inserts nothing",
 			assert: func(t *testing.T, ctx context.Context, s session.Store, _ *clockwork.FakeClock) {
-				require.ErrorIs(t, s.MarkPresented(ctx, "sess-never", suiteStart), session.ErrSessionNotFound)
+				require.ErrorIs(t, s.MarkPresented(ctx, "sess-never", suiteStart), session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, "sess-never")
 			},
 		},
@@ -1756,7 +1756,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 
 				err := s.MarkPresented(ctx, old.ID, at.Add(time.Second))
 
-				require.ErrorIs(t, err, session.ErrSessionSuperseded)
+				require.ErrorIs(t, err, session.ErrSuperseded)
 				got, err := s.Load(ctx, old.ID)
 				require.NoError(t, err)
 				assert.True(t, got.FirstPresentedAt.IsZero(), "a superseded session was marked presented")
@@ -1899,7 +1899,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 					AcceptUntil: suiteStart.Add(30 * time.Second), RetainUntil: sessionRetainUntil, Successor: successor, Now: suiteStart,
 				})
 
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, old.ID, successor.ID)
 			},
 		},
@@ -1928,7 +1928,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 					Old: first.ID, AcceptUntil: late.Add(30 * time.Second), RetainUntil: sessionRetainUntil, Successor: renewal, Now: late,
 				})
 
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
 				assertSessionsGone(ctx, t, s, renewal.ID)
 				assertSessionsLoad(ctx, t, s, knockedOut,
 					supersededAs(old, second.ID, again, again.Add(30*time.Second)), second)
@@ -1946,7 +1946,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				err := s.Create(ctx, orphan)
 
 				require.Error(t, err, "a session with no family must be refused at creation")
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, orphan.ID)
 			},
 		},
@@ -1961,7 +1961,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				err := s.Create(ctx, unstarted)
 
 				require.Error(t, err, "a session with no family start time must be refused at creation")
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assertSessionsGone(ctx, t, s, unstarted.ID)
 			},
 		},
@@ -2101,7 +2101,7 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 
 				clk.Advance(time.Minute)
 				_, err := s.Load(ctx, old.ID)
-				assert.ErrorIs(t, err, session.ErrSessionExpired, "a superseded record is expired at its retention deadline")
+				assert.ErrorIs(t, err, session.ErrExpired, "a superseded record is expired at its retention deadline")
 			},
 		},
 		{
@@ -2164,10 +2164,10 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 
 				clk.Advance(time.Minute)
 				_, err = s.Load(ctx, old.ID)
-				assert.ErrorIs(t, err, session.ErrSessionExpired,
+				assert.ErrorIs(t, err, session.ErrExpired,
 					"a superseded record with no retention deadline is expired at its own absolute deadline")
 				_, err = s.SuccessorPresented(ctx, old.ID)
-				assert.ErrorIs(t, err, session.ErrSessionNotFound)
+				assert.ErrorIs(t, err, session.ErrNotFound)
 				n, err = s.DeleteExpired(ctx)
 				require.NoError(t, err)
 				assert.Equal(t, 1, n, "the superseded record is swept at its own absolute deadline, its successor kept")
@@ -2211,8 +2211,8 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				})
 
 				require.Error(t, err, "a retention deadline before the window's end must be refused")
-				assert.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assert.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
 				assertSessionsGone(ctx, t, s, successor.ID)
 				assertSessionsLoad(ctx, t, s, old)
@@ -2232,8 +2232,8 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				})
 
 				require.Error(t, err, "a successor in no family must be refused")
-				assert.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assert.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
 				assertSessionsGone(ctx, t, s, successor.ID)
 				assertSessionsLoad(ctx, t, s, old)
@@ -2253,8 +2253,8 @@ func sessionFamilyCases() []suiteCase[session.Store] {
 				})
 
 				require.Error(t, err, "a successor with no family start time must be refused")
-				assert.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				assert.NotErrorIs(t, err, session.ErrRenewalConflict)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assert.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
 				assertSessionsGone(ctx, t, s, successor.ID)
 				assertSessionsLoad(ctx, t, s, old)
@@ -2406,7 +2406,7 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 
 				_, err := s.SuccessorPresented(ctx, old.ID)
 
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 			},
 		},
 		{
@@ -2433,7 +2433,7 @@ func sessionSuccessorPresentedCases() []suiteCase[session.Store] {
 
 				_, err := s.SuccessorPresented(ctx, "sess-never")
 
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				assertSessionsLoad(ctx, t, s, old, successor)
 				assertSessionsGone(ctx, t, s, "sess-never")
 			},
@@ -2474,7 +2474,7 @@ func RunSessionDeleteExceptNilFamily[S session.Store](t *testing.T, h DurableHar
 
 		assert.Equal(t, 1, n, "the other session of the nil family goes")
 		_, err = s.Load(t.Context(), other.ID)
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "the nil family's other current session survived")
+		assert.ErrorIs(t, err, session.ErrNotFound, "the nil family's other current session survived")
 		_, err = s.Load(t.Context(), keep.ID)
 		assert.NoError(t, err, "the named session must be kept")
 	})

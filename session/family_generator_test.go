@@ -24,15 +24,15 @@ func TestWithFamilyIDGenerator(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opt    session.ManagerOption
-		assert func(t *testing.T, m *session.Manager, err error)
+		opt    session.Option
+		assert func(t *testing.T, m *session.Sessions, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "the consumer's generator mints the family identifier",
 			opt:  session.WithFamilyIDGenerator(fixedGenerator{value: chosen}),
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 
 				got, err := m.Create(t.Context(), testUser)
@@ -44,14 +44,14 @@ func TestWithFamilyIDGenerator(t *testing.T) {
 		{
 			name: "a nil generator is a configuration error",
 			opt:  session.WithFamilyIDGenerator(nil),
-			assert: func(t *testing.T, _ *session.Manager, err error) {
+			assert: func(t *testing.T, _ *session.Sessions, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
 			},
 		},
 		{
 			name: "a typed-nil generator is a configuration error",
 			opt:  session.WithFamilyIDGenerator((*id.V7Generator)(nil)),
-			assert: func(t *testing.T, _ *session.Manager, err error) {
+			assert: func(t *testing.T, _ *session.Sessions, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
 			},
 		},
@@ -61,7 +61,7 @@ func TestWithFamilyIDGenerator(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := session.NewManager(tc.opt)
+			m, err := session.New(tc.opt)
 
 			tc.assert(t, m, err)
 		})
@@ -76,14 +76,14 @@ func TestDefaultFamilyIDsFollowTheClockInAnyOptionOrder(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(createdAt)
 	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 
-	for name, opts := range map[string][]session.ManagerOption{
+	for name, opts := range map[string][]session.Option{
 		"clock first": {session.WithClock(clk), session.WithStore(store)},
 		"clock last":  {session.WithStore(store), session.WithClock(clk)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := session.NewManager(opts...)
+			m, err := session.New(opts...)
 			require.NoError(t, err)
 
 			got, err := m.Create(t.Context(), testUser)

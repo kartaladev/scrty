@@ -68,7 +68,7 @@ func TestNewAEADCipher(t *testing.T) {
 	// A cipher wired without a keyring is a wiring mistake, reported before
 	// traffic rather than on the first seal or open, which may be hours later.
 	assertRefused := func(t *testing.T, c seal.Cipher, err error) {
-		require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+		require.ErrorIs(t, err, seal.ErrConfig)
 		assert.Nil(t, c)
 	}
 
@@ -393,7 +393,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 			},
 			call: sealCall,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+				require.ErrorIs(t, err, seal.ErrConfig)
 				assert.NotContains(t, err.Error(), string(keyTwo[:16]))
 			},
 		},
@@ -404,7 +404,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 			},
 			call: sealCall,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+				require.ErrorIs(t, err, seal.ErrConfig)
 			},
 		},
 		{
@@ -414,7 +414,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 			},
 			call: activeCall,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+				require.ErrorIs(t, err, seal.ErrConfig)
 			},
 		},
 		{
@@ -461,7 +461,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 			},
 			call: openCall,
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+				require.ErrorIs(t, err, seal.ErrConfig)
 			},
 		},
 		{

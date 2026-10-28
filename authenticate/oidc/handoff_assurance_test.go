@@ -18,7 +18,7 @@ import (
 // was written to, and every candidate the redemption's check was handed.
 type handoffAssuranceEnv struct {
 	mem   *oidc.MemoryHandoffStore
-	m     *oidc.HandoffManager
+	m     *oidc.Handoff
 	users *MockUserLoader
 	code  string
 
@@ -166,7 +166,7 @@ func TestHandoff_Assurance(t *testing.T) {
 			e.users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(handoffUser(), nil).AnyTimes()
 
 			var err error
-			e.m, err = oidc.NewHandoffManager(e.mem, e.users, oidc.WithHandoffClock(clk))
+			e.m, err = oidc.NewHandoff(e.mem, e.users, oidc.WithHandoffClock(clk))
 			require.NoError(t, err)
 
 			res := tc.callback()

@@ -31,7 +31,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	clk := clockwork.NewFakeClockAt(recoveryStart)
 
-	sessions, err := session.NewManager(session.WithClock(clk), session.WithAbsoluteTimeout(12*time.Hour),
+	sessions, err := session.New(session.WithClock(clk), session.WithAbsoluteTimeout(12*time.Hour),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 
@@ -60,7 +60,7 @@ func TestPasskeyRecoveryRoute(t *testing.T) {
 	lookups, err := mfa.LookupsFor(d.totp, method)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
 	d.chain, err = httpsec.New(

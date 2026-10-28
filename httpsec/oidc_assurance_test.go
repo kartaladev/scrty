@@ -42,12 +42,12 @@ func TestOIDCRedeem_RequiredUserWithoutAssuranceIsRefused(t *testing.T) {
 
 	out := serve(t, c, handoffRequest(t.Context(), oidcTestSource, code))
 
-	require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+	require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 	require.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 	require.Zero(t, h.activeSessions(t), "no session may be created")
 
 	again := serve(t, c, handoffRequest(t.Context(), oidcAnotherSource, code))
-	require.ErrorIs(t, again.err, policy.ErrMFAEnrollmentRequired, "the code was not consumed")
+	require.ErrorIs(t, again.err, policy.ErrMFAEnrolmentRequired, "the code was not consumed")
 }
 
 // The values the assurance cases sign in with.
@@ -68,7 +68,7 @@ var (
 type assuranceConfig struct {
 	// managerOpts configure the OIDC manager; d is the deployment being built,
 	// whose switches an option may read.
-	managerOpts func(t *testing.T, d *assuranceDeployment) []oidc.ManagerOption
+	managerOpts func(t *testing.T, d *assuranceDeployment) []oidc.Option
 
 	// requirementOpts configure the requirement policy beside the
 	// requirement for all and the assurance source.
@@ -89,7 +89,7 @@ type assuranceConfig struct {
 // rebuilding the manager.
 type assuranceDeployment struct {
 	h       *oidcHarness
-	current atomic.Pointer[oidc.Manager]
+	current atomic.Pointer[oidc.RelyingParty]
 
 	// enrolled is whether the user is enrolled on the method, and lookupDown
 	// fails the method's enrolment lookup.
@@ -107,7 +107,7 @@ func newAssuranceDeployment(t *testing.T, cfg assuranceConfig) *assuranceDeploym
 
 	d := &assuranceDeployment{}
 
-	var managerOpts []oidc.ManagerOption
+	var managerOpts []oidc.Option
 	if cfg.managerOpts != nil {
 		managerOpts = cfg.managerOpts(t, d)
 	}
@@ -147,10 +147,10 @@ func newAssuranceDeployment(t *testing.T, cfg assuranceConfig) *assuranceDeploym
 	lookups, err := mfa.LookupsFor(method)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups, append([]policy.MFARequirementOption{
+	requirement, err := policy.NewMFARequirement(nil, lookups, append([]policy.MFARequirementOption{
 		policy.WithMFARequiredForAll(),
 		policy.WithFederatedAssuranceSource(src),
 	}, cfg.requirementOpts...)...)
@@ -338,7 +338,7 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 	refusedByGuard := func(t *testing.T, d *assuranceDeployment, _ string, out served) {
 		t.Helper()
 
-		require.ErrorIs(t, out.err, policy.ErrPolicyDenied)
+		require.ErrorIs(t, out.err, policy.ErrDenied)
 		assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 		assert.False(t, out.handlerRan)
 		assert.Zero(t, d.h.activeSessions(t), "no session is created")
@@ -409,7 +409,7 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 				}))
 			},
 			assert: func(t *testing.T, d *assuranceDeployment, code string, out served) {
-				require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired,
+				require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired,
 					"decided as the record's absent assurance")
 				assert.Zero(t, d.h.activeSessions(t))
 				requireRedeemable(t, d.h, code)
@@ -418,7 +418,7 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 		{
 			name: "an evaluator failure denies and does not spend the code",
 			cfg: assuranceConfig{
-				managerOpts: func(t *testing.T, d *assuranceDeployment) []oidc.ManagerOption {
+				managerOpts: func(t *testing.T, d *assuranceDeployment) []oidc.Option {
 					e := NewMockAssuranceEvaluator(gomock.NewController(t))
 					e.EXPECT().MeetsAssurance(gomock.Any(), gomock.Any()).AnyTimes().
 						DoAndReturn(func(context.Context, oidc.AssuranceInput) (bool, error) {
@@ -429,7 +429,7 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 							return true, nil
 						})
 
-					return []oidc.ManagerOption{oidc.WithAssuranceEvaluator(e)}
+					return []oidc.Option{oidc.WithAssuranceEvaluator(e)}
 				},
 			},
 			amr: []string{"mfa"},
@@ -636,7 +636,7 @@ func TestFederatedRematch(t *testing.T) {
 				return credential
 			},
 			assert: func(t *testing.T, _ *assuranceDeployment, _ string, out served) {
-				require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+				require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 				assert.False(t, out.handlerRan, "the stale login is not honoured")
 			},
 		},

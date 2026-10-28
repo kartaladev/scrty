@@ -34,7 +34,7 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 		// store is the store construction is given; nil means no
 		// WithKeyStore at all, so the default in-memory one.
 		store  func(t *testing.T, ctrl *gomock.Controller) signingkey.KeyStore
-		assert func(t *testing.T, km *signingkey.KeyManager, err error)
+		assert func(t *testing.T, km *signingkey.Keys, err error)
 	}
 
 	cases := []testCase{
@@ -58,7 +58,7 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 
 				return store
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, err error) {
 				require.ErrorIs(t, err, context.Canceled)
 				assert.Nil(t, km)
 			},
@@ -80,7 +80,7 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 
 				return store
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, err error) {
 				require.ErrorIs(t, err, context.DeadlineExceeded)
 				assert.Nil(t, km)
 			},
@@ -105,7 +105,7 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 
 				return store
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, err error) {
 				require.ErrorIs(t, err, context.Canceled)
 				assert.Nil(t, km)
 			},
@@ -129,11 +129,11 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 
 				return store
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, km)
 
-				_, _, ok := km.GetSigner(signingkey.RS256)
+				_, _, ok := km.Signer(signingkey.RS256)
 				assert.True(t, ok, "construction left no current key")
 			},
 		},
@@ -152,11 +152,11 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 
 				return cctx
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, err error) {
 				require.NoError(t, err, "the default store has no I/O to cancel")
 				require.NotNil(t, km)
 
-				_, _, ok := km.GetSigner(signingkey.RS256)
+				_, _, ok := km.Signer(signingkey.RS256)
 				assert.True(t, ok, "construction left no current key")
 			},
 		},
@@ -177,7 +177,7 @@ func TestNewKeyManagerConstructionContext(t *testing.T) {
 				opts = append(opts, signingkey.WithKeyStore(tc.store(t, ctrl)))
 			}
 
-			km, err := signingkey.NewKeyManager(ctx, opts...)
+			km, err := signingkey.New(ctx, opts...)
 			tc.assert(t, km, err)
 		})
 	}

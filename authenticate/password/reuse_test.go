@@ -339,7 +339,7 @@ func TestReuseGuard_Check(t *testing.T) {
 
 	reused := func(t *testing.T, err error) {
 		t.Helper()
-		require.ErrorIs(t, err, password.ErrPasswordReused)
+		require.ErrorIs(t, err, password.ErrReused)
 	}
 
 	h3Current, h3Newest, h3Oldest, h3Free := depth3(), depth3(), depth3(), depth3()
@@ -732,7 +732,7 @@ func TestReuseGuard_Change(t *testing.T) {
 				return &identity.Details{ID: user, Password: hP2}, "p1", &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, u *identity.Details, w *recordingWrite) {
-				require.ErrorIs(t, err, password.ErrPasswordReused)
+				require.ErrorIs(t, err, password.ErrReused)
 				assert.Zero(t, w.calls)
 				assert.Zero(t, h.retires)
 				assert.Equal(t, hP2, u.Password)
@@ -758,7 +758,7 @@ func TestReuseGuard_Change(t *testing.T) {
 				return &identity.Details{ID: user, Password: hP1}, strings.Repeat("a", 73), &recordingWrite{}
 			},
 			assert: func(t *testing.T, err error, h *memHistory, _ *identity.Details, w *recordingWrite) {
-				require.ErrorIs(t, err, password.ErrPasswordTooLong)
+				require.ErrorIs(t, err, password.ErrTooLong)
 				assert.Zero(t, w.calls)
 				assert.Equal(t, [][]byte{hP1}, h.entries(user), "the retired entry holds the hash that is still current")
 			},
@@ -948,7 +948,7 @@ func TestReuseGuard_ErrorsCarryNoCredential(t *testing.T) {
 				return newMemHistory().seed("u-123", retired)
 			},
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, password.ErrPasswordReused)
+				require.ErrorIs(t, err, password.ErrReused)
 				assertNoCredential(t, err.Error(), words, current, retired)
 			},
 		},

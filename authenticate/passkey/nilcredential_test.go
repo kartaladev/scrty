@@ -37,20 +37,20 @@ func TestCredentialList_NilElementIsMissing(t *testing.T) {
 	type testCase struct {
 		name  string
 		codes bool
-		run   func(t *testing.T, f *fixture, m *passkey.Manager)
+		run   func(t *testing.T, f *fixture, m *passkey.Passkeys)
 	}
 
 	cases := []testCase{
 		{
 			name: "beginning a registration",
-			run: func(t *testing.T, f *fixture, m *passkey.Manager) {
+			run: func(t *testing.T, f *fixture, m *passkey.Passkeys) {
 				f.begin(t, m, fullSession("sess-a", "u-1"))
 			},
 		},
 		{
 			name:  "finishing, then abandoning a pending passkey for a new registration",
 			codes: true,
-			run: func(t *testing.T, f *fixture, m *passkey.Manager) {
+			run: func(t *testing.T, f *fixture, m *passkey.Passkeys) {
 				s := fullSession("sess-a", "u-1")
 
 				res, err := m.FinishRegistration(t.Context(), s, regBody(f.begin(t, m, s), "cred-a", ""),
@@ -73,7 +73,7 @@ func TestCredentialList_NilElementIsMissing(t *testing.T) {
 		},
 		{
 			name: "confirming an emailed code",
-			run: func(t *testing.T, f *fixture, m *passkey.Manager) {
+			run: func(t *testing.T, f *fixture, m *passkey.Passkeys) {
 				s := enrolmentSession("sess-a", "u-1")
 				rc := passkey.RegistrationContext{EmailConfirmation: true, ConfirmLimiter: permissive(t)}
 

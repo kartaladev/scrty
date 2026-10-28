@@ -53,7 +53,7 @@ type mfaHarness struct {
 	// systemClock builds the chain without WithClock, for the one case about
 	// what a chain reads by default.
 	systemClock bool
-	sessions    *session.Manager
+	sessions    *session.Sessions
 	method      *MockMethod
 	limiter     *MockLimiter
 
@@ -106,7 +106,7 @@ func newMFAHarness(t *testing.T) *mfaHarness {
 	// on the system clock.
 	clk := clockwork.NewFakeClockAt(time.Now().Truncate(time.Minute))
 
-	sessions, err := session.NewManager(session.WithClock(clk))
+	sessions, err := session.New(session.WithClock(clk))
 	require.NoError(t, err)
 
 	m := NewMockMethod(ctrl)
@@ -399,7 +399,7 @@ func TestEnableMFA(t *testing.T) {
 	withSessions := func(t *testing.T, opt httpsec.Option) (*httpsec.Chain, error) {
 		t.Helper()
 
-		sessions, err := session.NewManager()
+		sessions, err := session.New()
 		require.NoError(t, err)
 
 		return httpsec.New(opt, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions}))
@@ -538,7 +538,7 @@ func TestEnableMFA(t *testing.T) {
 			build: func(t *testing.T, opt httpsec.Option) (*httpsec.Chain, error) {
 				t.Helper()
 
-				sessions, err := session.NewManager()
+				sessions, err := session.New()
 				require.NoError(t, err)
 
 				return httpsec.New(opt, httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions},
@@ -1344,7 +1344,7 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 			vanishes: true,
 			assert: func(t *testing.T, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
-				require.ErrorIs(t, out.err, session.ErrSessionNotFound)
+				require.ErrorIs(t, out.err, session.ErrNotFound)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 			},
 		},
@@ -1353,7 +1353,7 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 			after: 10 * time.Second,
 			assert: func(t *testing.T, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrSessionRenewalConflict)
-				require.ErrorIs(t, out.err, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, out.err, session.ErrRenewalConflict)
 				assert.Equal(t, http.StatusConflict, httpsec.StatusForError(out.err))
 			},
 		},
@@ -1362,7 +1362,7 @@ func TestMFAVerifyRotationRefusals(t *testing.T) {
 			after: 31 * time.Second,
 			assert: func(t *testing.T, out served) {
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
-				require.ErrorIs(t, out.err, session.ErrSessionReused)
+				require.ErrorIs(t, out.err, session.ErrReused)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 			},
 		},

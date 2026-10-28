@@ -19,7 +19,7 @@ import (
 // the options the broker passed rather than trusting a matcher to see them.
 type recordedUsers struct {
 	mu    sync.Mutex
-	users []*identity.NewUser
+	users []*identity.UserChange
 }
 
 func (r *recordedUsers) record(opts []identity.UserOption) {
@@ -28,10 +28,10 @@ func (r *recordedUsers) record(opts []identity.UserOption) {
 	r.users = append(r.users, identity.ApplyUserOptions(opts...))
 }
 
-func (r *recordedUsers) all() []*identity.NewUser {
+func (r *recordedUsers) all() []*identity.UserChange {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]*identity.NewUser(nil), r.users...)
+	return append([]*identity.UserChange(nil), r.users...)
 }
 
 // TestFederatedLoginNeverNamesPasswordChangedAt pins that both federated-login
@@ -48,10 +48,10 @@ func TestFederatedLoginNeverNamesPasswordChangedAt(t *testing.T) {
 		// provisioner call it expects into rec.
 		broker func(t *testing.T, ctrl *gomock.Controller, prov *MockUserProvisioner, rec *recordedUsers) *oidc.Broker
 		ext    oidc.ExternalIdentity
-		assert func(t *testing.T, err error, got []*identity.NewUser)
+		assert func(t *testing.T, err error, got []*identity.UserChange)
 	}
 
-	namesPasswordAlone := func(t *testing.T, err error, got []*identity.NewUser) {
+	namesPasswordAlone := func(t *testing.T, err error, got []*identity.UserChange) {
 		t.Helper()
 		require.NoError(t, err)
 		require.Len(t, got, 1, "exactly one provisioner call writes the mapped password")

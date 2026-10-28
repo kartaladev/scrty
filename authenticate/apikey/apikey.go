@@ -95,7 +95,7 @@ func (k Key) liveAt(now time.Time) bool {
 //
 // The prefix is matched with its separator attached, so a configured prefix of
 // "s" does not accept a key issued under "sk".
-func (m *Manager) parsePresented(presented string) (id.ID, []byte, bool) {
+func (m *Keys) parsePresented(presented string) (id.ID, []byte, bool) {
 	// A presented key is a prefix, a separator, a 36-character identifier,
 	// another separator and a 43-character secret. The bound above that is
 	// slack, not licence: it keeps an arbitrarily long string from reaching

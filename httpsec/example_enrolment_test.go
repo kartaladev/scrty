@@ -97,13 +97,13 @@ func ExampleEnableMFAEnrolment() {
 		panic(err)
 	}
 
-	requirementPolicy, err := policy.NewMFARequirementPolicy(exampleRequirement{}, lookups,
+	requirementPolicy, err := policy.NewMFARequirement(exampleRequirement{}, lookups,
 		policy.WithMFAEnrolmentPath())
 	if err != nil {
 		panic(err)
 	}
 
-	challengePolicy, err := policy.NewMFAPolicy(lookups)
+	challengePolicy, err := policy.NewMFA(lookups)
 	if err != nil {
 		panic(err)
 	}
@@ -113,7 +113,7 @@ func ExampleEnableMFAEnrolment() {
 		panic(err)
 	}
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	if err != nil {
 		panic(err)
 	}

@@ -55,7 +55,7 @@ func TestFailureLogsAreSampled(t *testing.T) {
 			report := &failureReport{}
 			recorder, logger := newLogRecorder()
 
-			km, err := signingkey.NewKeyManager(t.Context(),
+			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(failingStore(t, report, tc.verb)),
 				signingkey.WithClock(clk),
 				signingkey.WithAlgs(signingkey.EdDSA),

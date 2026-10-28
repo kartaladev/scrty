@@ -36,7 +36,7 @@ func TestHousekeeping(t *testing.T) {
 		// current key, and the first is the non-current key the case waits on,
 		// which expires one second in.
 		seed   func(t *testing.T) []signingkey.Record
-		assert func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, current string)
+		assert func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, current string)
 	}
 
 	cases := []testCase{
@@ -48,7 +48,7 @@ func TestHousekeeping(t *testing.T) {
 					realRecord(t, epoch),
 				}
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, current string) {
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, current string) {
 				assert.True(t, publishes(km, current), "the current key is untouched")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256))
 
@@ -71,7 +71,7 @@ func TestHousekeeping(t *testing.T) {
 					realRecord(t, epoch.Add(-24*time.Hour)),
 				}
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, current string) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, current string) {
 				assert.True(t, publishes(km, current),
 					"a current key past its lifetime is still published")
 				assert.Equal(t, current, currentKid(t, km, signingkey.RS256),
@@ -83,13 +83,13 @@ func TestHousekeeping(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			clk := newClock()
-			store := signingkey.NewInMemoryKeyStore()
+			store := signingkey.NewMemoryKeyStore()
 			seed := tc.seed(t)
 			for _, rec := range seed {
 				require.NoError(t, store.Store(t.Context(), rec))
 			}
 
-			km, err := signingkey.NewKeyManager(t.Context(),
+			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clk),
 				signingkey.WithLifetime(24*time.Hour),
@@ -123,8 +123,8 @@ func TestHousekeeping(t *testing.T) {
 // failure instead of a hang.
 func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 	clk := newClock()
-	km, err := signingkey.NewKeyManager(t.Context(),
-		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+	km, err := signingkey.New(t.Context(),
+		signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
@@ -165,7 +165,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	)
 
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 
 	stale := realRecord(t, epoch.Add(sweep-lifetime-time.Hour))
 	boundary := realRecord(t, epoch.Add(sweep-lifetime))
@@ -174,7 +174,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 		require.NoError(t, store.Store(t.Context(), rec))
 	}
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithLifetime(lifetime),
@@ -216,13 +216,13 @@ func (c *steppedClock) Now() time.Time {
 // otherwise never age out, so it would verify tokens forever.
 func TestHousekeep_RetiresFarFutureKey(t *testing.T) {
 	clk := &steppedClock{FakeClock: newClock()}
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	ahead := realRecord(t, epoch.Add(-time.Hour))
 	current := realRecord(t, epoch)
 	require.NoError(t, store.Store(t.Context(), ahead))
 	require.NoError(t, store.Store(t.Context(), current))
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithLifetime(24*time.Hour),

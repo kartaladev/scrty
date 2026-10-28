@@ -97,7 +97,7 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 			name:    "not met, not enrolled, required for all, default mode denies for enrolment",
 			methods: unenrolledTOTP, source: notMet,
 			phase: policy.PostAuthentication, in: oidcLogin,
-			assert: denied(policy.ErrMFAEnrollmentRequired),
+			assert: denied(policy.ErrMFAEnrolmentRequired),
 		},
 		{
 			name:     "refuse mode denies an unmet login with the assurance-not-met reason",
@@ -153,7 +153,7 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 			opts:    []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
 			phase:   policy.PostAuthentication,
 			in:      func() *policy.Input { return mfaInput(factor.Password) },
-			assert:  denied(policy.ErrMFAEnrollmentRequired),
+			assert:  denied(policy.ErrMFAEnrolmentRequired),
 		},
 		{
 			name:    "a consumer exemption rule marking oidc exempt is a total exemption",
@@ -235,7 +235,7 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 			methods: unenrolledEnrollable, source: notMet,
 			opts:  []policy.MFARequirementOption{policy.WithMFAEnrolmentPath()},
 			phase: policy.PostAuthentication, in: oidcLogin,
-			assert: denied(policy.ErrMFAEnrollmentRequired),
+			assert: denied(policy.ErrMFAEnrolmentRequired),
 		},
 		{
 			name:     "met assurance is decided before an empty set of methods",
@@ -298,7 +298,7 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 			}
 			opts = append(opts, tc.opts...)
 
-			p, err := policy.NewMFARequirementPolicy(required, tc.methods(t), opts...)
+			p, err := policy.NewMFARequirement(required, tc.methods(t), opts...)
 			if err != nil {
 				tc.assert(t, policy.Decision{}, err)
 
@@ -416,7 +416,7 @@ func TestMFARequirementPolicy_FederatedPerRequest(t *testing.T) {
 		t.Helper()
 
 		require.NotEqual(t, policy.Allow, d.Outcome, "the session was allowed on its stale login")
-		deniedWith(policy.ErrMFAEnrollmentRequired)(t, d)
+		deniedWith(policy.ErrMFAEnrolmentRequired)(t, d)
 	}
 
 	cases := []testCase{

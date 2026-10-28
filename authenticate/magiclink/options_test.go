@@ -22,16 +22,16 @@ func TestNewMagicLinkManager(t *testing.T) {
 	type testCase struct {
 		name    string
 		baseURL string
-		assert  func(t *testing.T, m *magiclink.Manager, err error)
+		assert  func(t *testing.T, m *magiclink.Links, err error)
 	}
 
-	configError := func(t *testing.T, m *magiclink.Manager, err error) {
+	configError := func(t *testing.T, m *magiclink.Links, err error) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, magiclink.ErrConfig)
 		assert.Nil(t, m)
 	}
 
-	ok := func(t *testing.T, m *magiclink.Manager, err error) {
+	ok := func(t *testing.T, m *magiclink.Links, err error) {
 		require.NoError(t, err)
 		assert.NotNil(t, m)
 	}
@@ -66,7 +66,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 		name   string
 		sender func(t *testing.T) notify.Sender
 		opts   []magiclink.Option
-		assert func(t *testing.T, m *magiclink.Manager, err error)
+		assert func(t *testing.T, m *magiclink.Links, err error)
 	}
 
 	smtp := func(t *testing.T) notify.Sender {
@@ -82,7 +82,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 		{
 			name:   "the SMTP sender is refused",
 			sender: smtp,
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, magiclink.ErrConfig)
 				assert.Nil(t, m)
@@ -92,7 +92,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 		{
 			name:   "a sender reporting NonBlocking false is refused",
 			sender: func(_ *testing.T) notify.Sender { return liarSender{nonBlocking: false} },
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, magiclink.ErrConfig)
 				assert.Nil(t, m)
@@ -109,7 +109,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 
 				return q
 			},
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			},
@@ -118,7 +118,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 			name:   "the consumer may accept synchronous delivery explicitly",
 			sender: smtp,
 			opts:   []magiclink.Option{magiclink.WithSynchronousDelivery()},
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			},
@@ -126,7 +126,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 		{
 			name:   "a nil sender is refused",
 			sender: func(_ *testing.T) notify.Sender { return nil },
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, magiclink.ErrConfig)
 				assert.Nil(t, m)
@@ -139,7 +139,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 			// succeed — only for Send to panic on the nil receiver at first use.
 			name:   "a typed nil sender is refused the same as an absent one",
 			sender: func(_ *testing.T) notify.Sender { return (*recordingSender)(nil) },
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, magiclink.ErrConfig)
 				assert.Nil(t, m)
@@ -151,7 +151,7 @@ func TestManagerRefusesSynchronousSender(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := magiclink.NewManager(
+			m, err := magiclink.New(
 				testTokens(t), stubLoader{}, tc.sender(t), "https://app.example.com", tc.opts...)
 
 			tc.assert(t, m, err)
@@ -165,10 +165,10 @@ func TestMagicLinkOptions(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []magiclink.Option
-		assert func(t *testing.T, m *magiclink.Manager, err error)
+		assert func(t *testing.T, m *magiclink.Links, err error)
 	}
 
-	configError := func(t *testing.T, m *magiclink.Manager, err error) {
+	configError := func(t *testing.T, m *magiclink.Links, err error) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, magiclink.ErrConfig)
 		assert.Nil(t, m)
@@ -177,7 +177,7 @@ func TestMagicLinkOptions(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "defaults",
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.NoError(t, err)
 				assert.True(t, m.BindingEnabled(), "same-device binding is on by default")
 				assert.Equal(t, 15*time.Minute, m.TTL(), "the link's lifetime is the token manager's")
@@ -203,7 +203,7 @@ func TestMagicLinkOptions(t *testing.T) {
 		{
 			name: "a consumer confirm path is accepted",
 			opts: []magiclink.Option{magiclink.WithConfirmPath("/auth/link")},
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			},
@@ -211,7 +211,7 @@ func TestMagicLinkOptions(t *testing.T) {
 		{
 			name: "binding disabled",
 			opts: []magiclink.Option{magiclink.WithSameDeviceBinding(false)},
-			assert: func(t *testing.T, m *magiclink.Manager, err error) {
+			assert: func(t *testing.T, m *magiclink.Links, err error) {
 				require.NoError(t, err)
 				assert.False(t, m.BindingEnabled())
 			},
@@ -231,7 +231,7 @@ func TestMagicLinkOptions(t *testing.T) {
 func TestMagicLinkManagerRequiresItsPorts(t *testing.T) {
 	t.Parallel()
 
-	configError := func(t *testing.T, m *magiclink.Manager, err error) {
+	configError := func(t *testing.T, m *magiclink.Links, err error) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, magiclink.ErrConfig)
 		assert.Nil(t, m)
@@ -239,12 +239,12 @@ func TestMagicLinkManagerRequiresItsPorts(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		tokens func(t *testing.T) *onetime.Manager
+		tokens func(t *testing.T) *onetime.Tokens
 		users  identity.UserLoader
-		assert func(t *testing.T, m *magiclink.Manager, err error)
+		assert func(t *testing.T, m *magiclink.Links, err error)
 	}
 
-	validTokens := func(t *testing.T) *onetime.Manager { return testTokens(t) }
+	validTokens := func(t *testing.T) *onetime.Tokens { return testTokens(t) }
 
 	// A nil *mutableLoader satisfies identity.UserLoader through pointer
 	// receivers, so the interface field carries a type descriptor even though
@@ -256,7 +256,7 @@ func TestMagicLinkManagerRequiresItsPorts(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "no token manager",
-			tokens: func(*testing.T) *onetime.Manager { return nil },
+			tokens: func(*testing.T) *onetime.Tokens { return nil },
 			users:  stubLoader{},
 			assert: configError,
 		},
@@ -278,7 +278,7 @@ func TestMagicLinkManagerRequiresItsPorts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := magiclink.NewManager(tc.tokens(t), tc.users, &recordingSender{}, "https://app.example.com")
+			m, err := magiclink.New(tc.tokens(t), tc.users, &recordingSender{}, "https://app.example.com")
 			tc.assert(t, m, err)
 		})
 	}

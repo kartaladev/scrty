@@ -42,7 +42,7 @@ type externalKeySource struct {
 // tests that use it.
 var _ signingkey.KeySource = (*externalKeySource)(nil)
 
-func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (s *externalKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
 	if alg != signingkey.RS256 {
 		return "", nil, false
 	}

@@ -155,7 +155,7 @@ func TestUnstartedMemoryStoreKeepsExpiredRecords(t *testing.T) {
 	clk.Advance(createdAt.Add(time.Hour).Sub(clk.Now()))
 
 	_, err := store.Load(t.Context(), "expiring")
-	require.ErrorIs(t, err, session.ErrSessionExpired, "an expired session was served by an unstarted store")
+	require.ErrorIs(t, err, session.ErrExpired, "an expired session was served by an unstarted store")
 
 	// This is the documented limit of not calling Start, and the assertion
 	// exists so that nobody later "fixes" it into a surprise purge: a caller
@@ -205,7 +205,7 @@ func TestMemoryStoreClock(t *testing.T) {
 		}))
 
 		_, err := store.Load(t.Context(), "expired")
-		require.ErrorIs(t, err, session.ErrSessionExpired, "the store did not judge expiry by the system clock")
+		require.ErrorIs(t, err, session.ErrExpired, "the store did not judge expiry by the system clock")
 		_, err = store.Load(t.Context(), "live")
 		require.NoError(t, err)
 	}

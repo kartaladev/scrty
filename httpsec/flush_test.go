@@ -145,13 +145,13 @@ func flushOIDCRegistry(t *testing.T) *oidc.Registry {
 func oidcChain(
 	t *testing.T,
 	log *slog.Logger,
-	m *oidc.Manager,
-	handoffs *oidc.HandoffManager,
+	m *oidc.RelyingParty,
+	handoffs *oidc.Handoff,
 	opts ...httpsec.OIDCOption,
 ) *httpsec.Chain {
 	t.Helper()
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	base := []httpsec.OIDCOption{httpsec.WithOIDCSessions(sessions)}
@@ -437,7 +437,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				method.EXPECT().Channel().Return(factor.Email).AnyTimes()
 				method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{method},
+				p, err := policy.NewMFA([]policy.MFAMethodLookup{method},
 					policy.WithMFAPolicyLogger(log),
 					policy.WithMFAPolicyLogInterval(time.Hour))
 				require.NoError(t, err)
@@ -474,7 +474,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(oidc.Flow{}, errFlushFlowFault).Times(3)
 
-				m, err := oidc.NewManager(flushOIDCRegistry(t),
+				m, err := oidc.NewRelyingParty(flushOIDCRegistry(t),
 					NewMockIdentityBroker(gomock.NewController(t)),
 					oidc.WithFlowStore(flows), oidc.WithLogger(log))
 				require.NoError(t, err)
@@ -495,7 +495,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 			arrange: func(t *testing.T, log *slog.Logger) []*httpsec.Chain {
 				t.Helper()
 
-				handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(),
+				handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(),
 					NewMockUserLoader(gomock.NewController(t)), oidc.WithHandoffLogger(log))
 				require.NoError(t, err)
 
@@ -522,7 +522,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(oidc.Flow{}, errFlushFlowFault).Times(3)
 
-				m, err := oidc.NewManager(flushOIDCRegistry(t),
+				m, err := oidc.NewRelyingParty(flushOIDCRegistry(t),
 					NewMockIdentityBroker(gomock.NewController(t)),
 					oidc.WithFlowStore(flows), oidc.WithLogger(log))
 				require.NoError(t, err)
@@ -605,15 +605,15 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 	flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(oidc.Flow{}, errFlushFlowFault).Times(3)
 
-	m, err := oidc.NewManager(flushOIDCRegistry(t), NewMockIdentityBroker(gomock.NewController(t)),
+	m, err := oidc.NewRelyingParty(flushOIDCRegistry(t), NewMockIdentityBroker(gomock.NewController(t)),
 		oidc.WithFlowStore(flows), oidc.WithLogger(log))
 	require.NoError(t, err)
 
-	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(),
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(),
 		NewMockUserLoader(gomock.NewController(t)), oidc.WithHandoffLogger(log))
 	require.NoError(t, err)
 
-	oidcSessions, err := session.NewManager()
+	oidcSessions, err := session.New()
 	require.NoError(t, err)
 
 	// A second-factor policy registered on the chain's engine: a magic-link
@@ -625,7 +625,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 	method.EXPECT().Channel().Return(factor.Email).AnyTimes()
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
-	p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{method},
+	p, err := policy.NewMFA([]policy.MFAMethodLookup{method},
 		policy.WithMFAPolicyLogger(log), policy.WithMFAPolicyLogInterval(time.Hour))
 	require.NoError(t, err)
 

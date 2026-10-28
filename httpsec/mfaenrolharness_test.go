@@ -53,7 +53,7 @@ var _ notify.NonBlocking = queuedSender{}
 type enrolHarness struct {
 	t *testing.T
 
-	sessions *session.Manager
+	sessions *session.Sessions
 	store    *mfa.MemoryEnrolmentStore
 	totp     *mfa.TOTP
 
@@ -100,7 +100,7 @@ func newEnrolHarness(t *testing.T) *enrolHarness {
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	h := &enrolHarness{
@@ -140,7 +140,7 @@ func enrolmentEngine(t *testing.T) *policy.Engine {
 	lookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 	lookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-	p, err := policy.NewMFARequirementPolicy(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}}, policy.WithMFAEnrolmentPath())
+	p, err := policy.NewMFARequirement(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}}, policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 
 	return engineOf(t, p)

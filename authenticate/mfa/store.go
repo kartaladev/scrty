@@ -245,8 +245,8 @@ type DeviceProofStore interface {
 	ChargeEmailCode(ctx context.Context, user identity.UserID, gen id.ID, at time.Time) (int, bool, error)
 }
 
-// MaxEmailCodeFailures is how many attempts may be charged against one
+// MaxEmailCodeAttempts is how many attempts may be charged against one
 // emailed code. Every attempt is charged before it is compared, so the fifth
 // wrong code leaves no attempt for the right one, which is then refused and the
 // user begins again.
-const MaxEmailCodeFailures = 5
+const MaxEmailCodeAttempts = 5

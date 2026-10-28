@@ -25,7 +25,7 @@ import (
 // rotation undoes, which runs detached from the caller's cancellation.
 const compensatingRevokeTimeout = 5 * time.Second
 
-// Manager issues, verifies, revokes and rotates API keys.
+// Keys issues, verifies, revokes and rotates API keys.
 //
 // Every default is replaceable. With no options a manager keeps its records in
 // process memory, mints secrets from crypto/rand, stores them under SHA-256 and
@@ -34,9 +34,9 @@ const compensatingRevokeTimeout = 5 * time.Second
 // through WithDigest, and a test moves time through WithClock without waiting
 // for it.
 //
-// A Manager is safe for concurrent use as far as its store is: it holds no
+// A Keys is safe for concurrent use as far as its store is: it holds no
 // mutable state of its own after construction.
-type Manager struct {
+type Keys struct {
 	store  Store
 	prefix string
 	digest func([]byte) []byte
@@ -52,7 +52,7 @@ type Manager struct {
 	opening string
 }
 
-// NewManager returns a manager with every default in place.
+// New returns a manager with every default in place.
 //
 // A prefix that is not 1 to 16 lowercase ASCII letters or digits is refused
 // here rather than left to produce keys nothing can split, and every port and
@@ -64,8 +64,8 @@ type Manager struct {
 // error's Go type, never the store's own text; a consumer who wants that
 // detail logs it inside their own implementation of Store. The key
 // identifier, a library-owned value rather than a secret, is kept.
-func NewManager(opts ...Option) (*Manager, error) {
-	m := &Manager{
+func New(opts ...Option) (*Keys, error) {
+	m := &Keys{
 		store:  NewMemoryStore(),
 		prefix: defaultPrefix,
 		digest: sha256Digest,
@@ -112,7 +112,7 @@ func NewManager(opts ...Option) (*Manager, error) {
 
 // Prefix reports the prefix every key this manager issues carries, which is
 // what WithPrefix configured.
-func (m *Manager) Prefix() string { return m.prefix }
+func (m *Keys) Prefix() string { return m.prefix }
 
 // digestProbes are the two inputs NewManager hands the digest once, each the
 // size of a real secret. Neither starts with a zero byte, and they differ in
@@ -174,7 +174,7 @@ func sha256Digest(b []byte) []byte {
 // empty value for the secret is refused with ErrConfig, and stores nothing:
 // NewManager's probe refuses a digest that always does, and this refuses one
 // that does only for some inputs.
-func (m *Manager) Issue(
+func (m *Keys) Issue(
 	ctx context.Context,
 	principal identity.UserID,
 	name string,
@@ -237,7 +237,7 @@ func (m *Manager) Issue(
 //
 // A store failure comes back wrapped, with fixed text; a consumer who wants
 // its own detail logs it inside their own implementation of Store.
-func (m *Manager) List(ctx context.Context, principal identity.UserID) ([]Key, error) {
+func (m *Keys) List(ctx context.Context, principal identity.UserID) ([]Key, error) {
 	keys, err := m.store.List(ctx, principal)
 	if err != nil {
 		return nil, diag.Wrap(err, "apikey: could not list the principal's keys")
@@ -269,7 +269,7 @@ func (m *Manager) List(ctx context.Context, principal identity.UserID) ([]Key, e
 //
 // No error this returns and no log record it writes contains the presented key
 // or its secret.
-func (m *Manager) Verify(ctx context.Context, presented string) (identity.Principal, Key, error) {
+func (m *Keys) Verify(ctx context.Context, presented string) (identity.Principal, Key, error) {
 	keyID, secret, ok := m.parsePresented(presented)
 	if !ok {
 		return identity.Principal{}, Key{}, ErrVerificationFailed
@@ -325,7 +325,7 @@ func (m *Manager) Verify(ctx context.Context, presented string) (identity.Princi
 
 // log writes through the configured logger, and writes nothing when the
 // consumer supplied none.
-func (m *Manager) log(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
+func (m *Keys) log(ctx context.Context, level slog.Level, msg string, attrs ...slog.Attr) {
 	if m.logger == nil {
 		return
 	}
@@ -358,7 +358,7 @@ func levelFor(err error) slog.Level {
 // caller already matches on — and any other store failure comes back
 // wrapped, with fixed text; a consumer who wants its own detail logs it
 // inside their own implementation of Store.
-func (m *Manager) Revoke(ctx context.Context, keyID id.ID) error {
+func (m *Keys) Revoke(ctx context.Context, keyID id.ID) error {
 	_, err := m.store.Revoke(ctx, keyID, m.clock.Now())
 
 	return keyStoreFailed(err, "apikey: could not revoke the key")
@@ -431,7 +431,7 @@ func keyStoreFailed(err error, text string) error {
 // identifier is a secret. Inside a transaction the store carries, a rollback
 // undoes both, and whether that is available is the store implementation's to
 // say — this package neither opens nor requires one.
-func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) (string, Key, error) {
+func (m *Keys) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duration) (string, Key, error) {
 	existing, err := m.store.Get(ctx, keyID)
 	if err != nil {
 		return "", Key{}, keyStoreFailed(err, "apikey: could not read the key to rotate")
@@ -492,7 +492,7 @@ func (m *Manager) Rotate(ctx context.Context, keyID id.ID, lifetime time.Duratio
 // revokeReplacement ends a replacement key that a failed or lost rotation must
 // not leave live. It runs detached from ctx's cancellation, within
 // compensatingRevokeTimeout, so a caller that has hung up cannot prevent it.
-func (m *Manager) revokeReplacement(ctx context.Context, replacement id.ID) error {
+func (m *Keys) revokeReplacement(ctx context.Context, replacement id.ID) error {
 	undoCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), compensatingRevokeTimeout)
 	defer cancel()
 

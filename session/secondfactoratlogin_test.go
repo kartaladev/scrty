@@ -47,14 +47,14 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		name string
 		// act drives the manager and returns the session as the store now
 		// holds it.
-		act    func(t *testing.T, m *session.Manager) *session.Session
+		act    func(t *testing.T, m *session.Sessions) *session.Session
 		assert func(t *testing.T, got *session.Session, writes storeWrites)
 	}
 
 	cases := []testCase{
 		{
 			name: "created satisfied in one write",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFirstFactor(factor.Passkey), session.WithSecondFactorAtLogin())
 				require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		},
 		{
 			name: "rotation keeps it",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFirstFactor(factor.Passkey), session.WithSecondFactorAtLogin())
 				require.NoError(t, err)
@@ -96,7 +96,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		},
 		{
 			name: "consumer data cannot claim it",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
 				require.NoError(t, err)
 
@@ -116,7 +116,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		},
 		{
 			name: "verify-resolved sessions are not marked",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
 				require.NoError(t, err)
 
@@ -137,7 +137,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		},
 		{
 			name: "a later save cannot set the marker",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser, session.WithFirstFactor(factor.Password))
 				require.NoError(t, err)
 
@@ -155,7 +155,7 @@ func TestSecondFactorAtLogin(t *testing.T) {
 		},
 		{
 			name: "a later save cannot clear the marker",
-			act: func(t *testing.T, m *session.Manager) *session.Session {
+			act: func(t *testing.T, m *session.Sessions) *session.Session {
 				s, err := m.Create(t.Context(), testUser,
 					session.WithFirstFactor(factor.Passkey), session.WithSecondFactorAtLogin())
 				require.NoError(t, err)

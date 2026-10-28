@@ -80,16 +80,16 @@ func TestKeycloak(t *testing.T) {
 	broker, err := oidc.NewBroker(links, users)
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(kc.Outbound))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(kc.Outbound))
 	require.NoError(t, err)
 
-	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 	require.NoError(t, err)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
-	keys, err := signingkey.NewKeyManager(t.Context())
+	keys, err := signingkey.New(t.Context())
 	require.NoError(t, err)
 
 	tokens, err := token.NewGenerator(keys)
@@ -136,7 +136,7 @@ func TestKeycloak(t *testing.T) {
 			"the session outlived Keycloak's back-channel logout")
 
 		_, err := sessions.Load(t.Context(), res.session.ID)
-		require.ErrorIs(t, err, session.ErrSessionNotFound)
+		require.ErrorIs(t, err, session.ErrNotFound)
 	}
 
 	cases := []testCase{

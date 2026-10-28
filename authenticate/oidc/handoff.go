@@ -48,7 +48,7 @@ var (
 // interval.
 const handoffLogInterval = time.Minute
 
-// HandoffManager conveys a completed OIDC login to the session that will be
+// Handoff conveys a completed OIDC login to the session that will be
 // created for it, through a short-lived, single-use code.
 //
 // The callback calls Issue and hands the code to the browser; the browser
@@ -57,9 +57,9 @@ const handoffLogInterval = time.Minute
 // padding. The store holds the token id and SHA-256 of the secret, never the
 // secret itself.
 //
-// Build one with NewHandoffManager. A HandoffManager is safe for concurrent use
+// Build one with NewHandoffManager. A Handoff is safe for concurrent use
 // as far as the store and user loader it was given are.
-type HandoffManager struct {
+type Handoff struct {
 	store   HandoffStore
 	users   identity.UserLoader
 	random  io.Reader
@@ -69,7 +69,7 @@ type HandoffManager struct {
 	sampler *logsample.Sampler
 }
 
-// NewHandoffManager returns a manager that keeps codes in store and resolves
+// NewHandoff returns a manager that keeps codes in store and resolves
 // the user a code was issued for through users.
 //
 // Both are required, and neither is defaulted here: a nil store or loader,
@@ -77,7 +77,7 @@ type HandoffManager struct {
 // port (identity.MissingPort) wrapped in ErrConfig. A consumer with no shared
 // store passes NewMemoryHandoffStore(), which holds codes for one process only:
 //
-//	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+//	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 //
 // With no options it draws codes from crypto/rand.Reader (WithHandoffRandom),
 // reads time from clock.System() (WithHandoffClock), names records with
@@ -88,7 +88,7 @@ type HandoffManager struct {
 // and the error's Go type, never the dependency's own text; a consumer who
 // wants that detail logs it inside their own implementation of the store or
 // the loader.
-func NewHandoffManager(store HandoffStore, users identity.UserLoader, opts ...HandoffOption) (*HandoffManager, error) {
+func NewHandoff(store HandoffStore, users identity.UserLoader, opts ...HandoffOption) (*Handoff, error) {
 	if nilcheck.IsNil(store) {
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("handoff store"))
 	}
@@ -96,7 +96,7 @@ func NewHandoffManager(store HandoffStore, users identity.UserLoader, opts ...Ha
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("user loader"))
 	}
 
-	h := &HandoffManager{store: store, users: users}
+	h := &Handoff{store: store, users: users}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
@@ -138,7 +138,7 @@ func NewHandoffManager(store HandoffStore, users identity.UserLoader, opts ...Ha
 //
 // The code is the caller's to hand to the browser and nowhere else: the
 // library never logs it.
-func (h *HandoffManager) Issue(ctx context.Context, res CallbackResult) (string, error) {
+func (h *Handoff) Issue(ctx context.Context, res CallbackResult) (string, error) {
 	if res.Principal == nil || res.Principal.ID == "" {
 		return "", errors.New("oidc: a handoff needs the principal's user reference")
 	}
@@ -189,7 +189,7 @@ func handoffDigest(secret string) []byte {
 }
 
 // reportSuppressed writes the count of refusal records the sampler held back.
-func (h *HandoffManager) reportSuppressed(reason string, suppressed int) {
+func (h *Handoff) reportSuppressed(reason string, suppressed int) {
 	h.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc handoff refusals suppressed",
 		slog.String("reason", reason),
 		slog.Int("suppressed", suppressed))
@@ -269,7 +269,7 @@ type HandoffResult struct {
 // the error's Go type, never the store's or loader's own text. Any failure
 // before the consume leaves the code redeemable until it expires. No error and no log record carries the code or
 // the ID token.
-func (h *HandoffManager) Redeem(ctx context.Context, code string, checks ...RedeemCheck) (HandoffResult, error) {
+func (h *Handoff) Redeem(ctx context.Context, code string, checks ...RedeemCheck) (HandoffResult, error) {
 	tokenID, secret, ok := parseHandoffCode(code)
 	if !ok {
 		return HandoffResult{}, h.refuse(ctx, slog.LevelDebug, "malformed")
@@ -375,7 +375,7 @@ func parseHandoffCode(code string) (tokenID, secret string, ok bool) {
 // refuse logs why a redemption failed, through the sampler, and returns
 // ErrInvalidHandoff. The record names the reason; never the code, the secret
 // or the ID token.
-func (h *HandoffManager) refuse(ctx context.Context, level slog.Level, reason string) error {
+func (h *Handoff) refuse(ctx context.Context, level slog.Level, reason string) error {
 	return h.record(ctx, level, reason, slog.String("reason", reason))
 }
 
@@ -389,7 +389,7 @@ func (h *HandoffManager) refuse(ctx context.Context, level slog.Level, reason st
 // cancellation, cancelled=true, never the dependency's own text. A consumer
 // who wants that text logs it inside their own implementation of the store
 // or the loader.
-func (h *HandoffManager) refuseFailure(ctx context.Context, reason, op string, err error) error {
+func (h *Handoff) refuseFailure(ctx context.Context, reason, op string, err error) error {
 	attrs := diag.Failure(reason, err)
 	key := reason
 	if op != "" {
@@ -404,7 +404,7 @@ func (h *HandoffManager) refuseFailure(ctx context.Context, reason, op string, e
 // it is written exactly once whichever caller built them; key distinguishes
 // the sampling window from the reason attribute where a reason has more than
 // one call site (refuseFailure's op), and is otherwise the reason itself.
-func (h *HandoffManager) record(ctx context.Context, level slog.Level, key string, attrs ...slog.Attr) error {
+func (h *Handoff) record(ctx context.Context, level slog.Level, key string, attrs ...slog.Attr) error {
 	write, suppressed := h.sampler.Allow("oidc.handoff."+key, h.clock.Now())
 	if write {
 		h.log.LogAttrs(ctx, level, "oidc handoff redemption refused",
@@ -424,7 +424,7 @@ func (h *HandoffManager) record(ctx context.Context, level slog.Level, key strin
 // pending reports nothing. Call it directly, or let
 // httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
 // was given (oidc.Manager.FlushRefusalLogs).
-func (h *HandoffManager) FlushRefusalLogs() error {
+func (h *Handoff) FlushRefusalLogs() error {
 	h.sampler.Flush()
 
 	return nil
@@ -439,6 +439,6 @@ func (h *HandoffManager) FlushRefusalLogs() error {
 // handoffs, so there is no window to wait out, and a code that has not yet
 // expired is never deleted. A store error is returned with whatever count the
 // store reported. HandoffExpiryTask wraps it as a task.
-func (h *HandoffManager) PurgeExpired(ctx context.Context) (int, error) {
+func (h *Handoff) PurgeExpired(ctx context.Context) (int, error) {
 	return h.store.DeleteExpired(ctx, h.clock.Now())
 }

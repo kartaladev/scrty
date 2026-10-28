@@ -72,7 +72,7 @@ type CloneSignal struct {
 // only writes a warning. A consumer clone policy, when set, decides in its
 // place. Any other value is a configuration error.
 func WithCloneResponse(r CloneResponse) Option {
-	return func(m *Manager) { m.cloneResponse = r }
+	return func(m *Passkeys) { m.cloneResponse = r }
 }
 
 // WithClonePolicy sets a consumer function that decides each suspected clone,
@@ -82,7 +82,7 @@ func WithCloneResponse(r CloneResponse) Option {
 // taken as CloneRefuseSuspend, the safe reading. Every suspected clone is
 // also written as a sampled warning. A nil function is a configuration error.
 func WithClonePolicy(fn func(ctx context.Context, s CloneSignal) CloneAction) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.clonePolicy = fn
 		m.clonePolicySet = true
 	}
@@ -94,7 +94,7 @@ func WithClonePolicy(fn func(ctx context.Context, s CloneSignal) CloneAction) Op
 // policy or the clone response. Only the call whose Suspend suspended c ends
 // the user's sessions and queues the notice: of two racing clone assertions,
 // one does.
-func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *AssertionResult) error {
+func (m *Passkeys) onCounterRefused(ctx context.Context, c *Credential, res *AssertionResult) error {
 	// The read-back and the suspension are detached from the request: a client
 	// that disconnects once the write was refused must not leave a suspected
 	// clone active.
@@ -158,7 +158,7 @@ func (m *Manager) onCounterRefused(ctx context.Context, c *Credential, res *Asse
 //
 // The manager holds a revoker whenever clone revocation is on: New refuses
 // any other wiring.
-func (m *Manager) endSessionsOnClone(ctx context.Context, c *Credential) bool {
+func (m *Passkeys) endSessionsOnClone(ctx context.Context, c *Credential) bool {
 	if m.keepOnClone {
 		return false
 	}
@@ -179,7 +179,7 @@ func (m *Manager) endSessionsOnClone(ctx context.Context, c *Credential) bool {
 // allowed despite its counter, leaving the stored counter as it is. A
 // credential that is no longer active, such as one suspended meanwhile, is
 // refused as it now stands.
-func (m *Manager) recordAllowedClone(ctx context.Context, c *Credential, res *AssertionResult) error {
+func (m *Passkeys) recordAllowedClone(ctx context.Context, c *Credential, res *AssertionResult) error {
 	recorded, err := m.credentials.RecordUse(ctx, c.ID, res.BackupState, m.clock.Now())
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not record the assertion")
@@ -200,7 +200,7 @@ func (m *Manager) recordAllowedClone(ctx context.Context, c *Credential, res *As
 
 // cloneAction is the decision about signal: the consumer's policy when set,
 // otherwise the clone response.
-func (m *Manager) cloneAction(ctx context.Context, signal CloneSignal) CloneAction {
+func (m *Passkeys) cloneAction(ctx context.Context, signal CloneSignal) CloneAction {
 	if m.clonePolicy != nil {
 		switch a := m.clonePolicy(ctx, signal); a {
 		case CloneAllow, CloneRefuse, CloneRefuseSuspend:

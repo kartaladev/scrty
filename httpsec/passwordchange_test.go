@@ -309,7 +309,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				return changePasswordFormRequest(ctx, reuseCurrentPassword)
 			},
 			assert: func(t *testing.T, _ *authHarness, chain *httpsec.Chain, s served, saved *savedSessions) {
-				require.ErrorIs(t, s.err, password.ErrPasswordReused)
+				require.ErrorIs(t, s.err, password.ErrReused)
 				assert.Equal(t, http.StatusUnprocessableEntity, httpsec.StatusForError(s.err))
 				assert.Empty(t, saved.all(), "a change refused as reused clears no marker")
 
@@ -511,10 +511,10 @@ func TestPasswordChangeGateLogout(t *testing.T) {
 		name       string
 		logoutOpts []httpsec.LogoutOption
 		request    func(ctx context.Context) *http.Request
-		assert     func(t *testing.T, sessions *session.Manager, s *session.Session, out served)
+		assert     func(t *testing.T, sessions *session.Sessions, s *session.Session, out served)
 	}
 
-	loggedOut := func(t *testing.T, sessions *session.Manager, s *session.Session, out served) {
+	loggedOut := func(t *testing.T, sessions *session.Sessions, s *session.Session, out served) {
 		t.Helper()
 
 		var ch *httpsec.ChallengeError
@@ -526,7 +526,7 @@ func TestPasswordChangeGateLogout(t *testing.T) {
 		require.Error(t, err, "the session is ended, pending challenge included")
 	}
 
-	refused := func(t *testing.T, sessions *session.Manager, s *session.Session, out served) {
+	refused := func(t *testing.T, sessions *session.Sessions, s *session.Session, out served) {
 		t.Helper()
 
 		var ch *httpsec.ChallengeError
@@ -582,7 +582,7 @@ func TestPasswordChangeGateLogout(t *testing.T) {
 			request: func(ctx context.Context) *http.Request {
 				return formRequest(ctx, testChangePasswordPath, "")
 			},
-			assert: func(t *testing.T, sessions *session.Manager, s *session.Session, out served) {
+			assert: func(t *testing.T, sessions *session.Sessions, s *session.Session, out served) {
 				t.Helper()
 
 				require.NoError(t, out.err)
@@ -599,7 +599,7 @@ func TestPasswordChangeGateLogout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			sessions, err := session.NewManager()
+			sessions, err := session.New()
 			require.NoError(t, err)
 
 			s, err := sessions.Create(t.Context(), testPrincipal().ID)

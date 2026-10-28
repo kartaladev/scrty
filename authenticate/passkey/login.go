@@ -62,7 +62,7 @@ const (
 // can use it to refuse device-bound passkeys for some users only. A nil check
 // is a configuration error.
 func WithLoginCheck(fn func(ctx context.Context, f LoginFacts) error) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.loginCheck = fn
 		m.loginCheckSet = true
 	}
@@ -75,7 +75,7 @@ func WithLoginCheck(fn func(ctx context.Context, f LoginFacts) error) Option {
 // policies require to use MFA must then complete a second factor on another
 // channel, as after any other non-exempt login.
 func WithoutSecondFactorAtLogin() Option {
-	return func(m *Manager) { m.noProofAtLogin = true }
+	return func(m *Passkeys) { m.noProofAtLogin = true }
 }
 
 // errLoginBinding refuses a passwordless begin without a ceremony binding: a
@@ -96,7 +96,7 @@ var errLoginBinding = fmt.Errorf("%w: a passwordless login needs a ceremony bind
 // At most once per challenge lifetime, a begin also removes expired login
 // challenges from the store. A failed removal is logged and does not refuse
 // the begin.
-func (m *Manager) BeginLogin(ctx context.Context, binding string) (json.RawMessage, error) {
+func (m *Passkeys) BeginLogin(ctx context.Context, binding string) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (m *Manager) BeginLogin(ctx context.Context, binding string) (json.RawMessa
 
 // purgeLogin removes expired login challenges when no begin of this manager
 // has in the last challenge lifetime. A failure is logged by a fixed reason.
-func (m *Manager) purgeLogin(ctx context.Context) {
+func (m *Passkeys) purgeLogin(ctx context.Context) {
 	now := m.clock.Now()
 
 	m.purgeMu.Lock()
@@ -166,7 +166,7 @@ func (m *Manager) purgeLogin(ctx context.Context) {
 // The result's proof holds when the assertion was user-verified and
 // WithoutSecondFactorAtLogin is not set. Loading the user, and refusing an
 // unknown or disabled one, is the caller's.
-func (m *Manager) Authenticate(ctx context.Context, body []byte, binding string) (*LoginResult, error) {
+func (m *Passkeys) Authenticate(ctx context.Context, body []byte, binding string) (*LoginResult, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -236,7 +236,7 @@ func (m *Manager) Authenticate(ctx context.Context, body []byte, binding string)
 // spendLogin checks and spends the passwordless challenge presented, as
 // clientDataJSON carries it, against binding, and returns its token string.
 // Every refusal is authenticate.ErrAuthenticationFailed.
-func (m *Manager) spendLogin(ctx context.Context, presented, binding string) (string, error) {
+func (m *Passkeys) spendLogin(ctx context.Context, presented, binding string) (string, error) {
 	if binding == "" {
 		return "", m.refused(ctx, "binding", id.Nil)
 	}
@@ -264,7 +264,7 @@ func (m *Manager) spendLogin(ctx context.Context, presented, binding string) (st
 
 // matchHandle requires handle to be the one mapped to c's user. A missing,
 // unknown or other user's handle is authenticate.ErrAuthenticationFailed.
-func (m *Manager) matchHandle(ctx context.Context, c *Credential, handle []byte) error {
+func (m *Passkeys) matchHandle(ctx context.Context, c *Credential, handle []byte) error {
 	if len(handle) == 0 {
 		return m.refused(ctx, "handle", c.ID)
 	}
@@ -293,7 +293,7 @@ func (m *Manager) matchHandle(ctx context.Context, c *Credential, handle []byte)
 // unchanged. A verifier error matching context.Canceled or
 // context.DeadlineExceeded is returned wrapped, still matchable with
 // errors.Is, and is not a refusal. Nothing is written on any refusal.
-func (m *Manager) verifyAssertion(
+func (m *Passkeys) verifyAssertion(
 	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
 ) (*AssertionResult, error) {
 	res, err := m.checkAssertion(ctx, p, c, exp)
@@ -311,7 +311,7 @@ func (m *Manager) verifyAssertion(
 // checkAssertion verifies p against c and exp, with the user verification and
 // backup-eligibility rules, and writes nothing. Its refusals are those of
 // verifyAssertion.
-func (m *Manager) checkAssertion(
+func (m *Passkeys) checkAssertion(
 	ctx context.Context, p ParsedAssertion, c *Credential, exp AssertionExpectation,
 ) (*AssertionResult, error) {
 	res, err := m.verifier.VerifyAssertion(ctx, p, c, exp)
@@ -325,7 +325,7 @@ func (m *Manager) checkAssertion(
 		return nil, authenticate.ErrAuthenticationFailed
 	case res == nil:
 		return nil, m.refused(ctx, "verify", c.ID)
-	case exp.UV == UVRequired && !res.UserVerified:
+	case exp.UV == UserVerificationRequired && !res.UserVerified:
 		return nil, m.refused(ctx, "user-verification", c.ID)
 	case res.BackupState && !res.BackupEligible:
 		// WebAuthn Level 3 §6.1: a credential that is not eligible for
@@ -341,7 +341,7 @@ func (m *Manager) checkAssertion(
 
 // acceptAssertion runs the consumer's login check on a verified res, then
 // records the use. The login check's error is returned unchanged.
-func (m *Manager) acceptAssertion(ctx context.Context, c *Credential, res *AssertionResult) error {
+func (m *Passkeys) acceptAssertion(ctx context.Context, c *Credential, res *AssertionResult) error {
 	if m.loginCheck != nil {
 		if err := m.loginCheck(ctx, LoginFacts{
 			User:           c.User,
@@ -360,7 +360,7 @@ func (m *Manager) acceptAssertion(ctx context.Context, c *Credential, res *Asser
 
 // recordUse records res's counter, backup state and the time on c. A write
 // the store refuses is handled by the clone rule (see CloneResponse).
-func (m *Manager) recordUse(ctx context.Context, c *Credential, res *AssertionResult) error {
+func (m *Passkeys) recordUse(ctx context.Context, c *Credential, res *AssertionResult) error {
 	recorded, err := m.credentials.RecordAssertion(ctx, c.ID, res.SignCount, res.BackupState, m.clock.Now())
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not record the assertion")

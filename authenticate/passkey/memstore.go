@@ -235,13 +235,13 @@ func (s *MemoryCredentialStore) ClearReason(
 	defer s.mu.Unlock()
 
 	c := s.owned(user, cid)
-	if (r != AwaitingSavedCodes && r != AwaitingEmailCode) || c == nil ||
+	if (r != PendingSavedCodes && r != PendingEmailCode) || c == nil ||
 		c.State != StatePending || c.Pending&r == 0 {
 		return 0, false, nil
 	}
 
 	c.Pending &^= r
-	if r&AwaitingEmailCode != 0 {
+	if r&PendingEmailCode != 0 {
 		c.EmailCode = nil
 	}
 
@@ -262,7 +262,7 @@ func (s *MemoryCredentialStore) ChargeEmailAttempt(
 	defer s.mu.Unlock()
 
 	c := s.owned(user, cid)
-	if c == nil || c.State != StatePending || c.Pending&AwaitingEmailCode == 0 || c.EmailCode == nil {
+	if c == nil || c.State != StatePending || c.Pending&PendingEmailCode == 0 || c.EmailCode == nil {
 		return nil, false, nil
 	}
 
@@ -312,7 +312,7 @@ func (s *MemoryCredentialStore) Delete(_ context.Context, user identity.UserID, 
 // set, and reports how many.
 func (s *MemoryCredentialStore) DeleteAwaitingSavedCodes(_ context.Context, user identity.UserID) (int, error) {
 	return s.deleteWhere(func(c *Credential) bool {
-		return c.User == user && c.Pending&AwaitingSavedCodes != 0
+		return c.User == user && c.Pending&PendingSavedCodes != 0
 	}), nil
 }
 

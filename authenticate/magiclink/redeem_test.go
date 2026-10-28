@@ -88,7 +88,7 @@ func TestRedeemOrdering(t *testing.T) {
 			store := &countingTokenStore{Store: onetime.NewMemoryStore()}
 			tokens := tokensWithStore(t, store)
 
-			m, err := magiclink.NewManager(tokens, tc.loader, &recordingSender{}, "https://app.example.com",
+			m, err := magiclink.New(tokens, tc.loader, &recordingSender{}, "https://app.example.com",
 				magiclink.WithSameDeviceBinding(false))
 			require.NoError(t, err)
 
@@ -119,7 +119,7 @@ func TestRedeemBindsToUserReference(t *testing.T) {
 
 		sender := &recordingSender{}
 
-		m, err := magiclink.NewManager(testTokens(t), loader, sender, "https://app.example.com",
+		m, err := magiclink.New(testTokens(t), loader, sender, "https://app.example.com",
 			magiclink.WithSameDeviceBinding(false))
 		require.NoError(t, err)
 
@@ -151,7 +151,7 @@ func TestRedeemBindsToUserReference(t *testing.T) {
 
 		tokens := testTokens(t)
 
-		m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
+		m, err := magiclink.New(tokens, loader, &recordingSender{}, "https://app.example.com",
 			magiclink.WithSameDeviceBinding(false))
 		require.NoError(t, err)
 
@@ -181,7 +181,7 @@ func TestRefusalDoesNotSpendLink(t *testing.T) {
 
 		tokens := testTokens(t)
 
-		m, err := magiclink.NewManager(tokens, activeByID(), &recordingSender{}, "https://app.example.com",
+		m, err := magiclink.New(tokens, activeByID(), &recordingSender{}, "https://app.example.com",
 			magiclink.WithSameDeviceBinding(false))
 		require.NoError(t, err)
 
@@ -204,7 +204,7 @@ func TestRefusalDoesNotSpendLink(t *testing.T) {
 
 		tokens := testTokens(t)
 
-		m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
+		m, err := magiclink.New(tokens, loader, &recordingSender{}, "https://app.example.com",
 			magiclink.WithSameDeviceBinding(false))
 		require.NoError(t, err)
 
@@ -225,7 +225,7 @@ func TestRedeemRace(t *testing.T) {
 
 	tokens := testTokens(t)
 
-	m, err := magiclink.NewManager(tokens, activeByID(), &recordingSender{}, "https://app.example.com",
+	m, err := magiclink.New(tokens, activeByID(), &recordingSender{}, "https://app.example.com",
 		magiclink.WithSameDeviceBinding(false))
 	require.NoError(t, err)
 
@@ -275,7 +275,7 @@ func TestRedeemRequiresBinding(t *testing.T) {
 
 	// issueThroughRequest runs the real request path and hands back the token
 	// from the emailed link together with the binding nonce the caller got.
-	issueThroughRequest := func(t *testing.T, m *magiclink.Manager, sender *recordingSender) (string, string) {
+	issueThroughRequest := func(t *testing.T, m *magiclink.Links, sender *recordingSender) (string, string) {
 		t.Helper()
 
 		result := m.Request(t.Context(), "ada@example.com", "/")
@@ -292,7 +292,7 @@ func TestRedeemRequiresBinding(t *testing.T) {
 
 		sender := &recordingSender{}
 
-		m, err := magiclink.NewManager(testTokens(t), activeByID(), sender, "https://app.example.com")
+		m, err := magiclink.New(testTokens(t), activeByID(), sender, "https://app.example.com")
 		require.NoError(t, err)
 
 		token, nonce := issueThroughRequest(t, m, sender)
@@ -311,7 +311,7 @@ func TestRedeemRequiresBinding(t *testing.T) {
 
 		sender := &recordingSender{}
 
-		m, err := magiclink.NewManager(testTokens(t), activeByID(), sender, "https://app.example.com",
+		m, err := magiclink.New(testTokens(t), activeByID(), sender, "https://app.example.com",
 			magiclink.WithSameDeviceBinding(false))
 		require.NoError(t, err)
 

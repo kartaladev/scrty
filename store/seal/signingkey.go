@@ -73,10 +73,10 @@ func NewSigningKeyStore(
 	inner signingkey.KeyStore, r SigningKeyResealer, c Cipher, opts ...Option,
 ) (signingkey.KeyStore, error) {
 	if nilcheck.IsNil(inner) {
-		return nil, fmt.Errorf("%w: the sealing signing-key store has no inner store", ErrInvalidConfiguration)
+		return nil, fmt.Errorf("%w: the sealing signing-key store has no inner store", ErrConfig)
 	}
 	if nilcheck.IsNil(c) {
-		return nil, fmt.Errorf("%w: the sealing signing-key store has no cipher", ErrInvalidConfiguration)
+		return nil, fmt.Errorf("%w: the sealing signing-key store has no cipher", ErrConfig)
 	}
 
 	o, err := newOptions("signing-key", !nilcheck.IsNil(r), false, opts)

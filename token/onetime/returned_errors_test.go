@@ -19,7 +19,7 @@ func TestOnetimeReturnedErrors(t *testing.T) {
 	type testCase struct {
 		name   string
 		store  func(t *testing.T, ctrl *gomock.Controller) onetime.Store
-		call   func(t *testing.T, m *onetime.Manager) error
+		call   func(t *testing.T, m *onetime.Tokens) error
 		assert func(t *testing.T, err error)
 	}
 
@@ -46,7 +46,7 @@ func TestOnetimeReturnedErrors(t *testing.T) {
 				s.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *onetime.Manager) error {
+			call: func(t *testing.T, m *onetime.Tokens) error {
 				t.Helper()
 				_, _, err := m.Issue(t.Context(), "ada@example.com")
 				return err
@@ -62,7 +62,7 @@ func TestOnetimeReturnedErrors(t *testing.T) {
 					Return(0, errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *onetime.Manager) error {
+			call: func(t *testing.T, m *onetime.Tokens) error {
 				t.Helper()
 				_, err := m.IssuedCount(t.Context(), "ada@example.com")
 				return err
@@ -78,7 +78,7 @@ func TestOnetimeReturnedErrors(t *testing.T) {
 					Return(0, errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *onetime.Manager) error {
+			call: func(t *testing.T, m *onetime.Tokens) error {
 				t.Helper()
 				_, err := m.PurgeExpired(t.Context())
 				return err
@@ -92,7 +92,7 @@ func TestOnetimeReturnedErrors(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			m, err := onetime.NewManager("magic-link", onetime.WithStore(tc.store(t, ctrl)))
+			m, err := onetime.New("magic-link", onetime.WithStore(tc.store(t, ctrl)))
 			require.NoError(t, err)
 
 			tc.assert(t, tc.call(t, m))

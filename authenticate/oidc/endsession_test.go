@@ -39,19 +39,19 @@ func TestEndSessionURL(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []oidc.ManagerOption
+		opts   []oidc.Option
 		setup  func(e env)
-		act    func(ctx context.Context, m *oidc.Manager) (string, error)
+		act    func(ctx context.Context, m *oidc.RelyingParty) (string, error)
 		assert func(t *testing.T, e env, got string, err error)
 	}
 
-	direct := func(provider, idToken, state string) func(context.Context, *oidc.Manager) (string, error) {
-		return func(ctx context.Context, m *oidc.Manager) (string, error) {
+	direct := func(provider, idToken, state string) func(context.Context, *oidc.RelyingParty) (string, error) {
+		return func(ctx context.Context, m *oidc.RelyingParty) (string, error) {
 			return m.EndSessionURL(ctx, provider, idToken, state)
 		}
 	}
-	viaSession := func(s *session.Session, state string) func(context.Context, *oidc.Manager) (string, error) {
-		return func(ctx context.Context, m *oidc.Manager) (string, error) {
+	viaSession := func(s *session.Session, state string) func(context.Context, *oidc.RelyingParty) (string, error) {
+		return func(ctx context.Context, m *oidc.RelyingParty) (string, error) {
 			return m.EndSessionBuilder().EndSessionURL(ctx, s, state)
 		}
 	}
@@ -79,7 +79,7 @@ func TestEndSessionURL(t *testing.T) {
 
 	cases := []testCase{
 		{name: "with an endpoint and a redirect",
-			opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect(redirect)},
+			opts: []oidc.Option{oidc.WithPostLogoutRedirect(redirect)},
 			act:  direct("corp", hint, "xyz"),
 			assert: targets(discovered, url.Values{
 				"client_id":                {"client-corp"},
@@ -93,7 +93,7 @@ func TestEndSessionURL(t *testing.T) {
 				"client_id": {"client-corp"}, "id_token_hint": {hint}, "state": {"xyz"},
 			})},
 		{name: "an empty state is omitted",
-			opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect(redirect)},
+			opts: []oidc.Option{oidc.WithPostLogoutRedirect(redirect)},
 			act:  direct("corp", hint, ""),
 			assert: targets(discovered, url.Values{
 				"client_id": {"client-corp"}, "id_token_hint": {hint}, "post_logout_redirect_uri": {redirect},
@@ -139,7 +139,7 @@ func TestEndSessionURL(t *testing.T) {
 				assert.Empty(t, got)
 			}},
 		{name: "the session adapter reads the session's provider and token",
-			opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect(redirect)},
+			opts: []oidc.Option{oidc.WithPostLogoutRedirect(redirect)},
 			act:  viaSession(&session.Session{ExternalProvider: "corp", ExternalIDToken: hint}, "xyz"),
 			assert: targets(discovered, url.Values{
 				"client_id":                {"client-corp"},
@@ -182,10 +182,10 @@ func TestEndSessionURL(t *testing.T) {
 				staleRedirectProvider, staleIDTokenHintProvider, staleStateProvider)
 			require.NoError(t, err)
 
-			opts := append([]oidc.ManagerOption{
+			opts := append([]oidc.Option{
 				oidc.WithOutboundClient(inMemoryOutbound(t, e.p, e.q)),
 			}, tc.opts...)
-			m, err := oidc.NewManager(reg, stubBroker{}, opts...)
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, opts...)
 			require.NoError(t, err)
 
 			got, err := tc.act(t.Context(), m)
@@ -204,17 +204,17 @@ func TestEndSessionURL(t *testing.T) {
 
 		type constructionCase struct {
 			name   string
-			opts   []oidc.ManagerOption
-			assert func(t *testing.T, m *oidc.Manager, err error)
+			opts   []oidc.Option
+			assert func(t *testing.T, m *oidc.RelyingParty, err error)
 		}
-		refused := func(t *testing.T, m *oidc.Manager, err error) {
+		refused := func(t *testing.T, m *oidc.RelyingParty, err error) {
 			t.Helper()
 			require.ErrorIs(t, err, oidc.ErrConfig)
 			assert.Contains(t, err.Error(), "WithPostLogoutRedirect")
 			assert.NotContains(t, err.Error(), "s3cr3t", "user information is never repeated")
 			assert.Nil(t, m)
 		}
-		built := func(t *testing.T, m *oidc.Manager, err error) {
+		built := func(t *testing.T, m *oidc.RelyingParty, err error) {
 			t.Helper()
 			require.NoError(t, err)
 			assert.NotNil(t, m)
@@ -222,32 +222,32 @@ func TestEndSessionURL(t *testing.T) {
 
 		cases := []constructionCase{
 			{name: "an absolute https redirect is accepted",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect(redirect)}, assert: built},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect(redirect)}, assert: built},
 			{name: "an http redirect is refused with the default client",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("http://app.example/bye")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("http://app.example/bye")}, assert: refused},
 			{name: "an http redirect is accepted with a client allowing http",
-				opts: []oidc.ManagerOption{
+				opts: []oidc.Option{
 					oidc.WithPostLogoutRedirect("http://localhost:3000/bye"), oidc.WithOutboundClient(allowHTTP),
 				},
 				assert: built},
 			{name: "a redirect with user information is refused",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("https://user:s3cr3t@app.example/")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("https://user:s3cr3t@app.example/")}, assert: refused},
 			{name: "a redirect with a user name only is refused",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("https://user@app.example/")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("https://user@app.example/")}, assert: refused},
 			{name: "a relative redirect is refused",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("/bye")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("/bye")}, assert: refused},
 			{name: "a redirect with no host is refused",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("https:///bye")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("https:///bye")}, assert: refused},
 			{name: "an empty redirect is refused",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("")}, assert: refused},
 			{name: "an unparsable redirect is refused",
-				opts: []oidc.ManagerOption{oidc.WithPostLogoutRedirect("https://app.example/%zz")}, assert: refused},
+				opts: []oidc.Option{oidc.WithPostLogoutRedirect("https://app.example/%zz")}, assert: refused},
 		}
 
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
-				m, err := oidc.NewManager(reg, stubBroker{}, tc.opts...)
+				m, err := oidc.NewRelyingParty(reg, stubBroker{}, tc.opts...)
 				tc.assert(t, m, err)
 			})
 		}

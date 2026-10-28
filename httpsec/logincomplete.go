@@ -76,7 +76,7 @@ func (c *config) credentialIssuer(g token.Generator) credentialIssuer {
 // loginTailDeps is what the login tail needs to end a login.
 type loginTailDeps struct {
 	engine   *policy.Engine
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 
 	// issue issues the login's credential, as the chain's bearer mode
@@ -190,7 +190,7 @@ func WithCaller(ctx context.Context, a *authenticate.Authentication) context.Con
 // mark's deadlines are drawn from, and enrolmentLifetime is how long an
 // enrolment-only session may live, handed over when the chain is built.
 type challengeMarker struct {
-	sessions          *session.Manager
+	sessions          *session.Sessions
 	enrolmentLifetime time.Duration
 }
 

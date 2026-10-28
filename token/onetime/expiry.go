@@ -19,7 +19,7 @@ import (
 // A store that cannot purge yields an error that matches both
 // expiry.ErrPurgeUnsupported and ErrReapUnsupported, never a run that removed
 // nothing. A consumer who wants a different task name uses ExpiryTaskNamed.
-func ExpiryTask(m *Manager) expiry.Task {
+func ExpiryTask(m *Tokens) expiry.Task {
 	return ExpiryTaskNamed("one-time-tokens:"+m.Purpose(), m)
 }
 
@@ -27,7 +27,7 @@ func ExpiryTask(m *Manager) expiry.Task {
 // build on a one-time manager and publish a task under a name of their own.
 // Its behaviour, limits and errors are those of ExpiryTask: no interval, no
 // cutoff, and nothing inside the issuance window is deleted.
-func ExpiryTaskNamed(name string, m *Manager) expiry.Task {
+func ExpiryTaskNamed(name string, m *Tokens) expiry.Task {
 	return expiry.Task{
 		Name: name,
 		Run: func(ctx context.Context) (int, error) {

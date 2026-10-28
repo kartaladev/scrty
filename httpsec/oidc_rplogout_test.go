@@ -18,7 +18,7 @@ import (
 
 // The OIDC manager's end-session step is what EnableOIDCLogin hands logout, so
 // it has to satisfy logout's port.
-var _ httpsec.EndSessionBuilder = (&oidc.Manager{}).EndSessionBuilder()
+var _ httpsec.EndSessionBuilder = (&oidc.RelyingParty{}).EndSessionBuilder()
 
 // consumerEndSessionURL is the URL a consumer's own end-session step answers.
 const consumerEndSessionURL = "https://consumer.example/bye"

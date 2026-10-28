@@ -99,14 +99,14 @@ func NewKeyring(opts ...KeyringOption) (Keyring, error) {
 	var cfg keyringConfig
 	for _, opt := range opts {
 		if opt == nil {
-			return nil, fmt.Errorf("%w: a keyring option is nil", ErrInvalidConfiguration)
+			return nil, fmt.Errorf("%w: a keyring option is nil", ErrConfig)
 		}
 		opt(&cfg)
 	}
 
 	if len(cfg.active) != 1 {
 		return nil, fmt.Errorf("%w: a keyring needs exactly one active key, got %d",
-			ErrInvalidConfiguration, len(cfg.active))
+			ErrConfig, len(cfg.active))
 	}
 
 	kr := &keyring{activeID: cfg.active[0].id, keys: make(map[string][]byte, 1+len(cfg.retired))}
@@ -127,18 +127,18 @@ func NewKeyring(opts ...KeyringOption) (Keyring, error) {
 func (r *keyring) add(role string, k namedKey) error {
 	if !validKeyID(k.id) {
 		return fmt.Errorf("%w: the id of %s must be 1 to %d of A-Z, a-z, 0-9, '.', '_' or '-'",
-			ErrInvalidConfiguration, role, maxKeyIDLen)
+			ErrConfig, role, maxKeyIDLen)
 	}
 	if len(k.key) != KeySize {
 		return fmt.Errorf("%w: key %q must be %d bytes, got %d",
-			ErrInvalidConfiguration, k.id, KeySize, len(k.key))
+			ErrConfig, k.id, KeySize, len(k.key))
 	}
 	if _, dup := r.keys[k.id]; dup {
-		return fmt.Errorf("%w: key id %q is used more than once", ErrInvalidConfiguration, k.id)
+		return fmt.Errorf("%w: key id %q is used more than once", ErrConfig, k.id)
 	}
 	for id, other := range r.keys {
 		if subtle.ConstantTimeCompare(k.key, other) == 1 {
-			return fmt.Errorf("%w: keys %q and %q have identical bytes", ErrInvalidConfiguration, id, k.id)
+			return fmt.Errorf("%w: keys %q and %q have identical bytes", ErrConfig, id, k.id)
 		}
 	}
 

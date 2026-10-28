@@ -36,7 +36,7 @@ func newExternalKeySource(t *testing.T) *externalKeySource {
 	return &externalKeySource{kid: "external-1", signer: private, public: public}
 }
 
-func (s *externalKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (s *externalKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
 	if alg != signingkey.EdDSA {
 		return "", nil, false
 	}
@@ -66,7 +66,7 @@ func TestKeySource(t *testing.T) {
 	// issuesAndVerifies is shared: the cases differ only in which
 	// implementation of the port is behind them.
 	issuesAndVerifies := func(t *testing.T, source signingkey.KeySource) {
-		kid, _, ok := source.GetSigner(signingkey.EdDSA)
+		kid, _, ok := source.Signer(signingkey.EdDSA)
 		require.True(t, ok, "the source supplies a signer for EdDSA")
 		require.NotEmpty(t, kid)
 
@@ -84,7 +84,7 @@ func TestKeySource(t *testing.T) {
 		require.NoError(t, err, "the source's own set verifies what its signer signed")
 		assert.Equal(t, "issued over the port", string(payload))
 
-		_, _, rsOK := source.GetSigner(signingkey.RS256)
+		_, _, rsOK := source.Signer(signingkey.RS256)
 		assert.False(t, rsOK, "a source reports no signer for an algorithm it does not hold")
 	}
 
@@ -92,8 +92,8 @@ func TestKeySource(t *testing.T) {
 		{
 			name: "the key manager implements it",
 			source: func(t *testing.T) signingkey.KeySource {
-				km, err := signingkey.NewKeyManager(t.Context(),
-					signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+				km, err := signingkey.New(t.Context(),
+					signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.EdDSA),
 				)
 				require.NoError(t, err)
@@ -134,8 +134,8 @@ func TestLifetimeReporter(t *testing.T) {
 		{
 			name: "the key manager reports the lifetime and interval it was configured with",
 			source: func(t *testing.T) signingkey.KeySource {
-				km, err := signingkey.NewKeyManager(t.Context(),
-					signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+				km, err := signingkey.New(t.Context(),
+					signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.EdDSA),
 					signingkey.WithLifetime(48*time.Hour),
 					signingkey.WithRotateInterval(6*time.Hour),

@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	_ ratelimit.Verifier = (*Factory)(nil)
+	_ ratelimit.Verifier = (*LimiterFactory)(nil)
 	_ ratelimit.Verifier = (*Limiter)(nil)
 )
 
@@ -51,7 +51,7 @@ var (
 // On a cluster, go-redis sends INFO and CONFIG GET to one node, so the version
 // and the eviction policy are those of that node alone; every node must be
 // configured alike, which Verify cannot check.
-func (f *Factory) Verify(ctx context.Context) error { return f.check.verify(ctx) }
+func (f *LimiterFactory) Verify(ctx context.Context) error { return f.check.verify(ctx) }
 
 // Verify checks the server behind the limiter's client, as Factory.Verify
 // does.

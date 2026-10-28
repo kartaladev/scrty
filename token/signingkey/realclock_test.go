@@ -28,7 +28,7 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 		// options, short where the case waits on that loop and long enough to
 		// pass validation elsewhere.
 		intervals []signingkey.Option
-		assert    func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore)
+		assert    func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore)
 	}
 
 	cases := []testCase{
@@ -40,7 +40,7 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 				signingkey.WithHousekeepingInterval(10 * time.Millisecond),
 				signingkey.WithLifetime(120 * time.Millisecond),
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore) {
 				first := currentKid(t, km, signingkey.EdDSA)
 				require.NoError(t, km.Start(t.Context()))
 
@@ -60,10 +60,10 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 				signingkey.WithHousekeepingInterval(time.Hour),
 				signingkey.WithLifetime(24 * time.Hour),
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore) {
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore) {
 				// Another replica, configured for an algorithm this one does not
 				// sign with, writes its first key after this one was built.
-				other, err := signingkey.NewKeyManager(t.Context(),
+				other, err := signingkey.New(t.Context(),
 					signingkey.WithKeyStore(store),
 					signingkey.WithAlgs(signingkey.ES256),
 				)
@@ -83,8 +83,8 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ignore := goleak.IgnoreCurrent()
 
-			store := signingkey.NewInMemoryKeyStore()
-			km, err := signingkey.NewKeyManager(t.Context(), append([]signingkey.Option{
+			store := signingkey.NewMemoryKeyStore()
+			km, err := signingkey.New(t.Context(), append([]signingkey.Option{
 				signingkey.WithKeyStore(store),
 				signingkey.WithAlgs(signingkey.EdDSA),
 			}, tc.intervals...)...)

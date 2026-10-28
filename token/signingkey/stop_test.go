@@ -47,7 +47,7 @@ func TestStopWaitsForAnInFlightStoreWrite(t *testing.T) {
 		}).AnyTimes()
 
 	clk := newClock()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -101,7 +101,7 @@ func TestStopAfterSeveralLoopRuns(t *testing.T) {
 
 	clk := newClock()
 	recorder, logger := newLogRecorder()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, &failureReport{}, opReload)),
 		signingkey.WithClock(clk),
 		signingkey.WithLogger(logger),
@@ -150,7 +150,7 @@ func TestStopReturnsOnANilAfterClock(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	store := newCountingStore()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(neverClock{}),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -169,7 +169,7 @@ func TestStopReturnsOnANilAfterClock(t *testing.T) {
 // stopWithin stops km and fails the test if that takes longer than bound. A
 // Stop that cannot return is the failure being tested for, so it must show up
 // as a failed assertion rather than as a hung package.
-func stopWithin(t *testing.T, km *signingkey.KeyManager, bound time.Duration, why string) {
+func stopWithin(t *testing.T, km *signingkey.Keys, bound time.Duration, why string) {
 	t.Helper()
 
 	stopped := make(chan error, 1)

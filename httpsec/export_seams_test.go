@@ -37,7 +37,7 @@ var CompleteLoginForTest = completeLogin
 // without this package exporting the struct to consumers.
 func LoginTailDepsForTest(
 	engine *policy.Engine,
-	sessions *session.Manager,
+	sessions *session.Sessions,
 	tokens token.Generator,
 ) loginTailDeps {
 	return loginTailDeps{engine: engine, sessions: sessions, tokens: tokens, enforced: everyBuiltInEnforced()}
@@ -73,7 +73,7 @@ func everyBuiltInEnforced() map[policy.ChallengeKind]bool {
 // hands every login tail at assembly.
 func LoginTailDepsWithEnrolmentForTest(
 	engine *policy.Engine,
-	sessions *session.Manager,
+	sessions *session.Sessions,
 	tokens token.Generator,
 	enrolmentLifetime time.Duration,
 ) loginTailDeps {

@@ -14,18 +14,18 @@ import (
 type AssuranceMatch int
 
 const (
-	// MatchAny meets assurance when any configured criterion holds. It is
+	// AssuranceMatchAny meets assurance when any configured criterion holds. It is
 	// the zero value, and so the default.
-	MatchAny AssuranceMatch = iota
+	AssuranceMatchAny AssuranceMatch = iota
 
-	// MatchAll meets assurance only when every configured criterion holds. A
+	// AssuranceMatchAll meets assurance only when every configured criterion holds. A
 	// criterion with an empty accepted set is skipped, and a configuration
 	// with both sets empty never meets assurance.
-	MatchAll
+	AssuranceMatchAll
 )
 
 // defined reports whether the mode is one the library defines.
-func (x AssuranceMatch) defined() bool { return x == MatchAny || x == MatchAll }
+func (x AssuranceMatch) defined() bool { return x == AssuranceMatchAny || x == AssuranceMatchAll }
 
 // Assurance is a provider's assurance configuration: which values asserted by
 // its verified ID token show that the user authenticated strongly enough to
@@ -126,7 +126,7 @@ func (a Assurance) validate(provider string) error {
 // Assurance, for a provider the registry does not hold.
 //
 // The returned slices are the manager's own; callers only read them.
-func (m *Manager) assuranceFor(provider string) (Assurance, bool) {
+func (m *RelyingParty) assuranceFor(provider string) (Assurance, bool) {
 	if _, ok := m.registry.Lookup(provider); !ok {
 		return Assurance{}, false
 	}
@@ -139,7 +139,7 @@ func (m *Manager) assuranceFor(provider string) (Assurance, bool) {
 // checkAssuranceProviders refuses an assurance configuration for a provider
 // the registry does not hold, which would otherwise never apply and never say
 // so.
-func (m *Manager) checkAssuranceProviders() error {
+func (m *RelyingParty) checkAssuranceProviders() error {
 	for _, name := range slices.Sorted(maps.Keys(m.assurance)) {
 		if _, ok := m.registry.Lookup(name); !ok {
 			return fmt.Errorf("%w: WithProviderAssurance names provider %q, which is not registered",
@@ -164,9 +164,9 @@ func matchAssurance(a Assurance, amr []string, acr string) bool {
 	acrHolds := acrSet && acr != "" && slices.Contains(a.AcceptedACR, acr)
 
 	switch a.Match {
-	case MatchAny:
+	case AssuranceMatchAny:
 		return amrHolds || acrHolds
-	case MatchAll:
+	case AssuranceMatchAll:
 		return (amrSet || acrSet) && (!amrSet || amrHolds) && (!acrSet || acrHolds)
 	default:
 		return false

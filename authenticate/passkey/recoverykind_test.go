@@ -277,7 +277,7 @@ type recoveryWorld struct {
 	saved               []string
 	issued              string
 	tokens              *onetime.MemoryStore
-	sessions            *session.Manager
+	sessions            *session.Sessions
 }
 
 func newRecoveryWorld(t *testing.T) *recoveryWorld {
@@ -308,12 +308,12 @@ func newRecoveryWorld(t *testing.T) *recoveryWorld {
 	require.NoError(t, err)
 
 	w.tokens = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(w.f.clock))
-	mint, err := onetime.NewManager(recovery.IssuedCodePurpose, onetime.WithStore(w.tokens), onetime.WithClock(w.f.clock))
+	mint, err := onetime.New(recovery.IssuedCodePurpose, onetime.WithStore(w.tokens), onetime.WithClock(w.f.clock))
 	require.NoError(t, err)
 	w.issued, _, err = mint.Issue(ctx, "u-1")
 	require.NoError(t, err)
 
-	w.sessions, err = session.NewManager(session.WithClock(w.f.clock),
+	w.sessions, err = session.New(session.WithClock(w.f.clock),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(w.f.clock))))
 	require.NoError(t, err)
 
@@ -325,7 +325,7 @@ func newRecoveryWorld(t *testing.T) *recoveryWorld {
 
 // recoverer builds a recoverer over saved and issued codes, resetting the
 // MFA enrolments and the passkey kind of m, with extra options.
-func (w *recoveryWorld) recoverer(t *testing.T, m *passkey.Manager, extra ...recovery.Option) *recovery.Recoverer {
+func (w *recoveryWorld) recoverer(t *testing.T, m *passkey.Passkeys, extra ...recovery.Option) *recovery.Recoverer {
 	t.Helper()
 
 	mfaKind, err := recovery.MFAEnrolments(w.totp)
@@ -449,7 +449,7 @@ func TestRecoveryKindWayBack(t *testing.T) {
 		{
 			name: "only a pending passkey is no way back",
 			seed: func(c *passkey.Credential) {
-				c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes
+				c.State, c.Pending = passkey.StatePending, passkey.PendingSavedCodes
 			},
 			assert: func(t *testing.T, has bool, err error) {
 				t.Helper()
@@ -514,7 +514,7 @@ func TestNewRecoveryKindWiring(t *testing.T) {
 
 				c := onlyCredential(t, f, "u-1")
 				assert.Equal(t, passkey.StatePending, c.State)
-				assert.Equal(t, passkey.AwaitingSavedCodes, c.Pending)
+				assert.Equal(t, passkey.PendingSavedCodes, c.Pending)
 			},
 		},
 		{

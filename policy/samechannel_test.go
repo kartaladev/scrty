@@ -86,7 +86,7 @@ func TestSameChannelEnrolmentModes(t *testing.T) {
 			t.Parallel()
 
 			buf := &bytes.Buffer{}
-			p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
+			p, err := policy.NewMFA([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
 				append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(buf))}, tc.opts...)...)
 			require.NoError(t, err)
 
@@ -120,5 +120,5 @@ func TestSameChannelOverrideDoesNotReachARequiredUser(t *testing.T) {
 
 	require.Equal(t, policy.Deny, required.Outcome,
 		"a consumer setting on the challenge policy let a required user through")
-	assert.ErrorIs(t, required.Reason, policy.ErrMFAEnrollmentRequired)
+	assert.ErrorIs(t, required.Reason, policy.ErrMFAEnrolmentRequired)
 }

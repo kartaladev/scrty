@@ -14,7 +14,7 @@ type sessionTouch struct {
 	// sessions is the manager the chain was wired with, and nil when no
 	// built-in was given one. A chain that resolves no session has no activity
 	// to record.
-	sessions *session.Manager
+	sessions *session.Sessions
 
 	log *slog.Logger
 }

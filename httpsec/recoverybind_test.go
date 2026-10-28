@@ -64,7 +64,7 @@ func newRecoveryDeployment(t *testing.T, setup recoverySetup) *recoveryDeploymen
 	ctrl := gomock.NewController(t)
 	clk := clockwork.NewFakeClockAt(recoveryStart)
 
-	sessions, err := session.NewManager(session.WithClock(clk),
+	sessions, err := session.New(session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 
@@ -92,7 +92,7 @@ func newRecoveryDeployment(t *testing.T, setup recoverySetup) *recoveryDeploymen
 	lookups, err := mfa.LookupsFor(d.totp)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
 	var requirementOpts []policy.MFARequirementOption
@@ -100,7 +100,7 @@ func newRecoveryDeployment(t *testing.T, setup recoverySetup) *recoveryDeploymen
 		requirementOpts = append(requirementOpts, policy.WithMFAEnrolmentPath(d.pathOpts...))
 	}
 
-	requirement, err := policy.NewMFARequirementPolicy(d.required, lookups, requirementOpts...)
+	requirement, err := policy.NewMFARequirement(d.required, lookups, requirementOpts...)
 	require.NoError(t, err)
 
 	change := func(*httpsec.Exchange) error {
@@ -342,7 +342,7 @@ func TestRecoveryBind(t *testing.T) {
 				t.Helper()
 
 				out := d.invoices(t, credential)
-				require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+				require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 				assert.False(t, out.handlerRan)
 
@@ -389,7 +389,7 @@ func TestRecoveryEnrolmentSaveFails(t *testing.T) {
 	var failing atomic.Bool
 
 	var err error
-	h.sessions, err = session.NewManager(session.WithStore(
+	h.sessions, err = session.New(session.WithStore(
 		failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
 	require.NoError(t, err)
 
@@ -447,7 +447,7 @@ func TestRecoveryResolveRefused(t *testing.T) {
 				clk := clockwork.NewFakeClockAt(recoveryStart)
 
 				var err error
-				h.sessions, err = session.NewManager(session.WithClock(clk),
+				h.sessions, err = session.New(session.WithClock(clk),
 					session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 				require.NoError(t, err)
 
@@ -470,7 +470,7 @@ func TestRecoveryResolveRefused(t *testing.T) {
 				var failing atomic.Bool
 
 				var err error
-				h.sessions, err = session.NewManager(session.WithStore(
+				h.sessions, err = session.New(session.WithStore(
 					failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
 				require.NoError(t, err)
 

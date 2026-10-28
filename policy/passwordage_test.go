@@ -77,13 +77,13 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 		{
 			// "Consumer challenges unknown change times".
 			name:      "a consumer can challenge unknown change times instead",
-			opts:      []policy.PasswordAgeOption{policy.WithUnknownPasswordAge(policy.ChallengeUnknown)},
+			opts:      []policy.PasswordAgeOption{policy.WithUnknownPasswordAge(policy.UnknownAgeChallenge)},
 			changedAt: time.Time{},
 			assert:    challengesForANewPassword,
 		},
 		{
 			name:      "the default mode can be asked for by name",
-			opts:      []policy.PasswordAgeOption{policy.WithUnknownPasswordAge(policy.AllowUnknown)},
+			opts:      []policy.PasswordAgeOption{policy.WithUnknownPasswordAge(policy.UnknownAgeAllow)},
 			changedAt: time.Time{},
 			assert:    allows,
 		},
@@ -101,7 +101,7 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 			zeroNow:   true,
 			assert: func(t *testing.T, d policy.Decision) {
 				require.Equal(t, policy.Deny, d.Outcome, "a forgotten evaluation time let a stale password through")
-				require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+				require.ErrorIs(t, d.Reason, policy.ErrDenied)
 			},
 		},
 	}
@@ -110,7 +110,7 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewPasswordAgePolicy(tc.opts...)
+			p, err := policy.NewPasswordAge(tc.opts...)
 			require.NoError(t, err)
 
 			in := &policy.Input{PasswordChangedAt: tc.changedAt, Now: loginAt}
@@ -125,7 +125,7 @@ func TestPasswordAgePolicyEvaluate(t *testing.T) {
 func TestPasswordAgePolicyPhases(t *testing.T) {
 	t.Parallel()
 
-	p, err := policy.NewPasswordAgePolicy()
+	p, err := policy.NewPasswordAge()
 	require.NoError(t, err)
 
 	assert.Equal(t, []policy.Phase{policy.PostAuthentication}, p.Phases(),

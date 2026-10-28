@@ -41,42 +41,42 @@ func (m *MockKeySource) EXPECT() *MockKeySourceMockRecorder {
 	return m.recorder
 }
 
-// GetSigner mocks base method.
-func (m *MockKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
+// Signer mocks base method.
+func (m *MockKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetSigner", alg)
+	ret := m.ctrl.Call(m, "Signer", alg)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(crypto.Signer)
 	ret2, _ := ret[2].(bool)
 	return ret0, ret1, ret2
 }
 
-// GetSigner indicates an expected call of GetSigner.
-func (mr *MockKeySourceMockRecorder) GetSigner(alg any) *MockKeySourceGetSignerCall {
+// Signer indicates an expected call of Signer.
+func (mr *MockKeySourceMockRecorder) Signer(alg any) *MockKeySourceSignerCall {
 	mr.mock.ctrl.T.Helper()
-	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetSigner", reflect.TypeOf((*MockKeySource)(nil).GetSigner), alg)
-	return &MockKeySourceGetSignerCall{Call: call}
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Signer", reflect.TypeOf((*MockKeySource)(nil).Signer), alg)
+	return &MockKeySourceSignerCall{Call: call}
 }
 
-// MockKeySourceGetSignerCall wrap *gomock.Call
-type MockKeySourceGetSignerCall struct {
+// MockKeySourceSignerCall wrap *gomock.Call
+type MockKeySourceSignerCall struct {
 	*gomock.Call
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockKeySourceGetSignerCall) Return(kid string, signer crypto.Signer, ok bool) *MockKeySourceGetSignerCall {
+func (c *MockKeySourceSignerCall) Return(kid string, signer crypto.Signer, ok bool) *MockKeySourceSignerCall {
 	c.Call = c.Call.Return(kid, signer, ok)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockKeySourceGetSignerCall) Do(f func(signingkey.Alg) (string, crypto.Signer, bool)) *MockKeySourceGetSignerCall {
+func (c *MockKeySourceSignerCall) Do(f func(signingkey.Alg) (string, crypto.Signer, bool)) *MockKeySourceSignerCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockKeySourceGetSignerCall) DoAndReturn(f func(signingkey.Alg) (string, crypto.Signer, bool)) *MockKeySourceGetSignerCall {
+func (c *MockKeySourceSignerCall) DoAndReturn(f func(signingkey.Alg) (string, crypto.Signer, bool)) *MockKeySourceSignerCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

@@ -43,23 +43,23 @@ func TestRenewalLifetime(t *testing.T) {
 	t.Parallel()
 
 	// long is a manager allowing 30-day sessions in 90-day families.
-	long := []session.ManagerOption{
+	long := []session.Option{
 		session.WithMaxAbsoluteLifetime(30 * day),
 		session.WithMaxFamilyLifetime(90 * day),
 	}
 
 	type testCase struct {
 		name string
-		opts []session.ManagerOption
+		opts []session.Option
 		// familyStart, now and abs place the stored session; now is also the
 		// manager's clock.
 		familyStart, now, abs time.Time
-		rotate                func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error)
+		rotate                func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error)
 		assert                func(t *testing.T, store *session.MemoryStore, s, got *session.Session, err error)
 	}
 
-	withLifetime := func(d time.Duration) func(context.Context, *session.Manager, *session.Session) (*session.Session, error) {
-		return func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+	withLifetime := func(d time.Duration) func(context.Context, *session.Sessions, *session.Session) (*session.Session, error) {
+		return func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error) {
 			next, _, err := m.RotateWithGrace(ctx, s, 30*time.Second, session.WithSuccessorLifetime(d))
 			return next, err
 		}
@@ -78,7 +78,7 @@ func TestRenewalLifetime(t *testing.T) {
 		{
 			name:        "the default carries the deadline over",
 			familyStart: createdAt, now: createdAt.Add(6 * time.Hour), abs: createdAt.Add(12 * time.Hour),
-			rotate: func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+			rotate: func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error) {
 				next, _, err := m.RotateWithGrace(ctx, s, 30*time.Second)
 				return next, err
 			},
@@ -136,7 +136,7 @@ func TestRenewalLifetime(t *testing.T) {
 			name:        "rotation at second-factor verification never extends",
 			opts:        long,
 			familyStart: createdAt, now: createdAt.Add(6 * time.Hour), abs: createdAt.Add(12 * time.Hour),
-			rotate: func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+			rotate: func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error) {
 				return m.Rotate(ctx, s)
 			},
 			assert: func(t *testing.T, _ *session.MemoryStore, _, got *session.Session, err error) {
@@ -174,11 +174,11 @@ func TestRenewalLifetime_ExtendedFamilyStillDetectsReuse(t *testing.T) {
 		// act renews O, created at 09:00 with a 12-hour lifetime, as the
 		// case chooses, and returns the stolen identifier to present and
 		// when to present it.
-		act    func(ctx context.Context, t *testing.T, m *session.Manager, o *session.Session, clk *clockwork.FakeClock) (stolen string, at time.Time)
+		act    func(ctx context.Context, t *testing.T, m *session.Sessions, o *session.Session, clk *clockwork.FakeClock) (stolen string, at time.Time)
 		assert func(t *testing.T, store *session.MemoryStore, err error)
 	}
 
-	extend := func(ctx context.Context, t *testing.T, m *session.Manager, s *session.Session) *session.Session {
+	extend := func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session) *session.Session {
 		t.Helper()
 
 		next, _, err := m.RotateWithGrace(ctx, s, 30*time.Second, session.WithSuccessorLifetime(12*time.Hour))
@@ -190,14 +190,14 @@ func TestRenewalLifetime_ExtendedFamilyStillDetectsReuse(t *testing.T) {
 	revoked := func(t *testing.T, store *session.MemoryStore, err error) {
 		t.Helper()
 
-		require.ErrorIs(t, err, session.ErrSessionReused, "a stolen identifier presented while its family is live")
+		require.ErrorIs(t, err, session.ErrReused, "a stolen identifier presented while its family is live")
 		assert.Zero(t, store.Len(), "the family was not revoked")
 	}
 
 	cases := []testCase{
 		{
 			name: "O renewed at 15:00 for 12 hours, presented at 22:00, past its own 21:00",
-			act: func(ctx context.Context, t *testing.T, m *session.Manager, o *session.Session, clk *clockwork.FakeClock) (string, time.Time) {
+			act: func(ctx context.Context, t *testing.T, m *session.Sessions, o *session.Session, clk *clockwork.FakeClock) (string, time.Time) {
 				clk.Advance(6 * time.Hour)
 				extend(ctx, t, m, o)
 				return o.ID, createdAt.Add(13 * time.Hour)
@@ -206,7 +206,7 @@ func TestRenewalLifetime_ExtendedFamilyStillDetectsReuse(t *testing.T) {
 		},
 		{
 			name: "S1 renewed again at 16:00, presented at 03:30 the next day, past its own 03:00",
-			act: func(ctx context.Context, t *testing.T, m *session.Manager, o *session.Session, clk *clockwork.FakeClock) (string, time.Time) {
+			act: func(ctx context.Context, t *testing.T, m *session.Sessions, o *session.Session, clk *clockwork.FakeClock) (string, time.Time) {
 				clk.Advance(6 * time.Hour)
 				s1 := extend(ctx, t, m, o)
 				clk.Advance(time.Hour)
@@ -217,7 +217,7 @@ func TestRenewalLifetime_ExtendedFamilyStillDetectsReuse(t *testing.T) {
 		},
 		{
 			name: "O, renewed twice down the chain, presented at 03:30 the next day",
-			act: func(ctx context.Context, t *testing.T, m *session.Manager, o *session.Session, clk *clockwork.FakeClock) (string, time.Time) {
+			act: func(ctx context.Context, t *testing.T, m *session.Sessions, o *session.Session, clk *clockwork.FakeClock) (string, time.Time) {
 				clk.Advance(6 * time.Hour)
 				s1 := extend(ctx, t, m, o)
 				clk.Advance(time.Hour)
@@ -253,45 +253,45 @@ func TestNewManager_RenewalOptions(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []session.ManagerOption
-		assert func(t *testing.T, m *session.Manager, err error)
+		opts   []session.Option
+		assert func(t *testing.T, m *session.Sessions, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "a family maximum below the lifetime maximum is refused",
-			opts: []session.ManagerOption{
+			opts: []session.Option{
 				session.WithMaxAbsoluteLifetime(30 * day),
 				session.WithMaxFamilyLifetime(7 * day),
 			},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
 				assert.Nil(t, m)
 			},
 		},
 		{
 			name: "a family maximum below the default lifetime maximum is refused",
-			opts: []session.ManagerOption{session.WithMaxFamilyLifetime(time.Hour)},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			opts: []session.Option{session.WithMaxFamilyLifetime(time.Hour)},
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
 				assert.Nil(t, m)
 			},
 		},
 		{
 			name: "a family maximum equal to the lifetime maximum is accepted",
-			opts: []session.ManagerOption{
+			opts: []session.Option{
 				session.WithMaxAbsoluteLifetime(30 * day),
 				session.WithMaxFamilyLifetime(30 * day),
 			},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			},
 		},
 		{
 			name: "a nil reuse observer is refused",
-			opts: []session.ManagerOption{session.WithReuseObserver(nil)},
-			assert: func(t *testing.T, m *session.Manager, err error) {
+			opts: []session.Option{session.WithReuseObserver(nil)},
+			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.ErrorIs(t, err, session.ErrConfig)
 				assert.Nil(t, m)
 			},
@@ -302,7 +302,7 @@ func TestNewManager_RenewalOptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := session.NewManager(tc.opts...)
+			m, err := session.New(tc.opts...)
 			tc.assert(t, m, err)
 		})
 	}
@@ -329,7 +329,7 @@ func TestReuseObserver(t *testing.T) {
 		{
 			name: "without an observer reuse is still refused and revoked",
 			assert: func(t *testing.T, r reuseRun, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Zero(t, r.store.Len())
 				assert.Empty(t, r.reports)
 			},
@@ -338,7 +338,7 @@ func TestReuseObserver(t *testing.T) {
 			name:    "an observer is called once with the user, the family and the times",
 			observe: true,
 			assert: func(t *testing.T, r reuseRun, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				require.Len(t, r.reports, 1)
 				assert.Equal(t, session.ReuseReport{
 					User:         testUser,
@@ -359,7 +359,7 @@ func TestReuseObserver(t *testing.T) {
 		{
 			name: "the warning names the family and carries no session identifier",
 			assert: func(t *testing.T, r reuseRun, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Contains(t, r.logs, "level=WARN")
 				assert.Contains(t, r.logs, "family="+r.o.FamilyID.String())
 				assertNoIdentifier(t, r.logs, r.o.ID, r.s1.ID)
@@ -377,7 +377,7 @@ func TestReuseObserver(t *testing.T) {
 				mu sync.Mutex
 			)
 			logs := &bytes.Buffer{}
-			opts := []session.ManagerOption{session.WithSessionLogger(
+			opts := []session.Option{session.WithSessionLogger(
 				slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))}
 			if tc.observe {
 				opts = append(opts, session.WithReuseObserver(func(_ context.Context, rep session.ReuseReport) {
@@ -446,7 +446,7 @@ func TestReuseObserver_RevocationOrder(t *testing.T) {
 		{
 			name: "the observer runs after the family is revoked",
 			assert: func(t *testing.T, observed int, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Equal(t, 1, observed)
 			},
 		},
@@ -454,7 +454,7 @@ func TestReuseObserver_RevocationOrder(t *testing.T) {
 			name:      "a failed revocation is refused as reuse, reported, and not observed",
 			deleteErr: errStoreQuotes,
 			assert: func(t *testing.T, observed int, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				require.ErrorIs(t, err, errStoreQuotes, "the revocation's failure was hidden")
 				assert.NotContains(t, err.Error(), "alice@example.com")
 				assert.Zero(t, observed, "the observer was told of a family that was not revoked")
@@ -502,7 +502,7 @@ func TestRenewal_AuthenticationTime(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		rotate func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error)
+		rotate func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error)
 		// createdAt is the successor's expected CreatedAt.
 		createdAt time.Time
 	}
@@ -512,7 +512,7 @@ func TestRenewal_AuthenticationTime(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "a renewal carries the authentication time over",
-			rotate: func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+			rotate: func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error) {
 				next, _, err := m.RotateWithGrace(ctx, s, 30*time.Second)
 
 				return next, err
@@ -521,7 +521,7 @@ func TestRenewal_AuthenticationTime(t *testing.T) {
 		},
 		{
 			name: "a rotation at second-factor verification carries the authentication time over",
-			rotate: func(ctx context.Context, m *session.Manager, s *session.Session) (*session.Session, error) {
+			rotate: func(ctx context.Context, m *session.Sessions, s *session.Session) (*session.Session, error) {
 				return m.Rotate(ctx, s)
 			},
 			createdAt: renewedAt,

@@ -95,7 +95,7 @@ func TestIdleTimeoutPolicyEvaluate(t *testing.T) {
 			now:     time.Time{},
 			assert: func(t *testing.T, d policy.Decision) {
 				require.Equal(t, policy.Deny, d.Outcome, "a forgotten evaluation time let an idle session through")
-				require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+				require.ErrorIs(t, d.Reason, policy.ErrDenied)
 			},
 		},
 	}
@@ -104,7 +104,7 @@ func TestIdleTimeoutPolicyEvaluate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewIdleTimeoutPolicy(tc.opts...)
+			p, err := policy.NewIdleTimeout(tc.opts...)
 			require.NoError(t, err)
 
 			tc.assert(t, p.Evaluate(t.Context(), &policy.Input{Session: tc.session, Now: tc.now}))
@@ -169,7 +169,7 @@ func TestIdleTimeoutPolicyThresholds(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewIdleTimeoutPolicy(tc.opts...)
+			p, err := policy.NewIdleTimeout(tc.opts...)
 			require.NoError(t, err)
 
 			idle, absolute := p.Thresholds(tc.createdAt, tc.now)
@@ -181,7 +181,7 @@ func TestIdleTimeoutPolicyThresholds(t *testing.T) {
 func TestIdleTimeoutPolicyPhases(t *testing.T) {
 	t.Parallel()
 
-	p, err := policy.NewIdleTimeoutPolicy()
+	p, err := policy.NewIdleTimeout()
 	require.NoError(t, err)
 
 	assert.Equal(t, []policy.Phase{policy.PerRequest}, p.Phases(),
@@ -214,7 +214,7 @@ func TestIdleTimeoutPolicyIdleTimeout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewIdleTimeoutPolicy(tc.opts...)
+			p, err := policy.NewIdleTimeout(tc.opts...)
 			require.NoError(t, err)
 
 			tc.assert(t, p.IdleTimeout())

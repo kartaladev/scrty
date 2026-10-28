@@ -7,6 +7,6 @@ import (
 )
 
 // NewLimiters builds a limiter factory over a Redis client.
-func NewLimiters(client redis.UniversalClient) (*redisstore.Factory, error) {
+func NewLimiters(client redis.UniversalClient) (*redisstore.LimiterFactory, error) {
 	return redisstore.NewLimiterFactory(client)
 }

@@ -104,7 +104,7 @@ func TestManager_ExpiryTasks(t *testing.T) {
 				env.begin(t)
 				// A registration challenge in the same store, issued by a
 				// manager of the registration purpose.
-				reg, err := onetime.NewManager(expiryRegistrationPurpose,
+				reg, err := onetime.New(expiryRegistrationPurpose,
 					onetime.WithStore(env.challenges), onetime.WithClock(env.f.clock))
 				require.NoError(t, err)
 				_, _, err = reg.Issue(t.Context(), "u-1")

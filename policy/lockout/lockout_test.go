@@ -344,7 +344,7 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 			input: func() *policy.Input { return nil },
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Deny, d.Outcome)
-				assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
 			},
 		},
 		{
@@ -585,7 +585,7 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 				assert.Equal(t, policy.Deny, d.Outcome,
 					"a store that failed on the wait query let the request through")
 				assert.ErrorIs(t, d.Reason, errAttemptStoreDown, "the cause was collapsed")
-				assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
 				assert.NotErrorIs(t, d.Reason, lockout.ErrAccountLocked,
 					"an outage was reported to the caller as a locked account")
 			},

@@ -13,7 +13,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrSessionReused is what the Manager returns when a superseded session is
+// ErrReused is what the Manager returns when a superseded session is
 // presented at or after the end of its grace window. By then the Manager has
 // revoked the session's whole family: whoever presents a credential that was
 // already replaced is either a client that kept using it too long or someone
@@ -26,12 +26,12 @@ import (
 // transaction the consumer attached to the context. A consumer that rolls
 // back its request transaction whenever a call fails also rolls back the
 // revocation, and leaves the stolen family alive. Such a consumer must commit
-// when errors.Is(err, ErrSessionReused), and anything it writes in that
+// when errors.Is(err, ErrReused), and anything it writes in that
 // transaction from a ReuseObserver it writes inside a savepoint, so a failed
 // audit statement does not abort the transaction the revocation is in.
-var ErrSessionReused = fmt.Errorf("session: a superseded session was presented after its window: %w", ErrSessionExpired)
+var ErrReused = fmt.Errorf("session: a superseded session was presented after its window: %w", ErrExpired)
 
-// ErrSessionRenewalRequired is what the Manager returns, with
+// ErrRenewalRequired is what the Manager returns, with
 // WithUnusedSuccessorRecovery on, when an ordinary request presents a
 // superseded session after its grace window. Nothing is revoked: the client
 // may only have lost a renewal response, and it must renew (see
@@ -44,7 +44,7 @@ var ErrSessionReused = fmt.Errorf("session: a superseded session was presented a
 // It matches ErrSessionExpired through errors.Is, so a caller that only checks
 // for an ended session refuses it with no change. It does not match
 // ErrSessionReused.
-var ErrSessionRenewalRequired = fmt.Errorf("session: a superseded session must be renewed before use: %w", ErrSessionExpired)
+var ErrRenewalRequired = fmt.Errorf("session: a superseded session must be renewed before use: %w", ErrExpired)
 
 // MaxRenewalGrace is the longest grace window RotateWithGrace accepts,
 // inclusive. The window is time in which a stolen identifier works as well as
@@ -194,7 +194,7 @@ func WithSuccessorLifetime(d time.Duration) RotateOption {
 // one successor: the store supersedes conditionally on the successor this
 // call observed (Store.Supersede), and the loser gets
 // ErrSessionRenewalConflict with nothing stored.
-func (m *Manager) RotateWithGrace(ctx context.Context, s *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error) {
+func (m *Sessions) RotateWithGrace(ctx context.Context, s *Session, grace time.Duration, opts ...RotateOption) (*Session, RenewalKind, error) {
 	if s == nil {
 		return nil, 0, errors.New("session: rotate with grace was given no session")
 	}
@@ -237,7 +237,7 @@ func (m *Manager) RotateWithGrace(ctx context.Context, s *Session, grace time.Du
 	// the record itself still carries.
 	familyEnd := m.familyEnd(old)
 	if !now.Before(familyEnd) {
-		return nil, 0, ErrSessionExpired
+		return nil, 0, ErrExpired
 	}
 
 	id, err := m.newIdentifier()
@@ -285,7 +285,7 @@ func (m *Manager) RotateWithGrace(ctx context.Context, s *Session, grace time.Du
 // otherwise ErrSessionExpired, with nothing revoked. Such a session must not
 // authenticate anything: its only use is to be rotated. With recovery off it
 // behaves exactly like Load.
-func (m *Manager) LoadForRenewal(ctx context.Context, id string) (*Session, error) {
+func (m *Sessions) LoadForRenewal(ctx context.Context, id string) (*Session, error) {
 	return m.load(ctx, id, forRenewal)
 }
 
@@ -317,20 +317,20 @@ const (
 // successor was used (see ended). One with no successor of its own, knocked
 // out by a re-rotation or a recovery, has nothing to recover into and is
 // always reuse, whatever now is (see insideWindow). Anything else passes.
-func (m *Manager) judge(ctx context.Context, s *Session, now time.Time, p purpose) error {
+func (m *Sessions) judge(ctx context.Context, s *Session, now time.Time, p purpose) error {
 	if !s.superseded() {
 		return nil
 	}
 	if s.insideWindow(now) {
 		if s.expired(now) {
-			return ErrSessionExpired
+			return ErrExpired
 		}
 
 		return nil
 	}
 	if m.unusedSuccessorRecovery && len(s.SuccessorDigest) > 0 {
 		if p != forRenewal {
-			return ErrSessionRenewalRequired
+			return ErrRenewalRequired
 		}
 		if s.expired(now) {
 			return m.ended(ctx, s, now)
@@ -351,7 +351,7 @@ func (m *Manager) judge(ctx context.Context, s *Session, now time.Time, p purpos
 // every store failure is, and nothing is revoked or issued: the renewal is
 // refused either way, and revoking on a failed read would sign out a client
 // whose successor may never have been used.
-func (m *Manager) ended(ctx context.Context, s *Session, now time.Time) error {
+func (m *Sessions) ended(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot turn a reuse verdict into a
 	// refusal that revokes nothing; values are kept, as in reuse.
 	used, err := m.store.SuccessorPresented(context.WithoutCancel(ctx), s.ID)
@@ -362,7 +362,7 @@ func (m *Manager) ended(ctx context.Context, s *Session, now time.Time) error {
 		return m.reuse(ctx, s, now)
 	}
 
-	return ErrSessionExpired
+	return ErrExpired
 }
 
 // reuse revokes s's family, tells the observer, logs the fixed reason with
@@ -371,7 +371,7 @@ func (m *Manager) ended(ctx context.Context, s *Session, now time.Time) error {
 // A revocation that fails is returned joined with ErrSessionReused, so the
 // request is still refused and the failure is not hidden; the observer is not
 // called then, since it is told about a revoked family.
-func (m *Manager) reuse(ctx context.Context, s *Session, now time.Time) error {
+func (m *Sessions) reuse(ctx context.Context, s *Session, now time.Time) error {
 	// Detached so a client hanging up cannot abort the revocation;
 	// WithoutCancel keeps the context's values, so a consumer's transaction is
 	// still joined.
@@ -380,7 +380,7 @@ func (m *Manager) reuse(ctx context.Context, s *Session, now time.Time) error {
 			"session: a superseded session was presented after its window; its family could not be revoked",
 			append(diag.Failure("delete_family", err), slog.String("family", s.FamilyID.String()))...)
 
-		return errors.Join(ErrSessionReused, storeFailed(err, "session: the reused session's family could not be revoked"))
+		return errors.Join(ErrReused, storeFailed(err, "session: the reused session's family could not be revoked"))
 	}
 
 	if m.reuseObserver != nil {
@@ -393,7 +393,7 @@ func (m *Manager) reuse(ctx context.Context, s *Session, now time.Time) error {
 	}
 	m.logger.WarnContext(ctx, reuseLogReason, "family", s.FamilyID.String())
 
-	return ErrSessionReused
+	return ErrReused
 }
 
 // successorOf returns the session that from rotates into under identifier

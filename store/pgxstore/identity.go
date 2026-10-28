@@ -772,7 +772,7 @@ func parseUserID(ref identity.UserID) (id.ID, bool) {
 
 // checkUser refuses text PostgreSQL cannot store, naming the field and never
 // its value.
-func checkUser(username string, u *identity.NewUser) error {
+func checkUser(username string, u *identity.UserChange) error {
 	fields := []storekit.Field{storekit.Text("username", username), storekit.Text("name", u.Name)}
 	for _, r := range u.Roles {
 		fields = append(fields, storekit.Text("role", r))
@@ -787,7 +787,7 @@ func checkUser(username string, u *identity.NewUser) error {
 // upper-case spelling of one included, is refused before anything is written,
 // with text that does not carry it. It matches byte for byte, as user
 // references do, so every adapter stores the same references.
-func orgReference(u *identity.NewUser) (any, error) {
+func orgReference(u *identity.UserChange) (any, error) {
 	if !u.IsSet(identity.FieldOrganization) || u.Organization == nil || u.Organization.ID == "" {
 		return nil, nil
 	}

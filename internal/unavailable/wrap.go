@@ -125,7 +125,7 @@ func Wrap(backend ratelimit.Limiter, namespace string, limit int, window time.Du
 		l.sampler = logsample.New(cfg.LogInterval, logsample.WithReporter(l.reportSuppressed))
 	}
 
-	if cfg.Mode == ratelimit.UnavailableFallBackToLocal {
+	if cfg.Mode == ratelimit.UnavailableFallbackToLocal {
 		// The local limiter's per-replica warning is silenced: its
 		// multiplication applies only while the backend is down, and the
 		// transition records say so when it does.
@@ -183,7 +183,7 @@ func ValidateConfig(cfg Config) error {
 
 func knownMode(m ratelimit.UnavailableMode) bool {
 	switch m {
-	case ratelimit.UnavailableRefuse, ratelimit.UnavailableFallBackToLocal, ratelimit.UnavailableAllow:
+	case ratelimit.UnavailableRefuse, ratelimit.UnavailableFallbackToLocal, ratelimit.UnavailableAllow:
 		return true
 	default:
 		return false
@@ -366,7 +366,7 @@ func (l *limiter) localExceeded(ctx context.Context, key string) (bool, error) {
 // so the next outage would go unlogged.
 func (l *limiter) degradedExceeded(ctx context.Context, key string, err error, outage bool) (bool, error) {
 	switch l.mode {
-	case ratelimit.UnavailableFallBackToLocal:
+	case ratelimit.UnavailableFallbackToLocal:
 		return l.localExceeded(ctx, key)
 	case ratelimit.UnavailableAllow:
 		if outage {
@@ -384,7 +384,7 @@ func (l *limiter) degradedExceeded(ctx context.Context, key string, err error, o
 // degradedExceeded.
 func (l *limiter) degradedRecord(ctx context.Context, key string, err error, outage bool) error {
 	switch l.mode {
-	case ratelimit.UnavailableFallBackToLocal:
+	case ratelimit.UnavailableFallbackToLocal:
 		if err := l.local.RecordFailure(ctx, key); err != nil {
 			return diag.Wrap(err, "ratelimit: local count failed")
 		}
@@ -409,7 +409,7 @@ func (l *limiter) degradedRecord(ctx context.Context, key string, err error, out
 // each refusal.
 func (l *limiter) failed(ctx context.Context, adm admission, err error) (current bool) {
 	opened, current := l.breaker.failure(adm)
-	if !opened || l.mode != ratelimit.UnavailableFallBackToLocal {
+	if !opened || l.mode != ratelimit.UnavailableFallbackToLocal {
 		return current
 	}
 

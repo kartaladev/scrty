@@ -23,13 +23,13 @@ import (
 // declare.
 var ErrMFARequired = errors.New("policy: this request must present a second factor")
 
-// ErrMFAEnrollmentRequired is the reason the requirement policy refuses a user
+// ErrMFAEnrolmentRequired is the reason the requirement policy refuses a user
 // who must use a second factor and has no usable enrolment to be challenged on.
 //
 // "No usable enrolment" covers a user who has not enrolled and a user whose
 // only enrolment arrives on the channel the first factor already came from,
 // which is one factor wearing two names.
-var ErrMFAEnrollmentRequired = errors.New("policy: this user must enrol a second factor")
+var ErrMFAEnrolmentRequired = errors.New("policy: this user must enrol a second factor")
 
 // ErrFederatedAssuranceNotMet is the reason the requirement policy, in
 // FederatedAssuranceRefuse mode, refuses a required user's federated login
@@ -234,7 +234,7 @@ type mfaRequirementPolicy struct {
 	enrolment *enrolmentPath
 }
 
-// NewMFARequirementPolicy returns the MFA requirement policy, which enforces
+// NewMFARequirement returns the MFA requirement policy, which enforces
 // that a user who must use a second factor is challenged for one or refused,
 // and never simply let through.
 //
@@ -349,7 +349,7 @@ type mfaRequirementPolicy struct {
 // clock.System() (WithMFARequirementClock), DefaultLogInterval for its sampled
 // records (WithMFARequirementLogInterval) and no enrolment path
 // (WithMFAEnrolmentPath).
-func NewMFARequirementPolicy(
+func NewMFARequirement(
 	required identity.MFARequirementLookup,
 	methods []MFAMethodLookup,
 	opts ...MFARequirementOption,
@@ -654,7 +654,7 @@ func (p *mfaRequirementPolicy) denyEnrolment(ctx context.Context, in *Input, pha
 		slog.String("first_factor", string(in.FirstFactor)),
 		slog.String("phase", phase))
 
-	return Decision{Outcome: Deny, Reason: ErrMFAEnrollmentRequired}
+	return Decision{Outcome: Deny, Reason: ErrMFAEnrolmentRequired}
 }
 
 // denyAssurance refuses, in refuse mode, a required user's federated login

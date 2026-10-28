@@ -24,7 +24,7 @@ import (
 // store holds a flow begun by Authorize, and a token endpoint that answers
 // that flow's code with a valid ID token.
 type callbackEnv struct {
-	m      *oidc.Manager
+	m      *oidc.RelyingParty
 	p      *testProvider
 	broker *MockIdentityBroker
 	auth   oidc.Authorization
@@ -513,7 +513,7 @@ func newCallbackEnv(t *testing.T, now time.Time, flows func(t *testing.T) oidc.F
 	require.NoError(t, err)
 
 	e := &callbackEnv{p: p, broker: NewMockIdentityBroker(gomock.NewController(t)), logs: &bytes.Buffer{}, now: now}
-	opts := []oidc.ManagerOption{
+	opts := []oidc.Option{
 		oidc.WithOutboundClient(p.Outbound(t)),
 		oidc.WithClock(clockwork.NewFakeClockAt(now)),
 		oidc.WithLogger(testTextLogger(e.logs)),
@@ -521,7 +521,7 @@ func newCallbackEnv(t *testing.T, now time.Time, flows func(t *testing.T) oidc.F
 	if flows != nil {
 		opts = append(opts, oidc.WithFlowStore(flows(t)))
 	}
-	e.m, err = oidc.NewManager(reg, e.broker, opts...)
+	e.m, err = oidc.NewRelyingParty(reg, e.broker, opts...)
 	require.NoError(t, err)
 	if flows != nil {
 		return e

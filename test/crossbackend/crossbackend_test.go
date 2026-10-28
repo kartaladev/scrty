@@ -1064,7 +1064,7 @@ func testEnrolmentDurableFlow(t *testing.T, b backends) {
 			at := time.Now().UTC().Truncate(time.Microsecond)
 			clk := storefix.NewClock(at)
 
-			sessions, err := session.NewManager(
+			sessions, err := session.New(
 				session.WithStore(b.clockedSessionStore(t, name, clk)),
 				session.WithClock(clk),
 				session.WithIdleTimeout(idleTimeout),

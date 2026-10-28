@@ -54,7 +54,7 @@ type SessionRenewalDeps struct {
 	// manager the bearer does not read could never be presented. When no
 	// bearer is enabled there is nothing to default to, so a nil Sessions is
 	// refused as a missing session manager, and an explicit one is accepted.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Users reloads the session's user by the user reference the session
 	// records (LoadByUserID), never by username, before anything is rotated.
@@ -103,7 +103,7 @@ type RenewalResponder func(ex *Exchange, r RenewalResult) error
 // sessionRenewal answers POST on its path by rotating the request's session
 // with a grace window, and passes everything else through.
 type sessionRenewal struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    identity.UserLoader
 	tokens   token.Generator
 
@@ -330,13 +330,13 @@ func (r *sessionRenewal) judgeLate(
 // error, already behind fixed text.
 func renewalRefusal(err error) error {
 	switch {
-	case errors.Is(err, session.ErrSessionReused):
+	case errors.Is(err, session.ErrReused):
 		return errors.Join(ErrAuthenticationRequired, err)
-	case errors.Is(err, session.ErrSessionRenewalConflict):
+	case errors.Is(err, session.ErrRenewalConflict):
 		return ErrSessionRenewalConflict
-	case errors.Is(err, session.ErrSessionNotFound),
-		errors.Is(err, session.ErrSessionExpired),
-		errors.Is(err, session.ErrSessionUnreadable):
+	case errors.Is(err, session.ErrNotFound),
+		errors.Is(err, session.ErrExpired),
+		errors.Is(err, session.ErrUnreadable):
 		return ErrAuthenticationRequired
 	default:
 		return err
@@ -513,8 +513,8 @@ func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Op
 // through, whichever bearer mode is enabled, or nil when neither is. The
 // bearer may be enabled after the renewal endpoint, so it is read once every
 // option has been applied.
-func bearerSessions(c *config) *session.Manager {
-	var m *session.Manager
+func bearerSessions(c *config) *session.Sessions {
+	var m *session.Sessions
 
 	_ = eachInterceptor(c, func(b *sessionBearer) error {
 		m = b.sessions
@@ -534,7 +534,7 @@ func bearerSessions(c *config) *session.Manager {
 // bearer's when none was given, and only the bearer's when one was, since a
 // renewal that rotated through another manager would write a successor the
 // bearer cannot find.
-func (r *sessionRenewal) resolveSessions(c *config, option string, given *session.Manager) error {
+func (r *sessionRenewal) resolveSessions(c *config, option string, given *session.Sessions) error {
 	bearer := bearerSessions(c)
 
 	if given == nil {

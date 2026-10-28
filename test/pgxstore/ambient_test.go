@@ -86,7 +86,7 @@ func TestAmbientTx_Scenarios(t *testing.T) {
 				require.NoError(t, tx.Rollback(ctx))
 
 				_, err := sessions.Load(ctx, "scenario-rolled-back")
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 			},
 		},
 		{

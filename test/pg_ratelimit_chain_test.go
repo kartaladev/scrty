@@ -119,7 +119,7 @@ func TestPGLimiter_DefaultChainBuilds(t *testing.T) {
 			conn := test.RunTestPostgres(t, test.WithTestPostgresMigrations(set.FS(), set.Dir, set.VersionTable))
 			f := &capturingFactory{LimiterFactory: tc.factory(t, conn), built: map[string]capturedLimiter{}}
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 			_, err = httpsec.New(
 				httpsec.WithRateLimiterFactory(f),

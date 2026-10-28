@@ -45,7 +45,7 @@ const (
 	// disables by causing the outage.
 	UnavailableRefuse UnavailableMode = iota
 
-	// UnavailableFallBackToLocal counts in an in-memory limiter with the same
+	// UnavailableFallbackToLocal counts in an in-memory limiter with the same
 	// limit and window while the backend is unavailable, and a record that
 	// cannot reach the backend is counted there instead. Once the backend is
 	// back, a key is exceeded when either the shared count or the local one is.
@@ -56,7 +56,7 @@ const (
 	// and leaving this state is logged at ERROR and WARN. It suits
 	// second-factor flows, which keep a per-replica bound without locking
 	// users out of sign-in during an outage.
-	UnavailableFallBackToLocal
+	UnavailableFallbackToLocal
 
 	// UnavailableAllow reports every key as not exceeded and drops every
 	// record while the backend is unavailable, logging an ERROR sampled per
@@ -82,7 +82,7 @@ func (m UnavailableMode) String() string {
 	switch m {
 	case UnavailableRefuse:
 		return "refuse"
-	case UnavailableFallBackToLocal:
+	case UnavailableFallbackToLocal:
 		return "fall-back"
 	case UnavailableAllow:
 		return "allow"

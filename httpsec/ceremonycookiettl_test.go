@@ -43,10 +43,10 @@ func TestCeremonyCookieTTL_RefusesSubSecond(t *testing.T) {
 
 			h := newMagicLinkHarness(t)
 
-			onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(ttl))
+			onetimes, err := onetime.New("magic-link", onetime.WithTTL(ttl))
 			require.NoError(t, err)
 
-			h.manager, err = magiclink.NewManager(onetimes, h.users, h.sender, "https://app.example.com")
+			h.manager, err = magiclink.New(onetimes, h.users, h.sender, "https://app.example.com")
 			require.NoError(t, err)
 
 			_, err = h.build()

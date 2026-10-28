@@ -58,7 +58,7 @@ func cannotEnrol(m policy.MFAMethodLookup) policy.MFAMethodLookup {
 
 // deniedForEnrolment is the refusal every login the path does not admit gets:
 // the one it got before the path existed.
-var deniedForEnrolment = deniedWith(policy.ErrMFAEnrollmentRequired)
+var deniedForEnrolment = deniedWith(policy.ErrMFAEnrolmentRequired)
 
 // TestMFARequirementEnrolmentPath runs every case of the no-usable-enrolment
 // branch with the path off and on. The path-off rows pin today's outcome, so
@@ -96,7 +96,7 @@ func TestMFARequirementEnrolmentPath(t *testing.T) {
 
 		require.Equal(t, policy.Deny, d.Outcome, "an unreadable enrolment let the user through")
 		assert.ErrorIs(t, d.Reason, errEnrolmentStore)
-		assert.NotErrorIs(t, d.Reason, policy.ErrMFAEnrollmentRequired,
+		assert.NotErrorIs(t, d.Reason, policy.ErrMFAEnrolmentRequired,
 			"a lookup failure was reported as a missing enrolment")
 	}
 
@@ -391,7 +391,7 @@ func TestEnrolmentFirstFactors(t *testing.T) {
 				opts = append(opts, policy.WithMFAExemption(tc.exemption))
 			}
 
-			p, err := policy.NewMFARequirementPolicy(nil,
+			p, err := policy.NewMFARequirement(nil,
 				mfaMethods(canEnrol(mfaMethod(t, factor.AuthenticatorApp, false, nil))), opts...)
 			if err != nil {
 				tc.assert(t, policy.Decision{}, err)

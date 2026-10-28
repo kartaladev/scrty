@@ -82,23 +82,23 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		manager func(t *testing.T) *signingkey.KeyManager
-		assert  func(t *testing.T, km *signingkey.KeyManager, keys []signingkey.PublicKey, err error)
+		manager func(t *testing.T) *signingkey.Keys
+		assert  func(t *testing.T, km *signingkey.Keys, keys []signingkey.PublicKey, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "one entry per configured algorithm, naming the key that signs for it",
-			manager: func(t *testing.T) *signingkey.KeyManager {
-				km, err := signingkey.NewKeyManager(t.Context(),
-					signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+			manager: func(t *testing.T) *signingkey.Keys {
+				km, err := signingkey.New(t.Context(),
+					signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.RS256, signingkey.ES256),
 				)
 				require.NoError(t, err)
 
 				return km
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, keys []signingkey.PublicKey, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, keys []signingkey.PublicKey, err error) {
 				require.NoError(t, err)
 				require.Len(t, keys, 2)
 
@@ -116,17 +116,17 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 		},
 		{
 			name: "a key held for an algorithm this manager was not configured with is published too",
-			manager: func(t *testing.T) *signingkey.KeyManager {
+			manager: func(t *testing.T) *signingkey.Keys {
 				// A replica configured for EdDSA wrote to the same store. Its
 				// key never signs here, but publishing it is what lets this
 				// manager verify the tokens that replica issued.
 				foreign := realRecordFor(t, signingkey.EdDSA, epoch)
-				store := signingkey.NewInMemoryKeyStore()
+				store := signingkey.NewMemoryKeyStore()
 				require.NoError(t, store.Store(t.Context(), foreign))
 
 				// The manager reads the time the record is dated at, or the
 				// record would be dated years ahead and not published at all.
-				km, err := signingkey.NewKeyManager(t.Context(),
+				km, err := signingkey.New(t.Context(),
 					signingkey.WithKeyStore(store),
 					signingkey.WithAlgs(signingkey.RS256),
 					signingkey.WithClock(newClock()),
@@ -135,7 +135,7 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 
 				return km
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, keys []signingkey.PublicKey, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, keys []signingkey.PublicKey, err error) {
 				require.NoError(t, err)
 				require.Len(t, keys, 2,
 					"the foreign key is published alongside the one this manager minted")
@@ -144,7 +144,7 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 					"the stored key is held before the minted one, so it is published first")
 				assert.IsType(t, ed25519.PublicKey{}, keys[0].Key)
 
-				_, _, signs := km.GetSigner(signingkey.EdDSA)
+				_, _, signs := km.Signer(signingkey.EdDSA)
 				assert.False(t, signs, "publishing a foreign key is not signing with it")
 
 				assert.Equal(t, currentKid(t, km, signingkey.RS256), keys[1].Kid)
@@ -152,16 +152,16 @@ func TestVerificationKeysPublishesThePublicHalfOfEveryHeldKey(t *testing.T) {
 		},
 		{
 			name: "no published key can sign",
-			manager: func(t *testing.T) *signingkey.KeyManager {
-				km, err := signingkey.NewKeyManager(t.Context(),
-					signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+			manager: func(t *testing.T) *signingkey.Keys {
+				km, err := signingkey.New(t.Context(),
+					signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.RS256, signingkey.ES256, signingkey.EdDSA),
 				)
 				require.NoError(t, err)
 
 				return km
 			},
-			assert: func(t *testing.T, _ *signingkey.KeyManager, keys []signingkey.PublicKey, err error) {
+			assert: func(t *testing.T, _ *signingkey.Keys, keys []signingkey.PublicKey, err error) {
 				require.NoError(t, err)
 				require.Len(t, keys, 3)
 
@@ -248,8 +248,8 @@ func TestVerificationKeysDoNotShareKeyMaterialWithTheManager(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			km, err := signingkey.NewKeyManager(t.Context(),
-				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+			km, err := signingkey.New(t.Context(),
+				signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 				signingkey.WithAlgs(tc.alg),
 			)
 			require.NoError(t, err)
@@ -274,7 +274,7 @@ func TestVerificationKeysDoNotShareKeyMaterialWithTheManager(t *testing.T) {
 			assert.Equal(t, want, publicKeyBytes(t, after[0].Key),
 				"a caller writing to a key it was handed must not change the key the manager publishes")
 
-			_, signer, ok := km.GetSigner(tc.alg)
+			_, signer, ok := km.Signer(tc.alg)
 			require.True(t, ok)
 			assert.Equal(t, want, publicKeyBytes(t, signer.Public()),
 				"nor the public half of the key the manager still signs with")

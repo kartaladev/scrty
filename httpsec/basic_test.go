@@ -230,12 +230,12 @@ func TestBasicAuth(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				return denyingIn(t, policy.PreAuthentication, policy.ErrPolicyDenied)
+				return denyingIn(t, policy.PreAuthentication, policy.ErrDenied)
 			},
 			wire:    func(*testing.T, *authHarness) {},
 			request: func(ctx context.Context) *http.Request { return basicRequest(ctx, "ada", "s3cret") },
 			assert: func(t *testing.T, s served) {
-				require.ErrorIs(t, s.err, policy.ErrPolicyDenied)
+				require.ErrorIs(t, s.err, policy.ErrDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err))
 				assert.Empty(t, s.rec.Header().Get("WWW-Authenticate"), "a 403 carries no challenge")
 			},

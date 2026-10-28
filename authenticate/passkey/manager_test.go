@@ -46,7 +46,7 @@ type fixture struct {
 	sender   *MockSender
 	users    *MockUserLoader
 	creds    *passkey.MemoryCredentialStore
-	sessions *session.Manager
+	sessions *session.Sessions
 	deps     passkey.Deps
 
 	mu        sync.Mutex
@@ -54,7 +54,7 @@ type fixture struct {
 	sent      []notify.Message
 	sendErr   error
 	verified  []passkey.RegistrationExpectation
-	verifyFor map[string]func(nc *passkey.NewCredential) error // by credential ID
+	verifyFor map[string]func(nc *passkey.CredentialInput) error // by credential ID
 }
 
 // newFixture returns doubles whose verifier renders creation options and
@@ -109,7 +109,7 @@ func newFixture(t *testing.T) *fixture {
 			return &identity.Details{ID: u, Username: name, Active: true}, nil
 		}).AnyTimes()
 
-	sessions, err := session.NewManager(session.WithClock(f.clock),
+	sessions, err := session.New(session.WithClock(f.clock),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clock))))
 	require.NoError(t, err)
 
@@ -166,13 +166,13 @@ func (f *fixture) parseRegistration(body []byte) (passkey.ParsedRegistration, er
 // refuses it.
 func (f *fixture) verifyRegistration(
 	_ context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation,
-) (*passkey.NewCredential, error) {
+) (*passkey.CredentialInput, error) {
 	f.mu.Lock()
 	f.verified = append(f.verified, exp)
 	adjust := f.verifyFor[string(p.CredentialID())]
 	f.mu.Unlock()
 
-	nc := &passkey.NewCredential{
+	nc := &passkey.CredentialInput{
 		CredentialID:   p.CredentialID(),
 		PublicKey:      append([]byte("cose-"), p.CredentialID()...),
 		UserVerified:   true,
@@ -200,19 +200,19 @@ func (f *fixture) verifications() []passkey.RegistrationExpectation {
 }
 
 // adjustVerify sets how the verifier treats credential credID.
-func (f *fixture) adjustVerify(credID string, fn func(nc *passkey.NewCredential) error) {
+func (f *fixture) adjustVerify(credID string, fn func(nc *passkey.CredentialInput) error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	if f.verifyFor == nil {
-		f.verifyFor = map[string]func(nc *passkey.NewCredential) error{}
+		f.verifyFor = map[string]func(nc *passkey.CredentialInput) error{}
 	}
 
 	f.verifyFor[credID] = fn
 }
 
 // begin runs a registration begin for s and returns the challenge it issued.
-func (f *fixture) begin(t *testing.T, m *passkey.Manager, s *session.Session) string {
+func (f *fixture) begin(t *testing.T, m *passkey.Passkeys, s *session.Session) string {
 	t.Helper()
 
 	before := len(f.creations())
@@ -228,7 +228,7 @@ func (f *fixture) begin(t *testing.T, m *passkey.Manager, s *session.Session) st
 
 // manager builds a Manager over the fixture's deps, on its clock, with a
 // repudiation contact and opts.
-func (f *fixture) manager(t *testing.T, opts ...passkey.Option) *passkey.Manager {
+func (f *fixture) manager(t *testing.T, opts ...passkey.Option) *passkey.Passkeys {
 	t.Helper()
 
 	base := []passkey.Option{passkey.WithClock(f.clock), passkey.WithRepudiationContact("help@example.com")}
@@ -340,15 +340,15 @@ func TestNew(t *testing.T) {
 		deps   func(t *testing.T, f *fixture)
 		opts   []passkey.Option
 		noRepu bool
-		assert func(t *testing.T, m *passkey.Manager, err error)
+		assert func(t *testing.T, m *passkey.Passkeys, err error)
 	}
 
-	refused := func(t *testing.T, m *passkey.Manager, err error) {
+	refused := func(t *testing.T, m *passkey.Passkeys, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, passkey.ErrConfig)
 		assert.Nil(t, m)
 	}
-	accepted := func(t *testing.T, m *passkey.Manager, err error) {
+	accepted := func(t *testing.T, m *passkey.Passkeys, err error) {
 		t.Helper()
 		require.NoError(t, err)
 		assert.NotNil(t, m)
@@ -409,7 +409,7 @@ func TestNew(t *testing.T) {
 		},
 		{
 			name:   "typed-nil session revoker",
-			deps:   func(_ *testing.T, f *fixture) { f.deps.Sessions = (*session.Manager)(nil) },
+			deps:   func(_ *testing.T, f *fixture) { f.deps.Sessions = (*session.Sessions)(nil) },
 			assert: refused,
 		},
 		{

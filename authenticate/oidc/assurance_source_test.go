@@ -34,17 +34,17 @@ func TestManager_MeetsAssurance(t *testing.T) {
 	corpEv := func(amr []string, acr string) policy.FederatedAssurance {
 		return assurance.NewFederated("corp", issuer, amr, acr)
 	}
-	corp := func(a oidc.Assurance) func(*testing.T, *gomock.Controller) []oidc.ManagerOption {
-		return func(*testing.T, *gomock.Controller) []oidc.ManagerOption {
-			return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", a)}
+	corp := func(a oidc.Assurance) func(*testing.T, *gomock.Controller) []oidc.Option {
+		return func(*testing.T, *gomock.Controller) []oidc.Option {
+			return []oidc.Option{oidc.WithProviderAssurance("corp", a)}
 		}
 	}
 	// evaluator wires a mock evaluator that expect configures.
-	evaluator := func(expect func(e *MockAssuranceEvaluator)) func(*testing.T, *gomock.Controller) []oidc.ManagerOption {
-		return func(_ *testing.T, ctrl *gomock.Controller) []oidc.ManagerOption {
+	evaluator := func(expect func(e *MockAssuranceEvaluator)) func(*testing.T, *gomock.Controller) []oidc.Option {
+		return func(_ *testing.T, ctrl *gomock.Controller) []oidc.Option {
 			e := NewMockAssuranceEvaluator(ctrl)
 			expect(e)
-			return []oidc.ManagerOption{oidc.WithAssuranceEvaluator(e)}
+			return []oidc.Option{oidc.WithAssuranceEvaluator(e)}
 		}
 	}
 	met := func(t *testing.T, got bool, err error) {
@@ -60,7 +60,7 @@ func TestManager_MeetsAssurance(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   func(t *testing.T, ctrl *gomock.Controller) []oidc.ManagerOption
+		opts   func(t *testing.T, ctrl *gomock.Controller) []oidc.Option
 		user   identity.UserID
 		ev     policy.FederatedAssurance
 		ctx    func(ctx context.Context) context.Context
@@ -83,7 +83,7 @@ func TestManager_MeetsAssurance(t *testing.T) {
 		},
 		{
 			name: "match all",
-			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, AcceptedACR: []string{"gold"}, Match: oidc.MatchAll}),
+			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, AcceptedACR: []string{"gold"}, Match: oidc.AssuranceMatchAll}),
 			ev:   corpEv([]string{"mfa"}, "silver"), assert: notMet,
 		},
 		{
@@ -208,11 +208,11 @@ func TestManager_MeetsAssurance(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			opts := []oidc.ManagerOption{oidc.WithOutboundClient(p.Outbound(t))}
+			opts := []oidc.Option{oidc.WithOutboundClient(p.Outbound(t))}
 			if tc.opts != nil {
 				opts = append(opts, tc.opts(t, ctrl)...)
 			}
-			m, err := oidc.NewManager(reg, stubBroker{}, opts...)
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, opts...)
 			require.NoError(t, err)
 
 			ctx := t.Context()

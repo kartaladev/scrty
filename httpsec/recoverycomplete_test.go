@@ -1024,7 +1024,7 @@ func lockDecoyAuthenticator(t *testing.T, decoys int) authenticate.Authenticator
 		authenticate.WithPasswordAuthenticatorLogger(slog.New(slog.DiscardHandler)))
 	require.NoError(t, err)
 
-	m, err := authenticate.NewManager(provider)
+	m, err := authenticate.NewFirstOf(provider)
 	require.NoError(t, err)
 
 	return m

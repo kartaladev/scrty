@@ -67,7 +67,7 @@ func TestAuthenticateReturnedErrors(t *testing.T) {
 				v := NewMockVerifier(ctrl)
 				v.EXPECT().Verify(gomock.Any(), gomock.Any()).Return(token.NewClaims("ada", tokenID.String()), nil)
 
-				auth, err := authenticate.NewJwtAuthenticator(authenticate.WithJwtVerifier(v))
+				auth, err := authenticate.NewJWTAuthenticator(authenticate.WithJWTVerifier(v))
 				require.NoError(t, err)
 
 				creds := NewMockBearerCredentials(ctrl)

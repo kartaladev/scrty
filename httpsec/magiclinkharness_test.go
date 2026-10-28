@@ -129,11 +129,11 @@ func (s *capturingSender) lastNext(t *testing.T) string {
 // actually be redeemed, with doubles only where a test has to say what the
 // store answered.
 type magicLinkHarness struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    *MockUserLoader
 	tokens   *MockGenerator
 	sender   *capturingSender
-	manager  *magiclink.Manager
+	manager  *magiclink.Links
 
 	// issued counts the access tokens the login tail asked for, which is how a
 	// test pins that a refused redemption issues none, and sessionID is the
@@ -155,7 +155,7 @@ func newMagicLinkHarness(t *testing.T, managerOpts ...magiclink.Option) *magicLi
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	h := &magicLinkHarness{
@@ -191,10 +191,10 @@ func newMagicLinkHarness(t *testing.T, managerOpts ...magiclink.Option) *magicLi
 			return "issued-token", nil
 		})
 
-	onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
 	require.NoError(t, err)
 
-	h.manager, err = magiclink.NewManager(
+	h.manager, err = magiclink.New(
 		onetimes, h.users, h.sender, "https://app.example.com", managerOpts...)
 	require.NoError(t, err)
 

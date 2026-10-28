@@ -43,17 +43,17 @@ const (
 // second-factor policy — which is the only way to find out whether they
 // compose.
 type integrationHarness struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   *MockGenerator
 	users    *MockUserLoader
 	sender   *capturingSender
 
-	links  *magiclink.Manager
+	links  *magiclink.Links
 	totp   *mfa.TOTP
 	secret string
 	clock  *clockwork.FakeClock
 
-	keys   *apikey.Manager
+	keys   *apikey.Keys
 	apiKey string
 
 	// shared is one limiter handed to both the magic-link and the API key
@@ -70,7 +70,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 	ctrl := gomock.NewController(t)
 	ctx := t.Context()
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	h := &integrationHarness{
@@ -84,10 +84,10 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 	h.wireUsers()
 	h.wireTokens()
 
-	onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
 	require.NoError(t, err)
 
-	h.links, err = magiclink.NewManager(
+	h.links, err = magiclink.New(
 		onetimes, h.users, h.sender, "https://app.example.com")
 	require.NoError(t, err)
 
@@ -97,7 +97,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 
 	h.enrol(ctx, t)
 
-	h.keys, err = apikey.NewManager()
+	h.keys, err = apikey.New()
 	require.NoError(t, err)
 
 	h.apiKey, _, err = h.keys.Issue(ctx, integrationService, "billing", nil, 0)
@@ -205,7 +205,7 @@ func (h *integrationHarness) buildChain(t *testing.T) *httpsec.Chain {
 	lookups, err := mfa.LookupsFor(h.totp)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(challenge)

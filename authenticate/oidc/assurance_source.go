@@ -48,7 +48,7 @@ type AssuranceEvaluator interface {
 // asserted amr and acr are matched against the provider's current Assurance,
 // so a tightened configuration applies to existing sessions at their next
 // evaluation.
-func (m *Manager) MeetsAssurance(ctx context.Context, user identity.UserID, ev policy.FederatedAssurance) (bool, error) {
+func (m *RelyingParty) MeetsAssurance(ctx context.Context, user identity.UserID, ev policy.FederatedAssurance) (bool, error) {
 	if !ev.Asserted() {
 		return false, nil
 	}
@@ -78,4 +78,4 @@ func (m *Manager) MeetsAssurance(ctx context.Context, user identity.UserID, ev p
 	return matchAssurance(a, ev.AMR(), ev.ACR()), nil
 }
 
-var _ policy.FederatedAssuranceSource = (*Manager)(nil)
+var _ policy.FederatedAssuranceSource = (*RelyingParty)(nil)

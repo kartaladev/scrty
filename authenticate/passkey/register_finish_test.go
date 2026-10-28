@@ -26,7 +26,7 @@ func TestFinishRegistration(t *testing.T) {
 
 	type env struct {
 		f         *fixture
-		m         *passkey.Manager
+		m         *passkey.Passkeys
 		s         *session.Session
 		challenge string
 	}
@@ -107,7 +107,7 @@ func TestFinishRegistration(t *testing.T) {
 				exp := e.f.verifications()
 				require.Len(t, exp, 1)
 				assert.Equal(t, e.challenge, exp[0].Challenge)
-				assert.Equal(t, passkey.UVRequired, exp[0].UV)
+				assert.Equal(t, passkey.UserVerificationRequired, exp[0].UV)
 			},
 		},
 		{
@@ -144,7 +144,7 @@ func TestFinishRegistration(t *testing.T) {
 		{
 			name: "a challenge refused once stays spent",
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-z", func(*passkey.NewCredential) error { return verifyErr })
+				f.adjustVerify("cred-z", func(*passkey.CredentialInput) error { return verifyErr })
 			},
 			before: func(t *testing.T, e *env) {
 				_, err := e.m.FinishRegistration(t.Context(), e.s, regBody(e.challenge, "cred-z", ""),
@@ -188,7 +188,7 @@ func TestFinishRegistration(t *testing.T) {
 		{
 			name: "a response that fails verification",
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-a", func(*passkey.NewCredential) error { return verifyErr })
+				f.adjustVerify("cred-a", func(*passkey.CredentialInput) error { return verifyErr })
 			},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				failed(t, e, res, err)
@@ -203,7 +203,7 @@ func TestFinishRegistration(t *testing.T) {
 			opts: []passkey.Option{passkey.WithRegistrationCheck(
 				func(context.Context, passkey.RegistrationFacts) error { return consumerErr })},
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-a", func(nc *passkey.NewCredential) error {
+				f.adjustVerify("cred-a", func(nc *passkey.CredentialInput) error {
 					nc.BackupEligible, nc.BackupState = false, true
 
 					return nil
@@ -214,7 +214,7 @@ func TestFinishRegistration(t *testing.T) {
 		{
 			name: "a refused attestation is its own refusal",
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-a", func(*passkey.NewCredential) error { return passkey.ErrAttestationRefused })
+				f.adjustVerify("cred-a", func(*passkey.CredentialInput) error { return passkey.ErrAttestationRefused })
 			},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				t.Helper()
@@ -226,21 +226,21 @@ func TestFinishRegistration(t *testing.T) {
 		{
 			name: "no user verification when it is required",
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-a", func(nc *passkey.NewCredential) error { nc.UserVerified = false; return nil })
+				f.adjustVerify("cred-a", func(nc *passkey.CredentialInput) error { nc.UserVerified = false; return nil })
 			},
 			assert: failed,
 		},
 		{
 			name: "no user verification when it is preferred",
-			opts: []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred)},
+			opts: []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred)},
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-a", func(nc *passkey.NewCredential) error { nc.UserVerified = false; return nil })
+				f.adjustVerify("cred-a", func(nc *passkey.CredentialInput) error { nc.UserVerified = false; return nil })
 			},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				assert.True(t, res.Activated)
-				assert.Equal(t, passkey.UVPreferred, e.f.verifications()[0].UV)
+				assert.Equal(t, passkey.UserVerificationPreferred, e.f.verifications()[0].UV)
 			},
 		},
 		{
@@ -255,7 +255,7 @@ func TestFinishRegistration(t *testing.T) {
 					return nil
 				})},
 			setup: func(_ *testing.T, f *fixture) {
-				f.adjustVerify("cred-a", func(nc *passkey.NewCredential) error {
+				f.adjustVerify("cred-a", func(nc *passkey.CredentialInput) error {
 					nc.AttestationFormat, nc.AttestationTrusted = "packed", true
 
 					return nil
@@ -295,7 +295,7 @@ func TestFinishRegistration(t *testing.T) {
 			setup: func(t *testing.T, f *fixture) {
 				require.NoError(t, f.creds.Insert(t.Context(), &passkey.Credential{
 					ID: id.ID{15: 9}, User: "u-1", CredentialID: []byte("old"), CreatedAt: regStart,
-					State: passkey.StatePending, Pending: passkey.AwaitingEmailCode,
+					State: passkey.StatePending, Pending: passkey.PendingEmailCode,
 				}))
 			},
 			assert: func(t *testing.T, _ *env, res *passkey.RegistrationResult, err error) {

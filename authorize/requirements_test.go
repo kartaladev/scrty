@@ -287,7 +287,7 @@ func TestRequirements(t *testing.T) {
 			name: "HasPrivilege denies when the context carries an absent authorizer",
 			req:  always(authorize.HasPrivilege("billing", "invoice", "write")),
 			ctx: func(_ *testing.T, ctx context.Context) context.Context {
-				var absent *authorize.Manager
+				var absent *authorize.FirstOf
 
 				return authorize.WithAuthorizer(withRole(ctx, "viewer"), absent)
 			},

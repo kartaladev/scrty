@@ -45,7 +45,7 @@ type failingSignerKeySource struct {
 
 var _ signingkey.KeySource = (*failingSignerKeySource)(nil)
 
-func (s *failingSignerKeySource) GetSigner(alg signingkey.Alg) (string, crypto.Signer, bool) {
+func (s *failingSignerKeySource) Signer(alg signingkey.Alg) (string, crypto.Signer, bool) {
 	if alg != signingkey.RS256 {
 		return "", nil, false
 	}
@@ -136,7 +136,7 @@ func TestVerifierReturnedErrors(t *testing.T) {
 				keys := NewMockKeySource(gomock.NewController(t))
 				keys.EXPECT().VerificationKeys().Return(nil, errKeySourceFixture)
 
-				ver, err := token.NewVerifier(token.VerifyWithKeySource(keys))
+				ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
 				require.NoError(t, err)
 
 				_, verifyErr := ver.Verify(t.Context(), "any.token.here")
@@ -152,7 +152,7 @@ func TestVerifierReturnedErrors(t *testing.T) {
 				assert.NotContains(t, err.Error(), "u-123",
 					"the returned error quoted the key source's own text")
 				assert.ErrorIs(t, err, errKeySourceFixture, "the key source's own error is no longer reachable")
-				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+				assert.NotErrorIs(t, err, token.ErrInvalid,
 					"an unavailable key set must still not be reported as a refused token")
 			},
 		},

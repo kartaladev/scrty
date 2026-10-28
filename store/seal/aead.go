@@ -77,7 +77,7 @@ type aeadCipher struct {
 // the active key well before a key has sealed that many values.
 func NewAEADCipher(kr Keyring) (Cipher, error) {
 	if nilcheck.IsNil(kr) {
-		return nil, fmt.Errorf("%w: the cipher has no keyring", ErrInvalidConfiguration)
+		return nil, fmt.Errorf("%w: the cipher has no keyring", ErrConfig)
 	}
 
 	return &aeadCipher{kr: kr}, nil
@@ -149,7 +149,7 @@ func (c *aeadCipher) active() (string, []byte, error) {
 	}
 	if !validKeyID(id) {
 		return "", nil, fmt.Errorf("%w: the active key id must be 1 to %d of A-Z, a-z, 0-9, '.', '_' or '-'",
-			ErrInvalidConfiguration, maxKeyIDLen)
+			ErrConfig, maxKeyIDLen)
 	}
 
 	return id, key, nil
@@ -160,17 +160,17 @@ func (c *aeadCipher) active() (string, []byte, error) {
 // quietly downgrade the cipher to AES-128 or AES-192.
 func newAEAD(key []byte) (cipher.AEAD, error) {
 	if len(key) != KeySize {
-		return nil, fmt.Errorf("%w: a key must be %d bytes, got %d", ErrInvalidConfiguration, KeySize, len(key))
+		return nil, fmt.Errorf("%w: a key must be %d bytes, got %d", ErrConfig, KeySize, len(key))
 	}
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return nil, diag.Wrap(err, "seal: the key could not be used", ErrInvalidConfiguration)
+		return nil, diag.Wrap(err, "seal: the key could not be used", ErrConfig)
 	}
 
 	aead, err := cipher.NewGCMWithRandomNonce(block)
 	if err != nil {
-		return nil, diag.Wrap(err, "seal: the key could not be used", ErrInvalidConfiguration)
+		return nil, diag.Wrap(err, "seal: the key could not be used", ErrConfig)
 	}
 
 	return aead, nil

@@ -21,10 +21,10 @@ func TestNewAPIKeyManager(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []apikey.Option
-		assert func(t *testing.T, m *apikey.Manager, err error)
+		assert func(t *testing.T, m *apikey.Keys, err error)
 	}
 
-	configError := func(t *testing.T, m *apikey.Manager, err error) {
+	configError := func(t *testing.T, m *apikey.Keys, err error) {
 		require.Error(t, err)
 		assert.ErrorIs(t, err, apikey.ErrConfig)
 		assert.Nil(t, m)
@@ -37,7 +37,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "defaults",
-			assert: func(t *testing.T, m *apikey.Manager, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "sk", m.Prefix())
 			},
@@ -81,7 +81,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 			// the issued key's created-at from the consumer's clock.
 			name: "a consumer's own read-only clock is the manager's time source",
 			opts: []apikey.Option{apikey.WithClock(fixedClock{at: consumerClockAt})},
-			assert: func(t *testing.T, m *apikey.Manager, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				t.Helper()
 
 				require.NoError(t, err)
@@ -99,7 +99,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 		{
 			name: "a sixteen-character alphanumeric prefix",
 			opts: []apikey.Option{apikey.WithPrefix("acme0123456789ab")},
-			assert: func(t *testing.T, m *apikey.Manager, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "acme0123456789ab", m.Prefix())
 			},
@@ -107,7 +107,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 		{
 			name: "a single-character prefix",
 			opts: []apikey.Option{apikey.WithPrefix("k")},
-			assert: func(t *testing.T, m *apikey.Manager, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "k", m.Prefix())
 			},
@@ -122,7 +122,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 				apikey.WithClock(clock.System()),
 				apikey.WithRandom(rand.Reader),
 			},
-			assert: func(t *testing.T, m *apikey.Manager, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "acme", m.Prefix())
 			},
@@ -132,7 +132,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 			// component" — so it is ignored rather than refused.
 			name: "a nil logger is accepted",
 			opts: []apikey.Option{apikey.WithLogger(nil)},
-			assert: func(t *testing.T, m *apikey.Manager, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "sk", m.Prefix())
 			},
@@ -143,7 +143,7 @@ func TestNewAPIKeyManager(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			m, err := apikey.NewManager(tc.opts...)
+			m, err := apikey.New(tc.opts...)
 			tc.assert(t, m, err)
 		})
 	}

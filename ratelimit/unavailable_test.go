@@ -32,9 +32,9 @@ func TestUnavailableMode_Declarations(t *testing.T) {
 		{
 			name: "the three modes are distinct",
 			assert: func(t *testing.T) {
-				assert.NotEqual(t, ratelimit.UnavailableRefuse, ratelimit.UnavailableFallBackToLocal)
+				assert.NotEqual(t, ratelimit.UnavailableRefuse, ratelimit.UnavailableFallbackToLocal)
 				assert.NotEqual(t, ratelimit.UnavailableRefuse, ratelimit.UnavailableAllow)
-				assert.NotEqual(t, ratelimit.UnavailableFallBackToLocal, ratelimit.UnavailableAllow)
+				assert.NotEqual(t, ratelimit.UnavailableFallbackToLocal, ratelimit.UnavailableAllow)
 			},
 		},
 		{
@@ -71,7 +71,7 @@ func TestUnavailableMode_String(t *testing.T) {
 
 	cases := []testCase{
 		{name: "refuse", mode: ratelimit.UnavailableRefuse, assert: is("refuse")},
-		{name: "fall back to local", mode: ratelimit.UnavailableFallBackToLocal, assert: is("fall-back")},
+		{name: "fall back to local", mode: ratelimit.UnavailableFallbackToLocal, assert: is("fall-back")},
 		{name: "allow", mode: ratelimit.UnavailableAllow, assert: is("allow")},
 		{name: "an unknown value prints its number", mode: ratelimit.UnavailableMode(7), assert: is("UnavailableMode(7)")},
 		{name: "a negative value prints its number", mode: ratelimit.UnavailableMode(-1), assert: is("UnavailableMode(-1)")},

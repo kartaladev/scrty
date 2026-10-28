@@ -51,7 +51,7 @@ func (s *countingStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error
 // apiKeyHarness is a real key manager holding one live key, because what is
 // being pinned is which requests reach the verification at all.
 type apiKeyHarness struct {
-	keys  *apikey.Manager
+	keys  *apikey.Keys
 	store *countingStore
 	valid string
 
@@ -64,7 +64,7 @@ func newAPIKeyHarness(t *testing.T) *apiKeyHarness {
 
 	store := &countingStore{Store: apikey.NewMemoryStore()}
 
-	keys, err := apikey.NewManager(apikey.WithStore(store))
+	keys, err := apikey.New(apikey.WithStore(store))
 	require.NoError(t, err)
 
 	presented, _, err := keys.Issue(
@@ -122,12 +122,12 @@ func TestEnableAPIKey(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		manager func(h *apiKeyHarness) *apikey.Manager
+		manager func(h *apiKeyHarness) *apikey.Keys
 		opts    []httpsec.APIKeyOption
 		assert  func(t *testing.T, c *httpsec.Chain, err error)
 	}
 
-	configured := func(h *apiKeyHarness) *apikey.Manager { return h.keys }
+	configured := func(h *apiKeyHarness) *apikey.Keys { return h.keys }
 
 	configError := func(t *testing.T, c *httpsec.Chain, err error) {
 		require.ErrorIs(t, err, httpsec.ErrConfig)
@@ -152,7 +152,7 @@ func TestEnableAPIKey(t *testing.T) {
 		},
 		{
 			name:    "a nil manager",
-			manager: func(*apiKeyHarness) *apikey.Manager { return nil },
+			manager: func(*apiKeyHarness) *apikey.Keys { return nil },
 			assert:  configError,
 		},
 		{

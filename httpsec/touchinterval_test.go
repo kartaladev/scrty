@@ -82,7 +82,7 @@ func TestTouchIntervalWiring(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			sessions, err := session.NewManager(
+			sessions, err := session.New(
 				session.WithStore(session.NewMemoryStore()),
 				session.WithTouchInterval(tc.interval),
 			)
@@ -91,14 +91,14 @@ func TestTouchIntervalWiring(t *testing.T) {
 			var policies []policy.Policy
 
 			for _, idle := range tc.idle {
-				p, err := policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyTimeout(idle))
+				p, err := policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(idle))
 				require.NoError(t, err)
 
 				policies = append(policies, p)
 			}
 
 			_, err = httpsec.New(
-				httpsec.WithSessionManager(sessions),
+				httpsec.WithSessions(sessions),
 				httpsec.WithPolicyEngine(engineOf(t, policies...)),
 			)
 			tc.assert(t, err)

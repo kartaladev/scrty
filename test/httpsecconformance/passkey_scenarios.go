@@ -56,7 +56,7 @@ type PasskeyFixture struct {
 	Base *RecoveryFixture
 
 	// Manager runs the ceremonies the chain's endpoints serve.
-	Manager *passkey.Manager
+	Manager *passkey.Passkeys
 
 	// Credentials is the durable passkey store, read back by a scenario to
 	// assert what a ceremony left.
@@ -80,7 +80,7 @@ type passkeyBuild struct {
 }
 
 // newPasskeyFixture wires the durable stores and the manager.
-func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.Manager) {
+func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.Sessions) {
 	t.Helper()
 
 	base, sessions := newRecoveryFixture(t)
@@ -176,7 +176,7 @@ func (pf *PasskeyFixture) methods(withTOTP bool) []mfa.Method {
 // request issued has to be there for a verify request served by a chain built
 // afterwards, as it is behind two replicas.
 func (pf *PasskeyFixture) options(
-	t *testing.T, e *Effects, sessions *session.Manager, withTOTP bool,
+	t *testing.T, e *Effects, sessions *session.Sessions, withTOTP bool,
 ) []httpsec.Option {
 	t.Helper()
 
@@ -185,7 +185,7 @@ func (pf *PasskeyFixture) options(
 	lookups, err := mfa.LookupsFor(methods...)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(challenge)
@@ -210,7 +210,7 @@ func passkeyRoutes() []Route {
 
 // passkeyEffects is the Effects of a passkey scenario. The session store is the
 // durable one, so a scenario reads sessions through Passkey.Base.
-func passkeyEffects(pf *PasskeyFixture, sessions *session.Manager) *Effects {
+func passkeyEffects(pf *PasskeyFixture, sessions *session.Sessions) *Effects {
 	return &Effects{
 		Sessions: sessions,
 		Attempts: lockout.NewMemoryAttemptStore(),
@@ -221,7 +221,7 @@ func passkeyEffects(pf *PasskeyFixture, sessions *session.Manager) *Effects {
 
 // confirmedSession pre-creates the session a registration is made from: a
 // password session whose second factor is satisfied when the user has one.
-func (pf *PasskeyFixture) confirmedSession(t *testing.T, sessions *session.Manager, satisfied bool) *session.Session {
+func (pf *PasskeyFixture) confirmedSession(t *testing.T, sessions *session.Sessions, satisfied bool) *session.Session {
 	t.Helper()
 
 	s, err := sessions.Create(t.Context(), UserID, session.WithFirstFactor(factor.Password))
@@ -960,10 +960,10 @@ func passkeyEnrolmentOnlyUserRegistersWithEmailedCode() Scenario {
 			lookups, err := mfa.LookupsFor(methods...)
 			require.NoError(t, err)
 
-			challenge, err := policy.NewMFAPolicy(lookups)
+			challenge, err := policy.NewMFA(lookups)
 			require.NoError(t, err)
 
-			requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+			requirement, err := policy.NewMFARequirement(nil, lookups,
 				policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath())
 			require.NoError(t, err)
 

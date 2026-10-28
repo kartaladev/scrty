@@ -165,7 +165,7 @@ func redemptionDecision(
 			// that case allows outright rather than reaching this branch.
 			reason := d.Reason
 			if reason == nil {
-				reason = policy.ErrPolicyDenied
+				reason = policy.ErrDenied
 			}
 
 			out.denyErr = reason
@@ -252,11 +252,11 @@ func wrapChecks[C ~func(context.Context, identity.Principal, time.Time) error](
 // consumed. The refusal protects the session, not the credential.
 func guardRedemption(out *policyOutcome, p identity.Principal, passwordChangedAt time.Time) error {
 	if !out.evaluated {
-		return policy.ErrPolicyDenied
+		return policy.ErrDenied
 	}
 
 	if out.principal.ID != p.ID || !out.passwordChangedAt.Equal(passwordChangedAt) {
-		return policy.ErrPolicyDenied
+		return policy.ErrDenied
 	}
 
 	if out.unenforcedErr != nil {
@@ -271,7 +271,7 @@ func guardRedemption(out *policyOutcome, p identity.Principal, passwordChangedAt
 		return out.denyErr
 	}
 
-	return policy.ErrPolicyDenied
+	return policy.ErrDenied
 }
 
 // guardFederatedAssurance refuses a federated redemption whose redeemer
@@ -290,7 +290,7 @@ func guardFederatedAssurance(out *policyOutcome, provider, issuer string, amr []
 	ev := out.federated
 	if ev.Provider() != provider || ev.Issuer() != issuer ||
 		!slices.Equal(ev.AMR(), amr) || ev.ACR() != acr {
-		return policy.ErrPolicyDenied
+		return policy.ErrDenied
 	}
 
 	return nil

@@ -63,7 +63,7 @@ func TestRequest_ConcurrentBurstStaysWithinIssuanceLimit(t *testing.T) {
 
 	store := newCountHoldingStore(racers)
 	sender := &recordingSender{}
-	m, err := magiclink.NewManager(tokensWithStore(t, store), activeLoader(), sender, "https://app.example.com")
+	m, err := magiclink.New(tokensWithStore(t, store), activeLoader(), sender, "https://app.example.com")
 	require.NoError(t, err)
 
 	start := make(chan struct{})

@@ -19,10 +19,10 @@ import (
 
 // oidcFixture is what a construction row wires EnableOIDCLogin with.
 type oidcFixture struct {
-	manager  *oidc.Manager
-	handoffs *oidc.HandoffManager
+	manager  *oidc.RelyingParty
+	handoffs *oidc.Handoff
 	tokens   *MockGenerator
-	sessions *session.Manager
+	sessions *session.Sessions
 }
 
 // required is the minimal wiring every accepted configuration carries.
@@ -45,7 +45,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		name string
 
 		// manager builds the OIDC manager; nil means the fixture's.
-		manager func(t *testing.T) *oidc.Manager
+		manager func(t *testing.T) *oidc.RelyingParty
 
 		// enable builds the option under test from the fixture.
 		enable func(f oidcFixture) httpsec.Option
@@ -101,7 +101,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		method.EXPECT().Name().Return("totp").AnyTimes()
 		method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-		requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{method},
+		requirement, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{method},
 			append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, opts...)...)
 		require.NoError(t, err)
 
@@ -111,7 +111,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		return []httpsec.Option{httpsec.WithPolicyEngine(requirementEngine(opts...)), enableMFAFor(t)}
 	}
 
-	syncingRoles := func(t *testing.T) *oidc.Manager {
+	syncingRoles := func(t *testing.T) *oidc.RelyingParty {
 		return newTestOIDCManager(t,
 			oidc.WithRoleClaim(testOIDCProvider, "realm_access.roles"),
 			oidc.WithRoleSync(testOIDCProvider, true))
@@ -148,7 +148,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 				httpsec.WithHandoffLimiter(mustLimiter(t)),
 				httpsec.WithHandoffRateLimit(3, time.Minute),
 				httpsec.WithHandoffCountRefusals(false),
-				httpsec.WithBackchannelLogoutScope(httpsec.AllSessions),
+				httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll),
 				httpsec.WithOIDCRPInitiatedLogout(false),
 				httpsec.WithHandoffRedeemer(newTestHandoffManager(t)),
 			),
@@ -377,7 +377,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		},
 		{
 			name:   "a handoff redeemer interface holding a nil pointer",
-			enable: with(httpsec.WithHandoffRedeemer((*oidc.HandoffManager)(nil))),
+			enable: with(httpsec.WithHandoffRedeemer((*oidc.Handoff)(nil))),
 			assert: refused("WithHandoffRedeemer"),
 		},
 		{
@@ -481,10 +481,10 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 }
 
 // mustSessions builds an in-memory session manager.
-func mustSessions(t *testing.T) *session.Manager {
+func mustSessions(t *testing.T) *session.Sessions {
 	t.Helper()
 
-	m, err := session.NewManager()
+	m, err := session.New()
 	require.NoError(t, err)
 
 	return m

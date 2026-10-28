@@ -78,13 +78,13 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	// unauthenticated request.
 	if len(raw) > c.maxTokenSize {
 		return nil, fmt.Errorf("%w: longer than the %d-byte maximum",
-			ErrTokenInvalid, c.maxTokenSize)
+			ErrInvalid, c.maxTokenSize)
 	}
 
 	// Before the keys, because this is decidable from the string alone and
 	// says nothing about the key source.
 	if !canonicalCompact(raw) {
-		return nil, fmt.Errorf("%w: not a canonical compact JWS", ErrTokenInvalid)
+		return nil, fmt.Errorf("%w: not a canonical compact JWS", ErrInvalid)
 	}
 
 	keys, err := c.keys.VerificationKeys()
@@ -192,7 +192,7 @@ func classify(err error) error {
 		}
 	}
 
-	return fmt.Errorf("%w: %w", ErrTokenInvalid, err)
+	return fmt.Errorf("%w: %w", ErrInvalid, err)
 }
 
 // canonicalCompact reports whether raw is the single presentation of a compact

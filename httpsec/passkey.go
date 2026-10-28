@@ -48,12 +48,12 @@ const (
 // PasskeyDeps are what EnablePasskeys works over.
 type PasskeyDeps struct {
 	// Passkeys runs the ceremonies. Required.
-	Passkeys *passkey.Manager
+	Passkeys *passkey.Passkeys
 
 	// Sessions is the session manager a confined session is saved through
 	// when a passkey bound on it becomes active. Required, and it should be
 	// the one the chain resolves sessions through.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Users loads the user a passwordless login names. The registration and
 	// management endpoints do not use it.

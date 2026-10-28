@@ -22,12 +22,12 @@ var expiryT0 = time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
 var errExpiryStore = errors.New("store unavailable")
 
 // flowExpiryManager returns a login manager over flows, reading time from clk.
-func flowExpiryManager(t *testing.T, flows oidc.FlowStore, clk clockwork.Clock) *oidc.Manager {
+func flowExpiryManager(t *testing.T, flows oidc.FlowStore, clk clockwork.Clock) *oidc.RelyingParty {
 	t.Helper()
 
 	reg, err := oidc.NewRegistry(newTestProvider(t).Provider("corp"))
 	require.NoError(t, err)
-	m, err := oidc.NewManager(reg, stubBroker{}, oidc.WithClock(clk), oidc.WithFlowStore(flows))
+	m, err := oidc.NewRelyingParty(reg, stubBroker{}, oidc.WithClock(clk), oidc.WithFlowStore(flows))
 	require.NoError(t, err)
 
 	return m
@@ -35,10 +35,10 @@ func flowExpiryManager(t *testing.T, flows oidc.FlowStore, clk clockwork.Clock) 
 
 // handoffExpiryManager returns a handoff manager over store, reading time from
 // clk.
-func handoffExpiryManager(t *testing.T, store oidc.HandoffStore, clk clockwork.Clock) *oidc.HandoffManager {
+func handoffExpiryManager(t *testing.T, store oidc.HandoffStore, clk clockwork.Clock) *oidc.Handoff {
 	t.Helper()
 
-	h, err := oidc.NewHandoffManager(store, NewMockUserLoader(gomock.NewController(t)), oidc.WithHandoffClock(clk))
+	h, err := oidc.NewHandoff(store, NewMockUserLoader(gomock.NewController(t)), oidc.WithHandoffClock(clk))
 	require.NoError(t, err)
 
 	return h

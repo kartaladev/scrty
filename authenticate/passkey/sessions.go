@@ -26,20 +26,20 @@ type SessionRevoker interface {
 	DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error)
 }
 
-var _ SessionRevoker = (*session.Manager)(nil)
+var _ SessionRevoker = (*session.Sessions)(nil)
 
 // WithoutSessionRevocationOnRemoval keeps the user's other sessions when a
 // passkey is removed, replacing the default of ending every session but the
 // removing one.
 func WithoutSessionRevocationOnRemoval() Option {
-	return func(m *Manager) { m.keepOnRemoval = true }
+	return func(m *Passkeys) { m.keepOnRemoval = true }
 }
 
 // WithoutSessionRevocationOnClone keeps the user's sessions when a suspected
 // clone suspends a passkey, replacing the default of ending every one of them,
 // the session that presented the clone included.
 func WithoutSessionRevocationOnClone() Option {
-	return func(m *Manager) { m.keepOnClone = true }
+	return func(m *Passkeys) { m.keepOnClone = true }
 }
 
 // RemoveOption chooses, for one removal, whether the user's other sessions
@@ -76,7 +76,7 @@ func EndOtherSessions() RemoveOption {
 
 // endsOtherSessions resolves a removal's options against the manager's
 // default: the last option given wins, and a nil option is skipped.
-func (m *Manager) endsOtherSessions(opts []RemoveOption) bool {
+func (m *Passkeys) endsOtherSessions(opts []RemoveOption) bool {
 	var c removeConfig
 
 	for _, o := range opts {

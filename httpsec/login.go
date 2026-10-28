@@ -98,7 +98,7 @@ type LoginResponder func(ex *Exchange, result LoginResult) error
 // through.
 type formLogin struct {
 	authn    authenticate.Authenticator
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 	attempts policy.AttemptStore
 

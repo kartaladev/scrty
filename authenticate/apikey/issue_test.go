@@ -127,7 +127,7 @@ func TestManagerIssue(t *testing.T) {
 				opts = append(opts, apikey.WithDigest(tc.digest))
 			}
 
-			m, err := apikey.NewManager(opts...)
+			m, err := apikey.New(opts...)
 			require.NoError(t, err)
 
 			presented, rec, issueErr := m.Issue(ctx, tc.principal, "nightly export",
@@ -143,7 +143,7 @@ func TestListRevealsNoSecret(t *testing.T) {
 
 	ctx := t.Context()
 
-	m, err := apikey.NewManager()
+	m, err := apikey.New()
 	require.NoError(t, err)
 
 	presented, _, err := m.Issue(ctx, "svc-billing", "nightly export", []string{"invoices:read"}, 0)
@@ -164,7 +164,7 @@ func TestIssuedScopesAreACopy(t *testing.T) {
 
 	ctx := t.Context()
 
-	m, err := apikey.NewManager()
+	m, err := apikey.New()
 	require.NoError(t, err)
 
 	scopes := []string{"invoices:read"}

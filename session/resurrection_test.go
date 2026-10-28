@@ -25,10 +25,10 @@ func TestSaveNeverRecreatesADeletedSession(t *testing.T) {
 
 	// Touch is load-then-save: exactly the path a live request takes, and the
 	// request holding this session has no way to know it was just revoked.
-	require.ErrorIs(t, m.Touch(ctx, s), session.ErrSessionNotFound,
+	require.ErrorIs(t, m.Touch(ctx, s), session.ErrNotFound,
 		"recording activity on a revoked session succeeded, so it wrote the session back")
 
 	_, err = m.Load(ctx, s.ID)
-	require.ErrorIs(t, err, session.ErrSessionNotFound,
+	require.ErrorIs(t, err, session.ErrNotFound,
 		"a revoked session came back to life through Touch")
 }

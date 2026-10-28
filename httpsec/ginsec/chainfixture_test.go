@@ -205,7 +205,7 @@ func authenticated(t *testing.T) ([]httpsec.Option, *session.Session) {
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	live, err := sessions.Create(t.Context(), "u-1")

@@ -153,7 +153,7 @@ func newRecoveryPostgresPool(t *testing.T) *pgxpool.Pool {
 // newRecoveryFixture builds a RecoveryFixture over a freshly migrated
 // database, and the session manager every recovery scenario's chain shares
 // with it.
-func newRecoveryFixture(t *testing.T) (*RecoveryFixture, *session.Manager) {
+func newRecoveryFixture(t *testing.T) (*RecoveryFixture, *session.Sessions) {
 	t.Helper()
 
 	pool := newRecoveryPostgresPool(t)
@@ -163,7 +163,7 @@ func newRecoveryFixture(t *testing.T) (*RecoveryFixture, *session.Manager) {
 	sessionStore, err := pgxstore.NewSessionStore(pool, cipher, pgxstore.WithClock(clk))
 	require.NoError(t, err)
 
-	sessions, err := session.NewManager(session.WithClock(clk), session.WithStore(sessionStore))
+	sessions, err := session.New(session.WithClock(clk), session.WithStore(sessionStore))
 	require.NoError(t, err)
 
 	codeStore, err := pgxstore.NewRecoveryCodeStore(pool)
@@ -1089,7 +1089,7 @@ func recoveryCancelEndpointCancelsAHeldRecovery() Scenario {
 // shares: a bearer-authenticated caller, saved codes enabled on the core, and
 // a password-change resolve endpoint to satisfy EnableAccountRecovery's
 // binding requirement, which the saved-code endpoints themselves never use.
-func recoveryCodesOptions(sessions *session.Manager, deps recovery.Deps, coreOpts []recovery.Option) []httpsec.Option {
+func recoveryCodesOptions(sessions *session.Sessions, deps recovery.Deps, coreOpts []recovery.Option) []httpsec.Option {
 	return []httpsec.Option{
 		httpsec.EnableBearerToken(httpsec.BearerTokenDeps{
 			Verifier: fixtureTokens{}, Sessions: sessions, Users: fixtureUsers{},

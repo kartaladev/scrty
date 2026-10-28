@@ -271,7 +271,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: one(`UPDATE "sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20`)},
 		{name: "session save of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
 			return s.sessions.Save(ctx, storefix.DurableSession("stmt-sid-gone", now))
-		}), assert: refused(session.ErrSessionNotFound, `UPDATE "sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20`)},
+		}), assert: refused(session.ErrNotFound, `UPDATE "sessions" SET "absolute_expires_at"=CASE WHEN superseded_at IS NULL THEN $1 ELSE absolute_expires_at END,"created_at"=$2,"data"=$3,"enrolment_generation"=$4,"enrolment_origin_deadline"=$5,"external_id_token"=$6,"external_issuer"=$7,"external_provider"=$8,"external_session_id"=$9,"federated_acr"=$10,"federated_amr"=$11,"first_factor"=$12,"idle_expires_at"=CASE WHEN superseded_at IS NULL THEN $13 ELSE idle_expires_at END,"last_accessed_at"=$14,"mfa_satisfied_at"=$15,"mfa_state"=$16,"password_change_pending"=$17,"recovered_at"=$18,"user_id"=$19 WHERE id_digest = $20`)},
 		{name: "session load", run: func(ctx context.Context, t *testing.T, seed, counted storeSet, started func()) error {
 			require.NoError(t, seed.sessions.Create(ctx, storefix.DurableSession("stmt-sid-load", now)))
 			started()
@@ -296,7 +296,7 @@ func TestStores_OneStatementPerOperation(t *testing.T) {
 		}, assert: one(sessionSuccessorPresentedStmt)},
 		{name: "session successor presented of a session that is gone", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.SuccessorPresented(ctx, "stmt-sid-successor-gone"))
-		}), assert: refused(session.ErrSessionNotFound, sessionSuccessorPresentedStmt)},
+		}), assert: refused(session.ErrNotFound, sessionSuccessorPresentedStmt)},
 		{name: "session delete by provider session", run: with(func(ctx context.Context, s storeSet) error {
 			return ignoring(s.sessions.DeleteByExternalSession(ctx, "https://idp.example", "stmt-ext"))
 		}), assert: one(`DELETE FROM "sessions" WHERE external_issuer = $1 AND external_session_id = $2 AND external_issuer <> '' AND external_session_id <> ''`)},

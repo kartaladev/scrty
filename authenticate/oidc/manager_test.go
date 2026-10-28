@@ -92,8 +92,8 @@ func TestNewManagerOptions(t *testing.T) {
 		name     string
 		registry *oidc.Registry
 		broker   oidc.IdentityBroker
-		opts     []oidc.ManagerOption
-		assert   func(t *testing.T, m *oidc.Manager, err error)
+		opts     []oidc.Option
+		assert   func(t *testing.T, m *oidc.RelyingParty, err error)
 	}
 
 	fixed := bytes.NewReader(bytes.Repeat([]byte{7}, 4096))
@@ -101,8 +101,8 @@ func TestNewManagerOptions(t *testing.T) {
 	flows := NewMockFlowStore(gomock.NewController(t))
 	logger := slog.New(slog.DiscardHandler)
 	epoch := time.Unix(0, 0)
-	refusedConfig := func(fragments ...string) func(t *testing.T, m *oidc.Manager, err error) {
-		return func(t *testing.T, m *oidc.Manager, err error) {
+	refusedConfig := func(fragments ...string) func(t *testing.T, m *oidc.RelyingParty, err error) {
+		return func(t *testing.T, m *oidc.RelyingParty, err error) {
 			require.ErrorIs(t, err, oidc.ErrConfig)
 			assert.Nil(t, m)
 			for _, f := range fragments {
@@ -113,7 +113,7 @@ func TestNewManagerOptions(t *testing.T) {
 
 	cases := []testCase{
 		{name: "defaults construct with no options", registry: reg, broker: stubBroker{},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 				assert.Equal(t, []string{"corp", "partner"}, m.Providers())
@@ -130,59 +130,59 @@ func TestNewManagerOptions(t *testing.T) {
 				assert.Equal(t, 10*time.Minute, oidc.DefaultFlowTTL)
 			}},
 		{name: "a zero flow TTL is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithFlowTTL(0)}, assert: refusedConfig("WithFlowTTL")},
+			opts: []oidc.Option{oidc.WithFlowTTL(0)}, assert: refusedConfig("WithFlowTTL")},
 		{name: "a negative flow TTL is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithFlowTTL(-time.Second)}, assert: refusedConfig("WithFlowTTL")},
+			opts: []oidc.Option{oidc.WithFlowTTL(-time.Second)}, assert: refusedConfig("WithFlowTTL")},
 		{name: "a negative clock skew is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClockSkew(-time.Second)}, assert: refusedConfig("WithClockSkew")},
+			opts: []oidc.Option{oidc.WithClockSkew(-time.Second)}, assert: refusedConfig("WithClockSkew")},
 		{name: "a zero clock skew is accepted", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClockSkew(0)},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			opts: []oidc.Option{oidc.WithClockSkew(0)},
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 			}},
 		{name: "a clock skew above 5 minutes is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClockSkew(5*time.Minute + time.Nanosecond)}, assert: refusedConfig("WithClockSkew")},
+			opts: []oidc.Option{oidc.WithClockSkew(5*time.Minute + time.Nanosecond)}, assert: refusedConfig("WithClockSkew")},
 		{name: "a clock skew of exactly 5 minutes is accepted", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClockSkew(5 * time.Minute)},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			opts: []oidc.Option{oidc.WithClockSkew(5 * time.Minute)},
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 			}},
 		{name: "a logout-token max age above one hour is refused", registry: reg, broker: stubBroker{},
-			opts:   []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(time.Hour + time.Nanosecond)},
+			opts:   []oidc.Option{oidc.WithLogoutTokenMaxAge(time.Hour + time.Nanosecond)},
 			assert: refusedConfig("WithLogoutTokenMaxAge")},
 		{name: "a logout-token max age of exactly one hour is accepted", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(time.Hour)},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			opts: []oidc.Option{oidc.WithLogoutTokenMaxAge(time.Hour)},
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
 			}},
 		{name: "a zero logout-token max age is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(0)}, assert: refusedConfig("WithLogoutTokenMaxAge")},
+			opts: []oidc.Option{oidc.WithLogoutTokenMaxAge(0)}, assert: refusedConfig("WithLogoutTokenMaxAge")},
 		{name: "a negative logout-token max age is refused", registry: reg, broker: stubBroker{},
-			opts:   []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(-time.Second)},
+			opts:   []oidc.Option{oidc.WithLogoutTokenMaxAge(-time.Second)},
 			assert: refusedConfig("WithLogoutTokenMaxAge")},
 		{name: "a nil registry is refused", registry: nil, broker: stubBroker{},
 			assert: refusedConfig("registry")},
 		{name: "a zero-value registry with no providers is refused", registry: &oidc.Registry{}, broker: stubBroker{},
 			assert: refusedConfig("registry")},
 		{name: "a missing broker is refused as a missing port", registry: reg, broker: nil,
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.ErrorIs(t, err, oidc.ErrConfig)
 				require.ErrorIs(t, err, identity.ErrMissingPort)
 				assert.Nil(t, m)
 			}},
 		{name: "a typed-nil broker is refused as a missing port", registry: reg, broker: typedNilBroker,
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.ErrorIs(t, err, oidc.ErrConfig)
 				require.ErrorIs(t, err, identity.ErrMissingPort)
 				assert.Nil(t, m)
 			}},
 		{name: "a typed-nil flow store is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithFlowStore(typedNilFlows)}, assert: refusedConfig("WithFlowStore")},
+			opts: []oidc.Option{oidc.WithFlowStore(typedNilFlows)}, assert: refusedConfig("WithFlowStore")},
 		{name: "a typed-nil random source is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithRandom(typedNilRandom)}, assert: refusedConfig("WithRandom")},
+			opts: []oidc.Option{oidc.WithRandom(typedNilRandom)}, assert: refusedConfig("WithRandom")},
 		{name: "an http issuer is refused with the default client", registry: httpIssuer, broker: stubBroker{},
 			assert: refusedConfig("corp", "issuer", "http")},
 		{name: "an http redirect URL is refused with the default client", registry: httpRedirect, broker: stubBroker{},
@@ -192,32 +192,32 @@ func TestNewManagerOptions(t *testing.T) {
 		{name: "an http pinned endpoint is refused with the default client", registry: httpPinned, broker: stubBroker{},
 			assert: refusedConfig("corp", "token endpoint", "http")},
 		{name: "an http issuer is accepted with a client allowing http", registry: httpIssuer, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithOutboundClient(allowHTTP)},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			opts: []oidc.Option{oidc.WithOutboundClient(allowHTTP)},
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
 		{name: "a nil outbound client is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithOutboundClient(nil)}, assert: refusedConfig("WithOutboundClient")},
+			opts: []oidc.Option{oidc.WithOutboundClient(nil)}, assert: refusedConfig("WithOutboundClient")},
 		{name: "a nil random source is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithRandom(nil)}, assert: refusedConfig("WithRandom")},
+			opts: []oidc.Option{oidc.WithRandom(nil)}, assert: refusedConfig("WithRandom")},
 		{name: "a nil clock is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClock(nil)}, assert: refusedConfig("WithClock")},
+			opts: []oidc.Option{oidc.WithClock(nil)}, assert: refusedConfig("WithClock")},
 		{name: "a typed-nil clock is refused like an untyped one", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClock((*nilClock)(nil))}, assert: refusedConfig("WithClock")},
+			opts: []oidc.Option{oidc.WithClock((*nilClock)(nil))}, assert: refusedConfig("WithClock")},
 		{name: "a consumer clock with only Now is accepted", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			opts: []oidc.Option{oidc.WithClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})},
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
 		{name: "a nil flow store is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithFlowStore(nil)}, assert: refusedConfig("WithFlowStore")},
+			opts: []oidc.Option{oidc.WithFlowStore(nil)}, assert: refusedConfig("WithFlowStore")},
 		{name: "a nil logger is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithLogger(nil)}, assert: refusedConfig("WithLogger")},
+			opts: []oidc.Option{oidc.WithLogger(nil)}, assert: refusedConfig("WithLogger")},
 		{name: "a nil option is ignored", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{nil},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			opts: []oidc.Option{nil},
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
@@ -226,13 +226,13 @@ func TestNewManagerOptions(t *testing.T) {
 			assert: refusedConfig("corpp")},
 		{name: "a broker option naming registered providers is accepted", registry: reg,
 			broker: scopedStubBroker{providers: []string{"partner", "corp"}},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
 		{name: "a link-backed, role-syncing broker is exposed", registry: reg,
 			broker: linkedStubBroker{links: links, roleSync: []string{"partner"}},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.Same(t, links, m.Links())
 				assert.Equal(t, []string{"partner"}, m.RoleSyncProviders())
@@ -241,7 +241,7 @@ func TestNewManagerOptions(t *testing.T) {
 			broker: linkedStubBroker{links: links, roleSync: []string{"corpp"}},
 			assert: refusedConfig("corpp")},
 		{name: "consumer replacements are accepted", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithRandom(fixed),
 				oidc.WithOutboundClient(client),
 				oidc.WithClock(clockwork.NewFakeClockAt(epoch)),
@@ -249,7 +249,7 @@ func TestNewManagerOptions(t *testing.T) {
 				oidc.WithLogger(logger),
 				oidc.WithFlowTTL(3 * time.Minute),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				w := oidc.WiringOf(m)
 				assert.Equal(t, 3*time.Minute, w.FlowTTL)
@@ -263,82 +263,82 @@ func TestNewManagerOptions(t *testing.T) {
 				// first consumed: discovery, Authorize, expiry.
 			}},
 		{name: "assurance for an unregistered provider is refused, naming it", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corpp", oidc.Assurance{AcceptedAMR: []string{"mfa"}}),
 			},
 			assert: refusedConfig("corpp")},
 		{name: "an empty accepted amr value is refused without repeating the others", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa-value-x", ""}}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				refusedConfig("corp", "AcceptedAMR")(t, m, err)
 				assert.NotContains(t, err.Error(), "mfa-value-x", "no configured value reaches error text")
 			}},
 		{name: "an empty accepted acr value is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedACR: []string{""}}),
 			},
 			assert: refusedConfig("corp", "AcceptedACR")},
 		{name: "an empty requested acr value is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"gold", ""}}),
 			},
 			assert: refusedConfig("corp", "RequestACR")},
 		{name: "a requested acr value containing a space is refused without repeating it", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"urn:corp:loa 2"}}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				refusedConfig("corp", "RequestACR")(t, m, err)
 				assert.NotContains(t, err.Error(), "urn:corp:loa 2", "no configured value reaches error text")
 			}},
 		{name: "a requested acr value containing a tab is refused without repeating it", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"a\tb"}}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				refusedConfig("corp", "RequestACR")(t, m, err)
 				assert.NotContains(t, err.Error(), "a\tb", "no configured value reaches error text")
 			}},
 		{name: "a requested acr value containing a newline is refused without repeating it", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"a\nb"}}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				refusedConfig("corp", "RequestACR")(t, m, err)
 				assert.NotContains(t, err.Error(), "a\nb", "no configured value reaches error text")
 			}},
 		{name: "an undefined match mode is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: 7}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				refusedConfig("corp", "Match")(t, m, err)
 				assert.NotContains(t, err.Error(), "7", "no configured value reaches error text")
 			}},
 		{name: "a negative match mode is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: -1}),
 			},
 			assert: refusedConfig("corp", "Match")},
 		{name: "requesting an acr while accepting none is valid", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"mfa"}, RequestACR: []string{"gold"}}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
 		{name: "a nil assurance evaluator is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithAssuranceEvaluator(nil)}, assert: refusedConfig("WithAssuranceEvaluator")},
+			opts: []oidc.Option{oidc.WithAssuranceEvaluator(nil)}, assert: refusedConfig("WithAssuranceEvaluator")},
 		{name: "a typed-nil assurance evaluator is refused", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{oidc.WithAssuranceEvaluator(typedNilEval)}, assert: refusedConfig("WithAssuranceEvaluator")},
+			opts: []oidc.Option{oidc.WithAssuranceEvaluator(typedNilEval)}, assert: refusedConfig("WithAssuranceEvaluator")},
 		{name: "configured with nothing accepted is valid", registry: reg, broker: stubBroker{},
-			opts: []oidc.ManagerOption{
+			opts: []oidc.Option{
 				oidc.WithProviderAssurance("corp", oidc.Assurance{}),
 			},
-			assert: func(t *testing.T, m *oidc.Manager, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
@@ -347,7 +347,7 @@ func TestNewManagerOptions(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m, err := oidc.NewManager(tc.registry, tc.broker, tc.opts...)
+			m, err := oidc.NewRelyingParty(tc.registry, tc.broker, tc.opts...)
 			tc.assert(t, m, err)
 		})
 	}
@@ -360,7 +360,7 @@ func TestManagerProvidersIsTheCallersCopy(t *testing.T) {
 
 	reg, err := oidc.NewRegistry(newTestProvider(t).Provider("corp"))
 	require.NoError(t, err)
-	m, err := oidc.NewManager(reg, stubBroker{})
+	m, err := oidc.NewRelyingParty(reg, stubBroker{})
 	require.NoError(t, err)
 
 	names := m.Providers()

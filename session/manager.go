@@ -18,7 +18,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// Manager mints sessions, holds them in a Store and enforces their two
+// Sessions mints sessions, holds them in a Store and enforces their two
 // deadlines: an idle one that activity extends and an absolute one that
 // nothing extends.
 //
@@ -36,10 +36,10 @@ import (
 // ErrSessionExpired, ErrSessionUnreadable — bare gets that same value back. A
 // consumer who wants the store's full error logs it inside their own Store.
 //
-// A Manager is safe for concurrent use as far as its store is: after
+// A Sessions is safe for concurrent use as far as its store is: after
 // construction it holds no mutable state of its own beyond the lock that
 // serialises Rotate.
-type Manager struct {
+type Sessions struct {
 	store           Store
 	idleTimeout     time.Duration
 	absoluteTimeout time.Duration
@@ -158,7 +158,7 @@ func (k *keyedMutex) lock(key string) func() {
 const perProcessWarning = "session: the default in-memory store keeps sessions in this process only, " +
 	"so a restart ends every session and a second replica does not see this one's"
 
-// NewManager returns a session manager.
+// New returns a session manager.
 //
 // A non-positive idle or absolute timeout is refused here rather than left to
 // be noticed at the first login: a zero idle timeout expires every session at
@@ -169,8 +169,8 @@ const perProcessWarning = "session: the default in-memory store keeps sessions i
 // a nil logger is ignored, because "do not log from this component" is a
 // reading a nil logger plainly has, while a nil clock has no reading other
 // than a mistake.
-func NewManager(opts ...ManagerOption) (*Manager, error) {
-	m := &Manager{
+func New(opts ...Option) (*Sessions, error) {
+	m := &Sessions{
 		idleTimeout:     defaultIdleTimeout,
 		absoluteTimeout: defaultAbsoluteTimeout,
 		clock:           clock.System(),
@@ -251,7 +251,7 @@ const identifierBytes = 32
 // source — a counter, the clock, a shorter read — would hand out an identifier
 // that looks exactly like a good one and can be guessed, and nothing later in
 // the request would notice.
-func (m *Manager) newIdentifier() (string, error) {
+func (m *Sessions) newIdentifier() (string, error) {
 	raw := make([]byte, identifierBytes)
 	if _, err := io.ReadFull(m.random, raw); err != nil {
 		return "", fmt.Errorf("session: reading %d random bytes for a session identifier: %w", identifierBytes, err)
@@ -276,7 +276,7 @@ func (m *Manager) newIdentifier() (string, error) {
 // leave a live session that has forgotten which factor established it or which
 // provider it came from. Options run after the creation time and deadlines are
 // set, so an option may read them, as WithSecondFactorAtLogin does.
-func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
+func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...CreateOption) (*Session, error) {
 	id, err := m.newIdentifier()
 	if err != nil {
 		return nil, err
@@ -362,12 +362,12 @@ func (m *Manager) Create(ctx context.Context, user identity.UserID, opts ...Crea
 // still logged at debug), because a session served with its first use
 // unrecorded could later be judged an unused successor and recovered; leave
 // recovery off to serve it.
-func (m *Manager) Load(ctx context.Context, id string) (*Session, error) {
+func (m *Sessions) Load(ctx context.Context, id string) (*Session, error) {
 	return m.load(ctx, id, forRequest)
 }
 
 // load is Load and LoadForRenewal, which differ only in p.
-func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, error) {
+func (m *Sessions) load(ctx context.Context, id string, p purpose) (*Session, error) {
 	s, err := m.loadStored(ctx, id, "session: the session could not be loaded")
 	if err != nil {
 		return nil, err
@@ -379,8 +379,8 @@ func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, err
 	}
 	if !s.superseded() && s.FirstPresentedAt.IsZero() {
 		if err := m.markPresented(ctx, s, now); err != nil {
-			if m.unusedSuccessorRecovery && !errors.Is(err, ErrSessionSuperseded) &&
-				!errors.Is(err, ErrSessionNotFound) {
+			if m.unusedSuccessorRecovery && !errors.Is(err, ErrSuperseded) &&
+				!errors.Is(err, ErrNotFound) {
 				return nil, storeFailed(err, "session: the session's first presentation could not be recorded")
 			}
 
@@ -395,13 +395,13 @@ func (m *Manager) load(ctx context.Context, id string, p purpose) (*Session, err
 // that answers with neither a session nor an error is read as ErrSessionNotFound,
 // so no caller dereferences it; any other failure is a store failure carrying
 // text.
-func (m *Manager) loadStored(ctx context.Context, id, text string) (*Session, error) {
+func (m *Sessions) loadStored(ctx context.Context, id, text string) (*Session, error) {
 	s, err := m.store.Load(ctx, id)
 	if err != nil {
 		return nil, storeFailed(err, text)
 	}
 	if s == nil {
-		return nil, ErrSessionNotFound
+		return nil, ErrNotFound
 	}
 
 	return s, nil
@@ -430,9 +430,9 @@ func (m *Manager) loadStored(ctx context.Context, id, text string) (*Session, er
 // read was judged: a recovery committed in between supersedes with a window
 // ending at its own, later, time, which the earlier time would read as still
 // open.
-func (m *Manager) reloadSuperseded(ctx context.Context, id string, p purpose, err error) (*Session, error) {
-	if errors.Is(err, ErrSessionNotFound) {
-		return nil, ErrSessionNotFound
+func (m *Sessions) reloadSuperseded(ctx context.Context, id string, p purpose, err error) (*Session, error) {
+	if errors.Is(err, ErrNotFound) {
+		return nil, ErrNotFound
 	}
 
 	again, err := m.loadStored(ctx, id, "session: the session could not be loaded")
@@ -451,12 +451,12 @@ func (m *Manager) reloadSuperseded(ctx context.Context, id string, p purpose, er
 // the session again (reloadSuperseded). A failure other than
 // ErrSessionSuperseded and ErrSessionNotFound is logged first at debug, with
 // the store's text left out.
-func (m *Manager) markPresented(ctx context.Context, s *Session, now time.Time) error {
+func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time) error {
 	err := m.store.MarkPresented(ctx, s.ID, now)
 	switch {
 	case err == nil:
 		s.FirstPresentedAt = now
-	case errors.Is(err, ErrSessionSuperseded), errors.Is(err, ErrSessionNotFound):
+	case errors.Is(err, ErrSuperseded), errors.Is(err, ErrNotFound):
 		return err
 	default:
 		m.logger.LogAttrs(ctx, slog.LevelDebug, "session: the session's first presentation could not be recorded",
@@ -491,10 +491,10 @@ func (m *Manager) markPresented(ctx context.Context, s *Session, now time.Time) 
 // Activity on a session that is already past either deadline is refused with
 // ErrSessionExpired and nothing is written: an expired session is not one a
 // request can revive by being made.
-func (m *Manager) Touch(ctx context.Context, s *Session) error {
+func (m *Sessions) Touch(ctx context.Context, s *Session) error {
 	now := m.clock.Now()
 	if s.expired(now) {
-		return ErrSessionExpired
+		return ErrExpired
 	}
 
 	if s.superseded() || m.touchInterval > 0 && now.Sub(s.LastAccessedAt) < m.touchInterval {
@@ -516,18 +516,18 @@ func (m *Manager) Touch(ctx context.Context, s *Session) error {
 
 // Save persists changes made to s, and never re-creates a session that has
 // been deleted: a session that is no longer stored is ErrSessionNotFound.
-func (m *Manager) Save(ctx context.Context, s *Session) error {
+func (m *Sessions) Save(ctx context.Context, s *Session) error {
 	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }
 
 // Delete removes the session with this identifier.
-func (m *Manager) Delete(ctx context.Context, id string) error {
+func (m *Sessions) Delete(ctx context.Context, id string) error {
 	return storeFailed(m.store.Delete(ctx, id), "session: the session could not be deleted")
 }
 
 // DeleteByUser removes every session of this user, expired ones included: a
 // caller ending a user's sessions wants them gone, not filtered.
-func (m *Manager) DeleteByUser(ctx context.Context, user identity.UserID) error {
+func (m *Sessions) DeleteByUser(ctx context.Context, user identity.UserID) error {
 	return storeFailed(m.store.DeleteByUser(ctx, user), "session: the user's sessions could not be deleted")
 }
 
@@ -540,7 +540,7 @@ func (m *Manager) DeleteByUser(ctx context.Context, user identity.UserID) error 
 //
 // A keep naming another user's session, or none, is left untouched and every
 // session of this user goes; an empty keep ends them all.
-func (m *Manager) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
+func (m *Sessions) DeleteByUserExcept(ctx context.Context, user identity.UserID, keep string) (int, error) {
 	n, err := m.store.DeleteByUserExcept(ctx, user, keep)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's other sessions could not be deleted")
@@ -552,7 +552,7 @@ func (m *Manager) DeleteByUserExcept(ctx context.Context, user identity.UserID, 
 // CountActiveByUser counts this user's unexpired sessions, which is what a
 // concurrent-session limit is written against. A superseded session is not
 // counted, so a renewed sign-in counts once however often it is renewed.
-func (m *Manager) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
+func (m *Sessions) CountActiveByUser(ctx context.Context, user identity.UserID) (int, error) {
 	n, err := m.store.CountActiveByUser(ctx, user)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's active sessions could not be counted")
@@ -562,7 +562,7 @@ func (m *Manager) CountActiveByUser(ctx context.Context, user identity.UserID) (
 }
 
 // DeleteExpired removes every expired session and reports how many went.
-func (m *Manager) DeleteExpired(ctx context.Context) (int, error) {
+func (m *Sessions) DeleteExpired(ctx context.Context) (int, error) {
 	n, err := m.store.DeleteExpired(ctx)
 	if err != nil {
 		return n, storeFailed(err, "session: expired sessions could not be deleted")
@@ -577,7 +577,7 @@ func (m *Manager) DeleteExpired(ctx context.Context) (int, error) {
 //
 // An empty issuer or an empty session identifier ends nothing and is not an
 // error.
-func (m *Manager) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
+func (m *Sessions) DeleteByExternalSession(ctx context.Context, issuer, sessionID string) (int, error) {
 	n, err := m.store.DeleteByExternalSession(ctx, issuer, sessionID)
 	if err != nil {
 		return n, storeFailed(err, "session: the provider session's sessions could not be deleted")
@@ -588,7 +588,7 @@ func (m *Manager) DeleteByExternalSession(ctx context.Context, issuer, sessionID
 
 // DeleteByUserAndExternalIssuer ends this user's sessions from this issuer,
 // and reports how many went. An empty issuer ends nothing and is not an error.
-func (m *Manager) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
+func (m *Sessions) DeleteByUserAndExternalIssuer(ctx context.Context, user identity.UserID, issuer string) (int, error) {
 	n, err := m.store.DeleteByUserAndExternalIssuer(ctx, user, issuer)
 	if err != nil {
 		return n, storeFailed(err, "session: the user's sessions from the issuer could not be deleted")
@@ -602,7 +602,7 @@ func (m *Manager) DeleteByUserAndExternalIssuer(ctx context.Context, user identi
 // issue through rotation and renewal, so this ends that sign-in without
 // touching the user's sessions from other sign-ins. An unknown family ends
 // nothing and is not an error.
-func (m *Manager) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
+func (m *Sessions) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
 	if family.IsZero() {
 		return 0, errors.New("session: the nil family names no sessions to revoke")
 	}
@@ -617,7 +617,7 @@ func (m *Manager) RevokeFamily(ctx context.Context, family id.ID) (int, error) {
 
 // familyEnd is the latest time s's family could still be live under this
 // manager: its start plus the family maximum.
-func (m *Manager) familyEnd(s *Session) time.Time {
+func (m *Sessions) familyEnd(s *Session) time.Time {
 	return s.FamilyCreatedAt.Add(m.maxFamilyLifetime)
 }
 
@@ -628,7 +628,7 @@ func (m *Manager) familyEnd(s *Session) time.Time {
 // still judged as superseded, not expired, while the family lives. The other
 // two keep a family maximum lowered by a deploy from shortening a record
 // issued under the old one, inside its own window included.
-func (m *Manager) retainUntil(s *Session, acceptUntil time.Time) time.Time {
+func (m *Sessions) retainUntil(s *Session, acceptUntil time.Time) time.Time {
 	return laterTime(laterTime(m.familyEnd(s), s.AbsoluteExpiresAt), acceptUntil)
 }
 
@@ -643,11 +643,11 @@ func laterTime(a, b time.Time) time.Time {
 
 // IdleTimeout reports how long a session survives with no activity, which is
 // what WithIdleTimeout configured.
-func (m *Manager) IdleTimeout() time.Duration { return m.idleTimeout }
+func (m *Sessions) IdleTimeout() time.Duration { return m.idleTimeout }
 
 // AbsoluteTimeout reports the deadline nothing extends, which is what
 // WithAbsoluteTimeout configured.
-func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
+func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 
 // Rotate moves s to a new identifier and returns it under that identifier.
 //
@@ -711,7 +711,7 @@ func (m *Manager) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // reuse.
 //
 // s is not modified. The returned session is the one to use.
-func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
+func (m *Sessions) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	if s == nil {
 		return nil, fmt.Errorf("session: rotate was given no session")
 	}
@@ -725,7 +725,7 @@ func (m *Manager) Rotate(ctx context.Context, s *Session) (*Session, error) {
 	}
 	now := m.clock.Now()
 	if stored.superseded() && stored.insideWindow(now) {
-		return nil, ErrSessionRenewalConflict
+		return nil, ErrRenewalConflict
 	}
 	if err := m.judge(ctx, stored, now, forRequest); err != nil {
 		return nil, err

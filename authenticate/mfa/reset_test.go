@@ -434,7 +434,7 @@ func TestResetEnrolmentEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	enrolConfirmed(t, store, "u-1", []byte("12345678901234567890"))
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	first, err := sessions.Create(ctx, "u-1")
@@ -463,7 +463,7 @@ func TestResetEnrolmentEndToEnd(t *testing.T) {
 
 	for _, s := range []*session.Session{first, second} {
 		_, err := sessions.Load(ctx, s.ID)
-		require.ErrorIs(t, err, session.ErrSessionNotFound, "no session of the user loads")
+		require.ErrorIs(t, err, session.ErrNotFound, "no session of the user loads")
 	}
 
 	select {

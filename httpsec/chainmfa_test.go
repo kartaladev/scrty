@@ -20,7 +20,7 @@ import (
 func mfaChallengingEngine(t *testing.T) *policy.Engine {
 	t.Helper()
 
-	p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleLookup(t)})
+	p, err := policy.NewMFA([]policy.MFAMethodLookup{idleLookup(t)})
 	require.NoError(t, err)
 
 	return engineOf(t, p)
@@ -49,7 +49,7 @@ func idleLookup(t *testing.T) *MockMFAMethodLookup {
 func passwordChangeChallengingEngine(t *testing.T) *policy.Engine {
 	t.Helper()
 
-	p, err := policy.NewPasswordAgePolicy()
+	p, err := policy.NewPasswordAge()
 	require.NoError(t, err)
 
 	return engineOf(t, p)
@@ -61,7 +61,7 @@ func passwordChangeChallengingEngine(t *testing.T) *policy.Engine {
 func passwordChangeGateFor(t *testing.T) httpsec.Option {
 	t.Helper()
 
-	m, err := session.NewManager()
+	m, err := session.New()
 	require.NoError(t, err)
 
 	return httpsec.EnablePasswordChangeGate(m)
@@ -72,7 +72,7 @@ func passwordChangeGateFor(t *testing.T) httpsec.Option {
 func chainSessions(t *testing.T) httpsec.Option {
 	t.Helper()
 
-	m, err := session.NewManager()
+	m, err := session.New()
 	require.NoError(t, err)
 
 	return httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: m})

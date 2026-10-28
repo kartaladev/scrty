@@ -285,7 +285,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 	passwordAge := func(t *testing.T) policy.Policy {
 		t.Helper()
 
-		p, err := policy.NewPasswordAgePolicy()
+		p, err := policy.NewPasswordAge()
 		require.NoError(t, err)
 
 		return p
@@ -294,7 +294,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 	enrolmentPath := func(t *testing.T) policy.Policy {
 		t.Helper()
 
-		p, err := policy.NewMFARequirementPolicy(
+		p, err := policy.NewMFARequirement(
 			everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{idleLookup(t)}},
 			policy.WithMFAEnrolmentPath())
 		require.NoError(t, err)
@@ -342,7 +342,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 			opts: func(t *testing.T) []httpsec.Option {
 				t.Helper()
 
-				m, err := session.NewManager()
+				m, err := session.New()
 				require.NoError(t, err)
 
 				return []httpsec.Option{httpsec.EnablePasswordChangeGate(m)}
@@ -354,7 +354,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 			policies: func(t *testing.T) []policy.Policy {
 				t.Helper()
 
-				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleLookup(t)})
+				p, err := policy.NewMFA([]policy.MFAMethodLookup{idleLookup(t)})
 				require.NoError(t, err)
 
 				return []policy.Policy{p}
@@ -403,7 +403,7 @@ func TestUnenforcedChallenges(t *testing.T) {
 			policies: func(t *testing.T) []policy.Policy {
 				t.Helper()
 
-				p, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{idleLookup(t)})
+				p, err := policy.NewMFA([]policy.MFAMethodLookup{idleLookup(t)})
 				require.NoError(t, err)
 
 				return []policy.Policy{p}

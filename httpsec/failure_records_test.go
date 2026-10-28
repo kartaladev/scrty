@@ -284,7 +284,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				h := newOIDCHarness(t)
 
 				users := NewMockUserLoader(gomock.NewController(t))
-				handoffs, err := oidc.NewHandoffManager(
+				handoffs, err := oidc.NewHandoff(
 					failingHandoffStore{err: errFixtureFailure}, users)
 				require.NoError(t, err)
 
@@ -410,7 +410,7 @@ func TestHTTPSecFailureRecords(t *testing.T) {
 				h := newAuthHarness(t)
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).
-					Return(nil, fmt.Errorf("%w: %w", session.ErrSessionUnreadable, errFixtureFailure))
+					Return(nil, fmt.Errorf("%w: %w", session.ErrUnreadable, errFixtureFailure))
 
 				chain, err := httpsec.New(
 					httpsec.WithLogger(h.logger()),

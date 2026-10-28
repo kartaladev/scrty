@@ -21,12 +21,12 @@ import (
 // further records for the same key.
 const refusalLogInterval = time.Minute
 
-// Manager drives OpenID Connect logins against the providers of a Registry:
+// RelyingParty drives OpenID Connect logins against the providers of a Registry:
 // discovery, authorization, the callback and token verification. It resolves
 // verified identities through an IdentityBroker and creates no session itself.
 //
-// Build one with NewManager. A Manager is safe for concurrent use.
-type Manager struct {
+// Build one with NewManager. A RelyingParty is safe for concurrent use.
+type RelyingParty struct {
 	registry *Registry
 	out      *outbound.Client
 	random   io.Reader
@@ -64,7 +64,7 @@ type linkBacked interface{ Links() LinkStore }
 // roleSyncing is implemented by a broker that can sync roles per provider.
 type roleSyncing interface{ RoleSyncProviders() []string }
 
-// NewManager returns a manager for the registry's providers that resolves
+// NewRelyingParty returns a manager for the registry's providers that resolves
 // identities through broker.
 //
 // Both are required: a manager with no provider or no way to resolve an
@@ -106,7 +106,7 @@ type roleSyncing interface{ RoleSyncProviders() []string }
 // protocol-failure text (token verification, provider discovery, key-set
 // retrieval and the token endpoint's response), and — in the broker's
 // identity-linking records — the email_domain of the identity being linked.
-func NewManager(registry *Registry, broker IdentityBroker, opts ...ManagerOption) (*Manager, error) {
+func NewRelyingParty(registry *Registry, broker IdentityBroker, opts ...Option) (*RelyingParty, error) {
 	if registry == nil || len(registry.names) == 0 {
 		return nil, fmt.Errorf("%w: a provider registry built by NewRegistry is required", ErrConfig)
 	}
@@ -114,7 +114,7 @@ func NewManager(registry *Registry, broker IdentityBroker, opts ...ManagerOption
 		return nil, fmt.Errorf("%w: %w", ErrConfig, identity.MissingPort("identity broker"))
 	}
 
-	m := &Manager{registry: registry, broker: broker}
+	m := &RelyingParty{registry: registry, broker: broker}
 	for _, opt := range opts {
 		if opt == nil {
 			continue
@@ -185,7 +185,7 @@ func NewManager(registry *Registry, broker IdentityBroker, opts ...ManagerOption
 // absolute; the redirect URL and the post-logout redirect are checked too,
 // although the client never fetches them, so that plain-text redirects need
 // the same deliberate opt-in.
-func (m *Manager) checkSchemes() error {
+func (m *RelyingParty) checkSchemes() error {
 	for _, name := range m.registry.Names() {
 		p, _ := m.registry.Lookup(name)
 		urls := []struct{ field, value string }{
@@ -222,7 +222,7 @@ func (m *Manager) checkSchemes() error {
 
 // checkBrokerProviders refuses a broker whose configuration names a provider
 // the registry lacks, which would otherwise never apply and never say so.
-func (m *Manager) checkBrokerProviders() error {
+func (m *RelyingParty) checkBrokerProviders() error {
 	var named []string
 	if s, ok := m.broker.(providerScoped); ok {
 		named = append(named, s.ConfiguredProviders()...)
@@ -240,7 +240,7 @@ func (m *Manager) checkBrokerProviders() error {
 }
 
 // reportSuppressed writes the count of refusal records the sampler held back.
-func (m *Manager) reportSuppressed(key string, suppressed int) {
+func (m *RelyingParty) reportSuppressed(key string, suppressed int) {
 	m.log.LogAttrs(context.Background(), slog.LevelInfo, "oidc refusals suppressed",
 		slog.String("reason", key),
 		slog.Int("suppressed", suppressed))
@@ -256,7 +256,7 @@ func (m *Manager) reportSuppressed(key string, suppressed int) {
 // flight, and safe to call more than once: a second flush with nothing new
 // pending reports nothing. Call it directly, or let
 // httpsec.Chain.FlushRefusalLogs reach it through EnableOIDCLogin.
-func (m *Manager) FlushRefusalLogs() error {
+func (m *RelyingParty) FlushRefusalLogs() error {
 	m.sampler.Flush()
 
 	if f, ok := m.broker.(interface{ FlushRefusalLogs() error }); ok {
@@ -268,11 +268,11 @@ func (m *Manager) FlushRefusalLogs() error {
 
 // Providers returns the registered provider names in registration order. The
 // returned slice is the caller's own.
-func (m *Manager) Providers() []string { return m.registry.Names() }
+func (m *RelyingParty) Providers() []string { return m.registry.Names() }
 
 // Links returns the link store the broker resolves identities through, or nil
 // when the broker is not backed by one.
-func (m *Manager) Links() LinkStore {
+func (m *RelyingParty) Links() LinkStore {
 	if l, ok := m.broker.(linkBacked); ok {
 		return l.Links()
 	}
@@ -281,7 +281,7 @@ func (m *Manager) Links() LinkStore {
 
 // RoleSyncProviders returns the providers the broker syncs roles for, or nil
 // when the broker does not sync roles. The returned slice is the caller's own.
-func (m *Manager) RoleSyncProviders() []string {
+func (m *RelyingParty) RoleSyncProviders() []string {
 	if r, ok := m.broker.(roleSyncing); ok {
 		return slices.Clone(r.RoleSyncProviders())
 	}
@@ -296,6 +296,6 @@ func (m *Manager) RoleSyncProviders() []string {
 // flows, so there is no window to wait out, and a flow that has not yet expired
 // is never deleted. A flow store error is returned with whatever count the
 // store reported. FlowExpiryTask wraps it as a task.
-func (m *Manager) PurgeExpiredFlows(ctx context.Context) (int, error) {
+func (m *RelyingParty) PurgeExpiredFlows(ctx context.Context) (int, error) {
 	return m.flows.DeleteExpired(ctx, m.clock.Now())
 }

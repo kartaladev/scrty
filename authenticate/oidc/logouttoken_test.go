@@ -60,9 +60,9 @@ func TestVerifyLogoutToken(t *testing.T) {
 	type testCase struct {
 		name     string
 		provider string
-		opts     []oidc.ManagerOption
+		opts     []oidc.Option
 		setup    func(p *testProvider)
-		before   func(t *testing.T, m *oidc.Manager, raw string)
+		before   func(t *testing.T, m *oidc.RelyingParty, raw string)
 		token    func(t *testing.T, p *testProvider) string
 		ctx      func(ctx context.Context) context.Context
 		assert   func(t *testing.T, p *testProvider, got oidc.LogoutClaims, err error)
@@ -114,7 +114,7 @@ func TestVerifyLogoutToken(t *testing.T) {
 			}, "custom", "ignored")),
 			assert: accepted("subject-1", "provider-session")},
 		{name: "a consumer max age of 10 minutes accepts a 5-minute-old token",
-			opts:   []oidc.ManagerOption{oidc.WithLogoutTokenMaxAge(10 * time.Minute)},
+			opts:   []oidc.Option{oidc.WithLogoutTokenMaxAge(10 * time.Minute)},
 			token:  signed(claimsEdit("iat", now.Add(-5*time.Minute).Unix())),
 			assert: accepted("subject-1", "provider-session")},
 		{name: "an unexpired exp is accepted",
@@ -127,7 +127,7 @@ func TestVerifyLogoutToken(t *testing.T) {
 			token:  signed(claimsEdit("iat", now.Add(oidc.DefaultClockSkew).Unix())),
 			assert: accepted("subject-1", "provider-session")},
 		{name: "the same token is accepted again inside the window, since no jti is recorded",
-			before: func(t *testing.T, m *oidc.Manager, raw string) {
+			before: func(t *testing.T, m *oidc.RelyingParty, raw string) {
 				_, err := m.VerifyLogoutToken(t.Context(), "corp", raw)
 				require.NoError(t, err)
 			},
@@ -246,11 +246,11 @@ func TestVerifyLogoutToken(t *testing.T) {
 			}
 			reg, err := oidc.NewRegistry(p.Provider("corp"))
 			require.NoError(t, err)
-			opts := append([]oidc.ManagerOption{
+			opts := append([]oidc.Option{
 				oidc.WithOutboundClient(p.Outbound(t)),
 				oidc.WithClock(clockwork.NewFakeClockAt(now)),
 			}, tc.opts...)
-			m, err := oidc.NewManager(reg, stubBroker{}, opts...)
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, opts...)
 			require.NoError(t, err)
 
 			provider := tc.provider

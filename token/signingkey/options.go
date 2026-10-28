@@ -19,7 +19,7 @@ var ErrConfig = errors.New("signingkey: invalid configuration")
 
 // Option configures a KeyManager. Every default NewKeyManager applies has an
 // Option here that replaces it.
-type Option func(*KeyManager)
+type Option func(*Keys)
 
 // WithAlgs sets the algorithms a current key is kept for. Default: RS256 only.
 // Supported: RS256, ES256 and EdDSA; anything else fails construction.
@@ -29,33 +29,33 @@ type Option func(*KeyManager)
 // configuration after construction validated it, and rotation would go on
 // minting for whatever it had become.
 func WithAlgs(algs ...Alg) Option {
-	return func(km *KeyManager) { km.algs = slices.Clone(algs) }
+	return func(km *Keys) { km.algs = slices.Clone(algs) }
 }
 
 // WithLifetime sets how long a key stays published after it was created.
 // Default: 24h. It must be longer than the rotation interval, or a key would
 // stop being published while tokens it signed are still valid.
 func WithLifetime(d time.Duration) Option {
-	return func(km *KeyManager) { km.lifetime = d }
+	return func(km *Keys) { km.lifetime = d }
 }
 
 // WithRotateInterval sets how often a new key is minted for every configured
 // algorithm. Default: 1h.
 func WithRotateInterval(d time.Duration) Option {
-	return func(km *KeyManager) { km.rotateEvery = d }
+	return func(km *Keys) { km.rotateEvery = d }
 }
 
 // WithHousekeepingInterval sets how often keys past their lifetime stop being
 // published. Default: 1h.
 func WithHousekeepingInterval(d time.Duration) Option {
-	return func(km *KeyManager) { km.housekeepEvery = d }
+	return func(km *Keys) { km.housekeepEvery = d }
 }
 
 // WithReloadInterval sets how often the store is reloaded, which is how
 // replicas sharing a store see each other's keys. Default: 1m. It must be
 // shorter than the rotation interval, or a replica would miss a rotation.
 func WithReloadInterval(d time.Duration) Option {
-	return func(km *KeyManager) { km.reloadEvery = d }
+	return func(km *Keys) { km.reloadEvery = d }
 }
 
 // WithLogSampleWindow sets how long one written record about a rotation or
@@ -70,13 +70,13 @@ func WithReloadInterval(d time.Duration) Option {
 //
 // The error hook is never sampled: every failure reaches it.
 func WithLogSampleWindow(d time.Duration) Option {
-	return func(km *KeyManager) { km.sampleWindow = d }
+	return func(km *Keys) { km.sampleWindow = d }
 }
 
 // WithKeyStore sets where keys are persisted. Default: NewInMemoryKeyStore,
 // which does not survive a restart.
 func WithKeyStore(store KeyStore) Option {
-	return func(km *KeyManager) { km.store = store }
+	return func(km *Keys) { km.store = store }
 }
 
 // WithClock sets the time source. Default: clock.System().
@@ -97,7 +97,7 @@ func WithKeyStore(store KeyStore) Option {
 // A nil clock, typed nil included, is a configuration error from
 // NewKeyManager.
 func WithClock(clk clock.Timed) Option {
-	return func(km *KeyManager) { km.clock = clk }
+	return func(km *Keys) { km.clock = clk }
 }
 
 // WithLogger sets where rotation and reload failures are logged. Default:
@@ -108,7 +108,7 @@ func WithClock(clk clock.Timed) Option {
 // writing, and one that calls Start or Stop deadlocks the manager. A handler
 // that panics takes the loop down with it.
 func WithLogger(logger *slog.Logger) Option {
-	return func(km *KeyManager) { km.logger = logger }
+	return func(km *Keys) { km.logger = logger }
 }
 
 // WithErrorHook sets a function called with every rotation and reload failure.
@@ -141,12 +141,12 @@ func WithLogger(logger *slog.Logger) Option {
 // VerificationKeys, SupportedAlgs, KeyLifetime and RotateInterval. The manager
 // never holds the keyring lock across the hook.
 func WithErrorHook(hook func(error)) Option {
-	return func(km *KeyManager) { km.errorHook = hook }
+	return func(km *Keys) { km.errorHook = hook }
 }
 
 // validate reports a configuration that cannot work, so a wiring mistake fails
 // at construction rather than at the first rotation.
-func (km *KeyManager) validate() error {
+func (km *Keys) validate() error {
 	// A nil port is caught here rather than at first use: a nil store or
 	// clock would panic during construction, and a nil logger would panic in
 	// a background loop at the first failure it tried to report.

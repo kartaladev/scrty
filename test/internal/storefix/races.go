@@ -156,7 +156,7 @@ func ChargeRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 			e, ok, err := s.Get(ctx, user)
 			require.NoError(t, err)
 			require.True(t, ok, "the enrolment of %q must be present after the race", user)
-			assert.Equal(t, mfa.MaxEmailCodeFailures, e.EmailCodeAttempts,
+			assert.Equal(t, mfa.MaxEmailCodeAttempts, e.EmailCodeAttempts,
 				"%q: EmailCodeAttempts after the race must be the cap", user)
 			assert.Equal(t, []byte(RaceEmailCode), e.EmailCode,
 				"%q: EmailCode must still be stored after the race", user)

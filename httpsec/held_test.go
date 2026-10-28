@@ -130,7 +130,7 @@ func TestHeld(t *testing.T) {
 				}
 			}
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
 			// No Authenticate expectation: the password is never checked while

@@ -55,19 +55,19 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwt"
 )
 
-// ErrTokenInvalid identifies every rejection of a token. The specific cause is
-// wrapped, so errors.Is(err, ErrTokenInvalid) answers "was this token
+// ErrInvalid identifies every rejection of a token. The specific cause is
+// wrapped, so errors.Is(err, ErrInvalid) answers "was this token
 // refused?" while the wrapped error says why.
 //
 // A failure to obtain the key set, and a context cancelled before the check
 // finished, are not rejections: each is returned as itself and deliberately
-// does not match ErrTokenInvalid, so an outage is never reported as a failed
+// does not match ErrInvalid, so an outage is never reported as a failed
 // authentication.
 //
-// Nothing on the issue path matches it either. ErrTokenInvalid is the verdict
+// Nothing on the issue path matches it either. ErrInvalid is the verdict
 // on a token a caller presented, and issuing has no such token: a consumer who
 // maps it to "credential refused" must never see it from Generate.
-var ErrTokenInvalid = errors.New("token: invalid")
+var ErrInvalid = errors.New("token: invalid")
 
 // ErrNoSubject reports that Generate was handed a principal with no username,
 // so there is no subject to name. identity.Principal is a plain struct, so a

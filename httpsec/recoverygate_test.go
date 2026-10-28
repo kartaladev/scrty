@@ -388,7 +388,7 @@ func TestRecoveryGatePerRequestPhase(t *testing.T) {
 
 			clk := clockwork.NewFakeClockAt(time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC))
 
-			sessions, err := session.NewManager(session.WithClock(clk),
+			sessions, err := session.New(session.WithClock(clk),
 				session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 			require.NoError(t, err)
 

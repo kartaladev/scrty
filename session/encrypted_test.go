@@ -268,8 +268,8 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 		require.NoError(t, err)
 
 		loaded, err := current.Load(t.Context(), "rotated")
-		require.ErrorIs(t, err, session.ErrSessionUnreadable)
-		assert.NotErrorIs(t, err, session.ErrSessionNotFound,
+		require.ErrorIs(t, err, session.ErrUnreadable)
+		assert.NotErrorIs(t, err, session.ErrNotFound,
 			"a retired-key mistake was hidden as a missing session")
 		assert.Nil(t, loaded, "a session came back with its token blanked instead of an error")
 	})
@@ -294,7 +294,7 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 		require.NoError(t, inner.Save(t.Context(), moved))
 
 		loaded, err := sealing.Load(t.Context(), "session-b")
-		require.ErrorIs(t, err, session.ErrSessionUnreadable,
+		require.ErrorIs(t, err, session.ErrUnreadable,
 			"a sealed ID token opened under a session it was not sealed for")
 		assert.Nil(t, loaded)
 	})
@@ -314,7 +314,7 @@ func TestEncryptedStoreCopiesAndFailures(t *testing.T) {
 		require.NoError(t, inner.Save(t.Context(), stored))
 
 		_, err = sealing.Load(t.Context(), "not-base64")
-		require.ErrorIs(t, err, session.ErrSessionUnreadable)
+		require.ErrorIs(t, err, session.ErrUnreadable)
 	})
 
 	t.Run("loading issues no write", func(t *testing.T) {

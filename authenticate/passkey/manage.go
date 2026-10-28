@@ -42,7 +42,7 @@ type Summary struct {
 // first. A store failure is an error, never an empty list.
 //
 // It admits no session: the caller serves it to full sessions only.
-func (m *Manager) List(ctx context.Context, user identity.UserID) ([]Summary, error) {
+func (m *Passkeys) List(ctx context.Context, user identity.UserID) ([]Summary, error) {
 	all, err := m.credentials.List(ctx, user)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")
@@ -80,13 +80,13 @@ func (m *Manager) List(ctx context.Context, user identity.UserID) ([]Summary, er
 // A cid that names no passkey of user — another user's, or none — is
 // ErrNotFound, and nothing changes. Renaming changes no authenticator, so it
 // admits no session: the caller serves it to full sessions only.
-func (m *Manager) Rename(ctx context.Context, user identity.UserID, cid id.ID, name string) error {
+func (m *Passkeys) Rename(ctx context.Context, user identity.UserID, cid id.ID, name string) error {
 	c, err := m.findOwn(ctx, user, cid)
 	if err != nil {
 		return err
 	}
 
-	renamed, err := m.credentials.Rename(ctx, user, cid, NormaliseName(name, c.CreatedAt))
+	renamed, err := m.credentials.Rename(ctx, user, cid, NormalizeName(name, c.CreatedAt))
 	if err != nil {
 		return diag.Wrap(err, "passkey: could not rename the passkey")
 	}
@@ -135,7 +135,7 @@ func (m *Manager) Rename(ctx context.Context, user identity.UserID, cid id.ID, n
 //
 // Removing a passwordless user's last active passkey leaves them only account
 // recovery to sign in with.
-func (m *Manager) Remove(
+func (m *Passkeys) Remove(
 	ctx context.Context, s *session.Session, cid id.ID, rc RegistrationContext, opts ...RemoveOption,
 ) error {
 	if err := ctx.Err(); err != nil {
@@ -186,7 +186,7 @@ func (m *Manager) Remove(
 // its assertion after the delete is refused. It runs under a context the
 // caller cannot cancel, and its failure is logged and does not undo the
 // removal.
-func (m *Manager) endOtherSessionsAgain(ctx context.Context, s *session.Session, cid id.ID) {
+func (m *Passkeys) endOtherSessionsAgain(ctx context.Context, s *session.Session, cid id.ID) {
 	ctx = context.WithoutCancel(ctx)
 
 	if _, err := m.sessions.DeleteByUserExcept(ctx, s.UserID, s.ID); err != nil {
@@ -197,7 +197,7 @@ func (m *Manager) endOtherSessionsAgain(ctx context.Context, s *session.Session,
 
 // admitRemoval admits only a full session, by admit's rule for one: a
 // confined session, which admit lets register, may not remove.
-func (m *Manager) admitRemoval(ctx context.Context, s *session.Session, rc RegistrationContext) error {
+func (m *Passkeys) admitRemoval(ctx context.Context, s *session.Session, rc RegistrationContext) error {
 	if s == nil || s.MFA == session.MFARecoveryPending || s.MFA == session.MFAEnrolmentPending {
 		return ErrReauthenticationRequired
 	}
@@ -206,7 +206,7 @@ func (m *Manager) admitRemoval(ctx context.Context, s *session.Session, rc Regis
 }
 
 // findOwn returns user's credential cid, or ErrNotFound when it is not one.
-func (m *Manager) findOwn(ctx context.Context, user identity.UserID, cid id.ID) (*Credential, error) {
+func (m *Passkeys) findOwn(ctx context.Context, user identity.UserID, cid id.ID) (*Credential, error) {
 	c, err := m.credentials.Find(ctx, user, cid)
 
 	switch {

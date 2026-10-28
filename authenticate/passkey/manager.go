@@ -79,8 +79,8 @@ type Deps struct {
 	Sessions SessionRevoker
 }
 
-// Manager runs the passkey ceremonies. It is safe for concurrent use.
-type Manager struct {
+// Passkeys runs the passkey ceremonies. It is safe for concurrent use.
+type Passkeys struct {
 	verifier    Verifier
 	credentials CredentialStore
 	handles     HandleStore
@@ -93,8 +93,8 @@ type Manager struct {
 	keepOnRemoval bool
 	keepOnClone   bool
 
-	registration   *onetime.Manager
-	login          *onetime.Manager
+	registration   *onetime.Tokens
+	login          *onetime.Tokens
 	purgeMu        sync.Mutex
 	lastPurge      time.Time
 	loginCheck     func(ctx context.Context, f LoginFacts) error
@@ -164,8 +164,8 @@ const (
 // random source or identifier generator; and no session revoker (typed nil
 // included) while either WithoutSessionRevocationOnRemoval or
 // WithoutSessionRevocationOnClone is left off.
-func New(deps Deps, opts ...Option) (*Manager, error) {
-	m := &Manager{
+func New(deps Deps, opts ...Option) (*Passkeys, error) {
+	m := &Passkeys{
 		verifier:    deps.Verifier,
 		credentials: deps.Credentials,
 		handles:     deps.Handles,
@@ -180,7 +180,7 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 		issueLimit:    defaultIssueLimit,
 		passkeyLimit:  defaultPasskeyLimit,
 		freshness:     defaultFreshness,
-		uv:            UVRequired,
+		uv:            UserVerificationRequired,
 		residentKey:   ResidentKeyRequired,
 		cloneResponse: CloneSuspend,
 		names:         usernameAsNames,
@@ -221,7 +221,7 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 		challenges = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(m.clock))
 	}
 
-	reg, err := onetime.NewManager(registrationPurpose,
+	reg, err := onetime.New(registrationPurpose,
 		onetime.WithStore(challenges),
 		onetime.WithTTL(m.ttl),
 		onetime.WithIssuanceWindow(issuanceWindow),
@@ -236,7 +236,7 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 
 	m.registration = reg
 
-	login, err := onetime.NewManager(loginPurpose,
+	login, err := onetime.New(loginPurpose,
 		onetime.WithStore(challenges),
 		onetime.WithTTL(m.ttl),
 		onetime.WithIssuanceWindow(m.ttl),
@@ -262,7 +262,7 @@ func New(deps Deps, opts ...Option) (*Manager, error) {
 // factory WithConfirmLimiterFactory gave, or else the in-memory default logging
 // through the Manager's logger and clock. A factory replaced with nothing is
 // refused.
-func (m *Manager) resolveConfirmLimiter() error {
+func (m *Passkeys) resolveConfirmLimiter() error {
 	factory := m.confirmFactory
 
 	switch {
@@ -284,7 +284,7 @@ func (m *Manager) resolveConfirmLimiter() error {
 }
 
 // validate refuses every meaningless configuration with ErrConfig.
-func (m *Manager) validate() error {
+func (m *Passkeys) validate() error {
 	var missing string
 
 	switch {
@@ -304,7 +304,7 @@ func (m *Manager) validate() error {
 		missing = "the registration challenge limit must be positive"
 	case m.passkeyLimit <= 0:
 		missing = "the passkey limit must be positive"
-	case m.uv != UVRequired && m.uv != UVPreferred:
+	case m.uv != UserVerificationRequired && m.uv != UserVerificationPreferred:
 		missing = "unknown user-verification requirement"
 	case m.residentKey != ResidentKeyRequired && m.residentKey != ResidentKeyPreferred:
 		missing = "unknown resident-key requirement"
@@ -354,7 +354,7 @@ func (m *Manager) validate() error {
 // ChallengeTTL reports how long a ceremony challenge m issues stays valid:
 // the default of 5 minutes, or what WithChallengeTTL set. A caller that binds
 // a passwordless challenge to a cookie gives the cookie this lifetime.
-func (m *Manager) ChallengeTTL() time.Duration {
+func (m *Passkeys) ChallengeTTL() time.Duration {
 	return m.ttl
 }
 
@@ -364,7 +364,7 @@ func (m *Manager) ChallengeTTL() time.Duration {
 // alone has no password to fall back on, so a caller that serves passwordless
 // login refuses such a manager at construction rather than strand the user
 // with no way back in.
-func (m *Manager) RequiresRecoveryCodes() bool {
+func (m *Passkeys) RequiresRecoveryCodes() bool {
 	return m.recovery == nil && !m.optionalCodes
 }
 
@@ -401,7 +401,7 @@ func constantTimeEqual(stored, presented string) bool {
 // refusal is ErrReauthenticationRequired, except that a failed MFA or passkey
 // lookup refuses with fixed text, and a nil entry in rc.MFAMethods with
 // ErrConfig.
-func (m *Manager) admit(ctx context.Context, s *session.Session, rc RegistrationContext) error {
+func (m *Passkeys) admit(ctx context.Context, s *session.Session, rc RegistrationContext) error {
 	if s == nil || s.UserID == "" || s.PasswordChangePending {
 		return ErrReauthenticationRequired
 	}
@@ -458,7 +458,7 @@ func (m *Manager) admit(ctx context.Context, s *session.Session, rc Registration
 // established; with no route they meet no second factor, and counting them
 // would leave their holder unable ever to manage passkeys. A failed lookup is
 // an error with fixed text.
-func (m *Manager) owesSecondFactor(
+func (m *Passkeys) owesSecondFactor(
 	ctx context.Context, s *session.Session, methods []policy.MFAMethodLookup, passwordless bool,
 ) (bool, error) {
 	usable, err := policy.UsableMFAMethods(ctx, methods, s.UserID, s.FirstFactor)
@@ -486,7 +486,7 @@ func (m *Manager) owesSecondFactor(
 // factor: its own MFA method is among methods, recognised by type and by the
 // manager it belongs to, never by name; or passwordless login is served and
 // proves the second factor.
-func (m *Manager) passkeyRoute(methods []policy.MFAMethodLookup, passwordless bool) bool {
+func (m *Passkeys) passkeyRoute(methods []policy.MFAMethodLookup, passwordless bool) bool {
 	if passwordless && !m.noProofAtLogin {
 		return true
 	}

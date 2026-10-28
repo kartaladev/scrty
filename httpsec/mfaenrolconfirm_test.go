@@ -486,7 +486,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 
 				e, ok := h.enrolment(t)
 				require.True(t, ok)
-				assert.Equal(t, mfa.MaxEmailCodeFailures, e.EmailCodeAttempts,
+				assert.Equal(t, mfa.MaxEmailCodeAttempts, e.EmailCodeAttempts,
 					"every attempt the code had left is charged")
 
 				later := serve(t, h.chain(t, s), emailCodeRequest(t.Context(), drawn))
@@ -546,7 +546,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 
 				e, ok := h.enrolment(t)
 				require.True(t, ok)
-				assert.Equal(t, mfa.MaxEmailCodeFailures, e.EmailCodeAttempts,
+				assert.Equal(t, mfa.MaxEmailCodeAttempts, e.EmailCodeAttempts,
 					"every attempt the code had left is charged, though the caller went away")
 			},
 		},

@@ -58,14 +58,14 @@ func TestManagerRotate(t *testing.T) {
 	type testCase struct {
 		name   string
 		store  func(t *testing.T) session.Store
-		assert func(t *testing.T, m *session.Manager, old, got *session.Session, err error)
+		assert func(t *testing.T, m *session.Sessions, old, got *session.Session, err error)
 	}
 
 	cases := []testCase{
 		{
 			name:  "the old handle stops loading and the new one carries everything",
 			store: func(*testing.T) session.Store { return session.NewMemoryStore() },
-			assert: func(t *testing.T, m *session.Manager, old, got *session.Session, err error) {
+			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
 				require.NoError(t, err)
 				assert.NotEqual(t, old.ID, got.ID)
 				assert.Equal(t, old.UserID, got.UserID)
@@ -75,7 +75,7 @@ func TestManagerRotate(t *testing.T) {
 				assert.True(t, got.AbsoluteExpiresAt.Equal(old.AbsoluteExpiresAt))
 
 				_, loadErr := m.Load(t.Context(), old.ID)
-				assert.ErrorIs(t, loadErr, session.ErrSessionNotFound)
+				assert.ErrorIs(t, loadErr, session.ErrNotFound)
 
 				reloaded, loadErr := m.Load(t.Context(), got.ID)
 				require.NoError(t, loadErr)
@@ -88,7 +88,7 @@ func TestManagerRotate(t *testing.T) {
 			store: func(*testing.T) session.Store {
 				return &failingWriteStore{Store: session.NewMemoryStore()}
 			},
-			assert: func(t *testing.T, m *session.Manager, old, got *session.Session, err error) {
+			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
 				require.ErrorIs(t, err, errStoreWrite)
 				assert.Nil(t, got)
 
@@ -100,12 +100,12 @@ func TestManagerRotate(t *testing.T) {
 		{
 			name:  "a handle already rotated away cannot be rotated again",
 			store: func(*testing.T) session.Store { return session.NewMemoryStore() },
-			assert: func(t *testing.T, m *session.Manager, old, got *session.Session, err error) {
+			assert: func(t *testing.T, m *session.Sessions, old, got *session.Session, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, got)
 
 				again, againErr := m.Rotate(t.Context(), old)
-				require.ErrorIs(t, againErr, session.ErrSessionNotFound)
+				require.ErrorIs(t, againErr, session.ErrNotFound)
 				assert.Nil(t, again)
 			},
 		},
@@ -181,7 +181,7 @@ func TestManagerRotateConcurrent(t *testing.T) {
 	assert.Equal(t, 1, live, "exactly one rotated handle may remain loadable")
 
 	_, err = m.Load(ctx, s.ID)
-	assert.ErrorIs(t, err, session.ErrSessionNotFound, "the original handle must not survive")
+	assert.ErrorIs(t, err, session.ErrNotFound, "the original handle must not survive")
 }
 
 // barrierWait is how long a barrier insert waits for its fellows before it

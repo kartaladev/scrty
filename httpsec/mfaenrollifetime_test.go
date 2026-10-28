@@ -45,7 +45,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 			at:        start.Add(16 * time.Minute),
 			assert: func(t *testing.T, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 		{
@@ -68,7 +68,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 			h := newMagicLinkHarness(t)
 
 			store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
-			mgr, err := session.NewManager(
+			mgr, err := session.New(
 				session.WithStore(store),
 				session.WithClock(clk))
 			require.NoError(t, err)
@@ -84,7 +84,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 			lookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 			lookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-			requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}},
+			requirement, err := policy.NewMFARequirement(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}},
 				policy.WithMFAEnrolmentPath())
 			require.NoError(t, err)
 

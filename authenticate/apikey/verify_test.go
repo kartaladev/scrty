@@ -29,13 +29,13 @@ func TestManagerVerify(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		prepare func(t *testing.T, m *apikey.Manager, valid string) string
+		prepare func(t *testing.T, m *apikey.Keys, valid string) string
 		store   func(t *testing.T, inner apikey.Store) apikey.Store
 		at      time.Time
 		assert  func(t *testing.T, p identity.Principal, rec apikey.Key, err error)
 	}
 
-	unchanged := func(_ *testing.T, _ *apikey.Manager, valid string) string { return valid }
+	unchanged := func(_ *testing.T, _ *apikey.Keys, valid string) string { return valid }
 
 	refused := func(t *testing.T, p identity.Principal, rec apikey.Key, err error) {
 		assert.ErrorIs(t, err, apikey.ErrVerificationFailed)
@@ -61,7 +61,7 @@ func TestManagerVerify(t *testing.T) {
 		},
 		{
 			name: "an unknown identifier",
-			prepare: func(t *testing.T, _ *apikey.Manager, valid string) string {
+			prepare: func(t *testing.T, _ *apikey.Keys, valid string) string {
 				other, err := newID()
 				require.NoError(t, err)
 
@@ -74,7 +74,7 @@ func TestManagerVerify(t *testing.T) {
 		},
 		{
 			name: "a wrong secret",
-			prepare: func(_ *testing.T, _ *apikey.Manager, valid string) string {
+			prepare: func(_ *testing.T, _ *apikey.Keys, valid string) string {
 				idPart, _, _ := strings.Cut(strings.TrimPrefix(valid, "sk_"), ".")
 
 				return "sk_" + idPart + "." +
@@ -99,7 +99,7 @@ func TestManagerVerify(t *testing.T) {
 		},
 		{
 			name: "a revoked key",
-			prepare: func(t *testing.T, m *apikey.Manager, valid string) string {
+			prepare: func(t *testing.T, m *apikey.Keys, valid string) string {
 				idPart, _, _ := strings.Cut(strings.TrimPrefix(valid, "sk_"), ".")
 
 				parsed, err := id.Parse(idPart)
@@ -137,7 +137,7 @@ func TestManagerVerify(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(base)
 			inner := apikey.NewMemoryStore()
 
-			m, err := apikey.NewManager(
+			m, err := apikey.New(
 				apikey.WithStore(inner),
 				apikey.WithClock(clk),
 			)
@@ -151,7 +151,7 @@ func TestManagerVerify(t *testing.T) {
 
 			verifier := m
 			if tc.store != nil {
-				verifier, err = apikey.NewManager(
+				verifier, err = apikey.New(
 					apikey.WithStore(tc.store(t, inner)),
 					apikey.WithClock(clk),
 				)
@@ -174,7 +174,7 @@ func TestManagerExpiry(t *testing.T) {
 	base := time.Date(2026, 9, 24, 10, 0, 0, 0, time.UTC)
 	clk := clockwork.NewFakeClockAt(base)
 
-	m, err := apikey.NewManager(apikey.WithClock(clk))
+	m, err := apikey.New(apikey.WithClock(clk))
 	require.NoError(t, err)
 
 	never, _, err := m.Issue(ctx, "svc-billing", "forever", nil, 0)
@@ -191,7 +191,7 @@ func TestManagerRevoke(t *testing.T) {
 
 	ctx := t.Context()
 
-	m, err := apikey.NewManager()
+	m, err := apikey.New()
 	require.NoError(t, err)
 
 	presented, rec, err := m.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -219,17 +219,17 @@ func TestVerifyNeverDiscloseThePresentedKey(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		prepare func(t *testing.T, m *apikey.Manager, valid string) string
+		prepare func(t *testing.T, m *apikey.Keys, valid string) string
 	}
 
 	cases := []testCase{
 		{
 			name:    "a malformed key",
-			prepare: func(_ *testing.T, _ *apikey.Manager, _ string) string { return "sk_nonsense.aaaa" },
+			prepare: func(_ *testing.T, _ *apikey.Keys, _ string) string { return "sk_nonsense.aaaa" },
 		},
 		{
 			name: "an unknown identifier",
-			prepare: func(t *testing.T, _ *apikey.Manager, valid string) string {
+			prepare: func(t *testing.T, _ *apikey.Keys, valid string) string {
 				other, err := newID()
 				require.NoError(t, err)
 
@@ -240,7 +240,7 @@ func TestVerifyNeverDiscloseThePresentedKey(t *testing.T) {
 		},
 		{
 			name: "a revoked key",
-			prepare: func(t *testing.T, m *apikey.Manager, valid string) string {
+			prepare: func(t *testing.T, m *apikey.Keys, valid string) string {
 				idPart, _, _ := strings.Cut(strings.TrimPrefix(valid, "sk_"), ".")
 
 				parsed, err := id.Parse(idPart)
@@ -261,7 +261,7 @@ func TestVerifyNeverDiscloseThePresentedKey(t *testing.T) {
 			var logged bytes.Buffer
 			logger := slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-			m, err := apikey.NewManager(apikey.WithLogger(logger))
+			m, err := apikey.New(apikey.WithLogger(logger))
 			require.NoError(t, err)
 
 			valid, _, err := m.Issue(ctx, "svc-billing", "k", nil, 0)
@@ -341,7 +341,7 @@ func TestVerify_EmptyDigestDoesNotAcceptAnySecret(t *testing.T) {
 				opts = append(opts, apikey.WithDigest(tc.digest))
 			}
 
-			m, err := apikey.NewManager(opts...)
+			m, err := apikey.New(opts...)
 			require.NoError(t, err)
 
 			keyID, err := newID()

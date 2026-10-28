@@ -193,7 +193,7 @@ func TestPasskeyManage(t *testing.T) {
 
 				stored, err := h.creds.Find(t.Context(), testMFAUser, f.own.ID)
 				require.NoError(t, err)
-				assert.Equal(t, passkey.NormaliseName("", f.own.CreatedAt), stored.Name)
+				assert.Equal(t, passkey.NormalizeName("", f.own.CreatedAt), stored.Name)
 			},
 		},
 		{
@@ -561,7 +561,7 @@ func TestPasskeyRemoveOtherSessions(t *testing.T) {
 			return true
 		}
 
-		require.ErrorIs(t, err, session.ErrSessionNotFound)
+		require.ErrorIs(t, err, session.ErrNotFound)
 
 		return false
 	}

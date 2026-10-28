@@ -153,7 +153,7 @@ func TestLockoutCapWiring(t *testing.T) {
 			w := tc.wire(t)
 			ctrl := gomock.NewController(t)
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
 			opts := []httpsec.Option{httpsec.WithPolicyEngine(engineOf(t, lockoutPolicies(w.lockouts)...))}

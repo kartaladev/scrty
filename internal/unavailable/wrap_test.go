@@ -211,7 +211,7 @@ func TestUnavailable_Construction(t *testing.T) {
 			input: valid(),
 			assert: func(t *testing.T, _ ratelimit.Limiter, _ error) {
 				for _, mode := range []ratelimit.UnavailableMode{
-					ratelimit.UnavailableRefuse, ratelimit.UnavailableFallBackToLocal, ratelimit.UnavailableAllow,
+					ratelimit.UnavailableRefuse, ratelimit.UnavailableFallbackToLocal, ratelimit.UnavailableAllow,
 				} {
 					cfg := unavailable.DefaultConfig()
 					cfg.Mode = mode
@@ -451,7 +451,7 @@ func TestUnavailable_PassThrough(t *testing.T) {
 			},
 		},
 		endedCheck("refuse mode", ratelimit.UnavailableRefuse),
-		endedCheck("fall-back mode", ratelimit.UnavailableFallBackToLocal),
+		endedCheck("fall-back mode", ratelimit.UnavailableFallbackToLocal),
 		endedCheck("allow mode", ratelimit.UnavailableAllow),
 	}
 
@@ -511,7 +511,7 @@ func TestUnavailable_ErrorTextOmitsKey(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newHarness(t, ratelimit.UnavailableFallBackToLocal)
+			h := newHarness(t, ratelimit.UnavailableFallbackToLocal)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			tc.arrange(t, h, cancel)

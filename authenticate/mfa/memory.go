@@ -282,7 +282,7 @@ func (s *MemoryEnrolmentStore) ChargeEmailCode(
 
 	e, ok := s.enrolments[user]
 	if !ok || !onPendingGeneration(e, gen) || e.DeviceProvenAt.IsZero() || e.EmailCode == nil ||
-		!at.Before(e.EmailCodeUntil) || e.EmailCodeAttempts >= MaxEmailCodeFailures {
+		!at.Before(e.EmailCodeUntil) || e.EmailCodeAttempts >= MaxEmailCodeAttempts {
 		return 0, false, nil
 	}
 

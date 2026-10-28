@@ -218,7 +218,7 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
 				t.Helper()
-				return loadAllNewestFirstStore{signingkey.NewInMemoryKeyStore()}
+				return loadAllNewestFirstStore{signingkey.NewMemoryKeyStore()}
 			})
 		},
 		failsCase: "keys load oldest first by creation time, whatever order they were stored in",
@@ -354,7 +354,7 @@ type saveInsertsStore struct{ *session.MemoryStore }
 
 func (s saveInsertsStore) Save(ctx context.Context, sess *session.Session) error {
 	err := s.MemoryStore.Save(ctx, sess)
-	if errors.Is(err, session.ErrSessionNotFound) {
+	if errors.Is(err, session.ErrNotFound) {
 		return s.Create(ctx, sess)
 	}
 	return err

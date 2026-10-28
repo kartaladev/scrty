@@ -113,7 +113,7 @@ func TestNewLimiter(t *testing.T) {
 		},
 		{
 			name: "fall-back mode accepted", db: db, namespace: "api-key", limit: 20, window: time.Minute,
-			opts:   []pgxstore.LimiterOption{pgxstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallBackToLocal)},
+			opts:   []pgxstore.LimiterOption{pgxstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallbackToLocal)},
 			assert: accepted,
 		},
 		{

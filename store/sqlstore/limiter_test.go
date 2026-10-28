@@ -98,7 +98,7 @@ func TestNewLimiter(t *testing.T) {
 		},
 		{
 			name: "fall-back mode accepted", db: db, namespace: "api-key", limit: 20, window: time.Minute,
-			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallBackToLocal)},
+			opts:   []sqlstore.LimiterOption{sqlstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallbackToLocal)},
 			assert: accepted,
 		},
 		{

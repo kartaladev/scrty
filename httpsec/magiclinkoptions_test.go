@@ -20,13 +20,13 @@ func TestEnableMagicLink(t *testing.T) {
 
 	type testCase struct {
 		name    string
-		manager func(h *magicLinkHarness) *magiclink.Manager
+		manager func(h *magicLinkHarness) *magiclink.Links
 		opts    []httpsec.MagicLinkOption
 		drop    func(h *magicLinkHarness)
 		assert  func(t *testing.T, c *httpsec.Chain, err error)
 	}
 
-	configured := func(h *magicLinkHarness) *magiclink.Manager { return h.manager }
+	configured := func(h *magicLinkHarness) *magiclink.Links { return h.manager }
 
 	configError := func(t *testing.T, c *httpsec.Chain, err error) {
 		require.ErrorIs(t, err, httpsec.ErrConfig)
@@ -53,7 +53,7 @@ func TestEnableMagicLink(t *testing.T) {
 		},
 		{
 			name:    "a nil manager",
-			manager: func(*magicLinkHarness) *magiclink.Manager { return nil },
+			manager: func(*magicLinkHarness) *magiclink.Links { return nil },
 			assert:  configError,
 		},
 		{

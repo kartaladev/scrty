@@ -237,7 +237,7 @@ func TestFinishRegistration_AbandonedRegistrationReplacedAtLimitOne(t *testing.T
 
 	type env struct {
 		f *fixture
-		m *passkey.Manager
+		m *passkey.Passkeys
 		s *session.Session
 	}
 

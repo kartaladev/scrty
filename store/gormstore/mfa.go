@@ -314,7 +314,7 @@ func (s *enrolmentStore) ChargeEmailCode(
 		Where("user_id = ? AND generation = ? AND confirmed_at IS NULL"+
 			" AND device_proven_at IS NOT NULL AND email_code IS NOT NULL"+
 			" AND email_code_until > ? AND email_code_attempts < ?",
-			string(user), genArg(gen), storekit.Time(at), mfa.MaxEmailCodeFailures).
+			string(user), genArg(gen), storekit.Time(at), mfa.MaxEmailCodeAttempts).
 		Updates(map[string]any{"email_code_attempts": gormdb.Expr("email_code_attempts + 1")})
 	if res.Error != nil {
 		return 0, false, failed(op, res.Error)

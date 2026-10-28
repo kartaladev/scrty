@@ -66,7 +66,7 @@ func TestOidcReturnedErrors(t *testing.T) {
 				store := NewMockFlowStore(ctrl)
 				store.EXPECT().Begin(gomock.Any(), gomock.Any()).Return("", errRedactionFixture)
 
-				m, err := oidc.NewManager(reg, stubBroker{},
+				m, err := oidc.NewRelyingParty(reg, stubBroker{},
 					oidc.WithOutboundClient(p.Outbound(t)), oidc.WithFlowStore(store))
 				require.NoError(t, err)
 
@@ -115,7 +115,7 @@ func TestOidcReturnedErrors(t *testing.T) {
 				store := NewMockHandoffStore(ctrl)
 				store.EXPECT().Insert(gomock.Any(), gomock.Any()).Return(errRedactionFixture)
 
-				h, err := oidc.NewHandoffManager(store, NewMockUserLoader(ctrl))
+				h, err := oidc.NewHandoff(store, NewMockUserLoader(ctrl))
 				require.NoError(t, err)
 
 				return h.Issue(t.Context(), oidc.CallbackResult{

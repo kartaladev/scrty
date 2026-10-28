@@ -84,7 +84,7 @@ type renewalSetup struct {
 type renewalFixture struct {
 	clk      *clockwork.FakeClock
 	logs     *lockedBuffer
-	sessions *session.Manager
+	sessions *session.Sessions
 	chain    *httpsec.Chain
 
 	// old is O's identifier, which is its credential in this mode.
@@ -105,7 +105,7 @@ func newRenewalFixture(t *testing.T, setup renewalSetup) *renewalFixture {
 
 	// Long idle and absolute timeouts, so a session renewed the next day is
 	// still stored and only its renewal window has ended.
-	managerOpts := []session.ManagerOption{
+	managerOpts := []session.Option{
 		session.WithClock(f.clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
 		session.WithSessionLogger(logger),
@@ -118,7 +118,7 @@ func newRenewalFixture(t *testing.T, setup renewalSetup) *renewalFixture {
 
 	var err error
 
-	f.sessions, err = session.NewManager(managerOpts...)
+	f.sessions, err = session.New(managerOpts...)
 	require.NoError(t, err)
 
 	s, err := f.sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
@@ -263,7 +263,7 @@ func reusedCredential(t *testing.T, s served) {
 	t.Helper()
 
 	require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
-	require.ErrorIs(t, s.err, session.ErrSessionReused)
+	require.ErrorIs(t, s.err, session.ErrReused)
 	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 	assert.False(t, s.handlerRan)
 }
@@ -272,7 +272,7 @@ func refusedUnauthenticated(t *testing.T, s served) {
 	t.Helper()
 
 	require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
-	assert.NotErrorIs(t, s.err, session.ErrSessionReused)
+	assert.NotErrorIs(t, s.err, session.ErrReused)
 	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 	assert.False(t, s.handlerRan)
 }
@@ -519,7 +519,7 @@ func TestSessionRenewal(t *testing.T) {
 				f.clk.Advance(24 * time.Hour)
 
 				out := f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
-				require.ErrorIs(t, out.err, policy.ErrPolicyDenied)
+				require.ErrorIs(t, out.err, policy.ErrDenied)
 				assert.Empty(t, f.recorded(), "nothing was renewed")
 				f.unpresented(t, successor)
 			},
@@ -745,7 +745,7 @@ func TestSessionRenewal_SignedTokenMode(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 
-	sessions, err := session.NewManager(session.WithClock(clk),
+	sessions, err := session.New(session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 
@@ -837,7 +837,7 @@ func TestSessionRenewal_ConcurrentPair(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 	store := newBarrierStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk)))
 
-	sessions, err := session.NewManager(session.WithClock(clk), session.WithStore(store))
+	sessions, err := session.New(session.WithClock(clk), session.WithStore(store))
 	require.NoError(t, err)
 
 	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
@@ -916,10 +916,10 @@ func TestEnableSessionRenewal_Construction(t *testing.T) {
 	t.Parallel()
 
 	// otherManager is a session manager that is not the harness's.
-	otherManager := func(t *testing.T, _ *authHarness) *session.Manager {
+	otherManager := func(t *testing.T, _ *authHarness) *session.Sessions {
 		t.Helper()
 
-		m, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+		m, err := session.New(session.WithStore(session.NewMemoryStore()))
 		require.NoError(t, err)
 
 		return m
@@ -1158,7 +1158,7 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
-	sessions, err := session.NewManager(
+	sessions, err := session.New(
 		session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
 	)

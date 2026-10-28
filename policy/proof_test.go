@@ -104,7 +104,7 @@ func TestMFAPolicies_HonourSecondFactorProof(t *testing.T) {
 			in:    withoutProof,
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Deny, d.Outcome)
-				assert.ErrorIs(t, d.Reason, policy.ErrMFAEnrollmentRequired)
+				assert.ErrorIs(t, d.Reason, policy.ErrMFAEnrolmentRequired)
 			},
 		},
 		{

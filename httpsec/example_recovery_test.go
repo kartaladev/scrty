@@ -22,7 +22,7 @@ func ExampleEnableAccountRecovery() {
 		ID: "u-1", Username: "grace@example.com", Active: true,
 	}}
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	if err != nil {
 		panic(err)
 	}

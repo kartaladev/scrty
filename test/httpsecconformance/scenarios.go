@@ -121,7 +121,7 @@ type Effects struct {
 	// Sessions is the manager every scenario's chain is wired with, and Store
 	// is the store underneath it, held separately because counting a user's
 	// live sessions is what a scenario asserts on.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 	Store    *session.MemoryStore
 
 	// Attempts is the failed-login counter the chain records against.
@@ -239,7 +239,7 @@ func newEffects(t *testing.T) *Effects {
 
 	store := session.NewMemoryStore()
 
-	manager, err := session.NewManager(session.WithStore(store))
+	manager, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	return &Effects{
@@ -1102,7 +1102,7 @@ func (fixtureTokens) Generate(
 ) (string, error) {
 	if id == "" || p == nil || p.Username == "" {
 		return "", fmt.Errorf("httpsecconformance: %w: nothing to identify the token by",
-			token.ErrTokenInvalid)
+			token.ErrInvalid)
 	}
 
 	return issuedTokenFor(p.Username, id), nil
@@ -1112,13 +1112,13 @@ func (fixtureTokens) Verify(_ context.Context, presented string) (*token.Claims,
 	rest, ok := strings.CutPrefix(presented, tokenPrefix)
 	if !ok {
 		return nil, fmt.Errorf("httpsecconformance: %w: not a token this fixture issued",
-			token.ErrTokenInvalid)
+			token.ErrInvalid)
 	}
 
 	subject, id, ok := strings.Cut(rest, ".")
 	if !ok || subject == "" || id == "" {
 		return nil, fmt.Errorf("httpsecconformance: %w: the token names no session",
-			token.ErrTokenInvalid)
+			token.ErrInvalid)
 	}
 
 	return token.NewClaims(subject, id), nil

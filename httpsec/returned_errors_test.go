@@ -107,7 +107,7 @@ func allowingVerifyLimiter(t *testing.T) *MockLimiter {
 
 // oidcManagerOver builds a manager for testOIDCProvider, whose endpoints are
 // pinned so nothing is fetched, keeping its login flows in flows.
-func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.Manager {
+func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.RelyingParty {
 	t.Helper()
 
 	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
@@ -125,7 +125,7 @@ func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.Manager {
 	broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(gomock.NewController(t)))
 	require.NoError(t, err)
 
-	m, err := oidc.NewManager(registry, broker, oidc.WithFlowStore(flows))
+	m, err := oidc.NewRelyingParty(registry, broker, oidc.WithFlowStore(flows))
 	require.NoError(t, err)
 
 	return m
@@ -133,10 +133,10 @@ func oidcManagerOver(t *testing.T, flows oidc.FlowStore) *oidc.Manager {
 
 // oidcLoginOver is the chain options of a federated login over m, with a
 // token generator and a session manager that are never reached.
-func oidcLoginOver(t *testing.T, m *oidc.Manager) httpsec.Option {
+func oidcLoginOver(t *testing.T, m *oidc.RelyingParty) httpsec.Option {
 	t.Helper()
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	return httpsec.EnableOIDCLogin(m, newTestHandoffManager(t),
@@ -145,13 +145,13 @@ func oidcLoginOver(t *testing.T, m *oidc.Manager) httpsec.Option {
 }
 
 // failingSessionsOn is a session manager over a store double, wired by wire.
-func failingSessionsOn(t *testing.T, wire func(store *MockStore)) *session.Manager {
+func failingSessionsOn(t *testing.T, wire func(store *MockStore)) *session.Sessions {
 	t.Helper()
 
 	store := NewMockStore(gomock.NewController(t))
 	wire(store)
 
-	m, err := session.NewManager(session.WithStore(store))
+	m, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	return m
@@ -186,9 +186,9 @@ var sentinelsNotMatched = []error{
 	policy.ErrSessionIdle,
 	lockout.ErrAccountLocked,
 	policy.ErrTooManySessions,
-	policy.ErrPolicyDenied,
+	policy.ErrDenied,
 	policy.ErrMFARequired,
-	policy.ErrMFAEnrollmentRequired,
+	policy.ErrMFAEnrolmentRequired,
 	ratelimit.ErrThrottled,
 	mfa.ErrInvalidCode,
 	mfa.ErrVerifyThrottled,
@@ -198,9 +198,9 @@ var sentinelsNotMatched = []error{
 	oidc.ErrUnknownProvider,
 	oidc.ErrInvalidState,
 	oidc.ErrFlowUnspent,
-	session.ErrSessionNotFound,
-	session.ErrSessionExpired,
-	session.ErrSessionUnreadable,
+	session.ErrNotFound,
+	session.ErrExpired,
+	session.ErrUnreadable,
 }
 
 // failingRoleLoader is an identity.RoleLoader whose every lookup fails with
@@ -296,7 +296,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 	// mfaVerify runs a code submission for a pending session held by sessions,
 	// verified by method, issuing through tokens.
 	mfaVerify := func(
-		t *testing.T, s *session.Session, sessions *session.Manager, method mfa.Method, tokens *MockGenerator,
+		t *testing.T, s *session.Session, sessions *session.Sessions, method mfa.Method, tokens *MockGenerator,
 	) *errorSink {
 		t.Helper()
 
@@ -309,7 +309,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 	}
 
 	// pendingIn creates a password session owing a second factor in sessions.
-	pendingIn := func(t *testing.T, sessions *session.Manager) *session.Session {
+	pendingIn := func(t *testing.T, sessions *session.Sessions) *session.Session {
 		t.Helper()
 
 		s, err := sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(factor.Password))
@@ -376,14 +376,14 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				h := newAuthHarness(t)
 				formLogin(h)
 				h.store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(session.ErrSessionNotFound)
+				h.store.EXPECT().Save(gomock.Any(), gomock.Any()).Return(session.ErrNotFound)
 
 				return refusedBy(t, loginRequest(t),
 					httpsec.WithLogger(h.logger()), httpsec.EnableFormLogin(h.formLoginDeps()),
 					httpsec.WithPolicyEngine(challengingIn(t, policy.PostAuthentication, policy.ChallengeMFA)),
 					httpsec.EnableGateForTest(policy.ChallengeMFA))
 			},
-			assert: unchanged(session.ErrSessionNotFound, http.StatusInternalServerError),
+			assert: unchanged(session.ErrNotFound, http.StatusInternalServerError),
 		},
 		{
 			name: "login completion: the token could not be generated",
@@ -439,7 +439,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				assert.NotContains(t, text, leakedAddress, "the refusal's text quotes the dependency")
 				assert.NotContains(t, text, leakedUserRef, "the refusal's text quotes the dependency")
 				assert.ErrorIs(t, s.err, errFixtureFailure, "the dependency's error is no longer reachable")
-				assert.ErrorIs(t, s.err, policy.ErrPolicyDenied,
+				assert.ErrorIs(t, s.err, policy.ErrDenied,
 					"the refusal must still match the policy's own reason")
 				assert.Equal(t, http.StatusForbidden, s.status)
 			},
@@ -469,7 +469,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				totp, err := mfa.NewTOTP(enrolments, "Example")
 				require.NoError(t, err)
 
-				sessions, err := session.NewManager()
+				sessions, err := session.New()
 				require.NoError(t, err)
 
 				return mfaVerify(t, pendingIn(t, sessions), sessions, totp, issuing(t))
@@ -494,7 +494,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 		{
 			name: "verify endpoint: the token could not be generated",
 			act: func(t *testing.T) *errorSink {
-				sessions, err := session.NewManager()
+				sessions, err := session.New()
 				require.NoError(t, err)
 
 				tokens := NewMockGenerator(gomock.NewController(t))
@@ -551,7 +551,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			act: func(t *testing.T) *errorSink {
 				h := newOIDCHarness(t)
 
-				handoffs, err := oidc.NewHandoffManager(
+				handoffs, err := oidc.NewHandoff(
 					failingHandoffStore{err: errFixtureFailure}, NewMockUserLoader(gomock.NewController(t)))
 				require.NoError(t, err)
 
@@ -624,7 +624,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 
 				return backchannelRefusal(t, newOIDCHarness(t), oidcTestSubject, "",
 					httpsec.WithOIDCSessions(sessions),
-					httpsec.WithBackchannelLogoutScope(httpsec.AllSessions))
+					httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll))
 			},
 			assert: fixedText(http.StatusInternalServerError),
 		},

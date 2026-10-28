@@ -66,7 +66,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 	type testCase struct {
 		name   string
 		store  func(t *testing.T, ctrl *gomock.Controller) apikey.Store
-		call   func(t *testing.T, m *apikey.Manager) error
+		call   func(t *testing.T, m *apikey.Keys) error
 		assert func(t *testing.T, err error)
 	}
 
@@ -100,7 +100,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				s.EXPECT().Put(gomock.Any(), gomock.Any()).Return(errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				_, _, err := m.Issue(t.Context(), principal, "nightly export", nil, 0)
 				return err
@@ -115,7 +115,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				s.EXPECT().List(gomock.Any(), gomock.Any()).Return(nil, errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				_, err := m.List(t.Context(), principal)
 				return err
@@ -130,7 +130,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				return m.Revoke(t.Context(), newKeyID(t))
 			},
@@ -144,7 +144,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				s.EXPECT().Revoke(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, apikey.ErrKeyNotFound)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				return m.Revoke(t.Context(), newKeyID(t))
 			},
@@ -158,7 +158,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				s.EXPECT().Get(gomock.Any(), gomock.Any()).Return(apikey.Key{}, errRedactionFixture)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				_, _, err := m.Rotate(t.Context(), newKeyID(t), 0)
 				return err
@@ -173,7 +173,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				s.EXPECT().Get(gomock.Any(), gomock.Any()).Return(apikey.Key{}, apikey.ErrKeyNotFound)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				_, _, err := m.Rotate(t.Context(), newKeyID(t), 0)
 				return err
@@ -197,7 +197,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				)
 				return s
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				_, _, err := m.Rotate(t.Context(), oldKeyID, 0)
 				return err
@@ -215,7 +215,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				t.Helper()
 				return lostRace(ctrl, &revokedReplacement, func() (bool, error) { return true, nil })
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				fresh, _, err := m.Rotate(t.Context(), oldKeyID, 0)
 				assert.Empty(t, fresh, "a refused rotation returns no key")
@@ -232,7 +232,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 				t.Helper()
 				return lostRace(ctrl, &unrevokedReplacement, func() (bool, error) { return false, errRedactionFixture })
 			},
-			call: func(t *testing.T, m *apikey.Manager) error {
+			call: func(t *testing.T, m *apikey.Keys) error {
 				t.Helper()
 				fresh, _, err := m.Rotate(t.Context(), oldKeyID, 0)
 				assert.Empty(t, fresh, "a refused rotation returns no key")
@@ -255,7 +255,7 @@ func TestAPIKeyReturnedErrors(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			m, err := apikey.NewManager(apikey.WithStore(tc.store(t, ctrl)))
+			m, err := apikey.New(apikey.WithStore(tc.store(t, ctrl)))
 			require.NoError(t, err)
 
 			tc.assert(t, tc.call(t, m))

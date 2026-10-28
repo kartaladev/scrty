@@ -24,7 +24,7 @@ import (
 type resolveFixture struct {
 	start    time.Time
 	clk      *clockwork.FakeClock
-	sessions *session.Manager
+	sessions *session.Sessions
 	session  *session.Session
 }
 
@@ -36,7 +36,7 @@ func newResolveFixture(t *testing.T) resolveFixture {
 
 	// The store judges expiry by the manager's clock, so deadlines drawn from
 	// the fake clock are read against it.
-	sessions, err := session.NewManager(session.WithClock(clk), session.WithStore(
+	sessions, err := session.New(session.WithClock(clk), session.WithStore(
 		session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 
@@ -89,7 +89,7 @@ func TestExchangePublishSession(t *testing.T) {
 	f := newResolveFixture(t)
 
 	chain, err := httpsec.New(
-		httpsec.WithSessionManager(f.sessions),
+		httpsec.WithSessions(f.sessions),
 		httpsec.RegisterInterceptor(consumerAuthenticating(f, false), httpsec.OrderBearerToken),
 	)
 	require.NoError(t, err)
@@ -221,7 +221,7 @@ func TestExchangeEvaluatePerRequest(t *testing.T) {
 			f := newResolveFixture(t)
 
 			chain, err := httpsec.New(
-				httpsec.WithSessionManager(f.sessions),
+				httpsec.WithSessions(f.sessions),
 				tc.authenticating(t, f),
 				httpsec.WithPolicyEngine(challengingIn(t, policy.PerRequest, policy.ChallengeMFAEnrolment)),
 				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),
@@ -301,7 +301,7 @@ func TestExchangeEvaluatePerRequest_FailsClosed(t *testing.T) {
 			// The engine challenges every per-request phase it runs, so a phase
 			// that ran would mark the session or report a configuration error.
 			chain, err := httpsec.New(
-				httpsec.WithSessionManager(f.sessions),
+				httpsec.WithSessions(f.sessions),
 				httpsec.RegisterInterceptor(consumer, httpsec.OrderBearerToken),
 				httpsec.WithPolicyEngine(challengingIn(t, policy.PerRequest, policy.ChallengeMFAEnrolment)),
 				httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment),

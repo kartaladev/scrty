@@ -45,7 +45,7 @@ func pending(c *passkey.Credential, reasons passkey.PendingReason) *passkey.Cred
 	c.State = passkey.StatePending
 	c.Pending = reasons
 
-	if reasons&passkey.AwaitingEmailCode != 0 {
+	if reasons&passkey.PendingEmailCode != 0 {
 		c.EmailCode = &passkey.EmailCode{Code: "123456", ExpiresAt: storeTime.Add(10 * time.Minute)}
 	}
 
@@ -135,10 +135,10 @@ func TestMemoryCredentialStore_Insert(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "stores every attribute",
-			insert: func() *passkey.Credential { return pending(credential("u-1", 1, "C"), passkey.AwaitingEmailCode) },
+			insert: func() *passkey.Credential { return pending(credential("u-1", 1, "C"), passkey.PendingEmailCode) },
 			assert: func(t *testing.T, s passkey.CredentialStore, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.AwaitingEmailCode), stored(t, s, "C"))
+				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.PendingEmailCode), stored(t, s, "C"))
 			},
 		},
 		{
@@ -167,7 +167,7 @@ func TestMemoryCredentialStore_Insert(t *testing.T) {
 		},
 		{
 			name:   "mutating the inserted value changes nothing stored",
-			insert: func() *passkey.Credential { return pending(credential("u-1", 1, "C"), passkey.AwaitingEmailCode) },
+			insert: func() *passkey.Credential { return pending(credential("u-1", 1, "C"), passkey.PendingEmailCode) },
 			after: func(c *passkey.Credential) {
 				c.CredentialID[0] = 'X'
 				c.PublicKey[0] = 'X'
@@ -179,7 +179,7 @@ func TestMemoryCredentialStore_Insert(t *testing.T) {
 			},
 			assert: func(t *testing.T, s passkey.CredentialStore, err error) {
 				require.NoError(t, err)
-				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.AwaitingEmailCode), stored(t, s, "C"))
+				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.PendingEmailCode), stored(t, s, "C"))
 			},
 		},
 	}
@@ -207,7 +207,7 @@ func TestMemoryCredentialStore_Reads(t *testing.T) {
 	seed := func() []*passkey.Credential {
 		return []*passkey.Credential{
 			credential("u-1", 3, "C3"),
-			pending(credential("u-1", 1, "C1"), passkey.AwaitingSavedCodes),
+			pending(credential("u-1", 1, "C1"), passkey.PendingSavedCodes),
 			suspended(credential("u-1", 2, "C2")),
 			credential("u-2", 4, "C4"),
 		}
@@ -255,7 +255,7 @@ func TestMemoryCredentialStore_Reads(t *testing.T) {
 				list, err := s.List(t.Context(), "u-1")
 				require.NoError(t, err)
 				assert.Equal(t, []*passkey.Credential{
-					pending(credential("u-1", 1, "C1"), passkey.AwaitingSavedCodes),
+					pending(credential("u-1", 1, "C1"), passkey.PendingSavedCodes),
 					suspended(credential("u-1", 2, "C2")),
 					credential("u-1", 3, "C3"),
 				}, list)
@@ -416,11 +416,11 @@ func TestMemoryCredentialStore_RecordAssertion(t *testing.T) {
 		},
 		{
 			name:      "pending credential is not recorded",
-			seed:      pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
+			seed:      pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes),
 			callers:   1,
 			signCount: 43,
 			assert: func(t *testing.T, wins int, after *passkey.Credential) {
-				unchanged(t, wins, after, pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes))
+				unchanged(t, wins, after, pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes))
 			},
 		},
 	}
@@ -479,8 +479,8 @@ func TestMemoryCredentialStore_RecordUse(t *testing.T) {
 		},
 		{
 			name:   "pending credential is not recorded",
-			seed:   pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
-			assert: unchanged(pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes)),
+			seed:   pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes),
+			assert: unchanged(pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes)),
 		},
 		{
 			name:   "suspended credential is not recorded",
@@ -541,11 +541,11 @@ func TestMemoryCredentialStore_Suspend(t *testing.T) {
 		},
 		{
 			name:    "pending is not suspended",
-			seed:    pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
+			seed:    pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes),
 			callers: 1,
 			assert: func(t *testing.T, wins int, after *passkey.Credential) {
 				assert.Zero(t, wins)
-				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes), after)
+				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes), after)
 			},
 		},
 	}
@@ -567,7 +567,7 @@ func TestMemoryCredentialStore_Suspend(t *testing.T) {
 func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 	t.Parallel()
 
-	both := passkey.AwaitingSavedCodes | passkey.AwaitingEmailCode
+	both := passkey.PendingSavedCodes | passkey.PendingEmailCode
 
 	type step struct {
 		user   identity.UserID
@@ -591,8 +591,8 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 			name: "two reasons cleared one by one: pending, then active",
 			seed: pending(credential("u-1", 1, "C"), both),
 			steps: []step{
-				{user: "u-1", reason: passkey.AwaitingEmailCode},
-				{user: "u-1", reason: passkey.AwaitingSavedCodes},
+				{user: "u-1", reason: passkey.PendingEmailCode},
+				{user: "u-1", reason: passkey.PendingSavedCodes},
 			},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{passkey.StatePending, true}, {passkey.StateActive, true}}, results)
@@ -604,10 +604,10 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 		{
 			name:  "clearing the emailed-code reason drops the code",
 			seed:  pending(credential("u-1", 1, "C"), both),
-			steps: []step{{user: "u-1", reason: passkey.AwaitingEmailCode}},
+			steps: []step{{user: "u-1", reason: passkey.PendingEmailCode}},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{passkey.StatePending, true}}, results)
-				assert.Equal(t, passkey.AwaitingSavedCodes, after.Pending)
+				assert.Equal(t, passkey.PendingSavedCodes, after.Pending)
 				assert.Nil(t, after.EmailCode)
 			},
 		},
@@ -615,21 +615,21 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 			name: "a reason cleared twice is refused the second time",
 			seed: pending(credential("u-1", 1, "C"), both),
 			steps: []step{
-				{user: "u-1", reason: passkey.AwaitingSavedCodes},
-				{user: "u-1", reason: passkey.AwaitingSavedCodes},
+				{user: "u-1", reason: passkey.PendingSavedCodes},
+				{user: "u-1", reason: passkey.PendingSavedCodes},
 			},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{passkey.StatePending, true}, {0, false}}, results)
-				assert.Equal(t, passkey.AwaitingEmailCode, after.Pending)
+				assert.Equal(t, passkey.PendingEmailCode, after.Pending)
 			},
 		},
 		{
 			name:  "a reason not set is refused",
-			seed:  pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
-			steps: []step{{user: "u-1", reason: passkey.AwaitingEmailCode}},
+			seed:  pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes),
+			steps: []step{{user: "u-1", reason: passkey.PendingEmailCode}},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{0, false}}, results)
-				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes), after)
+				assert.Equal(t, pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes), after)
 			},
 		},
 		{
@@ -644,7 +644,7 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 		{
 			name:  "a known reason with an unknown bit is refused and changes nothing",
 			seed:  pending(credential("u-1", 1, "C"), both),
-			steps: []step{{user: "u-1", reason: passkey.AwaitingSavedCodes | 4}},
+			steps: []step{{user: "u-1", reason: passkey.PendingSavedCodes | 4}},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{0, false}}, results)
 				assert.Equal(t, pending(credential("u-1", 1, "C"), both), after)
@@ -670,8 +670,8 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 		},
 		{
 			name:  "another user's credential is refused",
-			seed:  pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
-			steps: []step{{user: "u-2", reason: passkey.AwaitingSavedCodes}},
+			seed:  pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes),
+			steps: []step{{user: "u-2", reason: passkey.PendingSavedCodes}},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{0, false}}, results)
 				assert.Equal(t, passkey.StatePending, after.State)
@@ -680,12 +680,12 @@ func TestMemoryCredentialStore_ClearReason(t *testing.T) {
 		{
 			name: "a suspended credential is refused",
 			seed: func() *passkey.Credential {
-				c := pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes)
+				c := pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes)
 				c.State = passkey.StateSuspended
 
 				return c
 			}(),
-			steps: []step{{user: "u-1", reason: passkey.AwaitingSavedCodes}},
+			steps: []step{{user: "u-1", reason: passkey.PendingSavedCodes}},
 			assert: func(t *testing.T, results []result, after *passkey.Credential) {
 				assert.Equal(t, []result{{0, false}}, results)
 				assert.Equal(t, passkey.StateSuspended, after.State)
@@ -728,7 +728,7 @@ func TestMemoryCredentialStore_ChargeEmailAttempt(t *testing.T) {
 	}
 
 	withAttempts := func(n int) *passkey.Credential {
-		c := pending(credential("u-1", 1, "C"), passkey.AwaitingEmailCode)
+		c := pending(credential("u-1", 1, "C"), passkey.PendingEmailCode)
 		c.EmailCode.Attempts = n
 
 		return c
@@ -793,9 +793,9 @@ func TestMemoryCredentialStore_ChargeEmailAttempt(t *testing.T) {
 		},
 		{
 			name: "not awaiting an emailed code is refused",
-			seed: pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes),
+			seed: pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes),
 			user: "u-1", at: before, callers: 1,
-			assert: refused(pending(credential("u-1", 1, "C"), passkey.AwaitingSavedCodes)),
+			assert: refused(pending(credential("u-1", 1, "C"), passkey.PendingSavedCodes)),
 		},
 		{
 			name: "no code outstanding is refused",
@@ -877,11 +877,11 @@ func TestMemoryCredentialStore_Writes(t *testing.T) {
 	seed := func() []*passkey.Credential {
 		return []*passkey.Credential{
 			credential("u-1", 1, "C1"),
-			pending(credential("u-1", 2, "C2"), passkey.AwaitingSavedCodes),
-			pending(credential("u-1", 3, "C3"), passkey.AwaitingSavedCodes|passkey.AwaitingEmailCode),
-			pending(credential("u-1", 4, "C4"), passkey.AwaitingEmailCode),
+			pending(credential("u-1", 2, "C2"), passkey.PendingSavedCodes),
+			pending(credential("u-1", 3, "C3"), passkey.PendingSavedCodes|passkey.PendingEmailCode),
+			pending(credential("u-1", 4, "C4"), passkey.PendingEmailCode),
 			credential("u-2", 5, "C5"),
-			pending(credential("u-2", 6, "C6"), passkey.AwaitingSavedCodes),
+			pending(credential("u-2", 6, "C6"), passkey.PendingSavedCodes),
 		}
 	}
 

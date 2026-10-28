@@ -119,7 +119,7 @@ func TestSigningKeyStoreFailureRecords(t *testing.T) {
 			store := NewMockKeyStore(gomock.NewController(t))
 			tc.store(store)
 
-			km, err := signingkey.NewKeyManager(t.Context(),
+			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clk),
 				signingkey.WithAlgs(signingkey.EdDSA),

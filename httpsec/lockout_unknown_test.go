@@ -96,7 +96,7 @@ func TestUnknownUsernameLock(t *testing.T) {
 			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
 			// Each user's sixth, locked, attempt is the only one that may spend a
@@ -209,7 +209,7 @@ func TestUnknownUsernameLockRealAuthenticator(t *testing.T) {
 			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
 
-			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
+			sessions, err := session.New(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
 			chain, err := httpsec.New(

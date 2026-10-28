@@ -53,7 +53,7 @@ func TestNewVerifierValidation(t *testing.T) {
 		return func(t *testing.T) []token.VerifyOption {
 			t.Helper()
 
-			return append([]token.VerifyOption{token.VerifyWithKeySource(newKeySource(t))}, opts...)
+			return append([]token.VerifyOption{token.WithVerifyKeySource(newKeySource(t))}, opts...)
 		}
 	}
 
@@ -83,15 +83,15 @@ func TestNewVerifierValidation(t *testing.T) {
 			// request instead of failing at wiring time.
 			name: "a typed-nil key source",
 			opts: func(_ *testing.T) []token.VerifyOption {
-				var missing *signingkey.KeyManager
+				var missing *signingkey.Keys
 
-				return []token.VerifyOption{token.VerifyWithKeySource(missing)}
+				return []token.VerifyOption{token.WithVerifyKeySource(missing)}
 			},
 			assert: refused("key source"),
 		},
 		{
 			name:   "a nil clock",
-			opts:   withKeys(token.VerifyWithClock(nil)),
+			opts:   withKeys(token.WithVerifyClock(nil)),
 			assert: refused("clock"),
 		},
 		{
@@ -101,7 +101,7 @@ func TestNewVerifierValidation(t *testing.T) {
 
 				var missing *clockwork.FakeClock
 
-				return withKeys(token.VerifyWithClock(missing))(t)
+				return withKeys(token.WithVerifyClock(missing))(t)
 			},
 			assert: refused("clock"),
 		},
@@ -116,8 +116,8 @@ func TestNewVerifierValidation(t *testing.T) {
 				t.Helper()
 
 				return []token.VerifyOption{
-					token.VerifyWithKeySource(consumerVerifyKeys),
-					token.VerifyWithClock(fixedClock{at: consumerVerifyAt}),
+					token.WithVerifyKeySource(consumerVerifyKeys),
+					token.WithVerifyClock(fixedClock{at: consumerVerifyAt}),
 				}
 			},
 			assert: func(t *testing.T, ver token.Verifier, err error) {
@@ -133,17 +133,17 @@ func TestNewVerifierValidation(t *testing.T) {
 		},
 		{
 			name:   "a zero maximum token size",
-			opts:   withKeys(token.VerifyWithMaxTokenSize(0)),
+			opts:   withKeys(token.WithVerifyMaxTokenSize(0)),
 			assert: refused("maximum token size"),
 		},
 		{
 			name:   "a negative maximum token size",
-			opts:   withKeys(token.VerifyWithMaxTokenSize(-1)),
+			opts:   withKeys(token.WithVerifyMaxTokenSize(-1)),
 			assert: refused("maximum token size"),
 		},
 		{
 			name:   "a nil option is skipped",
-			opts:   withKeys(nil, token.VerifyWithIssuer("https://auth.example"), nil),
+			opts:   withKeys(nil, token.WithVerifyIssuer("https://auth.example"), nil),
 			assert: constructed,
 		},
 		{
@@ -168,14 +168,14 @@ func TestVerifyKeySelection(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		token  func(t *testing.T, keys *signingkey.KeyManager) string
+		token  func(t *testing.T, keys *signingkey.Keys) string
 		assert func(t *testing.T, claims *token.Claims, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "a token this key source did not sign",
-			token: func(t *testing.T, _ *signingkey.KeyManager) string {
+			token: func(t *testing.T, _ *signingkey.Keys) string {
 				other, err := token.NewGenerator(newKeySource(t))
 				require.NoError(t, err)
 
@@ -188,8 +188,8 @@ func TestVerifyKeySelection(t *testing.T) {
 		},
 		{
 			name: "no key identifier in the header",
-			token: func(t *testing.T, keys *signingkey.KeyManager) string {
-				_, signer, ok := keys.GetSigner(signingkey.RS256)
+			token: func(t *testing.T, keys *signingkey.Keys) string {
+				_, signer, ok := keys.Signer(signingkey.RS256)
 				require.True(t, ok)
 
 				return signRaw(t, signer, "", signingkey.RS256, validClaims(time.Now()))
@@ -198,8 +198,8 @@ func TestVerifyKeySelection(t *testing.T) {
 		},
 		{
 			name: "a key identifier that is not in the set",
-			token: func(t *testing.T, keys *signingkey.KeyManager) string {
-				_, signer, ok := keys.GetSigner(signingkey.RS256)
+			token: func(t *testing.T, keys *signingkey.Keys) string {
+				_, signer, ok := keys.Signer(signingkey.RS256)
 				require.True(t, ok)
 
 				return signRaw(t, signer, "not-a-kid-in-the-set", signingkey.RS256, validClaims(time.Now()))
@@ -208,7 +208,7 @@ func TestVerifyKeySelection(t *testing.T) {
 		},
 		{
 			name: "the same claims named by the current key are accepted",
-			token: func(t *testing.T, keys *signingkey.KeyManager) string {
+			token: func(t *testing.T, keys *signingkey.Keys) string {
 				return signClaims(t, keys, validClaims(time.Now()))
 			},
 			assert: func(t *testing.T, claims *token.Claims, err error) {
@@ -225,7 +225,7 @@ func TestVerifyKeySelection(t *testing.T) {
 
 			keys := newKeySource(t)
 
-			ver, err := token.NewVerifier(token.VerifyWithKeySource(keys))
+			ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
 			require.NoError(t, err)
 
 			claims, err := ver.Verify(t.Context(), tc.token(t, keys))
@@ -243,14 +243,14 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 
 	type testCase struct {
 		name  string
-		token func(t *testing.T, keys *signingkey.KeyManager) string
+		token func(t *testing.T, keys *signingkey.Keys) string
 	}
 
 	cases := []testCase{
 		{
 			name: "alg none with an empty signature",
-			token: func(t *testing.T, keys *signingkey.KeyManager) string {
-				kid, _, ok := keys.GetSigner(signingkey.RS256)
+			token: func(t *testing.T, keys *signingkey.Keys) string {
+				kid, _, ok := keys.Signer(signingkey.RS256)
 				require.True(t, ok)
 
 				header := encodeSegment(t, map[string]any{"alg": "none", "typ": "JWT", "kid": kid})
@@ -262,8 +262,8 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 		},
 		{
 			name: "HS256 over an RS256 key, signed with that key's public half as the secret",
-			token: func(t *testing.T, keys *signingkey.KeyManager) string {
-				kid, signer, ok := keys.GetSigner(signingkey.RS256)
+			token: func(t *testing.T, keys *signingkey.Keys) string {
+				kid, signer, ok := keys.Signer(signingkey.RS256)
 				require.True(t, ok)
 
 				// The attacker knows the public key: it is published in the
@@ -285,7 +285,7 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 		},
 		{
 			name: "one payload character changed on a validly signed token",
-			token: func(t *testing.T, keys *signingkey.KeyManager) string {
+			token: func(t *testing.T, keys *signingkey.Keys) string {
 				return tamperPayload(t, signClaims(t, keys, validClaims(time.Now())))
 			},
 		},
@@ -297,11 +297,11 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 
 			keys := newKeySource(t)
 
-			ver, err := token.NewVerifier(token.VerifyWithKeySource(keys))
+			ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
 			require.NoError(t, err)
 
 			claims, err := ver.Verify(t.Context(), tc.token(t, keys))
-			require.ErrorIs(t, err, token.ErrTokenInvalid)
+			require.ErrorIs(t, err, token.ErrInvalid)
 			assert.Nil(t, claims)
 		})
 	}
@@ -394,8 +394,8 @@ func TestVerifyTimeChecks(t *testing.T) {
 			raw := signClaims(t, keys, tc.claims)
 
 			ver, err := token.NewVerifier(
-				token.VerifyWithKeySource(keys),
-				token.VerifyWithClock(clockwork.NewFakeClockAt(tc.verifyAt)),
+				token.WithVerifyKeySource(keys),
+				token.WithVerifyClock(clockwork.NewFakeClockAt(tc.verifyAt)),
 			)
 			require.NoError(t, err)
 
@@ -435,28 +435,28 @@ func TestVerifyClaimEnforcement(t *testing.T) {
 			name:       "a configured issuer that matches is accepted",
 			claim:      "iss",
 			value:      mine,
-			configured: []token.VerifyOption{token.VerifyWithIssuer(mine)},
+			configured: []token.VerifyOption{token.WithVerifyIssuer(mine)},
 			assert:     accepted,
 		},
 		{
 			name:       "a configured issuer that differs is rejected",
 			claim:      "iss",
 			value:      other,
-			configured: []token.VerifyOption{token.VerifyWithIssuer(mine)},
+			configured: []token.VerifyOption{token.WithVerifyIssuer(mine)},
 			assert:     rejected,
 		},
 		{
 			name:       "a configured issuer that is absent is rejected",
 			claim:      "iss",
 			value:      nil,
-			configured: []token.VerifyOption{token.VerifyWithIssuer(mine)},
+			configured: []token.VerifyOption{token.WithVerifyIssuer(mine)},
 			assert:     rejected,
 		},
 		{
 			name:       "an issuer configured as the empty string is still enforced",
 			claim:      "iss",
 			value:      mine,
-			configured: []token.VerifyOption{token.VerifyWithIssuer("")},
+			configured: []token.VerifyOption{token.WithVerifyIssuer("")},
 			assert:     rejected,
 		},
 		{
@@ -475,35 +475,35 @@ func TestVerifyClaimEnforcement(t *testing.T) {
 			name:       "a configured audience that matches is accepted",
 			claim:      "aud",
 			value:      []any{"api"},
-			configured: []token.VerifyOption{token.VerifyWithAudience("api")},
+			configured: []token.VerifyOption{token.WithVerifyAudience("api")},
 			assert:     accepted,
 		},
 		{
 			name:       "a configured audience that differs is rejected",
 			claim:      "aud",
 			value:      []any{"admin"},
-			configured: []token.VerifyOption{token.VerifyWithAudience("api")},
+			configured: []token.VerifyOption{token.WithVerifyAudience("api")},
 			assert:     rejected,
 		},
 		{
 			name:       "a configured audience that is absent is rejected",
 			claim:      "aud",
 			value:      nil,
-			configured: []token.VerifyOption{token.VerifyWithAudience("api")},
+			configured: []token.VerifyOption{token.WithVerifyAudience("api")},
 			assert:     rejected,
 		},
 		{
 			name:       "a configured audience present among several is accepted",
 			claim:      "aud",
 			value:      []any{"admin", "api"},
-			configured: []token.VerifyOption{token.VerifyWithAudience("api")},
+			configured: []token.VerifyOption{token.WithVerifyAudience("api")},
 			assert:     accepted,
 		},
 		{
 			name:       "an audience configured as the empty string is still enforced",
 			claim:      "aud",
 			value:      []any{"api"},
-			configured: []token.VerifyOption{token.VerifyWithAudience("")},
+			configured: []token.VerifyOption{token.WithVerifyAudience("")},
 			assert:     rejected,
 		},
 		{
@@ -532,8 +532,8 @@ func TestVerifyClaimEnforcement(t *testing.T) {
 			raw := signClaims(t, keys, claims)
 
 			opts := append([]token.VerifyOption{
-				token.VerifyWithKeySource(keys),
-				token.VerifyWithClock(clockwork.NewFakeClockAt(at)),
+				token.WithVerifyKeySource(keys),
+				token.WithVerifyClock(clockwork.NewFakeClockAt(at)),
 			}, tc.configured...)
 
 			ver, err := token.NewVerifier(opts...)
@@ -573,7 +573,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 				})
 			},
 			assert: func(t *testing.T, claims *token.Claims, err error) {
-				require.ErrorIs(t, err, token.ErrTokenInvalid)
+				require.ErrorIs(t, err, token.ErrInvalid)
 				assert.Nil(t, claims)
 				assert.ErrorIs(t, err, jwt.TokenExpiredError{},
 					"the specific cause survives the wrap")
@@ -591,7 +591,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			assert: func(t *testing.T, claims *token.Claims, err error) {
 				require.ErrorIs(t, err, unreachable)
 				assert.Nil(t, claims)
-				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+				assert.NotErrorIs(t, err, token.ErrInvalid,
 					"an unavailable key set is not a refused token")
 			},
 		},
@@ -609,7 +609,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			assert: func(t *testing.T, claims *token.Claims, err error) {
 				require.Error(t, err)
 				assert.Nil(t, claims)
-				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+				assert.NotErrorIs(t, err, token.ErrInvalid,
 					"a source that supplied no keys has not judged the token")
 			},
 		},
@@ -627,7 +627,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			assert: func(t *testing.T, claims *token.Claims, err error) {
 				require.Error(t, err)
 				assert.Nil(t, claims)
-				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+				assert.NotErrorIs(t, err, token.ErrInvalid,
 					"with nothing to check against, the verifier has reached no verdict")
 			},
 		},
@@ -645,7 +645,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 				// quietly drops what it cannot read would still hold the
 				// signing key, and would answer as though nothing were wrong.
 				keys := NewMockKeySource(gomock.NewController(t))
-				keys.EXPECT().GetSigner(gomock.Any()).DoAndReturn(signing.GetSigner).AnyTimes()
+				keys.EXPECT().Signer(gomock.Any()).DoAndReturn(signing.Signer).AnyTimes()
 				keys.EXPECT().VerificationKeys().Return(append(
 					[]signingkey.PublicKey{{
 						Kid: "unreadable-1",
@@ -663,7 +663,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			assert: func(t *testing.T, claims *token.Claims, err error) {
 				require.Error(t, err)
 				assert.Nil(t, claims)
-				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+				assert.NotErrorIs(t, err, token.ErrInvalid,
 					"a source supplying a key this package cannot read has not judged the token")
 			},
 		},
@@ -682,7 +682,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			assert: func(t *testing.T, claims *token.Claims, err error) {
 				require.ErrorIs(t, err, context.Canceled)
 				assert.Nil(t, claims)
-				assert.NotErrorIs(t, err, token.ErrTokenInvalid,
+				assert.NotErrorIs(t, err, token.ErrInvalid,
 					"a check that never ran cannot conclude the token is invalid")
 			},
 		},
@@ -695,8 +695,8 @@ func TestVerifyErrorClassification(t *testing.T) {
 			keys := tc.keys(t)
 
 			ver, err := token.NewVerifier(
-				token.VerifyWithKeySource(keys),
-				token.VerifyWithClock(clockwork.NewFakeClockAt(at)),
+				token.WithVerifyKeySource(keys),
+				token.WithVerifyClock(clockwork.NewFakeClockAt(at)),
 			)
 			require.NoError(t, err)
 
@@ -829,7 +829,7 @@ func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
 			require.NoError(t, naive,
 				"the presentation must be one a naive verifier accepts, or its rejection proves nothing")
 
-			ver, err := token.NewVerifier(token.VerifyWithKeySource(keys))
+			ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
 			require.NoError(t, err)
 
 			claims, err := ver.Verify(t.Context(), presented)
@@ -872,7 +872,7 @@ func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 		{
 			name: "a consumer raises the ceiling and the same string verifies",
 			keys: func(_ *testing.T) signingkey.KeySource { return signing },
-			opts: []token.VerifyOption{token.VerifyWithMaxTokenSize(64 << 10)},
+			opts: []token.VerifyOption{token.WithVerifyMaxTokenSize(64 << 10)},
 			assert: func(t *testing.T, claims *token.Claims, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, claims)
@@ -896,7 +896,7 @@ func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 			t.Parallel()
 
 			ver, err := token.NewVerifier(
-				append([]token.VerifyOption{token.VerifyWithKeySource(tc.keys(t))}, tc.opts...)...)
+				append([]token.VerifyOption{token.WithVerifyKeySource(tc.keys(t))}, tc.opts...)...)
 			require.NoError(t, err)
 
 			claims, err := ver.Verify(t.Context(), oversized)
@@ -930,8 +930,8 @@ func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
 	})
 
 	ver, err := token.NewVerifier(
-		token.VerifyWithKeySource(keys),
-		token.VerifyWithClock(clockwork.NewFakeClockAt(at)),
+		token.WithVerifyKeySource(keys),
+		token.WithVerifyClock(clockwork.NewFakeClockAt(at)),
 	)
 	require.NoError(t, err)
 
@@ -939,8 +939,8 @@ func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
 	// nbf and iat stand between it and acceptance — an hour on, the same
 	// string verifies.
 	later, err := token.NewVerifier(
-		token.VerifyWithKeySource(keys),
-		token.VerifyWithClock(clockwork.NewFakeClockAt(at.Add(time.Hour))),
+		token.WithVerifyKeySource(keys),
+		token.WithVerifyClock(clockwork.NewFakeClockAt(at.Add(time.Hour))),
 	)
 	require.NoError(t, err)
 	claims, err := later.Verify(t.Context(), raw)

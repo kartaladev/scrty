@@ -39,7 +39,7 @@ import (
 // verifiers should cache the bytes — as an HTTP cache header, typically — and
 // keep that cache well inside the key lifetime, which is what keeps a replaced
 // key published.
-func (km *KeyManager) JWKS() ([]byte, error) {
+func (km *Keys) JWKS() ([]byte, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 

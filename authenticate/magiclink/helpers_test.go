@@ -26,13 +26,13 @@ const testPurpose = "magic-link"
 // the tests can keep passing *onetime.Manager around.
 var clocks sync.Map // *onetime.Manager -> *clockwork.FakeClock
 
-func testTokens(t *testing.T) *onetime.Manager {
+func testTokens(t *testing.T) *onetime.Tokens {
 	t.Helper()
 
 	return tokensWithStore(t, nil)
 }
 
-func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Manager {
+func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Tokens {
 	t.Helper()
 
 	// The token managers built here read a fake clock, so a test can move a
@@ -45,7 +45,7 @@ func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Manager {
 	}
 	opts = append(opts, onetime.WithStore(store))
 
-	tokens, err := onetime.NewManager(testPurpose, opts...)
+	tokens, err := onetime.New(testPurpose, opts...)
 	require.NoError(t, err)
 
 	clocks.Store(tokens, clock)
@@ -55,13 +55,13 @@ func tokensWithStore(t *testing.T, store onetime.Store) *onetime.Manager {
 }
 
 // tokensWithFailingStore builds a manager whose store refuses every write.
-func tokensWithFailingStore(t *testing.T) *onetime.Manager {
+func tokensWithFailingStore(t *testing.T) *onetime.Tokens {
 	t.Helper()
 
 	return tokensWithStore(t, insertFailsStore{Store: onetime.NewMemoryStore()})
 }
 
-func advanceClockPast(t *testing.T, tokens *onetime.Manager) {
+func advanceClockPast(t *testing.T, tokens *onetime.Tokens) {
 	t.Helper()
 
 	c, ok := clocks.Load(tokens)
@@ -70,7 +70,7 @@ func advanceClockPast(t *testing.T, tokens *onetime.Manager) {
 	c.(*clockwork.FakeClock).Advance(tokens.TTL() + time.Second)
 }
 
-func issueFor(t *testing.T, tokens *onetime.Manager, subject string) string {
+func issueFor(t *testing.T, tokens *onetime.Tokens, subject string) string {
 	t.Helper()
 
 	presented, _, err := tokens.Issue(t.Context(), subject)
@@ -87,17 +87,17 @@ func freshUnknownToken(t *testing.T) string {
 	return issueFor(t, tokensWithStore(t, onetime.NewMemoryStore()), "u-1")
 }
 
-func consume(t *testing.T, tokens *onetime.Manager, presented string) {
+func consume(t *testing.T, tokens *onetime.Tokens, presented string) {
 	t.Helper()
 
 	_, err := tokens.Redeem(t.Context(), presented, "")
 	require.NoError(t, err)
 }
 
-func newManager(t *testing.T, baseURL string, opts ...magiclink.Option) (*magiclink.Manager, error) {
+func newManager(t *testing.T, baseURL string, opts ...magiclink.Option) (*magiclink.Links, error) {
 	t.Helper()
 
-	return magiclink.NewManager(testTokens(t), stubLoader{}, &recordingSender{}, baseURL, opts...)
+	return magiclink.New(testTokens(t), stubLoader{}, &recordingSender{}, baseURL, opts...)
 }
 
 // --- user loaders ---------------------------------------------------------

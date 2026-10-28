@@ -29,7 +29,7 @@ import (
 
 func auditStore(t *testing.T, recs ...signingkey.Record) signingkey.KeyStore {
 	t.Helper()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	for _, rec := range recs {
 		require.NoError(t, store.Store(t.Context(), rec))
 	}
@@ -58,13 +58,13 @@ func auditAlg(t *testing.T, alg signingkey.Alg) jwa.SignatureAlgorithm {
 // end the defect was found at: a token the manager signed still verifies
 // against what the manager publishes afterwards.
 func TestPublishedKeysDoNotBreakTheManagersOwnVerification(t *testing.T) {
-	km, err := signingkey.NewKeyManager(t.Context(),
-		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+	km, err := signingkey.New(t.Context(),
+		signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 		signingkey.WithAlgs(signingkey.EdDSA),
 	)
 	require.NoError(t, err)
 
-	kid, signer, ok := km.GetSigner(signingkey.EdDSA)
+	kid, signer, ok := km.Signer(signingkey.EdDSA)
 	require.True(t, ok)
 
 	exported, err := km.VerificationKeys()
@@ -93,7 +93,7 @@ func TestStoredRecordAlgMustMatchItsKey(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(auditStore(t, signingkey.Record{
 			Kid: "lies", Alg: signingkey.ES256, Private: auditDER(t, rsaKey),
 			CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -111,7 +111,7 @@ func TestES256KeyMustBeP256(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
 	require.NoError(t, err)
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(auditStore(t, signingkey.Record{
 			Kid: "p384", Alg: signingkey.ES256, Private: auditDER(t, key),
 			CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -122,7 +122,7 @@ func TestES256KeyMustBeP256(t *testing.T) {
 		return // refused, which is what this test asks for
 	}
 
-	_, signer, ok := km.GetSigner(signingkey.ES256)
+	_, signer, ok := km.Signer(signingkey.ES256)
 	require.True(t, ok)
 	signed, err := jws.Sign([]byte(`{"sub":"x"}`),
 		jws.WithKey(auditAlg(t, signingkey.ES256), signer))
@@ -142,7 +142,7 @@ func TestStoredRecordAlgMustBeSupported(t *testing.T) {
 	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(auditStore(t, signingkey.Record{
 			Kid: "hs", Alg: "HS256", Private: auditDER(t, rsaKey),
 			CreatedAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -152,7 +152,7 @@ func TestStoredRecordAlgMustBeSupported(t *testing.T) {
 		return // refused, which is what this test asks for
 	}
 
-	_, _, ok := km.GetSigner("HS256")
+	_, _, ok := km.Signer("HS256")
 	assert.False(t, ok,
 		"the manager offers no signer for an algorithm WithAlgs would have refused")
 
@@ -175,12 +175,12 @@ func TestStoredRecordKidMustMatchItsPrivateKey(t *testing.T) {
 	swapped := genuine
 	swapped.Private = auditDER(t, other)
 
-	km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(auditStore(t, swapped)))
+	km, err := signingkey.New(t.Context(), signingkey.WithKeyStore(auditStore(t, swapped)))
 	if err != nil {
 		return // refused, which is what this test asks for
 	}
 
-	kid, _, ok := km.GetSigner(signingkey.RS256)
+	kid, _, ok := km.Signer(signingkey.RS256)
 	require.True(t, ok)
 	assert.Equal(t, swapped.Kid, kid,
 		"a record is either refused or held under the identifier it carries; "+
@@ -191,7 +191,7 @@ func TestStoredRecordKidMustMatchItsPrivateKey(t *testing.T) {
 // the caller's slice and every loaded slice alias one backing array.
 func TestInMemoryStoreCopiesPrivateBytes(t *testing.T) {
 	ctx := t.Context()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 
 	secret := []byte{1, 2, 3, 4, 5, 6, 7, 8}
 	want := slices.Clone(secret)
@@ -225,10 +225,10 @@ func TestInMemoryStoreCopiesPrivateBytes(t *testing.T) {
 // F6 — one algorithm named twice is accepted and mints one key per mention on
 // every rotation.
 func TestDuplicateAlgsAreRefused(t *testing.T) {
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	clk := newClock()
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA, signingkey.EdDSA, signingkey.EdDSA),
@@ -258,8 +258,8 @@ func TestDuplicateAlgsAreRefused(t *testing.T) {
 // F7 — a housekeeping interval longer than the key lifetime silently extends
 // how long a key stays published, with no error and no documented limit.
 func TestHousekeepingIntervalMustHonourTheLifetime(t *testing.T) {
-	km, err := signingkey.NewKeyManager(t.Context(),
-		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+	km, err := signingkey.New(t.Context(),
+		signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithLifetime(2*time.Hour),
@@ -288,7 +288,7 @@ func TestTypedNilPortIsAConfigurationError(t *testing.T) {
 		}
 	}()
 
-	km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
+	km, err := signingkey.New(t.Context(), signingkey.WithKeyStore(store))
 	require.Error(t, err, "a nil store is a configuration error whatever its static type")
 	assert.Nil(t, km)
 }
@@ -304,8 +304,8 @@ func TestTheConfiguredAlgorithmsAreNotSharedWithTheConsumer(t *testing.T) {
 	want := []signingkey.Alg{signingkey.EdDSA, signingkey.ES256}
 
 	given := []signingkey.Alg{signingkey.EdDSA, signingkey.ES256}
-	km, err := signingkey.NewKeyManager(t.Context(),
-		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+	km, err := signingkey.New(t.Context(),
+		signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 		signingkey.WithAlgs(given...),
 	)
 	require.NoError(t, err)
@@ -328,14 +328,14 @@ func TestTheConfiguredAlgorithmsAreNotSharedWithTheConsumer(t *testing.T) {
 // contract promises a store can publish the set without decoding private
 // material. Nothing in the package reads the field back, so nothing noticed.
 func TestStoredRecordCarriesThePublishablePublicKey(t *testing.T) {
-	store := signingkey.NewInMemoryKeyStore()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	store := signingkey.NewMemoryKeyStore()
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithAlgs(signingkey.ES256),
 	)
 	require.NoError(t, err)
 
-	kid, _, ok := km.GetSigner(signingkey.ES256)
+	kid, _, ok := km.Signer(signingkey.ES256)
 	require.True(t, ok)
 
 	recs, err := store.LoadAll(t.Context())
@@ -368,7 +368,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	current := realRecord(t, epoch)
 
 	clk := newClock()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, current}}),
 		signingkey.WithClock(clk),
 		signingkey.WithLifetime(24*time.Hour),

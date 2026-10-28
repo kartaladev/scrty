@@ -31,14 +31,14 @@ const (
 	bindingNonceBytes = 16
 )
 
-// Manager runs the magic-link flow: it issues and sends links, and redeems
+// Links runs the magic-link flow: it issues and sends links, and redeems
 // them.
 //
-// Build one with NewManager. A Manager holds no mutable state after
+// Build one with NewManager. A Links holds no mutable state after
 // construction, and is safe for concurrent use as far as the token store, user
 // loader and sender it was given are.
-type Manager struct {
-	tokens *onetime.Manager
+type Links struct {
+	tokens *onetime.Tokens
 	users  identity.UserLoader
 	sender notify.Sender
 
@@ -54,7 +54,7 @@ type Manager struct {
 	acceptSyncDelivery bool
 }
 
-// NewManager builds the magic-link flow.
+// New builds the magic-link flow.
 //
 // linkBaseURL is where the emailed link points — the origin of the page that
 // will post the token back. It is required and must be absolute https, with
@@ -77,14 +77,14 @@ type Manager struct {
 //
 // Every refusal below wraps ErrConfig, so a wiring mistake is seen here and
 // never on the first request that needs it.
-func NewManager(
-	tokens *onetime.Manager,
+func New(
+	tokens *onetime.Tokens,
 	users identity.UserLoader,
 	sender notify.Sender,
 	linkBaseURL string,
 	opts ...Option,
-) (*Manager, error) {
-	m := &Manager{
+) (*Links, error) {
+	m := &Links{
 		tokens:        tokens,
 		users:         users,
 		sender:        sender,
@@ -236,20 +236,20 @@ func validateConfirmPath(path string) error {
 
 // loadByUsername is the default AddressResolver: the submitted address is the
 // username, passed on exactly as it arrived — never trimmed, never case-folded.
-func (m *Manager) loadByUsername(ctx context.Context, address string) (*identity.Details, error) {
+func (m *Links) loadByUsername(ctx context.Context, address string) (*identity.Details, error) {
 	return m.users.LoadByUsername(ctx, address)
 }
 
 // BindingEnabled reports whether links are bound to the device that asked for
 // them. It is true unless WithSameDeviceBinding(false) was given.
-func (m *Manager) BindingEnabled() bool { return m.binding }
+func (m *Links) BindingEnabled() bool { return m.binding }
 
 // TTL is how long an issued link stays redeemable.
 //
 // It is the token manager's time-to-live rather than a setting of this
 // package: a one-time credential's lifetime is configured in one place, with
 // onetime.WithTTL.
-func (m *Manager) TTL() time.Duration { return m.tokens.TTL() }
+func (m *Links) TTL() time.Duration { return m.tokens.TTL() }
 
 // Request issues and sends a sign-in link for the submitted address.
 //
@@ -269,7 +269,7 @@ func (m *Manager) TTL() time.Duration { return m.tokens.TTL() }
 // only for an address that resolves. The non-blocking sender removes the
 // largest part of it — the delivery — and the rest is documented rather than
 // closed here.
-func (m *Manager) Request(ctx context.Context, address, next string) RequestResult {
+func (m *Links) Request(ctx context.Context, address, next string) RequestResult {
 	// The binding value is drawn before anything about the address is known,
 	// so the shape of what is returned cannot depend on what is learned
 	// afterwards. When no link goes out it is a decoy binding nothing, and the
@@ -342,7 +342,7 @@ func (m *Manager) Request(ctx context.Context, address, next string) RequestResu
 // told which of them happened. No record quotes the address — a debug line
 // that did would put every address anyone typed into the log, which is the
 // enumeration this flow exists to prevent, moved one layer down.
-func (m *Manager) resolve(ctx context.Context, address string) (*identity.Details, bool) {
+func (m *Links) resolve(ctx context.Context, address string) (*identity.Details, bool) {
 	details, err := m.resolver(ctx, address)
 
 	switch {
@@ -372,7 +372,7 @@ func (m *Manager) resolve(ctx context.Context, address string) (*identity.Detail
 }
 
 // newBindingNonce draws the value a link is bound to.
-func (m *Manager) newBindingNonce() (string, error) {
+func (m *Links) newBindingNonce() (string, error) {
 	raw := make([]byte, bindingNonceBytes)
 	if _, err := io.ReadFull(m.random, raw); err != nil {
 		return "", fmt.Errorf("magiclink: read random source: %w", err)
@@ -385,7 +385,7 @@ func (m *Manager) newBindingNonce() (string, error) {
 //
 // next is query-escaped, so a target with its own query string arrives intact
 // rather than merging into the link's own parameters.
-func (m *Manager) buildLink(token, next string) string {
+func (m *Links) buildLink(token, next string) string {
 	q := url.Values{}
 	q.Set("token", token)
 	q.Set("next", next)
@@ -409,7 +409,7 @@ func (m *Manager) buildLink(token, next string) string {
 // Every failure except a consumer check's is ErrInvalidLink: a caller cannot
 // tell a wrong token from a disabled user from a store outage. A consumer
 // check's error is returned unchanged.
-func (m *Manager) Redeem(ctx context.Context, token, bindingNonce string, checks ...Check) (Redemption, error) {
+func (m *Links) Redeem(ctx context.Context, token, bindingNonce string, checks ...Check) (Redemption, error) {
 	var (
 		resolved Redemption
 
@@ -473,7 +473,7 @@ func (m *Manager) Redeem(ctx context.Context, token, bindingNonce string, checks
 // else, it would let a link minted for the first person authenticate the
 // second — so the recorded reference is the only thing trusted here, and a
 // loader that answers with a different one is refused rather than believed.
-func (m *Manager) resolveRedemption(ctx context.Context, tok onetime.Token) (*identity.Details, error) {
+func (m *Links) resolveRedemption(ctx context.Context, tok onetime.Token) (*identity.Details, error) {
 	user := identity.UserID(tok.Subject)
 
 	details, err := m.users.LoadByUserID(ctx, user)
@@ -511,7 +511,7 @@ func (m *Manager) resolveRedemption(ctx context.Context, tok onetime.Token) (*id
 // the traffic that is simply wrong and at error for the traffic that means
 // something is broken. No record here carries the presented token or the
 // binding value.
-func (m *Manager) redemptionError(ctx context.Context, err, refusal error) error {
+func (m *Links) redemptionError(ctx context.Context, err, refusal error) error {
 	switch {
 	case err == nil:
 		return nil
@@ -555,6 +555,6 @@ func (m *Manager) redemptionError(ctx context.Context, err, refusal error) error
 // A token store that cannot purge yields an error matching
 // onetime.ErrReapUnsupported. Nothing calls it on a timer; ExpiryTask wraps it
 // for a sweep.
-func (m *Manager) PurgeExpired(ctx context.Context) (int, error) {
+func (m *Links) PurgeExpired(ctx context.Context) (int, error) {
 	return m.tokens.PurgeExpired(ctx)
 }

@@ -147,7 +147,7 @@ func TestAdmissionCountsOwnPasskeys(t *testing.T) {
 	cases := []testCase{
 		{
 			name:    "a passkey login without user verification is refused when the passkey method is configured",
-			opts:    []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred)},
+			opts:    []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred)},
 			session: passkeyLogin,
 			rc:      ownMethod,
 			assert:  refused,

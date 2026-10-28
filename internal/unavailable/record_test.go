@@ -135,7 +135,7 @@ func TestUnavailable_RecordErrors(t *testing.T) {
 		},
 		{
 			name: "fall back: failed records reaching the limit locally exceed once reads succeed",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(t *testing.T, h *harness) {
 				h.writesFailReadsSucceed()
 				for _, err := range h.recordN(t, testKey, testLimit) {
@@ -150,7 +150,7 @@ func TestUnavailable_RecordErrors(t *testing.T) {
 		},
 		{
 			name: "fall back: failed records short of the limit do not exceed",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(t *testing.T, h *harness) {
 				h.writesFailReadsSucceed()
 				h.recordN(t, testKey, testLimit-1)
@@ -163,7 +163,7 @@ func TestUnavailable_RecordErrors(t *testing.T) {
 		},
 		{
 			name: "fall back: the shared count exceeds on its own",
-			mode: ratelimit.UnavailableFallBackToLocal,
+			mode: ratelimit.UnavailableFallbackToLocal,
 			arrange: func(_ *testing.T, h *harness) {
 				h.backend.EXPECT().Exceeded(gomock.Any(), testKey).Return(true, nil)
 			},

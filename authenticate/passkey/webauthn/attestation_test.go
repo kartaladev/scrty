@@ -55,7 +55,7 @@ func TestAttestation(t *testing.T) {
 		name   string
 		opts   func(t *testing.T, e *attestationEnv) []webauthn.Option
 		body   func(t *testing.T, a *webauthntest.Authenticator, e *attestationEnv) []byte
-		assert func(t *testing.T, nc *passkey.NewCredential, err error)
+		assert func(t *testing.T, nc *passkey.CredentialInput, err error)
 	}
 
 	none := func(_ *testing.T, a *webauthntest.Authenticator, _ *attestationEnv) []byte {
@@ -72,7 +72,7 @@ func TestAttestation(t *testing.T) {
 			return []webauthn.Option{webauthn.WithTrustedAttestation(e.source(t, mdsEntry(e.aaguid, e.attRoot, "FIDO_CERTIFIED")), allowed...)}
 		}
 	}
-	refused := func(t *testing.T, nc *passkey.NewCredential, err error) {
+	refused := func(t *testing.T, nc *passkey.CredentialInput, err error) {
 		require.ErrorIs(t, err, passkey.ErrAttestationRefused)
 		assert.Nil(t, nc)
 	}
@@ -81,7 +81,7 @@ func TestAttestation(t *testing.T) {
 		{
 			name: "the default accepts none and records no format",
 			body: none,
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Empty(t, nc.AttestationFormat)
 				assert.Empty(t, nc.AttestationStatement)
@@ -91,7 +91,7 @@ func TestAttestation(t *testing.T) {
 		{
 			name: "the default accepts an unrequested packed statement and records nothing of it",
 			body: self,
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Empty(t, nc.AttestationFormat)
 				assert.Empty(t, nc.AttestationStatement)
@@ -103,7 +103,7 @@ func TestAttestation(t *testing.T) {
 				return []webauthn.Option{webauthn.WithAttestationRecord()}
 			},
 			body: self,
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "packed", nc.AttestationFormat)
 				var stmt map[string]any
@@ -119,7 +119,7 @@ func TestAttestation(t *testing.T) {
 				return []webauthn.Option{webauthn.WithAttestationRecord()}
 			},
 			body: none,
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "none", nc.AttestationFormat)
 				assert.Empty(t, nc.AttestationStatement)
@@ -141,7 +141,7 @@ func TestAttestation(t *testing.T) {
 			name: "trusted mode accepts a statement chaining to a certified metadata entry",
 			opts: trusted(),
 			body: basic,
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.True(t, nc.AttestationTrusted)
 				assert.Equal(t, "packed", nc.AttestationFormat)
@@ -152,7 +152,7 @@ func TestAttestation(t *testing.T) {
 			name: "trusted mode accepts a model on the allowlist",
 			opts: func(t *testing.T, e *attestationEnv) []webauthn.Option { return trusted(e.aaguid)(t, e) },
 			body: basic,
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.True(t, nc.AttestationTrusted)
 			},
@@ -215,7 +215,7 @@ func TestAttestation(t *testing.T) {
 				a.UV = false
 				return basicAttestation(t, a, e.att)
 			},
-			assert: func(t *testing.T, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, nc *passkey.CredentialInput, err error) {
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, passkey.ErrAttestationRefused)
 				assert.Nil(t, nc)
@@ -237,7 +237,7 @@ func TestAttestation(t *testing.T) {
 			a.AAGUID = e.aaguid
 			p, err := v.ParseRegistration(tc.body(t, a, e))
 			require.NoError(t, err)
-			nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+			nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 			tc.assert(t, nc, err)
 		})
 	}
@@ -280,7 +280,7 @@ func TestAttestation_Conveyance(t *testing.T) {
 			}
 			raw, err := newVerifier(t, opts...).CreationOptions(t.Context(), passkey.CreationInput{
 				UserHandle: []byte("handle"), UserName: "alice", DisplayName: "Alice", Challenge: challenge,
-				Timeout: time.Minute, UV: passkey.UVRequired, ResidentKey: passkey.ResidentKeyRequired,
+				Timeout: time.Minute, UV: passkey.UserVerificationRequired, ResidentKey: passkey.ResidentKeyRequired,
 			})
 			require.NoError(t, err)
 			tc.assert(t, decode(t, raw))

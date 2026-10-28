@@ -46,9 +46,9 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 
 ## 3. Phase 2: renames (D8–D11)
 
-- [ ] 3.1 Rename every `Manager` type, constructor, option type and dependent signature as D8 says, through gopls across the workspace. This includes `httpsec`'s `Enable…` parameters and `WithSessions`, and `NewFirstOf` for `authenticate` and `authorize`. Verify: `go build ./...` and `go test ./...` pass in every module, and `evidence/check.sh` reports only mapped API differences.
-- [ ] 3.2 Rename the outliers in D9, including both the interface method and the implementation of `KeySource.Signer`, and `mfa.MaxEmailCodeAttempts`. Verify: as in 3.1.
-- [ ] 3.3 Apply D10's sentinel rule (`session`, `password`, `token`, `policy`) and its `policy` suffix rule (`IdleTimeout`, `ConcurrentSessions`, `PasswordAge`, `NewMFA`, `NewMFARequirement`). Verify: as in 3.1, and every backend alias still satisfies `errors.Is` against its source.
+- [x] 3.1 Rename every `Manager` type, constructor, option type and dependent signature as D8 says, through gopls across the workspace. This includes `httpsec`'s `Enable…` parameters and `WithSessions`, and `NewFirstOf` for `authenticate` and `authorize`. Verify: `go build ./...` and `go test ./...` pass in every module, and `evidence/check.sh` reports only mapped API differences.
+- [x] 3.2 Rename the outliers in D9, including both the interface method and the implementation of `KeySource.Signer`, and `mfa.MaxEmailCodeAttempts`. Verify: as in 3.1.
+- [x] 3.3 Apply D10's sentinel rule (`session`, `password`, `token`, `policy`) and its `policy` suffix rule (`IdleTimeout`, `ConcurrentSessions`, `PasswordAge`, `NewMFA`, `NewMFARequirement`). Verify: as in 3.1, and every backend alias still satisfies `errors.Is` against its source.
 - [ ] 3.4 Apply D10's option table and the enum-prefix renames, package by package. Verify: as in 3.1, and every renamed option's godoc still names the default it replaces.
 - [ ] 3.5 Change error-message prefixes to the new package names, and the identifiers that messages name to their new names (D11). In the assertions that check them, update only the prefix and those identifiers. Verify:
   - `go test ./...` passes in every module;

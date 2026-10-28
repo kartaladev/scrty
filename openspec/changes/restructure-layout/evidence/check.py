@@ -147,7 +147,28 @@ def check_api(m, ev, fresh, apidiff, empty):
     return problems
 
 
+TOKEN = re.compile(r"\b([a-z]\w*)\.([A-Z]\w*)\b")
+
+
+def short_idents(m):
+    """{"oldpkg.Old": "newpkg.New"} by short package name, for identifiers named inside test names."""
+    if not hasattr(m, "_short"):
+        m._short = {}
+        for old, new in m.idents.items():
+            opkg, oname = split_qualified(old)
+            npkg, nname = split_qualified(new)
+            if "." in oname:
+                continue
+            final = npkg.rsplit("/", 1)[-1] + "." + nname
+            m._short[opkg.rsplit("/", 1)[-1] + "." + oname] = final
+            m._short[m.path(opkg).rsplit("/", 1)[-1] + "." + oname] = final
+    return m._short
+
+
 def map_test(m, pkg, name):
+    # A subtest named after an identifier ("session.ErrSessionExpired") follows its rename.
+    short = short_idents(m)
+    name = TOKEN.sub(lambda mo: short.get(mo.group(0), mo.group(0)), name)
     best = None
     for old, new in m.tests:
         opkg, oname = split_test(old)

@@ -36,7 +36,7 @@ type ChangePasswordFunc func(ex *Exchange) error
 // passwordChangeGate holds every session that owes a password change, and lets
 // the consumer's resolve endpoint through so the debt can be paid.
 type passwordChangeGate struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 
 	// path and change are the consumer's resolve endpoint, and are empty when
 	// they registered none. Without one, only a new login clears the challenge.

@@ -17,7 +17,7 @@
 // length it returns in nanoseconds. What this reveals is the length of the
 // password the caller just supplied, which the caller already knows, so the
 // exception costs nothing an attacker can use — but the equal-cost claim is
-// Argon2id's and scrypt's, not bcrypt's. See [ErrPasswordTooLong].
+// Argon2id's and scrypt's, not bcrypt's. See [ErrTooLong].
 //
 // Passwords are hashed exactly as given — no trimming, case folding or Unicode
 // normalization — because any of those would silently let a different string
@@ -73,13 +73,13 @@ var ErrInvalidParameters = errors.New("password: parameters the algorithm will r
 // the first login after deployment.
 var ErrNoRandomSource = errors.New("password: salt source is nil")
 
-// ErrPasswordTooLong is returned when a password exceeds what its algorithm can
+// ErrTooLong is returned when a password exceeds what its algorithm can
 // hash. Only bcrypt has such a limit: 72 bytes.
 //
 // It is an error rather than a silent truncation because truncating is a
 // authentication bypass in disguise — two passwords sharing a 72-byte prefix
 // would become the same credential.
-var ErrPasswordTooLong = errors.New("password: password exceeds the algorithm's maximum length")
+var ErrTooLong = errors.New("password: password exceeds the algorithm's maximum length")
 
 // Encoder hashes passwords and checks them against a stored hash.
 type Encoder interface {

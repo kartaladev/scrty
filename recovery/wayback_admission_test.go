@@ -107,7 +107,7 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 			lookup := NewMockMFARequirementLookup(ctrl)
 			tc.lookup(lookup)
 
-			p, err := policy.NewMFARequirementPolicy(lookup, nil,
+			p, err := policy.NewMFARequirement(lookup, nil,
 				append([]policy.MFARequirementOption{policy.WithFederatedAssurance(tc.mode)}, tc.opts...)...)
 			require.NoError(t, err)
 			adm, ok := p.(policy.LoginAdmission)

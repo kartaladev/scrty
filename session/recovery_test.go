@@ -30,12 +30,12 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 		name string
 		// steps acts on the created session and returns the session to
 		// assert on.
-		steps  func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, s *session.Session) *session.Session
+		steps  func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, s *session.Session) *session.Session
 		assert func(t *testing.T, s *session.Session)
 	}
 
 	// markAndReload marks s at 09:00, saves it and reads it back.
-	markAndReload := func(t *testing.T, m *session.Manager, s *session.Session) *session.Session {
+	markAndReload := func(t *testing.T, m *session.Sessions, s *session.Session) *session.Session {
 		t.Helper()
 
 		m.MarkRecoveryPending(s, recoveryLifetime, at(9, 0))
@@ -50,7 +50,7 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "entered at recovery",
-			steps: func(t *testing.T, m *session.Manager, _ *clockwork.FakeClock, s *session.Session) *session.Session {
+			steps: func(t *testing.T, m *session.Sessions, _ *clockwork.FakeClock, s *session.Session) *session.Session {
 				return markAndReload(t, m, s)
 			},
 			assert: func(t *testing.T, s *session.Session) {
@@ -64,7 +64,7 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 		},
 		{
 			name: "a session already confined keeps its recorded deadline",
-			steps: func(t *testing.T, m *session.Manager, _ *clockwork.FakeClock, s *session.Session) *session.Session {
+			steps: func(t *testing.T, m *session.Sessions, _ *clockwork.FakeClock, s *session.Session) *session.Session {
 				m.MarkEnrolmentPending(s, enrolmentLifetime)
 				return markAndReload(t, m, s)
 			},
@@ -75,7 +75,7 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 		},
 		{
 			name: "activity cannot extend the state",
-			steps: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, s *session.Session) *session.Session {
+			steps: func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, s *session.Session) *session.Session {
 				loaded := markAndReload(t, m, s)
 				clk.Advance(14 * time.Minute)
 				require.NoError(t, m.Touch(t.Context(), loaded))
@@ -92,7 +92,7 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 		},
 		{
 			name: "restored by a later binding keeps the recovery time",
-			steps: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, s *session.Session) *session.Session {
+			steps: func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, s *session.Session) *session.Session {
 				loaded := markAndReload(t, m, s)
 				clk.Advance(5 * time.Minute)
 				require.NoError(t, m.RestoreEnrolmentDeadlines(loaded))
@@ -107,10 +107,10 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 		},
 		{
 			name: "past its lowered deadline it is not restored",
-			steps: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, s *session.Session) *session.Session {
+			steps: func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, s *session.Session) *session.Session {
 				loaded := markAndReload(t, m, s)
 				clk.Advance(recoveryLifetime)
-				require.ErrorIs(t, m.RestoreEnrolmentDeadlines(loaded), session.ErrSessionExpired)
+				require.ErrorIs(t, m.RestoreEnrolmentDeadlines(loaded), session.ErrExpired)
 
 				return loaded
 			},
@@ -121,7 +121,7 @@ func TestManager_MarkRecoveryPending(t *testing.T) {
 		},
 		{
 			name: "recovery time survives rotation",
-			steps: func(t *testing.T, m *session.Manager, _ *clockwork.FakeClock, s *session.Session) *session.Session {
+			steps: func(t *testing.T, m *session.Sessions, _ *clockwork.FakeClock, s *session.Session) *session.Session {
 				loaded := markAndReload(t, m, s)
 				rotated, err := m.Rotate(t.Context(), loaded)
 				require.NoError(t, err)

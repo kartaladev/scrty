@@ -20,7 +20,7 @@ func TestManagerLoad(t *testing.T) {
 		at time.Duration
 		// id, when non-empty, is loaded instead of the created session's.
 		id     string
-		opts   []session.ManagerOption
+		opts   []session.Option
 		assert func(t *testing.T, s *session.Session, err error)
 	}
 
@@ -38,7 +38,7 @@ func TestManagerLoad(t *testing.T) {
 			name: "an identifier that was never issued is not found",
 			id:   "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 			assert: func(t *testing.T, s *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				assert.Nil(t, s)
 			},
 		},
@@ -47,8 +47,8 @@ func TestManagerLoad(t *testing.T) {
 			name: "a session past its idle deadline is expired, not missing",
 			at:   31 * time.Minute,
 			assert: func(t *testing.T, s *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound,
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrNotFound,
 					"an expired session was reported as one that never existed, so the caller cannot tell 'log in again' from 'no such session'")
 				assert.Nil(t, s, "an expired session was served")
 			},
@@ -58,9 +58,9 @@ func TestManagerLoad(t *testing.T) {
 			// passed, so this row fails unless both are enforced.
 			name: "a session past its absolute deadline is expired",
 			at:   13 * time.Hour,
-			opts: []session.ManagerOption{session.WithIdleTimeout(24 * time.Hour)},
+			opts: []session.Option{session.WithIdleTimeout(24 * time.Hour)},
 			assert: func(t *testing.T, s *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 				assert.Nil(t, s, "an expired session was served")
 			},
 		},
@@ -70,7 +70,7 @@ func TestManagerLoad(t *testing.T) {
 			name: "a session exactly at its idle deadline is expired",
 			at:   30 * time.Minute,
 			assert: func(t *testing.T, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 	}

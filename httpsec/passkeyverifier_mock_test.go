@@ -276,10 +276,10 @@ func (c_2 *MockPasskeyVerifierVerifyAssertionCall) DoAndReturn(f func(context.Co
 }
 
 // VerifyRegistration mocks base method.
-func (m *MockPasskeyVerifier) VerifyRegistration(ctx context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.NewCredential, error) {
+func (m *MockPasskeyVerifier) VerifyRegistration(ctx context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.CredentialInput, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "VerifyRegistration", ctx, p, exp)
-	ret0, _ := ret[0].(*passkey.NewCredential)
+	ret0, _ := ret[0].(*passkey.CredentialInput)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -297,19 +297,19 @@ type MockPasskeyVerifierVerifyRegistrationCall struct {
 }
 
 // Return rewrite *gomock.Call.Return
-func (c *MockPasskeyVerifierVerifyRegistrationCall) Return(arg0 *passkey.NewCredential, arg1 error) *MockPasskeyVerifierVerifyRegistrationCall {
+func (c *MockPasskeyVerifierVerifyRegistrationCall) Return(arg0 *passkey.CredentialInput, arg1 error) *MockPasskeyVerifierVerifyRegistrationCall {
 	c.Call = c.Call.Return(arg0, arg1)
 	return c
 }
 
 // Do rewrite *gomock.Call.Do
-func (c *MockPasskeyVerifierVerifyRegistrationCall) Do(f func(context.Context, passkey.ParsedRegistration, passkey.RegistrationExpectation) (*passkey.NewCredential, error)) *MockPasskeyVerifierVerifyRegistrationCall {
+func (c *MockPasskeyVerifierVerifyRegistrationCall) Do(f func(context.Context, passkey.ParsedRegistration, passkey.RegistrationExpectation) (*passkey.CredentialInput, error)) *MockPasskeyVerifierVerifyRegistrationCall {
 	c.Call = c.Call.Do(f)
 	return c
 }
 
 // DoAndReturn rewrite *gomock.Call.DoAndReturn
-func (c *MockPasskeyVerifierVerifyRegistrationCall) DoAndReturn(f func(context.Context, passkey.ParsedRegistration, passkey.RegistrationExpectation) (*passkey.NewCredential, error)) *MockPasskeyVerifierVerifyRegistrationCall {
+func (c *MockPasskeyVerifierVerifyRegistrationCall) DoAndReturn(f func(context.Context, passkey.ParsedRegistration, passkey.RegistrationExpectation) (*passkey.CredentialInput, error)) *MockPasskeyVerifierVerifyRegistrationCall {
 	c.Call = c.Call.DoAndReturn(f)
 	return c
 }

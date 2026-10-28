@@ -37,7 +37,7 @@ func SessionAmbient() storetest.Ambient[session.Store] {
 		Refuse: func(ctx context.Context, s session.Store) error {
 			return s.Save(ctx, DurableSession("ambient-sid-never-created", time.Now()))
 		},
-		Refusal: session.ErrSessionNotFound,
+		Refusal: session.ErrNotFound,
 	}
 }
 

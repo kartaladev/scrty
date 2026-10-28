@@ -990,14 +990,14 @@ func TestChargeEmailCode(t *testing.T) {
 			name: "the fifth attempt is charged",
 			setup: func(t *testing.T, s *mfa.MemoryEnrolmentStore) {
 				provenOn(t, s, "u-1", g1, now)
-				charge(t, s, mfa.MaxEmailCodeFailures-1)
+				charge(t, s, mfa.MaxEmailCodeAttempts-1)
 			},
 			gen: g1,
 			at:  now,
 			assert: func(t *testing.T, got result, err error) {
 				require.NoError(t, err)
 				assert.True(t, got.charged)
-				assert.Equal(t, mfa.MaxEmailCodeFailures, got.count)
+				assert.Equal(t, mfa.MaxEmailCodeAttempts, got.count)
 				assert.NotNil(t, got.after.EmailCode, "a correct code charged fifth must still compare")
 			},
 		},
@@ -1005,7 +1005,7 @@ func TestChargeEmailCode(t *testing.T) {
 			name: "a sixth attempt is refused after five were charged",
 			setup: func(t *testing.T, s *mfa.MemoryEnrolmentStore) {
 				provenOn(t, s, "u-1", g1, now)
-				charge(t, s, mfa.MaxEmailCodeFailures)
+				charge(t, s, mfa.MaxEmailCodeAttempts)
 			},
 			gen:    g1,
 			at:     now,
@@ -1074,7 +1074,7 @@ func TestChargeEmailCode(t *testing.T) {
 			name: "a code out of attempts and past its expiry stays on the enrolment",
 			setup: func(t *testing.T, s *mfa.MemoryEnrolmentStore) {
 				provenOn(t, s, "u-1", g1, now)
-				charge(t, s, mfa.MaxEmailCodeFailures)
+				charge(t, s, mfa.MaxEmailCodeAttempts)
 			},
 			gen: g1,
 			at:  now.Add(11 * time.Minute),
@@ -1156,8 +1156,8 @@ func TestChargeEmailCodeRace(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	assert.Equal(t, int64(mfa.MaxEmailCodeFailures), charged.Load(), "one code, five comparisons at most")
-	assert.Equal(t, mfa.MaxEmailCodeFailures, stored(t, s, "u-1").EmailCodeAttempts)
+	assert.Equal(t, int64(mfa.MaxEmailCodeAttempts), charged.Load(), "one code, five comparisons at most")
+	assert.Equal(t, mfa.MaxEmailCodeAttempts, stored(t, s, "u-1").EmailCodeAttempts)
 }
 
 // TestChargeVerifyAttempt pins what the memory store adds to the suite's

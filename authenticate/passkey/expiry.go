@@ -27,7 +27,7 @@ import (
 // onetime.Reaper makes each task fail with an error matching both
 // expiry.ErrPurgeUnsupported and onetime.ErrReapUnsupported. A consumer
 // renames a task by setting Name on the returned value, or leaves one out.
-func (m *Manager) ExpiryTasks() []expiry.Task {
+func (m *Passkeys) ExpiryTasks() []expiry.Task {
 	return []expiry.Task{
 		onetime.ExpiryTaskNamed("passkey-registration-challenges", m.registration),
 		onetime.ExpiryTaskNamed("passkey-login-challenges", m.login),

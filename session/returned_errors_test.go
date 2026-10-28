@@ -29,9 +29,9 @@ const returnedErrorsID = "q3Vn8xZr0tLbW2mKc7YpE4sHd9FjA1uNo6GiTeRwXyQ"
 
 // sessionSentinels is every sentinel a session store may return bare.
 var sessionSentinels = []error{
-	session.ErrSessionNotFound,
-	session.ErrSessionExpired,
-	session.ErrSessionUnreadable,
+	session.ErrNotFound,
+	session.ErrExpired,
+	session.ErrUnreadable,
 }
 
 // returnedErrorsSession is a live session on the fixed clock the table's
@@ -99,7 +99,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 		assert func(t *testing.T, err error)
 	}
 
-	manager := func(t *testing.T, d returnedErrorsDoubles) *session.Manager {
+	manager := func(t *testing.T, d returnedErrorsDoubles) *session.Sessions {
 		t.Helper()
 
 		return managerFor(t, session.WithStore(d.store), session.WithClock(clockwork.NewFakeClockAt(createdAt)))
@@ -241,11 +241,11 @@ func TestSessionReturnedErrors(t *testing.T) {
 			name: "manager rotate: a lost race comes back bare",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
-				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrSessionRenewalConflict)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrRenewalConflict)
 				_, err := manager(t, d).Rotate(ctx, returnedErrorsSession(""))
 				return err
 			},
-			assert: isBare(session.ErrSessionRenewalConflict),
+			assert: isBare(session.ErrRenewalConflict),
 		},
 		{
 			// The successor is stored, so a failed delete is logged by type,
@@ -286,11 +286,11 @@ func TestSessionReturnedErrors(t *testing.T) {
 			name: "manager rotate with grace: a lost race comes back bare",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).Return(returnedErrorsSession(""), nil)
-				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrSessionRenewalConflict)
+				d.store.EXPECT().Supersede(gomock.Any(), gomock.Any()).Return(session.ErrRenewalConflict)
 				_, _, err := manager(t, d).RotateWithGrace(ctx, returnedErrorsSession(""), time.Second)
 				return err
 			},
-			assert: isBare(session.ErrSessionRenewalConflict),
+			assert: isBare(session.ErrRenewalConflict),
 		},
 		{
 			name: "encrypted supersede: a successor that moved on comes back bare",
@@ -306,11 +306,11 @@ func TestSessionReturnedErrors(t *testing.T) {
 			name: "manager load: a store error wrapping a sentinel gets fixed text and still matches it",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {
 				d.store.EXPECT().Load(gomock.Any(), returnedErrorsID).
-					Return(nil, fmt.Errorf("%w: %w", session.ErrSessionNotFound, errStoreQuotes))
+					Return(nil, fmt.Errorf("%w: %w", session.ErrNotFound, errStoreQuotes))
 				_, err := manager(t, d).Load(ctx, returnedErrorsID)
 				return err
 			},
-			assert: hidesStoreText(session.ErrSessionNotFound),
+			assert: hidesStoreText(session.ErrNotFound),
 		},
 
 		// Encrypted store: the inner store's and the cipher's failures.
@@ -371,7 +371,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 				return err
 			},
 			assert: func(t *testing.T, err error) {
-				hidesStoreText(session.ErrSessionUnreadable)(t, err)
+				hidesStoreText(session.ErrUnreadable)(t, err)
 				assert.NotContains(t, err.Error(), returnedErrorsID)
 			},
 		},
@@ -385,7 +385,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 			assert: func(t *testing.T, err error) {
 				t.Helper()
 
-				require.ErrorIs(t, err, session.ErrSessionUnreadable)
+				require.ErrorIs(t, err, session.ErrUnreadable)
 				assert.NotContains(t, err.Error(), returnedErrorsID)
 			},
 		},

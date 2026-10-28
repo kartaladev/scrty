@@ -66,7 +66,7 @@ func (exampleTokens) Generate(context.Context, string, *identity.Principal) (str
 }
 
 func (exampleTokens) Verify(context.Context, string) (*token.Claims, error) {
-	return nil, token.ErrTokenInvalid
+	return nil, token.ErrInvalid
 }
 
 func exampleUser() exampleUsers {
@@ -97,8 +97,8 @@ func ExampleRelyingParty() {
 
 // exampleSessions returns the session manager an example wires as the
 // revoker; a real application passes the one its chain uses.
-func exampleSessions() *session.Manager {
-	sessions, err := session.NewManager()
+func exampleSessions() *session.Sessions {
+	sessions, err := session.New()
 	if err != nil {
 		panic(err)
 	}
@@ -240,9 +240,9 @@ func ExampleWithoutSessionRevocationOnRemoval() {
 // passkey and the session that removes it.
 func ExampleKeepOtherSessions() {
 	var (
-		manager *passkey.Manager // built as in ExampleNew
-		current *session.Session // the session removing the passkey
-		cid     id.ID            // the passkey to remove
+		manager *passkey.Passkeys // built as in ExampleNew
+		current *session.Session  // the session removing the passkey
+		cid     id.ID             // the passkey to remove
 		rc      passkey.RegistrationContext
 	)
 
@@ -350,7 +350,7 @@ func Example_chain() {
 	}}
 	users := exampleUser()
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	if err != nil {
 		panic(err)
 	}

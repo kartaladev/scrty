@@ -16,10 +16,10 @@ func TestNewManager(t *testing.T) {
 	type testCase struct {
 		name      string
 		delegates func(t *testing.T, ctrl *gomock.Controller) []authenticate.Authenticator
-		assert    func(t *testing.T, m *authenticate.Manager, err error)
+		assert    func(t *testing.T, m *authenticate.FirstOf, err error)
 	}
 
-	configError := func(t *testing.T, m *authenticate.Manager, err error) {
+	configError := func(t *testing.T, m *authenticate.FirstOf, err error) {
 		t.Helper()
 
 		require.ErrorIs(t, err, authenticate.ErrConfig)
@@ -34,7 +34,7 @@ func TestNewManager(t *testing.T) {
 
 				return []authenticate.Authenticator{NewMockAuthenticator(ctrl)}
 			},
-			assert: func(t *testing.T, m *authenticate.Manager, err error) {
+			assert: func(t *testing.T, m *authenticate.FirstOf, err error) {
 				t.Helper()
 
 				require.NoError(t, err)
@@ -66,7 +66,7 @@ func TestNewManager(t *testing.T) {
 
 				// What an unchecked constructor error hands over: `d == nil` is
 				// false, so an unchecked manager panics on the first request.
-				var unchecked *authenticate.Manager
+				var unchecked *authenticate.FirstOf
 
 				return []authenticate.Authenticator{unchecked}
 			},
@@ -80,7 +80,7 @@ func TestNewManager(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 
-			m, err := authenticate.NewManager(tc.delegates(t, ctrl)...)
+			m, err := authenticate.NewFirstOf(tc.delegates(t, ctrl)...)
 			tc.assert(t, m, err)
 		})
 	}

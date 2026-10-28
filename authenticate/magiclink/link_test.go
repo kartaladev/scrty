@@ -31,7 +31,7 @@ func TestRequestBuildsLink(t *testing.T) {
 
 		sender := &recordingSender{}
 
-		m, err := magiclink.NewManager(testTokens(t), activeLoader(), sender, "https://app.example.com")
+		m, err := magiclink.New(testTokens(t), activeLoader(), sender, "https://app.example.com")
 		require.NoError(t, err)
 
 		m.Request(t.Context(), "ada@example.com", "/dashboard?tab=a&b=c")
@@ -55,7 +55,7 @@ func TestRequestBuildsLink(t *testing.T) {
 
 		sender := &recordingSender{}
 
-		m, err := magiclink.NewManager(testTokens(t), activeLoader(), sender, "https://app.example.com:8443",
+		m, err := magiclink.New(testTokens(t), activeLoader(), sender, "https://app.example.com:8443",
 			magiclink.WithConfirmPath("/auth/link"))
 		require.NoError(t, err)
 
@@ -83,7 +83,7 @@ func TestRequestBuildsLink(t *testing.T) {
 			}
 		}
 
-		m, err := magiclink.NewManager(testTokens(t), activeLoader(), sender, "https://app.example.com",
+		m, err := magiclink.New(testTokens(t), activeLoader(), sender, "https://app.example.com",
 			magiclink.WithRenderer(renderer))
 		require.NoError(t, err)
 
@@ -107,7 +107,7 @@ func TestRequestBuildsLink(t *testing.T) {
 			return notify.Message{Subject: "s", TextBody: link}
 		}
 
-		m, err := magiclink.NewManager(testTokens(t), activeLoader(), sender, "https://app.example.com",
+		m, err := magiclink.New(testTokens(t), activeLoader(), sender, "https://app.example.com",
 			magiclink.WithRenderer(renderer))
 		require.NoError(t, err)
 

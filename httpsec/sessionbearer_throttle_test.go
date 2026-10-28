@@ -46,7 +46,7 @@ func (h *authHarness) knowsOnlyTestReference() *referenceStore {
 			if id != testReference {
 				counts.unknown.Add(1)
 
-				return nil, session.ErrSessionNotFound
+				return nil, session.ErrNotFound
 			}
 
 			counts.live.Add(1)
@@ -373,7 +373,7 @@ func (l *failureRecordingLimiter) RecordFailure(ctx context.Context, key string)
 type lateRenewals struct {
 	clk     *clockwork.FakeClock
 	store   *loadCountingStore
-	manager *session.Manager
+	manager *session.Sessions
 	chain   *httpsec.Chain
 
 	mu       sync.Mutex
@@ -388,7 +388,7 @@ func newLateRenewals(t *testing.T) *lateRenewals {
 
 	var err error
 
-	l.manager, err = session.NewManager(
+	l.manager, err = session.New(
 		session.WithClock(l.clk),
 		session.WithStore(l.store),
 		session.WithUnusedSuccessorRecovery(),
@@ -525,7 +525,7 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 				return []served{l.renew(t, old)}
 			},
 			assert: func(t *testing.T, l *lateRenewals, out []served) {
-				require.ErrorIs(t, out[0].err, session.ErrSessionReused)
+				require.ErrorIs(t, out[0].err, session.ErrReused)
 				assert.Len(t, l.recorded(), 1)
 			},
 		},
@@ -534,7 +534,7 @@ func TestSessionBearerLateRenewals(t *testing.T) {
 			drive: func(t *testing.T, l *lateRenewals) []served {
 				old, _ := l.superseded(t)
 				l.clk.Advance(8 * 24 * time.Hour)
-				l.store.failEndpointLoad(session.ErrSessionRenewalConflict)
+				l.store.failEndpointLoad(session.ErrRenewalConflict)
 
 				return []served{l.renew(t, old)}
 			},

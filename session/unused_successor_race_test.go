@@ -145,10 +145,10 @@ func TestUnusedSuccessorRecovery_FirstPresentationRacingRecovery(t *testing.T) {
 	}
 
 	presentationWon := func(s1Err, renewErr error) bool {
-		return s1Err == nil && errors.Is(renewErr, session.ErrSessionReused)
+		return s1Err == nil && errors.Is(renewErr, session.ErrReused)
 	}
 	renewalWon := func(s1Err, renewErr error) bool {
-		return renewErr == nil && errors.Is(s1Err, session.ErrSessionReused)
+		return renewErr == nil && errors.Is(s1Err, session.ErrReused)
 	}
 
 	cases := []testCase{

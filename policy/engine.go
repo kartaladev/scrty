@@ -281,7 +281,7 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 	if in == nil {
 		return Decision{
 			Outcome: Deny,
-			Reason:  fmt.Errorf("%w: the policy engine was given no request to judge", ErrPolicyDenied),
+			Reason:  fmt.Errorf("%w: the policy engine was given no request to judge", ErrDenied),
 		}
 	}
 
@@ -310,7 +310,7 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 			// ever be written to remember. A reason the policy did give is left
 			// exactly as it was.
 			if d.Reason == nil {
-				d.Reason = ErrPolicyDenied
+				d.Reason = ErrDenied
 			}
 
 			return d
@@ -332,7 +332,7 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 			// return is an Allow — so it denies. This is the case a later
 			// Outcome constant creates if it is added without updating this
 			// switch, which the compiler does not catch.
-			return Decision{Outcome: Deny, Reason: ErrPolicyDenied}
+			return Decision{Outcome: Deny, Reason: ErrDenied}
 		}
 	}
 
@@ -346,6 +346,6 @@ func (e *Engine) EvaluatePhase(ctx context.Context, phase Phase, in *Input) Deci
 func noTimeDenied(name string) Decision {
 	return Decision{
 		Outcome: Deny,
-		Reason:  fmt.Errorf("%w: the %s policy was given no evaluation time", ErrPolicyDenied, name),
+		Reason:  fmt.Errorf("%w: the %s policy was given no evaluation time", ErrDenied, name),
 	}
 }

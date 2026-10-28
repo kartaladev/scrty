@@ -25,7 +25,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 	type testCase struct {
 		name   string
 		expect func(store *MockStore)
-		act    func(ctx context.Context, m *session.Manager, store session.Store) error
+		act    func(ctx context.Context, m *session.Sessions, store session.Store) error
 	}
 
 	loadsNothing := func(store *MockStore) {
@@ -36,7 +36,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 		{
 			name:   "Load",
 			expect: loadsNothing,
-			act: func(ctx context.Context, m *session.Manager, _ session.Store) error {
+			act: func(ctx context.Context, m *session.Sessions, _ session.Store) error {
 				_, err := m.Load(ctx, sid)
 				return err
 			},
@@ -44,7 +44,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 		{
 			name:   "LoadForRenewal",
 			expect: loadsNothing,
-			act: func(ctx context.Context, m *session.Manager, _ session.Store) error {
+			act: func(ctx context.Context, m *session.Sessions, _ session.Store) error {
 				_, err := m.LoadForRenewal(ctx, sid)
 				return err
 			},
@@ -56,7 +56,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(errStoreQuotes).Times(1)
 				store.EXPECT().Load(gomock.Any(), sid).Return(nil, nil).Times(1)
 			},
-			act: func(ctx context.Context, m *session.Manager, _ session.Store) error {
+			act: func(ctx context.Context, m *session.Sessions, _ session.Store) error {
 				_, err := m.Load(ctx, sid)
 				return err
 			},
@@ -64,7 +64,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 		{
 			name:   "Rotate",
 			expect: loadsNothing,
-			act: func(ctx context.Context, m *session.Manager, _ session.Store) error {
+			act: func(ctx context.Context, m *session.Sessions, _ session.Store) error {
 				_, err := m.Rotate(ctx, liveUnpresented(sid))
 				return err
 			},
@@ -72,7 +72,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 		{
 			name:   "RotateWithGrace",
 			expect: loadsNothing,
-			act: func(ctx context.Context, m *session.Manager, _ session.Store) error {
+			act: func(ctx context.Context, m *session.Sessions, _ session.Store) error {
 				_, _, err := m.RotateWithGrace(ctx, liveUnpresented(sid), 30_000_000_000)
 				return err
 			},
@@ -80,7 +80,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 		{
 			name:   "the encrypted store's Load",
 			expect: loadsNothing,
-			act: func(ctx context.Context, _ *session.Manager, store session.Store) error {
+			act: func(ctx context.Context, _ *session.Sessions, store session.Store) error {
 				sealing, err := session.NewEncryptedStore(store, fakeCipher{key: 0x2a})
 				require.NoError(t, err)
 				_, err = sealing.Load(ctx, sid)
@@ -99,7 +99,7 @@ func TestStoreReturningNoSessionIsNotFound(t *testing.T) {
 
 			var err error
 			assert.NotPanics(t, func() { err = tc.act(t.Context(), m, store) })
-			require.ErrorIs(t, err, session.ErrSessionNotFound)
+			require.ErrorIs(t, err, session.ErrNotFound)
 		})
 	}
 }
@@ -139,20 +139,20 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 
 	type testCase struct {
 		name string
-		opts []session.ManagerOption
+		opts []session.Option
 		// act runs the case's steps and returns what its last step returned.
-		act    func(ctx context.Context, t *testing.T, opts []session.ManagerOption) (*session.Session, error)
+		act    func(ctx context.Context, t *testing.T, opts []session.Option) (*session.Session, error)
 		assert func(t *testing.T, got *session.Session, err error)
 	}
 
-	loadOnMock := func(ctx context.Context, t *testing.T, opts []session.ManagerOption) (*session.Session, error) {
+	loadOnMock := func(ctx context.Context, t *testing.T, opts []session.Option) (*session.Session, error) {
 		t.Helper()
 
 		store := NewMockStore(gomock.NewController(t))
 		store.EXPECT().Load(gomock.Any(), sid).Return(liveUnpresented(sid), nil).AnyTimes()
 		store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(errStoreQuotes).Times(1)
 
-		all := append([]session.ManagerOption{
+		all := append([]session.Option{
 			session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt)),
 		}, opts...)
 
@@ -162,7 +162,7 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "with recovery on the load fails",
-			opts: []session.ManagerOption{session.WithUnusedSuccessorRecovery()},
+			opts: []session.Option{session.WithUnusedSuccessorRecovery()},
 			act:  loadOnMock,
 			assert: func(t *testing.T, got *session.Session, err error) {
 				require.ErrorIs(t, err, errStoreQuotes)
@@ -180,7 +180,7 @@ func TestLoad_FailedFirstUseWrite(t *testing.T) {
 		},
 		{
 			name: "with recovery on a later renewal of the predecessor recovers the successor whose write failed",
-			act: func(ctx context.Context, t *testing.T, _ []session.ManagerOption) (*session.Session, error) {
+			act: func(ctx context.Context, t *testing.T, _ []session.Option) (*session.Session, error) {
 				t.Helper()
 
 				clk := clockwork.NewFakeClockAt(createdAt)

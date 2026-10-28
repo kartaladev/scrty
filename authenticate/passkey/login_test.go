@@ -145,7 +145,7 @@ var (
 // of u-1: a device-bound security key with a stored counter of 42.
 type loginEnv struct {
 	f          *fixture
-	m          *passkey.Manager
+	m          *passkey.Passkeys
 	creds      *spyCredentials
 	challenges *spyChallenges
 	cred       *passkey.Credential
@@ -256,7 +256,7 @@ func newLoginEnv(t *testing.T, seed func(c *passkey.Credential)) *loginEnv {
 }
 
 // manager builds the manager, logging to e.logs.
-func (e *loginEnv) manager(t *testing.T, opts ...passkey.Option) *passkey.Manager {
+func (e *loginEnv) manager(t *testing.T, opts ...passkey.Option) *passkey.Passkeys {
 	t.Helper()
 
 	e.m = e.f.manager(t, append([]passkey.Option{passkey.WithLogger(e.logs.logger())}, opts...)...)
@@ -342,7 +342,7 @@ func TestLoginBegin(t *testing.T) {
 				in := e.requested[0]
 				assert.NotEmpty(t, in.Challenge)
 				assert.Empty(t, in.Allow)
-				assert.Equal(t, passkey.UVRequired, in.UV)
+				assert.Equal(t, passkey.UserVerificationRequired, in.UV)
 				assert.Equal(t, 5*time.Minute, in.Timeout)
 
 				res, err := e.m.Authenticate(t.Context(), assertion(in.Challenge, nil), "ceremony-cookie-value")
@@ -352,13 +352,13 @@ func TestLoginBegin(t *testing.T) {
 		},
 		{
 			name:    "user verification and the timeout follow the configuration",
-			opts:    []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred), passkey.WithChallengeTTL(2 * time.Minute)},
+			opts:    []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred), passkey.WithChallengeTTL(2 * time.Minute)},
 			binding: "ceremony-cookie-value",
 			assert: func(t *testing.T, e *loginEnv, _ json.RawMessage, err error) {
 				t.Helper()
 				require.NoError(t, err)
 				require.Len(t, e.requested, 1)
-				assert.Equal(t, passkey.UVPreferred, e.requested[0].UV)
+				assert.Equal(t, passkey.UserVerificationPreferred, e.requested[0].UV)
 				assert.Equal(t, 2*time.Minute, e.requested[0].Timeout)
 			},
 		},
@@ -564,7 +564,7 @@ func TestLogin(t *testing.T) {
 		},
 		{
 			name: "an assertion without user verification logs in single-factor under preferred",
-			opts: []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred)},
+			opts: []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred)},
 			body: withBody(func(b *assertionBody) { b.UV = false }),
 			assert: func(t *testing.T, _ *loginEnv, res *passkey.LoginResult, err error) {
 				t.Helper()
@@ -600,7 +600,7 @@ func TestLogin(t *testing.T) {
 		},
 		{
 			name: "a pending credential with a valid assertion is refused as pending",
-			seed: func(c *passkey.Credential) { c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes },
+			seed: func(c *passkey.Credential) { c.State, c.Pending = passkey.StatePending, passkey.PendingSavedCodes },
 			assert: func(t *testing.T, e *loginEnv, res *passkey.LoginResult, err error) {
 				t.Helper()
 				require.ErrorIs(t, err, passkey.ErrPending)
@@ -624,7 +624,7 @@ func TestLogin(t *testing.T) {
 		},
 		{
 			name:   "a pending credential's ID with a signature its key did not make is refused like an unknown one",
-			seed:   func(c *passkey.Credential) { c.State, c.Pending = passkey.StatePending, passkey.AwaitingSavedCodes },
+			seed:   func(c *passkey.Credential) { c.State, c.Pending = passkey.StatePending, passkey.PendingSavedCodes },
 			body:   withBody(func(b *assertionBody) { b.Sig = "forged" }),
 			assert: refused,
 		},

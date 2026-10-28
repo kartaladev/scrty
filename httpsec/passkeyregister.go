@@ -152,11 +152,11 @@ func passkeyStateName(s passkey.State) string {
 func passkeyPendingNames(r passkey.PendingReason) []string {
 	names := []string{}
 
-	if r&passkey.AwaitingSavedCodes != 0 {
+	if r&passkey.PendingSavedCodes != 0 {
 		names = append(names, "saved_codes")
 	}
 
-	if r&passkey.AwaitingEmailCode != 0 {
+	if r&passkey.PendingEmailCode != 0 {
 		names = append(names, "email_code")
 	}
 

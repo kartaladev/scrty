@@ -53,7 +53,7 @@ type idClaims struct {
 // a non-empty sub. Every refusal wraps ErrInvalidIDToken with the failed rule;
 // a key set that could not be fetched is returned as ErrDiscoveryFailed, and a
 // context error as itself.
-func (m *Manager) verifyIDToken(ctx context.Context, p Provider, raw, nonce string) (idClaims, error) {
+func (m *RelyingParty) verifyIDToken(ctx context.Context, p Provider, raw, nonce string) (idClaims, error) {
 	c, err := m.checkIDToken(ctx, p, raw, nonce)
 	if errors.Is(err, errTokenRefused) {
 		return idClaims{}, fmt.Errorf("%w: %w", ErrInvalidIDToken, err)
@@ -64,7 +64,7 @@ func (m *Manager) verifyIDToken(ctx context.Context, p Provider, raw, nonce stri
 	return c, nil
 }
 
-func (m *Manager) checkIDToken(ctx context.Context, p Provider, raw, nonce string) (idClaims, error) {
+func (m *RelyingParty) checkIDToken(ctx context.Context, p Provider, raw, nonce string) (idClaims, error) {
 	tok, err := m.parseProviderJWT(ctx, p, raw, true)
 	if err != nil {
 		return idClaims{}, err
@@ -163,7 +163,7 @@ func stringSet(v any) (set []string, ok bool) {
 // A refusal wraps errTokenRefused, including a kid the key set does not hold.
 // A key set that cannot be fetched is returned as ErrDiscoveryFailed, and a
 // context error as itself: neither is a verdict on the token.
-func (m *Manager) parseProviderJWT(ctx context.Context, p Provider, raw string, requireExp bool) (jwt.Token, error) {
+func (m *RelyingParty) parseProviderJWT(ctx context.Context, p Provider, raw string, requireExp bool) (jwt.Token, error) {
 	if !compactJWS(raw) {
 		return nil, refused("not a compact JWS")
 	}

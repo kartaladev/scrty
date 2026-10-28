@@ -25,7 +25,7 @@ func TestLogoutEndsTheWholeSignIn(t *testing.T) {
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
 
-	sessions, err := session.NewManager(
+	sessions, err := session.New(
 		session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)

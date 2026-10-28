@@ -30,7 +30,7 @@ func TestOnetimeStoreFailureRecords(t *testing.T) {
 	type testCase struct {
 		name   string
 		store  func(t *testing.T, ctrl *gomock.Controller) onetime.Store
-		act    func(t *testing.T, m *onetime.Manager) error
+		act    func(t *testing.T, m *onetime.Tokens) error
 		assert func(t *testing.T, err error, logs string)
 	}
 
@@ -56,7 +56,7 @@ func TestOnetimeStoreFailureRecords(t *testing.T) {
 				s.EXPECT().FindByID(gomock.Any(), checkTokenID).Return(nil, errRedactionFixture)
 				return s
 			},
-			act: func(t *testing.T, m *onetime.Manager) error {
+			act: func(t *testing.T, m *onetime.Tokens) error {
 				t.Helper()
 				_, err := m.Check(t.Context(), checkTokenID.String()+"."+checkSecret, "")
 				return err
@@ -73,7 +73,7 @@ func TestOnetimeStoreFailureRecords(t *testing.T) {
 				s.EXPECT().Consume(gomock.Any(), checkTokenID, gomock.Any()).Return(errRedactionFixture)
 				return s
 			},
-			act: func(t *testing.T, m *onetime.Manager) error {
+			act: func(t *testing.T, m *onetime.Tokens) error {
 				t.Helper()
 				c, err := m.Check(t.Context(), checkTokenID.String()+"."+checkSecret, "")
 				require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestOnetimeStoreFailureRecords(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			clk := clockwork.NewFakeClockAt(issuedAt.Add(time.Minute))
 
-			m, err := onetime.NewManager("magic-link",
+			m, err := onetime.New("magic-link",
 				onetime.WithStore(tc.store(t, ctrl)),
 				onetime.WithClock(clk),
 				onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))

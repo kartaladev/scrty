@@ -30,7 +30,7 @@ import (
 //
 // A lifetime of zero or less leaves a session that has already expired; the
 // caller validates the lifetime it configures.
-func (m *Manager) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
+func (m *Sessions) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
 	m.confine(s, lifetime)
 	s.MFA = MFAEnrolmentPending
 }
@@ -48,7 +48,7 @@ func (m *Manager) MarkEnrolmentPending(s *Session, lifetime time.Duration) {
 //
 // A lifetime of zero or less leaves a session that has already expired; the
 // caller validates the lifetime it configures.
-func (m *Manager) MarkRecoveryPending(s *Session, lifetime time.Duration, at time.Time) {
+func (m *Sessions) MarkRecoveryPending(s *Session, lifetime time.Duration, at time.Time) {
 	m.confine(s, lifetime)
 	s.MFA = MFARecoveryPending
 	s.RecoveredAt = at
@@ -56,7 +56,7 @@ func (m *Manager) MarkRecoveryPending(s *Session, lifetime time.Duration, at tim
 
 // confine sets the confinement marker on s, unless it already carries one,
 // and lowers its deadlines so it ends no later than lifetime from now.
-func (m *Manager) confine(s *Session, lifetime time.Duration) {
+func (m *Sessions) confine(s *Session, lifetime time.Duration) {
 	if s.EnrolmentOriginDeadline.IsZero() {
 		s.EnrolmentOriginDeadline = s.AbsoluteExpiresAt
 	}
@@ -94,14 +94,14 @@ func (m *Manager) confine(s *Session, lifetime time.Duration) {
 // is nil, so calling it on every satisfied session is safe. It does not change
 // the second-factor state or RecoveredAt; moving the session out of its state
 // is the caller's step.
-func (m *Manager) RestoreEnrolmentDeadlines(s *Session) error {
+func (m *Sessions) RestoreEnrolmentDeadlines(s *Session) error {
 	if s.EnrolmentOriginDeadline.IsZero() {
 		return nil
 	}
 
 	now := m.clock.Now()
 	if s.expired(now) {
-		return ErrSessionExpired
+		return ErrExpired
 	}
 
 	absolute := s.EnrolmentOriginDeadline

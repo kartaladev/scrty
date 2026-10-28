@@ -35,7 +35,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 		// store returns the store to construct over, and the kid the failure
 		// must name, if any.
 		store  func(t *testing.T, ctrl *gomock.Controller) (signingkey.KeyStore, string)
-		assert func(t *testing.T, km *signingkey.KeyManager, kid string, err error)
+		assert func(t *testing.T, km *signingkey.Keys, kid string, err error)
 	}
 
 	cases := []testCase{
@@ -48,7 +48,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 				// treated as an empty one.
 				return store, ""
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ string, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ string, err error) {
 				require.ErrorIs(t, err, errStoreUnreachable)
 				assert.Nil(t, km)
 			},
@@ -61,7 +61,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 				store.EXPECT().LoadAll(gomock.Any()).Return([]signingkey.Record{rec}, nil)
 				return store, rec.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, kid string, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, kid string, err error) {
 				require.Error(t, err)
 				assert.Nil(t, km)
 				assert.Contains(t, err.Error(), kid, "the error names the key it could not decode")
@@ -78,7 +78,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 				store.EXPECT().LoadAll(gomock.Any()).Return([]signingkey.Record{rec}, nil)
 				return store, rec.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, kid string, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, kid string, err error) {
 				require.Error(t, err)
 				assert.Nil(t, km)
 				assert.Contains(t, err.Error(), kid, "the error names the key it could not decode")
@@ -92,7 +92,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 				store.EXPECT().Store(gomock.Any(), gomock.Any()).Return(errStoreUnreachable)
 				return store, ""
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ string, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ string, err error) {
 				require.ErrorIs(t, err, errStoreUnreachable)
 				assert.Nil(t, km)
 			},
@@ -106,7 +106,7 @@ func TestNewKeyManagerFailsClosed(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			store, kid := tc.store(t, ctrl)
 
-			km, err := signingkey.NewKeyManager(t.Context(), signingkey.WithKeyStore(store))
+			km, err := signingkey.New(t.Context(), signingkey.WithKeyStore(store))
 			tc.assert(t, km, kid, err)
 		})
 	}

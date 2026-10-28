@@ -37,7 +37,7 @@ func TestManagerPrefetch(t *testing.T) {
 		providers func(t *testing.T, a, b *testProvider) []oidc.Provider
 		ctx       func(ctx context.Context) context.Context
 		prefetch  bool
-		assert    func(t *testing.T, m *oidc.Manager, a, b *testProvider, err error)
+		assert    func(t *testing.T, m *oidc.RelyingParty, a, b *testProvider, err error)
 	}
 
 	cases := []testCase{
@@ -46,7 +46,7 @@ func TestManagerPrefetch(t *testing.T) {
 			providers: func(t *testing.T, a, _ *testProvider) []oidc.Provider {
 				return []oidc.Provider{a.Provider("corp"), unreachable(t, "partner")}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, a, b *testProvider, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, a, b *testProvider, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, calls(a, b))
 			},
@@ -57,7 +57,7 @@ func TestManagerPrefetch(t *testing.T) {
 				return []oidc.Provider{a.Provider("corp"), unreachable(t, "partner")}
 			},
 			prefetch: true,
-			assert: func(t *testing.T, _ *oidc.Manager, _, _ *testProvider, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _, _ *testProvider, err error) {
 				require.ErrorIs(t, err, oidc.ErrDiscoveryFailed)
 				assert.Contains(t, err.Error(), `"partner"`)
 			},
@@ -68,7 +68,7 @@ func TestManagerPrefetch(t *testing.T) {
 				return []oidc.Provider{a.Provider("corp"), b.Provider("partner")}
 			},
 			prefetch: true,
-			assert: func(t *testing.T, m *oidc.Manager, a, b *testProvider, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, a, b *testProvider, err error) {
 				require.NoError(t, err)
 				require.EqualValues(t, 4, calls(a, b))
 				for _, name := range []string{"corp", "partner"} {
@@ -88,7 +88,7 @@ func TestManagerPrefetch(t *testing.T) {
 				return []oidc.Provider{p}
 			},
 			prefetch: true,
-			assert: func(t *testing.T, _ *oidc.Manager, a, _ *testProvider, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, a, _ *testProvider, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, a.discoveryCalls.Load())
 				assert.EqualValues(t, 1, a.jwksCalls.Load())
@@ -102,7 +102,7 @@ func TestManagerPrefetch(t *testing.T) {
 				return []oidc.Provider{p}
 			},
 			prefetch: true,
-			assert: func(t *testing.T, m *oidc.Manager, a, _ *testProvider, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, a, _ *testProvider, err error) {
 				require.NoError(t, err)
 				assert.EqualValues(t, 1, a.discoveryCalls.Load(), "discovery is still fetched when unpinned")
 				assert.Zero(t, a.jwksCalls.Load(), "no key-set request is made for a symmetric-only provider")
@@ -123,7 +123,7 @@ func TestManagerPrefetch(t *testing.T) {
 				return ctx
 			},
 			prefetch: true,
-			assert: func(t *testing.T, _ *oidc.Manager, a, b *testProvider, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, a, b *testProvider, err error) {
 				require.ErrorIs(t, err, context.Canceled)
 				assert.Zero(t, calls(a, b))
 			},
@@ -137,7 +137,7 @@ func TestManagerPrefetch(t *testing.T) {
 			a, b := newTestProvider(t), newTestProvider(t)
 			reg, err := oidc.NewRegistry(tc.providers(t, a, b)...)
 			require.NoError(t, err)
-			m, err := oidc.NewManager(reg, stubBroker{}, oidc.WithOutboundClient(a.Outbound(t)))
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, oidc.WithOutboundClient(a.Outbound(t)))
 			if err == nil && tc.prefetch {
 				ctx := t.Context()
 				if tc.ctx != nil {

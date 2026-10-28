@@ -97,7 +97,7 @@ func otherUser() *identity.Details {
 // with one live session of u-1's in it and a user loader whose answer a case
 // switches.
 type ownUserFixture struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	chain    *httpsec.Chain
 	user     *switchableUser
 
@@ -110,13 +110,13 @@ type ownUserFixture struct {
 func newOwnUserFixture(
 	t *testing.T,
 	mode bearerMode,
-	extra func(sessions *session.Manager) []httpsec.Option,
+	extra func(sessions *session.Sessions) []httpsec.Option,
 ) *ownUserFixture {
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC))
 
-	sessions, err := session.NewManager(session.WithClock(clk),
+	sessions, err := session.New(session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 
@@ -221,7 +221,7 @@ func TestBearer_AuthenticatesOnlyOwnActiveUser(t *testing.T) {
 	type testCase struct {
 		name   string
 		mode   bearerMode
-		extra  func(sessions *session.Manager) []httpsec.Option
+		extra  func(sessions *session.Sessions) []httpsec.Option
 		assert func(t *testing.T, f *ownUserFixture)
 	}
 
@@ -284,7 +284,7 @@ func TestBearer_AuthenticatesOnlyOwnActiveUser(t *testing.T) {
 			testCase{
 				name: "disabled user's logout is refused and revokes nothing",
 				mode: mode,
-				extra: func(sessions *session.Manager) []httpsec.Option {
+				extra: func(sessions *session.Sessions) []httpsec.Option {
 					return []httpsec.Option{httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: sessions})}
 				},
 				assert: func(t *testing.T, f *ownUserFixture) {

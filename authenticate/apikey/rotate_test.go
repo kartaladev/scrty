@@ -30,12 +30,12 @@ func TestManagerRotate(t *testing.T) {
 		// ends the context Rotate is called with.
 		store  func(inner apikey.Store, clk *clockwork.FakeClock, cancel context.CancelFunc) apikey.Store
 		target func(t *testing.T, rec apikey.Key) id.ID
-		assert func(t *testing.T, m *apikey.Manager, old string, fresh string, rec apikey.Key, err error)
+		assert func(t *testing.T, m *apikey.Keys, old string, fresh string, rec apikey.Key, err error)
 	}
 
 	// noLiveReplacement fails when a key without an expiry, which is what a
 	// replacement rotated with a zero lifetime is, is still live.
-	noLiveReplacement := func(t *testing.T, m *apikey.Manager) {
+	noLiveReplacement := func(t *testing.T, m *apikey.Keys) {
 		t.Helper()
 
 		keys, err := m.List(t.Context(), "svc-billing")
@@ -50,7 +50,7 @@ func TestManagerRotate(t *testing.T) {
 
 	// onlyOldLive fails unless exactly one key is live, which is the old one
 	// whose revoke failed: the replacement must have been ended.
-	onlyOldLive := func(t *testing.T, m *apikey.Manager) {
+	onlyOldLive := func(t *testing.T, m *apikey.Keys) {
 		t.Helper()
 
 		keys, err := m.List(t.Context(), "svc-billing")
@@ -73,7 +73,7 @@ func TestManagerRotate(t *testing.T) {
 		{
 			name:   "the new key works and the old one does not",
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, old, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, old, fresh string, _ apikey.Key, err error) {
 				require.NoError(t, err)
 
 				p, _, verifyErr := m.Verify(t.Context(), fresh)
@@ -89,7 +89,7 @@ func TestManagerRotate(t *testing.T) {
 		{
 			name:   "the replacement is a different record",
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, old, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, old, fresh string, _ apikey.Key, err error) {
 				require.NoError(t, err)
 				assert.NotEqual(t, old, fresh)
 
@@ -101,7 +101,7 @@ func TestManagerRotate(t *testing.T) {
 		{
 			name:   "the caller's lifetime is used, not the old key's",
 			target: sameKey,
-			assert: func(t *testing.T, _ *apikey.Manager, _, _ string, rec apikey.Key, err error) {
+			assert: func(t *testing.T, _ *apikey.Keys, _, _ string, rec apikey.Key, err error) {
 				require.NoError(t, err)
 				assert.Nil(t, rec.ExpiresAt, "rotated here with a lifetime of zero")
 			},
@@ -114,7 +114,7 @@ func TestManagerRotate(t *testing.T) {
 
 				return other
 			},
-			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, _, fresh string, _ apikey.Key, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, apikey.ErrKeyNotFound)
 				assert.Empty(t, fresh)
@@ -130,7 +130,7 @@ func TestManagerRotate(t *testing.T) {
 				return revokeFailsStore{Store: inner}
 			},
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, old, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, old, fresh string, _ apikey.Key, err error) {
 				require.Error(t, err)
 				assert.Empty(t, fresh, "the new key is returned only when both steps succeed")
 
@@ -147,7 +147,7 @@ func TestManagerRotate(t *testing.T) {
 				return advanceOnPutStore{Store: inner, clk: clk, by: time.Second, puts: new(atomic.Int32)}
 			},
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, _, fresh string, _ apikey.Key, err error) {
 				assert.ErrorIs(t, err, apikey.ErrRotationRefused)
 				assert.Empty(t, fresh)
 				noLiveReplacement(t, m)
@@ -159,7 +159,7 @@ func TestManagerRotate(t *testing.T) {
 				return &failOldRevokeStore{Store: inner}
 			},
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, old, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, old, fresh string, _ apikey.Key, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, errStore, "the store failure stays identifiable")
 				assert.Empty(t, fresh)
@@ -175,7 +175,7 @@ func TestManagerRotate(t *testing.T) {
 				return &revokeFailsTwiceStore{Store: inner}
 			},
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, old apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, _, fresh string, old apikey.Key, err error) {
 				require.Error(t, err)
 				assert.Empty(t, fresh)
 				assert.ErrorIs(t, err, errOldRevoke)
@@ -199,7 +199,7 @@ func TestManagerRotate(t *testing.T) {
 				return &failOldRevokeStore{Store: inner, cancel: cancel}
 			},
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, _, fresh string, _ apikey.Key, err error) {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, context.Canceled, "the revoke failure stays identifiable")
 				assert.Empty(t, fresh)
@@ -212,7 +212,7 @@ func TestManagerRotate(t *testing.T) {
 				return &loseThenCancelStore{Store: inner, cancel: cancel}
 			},
 			target: sameKey,
-			assert: func(t *testing.T, m *apikey.Manager, _, fresh string, _ apikey.Key, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, _, fresh string, _ apikey.Key, err error) {
 				assert.ErrorIs(t, err, apikey.ErrRotationRefused)
 				assert.Empty(t, fresh)
 				noLiveReplacement(t, m)
@@ -237,7 +237,7 @@ func TestManagerRotate(t *testing.T) {
 				store = tc.store(inner, clk, cancel)
 			}
 
-			m, err := apikey.NewManager(apikey.WithStore(store), apikey.WithClock(clk))
+			m, err := apikey.New(apikey.WithStore(store), apikey.WithClock(clk))
 			require.NoError(t, err)
 
 			old, issued, err := m.Issue(ctx, "svc-billing", "nightly export", []string{"invoices:read"}, tc.lifetime)
@@ -300,7 +300,7 @@ func TestManagerLastUsed(t *testing.T) {
 				store = tc.store(inner)
 			}
 
-			m, err := apikey.NewManager(
+			m, err := apikey.New(
 				apikey.WithStore(store),
 				apikey.WithClock(clockwork.NewFakeClockAt(at)),
 				// The best-effort case logs a warning by design; this keeps it
@@ -333,11 +333,11 @@ func TestRotate_RefusesRevokedOrExpiredKey(t *testing.T) {
 		name     string
 		lifetime time.Duration
 		// end makes the issued key one Rotate must refuse.
-		end    func(t *testing.T, m *apikey.Manager, clk *clockwork.FakeClock, rec apikey.Key)
-		assert func(t *testing.T, m *apikey.Manager, store *countingKeyStore, fresh string, err error)
+		end    func(t *testing.T, m *apikey.Keys, clk *clockwork.FakeClock, rec apikey.Key)
+		assert func(t *testing.T, m *apikey.Keys, store *countingKeyStore, fresh string, err error)
 	}
 
-	refusedIssuingNothing := func(t *testing.T, m *apikey.Manager, store *countingKeyStore, fresh string, err error) {
+	refusedIssuingNothing := func(t *testing.T, m *apikey.Keys, store *countingKeyStore, fresh string, err error) {
 		require.ErrorIs(t, err, apikey.ErrRotationRefused)
 		assert.Empty(t, fresh)
 		assert.Zero(t, store.Writes(), "a refused rotation writes nothing")
@@ -350,7 +350,7 @@ func TestRotate_RefusesRevokedOrExpiredKey(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "a revoked admin-scoped key",
-			end: func(t *testing.T, m *apikey.Manager, _ *clockwork.FakeClock, rec apikey.Key) {
+			end: func(t *testing.T, m *apikey.Keys, _ *clockwork.FakeClock, rec apikey.Key) {
 				require.NoError(t, m.Revoke(t.Context(), rec.ID))
 			},
 			assert: refusedIssuingNothing,
@@ -358,7 +358,7 @@ func TestRotate_RefusesRevokedOrExpiredKey(t *testing.T) {
 		{
 			name:     "a key past its lifetime",
 			lifetime: time.Hour,
-			end: func(_ *testing.T, _ *apikey.Manager, clk *clockwork.FakeClock, _ apikey.Key) {
+			end: func(_ *testing.T, _ *apikey.Keys, clk *clockwork.FakeClock, _ apikey.Key) {
 				clk.Advance(time.Hour + time.Second)
 			},
 			assert: refusedIssuingNothing,
@@ -366,10 +366,10 @@ func TestRotate_RefusesRevokedOrExpiredKey(t *testing.T) {
 		{
 			name:     "a key on the instant it expires is still live, and rotates",
 			lifetime: time.Hour,
-			end: func(_ *testing.T, _ *apikey.Manager, clk *clockwork.FakeClock, _ apikey.Key) {
+			end: func(_ *testing.T, _ *apikey.Keys, clk *clockwork.FakeClock, _ apikey.Key) {
 				clk.Advance(time.Hour)
 			},
-			assert: func(t *testing.T, m *apikey.Manager, _ *countingKeyStore, fresh string, err error) {
+			assert: func(t *testing.T, m *apikey.Keys, _ *countingKeyStore, fresh string, err error) {
 				require.NoError(t, err)
 
 				_, _, verifyErr := m.Verify(t.Context(), fresh)
@@ -387,7 +387,7 @@ func TestRotate_RefusesRevokedOrExpiredKey(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(issuedAt)
 			inner := apikey.NewMemoryStore()
 
-			m, err := apikey.NewManager(apikey.WithStore(inner), apikey.WithClock(clk))
+			m, err := apikey.New(apikey.WithStore(inner), apikey.WithClock(clk))
 			require.NoError(t, err)
 
 			_, rec, err := m.Issue(ctx, "svc-admin", "break glass", []string{"admin"}, tc.lifetime)
@@ -397,7 +397,7 @@ func TestRotate_RefusesRevokedOrExpiredKey(t *testing.T) {
 
 			// Counting starts here, so only the rotation's own writes count.
 			store := &countingKeyStore{Store: inner}
-			rotator, err := apikey.NewManager(apikey.WithStore(store), apikey.WithClock(clk))
+			rotator, err := apikey.New(apikey.WithStore(store), apikey.WithClock(clk))
 			require.NoError(t, err)
 
 			fresh, _, rotateErr := rotator.Rotate(ctx, rec.ID, 0)
@@ -414,7 +414,7 @@ func TestRotate_ConcurrentRotationsLeaveOneLiveReplacement(t *testing.T) {
 	ctx := t.Context()
 
 	inner := apikey.NewMemoryStore()
-	m, err := apikey.NewManager(apikey.WithStore(inner))
+	m, err := apikey.New(apikey.WithStore(inner))
 	require.NoError(t, err)
 
 	old, rec, err := m.Issue(ctx, "svc-billing", "nightly export", []string{"invoices:read"}, 0)
@@ -422,7 +422,7 @@ func TestRotate_ConcurrentRotationsLeaveOneLiveReplacement(t *testing.T) {
 
 	// Every rotation reads the key live and issues its replacement before any
 	// of them revokes it.
-	rotator, err := apikey.NewManager(apikey.WithStore(newRevokeBarrierStore(inner, rec.ID, rotations)))
+	rotator, err := apikey.New(apikey.WithStore(newRevokeBarrierStore(inner, rec.ID, rotations)))
 	require.NoError(t, err)
 
 	type outcome struct {

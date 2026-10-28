@@ -173,7 +173,7 @@ func TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential(t *testing.T) {
 	challengePolicy := func(t *testing.T, methods []policy.MFAMethodLookup) policy.Policy {
 		t.Helper()
 
-		p, err := policy.NewMFAPolicy(methods,
+		p, err := policy.NewMFA(methods,
 			policy.WithMFAExemption(func(factor.Kind) bool { return false }))
 		require.NoError(t, err)
 
@@ -184,7 +184,7 @@ func TestRedemption_PostRedeemPolicyLookupFailureKeepsCredential(t *testing.T) {
 
 		// The source answers the handoff's unasserted assurance as unmet;
 		// OIDC login refuses to assemble a requirement policy without one.
-		p, err := policy.NewMFARequirementPolicy(nil, methods, policy.WithMFARequiredForAll(),
+		p, err := policy.NewMFARequirement(nil, methods, policy.WithMFARequiredForAll(),
 			policy.WithFederatedAssuranceSource(newTestOIDCManager(t)))
 		require.NoError(t, err)
 
@@ -280,7 +280,7 @@ func TestRedemption_DecisionBindsTheCheckedPrincipal(t *testing.T) {
 		p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).AnyTimes().
 			DoAndReturn(func(_ context.Context, in *policy.Input) policy.Decision {
 				if in.User == returnedID {
-					return policy.Decision{Outcome: policy.Deny, Reason: policy.ErrPolicyDenied}
+					return policy.Decision{Outcome: policy.Deny, Reason: policy.ErrDenied}
 				}
 
 				return policy.Decision{Outcome: policy.Allow}
@@ -354,7 +354,7 @@ func TestRedemption_DecisionBindsTheCheckedPrincipal(t *testing.T) {
 	refused := func(t *testing.T, got served, sessions int) {
 		t.Helper()
 
-		require.ErrorIs(t, got.err, policy.ErrPolicyDenied)
+		require.ErrorIs(t, got.err, policy.ErrDenied)
 		assert.False(t, got.handlerRan)
 		assert.Zero(t, sessions, "no session exists for a refused login")
 	}

@@ -20,10 +20,10 @@ type storeOnly struct{ onetime.Store }
 
 // expiryManager builds a manager of purpose over store and clk, with the explicit
 // lifetime (15m) and issuance window (1h) the cases reason about.
-func expiryManager(t *testing.T, purpose string, store onetime.Store, clk clockwork.Clock) *onetime.Manager {
+func expiryManager(t *testing.T, purpose string, store onetime.Store, clk clockwork.Clock) *onetime.Tokens {
 	t.Helper()
 
-	m, err := onetime.NewManager(purpose,
+	m, err := onetime.New(purpose,
 		onetime.WithStore(store),
 		onetime.WithClock(clk),
 		onetime.WithTTL(15*time.Minute),
@@ -93,7 +93,7 @@ func TestExpiryTask(t *testing.T) {
 				mine := expiryManager(t, "email-change", store, clk)
 				other := expiryManager(t, "magic-link", store, clk)
 
-				for _, m := range []*onetime.Manager{mine, other} {
+				for _, m := range []*onetime.Tokens{mine, other} {
 					_, _, err := m.Issue(t.Context(), "carol")
 					require.NoError(t, err)
 				}

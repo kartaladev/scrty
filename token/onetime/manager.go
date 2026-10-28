@@ -18,7 +18,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// Manager issues, checks and consumes the one-time tokens of a single purpose.
+// Tokens issues, checks and consumes the one-time tokens of a single purpose.
 //
 // One manager serves one purpose, and the purpose is stored on every record it
 // issues, so two managers may share a store without either honouring the
@@ -32,9 +32,9 @@ import (
 // counting window through WithIssuanceWindow, and a test moves time through
 // WithClock without waiting for it.
 //
-// A Manager is safe for concurrent use as far as its store is: it holds no
+// A Tokens is safe for concurrent use as far as its store is: it holds no
 // mutable state of its own after construction.
-type Manager struct {
+type Tokens struct {
 	purpose        string
 	store          Store
 	storeSet       bool
@@ -46,7 +46,7 @@ type Manager struct {
 	random         io.Reader
 }
 
-// NewManager returns a manager that issues tokens for purpose.
+// New returns a manager that issues tokens for purpose.
 //
 // The purpose must be non-empty once surrounding space is removed. A manager
 // with no purpose would accept every record in its store, which is exactly how
@@ -70,8 +70,8 @@ type Manager struct {
 // error's Go type, never the store's own text; a consumer who wants that
 // detail logs it inside their own implementation of Store. The token
 // identifier, a library-owned value rather than a secret, is kept.
-func NewManager(purpose string, opts ...Option) (*Manager, error) {
-	m := &Manager{
+func New(purpose string, opts ...Option) (*Tokens, error) {
+	m := &Tokens{
 		purpose:        strings.TrimSpace(purpose),
 		ttl:            defaultTTL,
 		issuanceWindow: defaultIssuanceWindow,
@@ -119,15 +119,15 @@ func NewManager(purpose string, opts ...Option) (*Manager, error) {
 
 // Purpose reports the purpose every token this manager issues carries, which is
 // what NewManager was given.
-func (m *Manager) Purpose() string { return m.purpose }
+func (m *Tokens) Purpose() string { return m.purpose }
 
 // TTL reports how long an issued token stays valid, which is what WithTTL
 // configured.
-func (m *Manager) TTL() time.Duration { return m.ttl }
+func (m *Tokens) TTL() time.Duration { return m.ttl }
 
 // IssuanceWindow reports the window IssuedCount counts over and PurgeExpired
 // takes its cutoff from, which is what WithIssuanceWindow configured.
-func (m *Manager) IssuanceWindow() time.Duration { return m.issuanceWindow }
+func (m *Tokens) IssuanceWindow() time.Duration { return m.issuanceWindow }
 
 // secretBytes is how much entropy a token secret carries. Thirty-two bytes put
 // a presented token out of reach of guessing, and leave no reason to make it a
@@ -152,7 +152,7 @@ const secretBytes = 32
 // answer, a generator that cannot mint an identifier and a store that cannot
 // insert are each reported, and none of them leaves a record behind or hands
 // back a token nobody would honour.
-func (m *Manager) Issue(ctx context.Context, subject string, opts ...IssueOption) (string, Token, error) {
+func (m *Tokens) Issue(ctx context.Context, subject string, opts ...IssueOption) (string, Token, error) {
 	presented, tok, err := m.mint(subject, opts)
 	if err != nil {
 		return "", Token{}, err
@@ -182,7 +182,7 @@ func (m *Manager) Issue(ctx context.Context, subject string, opts ...IssueOption
 // issue. Every other failure is reported as Issue reports it, and is never
 // ErrIssueLimitReached: a store that cannot answer is an outage, not a subject
 // who asked too often.
-func (m *Manager) IssueWithin(
+func (m *Tokens) IssueWithin(
 	ctx context.Context, subject string, limit int, opts ...IssueOption,
 ) (string, Token, error) {
 	presented, tok, err := m.mint(subject, opts)
@@ -203,7 +203,7 @@ func (m *Manager) IssueWithin(
 
 // mint draws a token for subject and returns its presented form and the
 // record to store, writing nothing.
-func (m *Manager) mint(subject string, opts []IssueOption) (string, Token, error) {
+func (m *Tokens) mint(subject string, opts []IssueOption) (string, Token, error) {
 	if subject == "" {
 		return "", Token{}, ErrSubjectRequired
 	}
@@ -265,7 +265,7 @@ func (m *Manager) mint(subject string, opts []IssueOption) (string, Token, error
 //
 // Secret and binding comparisons run in constant time, so the answer cannot be
 // approached one byte at a time by measuring how long the refusal took.
-func (m *Manager) Check(ctx context.Context, presented, binding string) (Checked, error) {
+func (m *Tokens) Check(ctx context.Context, presented, binding string) (Checked, error) {
 	// A presented token has one shape and a known length. Refusing anything
 	// longer before hashing keeps the work an unauthenticated caller can buy
 	// bounded, whatever they paste in.
@@ -336,7 +336,7 @@ func (m *Manager) Check(ctx context.Context, presented, binding string) (Checked
 // that no longer exists, and a store that could not answer are the same answer
 // here for the same reason they are the same answer in Check. The store
 // failure is logged at error level, since nothing else records it.
-func (m *Manager) Consume(ctx context.Context, c Checked) error {
+func (m *Tokens) Consume(ctx context.Context, c Checked) error {
 	if c.token.ID.IsZero() {
 		return ErrInvalidToken
 	}
@@ -374,7 +374,7 @@ func (m *Manager) Consume(ctx context.Context, c Checked) error {
 // ErrInvalidToken and no record. Reporting anything else would let a caller
 // tell an outage from a spent token, and returning the record would say a
 // redemption happened that did not.
-func (m *Manager) Redeem(ctx context.Context, presented, binding string, checks ...Check) (Token, error) {
+func (m *Tokens) Redeem(ctx context.Context, presented, binding string, checks ...Check) (Token, error) {
 	c, err := m.Check(ctx, presented, binding)
 	if err != nil {
 		return Token{}, err
@@ -412,7 +412,7 @@ func (m *Manager) Redeem(ctx context.Context, presented, binding string, checks 
 // A store that cannot answer is reported. Returning zero on an outage would
 // quietly lift every limit resting on this number, at exactly the moment the
 // system is least able to notice.
-func (m *Manager) IssuedCount(ctx context.Context, subject string) (int, error) {
+func (m *Tokens) IssuedCount(ctx context.Context, subject string) (int, error) {
 	since := m.clock.Now().Add(-m.issuanceWindow)
 
 	n, err := m.store.CountRecentBySubject(ctx, m.purpose, subject, since)
@@ -438,7 +438,7 @@ func (m *Manager) IssuedCount(ctx context.Context, subject string) (int, error) 
 // reporting nothing removed: a sweep that never ran and a sweep that found
 // nothing look identical in a metric, and a consumer who wired a store that
 // cannot purge deserves to be told rather than to watch it grow.
-func (m *Manager) PurgeExpired(ctx context.Context) (int, error) {
+func (m *Tokens) PurgeExpired(ctx context.Context) (int, error) {
 	reaper, ok := m.store.(Reaper)
 	if !ok {
 		return 0, fmt.Errorf("%w: %T", ErrReapUnsupported, m.store)

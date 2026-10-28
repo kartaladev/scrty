@@ -78,7 +78,7 @@ func TestAPIKeyStoreFailureRecords(t *testing.T) {
 
 			clk := clockwork.NewFakeClockAt(base)
 			inner := apikey.NewMemoryStore()
-			issuer, err := apikey.NewManager(
+			issuer, err := apikey.New(
 				apikey.WithStore(inner), apikey.WithClock(clk))
 			require.NoError(t, err)
 
@@ -87,7 +87,7 @@ func TestAPIKeyStoreFailureRecords(t *testing.T) {
 			require.NoError(t, err)
 
 			var logs bytes.Buffer
-			verifier, err := apikey.NewManager(
+			verifier, err := apikey.New(
 				apikey.WithStore(tc.store(t, inner)),
 				apikey.WithClock(clk),
 				apikey.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))

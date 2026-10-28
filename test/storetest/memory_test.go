@@ -116,7 +116,7 @@ func TestMemorySigningKeyStore(t *testing.T) {
 
 	storetest.RunSigningKeyStoreSuite(t, func(t *testing.T) signingkey.KeyStore {
 		t.Helper()
-		return signingkey.NewInMemoryKeyStore()
+		return signingkey.NewMemoryKeyStore()
 	})
 }
 

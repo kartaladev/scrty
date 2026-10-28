@@ -68,10 +68,10 @@ func TestStatusForError(t *testing.T) {
 			want: 401,
 		},
 		{name: "access denied", err: authorize.ErrAccessDenied, want: 403},
-		{name: "reasonless policy deny", err: policy.ErrPolicyDenied, want: 403},
+		{name: "reasonless policy deny", err: policy.ErrDenied, want: 403},
 		{name: "second factor required", err: policy.ErrMFARequired, want: 403},
 		{name: "second factor unsatisfiable", err: policy.ErrMFARequirementUnsatisfiable, want: 403},
-		{name: "second factor enrolment required", err: policy.ErrMFAEnrollmentRequired, want: 403},
+		{name: "second factor enrolment required", err: policy.ErrMFAEnrolmentRequired, want: 403},
 		{name: "second factor on the first factor's channel", err: policy.ErrSecondFactorSameChannel, want: 403},
 		{name: "provider assurance not met", err: policy.ErrFederatedAssuranceNotMet, want: 403},
 		{name: "invalid second-factor code", err: mfa.ErrInvalidCode, want: 401},
@@ -93,10 +93,10 @@ func TestStatusForError(t *testing.T) {
 		{name: "wrapped invalid code", err: fmt.Errorf("verifying: %w", mfa.ErrInvalidCode), want: 401},
 		{name: "malformed login", err: httpsec.ErrCredentialsMissing, want: 400},
 		{name: "request too large", err: httpsec.ErrRequestTooLarge, want: 413},
-		{name: "reused password", err: password.ErrPasswordReused, want: 422},
+		{name: "reused password", err: password.ErrReused, want: 422},
 		{
 			name: "wrapped reused password",
-			err:  fmt.Errorf("change: %w", password.ErrPasswordReused),
+			err:  fmt.Errorf("change: %w", password.ErrReused),
 			want: 422,
 		},
 		{name: "password history unavailable is a dependency failure", err: password.ErrHistoryUnavailable, want: 500},
@@ -120,13 +120,13 @@ func TestStatusForError(t *testing.T) {
 		},
 		{
 			name: "the session core's renewal conflict, unwrapped by the chain",
-			err:  fmt.Errorf("rotating: %w", session.ErrSessionRenewalConflict),
+			err:  fmt.Errorf("rotating: %w", session.ErrRenewalConflict),
 			want: 409,
 		},
 		{name: "renewal throttled", err: fmt.Errorf("renewing: %w", httpsec.ErrRenewalThrottled), want: 429},
 		{
 			name: "reused session joined with authentication required",
-			err:  errors.Join(httpsec.ErrAuthenticationRequired, session.ErrSessionReused),
+			err:  errors.Join(httpsec.ErrAuthenticationRequired, session.ErrReused),
 			want: 401,
 		},
 		{name: "unknown identity provider", err: oidc.ErrUnknownProvider, want: 404},
@@ -257,7 +257,7 @@ func TestPolicyDenyReason(t *testing.T) {
 			name:  "a reasonless deny at login refuses with the engine's substituted sentinel",
 			phase: policy.PostAuthentication,
 			assert: func(t *testing.T, reason error) {
-				require.ErrorIs(t, reason, policy.ErrPolicyDenied)
+				require.ErrorIs(t, reason, policy.ErrDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(reason))
 				assert.NotEqual(t, http.StatusOK, httpsec.StatusForError(reason))
 				assert.False(t, errors.Is(reason, authenticate.ErrAuthenticationFailed),
@@ -268,7 +268,7 @@ func TestPolicyDenyReason(t *testing.T) {
 			name:  "a reasonless deny per request refuses the same way",
 			phase: policy.PerRequest,
 			assert: func(t *testing.T, reason error) {
-				require.ErrorIs(t, reason, policy.ErrPolicyDenied)
+				require.ErrorIs(t, reason, policy.ErrDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(reason))
 			},
 		},
@@ -371,23 +371,23 @@ var sentinelRegistry = map[string]map[string]error{
 		"passkey.ErrSuspended":                passkey.ErrSuspended,
 	},
 	"github.com/kartaladev/scrty/authenticate/password": {
-		"password.ErrConfig":              password.ErrConfig,
-		"password.ErrHistoryUnavailable":  password.ErrHistoryUnavailable,
-		"password.ErrInvalidParameters":   password.ErrInvalidParameters,
-		"password.ErrNoRandomSource":      password.ErrNoRandomSource,
-		"password.ErrPasswordReused":      password.ErrPasswordReused,
-		"password.ErrPasswordTooLong":     password.ErrPasswordTooLong,
-		"password.ErrPasswordContainsNUL": password.ErrPasswordContainsNUL,
-		"password.ErrWeakParameters":      password.ErrWeakParameters,
+		"password.ErrConfig":             password.ErrConfig,
+		"password.ErrHistoryUnavailable": password.ErrHistoryUnavailable,
+		"password.ErrInvalidParameters":  password.ErrInvalidParameters,
+		"password.ErrNoRandomSource":     password.ErrNoRandomSource,
+		"password.ErrReused":             password.ErrReused,
+		"password.ErrTooLong":            password.ErrTooLong,
+		"password.ErrContainsNUL":        password.ErrContainsNUL,
+		"password.ErrWeakParameters":     password.ErrWeakParameters,
 	},
 	"github.com/kartaladev/scrty/policy": {
 		"policy.ErrConfig":                      policy.ErrConfig,
 		"policy.ErrFederatedAssuranceNotMet":    policy.ErrFederatedAssuranceNotMet,
-		"policy.ErrMFAEnrollmentRequired":       policy.ErrMFAEnrollmentRequired,
+		"policy.ErrMFAEnrolmentRequired":        policy.ErrMFAEnrolmentRequired,
 		"policy.ErrMFARequired":                 policy.ErrMFARequired,
 		"policy.ErrMFARequirementLookupMissing": policy.ErrMFARequirementLookupMissing,
 		"policy.ErrMFARequirementUnsatisfiable": policy.ErrMFARequirementUnsatisfiable,
-		"policy.ErrPolicyDenied":                policy.ErrPolicyDenied,
+		"policy.ErrDenied":                      policy.ErrDenied,
 		"policy.ErrSecondFactorSameChannel":     policy.ErrSecondFactorSameChannel,
 		"policy.ErrSessionIdle":                 policy.ErrSessionIdle,
 		"policy.ErrTooManySessions":             policy.ErrTooManySessions,
@@ -432,16 +432,16 @@ var sentinelRegistry = map[string]map[string]error{
 		"httpsec.ErrUnknownMFAMethod":       httpsec.ErrUnknownMFAMethod,
 	},
 	"github.com/kartaladev/scrty/session": {
-		"session.ErrConfig":                 session.ErrConfig,
-		"session.ErrSessionExpired":         session.ErrSessionExpired,
-		"session.ErrSessionReused":          session.ErrSessionReused,
-		"session.ErrSessionNotFound":        session.ErrSessionNotFound,
-		"session.ErrSessionUnreadable":      session.ErrSessionUnreadable,
-		"session.ErrSessionRenewalConflict": session.ErrSessionRenewalConflict,
-		"session.ErrSessionRenewalRequired": session.ErrSessionRenewalRequired,
-		"session.ErrSessionSuperseded":      session.ErrSessionSuperseded,
-		"session.ErrSuccessorAdvanced":      session.ErrSuccessorAdvanced,
-		"session.ErrDeleteDidNotSettle":     session.ErrDeleteDidNotSettle,
+		"session.ErrConfig":             session.ErrConfig,
+		"session.ErrExpired":            session.ErrExpired,
+		"session.ErrReused":             session.ErrReused,
+		"session.ErrNotFound":           session.ErrNotFound,
+		"session.ErrUnreadable":         session.ErrUnreadable,
+		"session.ErrRenewalConflict":    session.ErrRenewalConflict,
+		"session.ErrRenewalRequired":    session.ErrRenewalRequired,
+		"session.ErrSuperseded":         session.ErrSuperseded,
+		"session.ErrSuccessorAdvanced":  session.ErrSuccessorAdvanced,
+		"session.ErrDeleteDidNotSettle": session.ErrDeleteDidNotSettle,
 	},
 	"github.com/kartaladev/scrty/store": {
 		"store.ErrIsolationTooStrong": store.ErrIsolationTooStrong,
@@ -466,19 +466,19 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"authorize.ErrUnsupportedAttributes":      "a misbuilt guard, deliberately 500 per design Decision 7",
 		"authorize.ErrInvalidAttributes":          "a misbuilt guard, deliberately 500 per design Decision 7",
 		"session.ErrConfig":                       "a wiring fault, refused at construction",
-		"session.ErrSessionNotFound": "leaves the chain only joined with ErrAuthenticationRequired, " +
+		"session.ErrNotFound": "leaves the chain only joined with ErrAuthenticationRequired, " +
 			"which answers it 401",
-		"session.ErrSessionExpired": "leaves the chain only joined with ErrAuthenticationRequired, " +
+		"session.ErrExpired": "leaves the chain only joined with ErrAuthenticationRequired, " +
 			"which answers it 401",
-		"session.ErrSessionReused": "leaves the chain only joined with ErrAuthenticationRequired, " +
+		"session.ErrReused": "leaves the chain only joined with ErrAuthenticationRequired, " +
 			"which answers it 401",
-		"session.ErrSessionRenewalRequired": "leaves the chain only joined with ErrAuthenticationRequired, " +
+		"session.ErrRenewalRequired": "leaves the chain only joined with ErrAuthenticationRequired, " +
 			"which answers it 401",
 		"session.ErrSuccessorAdvanced": "returned only by Store.Supersede and never leaves the session manager, " +
 			"which turns it into ErrSessionReused",
-		"session.ErrSessionSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
+		"session.ErrSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
 			"which re-loads the session and returns its verdict instead",
-		"session.ErrSessionUnreadable":  "converted to ErrAuthenticationRequired before it leaves the chain",
+		"session.ErrUnreadable":         "converted to ErrAuthenticationRequired before it leaves the chain",
 		"session.ErrDeleteDidNotSettle": "a store contract failure, answered 500 by default",
 		"store.ErrIsolationTooStrong":   "a store contract failure, answered 500 by default",
 		"ratelimit.ErrConfig":           "a wiring fault, refused at construction",
@@ -510,8 +510,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"password.ErrNoRandomSource":            "a wiring fault, refused at construction",
 		"password.ErrWeakParameters":            "a wiring fault, refused at construction",
 		"password.ErrHistoryUnavailable":        "a dependency failure, deliberately 500",
-		"password.ErrPasswordTooLong":           "the encoder's error is returned as is, and the consumer decides",
-		"password.ErrPasswordContainsNUL":       "the encoder's error is returned as is, and the consumer decides",
+		"password.ErrTooLong":                   "the encoder's error is returned as is, and the consumer decides",
+		"password.ErrContainsNUL":               "the encoder's error is returned as is, and the consumer decides",
 		"recovery.ErrConfig":                    "a wiring fault, refused at construction",
 		"recovery.ErrRecordNotFound":            "a store outcome the recovery core converts to ErrRefused before it leaves the core",
 		"passkey.ErrConfig":                     "a wiring fault, refused at construction",

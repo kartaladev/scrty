@@ -153,10 +153,10 @@ func (p *oidcTestProvider) serveToken(w http.ResponseWriter, r *http.Request) {
 type oidcHarness struct {
 	provider *oidcTestProvider
 	flows    *oidc.MemoryFlowStore
-	manager  *oidc.Manager
-	handoffs *oidc.HandoffManager
+	manager  *oidc.RelyingParty
+	handoffs *oidc.Handoff
 	store    *oidc.MemoryHandoffStore
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   *MockGenerator
 	logs     *syncBuffer
 
@@ -170,7 +170,7 @@ type oidcHarness struct {
 
 // newOIDCHarness builds the harness, with managerOpts configuring the OIDC
 // manager beside the flow store and outbound client it always gets.
-func newOIDCHarness(t *testing.T, managerOpts ...oidc.ManagerOption) *oidcHarness {
+func newOIDCHarness(t *testing.T, managerOpts ...oidc.Option) *oidcHarness {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -207,20 +207,20 @@ func newOIDCHarness(t *testing.T, managerOpts ...oidc.ManagerOption) *oidcHarnes
 	flows, err := oidc.NewMemoryFlowStore()
 	require.NoError(t, err)
 
-	opts := append([]oidc.ManagerOption{
+	opts := append([]oidc.Option{
 		oidc.WithOutboundClient(client),
 		oidc.WithFlowStore(flows),
 	}, managerOpts...)
 
-	manager, err := oidc.NewManager(registry, broker, opts...)
+	manager, err := oidc.NewRelyingParty(registry, broker, opts...)
 	require.NoError(t, err)
 
 	store := oidc.NewMemoryHandoffStore()
 
-	handoffs, err := oidc.NewHandoffManager(store, users)
+	handoffs, err := oidc.NewHandoff(store, users)
 	require.NoError(t, err)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	return &oidcHarness{
@@ -259,7 +259,7 @@ func (h *oidcHarness) conveyedChain(
 }
 
 func (h *oidcHarness) build(
-	t *testing.T, handoffs *oidc.HandoffManager, opts ...httpsec.OIDCOption,
+	t *testing.T, handoffs *oidc.Handoff, opts ...httpsec.OIDCOption,
 ) *httpsec.Chain {
 	t.Helper()
 
@@ -271,7 +271,7 @@ func (h *oidcHarness) build(
 
 // assemble is build without the assertion, for the cases that are about the
 // construction error itself.
-func (h *oidcHarness) assemble(handoffs *oidc.HandoffManager, opts ...httpsec.OIDCOption) (*httpsec.Chain, error) {
+func (h *oidcHarness) assemble(handoffs *oidc.Handoff, opts ...httpsec.OIDCOption) (*httpsec.Chain, error) {
 	chainOpts := []httpsec.Option{
 		httpsec.WithLogger(slog.New(slog.NewTextHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		httpsec.WithRefusalLogInterval(0),
@@ -498,8 +498,8 @@ func (p *oidcTestProvider) signClaims(t *testing.T, key []byte, claims map[strin
 // managerWith builds a manager over the test provider, as edit leaves its
 // registration (nil keeps it as it is), resolving identities through broker.
 func (h *oidcHarness) managerWith(
-	t *testing.T, broker oidc.IdentityBroker, edit func(*oidc.Provider), opts ...oidc.ManagerOption,
-) *oidc.Manager {
+	t *testing.T, broker oidc.IdentityBroker, edit func(*oidc.Provider), opts ...oidc.Option,
+) *oidc.RelyingParty {
 	t.Helper()
 
 	reg := h.provider.provider()
@@ -513,7 +513,7 @@ func (h *oidcHarness) managerWith(
 	client, err := outbound.New(outbound.WithHTTPClient(h.provider.srv.Client()))
 	require.NoError(t, err)
 
-	m, err := oidc.NewManager(registry, broker, append([]oidc.ManagerOption{
+	m, err := oidc.NewRelyingParty(registry, broker, append([]oidc.Option{
 		oidc.WithOutboundClient(client),
 		oidc.WithFlowStore(h.flows),
 	}, opts...)...)

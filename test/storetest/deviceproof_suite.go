@@ -276,16 +276,16 @@ func RunDeviceProofSuite(t *testing.T, newStore func(t *testing.T) DeviceProofEn
 				begunOn(ctx, t, s, g1)
 				e := proveDevice(ctx, t, s, g1, 1000, emailCode)
 
-				for want := 1; want <= mfa.MaxEmailCodeFailures; want++ {
+				for want := 1; want <= mfa.MaxEmailCodeAttempts; want++ {
 					count, charged, err := s.ChargeEmailCode(ctx, mfaUser, g1, chargeAt)
 					require.NoError(t, err)
-					assert.True(t, charged, "charge %d of %d must succeed", want, mfa.MaxEmailCodeFailures)
+					assert.True(t, charged, "charge %d of %d must succeed", want, mfa.MaxEmailCodeAttempts)
 					assert.Equal(t, want, count, "the count after charge %d", want)
 				}
 
 				refuseCharge(ctx, t, s, g1, chargeAt, "a charge past the cap")
 
-				e.EmailCodeAttempts = mfa.MaxEmailCodeFailures
+				e.EmailCodeAttempts = mfa.MaxEmailCodeAttempts
 				assertEnrolment(ctx, t, s, e)
 			},
 		},

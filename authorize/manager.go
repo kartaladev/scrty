@@ -9,7 +9,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 )
 
-// Manager runs authorizers in the order it was given them and lets the first
+// FirstOf runs authorizers in the order it was given them and lets the first
 // one that does not decline decide.
 //
 // It is itself an Authorizer, so a consumer puts one in the request context
@@ -20,13 +20,13 @@ import (
 // the declination is a distinct error: an attempt nobody was configured to
 // judge is one the consumer never described, and allowing it would turn a gap
 // in the wiring into an open door.
-type Manager struct {
+type FirstOf struct {
 	authorizers []Authorizer
 }
 
-var _ Authorizer = (*Manager)(nil)
+var _ Authorizer = (*FirstOf)(nil)
 
-// NewManager returns a manager over authorizers, consulted in the order given.
+// NewFirstOf returns a manager over authorizers, consulted in the order given.
 //
 // It refuses a call with no authorizers, and one with any absent authorizer,
 // including an interface holding a nil pointer. Neither is filtered out
@@ -37,7 +37,7 @@ var _ Authorizer = (*Manager)(nil)
 //
 // The manager holds its own copy of the slice, so a caller that reuses the
 // slice it passed cannot swap an authorizer out from under a built manager.
-func NewManager(authorizers ...Authorizer) (*Manager, error) {
+func NewFirstOf(authorizers ...Authorizer) (*FirstOf, error) {
 	if len(authorizers) == 0 {
 		return nil, fmt.Errorf("%w: a manager with no authorizers denies everything", ErrConfig)
 	}
@@ -48,7 +48,7 @@ func NewManager(authorizers ...Authorizer) (*Manager, error) {
 		}
 	}
 
-	return &Manager{authorizers: slices.Clone(authorizers)}, nil
+	return &FirstOf{authorizers: slices.Clone(authorizers)}, nil
 }
 
 // Authorize offers attrs to each authorizer in turn and returns the first
@@ -58,7 +58,7 @@ func NewManager(authorizers ...Authorizer) (*Manager, error) {
 // consumer's own authorizer still matches its cause and is never rewritten as a
 // decision about the caller. Only the case where every authorizer declined
 // produces an error of this package's own, and that error is a denial.
-func (m *Manager) Authorize(ctx context.Context, attrs Attributes) error {
+func (m *FirstOf) Authorize(ctx context.Context, attrs Attributes) error {
 	for _, a := range m.authorizers {
 		err := a.Authorize(ctx, attrs)
 		if errors.Is(err, ErrUnsupportedAttributes) {

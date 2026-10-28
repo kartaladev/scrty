@@ -114,10 +114,10 @@ func NewEnrolmentStore(
 	inner mfa.EnrolmentStore, r EnrolmentResealer, c Cipher, opts ...Option,
 ) (mfa.EnrolmentStore, error) {
 	if nilcheck.IsNil(inner) {
-		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no inner store", ErrInvalidConfiguration)
+		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no inner store", ErrConfig)
 	}
 	if nilcheck.IsNil(c) {
-		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no cipher", ErrInvalidConfiguration)
+		return nil, fmt.Errorf("%w: the sealing MFA enrolment store has no cipher", ErrConfig)
 	}
 
 	o, err := newOptions("MFA enrolment", !nilcheck.IsNil(r), true, opts)

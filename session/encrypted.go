@@ -161,7 +161,7 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 		return nil, storeFailed(err, "session: the inner store could not load the session")
 	}
 	if sess == nil {
-		return nil, ErrSessionNotFound
+		return nil, ErrNotFound
 	}
 	if sess.ExternalIDToken == "" {
 		return sess, nil
@@ -170,13 +170,13 @@ func (s *encryptedStore) Load(ctx context.Context, id string) (*Session, error) 
 	envelope, err := base64.RawURLEncoding.DecodeString(sess.ExternalIDToken)
 	if err != nil {
 		return nil, fmt.Errorf("%w: the stored provider ID token is not a valid envelope: %w",
-			ErrSessionUnreadable, err)
+			ErrUnreadable, err)
 	}
 
 	plaintext, err := s.cipher.Open(envelope, additionalData(sess.ID))
 	if err != nil {
 		return nil, diag.Wrap(err, textSessionUnreadableIDTokenNotOpened,
-			ErrSessionUnreadable)
+			ErrUnreadable)
 	}
 
 	sess.ExternalIDToken = string(plaintext)

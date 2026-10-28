@@ -358,7 +358,7 @@ type gormSaveStore struct {
 
 func (s gormSaveStore) Save(ctx context.Context, sess *session.Session) error {
 	err := s.Store.Save(ctx, sess)
-	if !errors.Is(err, session.ErrSessionNotFound) {
+	if !errors.Is(err, session.ErrNotFound) {
 		return err
 	}
 
@@ -548,7 +548,7 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 		return err
 	}
 	if superseded {
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	}
 	return s.db.WithContext(ctx).Exec(
 		`UPDATE sessions SET first_presented_at = ? WHERE id_digest = ? AND first_presented_at IS NULL`,

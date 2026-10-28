@@ -154,7 +154,7 @@ func WithReuseClock(clk clock.Clock) ReuseOption {
 	return func(c *reuseConfig) { c.clock = clk }
 }
 
-// Check refuses candidate with [ErrPasswordReused] when it matches user.Password
+// Check refuses candidate with [ErrReused] when it matches user.Password
 // or one of the depth−1 most recent retired hashes of user.ID.
 //
 // A user with no current hash (nil or empty) matches nothing on that count,
@@ -178,12 +178,12 @@ func (g *ReuseGuard) Check(ctx context.Context, user *identity.Details, candidat
 	}
 
 	if g.matches(candidate, user.Password) {
-		return ErrPasswordReused
+		return ErrReused
 	}
 
 	for _, hash := range retired {
 		if g.matches(candidate, hash) {
-			return ErrPasswordReused
+			return ErrReused
 		}
 	}
 
@@ -212,12 +212,12 @@ func (g *ReuseGuard) matches(candidate string, hash []byte) bool {
 //  1. read the user's recent history; a failure refuses with
 //     [ErrHistoryUnavailable] and nothing is written;
 //  2. check for reuse, as [ReuseGuard.Check] does; a match refuses with
-//     [ErrPasswordReused];
+//     [ErrReused];
 //  3. retire user.Password, keeping only the newest depth−1 retired hashes; a
 //     failure refuses with [ErrHistoryUnavailable] and the password is
 //     unchanged. A user with no current hash retires nothing;
 //  4. encode candidate with the guard's encoder; an encoder error, such as
-//     [ErrPasswordTooLong], is returned as is;
+//     [ErrTooLong], is returned as is;
 //  5. call write with user, the new hash and the time from the guard's clock,
 //     and return its error unchanged.
 //

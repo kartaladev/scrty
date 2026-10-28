@@ -500,7 +500,7 @@ func (s readThenMark) MarkPresented(ctx context.Context, sessionID string, at ti
 		return err
 	}
 	if superseded {
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	}
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET first_presented_at = $2 WHERE id_digest = $1 AND first_presented_at IS NULL`,

@@ -55,7 +55,7 @@ func TestKeyCacheBackoff(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []oidc.ManagerOption
+		opts   []oidc.Option
 		act    func(t *testing.T, p *testProvider, keys func() error)
 		assert func(t *testing.T, p *testProvider, logs cacheLogCapture)
 	}
@@ -102,7 +102,7 @@ func TestKeyCacheBackoff(t *testing.T) {
 		},
 		{
 			name: "a consumer backoff replaces the bounds",
-			opts: []oidc.ManagerOption{oidc.WithDiscoveryFailureBackoff(5*time.Second, 7*time.Second)},
+			opts: []oidc.Option{oidc.WithDiscoveryFailureBackoff(5*time.Second, 7*time.Second)},
 			act: func(t *testing.T, p *testProvider, keys func() error) {
 				p.failJWKS.Store(true)
 				require.True(t, probe(t, p, keys))
@@ -191,7 +191,7 @@ func TestKeyCacheBackoff(t *testing.T) {
 			p := newTestProvider(t)
 			logs := newCacheLogCapture()
 			synctest.Test(t, func(t *testing.T) {
-				opts := append([]oidc.ManagerOption{oidc.WithLogger(slog.New(logs))}, tc.opts...)
+				opts := append([]oidc.Option{oidc.WithLogger(slog.New(logs))}, tc.opts...)
 				m := newCacheManager(t, p, opts...)
 				keys := func() error {
 					_, err := oidc.KeysForTest(m, t.Context(), "corp", "k1")

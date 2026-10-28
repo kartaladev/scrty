@@ -27,16 +27,16 @@ func TestNewKeyManager(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []signingkey.Option
-		assert func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, err error)
+		assert func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "empty store gets a current RS256 key that is stored first",
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, err error) {
 				require.NoError(t, err)
 
-				kid, signer, ok := km.GetSigner(signingkey.RS256)
+				kid, signer, ok := km.Signer(signingkey.RS256)
 				require.True(t, ok)
 				require.NotEmpty(t, kid)
 				pub, isRSA := signer.Public().(*rsa.PublicKey)
@@ -53,15 +53,15 @@ func TestNewKeyManager(t *testing.T) {
 		{
 			name: "consumer algorithms",
 			opts: []signingkey.Option{signingkey.WithAlgs(signingkey.ES256, signingkey.EdDSA)},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, err error) {
 				require.NoError(t, err)
 
-				_, es, ok := km.GetSigner(signingkey.ES256)
+				_, es, ok := km.Signer(signingkey.ES256)
 				require.True(t, ok)
 				_, isEC := es.Public().(*ecdsa.PublicKey)
 				assert.True(t, isEC, "ES256 signs with an ECDSA key, got %T", es.Public())
 
-				_, ed, ok := km.GetSigner(signingkey.EdDSA)
+				_, ed, ok := km.Signer(signingkey.EdDSA)
 				require.True(t, ok)
 				_, isEd := ed.Public().(ed25519.PublicKey)
 				assert.True(t, isEd, "EdDSA signs with an Ed25519 key, got %T", ed.Public())
@@ -69,14 +69,14 @@ func TestNewKeyManager(t *testing.T) {
 				assert.ElementsMatch(t,
 					[]signingkey.Alg{signingkey.ES256, signingkey.EdDSA}, km.SupportedAlgs())
 
-				_, _, rsOK := km.GetSigner(signingkey.RS256)
+				_, _, rsOK := km.Signer(signingkey.RS256)
 				assert.False(t, rsOK, "an algorithm the consumer did not configure has no key")
 			},
 		},
 		{
 			name: "unsupported algorithm is refused",
 			opts: []signingkey.Option{signingkey.WithAlgs("HS256")},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, err error) {
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, err error) {
 				require.Error(t, err)
 				assert.Nil(t, km)
 				assert.Contains(t, err.Error(), "HS256")
@@ -92,10 +92,10 @@ func TestNewKeyManager(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			store := signingkey.NewInMemoryKeyStore()
+			store := signingkey.NewMemoryKeyStore()
 			opts := append([]signingkey.Option{signingkey.WithKeyStore(store)}, tc.opts...)
 
-			km, err := signingkey.NewKeyManager(t.Context(), opts...)
+			km, err := signingkey.New(t.Context(), opts...)
 			tc.assert(t, km, store, err)
 		})
 	}
@@ -119,13 +119,13 @@ func TestNewKeyManagerStoresBeforeUse(t *testing.T) {
 		}).
 		After(load.Call)
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clockwork.NewFakeClockAt(minted)),
 	)
 	require.NoError(t, err)
 
-	kid, signer, ok := km.GetSigner(signingkey.RS256)
+	kid, signer, ok := km.Signer(signingkey.RS256)
 	require.True(t, ok)
 
 	assert.Equal(t, kid, written.Kid,

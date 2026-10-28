@@ -16,7 +16,7 @@ const testOIDCProvider = "corp"
 // newTestOIDCManager builds an OIDC manager for testOIDCProvider over an
 // in-memory link store, with brokerOpts configuring the broker it resolves
 // identities through. It sends no request: construction never does.
-func newTestOIDCManager(t *testing.T, brokerOpts ...oidc.BrokerOption) *oidc.Manager {
+func newTestOIDCManager(t *testing.T, brokerOpts ...oidc.BrokerOption) *oidc.RelyingParty {
 	t.Helper()
 
 	registry, err := oidc.NewRegistry(oidc.Provider{ //nolint:gosec // G101: a fixture, not a credential
@@ -35,17 +35,17 @@ func newTestOIDCManager(t *testing.T, brokerOpts ...oidc.BrokerOption) *oidc.Man
 		brokerOpts...)
 	require.NoError(t, err)
 
-	m, err := oidc.NewManager(registry, broker)
+	m, err := oidc.NewRelyingParty(registry, broker)
 	require.NoError(t, err)
 
 	return m
 }
 
 // newTestHandoffManager builds a handoff manager over an in-memory store.
-func newTestHandoffManager(t *testing.T) *oidc.HandoffManager {
+func newTestHandoffManager(t *testing.T) *oidc.Handoff {
 	t.Helper()
 
-	h, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(gomock.NewController(t)))
+	h, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(gomock.NewController(t)))
 	require.NoError(t, err)
 
 	return h

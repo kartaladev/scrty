@@ -73,7 +73,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 			},
 			input: &policy.Input{Username: "alice", Now: mfaNow},
 			assert: func(t *testing.T, d policy.Decision, _ *bytes.Buffer) {
-				assertFixedReason(t, d, policy.ErrPolicyDenied)
+				assertFixedReason(t, d, policy.ErrDenied)
 			},
 		},
 		{
@@ -95,7 +95,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 			},
 			input: &policy.Input{Username: "alice", Now: mfaNow},
 			assert: func(t *testing.T, d policy.Decision, _ *bytes.Buffer) {
-				assertFixedReason(t, d, policy.ErrPolicyDenied)
+				assertFixedReason(t, d, policy.ErrDenied)
 				assert.NotErrorIs(t, d.Reason, lockout.ErrAccountLocked,
 					"an outage was reported to the caller as a locked account")
 			},
@@ -106,7 +106,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 				counter := NewMockSessionCounter(gomock.NewController(t))
 				counter.EXPECT().CountActiveByUser(gomock.Any(), gomock.Any()).Return(0, errLeakyStore)
 
-				p, err := policy.NewConcurrentSessionPolicy(counter, 3)
+				p, err := policy.NewConcurrentSessions(counter, 3)
 				require.NoError(t, err)
 
 				return p

@@ -13,7 +13,7 @@ import (
 // requestReturnsNoError pins the one thing about Request's signature the whole
 // capability rests on: there is no error beside the result, so a caller has
 // nothing to branch on and cannot leak which addresses have accounts.
-var requestReturnsNoError func(*magiclink.Manager, context.Context, string, string) magiclink.RequestResult = (*magiclink.Manager).Request
+var requestReturnsNoError func(*magiclink.Links, context.Context, string, string) magiclink.RequestResult = (*magiclink.Links).Request
 
 func TestMagicLinkSurface(t *testing.T) {
 	t.Parallel()
@@ -22,7 +22,7 @@ func TestMagicLinkSurface(t *testing.T) {
 
 	sender := &recordingSender{}
 
-	m, err := magiclink.NewManager(testTokens(t), activeByID(), sender, "https://app.example.com")
+	m, err := magiclink.New(testTokens(t), activeByID(), sender, "https://app.example.com")
 	require.NoError(t, err)
 
 	got := m.Request(t.Context(), "ada@example.com", "/")

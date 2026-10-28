@@ -19,12 +19,12 @@ import (
 // session O created at 09:00.
 type graceFixture struct {
 	clk   *clockwork.FakeClock
-	m     *session.Manager
+	m     *session.Sessions
 	store *session.MemoryStore
 	o     *session.Session
 }
 
-func newGraceFixture(t *testing.T, opts ...session.ManagerOption) *graceFixture {
+func newGraceFixture(t *testing.T, opts ...session.Option) *graceFixture {
 	t.Helper()
 
 	clk := clockwork.NewFakeClockAt(createdAt)
@@ -50,7 +50,7 @@ func TestRotateWithGrace(t *testing.T) {
 
 	type testCase struct {
 		name string
-		opts []session.ManagerOption
+		opts []session.Option
 		// act runs the case's steps against the fixture, O created at 09:00,
 		// and returns what its last step returned.
 		act    func(ctx context.Context, t *testing.T, f *graceFixture) (*session.Session, error)
@@ -96,7 +96,7 @@ func TestRotateWithGrace(t *testing.T) {
 			// O ends at 21:00; rotated at 20:59:50 with 30 s, its window ends
 			// at 21:00 rather than 21:00:20.
 			name: "the window is capped at the absolute deadline",
-			opts: []session.ManagerOption{session.WithIdleTimeout(12 * time.Hour)},
+			opts: []session.Option{session.WithIdleTimeout(12 * time.Hour)},
 			act: func(ctx context.Context, t *testing.T, f *graceFixture) (*session.Session, error) {
 				f.clk.Advance(12*time.Hour - 10*time.Second)
 				f.renew(ctx, t, f.o, 30*time.Second)
@@ -149,7 +149,7 @@ func TestRotateWithGrace(t *testing.T) {
 				return s2, err
 			},
 			assert: func(t *testing.T, _ *graceFixture, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 			},
 		},
 		{
@@ -162,7 +162,7 @@ func TestRotateWithGrace(t *testing.T) {
 				return f.m.Load(ctx, f.o.ID)
 			},
 			assert: func(t *testing.T, _ *graceFixture, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused, "the window ended at 09:00:30")
+				require.ErrorIs(t, err, session.ErrReused, "the window ended at 09:00:30")
 			},
 		},
 		{
@@ -171,13 +171,13 @@ func TestRotateWithGrace(t *testing.T) {
 				s1 := f.renew(ctx, t, f.o, 30*time.Second)
 				f.clk.Advance(5 * time.Minute)
 				_, err := f.m.Load(ctx, f.o.ID)
-				require.ErrorIs(t, err, session.ErrSessionReused)
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrReused)
+				require.ErrorIs(t, err, session.ErrExpired)
 
 				return f.m.Load(ctx, s1.ID)
 			},
 			assert: func(t *testing.T, f *graceFixture, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				assert.Zero(t, f.store.Len())
 			},
 		},
@@ -189,7 +189,7 @@ func TestRotateWithGrace(t *testing.T) {
 				return f.m.Load(ctx, f.o.ID)
 			},
 			assert: func(t *testing.T, f *graceFixture, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Zero(t, f.store.Len())
 			},
 		},
@@ -201,10 +201,10 @@ func TestRotateWithGrace(t *testing.T) {
 				f.renew(ctx, t, f.o, 30*time.Second)
 				f.clk.Advance(5 * time.Minute)
 				_, err := f.m.Load(ctx, f.o.ID)
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 
 				err = f.m.Delete(ctx, f.o.ID)
-				if errors.Is(err, session.ErrSessionNotFound) {
+				if errors.Is(err, session.ErrNotFound) {
 					err = nil
 				}
 				return nil, err
@@ -239,7 +239,7 @@ func TestRotateWithGrace(t *testing.T) {
 				return f.m.Rotate(ctx, f.o)
 			},
 			assert: func(t *testing.T, f *graceFixture, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Zero(t, f.store.Len())
 			},
 		},
@@ -252,14 +252,14 @@ func TestRotateWithGrace(t *testing.T) {
 				require.NoError(t, err)
 
 				got, err := f.m.Rotate(ctx, old)
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
 
 				_, loadErr := f.m.Load(ctx, s1.ID)
 				require.NoError(t, loadErr, "the current successor must still load")
 				return got, err
 			},
 			assert: func(t *testing.T, f *graceFixture, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, err, session.ErrRenewalConflict)
 				assert.Nil(t, got)
 				assert.Equal(t, 2, f.store.Len(), "a refused strict rotation stored a session or deleted one")
 				old, loadErr := f.store.Load(t.Context(), f.o.ID)
@@ -281,7 +281,7 @@ func TestRotateWithGrace(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, f *graceFixture, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 				assert.Zero(t, f.store.Len(), "the family was not revoked")
 			},
@@ -296,7 +296,7 @@ func TestRotateWithGrace(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, f *graceFixture, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 				assert.Zero(t, f.store.Len(), "the family was not revoked")
 			},
@@ -352,14 +352,14 @@ func TestLoad_JudgesTheWindowByItsOwnClock(t *testing.T) {
 			name: "a clock at exactly 09:00:30 is reuse",
 			at:   createdAt.Add(30 * time.Second),
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 			},
 		},
 		{
 			name: "a clock at 09:00:31 is reuse",
 			at:   createdAt.Add(31 * time.Second),
 			assert: func(t *testing.T, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 			},
 		},
 	}
@@ -451,7 +451,7 @@ func TestLoad_FirstPresentation(t *testing.T) {
 			name:   "a mark refused as superseded re-loads the session, and a knocked-out one is reuse",
 			stored: func() *session.Session { return liveUnpresented(sid) },
 			expect: func(store *MockStore) {
-				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionSuperseded).Times(1)
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSuperseded).Times(1)
 				knockedOut := liveUnpresented(sid)
 				knockedOut.SupersededAt = createdAt
 				knockedOut.AcceptUntil = createdAt
@@ -459,7 +459,7 @@ func TestLoad_FirstPresentation(t *testing.T) {
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).Return(1, nil).Times(1)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
@@ -467,7 +467,7 @@ func TestLoad_FirstPresentation(t *testing.T) {
 			name:   "a mark refused as superseded inside the window returns the re-loaded session, unmarked",
 			stored: func() *session.Session { return liveUnpresented(sid) },
 			expect: func(store *MockStore) {
-				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionSuperseded).Times(1)
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSuperseded).Times(1)
 				renewed := liveUnpresented(sid)
 				renewed.SupersededAt = createdAt
 				renewed.AcceptUntil = createdAt.Add(30 * time.Second)
@@ -485,7 +485,7 @@ func TestLoad_FirstPresentation(t *testing.T) {
 			name:   "a mark refused as superseded whose re-load fails is a store failure",
 			stored: func() *session.Session { return liveUnpresented(sid) },
 			expect: func(store *MockStore) {
-				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionSuperseded).Times(1)
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSuperseded).Times(1)
 				store.EXPECT().Load(gomock.Any(), sid).Return(nil, errStoreQuotes).Times(1)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
@@ -498,10 +498,10 @@ func TestLoad_FirstPresentation(t *testing.T) {
 			name:   "a mark refused as not found is not found",
 			stored: func() *session.Session { return liveUnpresented(sid) },
 			expect: func(store *MockStore) {
-				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrSessionNotFound).Times(1)
+				store.EXPECT().MarkPresented(gomock.Any(), sid, createdAt).Return(session.ErrNotFound).Times(1)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				assert.Nil(t, got)
 			},
 		},

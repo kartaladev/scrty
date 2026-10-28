@@ -102,7 +102,7 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 
 				loader := stubLoader{byUsername: map[string]*identity.Details{"ada@example.com": known}}
 
-				m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
+				m, err := magiclink.New(tokens, loader, &recordingSender{}, "https://app.example.com",
 					magiclink.WithLogger(logger))
 				require.NoError(t, err)
 
@@ -125,7 +125,7 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 				loader := stubLoader{byUsername: map[string]*identity.Details{"ada@example.com": known}}
 				sender := &failingSender{err: errStoreFailure}
 
-				m, err := magiclink.NewManager(testTokens(t), loader, sender, "https://app.example.com",
+				m, err := magiclink.New(testTokens(t), loader, sender, "https://app.example.com",
 					magiclink.WithLogger(logger))
 				require.NoError(t, err)
 
@@ -147,7 +147,7 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 
 				loader := stubLoader{err: errStoreFailure}
 
-				m, err := magiclink.NewManager(testTokens(t), loader, &recordingSender{}, "https://app.example.com",
+				m, err := magiclink.New(testTokens(t), loader, &recordingSender{}, "https://app.example.com",
 					magiclink.WithLogger(logger))
 				require.NoError(t, err)
 
@@ -169,7 +169,7 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 
 				loader := stubLoader{byUsername: map[string]*identity.Details{"ada@example.com": known}}
 
-				m, err := magiclink.NewManager(testTokens(t), loader, &recordingSender{}, "https://app.example.com",
+				m, err := magiclink.New(testTokens(t), loader, &recordingSender{}, "https://app.example.com",
 					magiclink.WithRandom(failingRandomSource{}), magiclink.WithLogger(logger))
 				require.NoError(t, err)
 
@@ -194,7 +194,7 @@ func TestMagicLinkFailureRecords(t *testing.T) {
 
 				loader := stubLoader{err: errStoreFailure}
 
-				m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
+				m, err := magiclink.New(tokens, loader, &recordingSender{}, "https://app.example.com",
 					magiclink.WithSameDeviceBinding(false), magiclink.WithLogger(logger))
 				require.NoError(t, err)
 

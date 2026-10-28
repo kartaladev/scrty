@@ -353,7 +353,7 @@ const voidingCode = ""
 // error other than ErrEmailCodeInvalid — a store failure — stops it and is
 // returned; the code may then keep some attempts.
 func VoidEmailCode(ctx context.Context, e Enroller, user identity.UserID, gen id.ID) error {
-	for range MaxEmailCodeFailures {
+	for range MaxEmailCodeAttempts {
 		err := e.RedeemEmailCode(ctx, user, gen, voidingCode)
 
 		switch {

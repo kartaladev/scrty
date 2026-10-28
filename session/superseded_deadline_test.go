@@ -27,13 +27,13 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 
 	type fixture struct {
 		clk   *clockwork.FakeClock
-		m     *session.Manager
+		m     *session.Sessions
 		store *inFlightStore
 	}
 
 	type testCase struct {
 		name string
-		opts []session.ManagerOption
+		opts []session.Option
 		// failDelete makes the store's Delete fail, as after a strict
 		// rotation whose delete did not land.
 		failDelete bool
@@ -48,7 +48,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Spec: "By default a successor SHALL keep its predecessor's
 			// absolute deadline."
 			name: "a re-rotation carries the one-hour deadline over, not the retention",
-			opts: []session.ManagerOption{session.WithMaxAbsoluteLifetime(month)},
+			opts: []session.Option{session.WithMaxAbsoluteLifetime(month)},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
 				require.NoError(t, err)
@@ -70,7 +70,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Retention is supersession state, which belongs to the record
 			// superseded alone: a successor is a live session and has none.
 			name: "a re-rotation's successor carries no retention deadline over",
-			opts: []session.ManagerOption{session.WithMaxAbsoluteLifetime(month)},
+			opts: []session.Option{session.WithMaxAbsoluteLifetime(month)},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
 				require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Spec: "By default a successor SHALL keep its predecessor's
 			// absolute deadline."
 			name:       "a re-rotation after a strict rotation whose delete failed carries the deadline over",
-			opts:       []session.ManagerOption{session.WithMaxAbsoluteLifetime(month)},
+			opts:       []session.Option{session.WithMaxAbsoluteLifetime(month)},
 			failDelete: true,
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
@@ -136,7 +136,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Spec: "A load of the old identifier between the two writes
 			// SHALL return the old session as it was."
 			name:       "the old identifier in flight after a strict rotation loads with its own deadlines",
-			opts:       []session.ManagerOption{session.WithMaxAbsoluteLifetime(month), session.WithIdleTimeout(idle)},
+			opts:       []session.Option{session.WithMaxAbsoluteLifetime(month), session.WithIdleTimeout(idle)},
 			failDelete: true,
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
@@ -159,7 +159,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// an expired error", and a successor keeps its predecessor's
 			// absolute deadline, which has passed.
 			name: "recovery after the session's absolute deadline is expired",
-			opts: []session.ManagerOption{
+			opts: []session.Option{
 				session.WithAbsoluteTimeout(72 * time.Hour),
 				session.WithIdleTimeout(48 * time.Hour),
 				session.WithUnusedSuccessorRecovery(),
@@ -178,8 +178,8 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got, "a family past its deadline was revived")
 			},
 		},
@@ -187,7 +187,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Spec: "Loading a session past either deadline SHALL fail with
 			// an expired error."
 			name: "recovery after the session's idle deadline is expired",
-			opts: []session.ManagerOption{
+			opts: []session.Option{
 				session.WithAbsoluteTimeout(72 * time.Hour),
 				session.WithIdleTimeout(idle),
 				session.WithUnusedSuccessorRecovery(),
@@ -206,8 +206,8 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return got, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got, "a session past its idle deadline was returned for renewal")
 			},
 		},
@@ -216,7 +216,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// SHALL succeed only while its own idle and absolute deadlines
 			// are unexpired", and the family is not revoked.
 			name: "inside the window, past its own idle deadline, is expired and revokes nothing",
-			opts: []session.ManagerOption{session.WithIdleTimeout(10 * time.Second)},
+			opts: []session.Option{session.WithIdleTimeout(10 * time.Second)},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser)
 				require.NoError(t, err)
@@ -227,20 +227,20 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				got, err := f.m.Load(ctx, o.ID)
 
 				_, err1 := f.store.Load(ctx, s1.ID)
-				assert.NotErrorIs(t, err1, session.ErrSessionNotFound, "the family was revoked")
+				assert.NotErrorIs(t, err1, session.ErrNotFound, "the family was revoked")
 
 				return got, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
 		{
 			// A deadline is the first instant the session is no longer valid.
 			name: "inside the window, exactly at its own idle deadline, is expired",
-			opts: []session.ManagerOption{session.WithIdleTimeout(10 * time.Second)},
+			opts: []session.Option{session.WithIdleTimeout(10 * time.Second)},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser)
 				require.NoError(t, err)
@@ -252,8 +252,8 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return f.m.Load(ctx, o.ID)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
@@ -262,7 +262,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// guard: it passes with the deadline raise too, and fails if the
 			// fix drops retention.
 			name: "after the window, past its own absolute deadline, is reuse",
-			opts: []session.ManagerOption{session.WithMaxAbsoluteLifetime(month)},
+			opts: []session.Option{session.WithMaxAbsoluteLifetime(month)},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser, session.WithAbsoluteLifetime(time.Hour))
 				require.NoError(t, err)
@@ -273,12 +273,12 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				got, err := f.m.Load(ctx, o.ID)
 
 				_, err1 := f.store.Load(ctx, s1.ID)
-				assert.ErrorIs(t, err1, session.ErrSessionNotFound, "the family was not revoked")
+				assert.ErrorIs(t, err1, session.ErrNotFound, "the family was not revoked")
 
 				return got, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
@@ -286,7 +286,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Spec: "Recovery never revives a session that has ended", at
 			// the deadline itself.
 			name: "recovery exactly at its own idle deadline is expired, with no successor",
-			opts: []session.ManagerOption{
+			opts: []session.Option{
 				session.WithAbsoluteTimeout(72 * time.Hour),
 				session.WithIdleTimeout(idle),
 				session.WithUnusedSuccessorRecovery(),
@@ -305,15 +305,15 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got, "a session at its idle deadline was renewed")
 			},
 		},
 		{
 			// Spec: "An ended session whose successor was used is reuse."
 			name: "an ended session whose successor was used is reuse",
-			opts: []session.ManagerOption{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
+			opts: []session.Option{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser)
 				require.NoError(t, err)
@@ -332,13 +332,13 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				next, err := renew(ctx, f.m, o.ID)
 
 				_, err1 := f.store.Load(ctx, s1.ID)
-				assert.ErrorIs(t, err1, session.ErrSessionNotFound, "the used successor still loads")
+				assert.ErrorIs(t, err1, session.ErrNotFound, "the used successor still loads")
 				assert.Zero(t, f.store.Len(), "the family was not revoked")
 
 				return next, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got, "a successor was issued for an ended session")
 			},
 		},
@@ -346,7 +346,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// Spec: "An ended session whose unused successor is gone is
 			// expired."
 			name: "an ended session whose unused successor is gone is expired",
-			opts: []session.ManagerOption{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
+			opts: []session.Option{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser)
 				require.NoError(t, err)
@@ -364,8 +364,8 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got, "a successor was issued for an ended session")
 			},
 		},
@@ -375,7 +375,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// S1's own idle deadline, 09:40, is still ahead when O, idle
 			// since 09:00, is renewed at 09:31.
 			name: "an ended session whose successor is unused is expired",
-			opts: []session.ManagerOption{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
+			opts: []session.Option{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser)
 				require.NoError(t, err)
@@ -393,8 +393,8 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got, "a successor was issued for an ended session")
 			},
 		},
@@ -403,7 +403,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			// deadlines". S1 is knocked out unused at 09:00:10, and is
 			// renewed at 09:31, past its own idle deadline (09:30).
 			name: "a knocked-out identifier renewed past its own idle deadline is reuse",
-			opts: []session.ManagerOption{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
+			opts: []session.Option{session.WithIdleTimeout(idle), session.WithUnusedSuccessorRecovery()},
 			act: func(ctx context.Context, t *testing.T, f *fixture) (*session.Session, error) {
 				o, err := f.m.Create(ctx, testUser)
 				require.NoError(t, err)
@@ -423,7 +423,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 				return next, err
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
@@ -436,7 +436,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(createdAt)
 			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 			f := &fixture{clk: clk, store: &inFlightStore{MemoryStore: inner, failDelete: tc.failDelete}}
-			f.m = managerFor(t, append([]session.ManagerOption{
+			f.m = managerFor(t, append([]session.Option{
 				session.WithStore(f.store),
 				session.WithClock(clk),
 			}, tc.opts...)...)
@@ -449,7 +449,7 @@ func TestSupersededRecord_RetentionIsNotADeadline(t *testing.T) {
 
 // renew is what a renewal endpoint does: LoadForRenewal, then RotateWithGrace
 // with the default grace when the load passed.
-func renew(ctx context.Context, m *session.Manager, sid string) (*session.Session, error) {
+func renew(ctx context.Context, m *session.Sessions, sid string) (*session.Session, error) {
 	s, err := m.LoadForRenewal(ctx, sid)
 	if err != nil {
 		return nil, err
@@ -495,8 +495,8 @@ func TestRecovery_AnEndedSessionAsksTheStoreWhetherItsSuccessorWasUsed(t *testin
 				store.EXPECT().SuccessorPresented(gomock.Any(), sid).Return(false, nil).Times(1)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
@@ -507,7 +507,7 @@ func TestRecovery_AnEndedSessionAsksTheStoreWhetherItsSuccessorWasUsed(t *testin
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).Return(2, nil).Times(1)
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionReused)
+				require.ErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},
@@ -518,7 +518,7 @@ func TestRecovery_AnEndedSessionAsksTheStoreWhetherItsSuccessorWasUsed(t *testin
 			},
 			assert: func(t *testing.T, got *session.Session, err error) {
 				require.ErrorIs(t, err, errStoreWrite)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, got)
 			},
 		},

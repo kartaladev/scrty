@@ -346,7 +346,7 @@ func TestEnrolmentEmailCode(t *testing.T) {
 				t.Helper()
 
 				refused(t, h, s, out)
-				assert.Equal(t, mfa.MaxEmailCodeFailures, attempts(t, h),
+				assert.Equal(t, mfa.MaxEmailCodeAttempts, attempts(t, h),
 					"no more attempts are charged, so no more comparisons made, than the limit")
 			},
 		},
@@ -716,7 +716,7 @@ func TestEnrolmentNotifiesWhenSessionUnsaved(t *testing.T) {
 			var failing atomic.Bool
 
 			var err error
-			h.sessions, err = session.NewManager(session.WithStore(
+			h.sessions, err = session.New(session.WithStore(
 				failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
 			require.NoError(t, err)
 

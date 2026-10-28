@@ -87,7 +87,7 @@ func TestTouch_Interval(t *testing.T) {
 			elapsed:  31 * time.Minute,
 			expect:   func(*MockStore, string) {},
 			assert: func(t *testing.T, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 	}
@@ -99,7 +99,7 @@ func TestTouch_Interval(t *testing.T) {
 			clk := clockwork.NewFakeClockAt(createdAt)
 			store := NewMockStore(gomock.NewController(t))
 			store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
-			opts := []session.ManagerOption{session.WithStore(store), session.WithClock(clk)}
+			opts := []session.Option{session.WithStore(store), session.WithClock(clk)}
 			if tc.interval != 0 {
 				opts = append(opts, session.WithTouchInterval(tc.interval))
 			}
@@ -160,7 +160,7 @@ func TestTouch_SkippedWritesOnlyBringExpiryEarlier(t *testing.T) {
 	clk.Advance(29*time.Minute + 10*time.Second) // 09:30:00
 	_, err = m.Load(t.Context(), s.ID)
 
-	require.ErrorIs(t, err, session.ErrSessionExpired)
+	require.ErrorIs(t, err, session.ErrExpired)
 }
 
 func TestNewManager_TouchIntervalMustBeShorterThanIdleTimeout(t *testing.T) {
@@ -199,7 +199,7 @@ func TestNewManager_TouchIntervalMustBeShorterThanIdleTimeout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := session.NewManager(session.WithTouchInterval(tc.interval))
+			_, err := session.New(session.WithTouchInterval(tc.interval))
 
 			tc.assert(t, err)
 		})

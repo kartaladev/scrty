@@ -32,21 +32,21 @@ const (
 type PendingReason uint8
 
 const (
-	// AwaitingSavedCodes waits for the user to confirm saved recovery codes.
-	AwaitingSavedCodes PendingReason = 1 << iota
-	// AwaitingEmailCode waits for the user to enter a code emailed to them.
-	AwaitingEmailCode
+	// PendingSavedCodes waits for the user to confirm saved recovery codes.
+	PendingSavedCodes PendingReason = 1 << iota
+	// PendingEmailCode waits for the user to enter a code emailed to them.
+	PendingEmailCode
 )
 
 // UserVerification is the user-verification requirement of a ceremony.
 type UserVerification uint8
 
 const (
-	// UVRequired requires the authenticator to verify the user. It is the
+	// UserVerificationRequired requires the authenticator to verify the user. It is the
 	// default.
-	UVRequired UserVerification = iota + 1
-	// UVPreferred asks for user verification but accepts its absence.
-	UVPreferred
+	UserVerificationRequired UserVerification = iota + 1
+	// UserVerificationPreferred asks for user verification but accepts its absence.
+	UserVerificationPreferred
 )
 
 // ResidentKey is the discoverable-credential requirement of a registration.
@@ -142,8 +142,8 @@ type AssertionExpectation struct {
 	UV        UserVerification
 }
 
-// NewCredential is a verified registration, before it is stored.
-type NewCredential struct {
+// CredentialInput is a verified registration, before it is stored.
+type CredentialInput struct {
 	CredentialID         []byte
 	PublicKey            []byte
 	SignCount            uint32
@@ -167,13 +167,13 @@ type AssertionResult struct {
 	BackupState    bool
 }
 
-// NormaliseName returns raw trimmed of surrounding white space, or the
+// NormalizeName returns raw trimmed of surrounding white space, or the
 // default name "Passkey <YYYY-MM-DD>" for created's date, in created's own
 // location, when the trimmed name is empty, is not valid UTF-8, is longer
 // than 64 characters, or holds a control character or a Unicode format
 // character (category Cf, such as a bidirectional override or a zero-width
 // character). A name is replaced, never truncated or refused.
-func NormaliseName(raw string, created time.Time) string {
+func NormalizeName(raw string, created time.Time) string {
 	name := strings.TrimSpace(raw)
 	if name == "" || !utf8.ValidString(name) || utf8.RuneCountInString(name) > maxNameRunes ||
 		strings.ContainsFunc(name, isUnsafeNameRune) {

@@ -38,9 +38,9 @@ const (
 	defaultHousekeepingInterval = time.Minute
 )
 
-// ManagerOption configures a Manager. Every option names the default it
+// Option configures a Manager. Every option names the default it
 // replaces, and every default works with no configuration at all.
-type ManagerOption func(*Manager)
+type Option func(*Sessions)
 
 // WithStore replaces where sessions are kept. The default is NewMemoryStore,
 // which does not survive a restart, and which reads the manager's own clock
@@ -51,8 +51,8 @@ type ManagerOption func(*Manager)
 // memory: a consumer who passed one meant to supply their own, and quietly
 // keeping their users' sessions in process memory is not a failure they would
 // find out about until a deploy.
-func WithStore(s Store) ManagerOption {
-	return func(m *Manager) {
+func WithStore(s Store) Option {
+	return func(m *Sessions) {
 		m.store = s
 		m.storeSupplied = true
 	}
@@ -63,15 +63,15 @@ func WithStore(s Store) ManagerOption {
 //
 // Zero or less is a configuration error: it would expire every session at the
 // instant it was created, which no caller can have meant.
-func WithIdleTimeout(d time.Duration) ManagerOption {
-	return func(m *Manager) { m.idleTimeout = d }
+func WithIdleTimeout(d time.Duration) Option {
+	return func(m *Sessions) { m.idleTimeout = d }
 }
 
 // WithAbsoluteTimeout replaces the deadline nothing extends. The default is 12
 // hours. Zero or less is a configuration error, for the same reason a zero
 // idle timeout is.
-func WithAbsoluteTimeout(d time.Duration) ManagerOption {
-	return func(m *Manager) { m.absoluteTimeout = d }
+func WithAbsoluteTimeout(d time.Duration) Option {
+	return func(m *Sessions) { m.absoluteTimeout = d }
 }
 
 // WithTouchInterval sets how stale a session's recorded activity may be
@@ -95,8 +95,8 @@ func WithAbsoluteTimeout(d time.Duration) ManagerOption {
 // touch interval at least as long as any idle timeout its policy engine
 // enforces (policy.IdleTimeoutPolicy), because the stored last access can be
 // up to one interval stale.
-func WithTouchInterval(d time.Duration) ManagerOption {
-	return func(m *Manager) { m.touchInterval = d }
+func WithTouchInterval(d time.Duration) Option {
+	return func(m *Sessions) { m.touchInterval = d }
 }
 
 // WithMaxAbsoluteLifetime sets the longest absolute lifetime a Create may
@@ -125,8 +125,8 @@ func WithTouchInterval(d time.Duration) ManagerOption {
 // enforces no figure of its own. For reference, NIST SP 800-63B-4 sets the
 // overall reauthentication timeout at no more than 30 days at AAL1 and 24
 // hours at AAL2; see WithMaxFamilyLifetime for the limit renewals keep.
-func WithMaxAbsoluteLifetime(limit time.Duration) ManagerOption {
-	return func(m *Manager) { m.maxLifetime = limit; m.maxLifetimeSupplied = true }
+func WithMaxAbsoluteLifetime(limit time.Duration) Option {
+	return func(m *Sessions) { m.maxLifetime = limit; m.maxLifetimeSupplied = true }
 }
 
 // WithAbsoluteLifetime gives the session being created an absolute lifetime
@@ -150,7 +150,7 @@ func WithAbsoluteLifetime(d time.Duration) CreateOption {
 // silent fallback: a caller passing one meant to inject a clock, and falling
 // back to the wall clock would make a test whose clock never advances look
 // like one that does.
-func WithClock(clk clock.Clock) ManagerOption { return func(m *Manager) { m.clock = clk } }
+func WithClock(clk clock.Clock) Option { return func(m *Sessions) { m.clock = clk } }
 
 // WithFamilyIDGenerator replaces the generator of the family identifier each
 // Create starts. The default is id.NewV7Generator on the manager's clock (see
@@ -162,8 +162,8 @@ func WithClock(clk clock.Clock) ManagerOption { return func(m *Manager) { m.cloc
 // identifiers their own records can be correlated with. A generator should
 // not return id.Nil, which names no family. A nil generator, typed nil
 // included, is a configuration error.
-func WithFamilyIDGenerator(g id.Generator) ManagerOption {
-	return func(m *Manager) {
+func WithFamilyIDGenerator(g id.Generator) Option {
+	return func(m *Sessions) {
 		m.families = g
 		m.familiesSupplied = true
 	}
@@ -174,8 +174,8 @@ func WithFamilyIDGenerator(g id.Generator) ManagerOption {
 // A nil logger is ignored rather than refused: unlike a clock, a nil logger
 // has an obvious safe reading — the caller does not want this component's logs
 // — and refusing it would make logging mandatory.
-func WithSessionLogger(l *slog.Logger) ManagerOption {
-	return func(m *Manager) {
+func WithSessionLogger(l *slog.Logger) Option {
+	return func(m *Sessions) {
 		if l != nil {
 			m.logger = l
 		}
@@ -189,7 +189,7 @@ func WithSessionLogger(l *slog.Logger) ManagerOption {
 // whose platform supplies its own cryptographic source can use it. A nil
 // reader is a configuration error: falling back would override a deliberate
 // choice about where this deployment's randomness comes from.
-func WithRandom(r io.Reader) ManagerOption { return func(m *Manager) { m.random = r } }
+func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } }
 
 // CreateOption configures one session as it is created, rather than the
 // Manager behind it.
@@ -345,8 +345,8 @@ func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {
 // enforces no figure of its own. For reference, NIST SP 800-63B-4 sets the
 // overall reauthentication timeout at no more than 30 days at AAL1 and 24
 // hours at AAL2.
-func WithMaxFamilyLifetime(limit time.Duration) ManagerOption {
-	return func(m *Manager) {
+func WithMaxFamilyLifetime(limit time.Duration) Option {
+	return func(m *Sessions) {
 		m.maxFamilyLifetime = limit
 		m.maxFamilyLifetimeSupplied = true
 	}
@@ -371,8 +371,8 @@ func WithMaxFamilyLifetime(limit time.Duration) ManagerOption {
 // aborts a PostgreSQL transaction and the revocation in it.
 //
 // A nil observer is a configuration error from NewManager.
-func WithReuseObserver(fn ReuseObserver) ManagerOption {
-	return func(m *Manager) {
+func WithReuseObserver(fn ReuseObserver) Option {
+	return func(m *Sessions) {
 		m.reuseObserver = fn
 		m.reuseObserverSupplied = true
 	}
@@ -414,6 +414,6 @@ func WithReuseObserver(fn ReuseObserver) ManagerOption {
 // Every manager over one store should agree on this option: the guarantee
 // that a first presentation racing a recovery leaves one live head is kept by
 // managers that have it on.
-func WithUnusedSuccessorRecovery() ManagerOption {
-	return func(m *Manager) { m.unusedSuccessorRecovery = true }
+func WithUnusedSuccessorRecovery() Option {
+	return func(m *Sessions) { m.unusedSuccessorRecovery = true }
 }

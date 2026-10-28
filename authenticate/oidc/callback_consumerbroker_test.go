@@ -52,7 +52,7 @@ func TestConsumerBroker(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	consumerBroker := NewMockIdentityBroker(ctrl)
 
-	m, err := oidc.NewManager(reg, consumerBroker,
+	m, err := oidc.NewRelyingParty(reg, consumerBroker,
 		oidc.WithOutboundClient(p.Outbound(t)),
 		oidc.WithClock(clockwork.NewFakeClockAt(now)),
 	)

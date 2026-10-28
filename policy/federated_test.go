@@ -186,8 +186,8 @@ func TestWithFederatedAssuranceSource(t *testing.T) {
 			opt := policy.WithFederatedAssuranceSource(tc.source)
 			method := idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))
 
-			_, challengeErr := policy.NewMFAPolicy(mfaMethods(method), opt)
-			_, requirementErr := policy.NewMFARequirementPolicy(nil, mfaMethods(method),
+			_, challengeErr := policy.NewMFA(mfaMethods(method), opt)
+			_, requirementErr := policy.NewMFARequirement(nil, mfaMethods(method),
 				policy.WithMFARequiredForAll(), opt)
 
 			tc.assert(t, challengeErr, requirementErr)

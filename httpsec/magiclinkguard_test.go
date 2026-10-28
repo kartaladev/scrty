@@ -92,7 +92,7 @@ func TestRedeemerGuard(t *testing.T) {
 			redeemer: neverChecks,
 			engine:   func(*testing.T) *policy.Engine { return nil },
 			assert: func(t *testing.T, h *magicLinkHarness, out served) {
-				require.ErrorIs(t, out.err, policy.ErrPolicyDenied,
+				require.ErrorIs(t, out.err, policy.ErrDenied,
 					"a check that never ran is not an allow")
 				establishedNothing(t, h)
 			},

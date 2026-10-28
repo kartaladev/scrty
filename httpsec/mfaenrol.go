@@ -36,7 +36,7 @@ type enrolmentInterceptor struct {
 	// never configured here. methods are the enrollable methods, keyed by the
 	// path segment that names each.
 	methods    map[string]mfa.Enroller
-	sessions   *session.Manager
+	sessions   *session.Sessions
 	logoutPath string
 	log        *slog.Logger
 

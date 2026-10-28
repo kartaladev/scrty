@@ -30,7 +30,7 @@ func TestManagerTouch(t *testing.T) {
 		// activity is every moment activity is recorded, relative to creation
 		// at 09:00. The assertion sees the result of the last one.
 		activity []time.Duration
-		opts     []session.ManagerOption
+		opts     []session.Option
 		assert   func(t *testing.T, s *session.Session, err error)
 	}
 
@@ -62,15 +62,15 @@ func TestManagerTouch(t *testing.T) {
 			name:     "activity on a session past its idle deadline is refused",
 			activity: []time.Duration{31 * time.Minute},
 			assert: func(t *testing.T, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 		{
 			name:     "activity on a session past its absolute deadline is refused",
 			activity: []time.Duration{13 * time.Hour},
-			opts:     []session.ManagerOption{session.WithIdleTimeout(24 * time.Hour)},
+			opts:     []session.Option{session.WithIdleTimeout(24 * time.Hour)},
 			assert: func(t *testing.T, _ *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 	}
@@ -106,7 +106,7 @@ func TestManagerTouch(t *testing.T) {
 		clk.Advance(10 * time.Minute)
 		err = m.Touch(t.Context(), stranger)
 
-		require.ErrorIs(t, err, session.ErrSessionNotFound)
+		require.ErrorIs(t, err, session.ErrNotFound)
 	})
 
 	t.Run("the extension is persisted, not only applied in memory", func(t *testing.T) {

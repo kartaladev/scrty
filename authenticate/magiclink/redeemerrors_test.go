@@ -20,13 +20,13 @@ import (
 func TestRedeemFailuresAreUniform(t *testing.T) {
 	t.Parallel()
 
-	keepValid := func(_ *testing.T, _ *onetime.Manager, valid string) (string, string) {
+	keepValid := func(_ *testing.T, _ *onetime.Tokens, valid string) (string, string) {
 		return valid, ""
 	}
 
 	type testCase struct {
 		name    string
-		prepare func(t *testing.T, tokens *onetime.Manager, valid string) (presented, binding string)
+		prepare func(t *testing.T, tokens *onetime.Tokens, valid string) (presented, binding string)
 		loader  identity.UserLoader
 		store   func(inner onetime.Store) onetime.Store
 		bound   bool
@@ -35,17 +35,17 @@ func TestRedeemFailuresAreUniform(t *testing.T) {
 	cases := []testCase{
 		{
 			name:    "malformed token",
-			prepare: func(*testing.T, *onetime.Manager, string) (string, string) { return "nonsense", "" },
+			prepare: func(*testing.T, *onetime.Tokens, string) (string, string) { return "nonsense", "" },
 		},
 		{
 			name: "unknown token",
-			prepare: func(t *testing.T, _ *onetime.Manager, _ string) (string, string) {
+			prepare: func(t *testing.T, _ *onetime.Tokens, _ string) (string, string) {
 				return freshUnknownToken(t), ""
 			},
 		},
 		{
 			name: "expired token",
-			prepare: func(t *testing.T, tokens *onetime.Manager, valid string) (string, string) {
+			prepare: func(t *testing.T, tokens *onetime.Tokens, valid string) (string, string) {
 				advanceClockPast(t, tokens)
 
 				return valid, ""
@@ -53,7 +53,7 @@ func TestRedeemFailuresAreUniform(t *testing.T) {
 		},
 		{
 			name: "already consumed",
-			prepare: func(t *testing.T, tokens *onetime.Manager, valid string) (string, string) {
+			prepare: func(t *testing.T, tokens *onetime.Tokens, valid string) (string, string) {
 				consume(t, tokens, valid)
 
 				return valid, ""
@@ -61,14 +61,14 @@ func TestRedeemFailuresAreUniform(t *testing.T) {
 		},
 		{
 			name: "wrong secret",
-			prepare: func(_ *testing.T, _ *onetime.Manager, valid string) (string, string) {
+			prepare: func(_ *testing.T, _ *onetime.Tokens, valid string) (string, string) {
 				return valid[:len(valid)-4] + "AAAA", ""
 			},
 		},
 		{
 			name:    "wrong binding",
 			bound:   true,
-			prepare: func(_ *testing.T, _ *onetime.Manager, valid string) (string, string) { return valid, "wrong-nonce" },
+			prepare: func(_ *testing.T, _ *onetime.Tokens, valid string) (string, string) { return valid, "wrong-nonce" },
 		},
 		{
 			name:    "user not found",
@@ -113,7 +113,7 @@ func TestRedeemFailuresAreUniform(t *testing.T) {
 
 			tokens := tokensWithStore(t, store)
 
-			m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
+			m, err := magiclink.New(tokens, loader, &recordingSender{}, "https://app.example.com",
 				magiclink.WithSameDeviceBinding(false))
 			require.NoError(t, err)
 
@@ -152,7 +152,7 @@ func TestConsumerChecksReturnedUnchanged(t *testing.T) {
 
 	tokens := testTokens(t)
 
-	m, err := magiclink.NewManager(tokens, activeByID(), &recordingSender{}, "https://app.example.com",
+	m, err := magiclink.New(tokens, activeByID(), &recordingSender{}, "https://app.example.com",
 		magiclink.WithSameDeviceBinding(false))
 	require.NoError(t, err)
 
@@ -180,7 +180,7 @@ func TestRedeemChecksSeeTheResolvedPrincipal(t *testing.T) {
 
 	tokens := testTokens(t)
 
-	m, err := magiclink.NewManager(tokens, loader, &recordingSender{}, "https://app.example.com",
+	m, err := magiclink.New(tokens, loader, &recordingSender{}, "https://app.example.com",
 		magiclink.WithSameDeviceBinding(false))
 	require.NoError(t, err)
 
@@ -214,7 +214,7 @@ func TestRedeemLogsCarryNoSecrets(t *testing.T) {
 
 	tokens := testTokens(t)
 
-	m, err := magiclink.NewManager(tokens,
+	m, err := magiclink.New(tokens,
 		stubLoader{err: errStoreDown},
 		&recordingSender{}, "https://app.example.com",
 		magiclink.WithLogger(logger))

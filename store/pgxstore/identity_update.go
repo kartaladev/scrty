@@ -22,7 +22,7 @@ type column struct {
 // alone otherwise. The email has no column and writes nothing; the roles are
 // written by the grant rebuild. The password-changed-at time is its own
 // field: naming the password alone never writes it.
-func userColumns(u *identity.NewUser, org any) []column {
+func userColumns(u *identity.UserChange, org any) []column {
 	var set []column
 	if u.IsSet(identity.FieldName) {
 		set = append(set, column{"name", u.Name})

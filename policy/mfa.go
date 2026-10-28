@@ -274,7 +274,7 @@ type mfaPolicy struct {
 	sampler                 *logsample.Sampler
 }
 
-// NewMFAPolicy returns the second-factor challenge policy, which turns a
+// NewMFA returns the second-factor challenge policy, which turns a
 // successful login into an MFA challenge when the user can use at least one of
 // methods.
 //
@@ -339,7 +339,7 @@ type mfaPolicy struct {
 // challenge (WithFederatedChallengeWhenUnmet), slog.Default
 // (WithMFAPolicyLogger), clock.System() (WithMFAPolicyClock) and
 // DefaultLogInterval for its sampled records (WithMFAPolicyLogInterval).
-func NewMFAPolicy(methods []MFAMethodLookup, opts ...MFAOption) (Policy, error) {
+func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 	p := &mfaPolicy{
 		sameChannel: SameChannelRefuse,
 		exempt:      factor.Kind.MFAExempt,

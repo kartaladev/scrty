@@ -39,7 +39,7 @@ const (
 // through httpsec.EnableOIDCLogin and served over net/http.
 type loginHarness struct {
 	provider *oidctest.IdentityProvider
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 	srv      *httptest.Server
 }
@@ -71,16 +71,16 @@ func newLoginHarness(t *testing.T, auth oidc.ClientAuthMethod) *loginHarness {
 	registry, err := oidc.NewRegistry(p.Provider(testProviderName, auth))
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(p.Outbound(t)))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(p.Outbound(t)))
 	require.NoError(t, err)
 
-	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 	require.NoError(t, err)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
-	keys, err := signingkey.NewKeyManager(t.Context())
+	keys, err := signingkey.New(t.Context())
 	require.NoError(t, err)
 
 	tokens, err := token.NewGenerator(keys)
@@ -380,7 +380,7 @@ func TestTestIdentityProviderLogoutToken(t *testing.T) {
 	broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
 	require.NoError(t, err)
 
-	manager, err := oidc.NewManager(registry, broker, oidc.WithOutboundClient(h.provider.Outbound(t)))
+	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(h.provider.Outbound(t)))
 	require.NoError(t, err)
 
 	type testCase struct {

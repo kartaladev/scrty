@@ -45,7 +45,7 @@ const passwordLoginNamespace = "password-login"
 type loginGuardHarness struct {
 	authn    *MockAuthenticator
 	attempts *lockout.MemoryAttemptStore
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   *MockGenerator
 	logs     *capturingHandler
 
@@ -74,7 +74,7 @@ func newLoginGuardHarness(t *testing.T) *loginGuardHarness {
 	store := NewMockStore(ctrl)
 	store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-	sessions, err := session.NewManager(session.WithStore(store))
+	sessions, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	h.sessions = sessions
@@ -1142,7 +1142,7 @@ func newLockResponseHarness(t *testing.T, decoy bool) *lockResponseHarness {
 		authenticate.WithPasswordAuthenticatorLogger(slog.New(slog.DiscardHandler)))
 	require.NoError(t, err)
 
-	m, err := authenticate.NewManager(provider)
+	m, err := authenticate.NewFirstOf(provider)
 	require.NoError(t, err)
 
 	h.authn = m
@@ -1157,7 +1157,7 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager(session.WithStore(NewMockStore(ctrl)))
+	sessions, err := session.New(session.WithStore(NewMockStore(ctrl)))
 	require.NoError(t, err)
 
 	attempts := lockout.NewMemoryAttemptStore()
@@ -1344,7 +1344,7 @@ func TestChain_LockResponseWarning(t *testing.T) {
 		{
 			name: "a manager without a decoy delegate warns once per endpoint",
 			authn: func(t *testing.T) authenticate.Authenticator {
-				m, err := authenticate.NewManager(NewMockAuthenticator(gomock.NewController(t)))
+				m, err := authenticate.NewFirstOf(NewMockAuthenticator(gomock.NewController(t)))
 				require.NoError(t, err)
 
 				return m

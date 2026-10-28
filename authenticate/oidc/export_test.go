@@ -22,18 +22,18 @@ type ManagerWiring struct {
 }
 
 // WiringOf exposes m's resolved dependencies to the black-box tests.
-func WiringOf(m *Manager) ManagerWiring {
+func WiringOf(m *RelyingParty) ManagerWiring {
 	return ManagerWiring{Out: m.out, Random: m.random, Clock: m.clock, Flows: m.flows, FlowTTL: m.flowTTL, Log: m.log}
 }
 
 // MetadataForTest exposes the manager's provider-metadata lookup.
-var MetadataForTest = (*Manager).metadataFor
+var MetadataForTest = (*RelyingParty).metadataFor
 
 // MetadataView is the provider metadata the manager resolved.
 type MetadataView = metadata
 
 // KeysForTest exposes the manager's key-set lookup.
-var KeysForTest = (*Manager).keysFor
+var KeysForTest = (*RelyingParty).keysFor
 
 // ErrUnknownSigningKeyForTest is the refusal keysFor returns for a key id the
 // provider's key set does not hold.
@@ -56,7 +56,7 @@ func FlowCountForTest(s *MemoryFlowStore) int {
 
 // ExchangeForTest exchanges code at the named provider's token endpoint, as
 // the callback does after completing the flow.
-func ExchangeForTest(ctx context.Context, m *Manager, provider, code, verifier string) (string, error) {
+func ExchangeForTest(ctx context.Context, m *RelyingParty, provider, code, verifier string) (string, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return "", ErrUnknownProvider
@@ -73,7 +73,7 @@ type IDClaimsView = idClaims
 
 // VerifyIDTokenForTest verifies raw as an ID token of the named provider for
 // a flow holding nonce.
-func VerifyIDTokenForTest(ctx context.Context, m *Manager, provider, raw, nonce string) (IDClaimsView, error) {
+func VerifyIDTokenForTest(ctx context.Context, m *RelyingParty, provider, raw, nonce string) (IDClaimsView, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return idClaims{}, ErrUnknownProvider
@@ -83,7 +83,7 @@ func VerifyIDTokenForTest(ctx context.Context, m *Manager, provider, raw, nonce 
 
 // AssuranceForTest exposes the manager's resolved assurance configuration for
 // a provider: the configured one, or the default.
-var AssuranceForTest = (*Manager).assuranceFor
+var AssuranceForTest = (*RelyingParty).assuranceFor
 
 // MatchAssuranceForTest exposes the pure matcher of asserted values against
 // an assurance configuration.

@@ -23,7 +23,7 @@ const DefaultBearerScheme = "Bearer"
 // bearerToken authenticates a token against a live session and a live user.
 type bearerToken struct {
 	verifier token.Verifier
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    identity.UserLoader
 
 	// log is the chain's logger, handed over by wire.

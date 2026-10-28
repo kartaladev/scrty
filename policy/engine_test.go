@@ -424,7 +424,7 @@ func TestEngineDeniesAnUnrecognisedOutcome(t *testing.T) {
 
 		require.Equal(t, policy.Deny, d.Outcome,
 			"an outcome the engine cannot interpret was passed over, and the phase allowed")
-		assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+		assert.ErrorIs(t, d.Reason, policy.ErrDenied)
 	}
 
 	cases := []testCase{
@@ -693,10 +693,10 @@ func TestEngineIdleTimeouts(t *testing.T) {
 
 	pre := []policy.Phase{policy.PerRequest}
 
-	idlePolicy := func(t *testing.T, d time.Duration) *policy.IdleTimeoutPolicy {
+	idlePolicy := func(t *testing.T, d time.Duration) *policy.IdleTimeout {
 		t.Helper()
 
-		p, err := policy.NewIdleTimeoutPolicy(policy.WithIdlePolicyTimeout(d))
+		p, err := policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(d))
 		require.NoError(t, err)
 
 		return p
@@ -772,6 +772,6 @@ func TestEngine_NilInputDeniesRatherThanPanics(t *testing.T) {
 	var d policy.Decision
 	require.NotPanics(t, func() { d = e.EvaluatePhase(t.Context(), policy.PerRequest, nil) })
 	require.Equal(t, policy.Deny, d.Outcome, "a phase with no input was allowed")
-	require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+	require.ErrorIs(t, d.Reason, policy.ErrDenied)
 	assert.False(t, called, "a policy was handed a nil input")
 }

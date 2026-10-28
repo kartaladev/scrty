@@ -82,7 +82,7 @@ type OIDCOption func(*oidcInterceptor) error
 // WithHandoffRedeemer, WithHandoffLimiter, WithHandoffRateLimit,
 // WithHandoffCountRefusals or WithOIDCHandoffPath, since none of them
 // govern anything once no handoff code is issued.
-func EnableOIDCLogin(m *oidc.Manager, h *oidc.HandoffManager, opts ...OIDCOption) Option {
+func EnableOIDCLogin(m *oidc.RelyingParty, h *oidc.Handoff, opts ...OIDCOption) Option {
 	const option = "EnableOIDCLogin"
 
 	return func(c *config) error {
@@ -104,7 +104,7 @@ func EnableOIDCLogin(m *oidc.Manager, h *oidc.HandoffManager, opts ...OIDCOption
 			limit:           defaultHandoffFailureLimit,
 			window:          defaultHandoffFailureWindow,
 			countRefusals:   true,
-			scope:           IssuerSessions,
+			scope:           BackchannelLogoutScopeIssuer,
 			rpLogout:        true,
 		}
 
@@ -358,7 +358,7 @@ func WithOIDCTokens(g token.Generator) OIDCOption {
 // Default: the session manager the chain's other built-ins were wired to, so a
 // deployment with one session store declares it once. A chain that has none at
 // all is refused. A nil manager is refused.
-func WithOIDCSessions(m *session.Manager) OIDCOption {
+func WithOIDCSessions(m *session.Sessions) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if err := requireDep("WithOIDCSessions", "session manager", m); err != nil {
 			return err
@@ -716,4 +716,4 @@ func WithOIDCRPInitiatedLogout(on bool) OIDCOption {
 }
 
 // Compile-time proof that the default redeemer satisfies the port.
-var _ HandoffRedeemer = (*oidc.HandoffManager)(nil)
+var _ HandoffRedeemer = (*oidc.Handoff)(nil)

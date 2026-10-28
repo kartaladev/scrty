@@ -15,13 +15,13 @@ import (
 // providers, sending every request through p's in-memory client so that it
 // can run inside a testing/synctest bubble. Build it inside the bubble: its
 // default clock, clock.System(), then reads the bubble's fake time.
-func newCacheManager(t *testing.T, p *testProvider, opts ...oidc.ManagerOption) *oidc.Manager {
+func newCacheManager(t *testing.T, p *testProvider, opts ...oidc.Option) *oidc.RelyingParty {
 	t.Helper()
 
 	reg, err := oidc.NewRegistry(p.Provider("corp"))
 	require.NoError(t, err)
-	m, err := oidc.NewManager(reg, stubBroker{},
-		append([]oidc.ManagerOption{oidc.WithOutboundClient(p.InMemoryOutbound(t))}, opts...)...)
+	m, err := oidc.NewRelyingParty(reg, stubBroker{},
+		append([]oidc.Option{oidc.WithOutboundClient(p.InMemoryOutbound(t))}, opts...)...)
 	require.NoError(t, err)
 
 	return m
@@ -32,7 +32,7 @@ func TestKeyCacheTTL(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []oidc.ManagerOption
+		opts   []oidc.Option
 		setup  func(p *testProvider)
 		after  time.Duration // time between the first and second keysFor
 		assert func(t *testing.T, p *testProvider, err error)
@@ -63,7 +63,7 @@ func TestKeyCacheTTL(t *testing.T) {
 		},
 		{
 			name: "a consumer TTL of one hour serves a 30-minute-old entry",
-			opts: []oidc.ManagerOption{oidc.WithDiscoveryTTL(time.Hour)}, after: 30 * time.Minute,
+			opts: []oidc.Option{oidc.WithDiscoveryTTL(time.Hour)}, after: 30 * time.Minute,
 			assert: func(t *testing.T, p *testProvider, err error) {
 				require.NoError(t, err)
 				assert.EqualValues(t, 1, p.jwksCalls.Load())
@@ -130,7 +130,7 @@ func TestKeyCacheOptions(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opt    oidc.ManagerOption
+		opt    oidc.Option
 		assert func(t *testing.T, err error)
 	}
 
@@ -157,7 +157,7 @@ func TestKeyCacheOptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := oidc.NewManager(reg, stubBroker{}, tc.opt)
+			_, err := oidc.NewRelyingParty(reg, stubBroker{}, tc.opt)
 			tc.assert(t, err)
 		})
 	}

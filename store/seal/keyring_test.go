@@ -25,7 +25,7 @@ var (
 func assertConfigError(t *testing.T, kr seal.Keyring, err error) {
 	t.Helper()
 
-	require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+	require.ErrorIs(t, err, seal.ErrConfig)
 	assert.Nil(t, kr)
 
 	for _, key := range [][]byte{keyOne, keyTwo, keyThree} {

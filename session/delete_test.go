@@ -34,7 +34,7 @@ func TestDeletingAndCounting(t *testing.T) {
 		require.NoError(t, m.Delete(ctx, gone.ID))
 
 		_, err = m.Load(ctx, gone.ID)
-		require.ErrorIs(t, err, session.ErrSessionNotFound)
+		require.ErrorIs(t, err, session.ErrNotFound)
 		_, err = m.Load(ctx, kept.ID)
 		require.NoError(t, err)
 	})
@@ -70,7 +70,7 @@ func TestDeletingAndCounting(t *testing.T) {
 
 		for _, id := range mine {
 			_, err := m.Load(ctx, id)
-			require.ErrorIs(t, err, session.ErrSessionNotFound, "a session of the deleted user still loads")
+			require.ErrorIs(t, err, session.ErrNotFound, "a session of the deleted user still loads")
 		}
 		_, err = m.Load(ctx, theirs.ID)
 		require.NoError(t, err, "another user's session was deleted")
@@ -160,16 +160,16 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 	// keep picks the kept identifier from them; prepare runs before the call.
 	type testCase struct {
 		name    string
-		prepare func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs
+		prepare func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs
 		keep    func(ids exceptIDs) string
-		assert  func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs)
+		assert  func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs)
 	}
 
 	cases := []testCase{
 		{
 			name: "the kept session stays and the user's others go",
 			keep: func(ids exceptIDs) string { return ids.mine[0] },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 2, removed)
 				assertLoads(t, m, ids.mine[0], ids.theirs)
@@ -179,7 +179,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 		{
 			name: "a kept session of another user is untouched and every session of the user goes",
 			keep: func(ids exceptIDs) string { return ids.theirs },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 3, removed)
 				assertLoads(t, m, ids.theirs)
@@ -189,7 +189,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 		{
 			name: "a kept identifier no session holds deletes every session of the user",
 			keep: func(exceptIDs) string { return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 3, removed)
 				assertLoads(t, m, ids.theirs)
@@ -199,7 +199,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 		{
 			name: "an empty kept identifier deletes every session of the user",
 			keep: func(exceptIDs) string { return "" },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 3, removed, "an empty kept identifier was a no-op")
 				assertLoads(t, m, ids.theirs)
@@ -210,7 +210,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 			name:    "named by a superseded session inside its window keeps it and its successor",
 			prepare: renewFirstSession,
 			keep:    func(ids exceptIDs) string { return ids.mine[0] },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 2, removed, "only the two unrelated sessions of the user go")
 				assertLoads(t, m, ids.mine[0], ids.fresh, ids.theirs)
@@ -221,7 +221,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 			name:    "named by the successor ends the superseded session of its family",
 			prepare: renewFirstSession,
 			keep:    func(ids exceptIDs) string { return ids.fresh },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 3, removed, "the superseded session and the two unrelated sessions go")
 				assertLoads(t, m, ids.fresh, ids.theirs)
@@ -230,7 +230,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 		},
 		{
 			name: "expired sessions of the user are deleted and counted",
-			prepare: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs {
+			prepare: func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, ids exceptIDs) exceptIDs {
 				t.Helper()
 
 				// The seeded sessions idle out; a fresh one is created to keep.
@@ -242,7 +242,7 @@ func TestDeletingByUserExceptOne(t *testing.T) {
 				return ids
 			},
 			keep: func(ids exceptIDs) string { return ids.fresh },
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids exceptIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids exceptIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 3, removed, "expired sessions were left behind or not counted")
 				assertLoads(t, m, ids.fresh)
@@ -276,7 +276,7 @@ type exceptIDs struct {
 }
 
 // seedExcept creates three sessions of testUser and one of otherUser.
-func seedExcept(t *testing.T, m *session.Manager) exceptIDs {
+func seedExcept(t *testing.T, m *session.Sessions) exceptIDs {
 	t.Helper()
 
 	var ids exceptIDs
@@ -295,7 +295,7 @@ func seedExcept(t *testing.T, m *session.Manager) exceptIDs {
 // renewFirstSession renews the first seeded session with a grace window, so
 // the family holds it superseded and its successor live; the successor's
 // identifier goes in ids.fresh.
-func renewFirstSession(t *testing.T, m *session.Manager, _ *clockwork.FakeClock, ids exceptIDs) exceptIDs {
+func renewFirstSession(t *testing.T, m *session.Sessions, _ *clockwork.FakeClock, ids exceptIDs) exceptIDs {
 	t.Helper()
 
 	first, err := m.Load(t.Context(), ids.mine[0])
@@ -308,7 +308,7 @@ func renewFirstSession(t *testing.T, m *session.Manager, _ *clockwork.FakeClock,
 }
 
 // assertLoads asserts every session in ids still loads.
-func assertLoads(t *testing.T, m *session.Manager, ids ...string) {
+func assertLoads(t *testing.T, m *session.Sessions, ids ...string) {
 	t.Helper()
 
 	for _, id := range ids {
@@ -318,12 +318,12 @@ func assertLoads(t *testing.T, m *session.Manager, ids ...string) {
 }
 
 // assertGone asserts no session in ids is stored any longer, expired or not.
-func assertGone(t *testing.T, m *session.Manager, ids ...string) {
+func assertGone(t *testing.T, m *session.Sessions, ids ...string) {
 	t.Helper()
 
 	for _, id := range ids {
 		_, err := m.Load(t.Context(), id)
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "a session that should have been deleted is still stored")
+		assert.ErrorIs(t, err, session.ErrNotFound, "a session that should have been deleted is still stored")
 	}
 }
 
@@ -332,36 +332,36 @@ func TestEndingFederatedSessions(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		call   func(t *testing.T, m *session.Manager) (int, error)
-		assert func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs)
+		call   func(t *testing.T, m *session.Sessions) (int, error)
+		assert func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs)
 	}
 
 	cases := []testCase{
 		{
 			name: "deleting by provider session is scoped to one issuer",
-			call: func(t *testing.T, m *session.Manager) (int, error) {
+			call: func(t *testing.T, m *session.Sessions) (int, error) {
 				t.Helper()
 
 				return m.DeleteByExternalSession(t.Context(), "https://a", "s-1")
 			},
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 1, removed)
 
 				_, err = m.Load(t.Context(), ids.issuerASession1)
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 				_, err = m.Load(t.Context(), ids.issuerBSession1)
 				require.NoError(t, err, "one provider's logout ended a session established at another")
 			},
 		},
 		{
 			name: "an empty issuer deletes nothing and is not an error",
-			call: func(t *testing.T, m *session.Manager) (int, error) {
+			call: func(t *testing.T, m *session.Sessions) (int, error) {
 				t.Helper()
 
 				return m.DeleteByExternalSession(t.Context(), "", "s-1")
 			},
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs) {
 				require.NoError(t, err)
 				assert.Zero(t, removed, "an empty issuer matched sessions, so any provider could end any other's")
 
@@ -374,12 +374,12 @@ func TestEndingFederatedSessions(t *testing.T) {
 			// they carry an empty issuer and an empty provider session
 			// identifier, so an unguarded match would find all of them.
 			name: "an empty issuer and an empty session identifier delete nothing",
-			call: func(t *testing.T, m *session.Manager) (int, error) {
+			call: func(t *testing.T, m *session.Sessions) (int, error) {
 				t.Helper()
 
 				return m.DeleteByExternalSession(t.Context(), "", "")
 			},
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs) {
 				require.NoError(t, err)
 				assert.Zero(t, removed, "an empty issuer and session identifier swept the password sessions")
 
@@ -389,12 +389,12 @@ func TestEndingFederatedSessions(t *testing.T) {
 		},
 		{
 			name: "an empty provider session identifier deletes nothing and is not an error",
-			call: func(t *testing.T, m *session.Manager) (int, error) {
+			call: func(t *testing.T, m *session.Sessions) (int, error) {
 				t.Helper()
 
 				return m.DeleteByExternalSession(t.Context(), "https://a", "")
 			},
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs) {
 				require.NoError(t, err)
 				assert.Zero(t, removed,
 					"an empty provider session identifier matched the sessions that recorded none")
@@ -405,12 +405,12 @@ func TestEndingFederatedSessions(t *testing.T) {
 		},
 		{
 			name: "deleting by user and issuer spares that user's password sessions",
-			call: func(t *testing.T, m *session.Manager) (int, error) {
+			call: func(t *testing.T, m *session.Sessions) (int, error) {
 				t.Helper()
 
 				return m.DeleteByUserAndExternalIssuer(t.Context(), testUser, "https://a")
 			},
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs) {
 				require.NoError(t, err)
 				assert.Equal(t, 2, removed)
 
@@ -419,17 +419,17 @@ func TestEndingFederatedSessions(t *testing.T) {
 				_, err = m.Load(t.Context(), ids.otherUserIssuerA)
 				require.NoError(t, err, "another user's session at the same issuer was ended")
 				_, err = m.Load(t.Context(), ids.issuerASession1)
-				require.ErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrNotFound)
 			},
 		},
 		{
 			name: "deleting by user and an empty issuer deletes nothing and is not an error",
-			call: func(t *testing.T, m *session.Manager) (int, error) {
+			call: func(t *testing.T, m *session.Sessions) (int, error) {
 				t.Helper()
 
 				return m.DeleteByUserAndExternalIssuer(t.Context(), testUser, "")
 			},
-			assert: func(t *testing.T, removed int, err error, m *session.Manager, ids federatedIDs) {
+			assert: func(t *testing.T, removed int, err error, m *session.Sessions, ids federatedIDs) {
 				require.NoError(t, err)
 				assert.Zero(t, removed, "an empty issuer ended a user's password sessions")
 
@@ -465,7 +465,7 @@ type federatedIDs struct {
 
 // seedFederated creates one session per shape the federated deletes have to
 // tell apart.
-func seedFederated(t *testing.T, m *session.Manager) federatedIDs {
+func seedFederated(t *testing.T, m *session.Sessions) federatedIDs {
 	t.Helper()
 
 	ctx := t.Context()

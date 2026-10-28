@@ -50,7 +50,7 @@ type Messages interface {
 // The default texts are plain English and name no brand. The recipient is
 // still set by the library. A nil Messages is a configuration error.
 func WithMessages(msgs Messages) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.messages = msgs
 		m.messagesSet = true
 	}
@@ -62,7 +62,7 @@ func WithMessages(msgs Messages) Option {
 // session uses its RegistrationContext's resolver instead, when it has one. A
 // nil resolver is a configuration error.
 func WithContactResolver(r mfa.ContactResolver) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.contact = r
 		m.contactSet = true
 	}
@@ -146,7 +146,7 @@ func (k noticeKind) String() string {
 // the address or queueing — is written through the sampler at error level,
 // naming the credential by its library identifier only, and does not undo
 // the change it reports.
-func (m *Manager) notify(
+func (m *Passkeys) notify(
 	ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool,
 ) {
 	ctx = context.WithoutCancel(ctx)
@@ -158,7 +158,7 @@ func (m *Manager) notify(
 }
 
 // sendNotice renders and queues one notice, and returns why it could not.
-func (m *Manager) sendNotice(
+func (m *Passkeys) sendNotice(
 	ctx context.Context, kind noticeKind, c *Credential, resolve mfa.ContactResolver, sessionsEnded bool,
 ) error {
 	to, err := m.contactOf(ctx, c.User, resolve)
@@ -184,7 +184,7 @@ func (m *Manager) sendNotice(
 
 // contactOf loads user and resolves their contact address by resolve, or by
 // the manager's resolver when resolve is nil.
-func (m *Manager) contactOf(ctx context.Context, user identity.UserID, resolve mfa.ContactResolver) (string, error) {
+func (m *Passkeys) contactOf(ctx context.Context, user identity.UserID, resolve mfa.ContactResolver) (string, error) {
 	details, err := m.users.LoadByUserID(ctx, user)
 	if err != nil {
 		return "", diag.Wrap(err, "passkey: could not load the user")

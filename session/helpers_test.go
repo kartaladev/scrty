@@ -39,17 +39,17 @@ func (c fixedClock) Now() time.Time { return c.at }
 
 // managerFor returns a manager on the default store with the default
 // deadlines, for cases that do not care about either.
-func managerFor(t *testing.T, opts ...session.ManagerOption) *session.Manager {
+func managerFor(t *testing.T, opts ...session.Option) *session.Sessions {
 	t.Helper()
 
-	m, err := session.NewManager(opts...)
+	m, err := session.New(opts...)
 	require.NoError(t, err)
 
 	return m
 }
 
 // managerWithReader returns a manager over store, drawing identifiers from r.
-func managerWithReader(t *testing.T, store session.Store, r io.Reader) *session.Manager {
+func managerWithReader(t *testing.T, store session.Store, r io.Reader) *session.Sessions {
 	t.Helper()
 
 	return managerFor(t, session.WithStore(store), session.WithRandom(r))
@@ -57,11 +57,11 @@ func managerWithReader(t *testing.T, store session.Store, r io.Reader) *session.
 
 // managerOnClock returns a manager and the store behind it, both reading the
 // same clock, so expiry means the same thing on either side.
-func managerOnClock(t *testing.T, clk *clockwork.FakeClock, opts ...session.ManagerOption) (*session.Manager, *session.MemoryStore) {
+func managerOnClock(t *testing.T, clk *clockwork.FakeClock, opts ...session.Option) (*session.Sessions, *session.MemoryStore) {
 	t.Helper()
 
 	store := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
-	all := append([]session.ManagerOption{
+	all := append([]session.Option{
 		session.WithStore(store),
 		session.WithClock(clk),
 	}, opts...)

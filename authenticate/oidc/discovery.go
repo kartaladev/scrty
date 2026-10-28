@@ -47,7 +47,7 @@ func pinnedMetadata(p Provider) (metadata, bool) {
 // origin with a scheme the outbound client allows. A pinned end-session
 // endpoint wins over a discovered one. Every failure wraps ErrDiscoveryFailed
 // and carries no part of the provider's answer.
-func (m *Manager) fetchMetadata(ctx context.Context, p Provider) (metadata, error) {
+func (m *RelyingParty) fetchMetadata(ctx context.Context, p Provider) (metadata, error) {
 	if md, ok := pinnedMetadata(p); ok {
 		return md, nil
 	}

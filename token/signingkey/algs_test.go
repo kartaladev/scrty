@@ -19,8 +19,8 @@ import (
 func realRecordFor(t *testing.T, alg signingkey.Alg, createdAt time.Time) signingkey.Record {
 	t.Helper()
 
-	store := signingkey.NewInMemoryKeyStore()
-	_, err := signingkey.NewKeyManager(t.Context(),
+	store := signingkey.NewMemoryKeyStore()
+	_, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithAlgs(alg),
 	)
@@ -46,7 +46,7 @@ func realRecordFor(t *testing.T, alg signingkey.Alg, createdAt time.Time) signin
 // current would be exempt from housekeeping for as long as the process lived.
 func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 
 	// A replica configured for ES256 shares the store: one key already past
 	// the lifetime, one exactly at it, which passes it one second in, and one
@@ -59,7 +59,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	require.NoError(t, store.Store(t.Context(), fresh))
 
 	// This manager is configured for RS256 only.
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.RS256),
@@ -73,7 +73,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 
 	require.Equal(t, []signingkey.Alg{signingkey.RS256}, km.SupportedAlgs())
 
-	kid, signer, ok := km.GetSigner(signingkey.ES256)
+	kid, signer, ok := km.Signer(signingkey.ES256)
 	assert.False(t, ok, "GetSigner answers only for the configured algorithms")
 	assert.Empty(t, kid)
 	assert.Nil(t, signer)
@@ -101,6 +101,6 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	assert.False(t, publishes(km, fresh.Kid),
 		"no foreign key is current, so none is exempt from housekeeping")
 
-	_, _, ok = km.GetSigner(signingkey.ES256)
+	_, _, ok = km.Signer(signingkey.ES256)
 	assert.False(t, ok, "and none of it made the manager an ES256 signer")
 }

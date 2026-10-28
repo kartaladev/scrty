@@ -95,7 +95,7 @@ func TestInMemoryKeyStore(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
-			store := signingkey.NewInMemoryKeyStore()
+			store := signingkey.NewMemoryKeyStore()
 			for _, rec := range tc.seed {
 				require.NoError(t, store.Store(ctx, rec))
 			}

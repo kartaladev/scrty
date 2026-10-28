@@ -273,7 +273,7 @@ func (s *mfaStore) ChargeEmailCode(
 	e, ok := s.enrolments[user]
 	refused := !ok || !s.onGeneration(e, gen) || e.DeviceProvenAt.IsZero() || e.EmailCode == nil ||
 		(!at.Before(e.EmailCodeUntil) && s.defect != mfaChargeIgnoresExpiry) ||
-		(e.EmailCodeAttempts >= mfa.MaxEmailCodeFailures && s.defect != mfaChargeWithoutCap)
+		(e.EmailCodeAttempts >= mfa.MaxEmailCodeAttempts && s.defect != mfaChargeWithoutCap)
 	if refused {
 		s.mu.Unlock()
 		return 0, false, nil
@@ -286,7 +286,7 @@ func (s *mfaStore) ChargeEmailCode(
 	defer s.mu.Unlock()
 
 	e.EmailCodeAttempts++
-	if s.defect == mfaChargeClearsCodeAtCap && e.EmailCodeAttempts == mfa.MaxEmailCodeFailures {
+	if s.defect == mfaChargeClearsCodeAtCap && e.EmailCodeAttempts == mfa.MaxEmailCodeAttempts {
 		e.EmailCode = nil
 	}
 	s.enrolments[user] = e

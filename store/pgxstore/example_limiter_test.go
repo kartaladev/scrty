@@ -40,7 +40,7 @@ func ExampleNewLimiterFactory() {
 	// than refuse every sign-in, so they take a factory of their own over the
 	// same pool.
 	secondFactor, err := pgxstore.NewLimiterFactory(pool,
-		pgxstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallBackToLocal),
+		pgxstore.WithLimiterOnUnavailable(ratelimit.UnavailableFallbackToLocal),
 		pgxstore.WithLimiterOperationTimeout(100*time.Millisecond),
 	)
 	if err != nil {

@@ -36,7 +36,7 @@ func holdJWKS(t *testing.T, p *testProvider) (release func()) {
 
 // startKeysFor calls keysFor for "corp" on its own goroutine and returns a
 // channel that yields the result.
-func startKeysFor(ctx context.Context, m *oidc.Manager, kid string) <-chan keysResult {
+func startKeysFor(ctx context.Context, m *oidc.RelyingParty, kid string) <-chan keysResult {
 	out := make(chan keysResult, 1)
 	go func() {
 		set, err := oidc.KeysForTest(m, ctx, "corp", kid)
@@ -50,14 +50,14 @@ func TestKeyCacheCoalesces(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		act    func(t *testing.T, m *oidc.Manager, release func()) []keysResult
+		act    func(t *testing.T, m *oidc.RelyingParty, release func()) []keysResult
 		assert func(t *testing.T, p *testProvider, results []keysResult)
 	}
 
 	cases := []testCase{
 		{
 			name: "eight concurrent misses share one fetch",
-			act: func(t *testing.T, m *oidc.Manager, release func()) []keysResult {
+			act: func(t *testing.T, m *oidc.RelyingParty, release func()) []keysResult {
 				var chans []<-chan keysResult
 				for range 8 {
 					chans = append(chans, startKeysFor(t.Context(), m, "k1"))
@@ -83,7 +83,7 @@ func TestKeyCacheCoalesces(t *testing.T) {
 		},
 		{
 			name: "a cancelling leader does not fail a waiter",
-			act: func(t *testing.T, m *oidc.Manager, release func()) []keysResult {
+			act: func(t *testing.T, m *oidc.RelyingParty, release func()) []keysResult {
 				leaderCtx, cancel := context.WithCancel(t.Context())
 				leader := startKeysFor(leaderCtx, m, "k1")
 				synctest.Wait() // the leader's fetch is in flight
@@ -109,7 +109,7 @@ func TestKeyCacheCoalesces(t *testing.T) {
 			// still blocked at its end, so this row is the leak check: every
 			// caller cancels, the fetch then completes, and nothing remains.
 			name: "no goroutine outlives the callers",
-			act: func(t *testing.T, m *oidc.Manager, release func()) []keysResult {
+			act: func(t *testing.T, m *oidc.RelyingParty, release func()) []keysResult {
 				var chans []<-chan keysResult
 				var cancels []context.CancelFunc
 				for range 4 {

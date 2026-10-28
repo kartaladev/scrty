@@ -34,7 +34,7 @@ func authorizeParams(t *testing.T, redirect, endpoint string) url.Values {
 
 // authorizeFlow returns the flow the manager's default store holds under
 // handle.
-func authorizeFlow(t *testing.T, m *oidc.Manager, handle string) oidc.Flow {
+func authorizeFlow(t *testing.T, m *oidc.RelyingParty, handle string) oidc.Flow {
 	t.Helper()
 
 	store, ok := oidc.WiringOf(m).Flows.(*oidc.MemoryFlowStore)
@@ -46,7 +46,7 @@ func authorizeFlow(t *testing.T, m *oidc.Manager, handle string) oidc.Flow {
 }
 
 // authorizeNoFlowStore is a flow store that fails the test if touched.
-func authorizeNoFlowStore(t *testing.T) oidc.ManagerOption {
+func authorizeNoFlowStore(t *testing.T) oidc.Option {
 	t.Helper()
 	return oidc.WithFlowStore(NewMockFlowStore(gomock.NewController(t)))
 }
@@ -63,16 +63,16 @@ func TestManagerAuthorize(t *testing.T) {
 		next     string
 		// opts are extra manager options; the provider's outbound client is
 		// always given.
-		opts   func(t *testing.T, p *testProvider) []oidc.ManagerOption
+		opts   func(t *testing.T, p *testProvider) []oidc.Option
 		setup  func(p *testProvider)
 		ctx    func(ctx context.Context) context.Context
-		assert func(t *testing.T, m *oidc.Manager, p *testProvider, got oidc.Authorization, err error)
+		assert func(t *testing.T, m *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "the redirect carries PKCE, state and nonce", provider: "corp", next: "/after?x=1",
-			assert: func(t *testing.T, m *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				f := authorizeFlow(t, m, got.Handle)
@@ -102,13 +102,13 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "requested acr values are sent space-separated in the configured order", provider: "corp",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", oidc.Assurance{
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithProviderAssurance("corp", oidc.Assurance{
 					AcceptedAMR: []string{"mfa"},
 					RequestACR:  []string{"urn:corp:loa:3", "urn:corp:loa:2"},
 				})}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				assert.Equal(t, []string{"urn:corp:loa:3 urn:corp:loa:2"}, q["acr_values"])
@@ -116,7 +116,7 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "nothing is requested by default", provider: "corp",
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				assert.False(t, q.Has("acr_values"))
@@ -124,12 +124,12 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "a configuration requesting nothing sends no acr_values", provider: "corp",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", oidc.Assurance{
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithProviderAssurance("corp", oidc.Assurance{
 					AcceptedACR: []string{"urn:corp:loa:2"},
 				})}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				assert.False(t, q.Has("acr_values"), "accepting an acr is not requesting one")
@@ -137,12 +137,12 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "another provider's requested acr values are not sent", provider: "corp",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithProviderAssurance("groups", oidc.Assurance{
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithProviderAssurance("groups", oidc.Assurance{
 					RequestACR: []string{"urn:groups:loa:2"},
 				})}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				assert.False(t, q.Has("acr_values"))
@@ -150,12 +150,12 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "requested acr values join a pinned endpoint's own parameters", provider: "pinned",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithProviderAssurance("pinned", oidc.Assurance{
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithProviderAssurance("pinned", oidc.Assurance{
 					RequestACR: []string{"gold"},
 				})}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/pinned/authorize")
 				assert.Equal(t, "gold", q.Get("acr_values"))
@@ -164,7 +164,7 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "two attempts carry different values", provider: "corp",
-			assert: func(t *testing.T, m *oidc.Manager, p *testProvider, first oidc.Authorization, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, p *testProvider, first oidc.Authorization, err error) {
 				require.NoError(t, err)
 				second, err := m.Authorize(t.Context(), "corp", "")
 				require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "consumer scopes are requested exactly", provider: "groups",
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				assert.Equal(t, "openid groups", q.Get("scope"))
@@ -188,10 +188,10 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "the flow is stored for the default TTL", provider: "corp",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithClock(clockwork.NewFakeClockAt(past))}
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithClock(clockwork.NewFakeClockAt(past))}
 			},
-			assert: func(t *testing.T, m *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, past.Add(10*time.Minute), got.ExpiresAt)
 				f := authorizeFlow(t, m, got.Handle)
@@ -205,13 +205,13 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "the flow is stored for the consumer's TTL", provider: "corp",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{
 					oidc.WithClock(clockwork.NewFakeClockAt(past)),
 					oidc.WithFlowTTL(3 * time.Minute),
 				}
 			},
-			assert: func(t *testing.T, m *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, past.Add(3*time.Minute), got.ExpiresAt)
 				assert.Equal(t, past.Add(3*time.Minute), authorizeFlow(t, m, got.Handle).ExpiresAt)
@@ -219,10 +219,10 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "the configured random source is used", provider: "corp",
-			opts: func(*testing.T, *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithRandom(bytes.NewReader(bytes.Repeat([]byte{7}, 4096)))}
+			opts: func(*testing.T, *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithRandom(bytes.NewReader(bytes.Repeat([]byte{7}, 4096)))}
 			},
-			assert: func(t *testing.T, m *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, m *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/authorize")
 				assert.Equal(t, sevens, q.Get("state"))
@@ -235,7 +235,7 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "a consumer flow store receives the flow", provider: "corp", next: "/n",
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
 				store := NewMockFlowStore(gomock.NewController(t))
 				store.EXPECT().Begin(gomock.Any(), gomock.Any()).
 					DoAndReturn(func(_ context.Context, f oidc.Flow) (string, error) {
@@ -246,21 +246,21 @@ func TestManagerAuthorize(t *testing.T) {
 						assert.NotEmpty(t, f.Verifier)
 						return "consumer-handle", nil
 					})
-				return []oidc.ManagerOption{oidc.WithFlowStore(store)}
+				return []oidc.Option{oidc.WithFlowStore(store)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "consumer-handle", got.Handle)
 			},
 		},
 		{
 			name: "a store refusal fails the authorization", provider: "corp",
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
 				store := NewMockFlowStore(gomock.NewController(t))
 				store.EXPECT().Begin(gomock.Any(), gomock.Any()).Return("", oidc.ErrFlowStoreFull)
-				return []oidc.ManagerOption{oidc.WithFlowStore(store)}
+				return []oidc.Option{oidc.WithFlowStore(store)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.ErrorIs(t, err, oidc.ErrFlowStoreFull)
 				assert.Empty(t, got.RedirectURL)
 				assert.Empty(t, got.Handle)
@@ -268,7 +268,7 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "the authorization endpoint's own query is kept", provider: "pinned",
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.NoError(t, err)
 				q := authorizeParams(t, got.RedirectURL, p.Issuer()+"/pinned/authorize")
 				assert.Equal(t, "login", q.Get("prompt"))
@@ -278,10 +278,10 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "an unknown provider stores no flow", provider: "nope",
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{authorizeNoFlowStore(t)}
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
+				return []oidc.Option{authorizeNoFlowStore(t)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, p *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, p *testProvider, got oidc.Authorization, err error) {
 				require.ErrorIs(t, err, oidc.ErrUnknownProvider)
 				assert.Equal(t, oidc.Authorization{}, got)
 				assert.Equal(t, int64(0), p.discoveryCalls.Load())
@@ -289,39 +289,39 @@ func TestManagerAuthorize(t *testing.T) {
 		},
 		{
 			name: "an encoded slash is an unknown provider", provider: "corp%2F..",
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{authorizeNoFlowStore(t)}
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
+				return []oidc.Option{authorizeNoFlowStore(t)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, _ oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, _ oidc.Authorization, err error) {
 				require.ErrorIs(t, err, oidc.ErrUnknownProvider)
 			},
 		},
 		{
 			name: "a trailing slash is an unknown provider", provider: "corp/",
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{authorizeNoFlowStore(t)}
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
+				return []oidc.Option{authorizeNoFlowStore(t)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, _ oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, _ oidc.Authorization, err error) {
 				require.ErrorIs(t, err, oidc.ErrUnknownProvider)
 			},
 		},
 		{
 			name: "a discovery failure is a provider failure and stores no flow", provider: "corp",
 			setup: func(p *testProvider) { p.failDiscovery.Store(true) },
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{authorizeNoFlowStore(t)}
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
+				return []oidc.Option{authorizeNoFlowStore(t)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.ErrorIs(t, err, oidc.ErrDiscoveryFailed)
 				assert.Equal(t, oidc.Authorization{}, got)
 			},
 		},
 		{
 			name: "a failing random source stores no flow", provider: "corp",
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithRandom(errReader{}), authorizeNoFlowStore(t)}
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
+				return []oidc.Option{oidc.WithRandom(errReader{}), authorizeNoFlowStore(t)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.ErrorIs(t, err, errFlowRandom)
 				assert.Equal(t, oidc.Authorization{}, got)
 			},
@@ -333,10 +333,10 @@ func TestManagerAuthorize(t *testing.T) {
 				cancel()
 				return c
 			},
-			opts: func(t *testing.T, _ *testProvider) []oidc.ManagerOption {
-				return []oidc.ManagerOption{authorizeNoFlowStore(t)}
+			opts: func(t *testing.T, _ *testProvider) []oidc.Option {
+				return []oidc.Option{authorizeNoFlowStore(t)}
 			},
-			assert: func(t *testing.T, _ *oidc.Manager, _ *testProvider, got oidc.Authorization, err error) {
+			assert: func(t *testing.T, _ *oidc.RelyingParty, _ *testProvider, got oidc.Authorization, err error) {
 				require.Error(t, err)
 				assert.Equal(t, oidc.Authorization{}, got)
 			},
@@ -360,11 +360,11 @@ func TestManagerAuthorize(t *testing.T) {
 			reg, err := oidc.NewRegistry(p.Provider("corp"), groups, pinned)
 			require.NoError(t, err)
 
-			opts := []oidc.ManagerOption{oidc.WithOutboundClient(p.Outbound(t))}
+			opts := []oidc.Option{oidc.WithOutboundClient(p.Outbound(t))}
 			if tc.opts != nil {
 				opts = append(opts, tc.opts(t, p)...)
 			}
-			m, err := oidc.NewManager(reg, stubBroker{}, opts...)
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, opts...)
 			require.NoError(t, err)
 
 			ctx := t.Context()

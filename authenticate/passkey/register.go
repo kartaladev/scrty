@@ -43,7 +43,7 @@ import (
 // "passkey-registration", its subject the user and bound to s's ID, and its
 // string is the challenge the options carry. Every credential the user holds,
 // in any state, is listed for the authenticator to exclude.
-func (m *Manager) BeginRegistration(
+func (m *Passkeys) BeginRegistration(
 	ctx context.Context, s *session.Session, rc RegistrationContext,
 ) (json.RawMessage, error) {
 	if err := ctx.Err(); err != nil {
@@ -115,7 +115,7 @@ func (m *Manager) BeginRegistration(
 
 // handle returns s's user's handle, assigning a new random one when they have
 // none.
-func (m *Manager) handle(ctx context.Context, s *session.Session) ([]byte, error) {
+func (m *Passkeys) handle(ctx context.Context, s *session.Session) ([]byte, error) {
 	offered := make([]byte, HandleSize)
 	if _, err := io.ReadFull(m.random, offered); err != nil {
 		return nil, diag.Wrap(err, "passkey: could not draw a user handle")
@@ -240,7 +240,7 @@ type RegistrationResult struct {
 // The passkey is named by the response's proposed name, normalised by
 // NormaliseName: a name that is too long or holds a control or format
 // character is replaced by the default date name, never truncated or refused.
-func (m *Manager) FinishRegistration(
+func (m *Passkeys) FinishRegistration(
 	ctx context.Context, s *session.Session, body []byte, rc RegistrationContext,
 ) (*RegistrationResult, error) {
 	if err := ctx.Err(); err != nil {
@@ -274,7 +274,7 @@ func (m *Manager) FinishRegistration(
 		return nil, diag.Wrap(err, "passkey: registration response refused", authenticate.ErrAuthenticationFailed)
 	case nc == nil:
 		return nil, authenticate.ErrAuthenticationFailed
-	case m.uv == UVRequired && !nc.UserVerified:
+	case m.uv == UserVerificationRequired && !nc.UserVerified:
 		return nil, authenticate.ErrAuthenticationFailed
 	case nc.BackupState && !nc.BackupEligible:
 		// WebAuthn Level 3 §6.1: a credential that is not eligible for
@@ -329,7 +329,7 @@ func (m *Manager) FinishRegistration(
 		AAGUID:               nc.AAGUID,
 		AttestationFormat:    nc.AttestationFormat,
 		AttestationStatement: nc.AttestationStatement,
-		Name:                 NormaliseName(parsed.Name(), now),
+		Name:                 NormalizeName(parsed.Name(), now),
 		CreatedAt:            now,
 		State:                StateActive,
 		Pending:              plan.reasons,
@@ -376,7 +376,7 @@ func (m *Manager) FinishRegistration(
 // passkey of its user is backup-eligible. The answer is advice for the
 // consumer's interface, so a store that cannot list is logged and answered
 // false rather than failing a registration already stored.
-func (m *Manager) noSyncedPasskey(ctx context.Context, c *Credential) bool {
+func (m *Passkeys) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 	if c.BackupEligible {
 		return false
 	}
@@ -403,7 +403,7 @@ func (m *Manager) noSyncedPasskey(ctx context.Context, c *Credential) bool {
 // bound to s's ID. A challenge bound to s's ID is spent before its user is
 // compared, so an attempt for another user spends it too. Every refusal is
 // authenticate.ErrAuthenticationFailed.
-func (m *Manager) spendRegistration(
+func (m *Passkeys) spendRegistration(
 	ctx context.Context, s *session.Session, presented string,
 ) (string, time.Time, error) {
 	challenge, err := DecodeChallenge(presented)

@@ -134,7 +134,7 @@ type SaveUpsertsStore struct{ session.Store }
 // Save saves sess, creating it when the store does not find it.
 func (s SaveUpsertsStore) Save(ctx context.Context, sess *session.Session) error {
 	err := s.Store.Save(ctx, sess)
-	if errors.Is(err, session.ErrSessionNotFound) {
+	if errors.Is(err, session.ErrNotFound) {
 		return s.Create(ctx, sess)
 	}
 	return err

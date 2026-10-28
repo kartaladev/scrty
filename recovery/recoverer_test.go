@@ -68,7 +68,7 @@ type fixture struct {
 	users    *MockUserLoader
 	sender   *MockSender
 	codes    *recovery.Codes
-	sessions *session.Manager
+	sessions *session.Sessions
 	kind     *MockAuthenticatorKind
 	clock    *clockwork.FakeClock
 	logs     *syncBuffer
@@ -91,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 	require.NoError(t, err)
 
 	// The store judges expiry on its own clock, so it gets the same one.
-	sessions, err := session.NewManager(session.WithClock(clk),
+	sessions, err := session.New(session.WithClock(clk),
 		session.WithStore(faultySessionStore{Store: session.NewMemoryStore(session.WithMemoryStoreClock(clk)), f: flt}))
 	require.NoError(t, err)
 
@@ -311,7 +311,7 @@ func TestNewRecoverer(t *testing.T) {
 		{
 			name: "the default session lifetime against a shorter absolute timeout",
 			deps: func(f *fixture, d *recovery.Deps) {
-				m, err := session.NewManager(session.WithClock(f.clock), session.WithAbsoluteTimeout(10*time.Minute),
+				m, err := session.New(session.WithClock(f.clock), session.WithAbsoluteTimeout(10*time.Minute),
 					session.WithIdleTimeout(5*time.Minute))
 				if err != nil {
 					panic(err)

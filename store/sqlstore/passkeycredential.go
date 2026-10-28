@@ -375,7 +375,7 @@ func (s *PasskeyCredentialStore) Suspend(ctx context.Context, cid id.ID) (bool, 
 func (s *PasskeyCredentialStore) ClearReason(
 	ctx context.Context, user identity.UserID, cid id.ID, r passkey.PendingReason,
 ) (passkey.State, bool, error) {
-	if (r != passkey.AwaitingSavedCodes && r != passkey.AwaitingEmailCode) || !storekit.Storable(string(user)) {
+	if (r != passkey.PendingSavedCodes && r != passkey.PendingEmailCode) || !storekit.Storable(string(user)) {
 		return 0, false, nil
 	}
 

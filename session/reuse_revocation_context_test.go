@@ -52,17 +52,17 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 	type testCase struct {
 		name string
 		// opts are manager options the case adds to the store and the clock.
-		opts []session.ManagerOption
+		opts []session.Option
 		// expect wires the store; cancel is the presenting request hanging up,
 		// which each case calls once the store has answered the read.
 		expect func(store *MockStore, cancel context.CancelFunc, seen *error)
-		call   func(ctx context.Context, m *session.Manager) error
+		call   func(ctx context.Context, m *session.Sessions) error
 		assert func(t *testing.T, err error, seen error)
 	}
 
 	revoked := func(t *testing.T, err error, seen error) {
 		t.Helper()
-		require.ErrorIs(t, err, session.ErrSessionReused)
+		require.ErrorIs(t, err, session.ErrReused)
 		require.NoError(t, seen, "the family was revoked on the presenting request's cancelled context, so a context-honouring store aborted it and the family stays alive")
 		assert.NotErrorIs(t, err, context.Canceled, "the revocation failed with the request's cancellation")
 	}
@@ -77,7 +77,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 				}).Times(1)
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(honouringDeleteFamily(seen)).Times(1)
 			},
-			call: func(ctx context.Context, m *session.Manager) error {
+			call: func(ctx context.Context, m *session.Sessions) error {
 				_, err := m.Load(ctx, sid)
 				return err
 			},
@@ -92,7 +92,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 				}).Times(1)
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(honouringDeleteFamily(seen)).Times(1)
 			},
-			call: func(ctx context.Context, m *session.Manager) error {
+			call: func(ctx context.Context, m *session.Sessions) error {
 				_, _, err := m.RotateWithGrace(ctx, liveUnpresented(sid), session.DefaultRenewalGrace)
 				return err
 			},
@@ -107,7 +107,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 				}).Times(1)
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(honouringDeleteFamily(seen)).Times(1)
 			},
-			call: func(ctx context.Context, m *session.Manager) error {
+			call: func(ctx context.Context, m *session.Sessions) error {
 				_, err := m.Rotate(ctx, liveUnpresented(sid))
 				return err
 			},
@@ -123,7 +123,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 				}).Times(1)
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(honouringDeleteFamily(seen)).Times(1)
 			},
-			call: func(ctx context.Context, m *session.Manager) error {
+			call: func(ctx context.Context, m *session.Sessions) error {
 				_, _, err := m.RotateWithGrace(ctx, liveUnpresented(sid), session.DefaultRenewalGrace)
 				return err
 			},
@@ -131,7 +131,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 		},
 		{
 			name: "renewal of an ended session whose successor was used",
-			opts: []session.ManagerOption{session.WithUnusedSuccessorRecovery()},
+			opts: []session.Option{session.WithUnusedSuccessorRecovery()},
 			expect: func(store *MockStore, cancel context.CancelFunc, seen *error) {
 				store.EXPECT().Load(gomock.Any(), sid).DoAndReturn(func(context.Context, string) (*session.Session, error) {
 					cancel()
@@ -149,7 +149,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 				}).Times(1)
 				store.EXPECT().DeleteFamily(gomock.Any(), graceFamily).DoAndReturn(honouringDeleteFamily(seen)).Times(1)
 			},
-			call: func(ctx context.Context, m *session.Manager) error {
+			call: func(ctx context.Context, m *session.Sessions) error {
 				_, err := m.LoadForRenewal(ctx, sid)
 				return err
 			},
@@ -167,7 +167,7 @@ func TestReuse_RevokesTheFamilyWhenThePresentingRequestIsCancelled(t *testing.T)
 			var seen error
 			store := NewMockStore(gomock.NewController(t))
 			tc.expect(store, cancel, &seen)
-			m := managerFor(t, append([]session.ManagerOption{session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt))}, tc.opts...)...)
+			m := managerFor(t, append([]session.Option{session.WithStore(store), session.WithClock(clockwork.NewFakeClockAt(createdAt))}, tc.opts...)...)
 
 			err := tc.call(ctx, m)
 			tc.assert(t, err, seen)

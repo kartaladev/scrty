@@ -42,7 +42,7 @@ const (
 
 // Option configures a Manager. Every option names the default it replaces, and
 // every default works with no configuration at all.
-type Option func(*Manager)
+type Option func(*Tokens)
 
 // WithStore replaces where tokens are kept. The default is NewMemoryStore,
 // which does not survive a restart, and which reads the manager's own clock
@@ -56,19 +56,19 @@ type Option func(*Manager)
 // a consumer who passed one meant to supply their own, and quietly keeping
 // their users' password-reset tokens in process memory is not a failure they
 // would find out about until a deploy.
-func WithStore(s Store) Option { return func(m *Manager) { m.store, m.storeSet = s, true } }
+func WithStore(s Store) Option { return func(m *Tokens) { m.store, m.storeSet = s, true } }
 
 // WithTTL replaces how long an issued token stays valid. The default is 15
 // minutes. Zero or less is a configuration error: it would expire every token
 // at the instant it was issued.
-func WithTTL(d time.Duration) Option { return func(m *Manager) { m.ttl = d } }
+func WithTTL(d time.Duration) Option { return func(m *Tokens) { m.ttl = d } }
 
 // WithIssuanceWindow replaces the span IssuedCount counts over and the distance
 // back from now that PurgeExpired leaves alone. The default is one hour. Zero
 // or less is a configuration error: it would count no issuance at all while
 // making every expired record eligible for the next sweep.
 func WithIssuanceWindow(d time.Duration) Option {
-	return func(m *Manager) { m.issuanceWindow = d }
+	return func(m *Tokens) { m.issuanceWindow = d }
 }
 
 // WithIDGenerator replaces the source of record identifiers. The default is
@@ -76,7 +76,7 @@ func WithIssuanceWindow(d time.Duration) Option {
 //
 // A consumer replaces it to mint identifiers their own records can be
 // correlated with. A nil generator is a configuration error.
-func WithIDGenerator(g id.Generator) Option { return func(m *Manager) { m.ids = g } }
+func WithIDGenerator(g id.Generator) Option { return func(m *Tokens) { m.ids = g } }
 
 // WithClock replaces the time source. The default is clock.System().
 //
@@ -89,7 +89,7 @@ func WithIDGenerator(g id.Generator) Option { return func(m *Manager) { m.ids = 
 // fallback: a caller passing one meant to inject a clock, and falling back to
 // the wall clock would make a test that never advances look like one that
 // does.
-func WithClock(clk clock.Clock) Option { return func(m *Manager) { m.clock = clk } }
+func WithClock(clk clock.Clock) Option { return func(m *Tokens) { m.clock = clk } }
 
 // WithLogger replaces the logger. The default is slog.Default().
 //
@@ -99,7 +99,7 @@ func WithClock(clk clock.Clock) Option { return func(m *Manager) { m.clock = clk
 // at error level, and no log this package writes carries a presented token, a
 // secret or a binding.
 func WithLogger(l *slog.Logger) Option {
-	return func(m *Manager) {
+	return func(m *Tokens) {
 		if l != nil {
 			m.logger = l
 		}
@@ -113,7 +113,7 @@ func WithLogger(l *slog.Logger) Option {
 // platform supplies its own cryptographic source can use it. A nil reader is a
 // configuration error: falling back would override a deliberate choice about
 // where this deployment's randomness comes from.
-func WithRandom(r io.Reader) Option { return func(m *Manager) { m.random = r } }
+func WithRandom(r io.Reader) Option { return func(m *Tokens) { m.random = r } }
 
 // IssueOption configures one issuance, rather than the manager behind it.
 type IssueOption func(*issuance)

@@ -36,7 +36,7 @@ func NotFoundUnless(exists bool, err error) error {
 		return err
 	}
 	if !exists {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 
 	return nil
@@ -51,11 +51,11 @@ func NotFoundUnless(exists bool, err error) error {
 func SupersedeRefusal(cause int, noFamily error) error {
 	switch cause {
 	case pgschema.SupersedeRefusalMissing:
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	case pgschema.SupersedeRefusalNoFamily:
 		return noFamily
 	default:
-		return session.ErrSessionRenewalConflict
+		return session.ErrRenewalConflict
 	}
 }
 
@@ -68,9 +68,9 @@ func PresentationRefusal(exists, superseded bool, err error) error {
 	case err != nil:
 		return err
 	case !exists:
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	case superseded:
-		return session.ErrSessionSuperseded
+		return session.ErrSuperseded
 	default:
 		return nil
 	}

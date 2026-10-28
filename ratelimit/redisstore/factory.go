@@ -11,7 +11,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-// Factory builds the Redis limiter of each flow that asks for one, so a
+// LimiterFactory builds the Redis limiter of each flow that asks for one, so a
 // consumer replaces the storage of every flow without restating any flow's
 // limit or window. Pass it to httpsec.WithRateLimiterFactory, or to the
 // component options of the mfa, recovery and passkey packages.
@@ -27,7 +27,7 @@ import (
 // factories or replicas may build one namespace with different policies.
 //
 // It is safe for concurrent use.
-type Factory struct {
+type LimiterFactory struct {
 	client redis.UniversalClient
 	opts   []Option
 	check  serverCheck
@@ -45,7 +45,7 @@ type policy struct {
 
 func (p policy) String() string { return fmt.Sprintf("%d per %s", p.limit, p.window) }
 
-var _ ratelimit.LimiterFactory = (*Factory)(nil)
+var _ ratelimit.LimiterFactory = (*LimiterFactory)(nil)
 
 // factoryProbeNamespace is the namespace of the limiter NewLimiterFactory
 // builds, and discards, to check client and options once.
@@ -62,13 +62,13 @@ const factoryProbeNamespace = "factory"
 // that the operation timeout and Verify's deadline bound every call; see
 // NewLimiter. It performs no I/O; call
 // Verify before traffic to check the server itself.
-func NewLimiterFactory(client redis.UniversalClient, opts ...Option) (*Factory, error) {
+func NewLimiterFactory(client redis.UniversalClient, opts ...Option) (*LimiterFactory, error) {
 	opts = slices.Clone(opts)
 	if _, err := NewLimiter(client, factoryProbeNamespace, 1, time.Second, opts...); err != nil {
 		return nil, err
 	}
 
-	return &Factory{
+	return &LimiterFactory{
 		client: client,
 		opts:   opts,
 		check:  newServerCheck(client, newConfig(opts)),
@@ -84,7 +84,7 @@ func NewLimiterFactory(client redis.UniversalClient, opts ...Option) (*Factory, 
 // is an error wrapping ratelimit.ErrConfig, naming the namespace and both
 // policies; so is anything NewLimiter refuses. A refused request does not
 // claim the namespace. On error the limiter is nil.
-func (f *Factory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
+func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Duration) (ratelimit.Limiter, error) {
 	asked := policy{limit: limit, window: window}
 
 	f.mu.Lock()

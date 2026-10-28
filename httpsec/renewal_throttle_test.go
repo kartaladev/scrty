@@ -239,7 +239,7 @@ func TestSessionRenewalThrottle_ConsumerLimiter(t *testing.T) {
 			assert: func(t *testing.T, _ *renewalFixture, out served, keys []string) {
 				t.Helper()
 
-				require.ErrorIs(t, out.err, policy.ErrPolicyDenied)
+				require.ErrorIs(t, out.err, policy.ErrDenied)
 				assert.Empty(t, keys)
 			},
 		},
@@ -349,7 +349,7 @@ func TestSessionRenewalThrottle_RemovedUserIsNotCharged(t *testing.T) {
 	t.Parallel()
 
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
-	sessions, err := session.NewManager(
+	sessions, err := session.New(
 		session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
 	)

@@ -93,16 +93,16 @@ func (h *mdsHarness) fetches() int {
 }
 
 // register runs a trusted registration from a basic-attested authenticator.
-func (h *mdsHarness) register(t *testing.T) (*passkey.NewCredential, error) {
+func (h *mdsHarness) register(t *testing.T) (*passkey.CredentialInput, error) {
 	t.Helper()
 	a := webauthntest.New(t)
 	a.AAGUID = h.env.aaguid
 	p, err := h.v.ParseRegistration(basicAttestation(t, a, h.env.att))
 	require.NoError(t, err)
-	return h.v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+	return h.v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 }
 
-func trustedOK(t *testing.T, nc *passkey.NewCredential, err error) {
+func trustedOK(t *testing.T, nc *passkey.CredentialInput, err error) {
 	t.Helper()
 	require.NoError(t, err)
 	assert.True(t, nc.AttestationTrusted)
@@ -261,10 +261,10 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 		token   func(t *testing.T, e *attestationEnv, b blob) []byte
 		advance time.Duration                        // how far the source's clock is ahead of real time
 		root    func(t *testing.T) *x509.Certificate // the configured root; nil means the env's
-		assert  func(t *testing.T, nc *passkey.NewCredential, err error)
+		assert  func(t *testing.T, nc *passkey.CredentialInput, err error)
 	}
 
-	refused := func(t *testing.T, nc *passkey.NewCredential, err error) {
+	refused := func(t *testing.T, nc *passkey.CredentialInput, err error) {
 		require.ErrorIs(t, err, passkey.ErrAttestationRefused)
 		assert.Nil(t, nc)
 	}
@@ -443,7 +443,7 @@ func TestMetadataBlob_SigningRules(t *testing.T) {
 			a.AAGUID = e.aaguid
 			p, err := v.ParseRegistration(basicAttestation(t, a, e.att))
 			require.NoError(t, err)
-			nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+			nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 			tc.assert(t, nc, err)
 		})
 	}

@@ -66,7 +66,7 @@ func TestConsume(t *testing.T) {
 		store := NewMockStore(ctrl)
 
 		clk := clockwork.NewFakeClockAt(issuedAt)
-		m, err := onetime.NewManager("magic-link",
+		m, err := onetime.New("magic-link",
 			onetime.WithStore(store), onetime.WithClock(clk))
 		require.NoError(t, err)
 
@@ -85,7 +85,7 @@ func TestConsume(t *testing.T) {
 		store.EXPECT().Consume(gomock.Any(), checkTokenID, gomock.Any()).Return(errStoreDown)
 
 		var logs bytes.Buffer
-		m, err := onetime.NewManager("magic-link",
+		m, err := onetime.New("magic-link",
 			onetime.WithStore(store), onetime.WithClock(clk),
 			onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 		require.NoError(t, err)
@@ -249,7 +249,7 @@ func TestRedeem(t *testing.T) {
 		store.EXPECT().Consume(gomock.Any(), checkTokenID, gomock.Any()).Return(errStoreDown)
 
 		var logs bytes.Buffer
-		m, err := onetime.NewManager("magic-link",
+		m, err := onetime.New("magic-link",
 			onetime.WithStore(store), onetime.WithClock(clk),
 			onetime.WithLogger(slog.New(slog.NewTextHandler(&logs, nil))))
 		require.NoError(t, err)

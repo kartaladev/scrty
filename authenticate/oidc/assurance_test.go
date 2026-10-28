@@ -11,13 +11,13 @@ import (
 
 // assuranceManager builds a manager for providers corp and partner with the
 // given options, sending no request.
-func assuranceManager(t *testing.T, opts ...oidc.ManagerOption) *oidc.Manager {
+func assuranceManager(t *testing.T, opts ...oidc.Option) *oidc.RelyingParty {
 	t.Helper()
 
 	p := newTestProvider(t)
 	reg, err := oidc.NewRegistry(p.Provider("corp"), p.Provider("partner"))
 	require.NoError(t, err)
-	m, err := oidc.NewManager(reg, stubBroker{}, append([]oidc.ManagerOption{oidc.WithOutboundClient(p.Outbound(t))}, opts...)...)
+	m, err := oidc.NewRelyingParty(reg, stubBroker{}, append([]oidc.Option{oidc.WithOutboundClient(p.Outbound(t))}, opts...)...)
 	require.NoError(t, err)
 	return m
 }
@@ -30,7 +30,7 @@ func TestMatchAssurance(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []oidc.ManagerOption
+		opts   []oidc.Option
 		amr    []string
 		acr    string
 		assert func(t *testing.T, met bool)
@@ -38,8 +38,8 @@ func TestMatchAssurance(t *testing.T) {
 
 	met := func(t *testing.T, got bool) { t.Helper(); assert.True(t, got, "assurance must be met") }
 	notMet := func(t *testing.T, got bool) { t.Helper(); assert.False(t, got, "assurance must not be met") }
-	corp := func(a oidc.Assurance) []oidc.ManagerOption {
-		return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", a)}
+	corp := func(a oidc.Assurance) []oidc.Option {
+		return []oidc.Option{oidc.WithProviderAssurance("corp", a)}
 	}
 
 	cases := []testCase{
@@ -74,17 +74,17 @@ func TestMatchAssurance(t *testing.T) {
 		},
 		{
 			name: "match all refuses when one criterion fails",
-			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, AcceptedACR: []string{"gold"}, Match: oidc.MatchAll}),
+			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, AcceptedACR: []string{"gold"}, Match: oidc.AssuranceMatchAll}),
 			amr:  []string{"mfa"}, acr: "silver", assert: notMet,
 		},
 		{
 			name: "match all holds when every criterion holds",
-			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, AcceptedACR: []string{"gold"}, Match: oidc.MatchAll}),
+			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, AcceptedACR: []string{"gold"}, Match: oidc.AssuranceMatchAll}),
 			amr:  []string{"pwd", "mfa"}, acr: "gold", assert: met,
 		},
 		{
 			name: "match all skips a criterion with no accepted values",
-			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: oidc.MatchAll}),
+			opts: corp(oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: oidc.AssuranceMatchAll}),
 			amr:  []string{"mfa"}, assert: met,
 		},
 		{
@@ -94,7 +94,7 @@ func TestMatchAssurance(t *testing.T) {
 		},
 		{
 			name: "match all with nothing accepted never meets assurance",
-			opts: corp(oidc.Assurance{Match: oidc.MatchAll}),
+			opts: corp(oidc.Assurance{Match: oidc.AssuranceMatchAll}),
 			amr:  []string{"mfa"}, acr: "gold", assert: notMet,
 		},
 		{
@@ -109,7 +109,7 @@ func TestMatchAssurance(t *testing.T) {
 		},
 		{
 			name: "another provider's configuration does not apply to corp",
-			opts: []oidc.ManagerOption{oidc.WithProviderAssurance("partner", oidc.Assurance{AcceptedAMR: []string{"otp"}})},
+			opts: []oidc.Option{oidc.WithProviderAssurance("partner", oidc.Assurance{AcceptedAMR: []string{"otp"}})},
 			amr:  []string{"otp"}, assert: notMet,
 		},
 	}
@@ -134,7 +134,7 @@ func TestManagerAssuranceFor(t *testing.T) {
 
 	type testCase struct {
 		name     string
-		opts     func() []oidc.ManagerOption
+		opts     func() []oidc.Option
 		provider string
 		assert   func(t *testing.T, got oidc.Assurance, ok bool)
 	}
@@ -144,13 +144,13 @@ func TestManagerAssuranceFor(t *testing.T) {
 			name: "a provider with no option gets the default", provider: "corp",
 			assert: func(t *testing.T, got oidc.Assurance, ok bool) {
 				require.True(t, ok)
-				assert.Equal(t, oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: oidc.MatchAny}, got)
+				assert.Equal(t, oidc.Assurance{AcceptedAMR: []string{"mfa"}, Match: oidc.AssuranceMatchAny}, got)
 			},
 		},
 		{
 			name: "a configured empty set stays empty", provider: "corp",
-			opts: func() []oidc.ManagerOption {
-				return []oidc.ManagerOption{oidc.WithProviderAssurance("corp", oidc.Assurance{})}
+			opts: func() []oidc.Option {
+				return []oidc.Option{oidc.WithProviderAssurance("corp", oidc.Assurance{})}
 			},
 			assert: func(t *testing.T, got oidc.Assurance, ok bool) {
 				require.True(t, ok)
@@ -161,10 +161,10 @@ func TestManagerAssuranceFor(t *testing.T) {
 		},
 		{
 			name: "the configuration is the manager's own copy", provider: "corp",
-			opts: func() []oidc.ManagerOption {
+			opts: func() []oidc.Option {
 				amr, acr, req := []string{"hwk"}, []string{"gold"}, []string{"gold"}
 				opt := oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: amr, AcceptedACR: acr, RequestACR: req})
-				return []oidc.ManagerOption{opt, func(*oidc.Manager) error {
+				return []oidc.Option{opt, func(*oidc.RelyingParty) error {
 					amr[0], acr[0], req[0] = "changed", "changed", "changed"
 					return nil
 				}}
@@ -178,15 +178,15 @@ func TestManagerAssuranceFor(t *testing.T) {
 		},
 		{
 			name: "the last option for a provider replaces an earlier one", provider: "corp",
-			opts: func() []oidc.ManagerOption {
-				return []oidc.ManagerOption{
+			opts: func() []oidc.Option {
+				return []oidc.Option{
 					oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedAMR: []string{"hwk"}}),
-					oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedACR: []string{"gold"}, Match: oidc.MatchAll}),
+					oidc.WithProviderAssurance("corp", oidc.Assurance{AcceptedACR: []string{"gold"}, Match: oidc.AssuranceMatchAll}),
 				}
 			},
 			assert: func(t *testing.T, got oidc.Assurance, ok bool) {
 				require.True(t, ok)
-				assert.Equal(t, oidc.Assurance{AcceptedACR: []string{"gold"}, Match: oidc.MatchAll}, got)
+				assert.Equal(t, oidc.Assurance{AcceptedACR: []string{"gold"}, Match: oidc.AssuranceMatchAll}, got)
 			},
 		},
 		{
@@ -202,7 +202,7 @@ func TestManagerAssuranceFor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var opts []oidc.ManagerOption
+			var opts []oidc.Option
 			if tc.opts != nil {
 				opts = tc.opts()
 			}

@@ -23,9 +23,9 @@ const (
 	defaultSampleWindow   = 5 * time.Minute
 )
 
-// KeyManager owns the signing keys: it generates them, persists them before
+// Keys owns the signing keys: it generates them, persists them before
 // using them, reloads them, rotates them and publishes them.
-type KeyManager struct {
+type Keys struct {
 	mu      sync.RWMutex
 	keys    map[string]*keyEntry // by kid
 	order   []string             // kids, in the order they were held
@@ -56,7 +56,7 @@ type KeyManager struct {
 	sampler        *logsample.Sampler
 }
 
-// NewKeyManager returns a manager holding a current key for every configured
+// New returns a manager holding a current key for every configured
 // algorithm, generating and storing one where the store has none. A stored key
 // is adopted rather than replaced, so a restart invalidates no token signed
 // within the key lifetime.
@@ -101,8 +101,8 @@ type KeyManager struct {
 // error's Go type, never the store's own text; a consumer who wants that
 // detail logs it inside their own implementation of KeyStore. The algorithm
 // the failure belongs to is kept.
-func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
-	km := &KeyManager{
+func New(ctx context.Context, opts ...Option) (*Keys, error) {
+	km := &Keys{
 		keys:           make(map[string]*keyEntry),
 		current:        make(map[Alg]string),
 		algs:           []Alg{RS256},
@@ -111,7 +111,7 @@ func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 		housekeepEvery: defaultHousekeepEvery,
 		reloadEvery:    defaultReloadEvery,
 		sampleWindow:   defaultSampleWindow,
-		store:          NewInMemoryKeyStore(),
+		store:          NewMemoryKeyStore(),
 		clock:          clock.System(),
 		logger:         slog.Default(),
 	}
@@ -147,7 +147,7 @@ func NewKeyManager(ctx context.Context, opts ...Option) (*KeyManager, error) {
 // A key past the lifetime is dropped here rather than left for housekeeping,
 // because a manager that only verifies may never be started, and would
 // otherwise publish it for as long as the process lived.
-func (km *KeyManager) loadFromStore(ctx context.Context) error {
+func (km *Keys) loadFromStore(ctx context.Context) error {
 	recs, err := km.store.LoadAll(ctx)
 	if err != nil {
 		return diag.Wrap(err, "signingkey: load keys")
@@ -198,7 +198,7 @@ func (e *keyEntry) stored() storedKey {
 //
 // There is no option over the rule itself, because it is what makes a retired
 // key stop verifying; WithLifetime moves the line it draws.
-func (km *KeyManager) publishable(k storedKey, newestOfAlg bool, now time.Time) bool {
+func (km *Keys) publishable(k storedKey, newestOfAlg bool, now time.Time) bool {
 	return newestOfAlg || !km.pastLifetime(k.createdAt, now)
 }
 
@@ -211,7 +211,7 @@ func (km *KeyManager) publishable(k storedKey, newestOfAlg bool, now time.Time) 
 // current key: where no held key qualifies, as after the clock steps back past
 // the reload interval, the previous current key stays current while it is still
 // held. Callers hold km.mu.
-func (km *KeyManager) repickCurrentLocked(recs []Record, now time.Time) {
+func (km *Keys) repickCurrentLocked(recs []Record, now time.Time) {
 	keys := slices.DeleteFunc(km.listedOrderLocked(recs), func(k storedKey) bool {
 		return km.keys[k.kid] == nil
 	})
@@ -248,7 +248,7 @@ func (km *KeyManager) repickCurrentLocked(recs []Record, now time.Time) {
 // for an algorithm SupportedAlgs denies, and would exempt it from housekeeping
 // for as long as the process lived, because the current key of an algorithm is
 // never expired.
-func (km *KeyManager) pickCurrent(keys []storedKey, now time.Time) map[Alg]string {
+func (km *Keys) pickCurrent(keys []storedKey, now time.Time) map[Alg]string {
 	current := make(map[Alg]string, len(km.algs))
 	newest := make(map[Alg]time.Time, len(km.algs))
 	latest := now.Add(km.reloadEvery)
@@ -268,7 +268,7 @@ func (km *KeyManager) pickCurrent(keys []storedKey, now time.Time) map[Alg]strin
 
 // mintMissing generates and stores a key for every configured algorithm that
 // has no current key.
-func (km *KeyManager) mintMissing(ctx context.Context) error {
+func (km *Keys) mintMissing(ctx context.Context) error {
 	for _, alg := range km.algs {
 		km.mu.RLock()
 		_, have := km.current[alg]
@@ -290,7 +290,7 @@ func (km *KeyManager) mintMissing(ctx context.Context) error {
 // A failure comes back as a *failure, whose err is what construction returns
 // and the error hook receives, and whose cause is the store's own error, so a
 // record names the store's error type rather than this package's wrapping.
-func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, *failure) {
+func (km *Keys) mintAndStore(ctx context.Context, alg Alg) (string, *failure) {
 	entry, rec, err := generateKey(alg, km.clock.Now())
 	if err != nil {
 		return "", &failure{err: err, reason: reasonGenerate, cause: err}
@@ -317,14 +317,14 @@ func (km *KeyManager) mintAndStore(ctx context.Context, alg Alg) (string, *failu
 // gone wrong or an edited row, and would otherwise never age out at all; one
 // dated a little ahead by the skew between replicas stays within it, so the
 // tokens that replica signs still verify.
-func (km *KeyManager) pastLifetime(createdAt, now time.Time) bool {
+func (km *Keys) pastLifetime(createdAt, now time.Time) bool {
 	age := now.Sub(createdAt)
 	return age > km.lifetime || age < -km.lifetime
 }
 
 // holdLocked holds entry, remembering the order keys were held in. Callers hold
 // km.mu.
-func (km *KeyManager) holdLocked(entry *keyEntry) {
+func (km *Keys) holdLocked(entry *keyEntry) {
 	if _, held := km.keys[entry.kid]; !held {
 		km.order = append(km.order, entry.kid)
 	}
@@ -335,18 +335,18 @@ func (km *KeyManager) holdLocked(entry *keyEntry) {
 //
 // The slice returned is the caller's own: sorting, filtering or rewriting it
 // changes nothing here.
-func (km *KeyManager) SupportedAlgs() []Alg {
+func (km *Keys) SupportedAlgs() []Alg {
 	return slices.Clone(km.algs)
 }
 
-// GetSigner returns the kid and signer currently signing for alg, and whether
+// Signer returns the kid and signer currently signing for alg, and whether
 // there is one.
 //
 // It answers only for the configured algorithms, so what SupportedAlgs reports
 // and what this hands out are the same set. A shared store may hold keys for
 // other algorithms, written by a replica configured differently; those stay
 // published, and none of them ever signs here.
-func (km *KeyManager) GetSigner(alg Alg) (string, crypto.Signer, bool) {
+func (km *Keys) Signer(alg Alg) (string, crypto.Signer, bool) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 
@@ -374,7 +374,7 @@ func (km *KeyManager) GetSigner(alg Alg) (string, crypto.Signer, bool) {
 // and has nothing left to fail at. It is part of the KeySource contract for
 // the sources that do: one backed by a key service answers a request per call
 // and has an outage to report.
-func (km *KeyManager) VerificationKeys() ([]PublicKey, error) {
+func (km *Keys) VerificationKeys() ([]PublicKey, error) {
 	km.mu.RLock()
 	defer km.mu.RUnlock()
 

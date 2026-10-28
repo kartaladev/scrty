@@ -59,11 +59,11 @@ func TestHandoffManagerFlushRefusalLogs(t *testing.T) {
 	// issued code, and a sink of every record it writes. Every case shares a
 	// clock that never advances, so repeated refusals of one reason land in
 	// the same sampling window.
-	buildHandoff := func(t *testing.T) (m *oidc.HandoffManager, code string, logs *handoffLogSink) {
+	buildHandoff := func(t *testing.T) (m *oidc.Handoff, code string, logs *handoffLogSink) {
 		t.Helper()
 
 		logs = &handoffLogSink{}
-		m, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(gomock.NewController(t)),
+		m, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(gomock.NewController(t)),
 			oidc.WithHandoffClock(flushFixedClock()), oidc.WithHandoffLogger(logs.Logger()))
 		require.NoError(t, err)
 
@@ -85,16 +85,16 @@ func TestHandoffManagerFlushRefusalLogs(t *testing.T) {
 
 	type testCase struct {
 		name string
-		act  func(t *testing.T, m *oidc.HandoffManager, code string)
+		act  func(t *testing.T, m *oidc.Handoff, code string)
 
 		// afterFlush runs after FlushRefusalLogs, only for the row proving the
 		// manager still works afterward; nil for every other row.
-		afterFlush func(t *testing.T, m *oidc.HandoffManager, code string)
+		afterFlush func(t *testing.T, m *oidc.Handoff, code string)
 
 		assert func(t *testing.T, err error, logs string)
 	}
 
-	redeemWrongThrice := func(t *testing.T, m *oidc.HandoffManager, code string) {
+	redeemWrongThrice := func(t *testing.T, m *oidc.Handoff, code string) {
 		t.Helper()
 
 		wrong := wrongSecretFor(t, code)
@@ -118,7 +118,7 @@ func TestHandoffManagerFlushRefusalLogs(t *testing.T) {
 		},
 		{
 			name: "a flush with nothing pending reports nothing",
-			act:  func(*testing.T, *oidc.HandoffManager, string) {},
+			act:  func(*testing.T, *oidc.Handoff, string) {},
 			assert: func(t *testing.T, err error, logs string) {
 				require.NoError(t, err)
 				assert.Empty(t, flushSummaries(t, logs, "oidc handoff refusals suppressed"))
@@ -127,7 +127,7 @@ func TestHandoffManagerFlushRefusalLogs(t *testing.T) {
 		{
 			name: "the component still works after a flush",
 			act:  redeemWrongThrice,
-			afterFlush: func(t *testing.T, m *oidc.HandoffManager, code string) {
+			afterFlush: func(t *testing.T, m *oidc.Handoff, code string) {
 				t.Helper()
 
 				// One more refusal of the same reason, after the flush, must
@@ -299,11 +299,11 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 
 	type testCase struct {
 		name  string
-		build func(t *testing.T) (m *oidc.Manager, logs *bytes.Buffer)
+		build func(t *testing.T) (m *oidc.RelyingParty, logs *bytes.Buffer)
 
 		// afterFlush runs after FlushRefusalLogs, only for the row proving the
 		// manager still works afterward; nil for every other row.
-		afterFlush func(t *testing.T, m *oidc.Manager)
+		afterFlush func(t *testing.T, m *oidc.RelyingParty)
 
 		assert func(t *testing.T, err error, logs string)
 	}
@@ -311,7 +311,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "the manager's own pending count is reported",
-			build: func(t *testing.T) (*oidc.Manager, *bytes.Buffer) {
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
 				t.Helper()
 
 				logs := &bytes.Buffer{}
@@ -322,7 +322,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 				flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(oidc.Flow{}, flowFault).Times(3)
 
-				m, err := oidc.NewManager(reg, NewMockIdentityBroker(gomock.NewController(t)),
+				m, err := oidc.NewRelyingParty(reg, NewMockIdentityBroker(gomock.NewController(t)),
 					oidc.WithFlowStore(flows), oidc.WithClock(flushFixedClock()), oidc.WithLogger(testTextLogger(logs)))
 				require.NoError(t, err)
 
@@ -343,7 +343,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 		},
 		{
 			name: "a broker's pending count is reached through the manager",
-			build: func(t *testing.T) (*oidc.Manager, *bytes.Buffer) {
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
 				t.Helper()
 
 				brokerLogs := &bytes.Buffer{}
@@ -359,7 +359,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 
 				reg, err := oidc.NewRegistry(flushProvider())
 				require.NoError(t, err)
-				m, err := oidc.NewManager(reg, broker)
+				m, err := oidc.NewRelyingParty(reg, broker)
 				require.NoError(t, err)
 
 				return m, brokerLogs
@@ -374,13 +374,13 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 		},
 		{
 			name: "a consumer broker without a flush is skipped without error",
-			build: func(t *testing.T) (*oidc.Manager, *bytes.Buffer) {
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
 				t.Helper()
 
 				reg, err := oidc.NewRegistry(flushProvider())
 				require.NoError(t, err)
 
-				m, err := oidc.NewManager(reg, NewMockIdentityBroker(gomock.NewController(t)))
+				m, err := oidc.NewRelyingParty(reg, NewMockIdentityBroker(gomock.NewController(t)))
 				require.NoError(t, err)
 
 				return m, &bytes.Buffer{}
@@ -391,7 +391,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 		},
 		{
 			name: "the manager still works after a flush",
-			build: func(t *testing.T) (*oidc.Manager, *bytes.Buffer) {
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
 				t.Helper()
 
 				logs := &bytes.Buffer{}
@@ -402,7 +402,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 				flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(oidc.Flow{}, flowFault).Times(4)
 
-				m, err := oidc.NewManager(reg, NewMockIdentityBroker(gomock.NewController(t)),
+				m, err := oidc.NewRelyingParty(reg, NewMockIdentityBroker(gomock.NewController(t)),
 					oidc.WithFlowStore(flows), oidc.WithClock(flushFixedClock()), oidc.WithLogger(testTextLogger(logs)))
 				require.NoError(t, err)
 
@@ -413,7 +413,7 @@ func TestManagerFlushRefusalLogs(t *testing.T) {
 
 				return m, logs
 			},
-			afterFlush: func(t *testing.T, m *oidc.Manager) {
+			afterFlush: func(t *testing.T, m *oidc.RelyingParty) {
 				t.Helper()
 
 				// One more callback failure of the same reason, after the

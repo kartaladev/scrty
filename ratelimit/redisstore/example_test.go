@@ -32,7 +32,7 @@ func Example_sharedLimiter() {
 	// during an outage rather than refuse every sign-in, take a factory of
 	// their own over the same client.
 	secondFactor, err := redisstore.NewLimiterFactory(client,
-		redisstore.WithOnUnavailable(ratelimit.UnavailableFallBackToLocal),
+		redisstore.WithOnUnavailable(ratelimit.UnavailableFallbackToLocal),
 	)
 	if err != nil {
 		panic(err)

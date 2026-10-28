@@ -45,7 +45,7 @@ type Authorization struct {
 // refusal, such as ErrFlowStoreFull, comes back wrapped with fixed library
 // text; the store's own error stays reachable by identity, so a consumer who
 // wants its own detail logs it inside their own implementation of FlowStore.
-func (m *Manager) Authorize(ctx context.Context, provider, next string) (Authorization, error) {
+func (m *RelyingParty) Authorize(ctx context.Context, provider, next string) (Authorization, error) {
 	p, ok := m.registry.Lookup(provider)
 	if !ok {
 		return Authorization{}, ErrUnknownProvider

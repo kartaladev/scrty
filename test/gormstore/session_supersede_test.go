@@ -98,7 +98,7 @@ func TestSessionStore_SupersedeObservingNoSuccessor(t *testing.T) {
 
 				for _, observed := range [][]byte{nil, {}} {
 					err := store.Supersede(ctx, supersessionOf(old, sid+"-late", observed))
-					require.ErrorIs(t, err, session.ErrSessionRenewalConflict)
+					require.ErrorIs(t, err, session.ErrRenewalConflict)
 				}
 				_, found := successorIsNull(ctx, t, db, sid+"-late")
 				assert.False(t, found, "a refused supersession wrote its successor")

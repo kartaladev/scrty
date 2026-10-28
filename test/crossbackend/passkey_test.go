@@ -86,7 +86,7 @@ func crossBackendPasskey(seed string) *passkey.Credential {
 		CreatedAt:            created,
 		LastUsedAt:           created.Add(time.Hour),
 		State:                passkey.StatePending,
-		Pending:              passkey.AwaitingSavedCodes | passkey.AwaitingEmailCode,
+		Pending:              passkey.PendingSavedCodes | passkey.PendingEmailCode,
 		EmailCode:            &passkey.EmailCode{Code: "314159", ExpiresAt: created.Add(10 * time.Minute), Attempts: 2},
 	}
 }

@@ -38,10 +38,10 @@ func assuranceOptions(t *testing.T, e *Effects, mode policy.FederatedAssuranceMo
 
 	source := policy.WithFederatedAssuranceSource(e.OIDC.Manager)
 
-	challenge, err := policy.NewMFAPolicy(lookups, source)
+	challenge, err := policy.NewMFA(lookups, source)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+	requirement, err := policy.NewMFARequirement(nil, lookups,
 		policy.WithMFARequiredForAll(), policy.WithFederatedAssurance(mode), source)
 	require.NoError(t, err)
 

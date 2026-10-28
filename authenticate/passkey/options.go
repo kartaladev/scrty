@@ -14,7 +14,7 @@ import (
 
 // Option configures a Manager. Every option names the default it replaces.
 // A nil option is ignored.
-type Option func(*Manager)
+type Option func(*Passkeys)
 
 // NameResolver returns the user name and display name a registration's
 // creation options carry for the user d describes. An authenticator shows
@@ -59,7 +59,7 @@ type RegistrationFacts struct {
 // A nil factory, typed nil included, is an error wrapping ErrConfig, as is an
 // error from f, which names the namespace.
 func WithConfirmLimiterFactory(f ratelimit.LimiterFactory) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.confirmFactory = f
 		m.factorySet = true
 	}
@@ -69,7 +69,7 @@ func WithConfirmLimiterFactory(f ratelimit.LimiterFactory) Option {
 // is issued. The default is 5 minutes, and it is also the timeout the creation
 // options carry. Zero or less is a configuration error.
 func WithChallengeTTL(d time.Duration) Option {
-	return func(m *Manager) { m.ttl = d }
+	return func(m *Passkeys) { m.ttl = d }
 }
 
 // WithRegistrationChallengeLimit replaces how many registration challenges one
@@ -78,7 +78,7 @@ func WithChallengeTTL(d time.Duration) Option {
 // the issue are one decision of the challenge store's, so begins racing for
 // one user never together exceed it. Zero or less is a configuration error.
 func WithRegistrationChallengeLimit(n int) Option {
-	return func(m *Manager) { m.issueLimit = n }
+	return func(m *Passkeys) { m.issueLimit = n }
 }
 
 // WithPasskeyLimit replaces how many passkeys one user may hold, counting
@@ -87,7 +87,7 @@ func WithRegistrationChallengeLimit(n int) Option {
 // insert (CredentialStore.InsertWithin), so finishes racing for one user never
 // leave it holding more. Zero or less is a configuration error.
 func WithPasskeyLimit(n int) Option {
-	return func(m *Manager) { m.passkeyLimit = n }
+	return func(m *Passkeys) { m.passkeyLimit = n }
 }
 
 // WithManagementFreshness replaces how recent a full session's authentication
@@ -97,7 +97,7 @@ func WithPasskeyLimit(n int) Option {
 // regain freshness. The default is 15 minutes; an older session is refused
 // with ErrReauthenticationRequired. Zero or less is a configuration error.
 func WithManagementFreshness(d time.Duration) Option {
-	return func(m *Manager) { m.freshness = d }
+	return func(m *Passkeys) { m.freshness = d }
 }
 
 // WithUserVerification replaces the user-verification requirement of every
@@ -107,7 +107,7 @@ func WithManagementFreshness(d time.Duration) Option {
 // passwordless login made with one is single-factor and records no second
 // factor. Any other value is a configuration error.
 func WithUserVerification(uv UserVerification) Option {
-	return func(m *Manager) { m.uv = uv }
+	return func(m *Passkeys) { m.uv = uv }
 }
 
 // WithResidentKey replaces the discoverable-credential requirement of a
@@ -116,14 +116,14 @@ func WithUserVerification(uv UserVerification) Option {
 // as a second factor, never for passwordless login. Any other value is a
 // configuration error.
 func WithResidentKey(rk ResidentKey) Option {
-	return func(m *Manager) { m.residentKey = rk }
+	return func(m *Passkeys) { m.residentKey = rk }
 }
 
 // WithNameResolver replaces how the user name and display name of the
 // creation options are taken from the user's loaded details. The default uses
 // the username for both. A nil resolver is a configuration error.
 func WithNameResolver(fn NameResolver) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.names = fn
 		m.namesSet = true
 	}
@@ -134,14 +134,14 @@ func WithNameResolver(fn NameResolver) Option {
 // is required: a notice that a passkey was bound is only useful when it says
 // what to do if it was not the recipient.
 func WithRepudiationContact(s string) Option {
-	return func(m *Manager) { m.repudiation = s }
+	return func(m *Passkeys) { m.repudiation = s }
 }
 
 // WithSynchronousDelivery accepts a sender that does not report
 // notify.NonBlocking. By default such a sender is a configuration error,
 // because a registration finish would then wait on a mail server.
 func WithSynchronousDelivery() Option {
-	return func(m *Manager) { m.syncDelivery = true }
+	return func(m *Passkeys) { m.syncDelivery = true }
 }
 
 // WithRegistrationCheck adds a consumer check that runs on every verified
@@ -151,7 +151,7 @@ func WithSynchronousDelivery() Option {
 // stricter policy to some users only, such as refusing backup-eligible
 // passkeys for administrators. A nil check is a configuration error.
 func WithRegistrationCheck(fn func(ctx context.Context, f RegistrationFacts) error) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.regCheck = fn
 		m.regCheckSet = true
 	}
@@ -164,13 +164,13 @@ func WithRegistrationCheck(fn func(ctx context.Context, f RegistrationFacts) err
 // confirms a new set of saved recovery codes. The optional mode allows
 // accounts that only the operator can recover.
 func WithOptionalRecoveryCodes() Option {
-	return func(m *Manager) { m.optionalCodes = true }
+	return func(m *Passkeys) { m.optionalCodes = true }
 }
 
 // WithClock replaces the time source. The default is clock.System(). A nil
 // clock is a configuration error.
 func WithClock(clk clock.Clock) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.clock = clk
 		m.clockSet = true
 	}
@@ -180,7 +180,7 @@ func WithClock(clk clock.Clock) Option {
 // secrets are drawn from. The default is crypto/rand.Reader. A nil reader is a
 // configuration error.
 func WithRandom(r io.Reader) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.random = r
 		m.randomSet = true
 	}
@@ -190,7 +190,7 @@ func WithRandom(r io.Reader) Option {
 // identifiers. The default is id.NewV7Generator. A nil generator is a
 // configuration error.
 func WithIDGenerator(g id.Generator) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		m.ids = g
 		m.idsSet = true
 	}
@@ -199,7 +199,7 @@ func WithIDGenerator(g id.Generator) Option {
 // WithLogger replaces the logger. The default is slog.Default(). A nil logger
 // is ignored.
 func WithLogger(l *slog.Logger) Option {
-	return func(m *Manager) {
+	return func(m *Passkeys) {
 		if l != nil {
 			m.logger = l
 		}

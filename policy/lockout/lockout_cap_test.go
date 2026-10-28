@@ -252,7 +252,7 @@ func deniedAsHeld(t *testing.T, d policy.Decision, failures int) {
 	require.ErrorAs(t, d.Reason, &locked)
 	assert.Zero(t, locked.Wait, "a hold carries a wait, which no amount of waiting serves")
 	assert.Equal(t, heldText(failures), d.Reason.Error())
-	assert.NotErrorIs(t, d.Reason, policy.ErrPolicyDenied, "a hold was reported as a policy outage")
+	assert.NotErrorIs(t, d.Reason, policy.ErrDenied, "a hold was reported as a policy outage")
 }
 
 // TestLockoutCapEvaluate pins pre-authentication under a cap: a held
@@ -412,7 +412,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *lockout.Policy, d policy.Decision) {
 				require.Equal(t, policy.Deny, d.Outcome, "an unreadable hold was allowed")
-				require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+				require.ErrorIs(t, d.Reason, policy.ErrDenied)
 				require.ErrorIs(t, d.Reason, errAttemptStoreDown)
 				assert.NotErrorIs(t, d.Reason, lockout.ErrAccountLocked,
 					"an outage was reported as a lock the policy does not know of")

@@ -146,7 +146,7 @@ type config struct {
 	// any enabled built-in was wired to. A deployment has one session store, so
 	// taking it from the built-ins costs the consumer no second declaration,
 	// and a chain that resolves no session has nothing to record.
-	sessions *session.Manager
+	sessions *session.Sessions
 
 	// sessionsExplicit records that WithSessionManager set sessions, which no
 	// built-in's manager then replaces.
@@ -257,13 +257,13 @@ func (c *config) wire(fn func(*Chain)) {
 // The first one wins, unless WithSessionManager set one, and a nil one is ignored: a deployment has one session
 // store, and the built-in whose dependency is missing is refused by its own
 // check rather than by this one.
-func (c *config) useSessions(m *session.Manager) {
+func (c *config) useSessions(m *session.Sessions) {
 	if c.sessions == nil && !c.sessionsExplicit && m != nil {
 		c.sessions = m
 	}
 }
 
-// WithSessionManager sets the session manager the chain itself uses: the one
+// WithSessions sets the session manager the chain itself uses: the one
 // that records a session's activity after the handler, and the one a mark from
 // Exchange.EvaluatePerRequest is stored through.
 //
@@ -284,7 +284,7 @@ func (c *config) useSessions(m *session.Manager) {
 //
 // Default: the manager of the first enabled built-in that was wired to one.
 // A chain with none records no activity and refuses to store an enrolment mark.
-func WithSessionManager(m *session.Manager) Option {
+func WithSessions(m *session.Sessions) Option {
 	return func(c *config) error {
 		if err := requireDep("WithSessionManager", "session manager", m); err != nil {
 			return err
@@ -1011,7 +1011,7 @@ type FormLoginDeps struct {
 	Authenticator authenticate.Authenticator
 
 	// Sessions opens the session a successful login establishes.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Tokens issues the access token the response carries. The session
 	// identifier is the token's jti, which is how a later bearer request finds
@@ -1464,7 +1464,7 @@ type BearerTokenDeps struct {
 	Verifier token.Verifier
 
 	// Sessions loads the session the token's jti names.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Users reloads the user the token's subject names, so the roles the
 	// request is judged on are the ones the store holds now.
@@ -1898,7 +1898,7 @@ type APIKeyOption func(*apiKeyInterceptor) error
 // to prompt and nothing to keep between requests, so a policy that challenges
 // in the stateless phase refuses outright rather than raising a prompt nothing
 // can answer.
-func EnableAPIKey(m *apikey.Manager, opts ...APIKeyOption) Option {
+func EnableAPIKey(m *apikey.Keys, opts ...APIKeyOption) Option {
 	const option = "EnableAPIKey"
 
 	return func(c *config) error {
@@ -2013,7 +2013,7 @@ type MagicLinkOption func(*magicLinkInterceptor) error
 // session the caller then has to be able to present. The session manager is
 // taken from the chain when WithMagicLinkSessions is not given, and a chain
 // with neither is refused.
-func EnableMagicLink(m *magiclink.Manager, opts ...MagicLinkOption) Option {
+func EnableMagicLink(m *magiclink.Links, opts ...MagicLinkOption) Option {
 	const option = "EnableMagicLink"
 
 	return func(c *config) error {
@@ -2214,7 +2214,7 @@ func WithMagicLinkLimiter(l ratelimit.Limiter) MagicLinkOption {
 // deployment with one session store declares it once. A chain that has none at
 // all is refused: a redemption that could not open a session would spend the
 // link and authenticate nobody.
-func WithMagicLinkSessions(m *session.Manager) MagicLinkOption {
+func WithMagicLinkSessions(m *session.Sessions) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		if err := requireDep("WithMagicLinkSessions", "session manager", m); err != nil {
 			return err
@@ -2354,7 +2354,7 @@ type PasswordChangeOption func(*passwordChangeGate) error
 // The session manager is required and is the one the marker is cleared in: a
 // gate that could not record the change would refuse the next request just the
 // same, and the caller would have changed their password for nothing.
-func EnablePasswordChangeGate(sessions *session.Manager, opts ...PasswordChangeOption) Option {
+func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChangeOption) Option {
 	const option = "EnablePasswordChangeGate"
 
 	return func(c *config) error {
@@ -2419,7 +2419,7 @@ type LogoutDeps struct {
 	// Sessions is where the caller's session is deleted. Supply the same
 	// manager the authentication interceptors load sessions from, or a logout
 	// deletes from a store nothing reads.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// EndSession builds the identity provider's end-session URL for a session
 	// a federated login created. It is optional: nil means no end-session

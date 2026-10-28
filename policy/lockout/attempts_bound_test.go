@@ -150,7 +150,7 @@ func TestDefaultLockoutStore_FullStoreDeniesNewIdentifier(t *testing.T) {
 
 	d := p.Evaluate(t.Context(), lockoutInput("newcomer"))
 	require.Equal(t, policy.Deny, d.Outcome, "a full store let an uncounted guess through")
-	require.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+	require.ErrorIs(t, d.Reason, policy.ErrDenied)
 	require.ErrorIs(t, d.Reason, lockout.ErrAttemptStoreFull)
 
 	assert.Equal(t, capacity, store.IdentifiersForTest(), "the full store grew")

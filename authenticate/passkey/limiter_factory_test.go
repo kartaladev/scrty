@@ -28,12 +28,12 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   func(t *testing.T) []passkey.Option
-		assert func(t *testing.T, m *passkey.Manager, err error)
+		assert func(t *testing.T, m *passkey.Passkeys, err error)
 	}
 
 	// confirm presents a code for user with no per-call limiter, so the
 	// Manager's own limiter answers.
-	confirm := func(t *testing.T, m *passkey.Manager) error {
+	confirm := func(t *testing.T, m *passkey.Passkeys) error {
 		t.Helper()
 
 		_, err := m.ConfirmEmailCode(t.Context(), &session.Session{UserID: user}, "000000",
@@ -46,7 +46,7 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 		{
 			name: "default builds in-memory",
 			opts: func(*testing.T) []passkey.Option { return nil },
-			assert: func(t *testing.T, m *passkey.Manager, err error) {
+			assert: func(t *testing.T, m *passkey.Passkeys, err error) {
 				require.NoError(t, err)
 				assert.NotErrorIs(t, confirm(t, m), mfa.ErrEnrolmentThrottled,
 					"a fresh in-memory limiter has nothing counted yet")
@@ -64,7 +64,7 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 
 				return []passkey.Option{passkey.WithConfirmLimiterFactory(f)}
 			},
-			assert: func(t *testing.T, m *passkey.Manager, err error) {
+			assert: func(t *testing.T, m *passkey.Passkeys, err error) {
 				require.NoError(t, err)
 				assert.ErrorIs(t, confirm(t, m), mfa.ErrEnrolmentThrottled,
 					"the confirmation is counted through the limiter the factory built")
@@ -75,7 +75,7 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 			opts: func(*testing.T) []passkey.Option {
 				return []passkey.Option{passkey.WithConfirmLimiterFactory(nil)}
 			},
-			assert: func(t *testing.T, m *passkey.Manager, err error) {
+			assert: func(t *testing.T, m *passkey.Passkeys, err error) {
 				require.ErrorIs(t, err, passkey.ErrConfig)
 				assert.Nil(t, m)
 			},
@@ -85,7 +85,7 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 			opts: func(*testing.T) []passkey.Option {
 				return []passkey.Option{passkey.WithConfirmLimiterFactory((*MockLimiterFactory)(nil))}
 			},
-			assert: func(t *testing.T, m *passkey.Manager, err error) {
+			assert: func(t *testing.T, m *passkey.Passkeys, err error) {
 				require.ErrorIs(t, err, passkey.ErrConfig)
 				assert.Nil(t, m)
 			},
@@ -98,7 +98,7 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 
 				return []passkey.Option{passkey.WithConfirmLimiterFactory(f)}
 			},
-			assert: func(t *testing.T, m *passkey.Manager, err error) {
+			assert: func(t *testing.T, m *passkey.Passkeys, err error) {
 				require.ErrorIs(t, err, passkey.ErrConfig)
 				require.ErrorIs(t, err, errFactory)
 				assert.Contains(t, err.Error(), `"passkey-email-confirm"`, "the error names the namespace")

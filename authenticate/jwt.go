@@ -15,13 +15,13 @@ import (
 
 //go:generate mockgen -destination=verifier_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/token Verifier
 
-// JwtOption configures the bearer-token provider.
+// JWTOption configures the bearer-token provider.
 //
 // A nil option is skipped, so a consumer who builds the slice conditionally
 // need not filter it first.
-type JwtOption func(*jwtAuthenticator)
+type JWTOption func(*jwtAuthenticator)
 
-// WithJwtVerifier supplies the verifier every presented token is checked by.
+// WithJWTVerifier supplies the verifier every presented token is checked by.
 //
 // It is required and has no default. A verifier decides which issuers, which
 // signing keys, which audience and which clock skew are acceptable, and there
@@ -31,11 +31,11 @@ type JwtOption func(*jwtAuthenticator)
 //
 // A nil verifier, including a non-nil interface holding a nil pointer, is the
 // same as supplying none.
-func WithJwtVerifier(v token.Verifier) JwtOption {
+func WithJWTVerifier(v token.Verifier) JWTOption {
 	return func(a *jwtAuthenticator) { a.verifier = v }
 }
 
-// WithJwtIDGenerator replaces the generator that names an authentication whose
+// WithJWTIDGenerator replaces the generator that names an authentication whose
 // token carries no identifier this library can use.
 //
 // The default is id.NewV7Generator. It is consulted only as a fallback: a token
@@ -45,7 +45,7 @@ func WithJwtVerifier(v token.Verifier) JwtOption {
 // A nil generator is a configuration error rather than a silent return to the
 // default, because a consumer supplying one means their records are keyed by
 // its identifiers.
-func WithJwtIDGenerator(g id.Generator) JwtOption {
+func WithJWTIDGenerator(g id.Generator) JWTOption {
 	return func(a *jwtAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
@@ -59,7 +59,7 @@ type jwtAuthenticator struct {
 	idsSet bool
 }
 
-// NewJwtAuthenticator returns a provider that resolves BearerCredentials
+// NewJWTAuthenticator returns a provider that resolves BearerCredentials
 // through a token verifier.
 //
 // WithJwtVerifier is required. Defaults: id.NewV7Generator, for the identifier
@@ -68,7 +68,7 @@ type jwtAuthenticator struct {
 // Nothing here parses or trusts a token itself. The verifier is the only thing
 // that reads one, and this provider builds a principal only from what the
 // verifier reported — never from an unverified segment of the presented string.
-func NewJwtAuthenticator(opts ...JwtOption) (Authenticator, error) {
+func NewJWTAuthenticator(opts ...JWTOption) (Authenticator, error) {
 	a := &jwtAuthenticator{}
 	for _, opt := range opts {
 		if opt != nil {

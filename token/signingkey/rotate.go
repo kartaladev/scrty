@@ -17,7 +17,7 @@ import (
 //
 // A failure leaves the previous key current, is reported, and is retried one
 // rotation interval later. One algorithm failing does not stop the others.
-func (km *KeyManager) rotateAll(ctx context.Context) {
+func (km *Keys) rotateAll(ctx context.Context) {
 	for _, alg := range km.algs {
 		if _, f := km.mintAndStore(ctx, alg); f != nil {
 			km.report(ctx, "rotate", alg, f)
@@ -41,7 +41,7 @@ func (km *KeyManager) rotateAll(ctx context.Context) {
 // under the lock a caller already held would deadlock on the loop goroutine.
 // The hook also runs on that goroutine, so it may not call Start or Stop —
 // documented in WithErrorHook, because nothing here can enforce it.
-func (km *KeyManager) report(ctx context.Context, op string, alg Alg, f *failure) {
+func (km *Keys) report(ctx context.Context, op string, alg Alg, f *failure) {
 	if km.errorHook != nil {
 		km.errorHook(f.err)
 	}
@@ -86,7 +86,7 @@ type failure struct {
 //
 // The sampler's reporter contract carries no context, so there is none to
 // propagate here.
-func (km *KeyManager) reportSuppressed(key string, suppressed int) {
+func (km *Keys) reportSuppressed(key string, suppressed int) {
 	op, alg, _ := strings.Cut(key, sampleKeySeparator)
 	km.logger.LogAttrs(context.Background(), slog.LevelError,
 		"signingkey: repeated failures suppressed",
@@ -126,7 +126,7 @@ func failureAttrs(op string, alg Alg, suppressed int) []slog.Attr {
 // skipped rather than failing the whole reload, because the keys already held
 // are still good and the next reload will try again — construction is the
 // stricter case, where skipping a record would mint a replacement for it.
-func (km *KeyManager) reload(ctx context.Context) {
+func (km *Keys) reload(ctx context.Context) {
 	recs, err := km.store.LoadAll(ctx)
 	if err != nil {
 		km.report(ctx, "reload", "", &failure{
@@ -213,7 +213,7 @@ func (km *KeyManager) reload(ctx context.Context) {
 // A held key takes its place from the store's listing like any other, so it
 // wins a tie only where the store lists it later — as it did at construction —
 // and never merely because it is held. Callers hold km.mu.
-func (km *KeyManager) listedOrderLocked(recs []Record) []storedKey {
+func (km *Keys) listedOrderLocked(recs []Record) []storedKey {
 	listed := make(map[string]struct{}, len(recs))
 	for _, rec := range recs {
 		listed[rec.Kid] = struct{}{}
@@ -247,7 +247,7 @@ func (km *KeyManager) listedOrderLocked(recs []Record) []storedKey {
 //
 // It takes the keyring lock itself and is only ever called from its own loop,
 // never from rotation while rotation holds that lock.
-func (km *KeyManager) housekeep(context.Context) {
+func (km *Keys) housekeep(context.Context) {
 	now := km.clock.Now()
 
 	km.mu.Lock()

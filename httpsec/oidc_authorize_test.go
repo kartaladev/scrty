@@ -34,7 +34,7 @@ func TestOIDCAuthorize(t *testing.T) {
 
 	type testCase struct {
 		name        string
-		managerOpts []oidc.ManagerOption
+		managerOpts []oidc.Option
 		opts        []httpsec.OIDCOption
 		request     func(t *testing.T) *http.Request
 		assert      func(t *testing.T, h *oidcHarness, out served)
@@ -202,7 +202,7 @@ func TestOIDCAuthorize(t *testing.T) {
 		},
 		{
 			name:        "a flow expiry already passed clamps Max-Age to 1",
-			managerOpts: []oidc.ManagerOption{oidc.WithClock(clockwork.NewFakeClockAt(time.Now().Add(-oidc.DefaultFlowTTL)))},
+			managerOpts: []oidc.Option{oidc.WithClock(clockwork.NewFakeClockAt(time.Now().Add(-oidc.DefaultFlowTTL)))},
 			request:     get(corp),
 			assert: func(t *testing.T, _ *oidcHarness, out served) {
 				require.NoError(t, out.err)

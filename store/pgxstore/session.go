@@ -186,7 +186,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 		return err
 	}
 	if n == 0 {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 
 	return nil
@@ -227,7 +227,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		&amr, &sess.FederatedACR, &family, &familyCreated, &superseded, &acceptUntil,
 		&sess.SuccessorDigest, &presented, &authenticated, &retain)
 	if errors.Is(err, pgxv5.ErrNoRows) {
-		return nil, session.ErrSessionNotFound
+		return nil, session.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
@@ -237,7 +237,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		return nil, failed(op, err)
 	}
 	if stale(s.c.clock.Now(), superseded.Valid, retain.Valid, sess.RetainUntil, idle, abs) {
-		return nil, session.ErrSessionExpired
+		return nil, session.ErrExpired
 	}
 
 	if sess.Data, err = storekit.DecodeSessionData(encoded); err != nil {
@@ -715,7 +715,7 @@ func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string)
 	err := s.c.queryRow(ctx, "read whether session successor was used", pgschema.SessionSuccessorPresented,
 		[]any{storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())}, &used)
 	if errors.Is(err, pgxv5.ErrNoRows) {
-		return false, session.ErrSessionNotFound
+		return false, session.ErrNotFound
 	}
 
 	return used, err

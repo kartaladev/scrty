@@ -95,8 +95,8 @@ func TestSessionCipher(t *testing.T) {
 				require.NoError(t, inner.Save(t.Context(), attacker))
 
 				got, err := sealing.Load(t.Context(), "sess-attacker")
-				require.ErrorIs(t, err, session.ErrSessionUnreadable)
-				assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+				require.ErrorIs(t, err, session.ErrUnreadable)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
 				assert.Nil(t, got)
 				assert.NotContains(t, err.Error(), idToken)
 			},

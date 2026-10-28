@@ -23,11 +23,11 @@ func TestNewLimiterFactory(t *testing.T) {
 		name   string
 		client func(t *testing.T) redis.UniversalClient // nil means a recording client
 		opts   []redisstore.Option
-		assert func(t *testing.T, f *redisstore.Factory, rec *recorder, err error)
+		assert func(t *testing.T, f *redisstore.LimiterFactory, rec *recorder, err error)
 	}
 
-	refused := func(want string) func(t *testing.T, f *redisstore.Factory, _ *recorder, err error) {
-		return func(t *testing.T, f *redisstore.Factory, _ *recorder, err error) {
+	refused := func(want string) func(t *testing.T, f *redisstore.LimiterFactory, _ *recorder, err error) {
+		return func(t *testing.T, f *redisstore.LimiterFactory, _ *recorder, err error) {
 			require.ErrorIs(t, err, ratelimit.ErrConfig)
 			assert.Contains(t, err.Error(), want)
 			assert.Nil(t, f)
@@ -38,14 +38,14 @@ func TestNewLimiterFactory(t *testing.T) {
 		{
 			name: "a nil option among valid ones is skipped",
 			opts: []redisstore.Option{redisstore.WithKeyPrefix("app:rl:"), nil, redisstore.WithLogger(quietLogger())},
-			assert: func(t *testing.T, f *redisstore.Factory, _ *recorder, err error) {
+			assert: func(t *testing.T, f *redisstore.LimiterFactory, _ *recorder, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, f)
 			},
 		},
 		{
 			name: "defaults accepted without I/O",
-			assert: func(t *testing.T, f *redisstore.Factory, rec *recorder, err error) {
+			assert: func(t *testing.T, f *redisstore.LimiterFactory, rec *recorder, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, f)
 				assert.Empty(t, rec.commands(), "construction sent a command")

@@ -73,7 +73,7 @@ func onTimeline(t *testing.T, h *enrolHarness, failing *atomic.Bool) {
 	store := session.NewMemoryStore(session.WithMemoryStoreClock(h.clock))
 
 	var err error
-	h.sessions, err = session.NewManager(
+	h.sessions, err = session.New(
 		session.WithStore(failingCreates{Store: store, failing: failing}),
 		session.WithClock(h.clock),
 		session.WithAbsoluteTimeout(12*time.Hour),
@@ -178,7 +178,7 @@ func TestVerifyUpgradesEnrolmentSession(t *testing.T) {
 				t.Helper()
 
 				require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired, "the session has ended")
-				require.ErrorIs(t, out.err, session.ErrSessionExpired)
+				require.ErrorIs(t, out.err, session.ErrExpired)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
 				untouched(t, h, issued)
 			},

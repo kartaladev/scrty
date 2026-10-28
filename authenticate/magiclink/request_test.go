@@ -29,12 +29,12 @@ func TestRequestIsUniform(t *testing.T) {
 	type testCase struct {
 		name   string
 		loader identity.UserLoader
-		tokens func(t *testing.T) *onetime.Manager
+		tokens func(t *testing.T) *onetime.Tokens
 		sender func() sendCounter
 		opts   []magiclink.Option
 		// prepare runs before the request under test, so a branch that needs
 		// history can build it.
-		prepare func(t *testing.T, m *magiclink.Manager)
+		prepare func(t *testing.T, m *magiclink.Links)
 		assert  func(t *testing.T, got magiclink.RequestResult, sent int)
 	}
 
@@ -75,7 +75,7 @@ func TestRequestIsUniform(t *testing.T) {
 		{
 			name:   "the issuance limit is reached",
 			loader: stubLoader{byUsername: map[string]*identity.Details{"ada@example.com": known}},
-			prepare: func(t *testing.T, m *magiclink.Manager) {
+			prepare: func(t *testing.T, m *magiclink.Links) {
 				t.Helper()
 
 				for range 5 {
@@ -145,7 +145,7 @@ func TestRequestIsUniform(t *testing.T) {
 				tokens = tc.tokens(t)
 			}
 
-			m, err := magiclink.NewManager(tokens, tc.loader, sender, "https://app.example.com", tc.opts...)
+			m, err := magiclink.New(tokens, tc.loader, sender, "https://app.example.com", tc.opts...)
 			require.NoError(t, err)
 
 			if tc.prepare != nil {
@@ -168,7 +168,7 @@ func TestRequestResolvesAddress(t *testing.T) {
 
 		loader := &recordingLoader{}
 
-		m, err := magiclink.NewManager(testTokens(t), loader, &recordingSender{}, "https://app.example.com")
+		m, err := magiclink.New(testTokens(t), loader, &recordingSender{}, "https://app.example.com")
 		require.NoError(t, err)
 
 		m.Request(t.Context(), " Ada@Example.com", "/")
@@ -191,7 +191,7 @@ func TestRequestResolvesAddress(t *testing.T) {
 			return nil, identity.ErrUserNotFound
 		}
 
-		m, err := magiclink.NewManager(testTokens(t), loader, sender, "https://app.example.com",
+		m, err := magiclink.New(testTokens(t), loader, sender, "https://app.example.com",
 			magiclink.WithAddressResolver(resolver))
 		require.NoError(t, err)
 
@@ -222,7 +222,7 @@ func TestRequestIssuanceLimit(t *testing.T) {
 
 			sender := &recordingSender{}
 
-			m, err := magiclink.NewManager(testTokens(t), activeLoader(), sender,
+			m, err := magiclink.New(testTokens(t), activeLoader(), sender,
 				"https://app.example.com", tc.opts...)
 			require.NoError(t, err)
 

@@ -37,7 +37,7 @@ type authHarness struct {
 	users    *MockUserLoader
 	verifier *MockVerifier
 	store    *MockStore
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   *MockGenerator
 	attempts *MockAttemptStore
 
@@ -50,7 +50,7 @@ func newAuthHarness(t *testing.T) *authHarness {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 
-	manager, err := session.NewManager(session.WithStore(store))
+	manager, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	return &authHarness{

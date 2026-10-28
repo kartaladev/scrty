@@ -46,9 +46,9 @@ func TestVerifyIDToken(t *testing.T) {
 		name     string
 		provider string
 		nonce    string
-		opts     []oidc.ManagerOption
+		opts     []oidc.Option
 		setup    func(p *testProvider)
-		before   func(t *testing.T, m *oidc.Manager, p *testProvider)
+		before   func(t *testing.T, m *oidc.RelyingParty, p *testProvider)
 		token    func(t *testing.T, p *testProvider) string
 		ctx      func(ctx context.Context) context.Context
 		assert   func(t *testing.T, p *testProvider, got oidc.IDClaimsView, err error)
@@ -190,7 +190,7 @@ func TestVerifyIDToken(t *testing.T) {
 		},
 		{
 			name: "a consumer skew of 5 minutes accepts an iat 3 minutes ahead",
-			opts: []oidc.ManagerOption{oidc.WithClockSkew(5 * time.Minute)},
+			opts: []oidc.Option{oidc.WithClockSkew(5 * time.Minute)},
 			token: signed(func(_ *testProvider, c map[string]any) map[string]any {
 				return with(c, "iat", now.Add(3*time.Minute).Unix())
 			}),
@@ -207,7 +207,7 @@ func TestVerifyIDToken(t *testing.T) {
 		},
 		{
 			name: "unknown kid inside the cooldown",
-			before: func(t *testing.T, m *oidc.Manager, p *testProvider) {
+			before: func(t *testing.T, m *oidc.RelyingParty, p *testProvider) {
 				_, err := oidc.VerifyIDTokenForTest(t.Context(), m, "corp", p.Sign(t, valid(p, "corp")), nonce)
 				require.NoError(t, err)
 				_, err = oidc.VerifyIDTokenForTest(t.Context(), m, "corp", p.Sign(t, valid(p, "corp"), withKid("k8")), nonce)
@@ -544,11 +544,11 @@ func TestVerifyIDToken(t *testing.T) {
 			reg, err := oidc.NewRegistry(p.Provider("corp"), shared, ec, wide)
 			require.NoError(t, err)
 
-			opts := append([]oidc.ManagerOption{
+			opts := append([]oidc.Option{
 				oidc.WithOutboundClient(p.Outbound(t)),
 				oidc.WithClock(clockwork.NewFakeClockAt(now)),
 			}, tc.opts...)
-			m, err := oidc.NewManager(reg, stubBroker{}, opts...)
+			m, err := oidc.NewRelyingParty(reg, stubBroker{}, opts...)
 			require.NoError(t, err)
 
 			provider := tc.provider

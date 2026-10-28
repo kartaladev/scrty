@@ -37,7 +37,7 @@ type tokenResponse struct {
 // object, one carrying an error member, and one without an ID token are all
 // ErrExchangeFailed. The provider's answer is logged, truncated, through the
 // sampler and is never part of the returned error.
-func (m *Manager) exchange(ctx context.Context, p Provider, md metadata, code, verifier string) (string, error) {
+func (m *RelyingParty) exchange(ctx context.Context, p Provider, md metadata, code, verifier string) (string, error) {
 	form := url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -88,7 +88,7 @@ func (m *Manager) exchange(ctx context.Context, p Provider, md metadata, code, v
 // logExchangeFailure writes one WARN record for a failed exchange through the
 // sampler, keyed by provider and reason. attrs never carry a credential: the
 // only provider text they may hold is a refused answer's body, truncated.
-func (m *Manager) logExchangeFailure(ctx context.Context, provider, reason string, attrs ...slog.Attr) {
+func (m *RelyingParty) logExchangeFailure(ctx context.Context, provider, reason string, attrs ...slog.Attr) {
 	write, suppressed := m.sampler.Allow("oidc.exchange:"+reason+":"+provider, m.clock.Now())
 	if !write {
 		return

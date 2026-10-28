@@ -264,7 +264,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 
 	stored, exists := s.records[sess.ID]
 	if !exists {
-		return ErrSessionNotFound
+		return ErrNotFound
 	}
 	rec := sess.clone()
 	rec.MFAAtFirstFactor = stored.MFAAtFirstFactor
@@ -296,10 +296,10 @@ func (s *MemoryStore) Load(_ context.Context, id string) (*Session, error) {
 
 	rec, found := s.records[id]
 	if !found {
-		return nil, ErrSessionNotFound
+		return nil, ErrNotFound
 	}
 	if stale(rec, s.clock.Now()) {
-		return nil, ErrSessionExpired
+		return nil, ErrExpired
 	}
 
 	return rec.clone(), nil
@@ -454,7 +454,7 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 
 	rec, found := s.records[id]
 	if !found {
-		return ErrSessionNotFound
+		return ErrNotFound
 	}
 	if !rec.SupersededAt.IsZero() || rec.LastAccessedAt.After(olderThan) {
 		return nil
@@ -510,14 +510,14 @@ func (s *MemoryStore) Supersede(_ context.Context, op Supersession) error {
 
 	old, found := s.records[op.Old]
 	if !found {
-		return ErrSessionNotFound
+		return ErrNotFound
 	}
 	if old.FamilyID.IsZero() {
 		return errors.New("session: a session with no family cannot be superseded")
 	}
 	if !bytes.Equal(old.SuccessorDigest, op.ObservedSuccessor) ||
 		len(op.ObservedSuccessor) == 0 && !old.SupersededAt.IsZero() {
-		return ErrSessionRenewalConflict
+		return ErrRenewalConflict
 	}
 	previous := s.successorLocked(old)
 	if len(op.ObservedSuccessor) > 0 && (previous == nil || !previous.SupersededAt.IsZero() ||
@@ -612,9 +612,9 @@ func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) 
 	rec, found := s.records[id]
 	switch {
 	case !found:
-		return ErrSessionNotFound
+		return ErrNotFound
 	case !rec.SupersededAt.IsZero():
-		return ErrSessionSuperseded
+		return ErrSuperseded
 	case !rec.FirstPresentedAt.IsZero():
 		return nil
 	}
@@ -638,7 +638,7 @@ func (s *MemoryStore) SuccessorPresented(_ context.Context, id string) (bool, er
 	now := s.clock.Now()
 	rec, found := s.records[id]
 	if !found || stale(rec, now) {
-		return false, ErrSessionNotFound
+		return false, ErrNotFound
 	}
 	successor := s.successorLocked(rec)
 	if successor == nil || stale(successor, now) {

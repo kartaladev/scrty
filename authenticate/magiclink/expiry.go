@@ -14,6 +14,6 @@ import (
 // inside that window, expired or not, so a sweep cannot free issuance quota.
 // A store that cannot purge yields an error matching
 // expiry.ErrPurgeUnsupported.
-func ExpiryTask(m *Manager) expiry.Task {
+func ExpiryTask(m *Links) expiry.Task {
 	return onetime.ExpiryTaskNamed("magiclink-tokens", m.tokens)
 }

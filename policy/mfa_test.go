@@ -158,7 +158,7 @@ func mfaPolicyFor(t *testing.T, method policy.MFAMethodLookup, opts ...policy.MF
 func mfaPolicyOver(t *testing.T, methods []policy.MFAMethodLookup, opts ...policy.MFAOption) policy.Policy {
 	t.Helper()
 
-	p, err := policy.NewMFAPolicy(methods,
+	p, err := policy.NewMFA(methods,
 		append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(&bytes.Buffer{}))}, opts...)...)
 	require.NoError(t, err, "the policy under test could not be built")
 
@@ -411,7 +411,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := policy.NewMFAPolicy(tc.methods, tc.opts...)
+			p, err := policy.NewMFA(tc.methods, tc.opts...)
 			tc.assert(t, p, err)
 		})
 	}

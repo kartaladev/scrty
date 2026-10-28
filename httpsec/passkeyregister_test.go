@@ -710,28 +710,28 @@ func TestEnablePasskeysDeps(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		deps   func(m *passkey.Manager, sessions *session.Manager) httpsec.PasskeyDeps
+		deps   func(m *passkey.Passkeys, sessions *session.Sessions) httpsec.PasskeyDeps
 		assert func(t *testing.T, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "both given",
-			deps: func(m *passkey.Manager, sessions *session.Manager) httpsec.PasskeyDeps {
+			deps: func(m *passkey.Passkeys, sessions *session.Sessions) httpsec.PasskeyDeps {
 				return httpsec.PasskeyDeps{Passkeys: m, Sessions: sessions}
 			},
 			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "no passkey manager",
-			deps: func(_ *passkey.Manager, sessions *session.Manager) httpsec.PasskeyDeps {
+			deps: func(_ *passkey.Passkeys, sessions *session.Sessions) httpsec.PasskeyDeps {
 				return httpsec.PasskeyDeps{Sessions: sessions}
 			},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) },
 		},
 		{
 			name: "no session manager",
-			deps: func(m *passkey.Manager, _ *session.Manager) httpsec.PasskeyDeps {
+			deps: func(m *passkey.Passkeys, _ *session.Sessions) httpsec.PasskeyDeps {
 				return httpsec.PasskeyDeps{Passkeys: m}
 			},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, httpsec.ErrConfig) },

@@ -132,7 +132,7 @@ func TestCreate_AbsoluteLifetime(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []session.ManagerOption
+		opts   []session.Option
 		create []session.CreateOption
 		assert func(t *testing.T, s *session.Session, err error, stored int)
 	}
@@ -156,7 +156,7 @@ func TestCreate_AbsoluteLifetime(t *testing.T) {
 		},
 		{
 			name:   "a lifetime up to the maximum is honoured",
-			opts:   []session.ManagerOption{session.WithMaxAbsoluteLifetime(thirtyDays)},
+			opts:   []session.Option{session.WithMaxAbsoluteLifetime(thirtyDays)},
 			create: []session.CreateOption{session.WithAbsoluteLifetime(thirtyDays)},
 			assert: func(t *testing.T, s *session.Session, err error, stored int) {
 				require.NoError(t, err)
@@ -167,7 +167,7 @@ func TestCreate_AbsoluteLifetime(t *testing.T) {
 		},
 		{
 			name:   "a lifetime above the maximum is refused, not shortened",
-			opts:   []session.ManagerOption{session.WithMaxAbsoluteLifetime(thirtyDays)},
+			opts:   []session.Option{session.WithMaxAbsoluteLifetime(thirtyDays)},
 			create: []session.CreateOption{session.WithAbsoluteLifetime(thirtyDays + time.Second)},
 			assert: func(t *testing.T, s *session.Session, err error, stored int) {
 				require.ErrorIs(t, err, session.ErrConfig)
@@ -213,7 +213,7 @@ func TestCreate_AbsoluteLifetime(t *testing.T) {
 			store.EXPECT().Create(gomock.Any(), gomock.Any()).
 				DoAndReturn(func(context.Context, *session.Session) error { stored++; return nil }).
 				AnyTimes()
-			m := managerFor(t, append([]session.ManagerOption{session.WithStore(store), session.WithClock(clk)}, tc.opts...)...)
+			m := managerFor(t, append([]session.Option{session.WithStore(store), session.WithClock(clk)}, tc.opts...)...)
 
 			s, err := m.Create(t.Context(), testUser, tc.create...)
 
@@ -225,7 +225,7 @@ func TestCreate_AbsoluteLifetime(t *testing.T) {
 func TestNewManager_MaxAbsoluteLifetimeBelowTheTimeoutIsRefused(t *testing.T) {
 	t.Parallel()
 
-	_, err := session.NewManager(session.WithMaxAbsoluteLifetime(time.Hour))
+	_, err := session.New(session.WithMaxAbsoluteLifetime(time.Hour))
 
 	require.ErrorIs(t, err, session.ErrConfig)
 }

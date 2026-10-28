@@ -54,7 +54,7 @@ func (recoveryMessages) Regenerated(time.Time) (string, string)     { return "re
 // scrty ships neither; a case replaces a port with a strict double where it
 // must show the port was never reached.
 type recoveryHarness struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	codes    *recovery.Codes
 	totp     *mfa.TOTP
 	clock    *clockwork.FakeClock
@@ -131,7 +131,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 
 	// The sessions, the core and TOTP share one fake clock, so a case moves
 	// time for all of them at once.
-	sessions, err := session.NewManager(session.WithClock(clk),
+	sessions, err := session.New(session.WithClock(clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
 	require.NoError(t, err)
 

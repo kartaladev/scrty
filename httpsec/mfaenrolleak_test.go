@@ -601,7 +601,7 @@ func TestEnrolmentOutagesCarryNoAddress(t *testing.T) {
 			var failing atomic.Bool
 
 			var err error
-			h.sessions, err = session.NewManager(session.WithStore(
+			h.sessions, err = session.New(session.WithStore(
 				failingSaves{Store: session.NewMemoryStore(), failing: &failing}))
 			require.NoError(t, err)
 

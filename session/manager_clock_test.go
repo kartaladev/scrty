@@ -20,12 +20,12 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 		// offset places the manager's clock relative to the system clock.
 		offset time.Duration
 		// store is the explicit store option, nil for none.
-		store func() session.ManagerOption
+		store func() session.Option
 		// plain wraps the clock so that it only tells the time.
 		plain bool
 		// advance is how far the clock moves after the first session.
 		advance time.Duration
-		assert  func(t *testing.T, m *session.Manager, live string, removed int, err error)
+		assert  func(t *testing.T, m *session.Sessions, live string, removed int, err error)
 	}
 
 	const idle, absolute = 30 * time.Minute, time.Hour
@@ -35,7 +35,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			name:    "a clock ahead of the system clock sweeps what it expired",
 			offset:  365 * 24 * time.Hour,
 			advance: 2 * time.Hour,
-			assert: func(t *testing.T, m *session.Manager, live string, removed int, err error) {
+			assert: func(t *testing.T, m *session.Sessions, live string, removed int, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 1, removed)
 				_, loadErr := m.Load(t.Context(), live)
@@ -46,7 +46,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			name:    "a clock behind the system clock keeps a live session",
 			offset:  -365 * 24 * time.Hour,
 			advance: 2 * time.Hour,
-			assert: func(t *testing.T, m *session.Manager, live string, removed int, err error) {
+			assert: func(t *testing.T, m *session.Sessions, live string, removed int, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 1, removed, "only the session the clock expired goes")
 				_, loadErr := m.Load(t.Context(), live)
@@ -58,7 +58,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			offset:  -365 * 24 * time.Hour,
 			plain:   true,
 			advance: 0,
-			assert: func(t *testing.T, m *session.Manager, live string, removed int, err error) {
+			assert: func(t *testing.T, m *session.Sessions, live string, removed int, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, removed)
 				_, loadErr := m.Load(t.Context(), live)
@@ -68,9 +68,9 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 		{
 			name:    "an explicit store keeps its own clock",
 			offset:  365 * 24 * time.Hour,
-			store:   func() session.ManagerOption { return session.WithStore(session.NewMemoryStore()) },
+			store:   func() session.Option { return session.WithStore(session.NewMemoryStore()) },
 			advance: 2 * time.Hour,
-			assert: func(t *testing.T, _ *session.Manager, _ string, removed int, err error) {
+			assert: func(t *testing.T, _ *session.Sessions, _ string, removed int, err error) {
 				require.NoError(t, err)
 				assert.Zero(t, removed, "the consumer's store judges expiry on the system clock")
 			},
@@ -86,7 +86,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			if tc.plain {
 				clk = fixedClock{at: fc.Now()}
 			}
-			opts := []session.ManagerOption{
+			opts := []session.Option{
 				session.WithClock(clk),
 				session.WithIdleTimeout(idle),
 				session.WithAbsoluteTimeout(absolute),

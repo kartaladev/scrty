@@ -12,12 +12,12 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
-// ManagerOption customises a Manager at construction.
+// Option customises a Manager at construction.
 //
 // Every option replaces a default that already works. An option given nil
 // fails construction with ErrConfig rather than silently keeping the default:
 // a consumer who passed one meant to replace it. A nil option is ignored.
-type ManagerOption func(*Manager) error
+type Option func(*RelyingParty) error
 
 // WithOutboundClient replaces the client every request to a provider is sent
 // through: discovery, key sets and the code exchange.
@@ -27,8 +27,8 @@ type ManagerOption func(*Manager) error
 // certificate authority, to allow http for a development provider, or to
 // change those bounds. Confinement is then whatever the supplied client
 // configures; no option here can weaken it past what package outbound allows.
-func WithOutboundClient(c *outbound.Client) ManagerOption {
-	return func(m *Manager) error {
+func WithOutboundClient(c *outbound.Client) Option {
+	return func(m *RelyingParty) error {
 		if c == nil {
 			return fmt.Errorf("%w: WithOutboundClient was given nil", ErrConfig)
 		}
@@ -44,8 +44,8 @@ func WithOutboundClient(c *outbound.Client) ManagerOption {
 //
 // It exists so a test can fix or fail the source; production code has no
 // reason to replace it.
-func WithRandom(r io.Reader) ManagerOption {
-	return func(m *Manager) error {
+func WithRandom(r io.Reader) Option {
+	return func(m *RelyingParty) error {
 		if nilcheck.IsNil(r) {
 			return fmt.Errorf("%w: WithRandom was given nil", ErrConfig)
 		}
@@ -58,8 +58,8 @@ func WithRandom(r io.Reader) ManagerOption {
 // decision reads. The default is clock.System(). The default in-memory flow
 // store reads the same clock. A nil clock, typed nil included, is a
 // configuration error.
-func WithClock(clk clock.Clock) ManagerOption {
-	return func(m *Manager) error {
+func WithClock(clk clock.Clock) Option {
+	return func(m *RelyingParty) error {
 		if nilcheck.IsNil(clk) {
 			return fmt.Errorf("%w: WithClock was given nil", ErrConfig)
 		}
@@ -86,8 +86,8 @@ func WithClock(clk clock.Clock) ManagerOption {
 // WithMemoryFlowStoreClock and WithMemoryFlowStoreRandom to it, matching
 // whatever WithClock or WithRandom the manager itself was given. A nil store,
 // including a nil pointer inside a non-nil interface, is refused.
-func WithFlowStore(s FlowStore) ManagerOption {
-	return func(m *Manager) error {
+func WithFlowStore(s FlowStore) Option {
+	return func(m *RelyingParty) error {
 		if nilcheck.IsNil(s) {
 			return fmt.Errorf("%w: WithFlowStore was given nil", ErrConfig)
 		}
@@ -100,8 +100,8 @@ func WithFlowStore(s FlowStore) ManagerOption {
 // and so the longest a user may take at the provider. The default is
 // DefaultFlowTTL (10 minutes). A TTL of zero or less is refused: no login
 // could complete.
-func WithFlowTTL(d time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithFlowTTL(d time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if d <= 0 {
 			return fmt.Errorf("%w: WithFlowTTL must be positive, got %s", ErrConfig, d)
 		}
@@ -115,8 +115,8 @@ func WithFlowTTL(d time.Duration) ManagerOption {
 //
 // No record this package writes carries a token, a client secret, a PKCE
 // verifier, a state, a nonce, a handoff code or a claim value.
-func WithLogger(l *slog.Logger) ManagerOption {
-	return func(m *Manager) error {
+func WithLogger(l *slog.Logger) Option {
+	return func(m *RelyingParty) error {
 		if l == nil {
 			return fmt.Errorf("%w: WithLogger was given nil", ErrConfig)
 		}
@@ -129,8 +129,8 @@ func WithLogger(l *slog.Logger) ManagerOption {
 // are served from the cache, with no request, before the next use refetches
 // them. The default is DefaultDiscoveryTTL (15 minutes). A TTL of zero or
 // less is refused: it would send a request on every login.
-func WithDiscoveryTTL(d time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithDiscoveryTTL(d time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if d <= 0 {
 			return fmt.Errorf("%w: WithDiscoveryTTL must be positive, got %s", ErrConfig, d)
 		}
@@ -146,8 +146,8 @@ func WithDiscoveryTTL(d time.Duration) ManagerOption {
 // a success. The defaults are DefaultDiscoveryBackoffBase (1 second) and
 // DefaultDiscoveryBackoffMax (30 seconds). A base of zero or less, or a
 // maxWindow below the base, is refused.
-func WithDiscoveryFailureBackoff(base, maxWindow time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithDiscoveryFailureBackoff(base, maxWindow time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if base <= 0 || maxWindow < base {
 			return fmt.Errorf("%w: WithDiscoveryFailureBackoff needs 0 < base <= max, got %s and %s",
 				ErrConfig, base, maxWindow)
@@ -162,8 +162,8 @@ func WithDiscoveryFailureBackoff(base, maxWindow time.Duration) ManagerOption {
 // with no request. The default is DefaultJWKSRefetchCooldown (30 seconds). The
 // cooldown is tracked per provider. A cooldown of zero or less is refused: it
 // would let every forged key id reach the provider.
-func WithJWKSRefetchCooldown(d time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithJWKSRefetchCooldown(d time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if d <= 0 {
 			return fmt.Errorf("%w: WithJWKSRefetchCooldown must be positive, got %s", ErrConfig, d)
 		}
@@ -181,8 +181,8 @@ func WithJWKSRefetchCooldown(d time.Duration) ManagerOption {
 // revoked. Even with a window, a stale key set is never served to a token
 // whose key id it lacks, and a fresh set is never served in place of a failed
 // refetch for an unknown key id. A negative window is refused.
-func WithDiscoveryStaleWhileError(window time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithDiscoveryStaleWhileError(window time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if window < 0 {
 			return fmt.Errorf("%w: WithDiscoveryStaleWhileError must not be negative, got %s", ErrConfig, window)
 		}
@@ -213,8 +213,8 @@ const MaxLogoutTokenMaxAge = time.Hour
 // minutes), since it would accept tokens expired by that much. There is no way
 // to exceed the bound: it is the line past which the manager's expiry guarantee
 // stops holding.
-func WithClockSkew(d time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithClockSkew(d time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if d < 0 {
 			return fmt.Errorf("%w: WithClockSkew must not be negative, got %s", ErrConfig, d)
 		}
@@ -236,8 +236,8 @@ func WithClockSkew(d time.Duration) ManagerOption {
 // less is refused: no token could be accepted. One above MaxLogoutTokenMaxAge
 // (one hour) is refused too, because it would keep a captured token replayable
 // for that long; the bound cannot be exceeded.
-func WithLogoutTokenMaxAge(d time.Duration) ManagerOption {
-	return func(m *Manager) error {
+func WithLogoutTokenMaxAge(d time.Duration) Option {
+	return func(m *RelyingParty) error {
 		if d <= 0 {
 			return fmt.Errorf("%w: WithLogoutTokenMaxAge must be positive, got %s", ErrConfig, d)
 		}
@@ -261,8 +261,8 @@ func WithLogoutTokenMaxAge(d time.Duration) ManagerOption {
 // WithOutboundClient. Anything else, the empty string included, fails
 // construction with ErrConfig. The URL is sent exactly as given, since
 // providers compare it byte for byte with the one registered.
-func WithPostLogoutRedirect(u string) ManagerOption {
-	return func(m *Manager) error {
+func WithPostLogoutRedirect(u string) Option {
+	return func(m *RelyingParty) error {
 		parsed, err := url.Parse(u)
 		if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.User != nil {
 			return fmt.Errorf("%w: WithPostLogoutRedirect needs an absolute URL with a host and no user information",
@@ -290,8 +290,8 @@ func WithPostLogoutRedirect(u string) ManagerOption {
 // any set contains the empty string, when a RequestACR value contains
 // whitespace (acr_values is space-separated, so it would be sent as two
 // values), or when Match is not MatchAny or MatchAll.
-func WithProviderAssurance(provider string, a Assurance) ManagerOption {
-	return func(m *Manager) error {
+func WithProviderAssurance(provider string, a Assurance) Option {
+	return func(m *RelyingParty) error {
 		if err := a.validate(provider); err != nil {
 			return err
 		}
@@ -324,8 +324,8 @@ func WithProviderAssurance(provider string, a Assurance) ManagerOption {
 //
 // A nil evaluator, including a nil pointer inside a non-nil interface, fails
 // construction with ErrConfig.
-func WithAssuranceEvaluator(e AssuranceEvaluator) ManagerOption {
-	return func(m *Manager) error {
+func WithAssuranceEvaluator(e AssuranceEvaluator) Option {
+	return func(m *RelyingParty) error {
 		if nilcheck.IsNil(e) {
 			return fmt.Errorf("%w: WithAssuranceEvaluator was given nil", ErrConfig)
 		}

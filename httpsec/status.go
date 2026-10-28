@@ -70,7 +70,7 @@ var statusTable = []statusRow{
 	// that could not be read or recorded is a dependency failure, not a
 	// refusal of the caller's input, and carries no row here: it falls through
 	// to the unrecognised-error 500 below, like any other unrecognised error.
-	{password.ErrPasswordReused, http.StatusUnprocessableEntity},
+	{password.ErrReused, http.StatusUnprocessableEntity},
 
 	// An account lock is a client that has sent too many failed attempts in a
 	// span (RFC 6585 §4), not a locked WebDAV resource (RFC 4918 §11.3), so it
@@ -93,7 +93,7 @@ var statusTable = []statusRow{
 	// and the core's reaching here unwrapped answer alike: the client retries
 	// with the credential it holds. A reused session needs no row: it leaves
 	// the chain joined with ErrAuthenticationRequired, answered 401 above.
-	{session.ErrSessionRenewalConflict, http.StatusConflict},
+	{session.ErrRenewalConflict, http.StatusConflict},
 
 	// A rotation of an API key that is revoked, expired or was ended by a
 	// concurrent rotation or revocation: well formed, but in conflict with
@@ -124,10 +124,10 @@ var statusTable = []statusRow{
 	{apikey.ErrKeyNotFound, http.StatusNotFound},
 
 	{authorize.ErrAccessDenied, http.StatusForbidden},
-	{policy.ErrPolicyDenied, http.StatusForbidden},
+	{policy.ErrDenied, http.StatusForbidden},
 	{policy.ErrMFARequired, http.StatusForbidden},
 	{policy.ErrMFARequirementUnsatisfiable, http.StatusForbidden},
-	{policy.ErrMFAEnrollmentRequired, http.StatusForbidden},
+	{policy.ErrMFAEnrolmentRequired, http.StatusForbidden},
 	{policy.ErrSecondFactorSameChannel, http.StatusForbidden},
 	{policy.ErrFederatedAssuranceNotMet, http.StatusForbidden},
 	{mfa.ErrSameChannel, http.StatusForbidden},
@@ -172,7 +172,7 @@ var statusTable = []statusRow{
 // every other kind, a consumer's own included, is 401.
 //
 // A new password a consumer's password-change function refused as reused
-// ([password.ErrPasswordReused]) is 422: the request is well formed and the
+// ([password.ErrReused]) is 422: the request is well formed and the
 // value is refused, not 400 (malformed), 401 (authentication) or 403 (the
 // password-change challenge itself, which would make the client unable to
 // tell "you still owe a change" from "that password was used recently"). A

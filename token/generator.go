@@ -90,7 +90,7 @@ func (g *generator) Generate(_ context.Context, id string, p *identity.Principal
 
 	cfg := g.cfg
 
-	kid, signer, ok := cfg.keys.GetSigner(cfg.alg)
+	kid, signer, ok := cfg.keys.Signer(cfg.alg)
 	if !ok {
 		// Never fall back to another algorithm, and never to an unsigned
 		// token. Keys rotate, so this cannot be a construction check.

@@ -20,7 +20,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 
 	type testCase struct {
 		name string
-		opts []oidc.ManagerOption
+		opts []oidc.Option
 		// act runs with the key set (and document) fetched at time zero.
 		act    func(t *testing.T, p *testProvider, keys func(kid string) (jwk.Set, error))
 		assert func(t *testing.T, logs cacheLogCapture)
@@ -41,7 +41,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 		},
 		{
 			name: "a consumer window serves an expired set with a warning per use",
-			opts: []oidc.ManagerOption{tenMinutes},
+			opts: []oidc.Option{tenMinutes},
 			act: func(t *testing.T, p *testProvider, keys func(string) (jwk.Set, error)) {
 				time.Sleep(20 * time.Minute)
 				p.failJWKS.Store(true)
@@ -67,7 +67,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 		},
 		{
 			name: "a stale set lacking the kid is a provider failure",
-			opts: []oidc.ManagerOption{tenMinutes},
+			opts: []oidc.Option{tenMinutes},
 			act: func(t *testing.T, p *testProvider, keys func(string) (jwk.Set, error)) {
 				time.Sleep(20 * time.Minute)
 				p.failJWKS.Store(true)
@@ -81,7 +81,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 		},
 		{
 			name: "the end of TTL plus window is still served",
-			opts: []oidc.ManagerOption{tenMinutes},
+			opts: []oidc.Option{tenMinutes},
 			act: func(t *testing.T, p *testProvider, keys func(string) (jwk.Set, error)) {
 				time.Sleep(25 * time.Minute)
 				p.failJWKS.Store(true)
@@ -94,7 +94,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 		},
 		{
 			name: "beyond TTL plus window is refused",
-			opts: []oidc.ManagerOption{tenMinutes},
+			opts: []oidc.Option{tenMinutes},
 			act: func(t *testing.T, p *testProvider, keys func(string) (jwk.Set, error)) {
 				time.Sleep(26 * time.Minute)
 				p.failJWKS.Store(true)
@@ -107,7 +107,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 		},
 		{
 			name: "a stale discovery document still lets the key set be fetched",
-			opts: []oidc.ManagerOption{tenMinutes},
+			opts: []oidc.Option{tenMinutes},
 			act: func(t *testing.T, p *testProvider, keys func(string) (jwk.Set, error)) {
 				time.Sleep(20 * time.Minute)
 				p.failDiscovery.Store(true)
@@ -121,7 +121,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 		},
 		{
 			name: "a failed unknown-kid refetch never falls back to the fresh set",
-			opts: []oidc.ManagerOption{tenMinutes},
+			opts: []oidc.Option{tenMinutes},
 			act: func(t *testing.T, p *testProvider, keys func(string) (jwk.Set, error)) {
 				time.Sleep(time.Minute)
 				p.failJWKS.Store(true)
@@ -142,7 +142,7 @@ func TestKeyCacheStaleWindow(t *testing.T) {
 			p := newTestProvider(t)
 			logs := newCacheLogCapture()
 			synctest.Test(t, func(t *testing.T) {
-				opts := append([]oidc.ManagerOption{oidc.WithLogger(slog.New(logs))}, tc.opts...)
+				opts := append([]oidc.Option{oidc.WithLogger(slog.New(logs))}, tc.opts...)
 				m := newCacheManager(t, p, opts...)
 				keys := func(kid string) (jwk.Set, error) { return oidc.KeysForTest(m, t.Context(), "corp", kid) }
 				_, err := keys("k1")

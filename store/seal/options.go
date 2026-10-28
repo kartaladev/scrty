@@ -47,7 +47,7 @@ func newOptions(store string, hasResealer, usesClock bool, opts []Option) (optio
 	o := options{resealOnRead: true, clock: clock.System()}
 	for _, opt := range opts {
 		if opt == nil {
-			return options{}, fmt.Errorf("%w: a sealing store option is nil", ErrInvalidConfiguration)
+			return options{}, fmt.Errorf("%w: a sealing store option is nil", ErrConfig)
 		}
 		opt(&o)
 	}
@@ -55,14 +55,14 @@ func newOptions(store string, hasResealer, usesClock bool, opts []Option) (optio
 	switch {
 	case o.clockSet && !usesClock:
 		return options{}, fmt.Errorf("%w: the sealing %s store judges no time and takes no clock",
-			ErrInvalidConfiguration, store)
+			ErrConfig, store)
 	case o.nilClock:
-		return options{}, fmt.Errorf("%w: the sealing %s store's clock is nil", ErrInvalidConfiguration, store)
+		return options{}, fmt.Errorf("%w: the sealing %s store's clock is nil", ErrConfig, store)
 	}
 
 	if o.resealOnRead && !hasResealer {
 		return options{}, fmt.Errorf("%w: the sealing %s store re-seals on read but has no resealer",
-			ErrInvalidConfiguration, store)
+			ErrConfig, store)
 	}
 
 	return o, nil

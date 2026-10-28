@@ -48,7 +48,7 @@ func TestBcryptNeverMatchesByTruncation(t *testing.T) {
 			assert: func(t *testing.T, enc password.Encoder) {
 				encoded, err := enc.Encode(overLimit)
 
-				require.ErrorIs(t, err, password.ErrPasswordTooLong,
+				require.ErrorIs(t, err, password.ErrTooLong,
 					"storing a truncated hash would silently make this password equal to its "+
 						"own first 72 bytes")
 				assert.Nil(t, encoded, "no hash may be returned alongside the refusal")

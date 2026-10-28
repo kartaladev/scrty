@@ -138,7 +138,7 @@ func TestManagerAuthorize(t *testing.T) {
 				ctx = tc.ctx(ctx)
 			}
 
-			manager, err := authorize.NewManager(tc.authorizers(t, ctrl)...)
+			manager, err := authorize.NewFirstOf(tc.authorizers(t, ctrl)...)
 			require.NoError(t, err)
 
 			tc.assert(t, manager.Authorize(ctx, authorize.PrivilegeAttributes{
@@ -156,10 +156,10 @@ func TestNewManager(t *testing.T) {
 	type testCase struct {
 		name        string
 		authorizers func(t *testing.T, ctrl *gomock.Controller) []authorize.Authorizer
-		assert      func(t *testing.T, manager *authorize.Manager, err error)
+		assert      func(t *testing.T, manager *authorize.FirstOf, err error)
 	}
 
-	configError := func(t *testing.T, manager *authorize.Manager, err error) {
+	configError := func(t *testing.T, manager *authorize.FirstOf, err error) {
 		require.ErrorIs(t, err, authorize.ErrConfig)
 		assert.Nil(t, manager, "a refused configuration still produced a manager")
 	}
@@ -170,7 +170,7 @@ func TestNewManager(t *testing.T) {
 			authorizers: func(_ *testing.T, ctrl *gomock.Controller) []authorize.Authorizer {
 				return []authorize.Authorizer{NewMockAuthorizer(ctrl)}
 			},
-			assert: func(t *testing.T, manager *authorize.Manager, err error) {
+			assert: func(t *testing.T, manager *authorize.FirstOf, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, manager)
 			},
@@ -195,7 +195,7 @@ func TestNewManager(t *testing.T) {
 			// panics instead of the wiring failing here.
 			name: "a typed nil authorizer is a configuration error",
 			authorizers: func(_ *testing.T, _ *gomock.Controller) []authorize.Authorizer {
-				var absent *authorize.Manager
+				var absent *authorize.FirstOf
 
 				return []authorize.Authorizer{absent}
 			},
@@ -209,7 +209,7 @@ func TestNewManager(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 
-			manager, err := authorize.NewManager(tc.authorizers(t, ctrl)...)
+			manager, err := authorize.NewFirstOf(tc.authorizers(t, ctrl)...)
 			tc.assert(t, manager, err)
 		})
 	}
@@ -225,7 +225,7 @@ func TestManagerHoldsItsOwnAuthorizerSlice(t *testing.T) {
 
 	authorizers := []authorize.Authorizer{judging}
 
-	manager, err := authorize.NewManager(authorizers...)
+	manager, err := authorize.NewFirstOf(authorizers...)
 	require.NoError(t, err)
 
 	// A caller reusing its slice must not be able to swap an authorizer out

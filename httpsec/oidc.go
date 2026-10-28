@@ -111,29 +111,29 @@ type HandoffRedeemer interface {
 type BackchannelLogoutScope uint8
 
 const (
-	// IssuerSessions ends only the user's sessions that were created by a login
+	// BackchannelLogoutScopeIssuer ends only the user's sessions that were created by a login
 	// through the token's issuer. It is the default: a provider asserts a fact
 	// about its own session, and has no authority over a password login or
 	// another provider's session.
-	IssuerSessions BackchannelLogoutScope = iota
+	BackchannelLogoutScopeIssuer BackchannelLogoutScope = iota
 
-	// AllSessions ends every session of the user, whatever created it. It
+	// BackchannelLogoutScopeAll ends every session of the user, whatever created it. It
 	// widens the provider's authority: a subject-only token from that provider
 	// then ends sessions it did not establish, including the user's password
 	// sessions and sessions opened through other providers. Choose it only
 	// when the application trusts that provider to sign the user out
 	// everywhere.
-	AllSessions
+	BackchannelLogoutScopeAll
 )
 
 // valid reports whether s is one of the defined scopes.
-func (s BackchannelLogoutScope) valid() bool { return s <= AllSessions }
+func (s BackchannelLogoutScope) valid() bool { return s <= BackchannelLogoutScopeAll }
 
 // oidcInterceptor answers the federated-login endpoints: the authorize
 // redirect, the callback, handoff redemption and back-channel logout.
 type oidcInterceptor struct {
-	manager  *oidc.Manager
-	handoffs *oidc.HandoffManager
+	manager  *oidc.RelyingParty
+	handoffs *oidc.Handoff
 
 	// redeemer is what redemption calls: WithHandoffRedeemer's, or the handoff
 	// manager when the consumer supplied none. It stays nil only when neither
@@ -142,7 +142,7 @@ type oidcInterceptor struct {
 	redeemer        HandoffRedeemer
 	callbackSuccess CallbackSuccess
 
-	sessions *session.Manager
+	sessions *session.Sessions
 	tokens   token.Generator
 
 	// issue issues a redeemed handoff's credential as the chain's bearer

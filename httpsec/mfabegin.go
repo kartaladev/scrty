@@ -164,7 +164,7 @@ const challengeSweepFlow = "mfa-challenge-sweep"
 // waiting out the window; the exception is a store that cannot purge at all,
 // which no retry would change, so its turn is kept and it is logged once per
 // window.
-func (i *mfaInterceptor) sweepExpired(ctx context.Context, method string, mgr *onetime.Manager) {
+func (i *mfaInterceptor) sweepExpired(ctx context.Context, method string, mgr *onetime.Tokens) {
 	clock := i.sweeps[method]
 
 	claimed, due := clock.claim(i.now(), mgr.IssuanceWindow())
@@ -245,7 +245,7 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 		store = onetime.NewMemoryStore(onetime.WithMemoryStoreClock(c.clock))
 	}
 
-	i.challenges = make(map[string]*onetime.Manager)
+	i.challenges = make(map[string]*onetime.Tokens)
 	i.sweeps = make(map[string]*sweepClock)
 
 	for _, m := range i.methods {
@@ -253,7 +253,7 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 			continue
 		}
 
-		mgr, err := onetime.NewManager(mfaChallengePurpose(m.Name()),
+		mgr, err := onetime.New(mfaChallengePurpose(m.Name()),
 			onetime.WithTTL(i.challengeTTL),
 			onetime.WithStore(store),
 			onetime.WithClock(c.clock),

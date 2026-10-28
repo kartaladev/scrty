@@ -103,7 +103,7 @@ func TestNotices(t *testing.T) {
 
 	type env struct {
 		f    *fixture
-		m    *passkey.Manager
+		m    *passkey.Passkeys
 		logs *logBuffer
 		recv *passkey.RecoveryDeps
 	}
@@ -130,7 +130,7 @@ func TestNotices(t *testing.T) {
 	}
 
 	ended := func(
-		t *testing.T, e *env, notify func(*testing.T, *passkey.Manager, *passkey.Credential, bool), v bool,
+		t *testing.T, e *env, notify func(*testing.T, *passkey.Passkeys, *passkey.Credential, bool), v bool,
 	) string {
 		t.Helper()
 
@@ -141,10 +141,10 @@ func TestNotices(t *testing.T) {
 
 		return msgs[0].TextBody
 	}
-	removed := func(t *testing.T, m *passkey.Manager, c *passkey.Credential, v bool) {
+	removed := func(t *testing.T, m *passkey.Passkeys, c *passkey.Credential, v bool) {
 		m.NotifyRemoved(t.Context(), c, v)
 	}
-	suspended := func(t *testing.T, m *passkey.Manager, c *passkey.Credential, v bool) {
+	suspended := func(t *testing.T, m *passkey.Passkeys, c *passkey.Credential, v bool) {
 		m.NotifySuspended(t.Context(), c, v)
 	}
 
@@ -282,7 +282,7 @@ func TestNotices(t *testing.T) {
 		{
 			name: "a first device-bound passkey reports no synced passkey",
 			assert: func(t *testing.T, e *env) {
-				e.f.adjustVerify("cred-a", func(nc *passkey.NewCredential) error {
+				e.f.adjustVerify("cred-a", func(nc *passkey.CredentialInput) error {
 					nc.BackupEligible, nc.BackupState = false, false
 					return nil
 				})
@@ -304,7 +304,7 @@ func TestNotices(t *testing.T) {
 			name: "a device-bound passkey beside an active synced one reports a synced passkey",
 			assert: func(t *testing.T, e *env) {
 				register(t, e, fullSession("sess-a", "u-1"), "cred-a", "", passkey.RegistrationContext{})
-				e.f.adjustVerify("cred-b", func(nc *passkey.NewCredential) error {
+				e.f.adjustVerify("cred-b", func(nc *passkey.CredentialInput) error {
 					nc.BackupEligible, nc.BackupState = false, false
 					return nil
 				})

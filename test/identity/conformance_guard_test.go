@@ -587,7 +587,7 @@ func (s *brokenStore) Provision(
 	return s.insertLocked(username, u), nil
 }
 
-func (s *brokenStore) insertLocked(username string, u *identity.NewUser) *identity.Details {
+func (s *brokenStore) insertLocked(username string, u *identity.UserChange) *identity.Details {
 	s.nextID++
 	id := strconv.Itoa(s.nextID)
 
@@ -645,7 +645,7 @@ func (s *brokenStore) insertLocked(username string, u *identity.NewUser) *identi
 
 // adopt takes the caller's password buffer and organization into d, copying
 // them unless the store's defect is to hold the caller's own memory.
-func (s *brokenStore) adopt(d *identity.Details, u *identity.NewUser) {
+func (s *brokenStore) adopt(d *identity.Details, u *identity.UserChange) {
 	switch {
 	case s.d == defectDropsPasswordWithTime && u.IsSet(identity.FieldPasswordChangedAt):
 		// the local change's time is recorded, its password is not
@@ -705,7 +705,7 @@ func (s *brokenStore) Update(
 // amendedOnlyLocked returns the user's identity and the fields u named, and
 // nothing the update did not touch: a store answering from its UPDATE statement
 // rather than reading the record back.
-func (s *brokenStore) amendedOnlyLocked(d *identity.Details, u *identity.NewUser) *identity.Details {
+func (s *brokenStore) amendedOnlyLocked(d *identity.Details, u *identity.UserChange) *identity.Details {
 	full := s.recordLocked(d)
 	out := &identity.Details{ID: full.ID, Username: full.Username}
 
@@ -735,7 +735,7 @@ func (s *brokenStore) amendedOnlyLocked(d *identity.Details, u *identity.NewUser
 // unserializedUpdate reads, decides and writes without holding the lock across
 // the three, which is what lets two role rebuilds interleave.
 func (s *brokenStore) unserializedUpdate(
-	username string, u *identity.NewUser,
+	username string, u *identity.UserChange,
 ) (*identity.Details, error) {
 	s.mu.Lock()
 	d, ok := s.byName[s.key(username)]
@@ -766,7 +766,7 @@ func (s *brokenStore) unserializedUpdate(
 // about to replace — the interleaving the suite's concurrent-roles case says it
 // detects, made deterministic so no run can miss it.
 func (s *brokenStore) lostUpdate(
-	username string, u *identity.NewUser,
+	username string, u *identity.UserChange,
 ) (*identity.Details, error) {
 	s.mu.Lock()
 	d, ok := s.byName[s.key(username)]
@@ -801,7 +801,7 @@ func (s *brokenStore) lostUpdate(
 	return s.recordLocked(snapshot), nil
 }
 
-func (s *brokenStore) write(d *identity.Details, u *identity.NewUser) {
+func (s *brokenStore) write(d *identity.Details, u *identity.UserChange) {
 	ignore := s.d == defectIgnoresIsSet
 
 	if ignore || u.IsSet(identity.FieldName) {
@@ -856,7 +856,7 @@ func (s *brokenStore) write(d *identity.Details, u *identity.NewUser) {
 }
 
 // namesNothing reports whether u names no field at all.
-func namesNothing(u *identity.NewUser) bool {
+func namesNothing(u *identity.UserChange) bool {
 	for _, f := range []identity.Field{
 		identity.FieldName, identity.FieldEmail, identity.FieldPassword, identity.FieldPasswordChangedAt,
 		identity.FieldOrganization, identity.FieldRoles,
@@ -876,7 +876,7 @@ func (s *brokenStore) mintGrantID() string {
 
 // writeChangedAt writes the named password-changed time into d, unless the
 // store's defect is to drop it.
-func (s *brokenStore) writeChangedAt(d *identity.Details, u *identity.NewUser) {
+func (s *brokenStore) writeChangedAt(d *identity.Details, u *identity.UserChange) {
 	switch {
 	case s.d == defectIgnoresNamedChangedAt:
 	case s.d == defectKeepsChangedAtOnNamedZero && u.PasswordChangedAt.IsZero():

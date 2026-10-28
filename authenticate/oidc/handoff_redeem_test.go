@@ -41,7 +41,7 @@ type handoffRedeemFixture struct {
 	mem   *oidc.MemoryHandoffStore
 	users *MockUserLoader
 	logs  *handoffLogSink
-	m     *oidc.HandoffManager
+	m     *oidc.Handoff
 	code  string
 }
 
@@ -76,7 +76,7 @@ func newHandoffRedeemFixture(
 	f.mem = oidc.NewMemoryHandoffStore()
 	f.users = NewMockUserLoader(f.ctrl)
 
-	issuer, err := oidc.NewHandoffManager(f.mem, NewMockUserLoader(f.ctrl), oidc.WithHandoffClock(f.clock))
+	issuer, err := oidc.NewHandoff(f.mem, NewMockUserLoader(f.ctrl), oidc.WithHandoffClock(f.clock))
 	require.NoError(t, err)
 	f.code, err = issuer.Issue(t.Context(), handoffCallback())
 	require.NoError(t, err)
@@ -85,7 +85,7 @@ func newHandoffRedeemFixture(
 	if store != nil {
 		s = store(t, f.ctrl, f.mem)
 	}
-	f.m, err = oidc.NewHandoffManager(s, f.users,
+	f.m, err = oidc.NewHandoff(s, f.users,
 		oidc.WithHandoffClock(f.clock), oidc.WithHandoffLogger(f.logs.Logger()))
 	require.NoError(t, err)
 

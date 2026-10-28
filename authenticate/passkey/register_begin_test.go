@@ -31,7 +31,7 @@ func TestBeginRegistration(t *testing.T) {
 		session func() *session.Session
 		rc      func(f *fixture) passkey.RegistrationContext
 		at      time.Duration // after regStart, when the begin runs
-		before  func(t *testing.T, f *fixture, m *passkey.Manager, s *session.Session)
+		before  func(t *testing.T, f *fixture, m *passkey.Passkeys, s *session.Session)
 		ctx     func(ctx context.Context) context.Context
 		assert  func(t *testing.T, f *fixture, raw json.RawMessage, err error)
 	}
@@ -72,7 +72,7 @@ func TestBeginRegistration(t *testing.T) {
 				issued(t, f, raw, err)
 
 				in := f.creations()[0]
-				assert.Equal(t, passkey.UVRequired, in.UV)
+				assert.Equal(t, passkey.UserVerificationRequired, in.UV)
 				assert.Equal(t, passkey.ResidentKeyRequired, in.ResidentKey)
 				assert.Len(t, in.UserHandle, passkey.HandleSize)
 				assert.Equal(t, 5*time.Minute, in.Timeout)
@@ -242,7 +242,7 @@ func TestBeginRegistration(t *testing.T) {
 			name:    "the eleventh begin within the hour is throttled",
 			session: full,
 			at:      time.Minute,
-			before: func(t *testing.T, _ *fixture, m *passkey.Manager, s *session.Session) {
+			before: func(t *testing.T, _ *fixture, m *passkey.Passkeys, s *session.Session) {
 				for range 10 {
 					_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 					require.NoError(t, err)
@@ -261,7 +261,7 @@ func TestBeginRegistration(t *testing.T) {
 			opts:    []passkey.Option{passkey.WithRegistrationChallengeLimit(1)},
 			session: full,
 			at:      time.Minute,
-			before: func(t *testing.T, _ *fixture, m *passkey.Manager, s *session.Session) {
+			before: func(t *testing.T, _ *fixture, m *passkey.Passkeys, s *session.Session) {
 				_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 				require.NoError(t, err)
 			},
@@ -273,7 +273,7 @@ func TestBeginRegistration(t *testing.T) {
 		{
 			name:    "the handle is reused a day later",
 			session: full,
-			before: func(t *testing.T, f *fixture, m *passkey.Manager, s *session.Session) {
+			before: func(t *testing.T, f *fixture, m *passkey.Passkeys, s *session.Session) {
 				_, err := m.BeginRegistration(t.Context(), s, passkey.RegistrationContext{})
 				require.NoError(t, err)
 
@@ -295,7 +295,7 @@ func TestBeginRegistration(t *testing.T) {
 			name:    "concurrent first registrations share one handle",
 			session: full,
 			at:      time.Minute,
-			before: func(t *testing.T, _ *fixture, m *passkey.Manager, s *session.Session) {
+			before: func(t *testing.T, _ *fixture, m *passkey.Passkeys, s *session.Session) {
 				const callers = 8
 
 				start := make(chan struct{})
@@ -347,12 +347,12 @@ func TestBeginRegistration(t *testing.T) {
 		},
 		{
 			name:    "consumer user verification and resident key",
-			opts:    []passkey.Option{passkey.WithUserVerification(passkey.UVPreferred), passkey.WithResidentKey(passkey.ResidentKeyPreferred), passkey.WithChallengeTTL(2 * time.Minute)},
+			opts:    []passkey.Option{passkey.WithUserVerification(passkey.UserVerificationPreferred), passkey.WithResidentKey(passkey.ResidentKeyPreferred), passkey.WithChallengeTTL(2 * time.Minute)},
 			session: full,
 			at:      time.Minute,
 			assert: func(t *testing.T, f *fixture, raw json.RawMessage, err error) {
 				issued(t, f, raw, err)
-				assert.Equal(t, passkey.UVPreferred, f.creations()[0].UV)
+				assert.Equal(t, passkey.UserVerificationPreferred, f.creations()[0].UV)
 				assert.Equal(t, passkey.ResidentKeyPreferred, f.creations()[0].ResidentKey)
 				assert.Equal(t, 2*time.Minute, f.creations()[0].Timeout)
 			},

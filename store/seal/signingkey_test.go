@@ -109,7 +109,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 
 	refused := func(t *testing.T, store signingkey.KeyStore, err error) {
 		t.Helper()
-		require.ErrorIs(t, err, seal.ErrInvalidConfiguration)
+		require.ErrorIs(t, err, seal.ErrConfig)
 		assert.Nil(t, store)
 	}
 	built := func(t *testing.T, store signingkey.KeyStore, err error) {
@@ -121,7 +121,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 	cases := []testCase{
 		{
 			name:     "a complete wiring builds a store",
-			inner:    signingkey.NewInMemoryKeyStore(),
+			inner:    signingkey.NewMemoryKeyStore(),
 			resealer: true,
 			cipher:   c,
 			assert:   built,
@@ -134,33 +134,33 @@ func TestNewSigningKeyStore(t *testing.T) {
 		},
 		{
 			name:     "a nil cipher is refused",
-			inner:    signingkey.NewInMemoryKeyStore(),
+			inner:    signingkey.NewMemoryKeyStore(),
 			resealer: true,
 			assert:   refused,
 		},
 		{
 			name:     "a typed-nil cipher is refused",
-			inner:    signingkey.NewInMemoryKeyStore(),
+			inner:    signingkey.NewMemoryKeyStore(),
 			resealer: true,
 			cipher:   typedNilCipher,
 			assert:   refused,
 		},
 		{
 			name:   "a nil resealer is refused while re-sealing on read is on",
-			inner:  signingkey.NewInMemoryKeyStore(),
+			inner:  signingkey.NewMemoryKeyStore(),
 			cipher: c,
 			assert: refused,
 		},
 		{
 			name:   "a nil resealer is accepted with re-sealing on read off",
-			inner:  signingkey.NewInMemoryKeyStore(),
+			inner:  signingkey.NewMemoryKeyStore(),
 			cipher: c,
 			opts:   []seal.Option{seal.WithResealOnRead(false)},
 			assert: built,
 		},
 		{
 			name:     "a nil option is refused",
-			inner:    signingkey.NewInMemoryKeyStore(),
+			inner:    signingkey.NewMemoryKeyStore(),
 			resealer: true,
 			cipher:   c,
 			opts:     []seal.Option{nil},
@@ -170,7 +170,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 			// Signing keys have no expiry the store judges, so a clock
 			// would be silently ignored; it is refused instead.
 			name:     "a clock is refused: the signing-key store judges no time",
-			inner:    signingkey.NewInMemoryKeyStore(),
+			inner:    signingkey.NewMemoryKeyStore(),
 			resealer: true,
 			cipher:   c,
 			opts:     []seal.Option{seal.WithClock(clockwork.NewRealClock())},
@@ -178,7 +178,7 @@ func TestNewSigningKeyStore(t *testing.T) {
 		},
 		{
 			name:          "a typed-nil resealer is refused",
-			inner:         signingkey.NewInMemoryKeyStore(),
+			inner:         signingkey.NewMemoryKeyStore(),
 			resealerValue: typedNilResealer,
 			cipher:        c,
 			assert:        refused,
@@ -279,7 +279,7 @@ func TestSigningKeyStore_Store(t *testing.T) {
 			if tc.cipher != nil {
 				c = tc.cipher(ctrl)
 			}
-			inner := signingkey.NewInMemoryKeyStore()
+			inner := signingkey.NewMemoryKeyStore()
 			if tc.inner != nil {
 				inner = tc.inner(ctrl)
 			}
@@ -514,7 +514,7 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 			if tc.cipher != nil {
 				c = tc.cipher(ctrl)
 			}
-			inner := signingkey.NewInMemoryKeyStore()
+			inner := signingkey.NewMemoryKeyStore()
 			if tc.inner != nil {
 				inner = tc.inner(ctrl)
 			}

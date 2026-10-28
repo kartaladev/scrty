@@ -39,7 +39,7 @@ func TestOIDCRedeemMFADefaultClassification(t *testing.T) {
 				code := h.issueHandoff(t, "")
 
 				out := serve(t, c, handoffRequest(t.Context(), oidcTestSource, code))
-				require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+				require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 				assert.Zero(t, h.activeSessions(t), "no session is established")
 

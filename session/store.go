@@ -10,20 +10,20 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrSessionNotFound is what a store reports when there is no session to act
+// ErrNotFound is what a store reports when there is no session to act
 // on: none with that identifier, or — for Save — none still there to update.
 //
 // A caller distinguishes it from ErrSessionExpired because the two mean
 // different things to whoever is waiting: an expired session says "log in
 // again", a missing one says there is nothing here at all.
-var ErrSessionNotFound = errors.New("session: session not found")
+var ErrNotFound = errors.New("session: session not found")
 
-// ErrSessionExpired is what a store reports for a session past either of its
+// ErrExpired is what a store reports for a session past either of its
 // deadlines. Expiry is enforced on every load, so a stale session is never
 // served, whether or not anything has got round to deleting it.
-var ErrSessionExpired = errors.New("session: session expired")
+var ErrExpired = errors.New("session: session expired")
 
-// ErrSessionUnreadable is what a sealing store reports when a stored value
+// ErrUnreadable is what a sealing store reports when a stored value
 // will not open: a retired key, a corrupted envelope, or a value moved from
 // another session.
 //
@@ -31,14 +31,14 @@ var ErrSessionExpired = errors.New("session: session expired")
 // from under live sessions is an operational mistake, and reporting it as a
 // missing session would hide it behind a perfectly ordinary-looking login
 // prompt.
-var ErrSessionUnreadable = errors.New("session: session cannot be read")
+var ErrUnreadable = errors.New("session: session cannot be read")
 
-// ErrSessionRenewalConflict is what a store reports when a supersession lost
+// ErrRenewalConflict is what a store reports when a supersession lost
 // to another: the session's current successor is no longer the one the caller
 // observed, because a concurrent renewal superseded it first. Nothing was
 // written. The caller that sees it did not produce a successor, and another
 // caller did.
-var ErrSessionRenewalConflict = errors.New("session: the session was renewed concurrently")
+var ErrRenewalConflict = errors.New("session: the session was renewed concurrently")
 
 // ErrSuccessorAdvanced is what a store reports when a supersession names a
 // successor that has moved on, and nothing was written. Supersede returns it
@@ -53,14 +53,14 @@ var ErrSessionRenewalConflict = errors.New("session: the session was renewed con
 // moved on would leave the family with two live heads.
 var ErrSuccessorAdvanced = errors.New("session: the session's successor has moved on")
 
-// ErrSessionSuperseded is what a store reports when Store.MarkPresented is
+// ErrSuperseded is what a store reports when Store.MarkPresented is
 // asked to record the first presentation of a session that has been
 // superseded, and nothing was written. A superseded session is never marked
 // presented: its presentation state is its successor's to record.
 //
 // The Manager never returns it: it re-loads the session and judges it, which
 // is how a recovery committed between a load and its mark is caught.
-var ErrSessionSuperseded = errors.New("session: the session has been superseded")
+var ErrSuperseded = errors.New("session: the session has been superseded")
 
 // ErrDeleteDidNotSettle is wrapped by the error a durable store's user-wide
 // delete (DeleteByUser, DeleteByUserExcept, DeleteByExternalSession and
@@ -416,8 +416,8 @@ type Store interface {
 // store failure would then read as a missing or expired session.
 func storeFailed(err error, text string) error {
 	//nolint:errorlint // identity: only a bare sentinel is known to carry no store text
-	if err == ErrSessionNotFound || err == ErrSessionExpired || err == ErrSessionUnreadable ||
-		err == ErrSessionRenewalConflict || err == ErrSuccessorAdvanced || err == ErrSessionSuperseded {
+	if err == ErrNotFound || err == ErrExpired || err == ErrUnreadable ||
+		err == ErrRenewalConflict || err == ErrSuccessorAdvanced || err == ErrSuperseded {
 		return err
 	}
 

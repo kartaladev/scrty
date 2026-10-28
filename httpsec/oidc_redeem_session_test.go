@@ -45,7 +45,7 @@ func (w *sessionWrites) saves() []session.Session {
 
 // spiedSessions is a session manager over an in-memory store whose writes are
 // recorded.
-func spiedSessions(t *testing.T) (*session.Manager, *sessionWrites) {
+func spiedSessions(t *testing.T) (*session.Sessions, *sessionWrites) {
 	t.Helper()
 
 	mem := session.NewMemoryStore()
@@ -71,7 +71,7 @@ func spiedSessions(t *testing.T) (*session.Manager, *sessionWrites) {
 	store.EXPECT().Load(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.Load)
 	store.EXPECT().CountActiveByUser(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(mem.CountActiveByUser)
 
-	m, err := session.NewManager(session.WithStore(store))
+	m, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	return m, w
@@ -109,10 +109,10 @@ func oidcMFAEngine(t *testing.T, exempt bool, enrolled func() bool) *policy.Engi
 		requirementOpts = append(requirementOpts, classification)
 	}
 
-	challenge, err := policy.NewMFAPolicy([]policy.MFAMethodLookup{method}, challengeOpts...)
+	challenge, err := policy.NewMFA([]policy.MFAMethodLookup{method}, challengeOpts...)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, []policy.MFAMethodLookup{method}, requirementOpts...)
+	requirement, err := policy.NewMFARequirement(nil, []policy.MFAMethodLookup{method}, requirementOpts...)
 	require.NoError(t, err)
 
 	return engineOf(t, challenge, requirement)

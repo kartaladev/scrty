@@ -109,7 +109,7 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 			live: 1,
 			assert: func(t *testing.T, r rotations) {
 				require.NoError(t, r.graceErr)
-				require.ErrorIs(t, r.strictErr, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, r.strictErr, session.ErrRenewalConflict)
 				assert.Nil(t, r.strict)
 			},
 		},
@@ -132,7 +132,7 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 			live: 1,
 			assert: func(t *testing.T, r rotations) {
 				require.NoError(t, r.strictErr)
-				require.ErrorIs(t, r.graceErr, session.ErrSessionRenewalConflict)
+				require.ErrorIs(t, r.graceErr, session.ErrRenewalConflict)
 				assert.Nil(t, r.grace)
 			},
 		},
@@ -177,7 +177,7 @@ func TestRotate_RacingAGraceRotationLeavesOneLiveHead(t *testing.T) {
 			inner := session.NewMemoryStore(session.WithMemoryStoreClock(clk))
 			store := &gatedStore{MemoryStore: inner}
 			tc.gates(store)
-			ms := make([]*session.Manager, tc.managers)
+			ms := make([]*session.Sessions, tc.managers)
 			for i := range ms {
 				ms[i] = managerFor(t, session.WithStore(store), session.WithClock(clk))
 			}
@@ -256,7 +256,7 @@ type inFlightFixture struct {
 	clk   *clockwork.FakeClock
 	inner *session.MemoryStore
 	store *inFlightStore
-	m     *session.Manager
+	m     *session.Sessions
 	logs  *bytes.Buffer
 
 	// pending is the stored session; satisfied is the caller's copy with the
@@ -313,7 +313,7 @@ func TestRotate_OldIdentifierInFlight(t *testing.T) {
 				assert.Equal(t, session.MFASatisfied, next.MFA)
 
 				_, err = f.m.Load(t.Context(), f.pending.ID)
-				require.ErrorIs(t, err, session.ErrSessionNotFound, "once deleted the old identifier is not found")
+				require.ErrorIs(t, err, session.ErrNotFound, "once deleted the old identifier is not found")
 			},
 		},
 		{
@@ -345,7 +345,7 @@ func TestRotate_OldIdentifierInFlight(t *testing.T) {
 
 				f.clk.Advance(session.DefaultRenewalGrace + time.Second - 10*time.Second)
 				_, err = f.m.Load(t.Context(), f.pending.ID)
-				require.ErrorIs(t, err, session.ErrSessionReused, "after the window the old identifier is reuse")
+				require.ErrorIs(t, err, session.ErrReused, "after the window the old identifier is reuse")
 			},
 		},
 	}

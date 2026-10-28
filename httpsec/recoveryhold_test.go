@@ -111,10 +111,10 @@ func (h *recoveryHarness) passwordLogin(t *testing.T) served {
 func (h *recoveryHarness) withMagicLink(t *testing.T) {
 	t.Helper()
 
-	onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
 	require.NoError(t, err)
 
-	links, err := magiclink.NewManager(onetimes, h.users, h.sender, "https://app.example.com")
+	links, err := magiclink.New(onetimes, h.users, h.sender, "https://app.example.com")
 	require.NoError(t, err)
 
 	h.chainOpts = append(h.chainOpts, httpsec.EnableMagicLink(links,

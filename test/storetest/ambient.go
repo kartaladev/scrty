@@ -214,7 +214,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 	missing := func(t *testing.T, s S, sessionID, msg string) {
 		t.Helper()
 		_, err := s.Load(t.Context(), sessionID)
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, msg)
+		assert.ErrorIs(t, err, session.ErrNotFound, msg)
 	}
 	loads := func(t *testing.T, s S, sessionID, msg string) {
 		t.Helper()
@@ -277,7 +277,7 @@ func RunSessionFamilyAmbientTx[S session.Store](t *testing.T, h DurableHarness[S
 				ctx, commit, _ := begin(t)
 				// Observing no successor is stale: the first rotation set one.
 				require.ErrorIs(t, s.Supersede(ctx, rotation(old, sid("conflict-late"))),
-					session.ErrSessionRenewalConflict)
+					session.ErrRenewalConflict)
 				after := familySession(sid("conflict-after"), "ambient-family-u3", suiteID(2004))
 				require.NoError(t, s.Create(ctx, after), "a write after the refusal failed")
 				require.NoError(t, commit(), "the transaction did not commit after the refusal")
@@ -489,7 +489,7 @@ func RunSessionFamilyRevocationRace[S session.Store](t *testing.T, h DurableHarn
 
 			for _, sessionID := range []string{old.ID, successor.ID} {
 				_, err := s.Load(t.Context(), sessionID)
-				assert.ErrorIs(t, err, session.ErrSessionNotFound,
+				assert.ErrorIs(t, err, session.ErrNotFound,
 					"%s is still stored after its family was revoked: the revocation did not see "+
 						"the successor of the supersession it waited on", sessionID)
 			}
@@ -669,12 +669,12 @@ func RunSessionUserDeleteRace[S session.Store](t *testing.T, h DurableHarness[S]
 
 			for _, sessionID := range []string{in.x.ID, successor.ID} {
 				_, err := s.Load(t.Context(), sessionID)
-				assert.ErrorIs(t, err, session.ErrSessionNotFound,
+				assert.ErrorIs(t, err, session.ErrNotFound,
 					"%s is still stored after the delete: the delete did not see "+
 						"the successor of the supersession it waited on", sessionID)
 			}
 			_, err := s.Load(t.Context(), in.k.ID)
-			if !errors.Is(err, session.ErrSessionNotFound) {
+			if !errors.Is(err, session.ErrNotFound) {
 				require.NoError(t, err)
 			}
 			tc.assert(t, got.n, err == nil)
@@ -836,7 +836,7 @@ func RunSessionSuccessorAdvanceRace[S session.Store](t *testing.T, h DurableHarn
 					"it judged the successor before locking it")
 
 			_, err = s.Load(t.Context(), late.ID)
-			assert.ErrorIs(t, err, session.ErrSessionNotFound, "the refused supersession stored its successor")
+			assert.ErrorIs(t, err, session.ErrNotFound, "the refused supersession stored its successor")
 			got, err := s.Load(t.Context(), old.ID)
 			require.NoError(t, err)
 			assert.Equal(t, sessionDigest(first.ID), got.SuccessorDigest,
@@ -980,12 +980,12 @@ func RunSessionSupersessionLockOrder[S session.Store](t *testing.T, h DurableHar
 			"PostgreSQL aborted the re-rotation as one side of a deadlock: %v", rotateErr)
 		require.NoError(t, revocation.err, "the family revocation failed")
 		if rotateErr != nil {
-			require.ErrorIs(t, rotateErr, session.ErrSessionNotFound,
+			require.ErrorIs(t, rotateErr, session.ErrNotFound,
 				"the re-rotation that lost the race to the revocation did not find the family gone")
 		}
 		for _, sessionID := range []string{old.ID, first.ID, late.ID} {
 			_, err := s.Load(t.Context(), sessionID)
-			assert.ErrorIs(t, err, session.ErrSessionNotFound,
+			assert.ErrorIs(t, err, session.ErrNotFound,
 				"%s is still stored after its family was revoked", sessionID)
 		}
 	})
@@ -1027,11 +1027,11 @@ func RunSessionSupersedeRefusesNilFamily[S session.Store](t *testing.T, h Durabl
 		})
 
 		require.Error(t, err, "a session in no family must not be superseded")
-		assert.NotErrorIs(t, err, session.ErrSessionRenewalConflict)
-		assert.NotErrorIs(t, err, session.ErrSessionNotFound)
+		assert.NotErrorIs(t, err, session.ErrRenewalConflict)
+		assert.NotErrorIs(t, err, session.ErrNotFound)
 		assert.NotErrorIs(t, err, session.ErrSuccessorAdvanced)
 		_, err = s.Load(t.Context(), successor.ID)
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "the refused supersession stored its successor")
+		assert.ErrorIs(t, err, session.ErrNotFound, "the refused supersession stored its successor")
 		after, err := s.Load(t.Context(), old.ID)
 		require.NoError(t, err)
 		assertSession(t, before, after)
@@ -1138,7 +1138,7 @@ func RunSessionPresentationRace[S session.Store](t *testing.T, h DurableHarness[
 		case <-time.After(revocationWait):
 			t.Fatal("the mark did not return after the supersession it waited on committed")
 		}
-		require.ErrorIs(t, err, session.ErrSessionSuperseded,
+		require.ErrorIs(t, err, session.ErrSuperseded,
 			"the mark went ahead on a session superseded while it waited: it judged the session before locking it")
 
 		got, err := s.Load(t.Context(), first.ID)

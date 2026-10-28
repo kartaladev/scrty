@@ -191,7 +191,7 @@ func TestMFAPolicy_Federated(t *testing.T) {
 			}
 			opts = append(opts, tc.opts...)
 
-			p, err := policy.NewMFAPolicy(tc.methods(t), opts...)
+			p, err := policy.NewMFA(tc.methods(t), opts...)
 			if err != nil {
 				tc.assert(t, policy.Decision{}, err, nil)
 

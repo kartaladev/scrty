@@ -74,7 +74,7 @@ type countingStore struct {
 }
 
 func newCountingStore() *countingStore {
-	return &countingStore{KeyStore: signingkey.NewInMemoryKeyStore()}
+	return &countingStore{KeyStore: signingkey.NewMemoryKeyStore()}
 }
 
 func (s *countingStore) Store(ctx context.Context, rec signingkey.Record) error {
@@ -164,19 +164,19 @@ func (s *countingStore) releaseLoad() {
 func TestKeyManagerLifecycle(t *testing.T) {
 	type testCase struct {
 		name   string
-		assert func(t *testing.T, km *signingkey.KeyManager, noLeak func())
+		assert func(t *testing.T, km *signingkey.Keys, noLeak func())
 	}
 
 	cases := []testCase{
 		{
 			name: "construction starts no goroutine",
-			assert: func(_ *testing.T, _ *signingkey.KeyManager, noLeak func()) {
+			assert: func(_ *testing.T, _ *signingkey.Keys, noLeak func()) {
 				noLeak()
 			},
 		},
 		{
 			name: "start is idempotent and stop leaves no goroutine",
-			assert: func(t *testing.T, km *signingkey.KeyManager, noLeak func()) {
+			assert: func(t *testing.T, km *signingkey.Keys, noLeak func()) {
 				require.NoError(t, km.Start(t.Context()))
 				require.NoError(t, km.Start(t.Context()), "starting again launches nothing")
 				require.NoError(t, km.Stop())
@@ -186,7 +186,7 @@ func TestKeyManagerLifecycle(t *testing.T) {
 		},
 		{
 			name: "stop before start returns at once and start then launches nothing",
-			assert: func(t *testing.T, km *signingkey.KeyManager, noLeak func()) {
+			assert: func(t *testing.T, km *signingkey.Keys, noLeak func()) {
 				require.NoError(t, km.Stop())
 				require.NoError(t, km.Start(t.Context()))
 				noLeak()
@@ -194,7 +194,7 @@ func TestKeyManagerLifecycle(t *testing.T) {
 		},
 		{
 			name: "concurrent start and stop",
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ func()) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ func()) {
 				var wg sync.WaitGroup
 				gate := make(chan struct{})
 				for range 8 {
@@ -208,7 +208,7 @@ func TestKeyManagerLifecycle(t *testing.T) {
 		},
 		{
 			name: "cancelling the start context ends the work",
-			assert: func(t *testing.T, km *signingkey.KeyManager, noLeak func()) {
+			assert: func(t *testing.T, km *signingkey.Keys, noLeak func()) {
 				ctx, cancel := context.WithCancel(t.Context())
 				require.NoError(t, km.Start(ctx))
 				cancel()
@@ -222,8 +222,8 @@ func TestKeyManagerLifecycle(t *testing.T) {
 			ignore := goleak.IgnoreCurrent()
 			noLeak := func() { goleak.VerifyNone(t, ignore) }
 
-			km, err := signingkey.NewKeyManager(t.Context(),
-				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+			km, err := signingkey.New(t.Context(),
+				signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 				signingkey.WithAlgs(signingkey.EdDSA),
 			)
 			require.NoError(t, err)
@@ -247,13 +247,13 @@ func TestKeyManagerLifecycle(t *testing.T) {
 func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 	type testCase struct {
 		name   string
-		assert func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore)
+		assert func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.Keys, store *countingStore)
 	}
 
 	cases := []testCase{
 		{
 			name: "one interval runs rotation, reload and housekeeping once each",
-			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore) {
+			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.Keys, store *countingStore) {
 				require.NoError(t, km.Start(t.Context()))
 
 				advance(t, clk, time.Hour, loopCount)
@@ -263,7 +263,7 @@ func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 		},
 		{
 			name: "the interval is measured from the end of a run",
-			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore) {
+			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.Keys, store *countingStore) {
 				store.holdNextLoad()
 				require.NoError(t, km.Start(t.Context()))
 
@@ -284,7 +284,7 @@ func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 		},
 		{
 			name: "a long jump runs each loop once",
-			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.KeyManager, store *countingStore) {
+			assert: func(t *testing.T, clk *clockwork.FakeClock, km *signingkey.Keys, store *countingStore) {
 				require.NoError(t, km.Start(t.Context()))
 
 				advance(t, clk, 5*time.Hour, loopCount)
@@ -306,7 +306,7 @@ func TestLifecycleLoopsRunOnTheClock(t *testing.T) {
 
 			clk := newClock()
 			store := newCountingStore()
-			km, err := signingkey.NewKeyManager(t.Context(),
+			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clk),
 				signingkey.WithAlgs(signingkey.RS256),

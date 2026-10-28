@@ -189,7 +189,7 @@ func (v *Verifier) ParseRegistration(body []byte) (passkey.ParsedRegistration, e
 // configured attestation mode.
 func (v *Verifier) VerifyRegistration(
 	ctx context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation,
-) (*passkey.NewCredential, error) {
+) (*passkey.CredentialInput, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -204,7 +204,7 @@ func (v *Verifier) VerifyRegistration(
 	if _, err := data.Verify(
 		encodeChallenge(exp.Challenge), v.rp.ID, v.origins, nil, nil,
 		protocol.TopOriginExplicitVerificationMode, false,
-		exp.UV != passkey.UVPreferred, true,
+		exp.UV != passkey.UserVerificationPreferred, true,
 		nil, v.params, protocol.AttestationPolicy{}, protocol.SignaturePolicy{},
 	); err != nil {
 		return nil, errRegistrationRefused
@@ -223,7 +223,7 @@ func (v *Verifier) VerifyRegistration(
 		transports = append(transports, string(t))
 	}
 
-	return &passkey.NewCredential{
+	return &passkey.CredentialInput{
 		CredentialID:         slices.Clone(authData.AttData.CredentialID),
 		PublicKey:            slices.Clone(authData.AttData.CredentialPublicKey),
 		SignCount:            authData.Counter,
@@ -280,7 +280,7 @@ func (v *Verifier) VerifyAssertion(
 	if err := data.Verify(
 		encodeChallenge(exp.Challenge), v.rp.ID, "", v.origins, nil, nil,
 		protocol.TopOriginExplicitVerificationMode, false,
-		exp.UV != passkey.UVPreferred, true,
+		exp.UV != passkey.UserVerificationPreferred, true,
 		c.PublicKey, protocol.SignaturePolicy{},
 	); err != nil {
 		return nil, errAssertionRefused
@@ -315,9 +315,9 @@ func encodeChallenge(challenge string) string {
 
 func uvRequirement(uv passkey.UserVerification) (protocol.UserVerificationRequirement, bool) {
 	switch uv {
-	case passkey.UVRequired:
+	case passkey.UserVerificationRequired:
 		return protocol.VerificationRequired, true
-	case passkey.UVPreferred:
+	case passkey.UserVerificationPreferred:
 		return protocol.VerificationPreferred, true
 	default:
 		return "", false

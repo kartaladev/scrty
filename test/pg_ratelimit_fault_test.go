@@ -642,7 +642,7 @@ func runPGUnavailable(t *testing.T, b pgFaultBackend) {
 		{
 			name: "fall back while stopped: local failures exceed the source on this instance",
 			assert: func(t *testing.T, e pgOutage) {
-				l := e.build(ratelimit.UnavailableFallBackToLocal)
+				l := e.build(ratelimit.UnavailableFallbackToLocal)
 				e.conn.Stop(t)
 
 				for range pgOutageLimit {

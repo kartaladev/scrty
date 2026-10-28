@@ -181,7 +181,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 		return err
 	}
 	if n == 0 {
-		return session.ErrSessionNotFound
+		return session.ErrNotFound
 	}
 
 	return nil
@@ -221,14 +221,14 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		&amr, &sess.FederatedACR, &sess.FamilyID, &familyCreated, &superseded, &acceptUntil,
 		&sess.SuccessorDigest, &presented, &authenticated, &retain)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, session.ErrSessionNotFound
+		return nil, session.ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	if stale(s.c.clock.Now(), superseded.Valid, retain, idle, abs) {
-		return nil, session.ErrSessionExpired
+		return nil, session.ErrExpired
 	}
 
 	if sess.Data, err = storekit.DecodeSessionData(encoded); err != nil {
@@ -690,7 +690,7 @@ func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string)
 	err := s.c.queryRow(ctx, "read whether session successor was used", pgschema.SessionSuccessorPresented,
 		[]any{storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())}, &used)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, session.ErrSessionNotFound
+		return false, session.ErrNotFound
 	}
 
 	return used, err

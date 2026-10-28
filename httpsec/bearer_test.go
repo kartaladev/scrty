@@ -299,7 +299,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).
-					Return(nil, session.ErrSessionNotFound)
+					Return(nil, session.ErrNotFound)
 			},
 			assert: unauthenticated,
 		},
@@ -308,7 +308,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).
-					Return(nil, session.ErrSessionExpired)
+					Return(nil, session.ErrExpired)
 			},
 			assert: unauthenticated,
 		},
@@ -317,7 +317,7 @@ func TestBearerSessionResolution(t *testing.T) {
 			wire: func(_ *testing.T, h *authHarness) {
 				h.expectVerified()
 				h.store.EXPECT().Load(gomock.Any(), testJTI).
-					Return(nil, session.ErrSessionUnreadable)
+					Return(nil, session.ErrUnreadable)
 			},
 			assert: func(t *testing.T, h *authHarness, s served) {
 				require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired,
@@ -423,7 +423,7 @@ func TestBearerPerRequestPhase(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *session.Session, s served) {
 				require.Error(t, s.err, "a reasonless deny must never return nil")
-				require.ErrorIs(t, s.err, policy.ErrPolicyDenied)
+				require.ErrorIs(t, s.err, policy.ErrDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(s.err),
 					"this is the row that catches a refusal served as a 200")
 				assert.False(t, s.handlerRan)
@@ -800,7 +800,7 @@ func TestBearerMarksEnrolment(t *testing.T) {
 			store := &countingSaves{Store: session.NewMemoryStore(
 				session.WithMemoryStoreClock(clk))}
 
-			sessions, err := session.NewManager(
+			sessions, err := session.New(
 				session.WithClock(clk), session.WithStore(store))
 			require.NoError(t, err)
 
@@ -1022,10 +1022,10 @@ func TestBearerRefusesReusedSession(t *testing.T) {
 	s := serve(t, chain, bearerRequest(t.Context(), "Bearer abc.def.ghi"))
 
 	require.ErrorIs(t, s.err, httpsec.ErrAuthenticationRequired)
-	require.ErrorIs(t, s.err, session.ErrSessionReused)
+	require.ErrorIs(t, s.err, session.ErrReused)
 	assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 	assert.False(t, s.handlerRan)
 
 	_, err = f.sessions.Load(t.Context(), successor.ID)
-	require.ErrorIs(t, err, session.ErrSessionNotFound, "the family is revoked, its live successor with it")
+	require.ErrorIs(t, err, session.ErrNotFound, "the family is revoked, its live successor with it")
 }

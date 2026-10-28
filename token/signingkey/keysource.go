@@ -116,10 +116,10 @@ func clonePublicKey(key crypto.PublicKey) (crypto.PublicKey, error) {
 // something has to hold the keys, so the source is always supplied by the
 // caller.
 type KeySource interface {
-	// GetSigner returns the key identifier and signer currently signing for
+	// Signer returns the key identifier and signer currently signing for
 	// alg, and whether there is one. An implementation that does not hold a
 	// key for alg reports false rather than substituting another algorithm.
-	GetSigner(alg Alg) (kid string, signer crypto.Signer, ok bool)
+	Signer(alg Alg) (kid string, signer crypto.Signer, ok bool)
 
 	// VerificationKeys returns the public keys verification selects from,
 	// each carrying its key identifier and the algorithm it verifies, and
@@ -154,13 +154,13 @@ type LifetimeReporter interface {
 
 // KeyLifetime reports how long a key stays published after it was created,
 // which is what WithLifetime configured.
-func (km *KeyManager) KeyLifetime() time.Duration { return km.lifetime }
+func (km *Keys) KeyLifetime() time.Duration { return km.lifetime }
 
 // RotateInterval reports how often a new key is minted, which is what
 // WithRotateInterval configured.
-func (km *KeyManager) RotateInterval() time.Duration { return km.rotateEvery }
+func (km *Keys) RotateInterval() time.Duration { return km.rotateEvery }
 
 var (
-	_ KeySource        = (*KeyManager)(nil)
-	_ LifetimeReporter = (*KeyManager)(nil)
+	_ KeySource        = (*Keys)(nil)
+	_ LifetimeReporter = (*Keys)(nil)
 )

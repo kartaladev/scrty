@@ -25,7 +25,7 @@ func TestEngine_UnwiredFederatedAssurance(t *testing.T) {
 
 	requirement := func(opts ...policy.MFARequirementOption) func(t *testing.T) []policy.Policy {
 		return func(t *testing.T) []policy.Policy {
-			p, err := policy.NewMFARequirementPolicy(nil,
+			p, err := policy.NewMFARequirement(nil,
 				mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))),
 				append([]policy.MFARequirementOption{policy.WithMFARequiredForAll()}, opts...)...)
 			require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestEngine_UnwiredFederatedAssurance(t *testing.T) {
 		{
 			name: "the challenge policy without its opt-in needs no source",
 			policies: func(t *testing.T) []policy.Policy {
-				p, err := policy.NewMFAPolicy(mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))))
+				p, err := policy.NewMFA(mfaMethods(idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp))))
 				require.NoError(t, err)
 
 				return []policy.Policy{p}

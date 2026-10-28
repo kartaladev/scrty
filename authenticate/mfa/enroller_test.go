@@ -150,7 +150,7 @@ func (s *spyStore) Get(ctx context.Context, user identity.UserID) (mfa.Enrolment
 		e.EmailCode = nil
 	}
 
-	if hide && e.EmailCodeAttempts >= mfa.MaxEmailCodeFailures {
+	if hide && e.EmailCodeAttempts >= mfa.MaxEmailCodeAttempts {
 		e.EmailCode = nil
 		if hideProof {
 			e.DeviceProvenAt = time.Time{}
@@ -325,7 +325,7 @@ func TestTOTPEnroller(t *testing.T) {
 	exhaust := func(t *testing.T, f *enrolFixture, gen id.ID, emailed string) {
 		t.Helper()
 
-		for range mfa.MaxEmailCodeFailures {
+		for range mfa.MaxEmailCodeAttempts {
 			require.ErrorIs(t, f.m.RedeemEmailCode(t.Context(), "u-1", gen, wrongCode(t, emailed)),
 				mfa.ErrEmailCodeInvalid)
 		}
@@ -871,7 +871,7 @@ func TestTOTPEnroller(t *testing.T) {
 
 				return outcome{enrolled: f.enrolled(t), e: f.stored(t)}, err
 			},
-			assert: refusedPending(mfa.MaxEmailCodeFailures),
+			assert: refusedPending(mfa.MaxEmailCodeAttempts),
 		},
 		{
 			name: "voiding after wrong attempts charges only the attempts left",
@@ -886,7 +886,7 @@ func TestTOTPEnroller(t *testing.T) {
 
 				return outcome{enrolled: f.enrolled(t), e: f.stored(t)}, err
 			},
-			assert: refusedPending(mfa.MaxEmailCodeFailures),
+			assert: refusedPending(mfa.MaxEmailCodeAttempts),
 		},
 		{
 			name: "voiding where no emailed code is outstanding changes nothing and is not an error",

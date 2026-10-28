@@ -69,13 +69,13 @@ func TestKidIsThumbprint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			km, err := signingkey.NewKeyManager(t.Context(),
-				signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+			km, err := signingkey.New(t.Context(),
+				signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 				signingkey.WithAlgs(tc.alg),
 			)
 			require.NoError(t, err)
 
-			kid, signer, ok := km.GetSigner(tc.alg)
+			kid, signer, ok := km.Signer(tc.alg)
 			require.True(t, ok)
 			assert.Equal(t, rfc7638(t, signer.Public()), kid,
 				"the key identifier is the RFC 7638 SHA-256 thumbprint of the public key")

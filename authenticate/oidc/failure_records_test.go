@@ -139,7 +139,7 @@ func TestHandoffFailureRecords(t *testing.T) {
 		t.Parallel()
 
 		mem := oidc.NewMemoryHandoffStore()
-		issuer, err := oidc.NewHandoffManager(mem, NewMockUserLoader(gomock.NewController(t)))
+		issuer, err := oidc.NewHandoff(mem, NewMockUserLoader(gomock.NewController(t)))
 		require.NoError(t, err)
 
 		code1, err := issuer.Issue(t.Context(), handoffCallback())
@@ -160,7 +160,7 @@ func TestHandoffFailureRecords(t *testing.T) {
 		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(handoffUser(), nil)
 
 		logs := &handoffLogSink{}
-		m, err := oidc.NewHandoffManager(store, users, oidc.WithHandoffLogger(logs.Logger()))
+		m, err := oidc.NewHandoff(store, users, oidc.WithHandoffLogger(logs.Logger()))
 		require.NoError(t, err)
 
 		res1, err1 := m.Redeem(t.Context(), code1)

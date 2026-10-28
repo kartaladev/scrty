@@ -47,7 +47,7 @@ const (
 
 // Option configures a Manager. Every option names the default it replaces, and
 // every default works with no configuration at all.
-type Option func(*Manager)
+type Option func(*Keys)
 
 // WithStore replaces where key records are kept. The default is
 // NewMemoryStore, which does not survive a restart.
@@ -56,7 +56,7 @@ type Option func(*Manager)
 // a consumer who passed one meant to supply their own, and quietly keeping a
 // fleet's machine credentials in process memory is not a failure they would
 // find out about until a deploy.
-func WithStore(s Store) Option { return func(m *Manager) { m.store = s } }
+func WithStore(s Store) Option { return func(m *Keys) { m.store = s } }
 
 // WithPrefix replaces the prefix presented keys carry. The default is "sk".
 //
@@ -69,7 +69,7 @@ func WithStore(s Store) Option { return func(m *Manager) { m.store = s } }
 // configuration error. The limit is not decoration: the prefix is matched with
 // its separator attached, and a prefix holding an underscore or a dot would
 // make the presented form ambiguous to split.
-func WithPrefix(p string) Option { return func(m *Manager) { m.prefix = p } }
+func WithPrefix(p string) Option { return func(m *Keys) { m.prefix = p } }
 
 // WithDigest replaces the one-way function the secret is stored under. The
 // default is SHA-256.
@@ -89,14 +89,14 @@ func WithPrefix(p string) Option { return func(m *Manager) { m.prefix = p } }
 // that cannot work; it judges nothing about one that can. A digest that
 // returns an empty value only for some inputs is caught at Issue, which then
 // stores nothing, and at Verify, which refuses.
-func WithDigest(d func([]byte) []byte) Option { return func(m *Manager) { m.digest = d } }
+func WithDigest(d func([]byte) []byte) Option { return func(m *Keys) { m.digest = d } }
 
 // WithIDGenerator replaces the source of record identifiers. The default is
 // id.NewV7Generator, whose identifiers sort by the moment they were minted.
 //
 // A consumer replaces it to mint identifiers their own records can be
 // correlated with. A nil generator is a configuration error.
-func WithIDGenerator(g id.Generator) Option { return func(m *Manager) { m.ids = g } }
+func WithIDGenerator(g id.Generator) Option { return func(m *Keys) { m.ids = g } }
 
 // WithClock replaces the time source. The default is clock.System().
 //
@@ -104,7 +104,7 @@ func WithIDGenerator(g id.Generator) Option { return func(m *Manager) { m.ids = 
 // silent fallback: a caller passing one meant to inject a clock, and falling
 // back to the wall clock would make a test that never advances look like one
 // that does.
-func WithClock(clk clock.Clock) Option { return func(m *Manager) { m.clock = clk } }
+func WithClock(clk clock.Clock) Option { return func(m *Keys) { m.clock = clk } }
 
 // WithRandom replaces the source key secrets are drawn from. The default is
 // crypto/rand.Reader.
@@ -113,7 +113,7 @@ func WithClock(clk clock.Clock) Option { return func(m *Manager) { m.clock = clk
 // platform supplies its own cryptographic source can use it. A nil reader is a
 // configuration error: falling back would override a deliberate choice about
 // where this deployment's randomness comes from.
-func WithRandom(r io.Reader) Option { return func(m *Manager) { m.random = r } }
+func WithRandom(r io.Reader) Option { return func(m *Keys) { m.random = r } }
 
 // WithLogger replaces the logger. The default is slog.Default().
 //
@@ -124,7 +124,7 @@ func WithRandom(r io.Reader) Option { return func(m *Manager) { m.random = r } }
 // a store that could not answer, and no log this package writes carries a
 // presented key or a secret.
 func WithLogger(l *slog.Logger) Option {
-	return func(m *Manager) {
+	return func(m *Keys) {
 		if l != nil {
 			m.logger = l
 		}

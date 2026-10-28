@@ -72,7 +72,7 @@ type Deps struct {
 	Users identity.UserLoader
 
 	// Sessions creates the session a completed recovery produces. Required.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Records keeps recovery records. Nil selects NewMemoryRecordStore, which
 	// holds one process's records only.
@@ -96,7 +96,7 @@ type Deps struct {
 // construction, and is safe for concurrent use as far as its ports are.
 type Recoverer struct {
 	users    identity.UserLoader
-	sessions *session.Manager
+	sessions *session.Sessions
 	records  RecordStore
 	sender   notify.Sender
 	codes    *Codes
@@ -104,7 +104,7 @@ type Recoverer struct {
 	proofs      []ProofKind
 	repudiation string
 
-	issued      *onetime.Manager
+	issued      *onetime.Tokens
 	issuedLimit int
 	resolver    mfa.ContactResolver
 	messages    Messages
@@ -124,8 +124,8 @@ type Recoverer struct {
 	window       time.Duration
 	cancelLink   *url.URL
 	holdStore    onetime.Store
-	finishTokens *onetime.Manager
-	cancelTokens *onetime.Manager
+	finishTokens *onetime.Tokens
+	cancelTokens *onetime.Tokens
 
 	clock  clock.Clock
 	logger *slog.Logger
@@ -590,7 +590,7 @@ func (r *Recoverer) validateIssued(c *config) error {
 		topts = append(topts, onetime.WithStore(c.issuedStore))
 	}
 
-	m, err := onetime.NewManager(IssuedCodePurpose, topts...)
+	m, err := onetime.New(IssuedCodePurpose, topts...)
 	if err != nil {
 		return fmt.Errorf("%w: issued codes: %w", ErrConfig, err)
 	}

@@ -64,9 +64,9 @@ type PasswordlessSetting func(*passwordlessConfig) error
 type passwordlessInterceptor struct {
 	passwordlessConfig
 
-	manager  *passkey.Manager
+	manager  *passkey.Passkeys
 	users    identity.UserLoader
-	sessions *session.Manager
+	sessions *session.Sessions
 
 	beginPath  string
 	finishPath string

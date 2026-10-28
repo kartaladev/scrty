@@ -40,7 +40,7 @@ func register(t *testing.T, v *webauthn.Verifier, a *webauthntest.Authenticator)
 	t.Helper()
 	p, err := v.ParseRegistration(a.Create(rpID, rpOrigin, challenge, []byte("handle-0123456789"), webauthntest.AttestationNone))
 	require.NoError(t, err)
-	nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+	nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 	require.NoError(t, err)
 	return &passkey.Credential{CredentialID: nc.CredentialID, PublicKey: nc.PublicKey, SignCount: nc.SignCount}
 }
@@ -119,7 +119,7 @@ func TestVerifier_CreationOptions(t *testing.T) {
 	base := passkey.CreationInput{
 		UserHandle: handle, UserName: "alice@example.com", DisplayName: "Alice",
 		Challenge: challenge, Timeout: 5 * time.Minute,
-		UV: passkey.UVRequired, ResidentKey: passkey.ResidentKeyRequired,
+		UV: passkey.UserVerificationRequired, ResidentKey: passkey.ResidentKeyRequired,
 	}
 
 	cases := []testCase{
@@ -149,7 +149,7 @@ func TestVerifier_CreationOptions(t *testing.T) {
 			name: "preferred user verification and resident key are rendered as preferred",
 			in: func() passkey.CreationInput {
 				in := base
-				in.UV, in.ResidentKey = passkey.UVPreferred, passkey.ResidentKeyPreferred
+				in.UV, in.ResidentKey = passkey.UserVerificationPreferred, passkey.ResidentKeyPreferred
 				return in
 			}(),
 			assert: func(t *testing.T, opts map[string]any, err error) {
@@ -227,7 +227,7 @@ func TestVerifier_RequestOptions(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "no allowed credentials leaves allowCredentials out",
-			in:   passkey.RequestInput{Challenge: challenge, Timeout: 5 * time.Minute, UV: passkey.UVRequired},
+			in:   passkey.RequestInput{Challenge: challenge, Timeout: 5 * time.Minute, UV: passkey.UserVerificationRequired},
 			assert: func(t *testing.T, opts map[string]any, err error) {
 				require.NoError(t, err)
 				assert.NotContains(t, opts, "allowCredentials")
@@ -240,7 +240,7 @@ func TestVerifier_RequestOptions(t *testing.T) {
 		{
 			name: "allowed credentials are listed with their transports",
 			in: passkey.RequestInput{
-				Challenge: challenge, Timeout: time.Minute, UV: passkey.UVPreferred,
+				Challenge: challenge, Timeout: time.Minute, UV: passkey.UserVerificationPreferred,
 				Allow: []passkey.Descriptor{{ID: []byte("cred-one"), Transports: []string{"usb"}}},
 			},
 			assert: func(t *testing.T, opts map[string]any, err error) {
@@ -321,10 +321,10 @@ func TestVerifier_Registration(t *testing.T) {
 		presented string // the challenge the client was handed; empty means challenge
 		exp       passkey.RegistrationExpectation
 		body      func(body []byte) []byte
-		assert    func(t *testing.T, a *webauthntest.Authenticator, p passkey.ParsedRegistration, nc *passkey.NewCredential, err error)
+		assert    func(t *testing.T, a *webauthntest.Authenticator, p passkey.ParsedRegistration, nc *passkey.CredentialInput, err error)
 	}
 
-	required := passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired}
+	required := passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired}
 
 	cases := []testCase{
 		{
@@ -335,7 +335,7 @@ func TestVerifier_Registration(t *testing.T) {
 				a.AAGUID = [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
 			},
 			exp: required,
-			assert: func(t *testing.T, a *webauthntest.Authenticator, p passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, a *webauthntest.Authenticator, p passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, b64(challenge), p.Challenge())
 				assert.Equal(t, a.CredentialID(), p.CredentialID())
@@ -355,7 +355,7 @@ func TestVerifier_Registration(t *testing.T) {
 		{
 			name: "an all-zero AAGUID means the authenticator reported none, so it is nil",
 			exp:  required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Nil(t, nc.AAGUID)
 			},
@@ -364,7 +364,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:   "a subdomain origin in the configured set is accepted",
 			origin: "https://login.example.com",
 			exp:    required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, nc)
 			},
@@ -373,7 +373,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:   "a wrong origin is refused as authentication failed",
 			origin: "https://evil.example",
 			exp:    required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 				assert.NotContains(t, err.Error(), "evil")
@@ -383,7 +383,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "a challenge other than the expected one is refused",
 			presented: "passkey-registration.another-token",
 			exp:       required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 				assert.NotContains(t, err.Error(), "another-token")
@@ -394,7 +394,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "no user verification under required is refused",
 			configure: func(a *webauthntest.Authenticator) { a.UV = false },
 			exp:       required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
@@ -402,8 +402,8 @@ func TestVerifier_Registration(t *testing.T) {
 		{
 			name:      "no user verification under preferred is accepted and reported",
 			configure: func(a *webauthntest.Authenticator) { a.UV = false },
-			exp:       passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVPreferred},
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			exp:       passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationPreferred},
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.False(t, nc.UserVerified)
 			},
@@ -412,15 +412,15 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "an unknown user-verification value is treated as required",
 			configure: func(a *webauthntest.Authenticator) { a.UV = false },
 			exp:       passkey.RegistrationExpectation{Challenge: challenge},
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, _ *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, _ *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 			},
 		},
 		{
 			name:      "no user presence is refused, even under preferred user verification",
 			configure: func(a *webauthntest.Authenticator) { a.UP = false },
-			exp:       passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVPreferred},
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			exp:       passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationPreferred},
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
@@ -429,7 +429,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "a cross-origin ceremony is refused",
 			configure: func(a *webauthntest.Authenticator) { a.CrossOrigin = true },
 			exp:       required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
@@ -438,7 +438,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "a cross-origin ceremony under a top origin of the relying party's own is refused",
 			configure: func(a *webauthntest.Authenticator) { a.CrossOrigin, a.TopOrigin = true, rpOrigin },
 			exp:       required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
@@ -447,7 +447,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "a top origin without the cross-origin flag is refused",
 			configure: func(a *webauthntest.Authenticator) { a.TopOrigin = rpOrigin },
 			exp:       required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
@@ -456,7 +456,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name: "a response for another relying party ID is refused",
 			rpID: "other.example",
 			exp:  required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
@@ -465,15 +465,15 @@ func TestVerifier_Registration(t *testing.T) {
 			name:      "an authentication response presented at registration is refused",
 			configure: func(a *webauthntest.Authenticator) { a.ClientDataType = "webauthn.get" },
 			exp:       required,
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, nc *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, nc)
 			},
 		},
 		{
 			name: "an empty expected challenge is refused",
-			exp:  passkey.RegistrationExpectation{UV: passkey.UVRequired},
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, _ *passkey.NewCredential, err error) {
+			exp:  passkey.RegistrationExpectation{UV: passkey.UserVerificationRequired},
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedRegistration, _ *passkey.CredentialInput, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 			},
 		},
@@ -481,7 +481,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name: "the response's proposed name is read",
 			exp:  required,
 			body: func(body []byte) []byte { return withMember(t, body, "name", "Work laptop") },
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, p passkey.ParsedRegistration, _ *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, p passkey.ParsedRegistration, _ *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, "Work laptop", p.Name())
 			},
@@ -490,7 +490,7 @@ func TestVerifier_Registration(t *testing.T) {
 			name: "a name that is not a string is ignored, not refused",
 			exp:  required,
 			body: func(body []byte) []byte { return withMember(t, body, "name", 42) },
-			assert: func(t *testing.T, _ *webauthntest.Authenticator, p passkey.ParsedRegistration, _ *passkey.NewCredential, err error) {
+			assert: func(t *testing.T, _ *webauthntest.Authenticator, p passkey.ParsedRegistration, _ *passkey.CredentialInput, err error) {
 				require.NoError(t, err)
 				assert.Empty(t, p.Name())
 			},
@@ -556,7 +556,7 @@ func TestVerifier_Assertion(t *testing.T) {
 		assert    func(t *testing.T, a *webauthntest.Authenticator, p passkey.ParsedAssertion, r *passkey.AssertionResult, err error)
 	}
 
-	required := passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UVRequired}
+	required := passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UserVerificationRequired}
 
 	cases := []testCase{
 		{
@@ -586,7 +586,7 @@ func TestVerifier_Assertion(t *testing.T) {
 		{
 			name:      "no user verification under preferred is accepted and reported",
 			configure: func(a *webauthntest.Authenticator) { a.UV = false },
-			exp:       passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UVPreferred},
+			exp:       passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UserVerificationPreferred},
 			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
 				require.NoError(t, err)
 				assert.False(t, r.UserVerified)
@@ -595,7 +595,7 @@ func TestVerifier_Assertion(t *testing.T) {
 		{
 			name:      "no user presence is refused, even under preferred user verification",
 			configure: func(a *webauthntest.Authenticator) { a.UP = false },
-			exp:       passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UVPreferred},
+			exp:       passkey.AssertionExpectation{Challenge: loginChallenge, UV: passkey.UserVerificationPreferred},
 			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, r *passkey.AssertionResult, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.Nil(t, r)
@@ -656,7 +656,7 @@ func TestVerifier_Assertion(t *testing.T) {
 		},
 		{
 			name: "a challenge other than the expected one is refused",
-			exp:  passkey.AssertionExpectation{Challenge: "passkey-login.other", UV: passkey.UVRequired},
+			exp:  passkey.AssertionExpectation{Challenge: "passkey-login.other", UV: passkey.UserVerificationRequired},
 			assert: func(t *testing.T, _ *webauthntest.Authenticator, _ passkey.ParsedAssertion, _ *passkey.AssertionResult, err error) {
 				require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 				assert.NotContains(t, err.Error(), loginChallenge)
@@ -724,7 +724,7 @@ func TestVerifier_RefusesForeignParsedValues(t *testing.T) {
 		{
 			name: "registration",
 			call: func() error {
-				_, err := v.VerifyRegistration(t.Context(), foreignRegistration{}, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UVRequired})
+				_, err := v.VerifyRegistration(t.Context(), foreignRegistration{}, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 				return err
 			},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed) },
@@ -732,7 +732,7 @@ func TestVerifier_RefusesForeignParsedValues(t *testing.T) {
 		{
 			name: "assertion",
 			call: func() error {
-				_, err := v.VerifyAssertion(t.Context(), foreignAssertion{}, &passkey.Credential{}, passkey.AssertionExpectation{Challenge: challenge, UV: passkey.UVRequired})
+				_, err := v.VerifyAssertion(t.Context(), foreignAssertion{}, &passkey.Credential{}, passkey.AssertionExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
 				return err
 			},
 			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed) },

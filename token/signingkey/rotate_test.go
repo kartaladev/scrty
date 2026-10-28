@@ -30,22 +30,22 @@ var epoch = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // currentKid returns the kid currently signing for alg, requiring there to be
 // one.
-func currentKid(t *testing.T, km *signingkey.KeyManager, alg signingkey.Alg) string {
+func currentKid(t *testing.T, km *signingkey.Keys, alg signingkey.Alg) string {
 	t.Helper()
 
-	kid, signer, ok := km.GetSigner(alg)
+	kid, signer, ok := km.Signer(alg)
 	require.True(t, ok, "there is a current %s key", alg)
 	require.NotNil(t, signer, "the current %s key signs", alg)
 	return kid
 }
 
 // waitForRotation returns the kid that replaced was as the current key for alg.
-func waitForRotation(t *testing.T, km *signingkey.KeyManager, alg signingkey.Alg, was string) string {
+func waitForRotation(t *testing.T, km *signingkey.Keys, alg signingkey.Alg, was string) string {
 	t.Helper()
 
 	var replacement string
 	require.Eventually(t, func() bool {
-		kid, _, ok := km.GetSigner(alg)
+		kid, _, ok := km.Signer(alg)
 		if ok && kid != was {
 			replacement = kid
 			return true
@@ -59,7 +59,7 @@ func waitForRotation(t *testing.T, km *signingkey.KeyManager, alg signingkey.Alg
 // left behind. It snapshots the goroutines running now, so it must be called
 // before the manager is started — which is also when the manager has started
 // none of its own.
-func stopAndVerify(t *testing.T, km *signingkey.KeyManager) {
+func stopAndVerify(t *testing.T, km *signingkey.Keys) {
 	t.Helper()
 
 	ignore := goleak.IgnoreCurrent()
@@ -71,8 +71,8 @@ func stopAndVerify(t *testing.T, km *signingkey.KeyManager) {
 
 func TestRotationAtTheConfiguredInterval(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	store := signingkey.NewMemoryKeyStore()
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithRotateInterval(6*time.Hour), // the consumer's interval
@@ -244,12 +244,12 @@ func TestRotationFailureIsObservable(t *testing.T) {
 		// logTo installs the recorder's logger and returns the options that
 		// route the manager's records to it.
 		logTo  func(t *testing.T, logger *slog.Logger) []signingkey.Option
-		assert func(t *testing.T, rec *logRecorder, report *failureReport, previous string, km *signingkey.KeyManager)
+		assert func(t *testing.T, rec *logRecorder, report *failureReport, previous string, km *signingkey.Keys)
 	}
 
 	// assertReported is shared: both cases differ only in where the records are
 	// expected to arrive, and both then make the same claims about them.
-	assertReported := func(t *testing.T, rec *logRecorder, report *failureReport, previous string, km *signingkey.KeyManager) {
+	assertReported := func(t *testing.T, rec *logRecorder, report *failureReport, previous string, km *signingkey.Keys) {
 		hooked, rejected := report.snapshot()
 
 		require.GreaterOrEqual(t, len(hooked), 2,
@@ -320,7 +320,7 @@ func TestRotationFailureIsObservable(t *testing.T) {
 				signingkey.WithErrorHook(report.hook),
 			}, tc.logTo(t, logger)...)
 
-			km, err := signingkey.NewKeyManager(t.Context(), opts...)
+			km, err := signingkey.New(t.Context(), opts...)
 			require.NoError(t, err)
 			stopAndVerify(t, km)
 
@@ -345,12 +345,12 @@ func TestRotationFailureIsObservable(t *testing.T) {
 // rotation, and it would never age out.
 func TestRotation_IsNotUndoneByAFutureDatedStoredKey(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	future := realRecordFor(t, signingkey.EdDSA, epoch.Add(365*24*time.Hour))
 	require.NoError(t, store.Store(t.Context(), realRecordFor(t, signingkey.EdDSA, epoch)))
 	require.NoError(t, store.Store(t.Context(), future))
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),

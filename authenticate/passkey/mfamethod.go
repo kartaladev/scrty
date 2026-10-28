@@ -44,7 +44,7 @@ const (
 //
 // It is safe for concurrent use.
 type MFAMethod struct {
-	m *Manager
+	m *Passkeys
 }
 
 var (
@@ -55,7 +55,7 @@ var (
 // MFAMethod returns the manager's passkeys as an MFA method, verified with the
 // manager's verifier, user-verification requirement, login check and clone
 // rule. Serve it on the MFA slot beside the other methods.
-func (m *Manager) MFAMethod() *MFAMethod { return &MFAMethod{m: m} }
+func (m *Passkeys) MFAMethod() *MFAMethod { return &MFAMethod{m: m} }
 
 // Name reports MethodName.
 func (*MFAMethod) Name() string { return MethodName }
@@ -255,7 +255,7 @@ func (pm *MFAMethod) RemoveEnrolment(ctx context.Context, user identity.UserID) 
 
 // activeCredentials lists user's active credentials, in the store's order. A
 // store failure is an error, never an empty list.
-func (m *Manager) activeCredentials(ctx context.Context, user identity.UserID) ([]*Credential, error) {
+func (m *Passkeys) activeCredentials(ctx context.Context, user identity.UserID) ([]*Credential, error) {
 	all, err := m.credentials.List(ctx, user)
 	if err != nil {
 		return nil, diag.Wrap(err, "passkey: could not list the user's passkeys")

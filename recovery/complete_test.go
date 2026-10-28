@@ -513,7 +513,7 @@ func TestRecoverer_Complete(t *testing.T) {
 
 				e.clock.Advance(2 * time.Minute)
 				_, err = e.sessions.Load(t.Context(), res.Session.ID)
-				require.ErrorIs(t, err, session.ErrSessionExpired, "expired at 16 minutes")
+				require.ErrorIs(t, err, session.ErrExpired, "expired at 16 minutes")
 			},
 		},
 		{
@@ -527,7 +527,7 @@ func TestRecoverer_Complete(t *testing.T) {
 
 				e.clock.Advance(6 * time.Minute)
 				_, err = e.sessions.Load(t.Context(), res.Session.ID)
-				require.ErrorIs(t, err, session.ErrSessionExpired)
+				require.ErrorIs(t, err, session.ErrExpired)
 			},
 		},
 		{

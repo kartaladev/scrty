@@ -164,7 +164,7 @@ func TestPasskeyMFA(t *testing.T) {
 		{
 			name: "after a passkey login without user verification, the passkey is the same channel",
 			setup: func(_ *testing.T, d *pwlDeployment) {
-				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UVPreferred))
+				d.pkOpts = append(d.pkOpts, passkey.WithUserVerification(passkey.UserVerificationPreferred))
 				d.verifier.notUserVerified.Store(true)
 			},
 			act: func(t *testing.T, d *pwlDeployment) served {

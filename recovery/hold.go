@@ -138,8 +138,8 @@ func (r *Recoverer) validateHolds(c *config) error {
 
 // holdTokens builds a manager of purpose over the hold token store, issuing
 // tokens that live for ttl.
-func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Manager, error) {
-	m, err := onetime.NewManager(purpose,
+func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
+	m, err := onetime.New(purpose,
 		onetime.WithStore(r.holdStore), onetime.WithTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
@@ -375,7 +375,7 @@ func (r *Recoverer) Finish(ctx context.Context, completionToken string) (*Result
 // pending are all ErrRefused; a record store outage is
 // returned behind fixed text. refused is the message a refusal is logged
 // under.
-func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Manager, token, refused string) (onetime.Checked, *Record, error) {
+func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Tokens, token, refused string) (onetime.Checked, *Record, error) {
 	checked, err := m.Check(ctx, token, "")
 	if err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, refused, slog.String("reason", "token"), slog.String("purpose", m.Purpose()))
@@ -413,7 +413,7 @@ func (r *Recoverer) findHeld(ctx context.Context, m *onetime.Manager, token, ref
 // consumeHoldToken spends a hold token once its record has been decided. The
 // record's conditional write is what decided the race, and it already refuses
 // the token's every later use, so a consume that fails is logged and ignored.
-func (r *Recoverer) consumeHoldToken(ctx context.Context, m *onetime.Manager, checked onetime.Checked) {
+func (r *Recoverer) consumeHoldToken(ctx context.Context, m *onetime.Tokens, checked onetime.Checked) {
 	if err := m.Consume(ctx, checked); err != nil {
 		r.logger.LogAttrs(ctx, slog.LevelDebug, msgHoldTokenConsume, diag.Failure("token-consume", err)...)
 	}

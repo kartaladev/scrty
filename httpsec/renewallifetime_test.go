@@ -34,7 +34,7 @@ func TestSessionRenewal_Lifetime(t *testing.T) {
 	type testCase struct {
 		name string
 		// manager is the lifetime options the manager is built with.
-		manager []session.ManagerOption
+		manager []session.Option
 		// created is the absolute lifetime the first session is created with;
 		// zero keeps the manager's absolute timeout.
 		created time.Duration
@@ -45,7 +45,7 @@ func TestSessionRenewal_Lifetime(t *testing.T) {
 		assert   func(t *testing.T, f *lifetimeFixture, out served)
 	}
 
-	family90 := []session.ManagerOption{
+	family90 := []session.Option{
 		session.WithMaxAbsoluteLifetime(30 * day),
 		session.WithMaxFamilyLifetime(90 * day),
 	}
@@ -91,7 +91,7 @@ func TestSessionRenewal_Lifetime(t *testing.T) {
 		},
 		{
 			name:    "a lifetime above the lifetime maximum is a configuration error and stores nothing",
-			manager: []session.ManagerOption{session.WithMaxAbsoluteLifetime(30 * day)},
+			manager: []session.Option{session.WithMaxAbsoluteLifetime(30 * day)},
 			opts: []httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(
 				func(*httpsec.Exchange, *session.Session) time.Duration { return 45 * day })},
 			advances: []time.Duration{time.Hour},
@@ -174,7 +174,7 @@ func TestSessionRenewal_LifetimeFunctionSeesTheRenewedSession(t *testing.T) {
 func TestWithRenewalLifetime_NilFunctionIsRefused(t *testing.T) {
 	t.Parallel()
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	users := NewMockUserLoader(gomock.NewController(t))
@@ -194,7 +194,7 @@ func TestWithRenewalLifetime_NilFunctionIsRefused(t *testing.T) {
 // a manager on a fake clock, and the first session in it.
 type lifetimeFixture struct {
 	clk      *clockwork.FakeClock
-	sessions *session.Manager
+	sessions *session.Sessions
 	chain    *httpsec.Chain
 
 	// first is the identifier of the first session, and current of the latest.
@@ -206,7 +206,7 @@ type lifetimeFixture struct {
 func newLifetimeFixture(
 	t *testing.T,
 	start time.Time,
-	managerOpts []session.ManagerOption,
+	managerOpts []session.Option,
 	created time.Duration,
 	opts []httpsec.SessionRenewalOption,
 ) *lifetimeFixture {
@@ -216,7 +216,7 @@ func newLifetimeFixture(
 
 	var err error
 
-	f.sessions, err = session.NewManager(append([]session.ManagerOption{
+	f.sessions, err = session.New(append([]session.Option{
 		session.WithClock(f.clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
 		session.WithIdleTimeout(100 * day),

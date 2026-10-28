@@ -3,11 +3,11 @@ package seal
 import "errors"
 
 var (
-	// ErrInvalidConfiguration reports a keyring or cipher that was wired
+	// ErrConfig reports a keyring or cipher that was wired
 	// wrongly: no active key or more than one, a key that is not 32 bytes, an
 	// empty, malformed or duplicated key id, two ids naming the same key
 	// bytes, or a nil option or keyring. Its text never contains key bytes.
-	ErrInvalidConfiguration = errors.New("seal: invalid configuration")
+	ErrConfig = errors.New("seal: invalid configuration")
 
 	// ErrDecryptionFailed reports a value that would not open. It is opaque on
 	// purpose: a wrong key, wrong additional data, an altered byte, a

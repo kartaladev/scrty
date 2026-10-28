@@ -33,7 +33,7 @@ func TestADenyAlwaysCarriesAReason(t *testing.T) {
 	require.Equal(t, policy.Deny, d.Outcome)
 	require.Error(t, d.Reason,
 		"a deny with no reason is indistinguishable from success to the caller that reports it")
-	assert.ErrorIs(t, d.Reason, policy.ErrPolicyDenied)
+	assert.ErrorIs(t, d.Reason, policy.ErrDenied)
 }
 
 // TestADenyCarriesItsOwnReasonUnchanged pins the other half: the substitution
@@ -55,6 +55,6 @@ func TestADenyCarriesItsOwnReasonUnchanged(t *testing.T) {
 	d := e.EvaluatePhase(t.Context(), policy.StatelessAuthentication, &policy.Input{})
 	require.Equal(t, policy.Deny, d.Outcome)
 	assert.ErrorIs(t, d.Reason, errDenied, "the policy's own reason was replaced")
-	assert.NotErrorIs(t, d.Reason, policy.ErrPolicyDenied,
+	assert.NotErrorIs(t, d.Reason, policy.ErrDenied,
 		"a policy that explained itself was reported as an unexplained refusal")
 }

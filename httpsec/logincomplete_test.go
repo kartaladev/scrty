@@ -224,7 +224,7 @@ func (l *callLog) all() []string {
 type loginSpies struct {
 	store    *MockStore
 	tokens   *MockGenerator
-	sessions *session.Manager
+	sessions *session.Sessions
 
 	mu      sync.Mutex
 	created *session.Session
@@ -236,7 +236,7 @@ func newLoginSpies(t *testing.T) *loginSpies {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 
-	manager, err := session.NewManager(session.WithStore(store))
+	manager, err := session.New(session.WithStore(store))
 	require.NoError(t, err)
 
 	return &loginSpies{store: store, tokens: NewMockGenerator(ctrl), sessions: manager}
@@ -388,7 +388,7 @@ func TestCompleteLogin(t *testing.T) {
 			wire: func(*testing.T, *loginSpies, *callLog, *string) {},
 			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
 				require.Error(t, err, "a reasonless deny must never return nil")
-				require.ErrorIs(t, err, policy.ErrPolicyDenied)
+				require.ErrorIs(t, err, policy.ErrDenied)
 				assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(err))
 				assert.Empty(t, tok)
 				assert.Empty(t, calls)
@@ -639,7 +639,7 @@ func TestCompleteLoginEnrolment(t *testing.T) {
 			store := NewMockStore(ctrl)
 			tokens := NewMockGenerator(ctrl)
 
-			sessions, err := session.NewManager(session.WithStore(store),
+			sessions, err := session.New(session.WithStore(store),
 				session.WithClock(clockwork.NewFakeClockAt(start)))
 			require.NoError(t, err)
 
@@ -687,7 +687,7 @@ func TestCompleteLoginEnrolmentMagicLink(t *testing.T) {
 
 	h := newMagicLinkHarness(t)
 
-	sessions, err := session.NewManager(session.WithClock(clockwork.NewFakeClockAt(start)))
+	sessions, err := session.New(session.WithClock(clockwork.NewFakeClockAt(start)))
 	require.NoError(t, err)
 	h.sessions = sessions
 
@@ -700,7 +700,7 @@ func TestCompleteLoginEnrolmentMagicLink(t *testing.T) {
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
 	method.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
 
-	requirement, err := policy.NewMFARequirementPolicy(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{method}},
+	requirement, err := policy.NewMFARequirement(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{method}},
 		policy.WithMFAEnrolmentPath())
 	require.NoError(t, err)
 

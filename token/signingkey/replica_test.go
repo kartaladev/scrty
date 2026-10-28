@@ -20,7 +20,7 @@ import (
 func signWithCurrent(t *testing.T, source signingkey.KeySource, payload string) []byte {
 	t.Helper()
 
-	kid, signer, ok := source.GetSigner(signingkey.EdDSA)
+	kid, signer, ok := source.Signer(signingkey.EdDSA)
 	require.True(t, ok)
 
 	private, err := jwk.Import[jwk.Key](signer)
@@ -34,7 +34,7 @@ func signWithCurrent(t *testing.T, source signingkey.KeySource, payload string) 
 
 func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	shared := []signingkey.Option{
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
@@ -45,11 +45,11 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 
 	// Replica A is the one that rotates. Replica B rotates so rarely that
 	// everything it publishes beyond its own first key came from the store.
-	replicaA, err := signingkey.NewKeyManager(t.Context(), append(shared,
+	replicaA, err := signingkey.New(t.Context(), append(shared,
 		signingkey.WithRotateInterval(time.Minute),
 		signingkey.WithLifetime(24*time.Hour))...)
 	require.NoError(t, err)
-	replicaB, err := signingkey.NewKeyManager(t.Context(), append(shared,
+	replicaB, err := signingkey.New(t.Context(), append(shared,
 		signingkey.WithRotateInterval(24*time.Hour),
 		signingkey.WithLifetime(48*time.Hour))...)
 	require.NoError(t, err)
@@ -81,7 +81,7 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 		"nothing is reloaded before the consumer's 10-second interval has elapsed")
 
 	advance(t, clk, time.Second, bothReplicas) // ten seconds since replica A rotated
-	kid, _, ok := replicaB.GetSigner(signingkey.EdDSA)
+	kid, _, ok := replicaB.Signer(signingkey.EdDSA)
 	require.True(t, publishes(replicaB, k2) && ok && kid == k2,
 		"within one reload interval replica B publishes k2 and adopts it as current")
 
@@ -95,11 +95,11 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 
 func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	held := realRecord(t, epoch)
 	require.NoError(t, store.Store(t.Context(), held))
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithReloadInterval(10*time.Second),
@@ -122,7 +122,7 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 	require.NoError(t, km.Start(t.Context()))
 
 	advance(t, clk, 10*time.Second, loopCount)
-	kid, _, ok := km.GetSigner(signingkey.RS256)
+	kid, _, ok := km.Signer(signingkey.RS256)
 	require.True(t, publishes(km, newest.Kid) && ok && kid == newest.Kid,
 		"a reload publishes the stored key and re-picks the latest CreatedAt as current")
 
@@ -140,7 +140,7 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 	report := &failureReport{}
 	recorder, logger := newLogRecorder()
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(failingStore(t, report, opReload)),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.EdDSA),
@@ -189,8 +189,8 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 
 func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
 	clk := &steppedClock{FakeClock: newClock()}
-	km, err := signingkey.NewKeyManager(t.Context(),
-		signingkey.WithKeyStore(signingkey.NewInMemoryKeyStore()),
+	km, err := signingkey.New(t.Context(),
+		signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.RS256),
 		signingkey.WithRotateInterval(24*time.Hour),
@@ -208,7 +208,7 @@ func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
 	clk.back.Store(int64(time.Hour))
 	advance(t, clk.FakeClock, time.Minute, loopCount)
 
-	kid, signer, ok := km.GetSigner(signingkey.RS256)
+	kid, signer, ok := km.Signer(signingkey.RS256)
 	require.True(t, ok, "a reload never leaves a configured algorithm without a current key")
 	assert.NotNil(t, signer)
 	assert.Equal(t, held, kid, "the previous current key stays current")
@@ -216,11 +216,11 @@ func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
 
 func TestConstructionOverOnlyAFarFutureKeyMintsACurrentKey(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
+	store := signingkey.NewMemoryKeyStore()
 	future := realRecord(t, epoch.Add(365*24*time.Hour))
 	require.NoError(t, store.Store(t.Context(), future))
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.RS256),
@@ -237,8 +237,8 @@ func TestConstructionOverOnlyAFarFutureKeyMintsACurrentKey(t *testing.T) {
 
 func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
 	clk := newClock()
-	store := signingkey.NewInMemoryKeyStore()
-	km, err := signingkey.NewKeyManager(t.Context(),
+	store := signingkey.NewMemoryKeyStore()
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.RS256),
@@ -258,7 +258,7 @@ func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
 
 	advance(t, clk, time.Minute, loopCount)
 
-	kid, _, ok := km.GetSigner(signingkey.RS256)
+	kid, _, ok := km.Signer(signingkey.RS256)
 	require.True(t, ok)
 	assert.Equal(t, ahead.Kid, kid, "a key within one reload interval ahead is adopted as current")
 }
@@ -275,7 +275,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 		// ones it lists from the first reload on, and the kid that must be
 		// current throughout.
 		listed func(t *testing.T) (atStart, atReload []signingkey.Record, current string)
-		assert func(t *testing.T, km *signingkey.KeyManager, atReload []signingkey.Record)
+		assert func(t *testing.T, km *signingkey.Keys, atReload []signingkey.Record)
 	}
 
 	cases := []testCase{
@@ -289,7 +289,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 				recs := []signingkey.Record{earlier, later}
 				return recs, recs, later.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, atReload []signingkey.Record) {
+			assert: func(t *testing.T, km *signingkey.Keys, atReload []signingkey.Record) {
 				assert.False(t, publishes(km, atReload[0].Kid),
 					"a key past its lifetime that is not current is never republished")
 			},
@@ -301,7 +301,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 				arrived := realRecord(t, epoch)
 				return []signingkey.Record{held}, []signingkey.Record{arrived, held}, held.Kid
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, atReload []signingkey.Record) {
+			assert: func(t *testing.T, km *signingkey.Keys, atReload []signingkey.Record) {
 				assert.True(t, publishes(km, atReload[0].Kid),
 					"the arriving key is within its lifetime, so it is published")
 			},
@@ -314,7 +314,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 			atStart, atReload, current := tc.listed(t)
 			store := &listingStore{recs: atStart}
 
-			km, err := signingkey.NewKeyManager(t.Context(),
+			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clk),
 				signingkey.WithReloadInterval(10*time.Second),

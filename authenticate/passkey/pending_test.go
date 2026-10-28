@@ -101,7 +101,7 @@ func TestPending(t *testing.T) {
 
 	type env struct {
 		f    *fixture
-		m    *passkey.Manager
+		m    *passkey.Passkeys
 		s    *session.Session
 		rc   passkey.RegistrationContext
 		recv *passkey.RecoveryDeps
@@ -136,7 +136,7 @@ func TestPending(t *testing.T) {
 
 		c := onlyCredential(t, e.f, "u-1")
 		assert.Equal(t, passkey.StatePending, c.State)
-		assert.Equal(t, passkey.AwaitingSavedCodes, c.Pending)
+		assert.Equal(t, passkey.PendingSavedCodes, c.Pending)
 	}
 	awaitingEmail := func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 		t.Helper()
@@ -147,7 +147,7 @@ func TestPending(t *testing.T) {
 
 		c := onlyCredential(t, e.f, "u-1")
 		assert.Equal(t, passkey.StatePending, c.State)
-		assert.Equal(t, passkey.AwaitingEmailCode, c.Pending)
+		assert.Equal(t, passkey.PendingEmailCode, c.Pending)
 	}
 	stillPending := func(t *testing.T, e *env) {
 		t.Helper()
@@ -258,7 +258,7 @@ func TestPending(t *testing.T) {
 				c := onlyCredential(t, e.f, "u-1")
 				assert.NotEqual(t, old.ID, c.ID)
 				assert.Equal(t, []byte("cred-b"), c.CredentialID)
-				assert.Equal(t, passkey.AwaitingSavedCodes, c.Pending)
+				assert.Equal(t, passkey.PendingSavedCodes, c.Pending)
 			},
 		},
 		{
@@ -464,7 +464,7 @@ func TestPending(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, held, 1, "the credential awaiting the lost code should have been deleted")
 				assert.Equal(t, []byte("cred-b"), held[0].CredentialID)
-				assert.Equal(t, passkey.AwaitingEmailCode, held[0].Pending)
+				assert.Equal(t, passkey.PendingEmailCode, held[0].Pending)
 
 				msgs := e.f.messages()
 				require.Len(t, msgs, 2)
@@ -593,7 +593,7 @@ func TestPending(t *testing.T) {
 				t.Helper()
 				require.NoError(t, err)
 				require.Len(t, res.RecoveryCodes, 10)
-				assert.Equal(t, passkey.AwaitingSavedCodes|passkey.AwaitingEmailCode, onlyCredential(t, e.f, "u-1").Pending)
+				assert.Equal(t, passkey.PendingSavedCodes|passkey.PendingEmailCode, onlyCredential(t, e.f, "u-1").Pending)
 
 				c, err := e.m.ConfirmEmailCode(t.Context(), e.s, emailedCode(t, e.f), e.rc)
 				require.NoError(t, err)
@@ -656,7 +656,7 @@ func TestPending(t *testing.T) {
 
 				c := onlyCredential(t, e.f, "u-1")
 				assert.Equal(t, []byte("cred-b"), c.CredentialID)
-				assert.Equal(t, passkey.AwaitingSavedCodes, c.Pending)
+				assert.Equal(t, passkey.PendingSavedCodes, c.Pending)
 			},
 		},
 	}

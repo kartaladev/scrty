@@ -152,7 +152,7 @@ func TestManagerAuthenticate(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			m, err := authenticate.NewManager(tc.delegates(t, ctrl)...)
+			m, err := authenticate.NewFirstOf(tc.delegates(t, ctrl)...)
 			require.NoError(t, err)
 
 			got, err := m.Authenticate(t.Context(), credentials(t))

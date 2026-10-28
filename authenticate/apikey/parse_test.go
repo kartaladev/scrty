@@ -51,7 +51,7 @@ func TestManagerParsePresented(t *testing.T) {
 
 			store := &countingKeyStore{Store: apikey.NewMemoryStore()}
 
-			m, err := apikey.NewManager(apikey.WithStore(store))
+			m, err := apikey.New(apikey.WithStore(store))
 			require.NoError(t, err)
 
 			valid, _, err := m.Issue(ctx, "svc-billing", "k", nil, 0)

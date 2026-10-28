@@ -54,13 +54,13 @@ func (r *requiredFlag) Required(context.Context, identity.UserID) (bool, error) 
 // in one chain. Only the user store and the token generator are doubles, since
 // scrty ships neither.
 type e2eDeployment struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	totp     *mfa.TOTP
 	clock    *clockwork.FakeClock
 	users    *MockUserLoader
 	sender   *capturingSender
 	tokens   *MockGenerator
-	links    *magiclink.Manager
+	links    *magiclink.Links
 	required *requiredFlag
 	hash     []byte
 
@@ -77,7 +77,7 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 
 	ctrl := gomock.NewController(t)
 
-	sessions, err := session.NewManager()
+	sessions, err := session.New()
 	require.NoError(t, err)
 
 	d := &e2eDeployment{
@@ -93,10 +93,10 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 	d.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Payroll", mfa.WithClock(d.clock))
 	require.NoError(t, err)
 
-	onetimes, err := onetime.NewManager("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
 	require.NoError(t, err)
 
-	d.links, err = magiclink.NewManager(onetimes, d.users, d.sender, "https://app.example.com")
+	d.links, err = magiclink.New(onetimes, d.users, d.sender, "https://app.example.com")
 	require.NoError(t, err)
 
 	d.wireUsers(t)
@@ -162,10 +162,10 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 	lookups, err := mfa.LookupsFor(d.totp)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(d.required, lookups,
+	requirement, err := policy.NewMFARequirement(d.required, lookups,
 		policy.WithMFAEnrolmentPath(d.pathOpts...))
 	require.NoError(t, err)
 
@@ -383,10 +383,10 @@ func oidcEnrolmentChain(t *testing.T, h *oidcHarness, pathOpts ...policy.Enrolme
 	lookups, err := mfa.LookupsFor(method)
 	require.NoError(t, err)
 
-	challenge, err := policy.NewMFAPolicy(lookups)
+	challenge, err := policy.NewMFA(lookups)
 	require.NoError(t, err)
 
-	requirement, err := policy.NewMFARequirementPolicy(nil, lookups,
+	requirement, err := policy.NewMFARequirement(nil, lookups,
 		policy.WithMFARequiredForAll(), policy.WithMFAEnrolmentPath(pathOpts...),
 		policy.WithFederatedAssuranceSource(h.manager))
 	require.NoError(t, err)
@@ -471,7 +471,7 @@ func TestEnrolmentPathEndToEnd(t *testing.T) {
 			code := h.issueHandoff(t, "")
 
 			out := serve(t, c, handoffRequest(t.Context(), oidcTestSource, code))
-			require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+			require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 			assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 
 			var ch *httpsec.ChallengeError
@@ -480,7 +480,7 @@ func TestEnrolmentPathEndToEnd(t *testing.T) {
 
 			// Presented again, it is judged again rather than refused as spent.
 			again := serve(t, c, handoffRequest(t.Context(), oidcAnotherSource, code))
-			require.ErrorIs(t, again.err, policy.ErrMFAEnrollmentRequired, "the handoff was kept")
+			require.ErrorIs(t, again.err, policy.ErrMFAEnrolmentRequired, "the handoff was kept")
 		})
 
 		t.Run("is sent to enrol when OIDC is on the allowlist", func(t *testing.T) {
@@ -514,7 +514,7 @@ func TestEnrolmentPathEndToEnd(t *testing.T) {
 		d.build(t)
 
 		out := d.login(t)
-		require.ErrorIs(t, out.err, policy.ErrMFAEnrollmentRequired)
+		require.ErrorIs(t, out.err, policy.ErrMFAEnrolmentRequired)
 		assert.Equal(t, http.StatusForbidden, httpsec.StatusForError(out.err))
 
 		var ch *httpsec.ChallengeError

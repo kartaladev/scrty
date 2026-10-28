@@ -636,7 +636,7 @@ func (p *Policy) Evaluate(ctx context.Context, in *policy.Input) policy.Decision
 		// exactly like an account in good standing.
 		return policy.Decision{
 			Outcome: policy.Deny,
-			Reason:  fmt.Errorf("%w: the lockout policy was given no request to judge", policy.ErrPolicyDenied),
+			Reason:  fmt.Errorf("%w: the lockout policy was given no request to judge", policy.ErrDenied),
 		}
 	}
 
@@ -721,7 +721,7 @@ func storeDenied(err error) policy.Decision {
 		Outcome: policy.Deny,
 		Reason: diag.Wrap(err,
 			"policy: denied by policy: the attempt store could not say how often this identifier has failed",
-			policy.ErrPolicyDenied),
+			policy.ErrDenied),
 	}
 }
 

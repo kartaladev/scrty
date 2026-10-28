@@ -18,10 +18,10 @@ import (
 
 // restartable returns a manager on clk and store, configured so one clock
 // advance of an hour rotates.
-func restartable(t *testing.T, clk *clockwork.FakeClock, store signingkey.KeyStore) *signingkey.KeyManager {
+func restartable(t *testing.T, clk *clockwork.FakeClock, store signingkey.KeyStore) *signingkey.Keys {
 	t.Helper()
 
-	km, err := signingkey.NewKeyManager(t.Context(),
+	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithClock(clk),
@@ -88,7 +88,7 @@ func TestRestartedManager(t *testing.T) {
 		seed func(t *testing.T) (recs []signingkey.Record, subject signingkey.Record)
 		// start runs the manager's loops before the assertions.
 		start  bool
-		assert func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, subject signingkey.Record)
+		assert func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, subject signingkey.Record)
 	}
 
 	cases := []testCase{
@@ -99,10 +99,10 @@ func TestRestartedManager(t *testing.T) {
 				return []signingkey.Record{old, realRecord(t, epoch)}, old
 			},
 			start: true,
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, old signingkey.Record) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, old signingkey.Record) {
 				// Whoever still holds the 30-day-old private key issues a fresh
 				// token with it.
-				holder, err := signingkey.NewKeyManager(t.Context(),
+				holder, err := signingkey.New(t.Context(),
 					signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{old}}),
 					signingkey.WithClock(clockwork.NewFakeClockAt(old.CreatedAt)),
 				)
@@ -114,11 +114,11 @@ func TestRestartedManager(t *testing.T) {
 				require.NoError(t, err)
 
 				verifier, err := token.NewVerifier(
-					token.VerifyWithKeySource(km), token.VerifyWithClock(newClock()))
+					token.WithVerifyKeySource(km), token.WithVerifyClock(newClock()))
 				require.NoError(t, err)
 
 				_, err = verifier.Verify(t.Context(), issued)
-				require.ErrorIs(t, err, token.ErrTokenInvalid,
+				require.ErrorIs(t, err, token.ErrInvalid,
 					"a key 30 days past its 24h lifetime does not verify after a restart")
 			},
 		},
@@ -128,7 +128,7 @@ func TestRestartedManager(t *testing.T) {
 				sole := realRecord(t, epoch.Add(-3*24*time.Hour))
 				return []signingkey.Record{sole}, sole
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, store signingkey.KeyStore, sole signingkey.Record) {
+			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore, sole signingkey.Record) {
 				assert.Equal(t, sole.Kid, currentKid(t, km, signingkey.RS256),
 					"the newest key of a configured algorithm is current whatever its age")
 				assert.True(t, publishes(km, sole.Kid), "and it is published")
@@ -144,7 +144,7 @@ func TestRestartedManager(t *testing.T) {
 				old := realRecord(t, epoch.Add(-25*time.Hour))
 				return []signingkey.Record{old, realRecord(t, epoch)}, old
 			},
-			assert: func(t *testing.T, km *signingkey.KeyManager, _ signingkey.KeyStore, old signingkey.Record) {
+			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore, old signingkey.Record) {
 				published, err := km.VerificationKeys()
 				require.NoError(t, err)
 				t.Logf("published keys after restart: %d", len(published))
@@ -158,12 +158,12 @@ func TestRestartedManager(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			recs, subject := tc.seed(t)
-			store := signingkey.NewInMemoryKeyStore()
+			store := signingkey.NewMemoryKeyStore()
 			for _, rec := range recs {
 				require.NoError(t, store.Store(t.Context(), rec))
 			}
 
-			km, err := signingkey.NewKeyManager(t.Context(),
+			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(newClock()),
 			)

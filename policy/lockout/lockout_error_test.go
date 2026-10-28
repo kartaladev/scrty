@@ -37,7 +37,7 @@ func TestAccountLockoutPolicyLockoutError(t *testing.T) {
 			require.ErrorAs(t, d.Reason, &locked, "the refusal is not a *lockout.Error")
 			assert.Equal(t, wait, locked.Wait)
 			assert.Equal(t, text, d.Reason.Error())
-			assert.NotErrorIs(t, d.Reason, policy.ErrPolicyDenied,
+			assert.NotErrorIs(t, d.Reason, policy.ErrDenied,
 				"a lock was reported as a policy outage")
 		}
 	}
@@ -139,7 +139,7 @@ func TestLockoutError(t *testing.T) {
 			name: "it matches no other sentinel",
 			err:  &lockout.Error{},
 			assert: func(t *testing.T, err error) {
-				assert.NotErrorIs(t, err, policy.ErrPolicyDenied)
+				assert.NotErrorIs(t, err, policy.ErrDenied)
 				assert.NotErrorIs(t, err, policy.ErrConfig)
 			},
 		},

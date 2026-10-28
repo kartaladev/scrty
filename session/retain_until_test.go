@@ -53,7 +53,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		renew  func(ctx context.Context, t *testing.T, m *session.Manager, s *session.Session)
+		renew  func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session)
 		assert func(t *testing.T, s *session.Session, op session.Supersession)
 	}
 
@@ -67,7 +67,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "a strict rotation",
-			renew: func(ctx context.Context, t *testing.T, m *session.Manager, s *session.Session) {
+			renew: func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session) {
 				_, err := m.Rotate(ctx, s)
 				require.NoError(t, err)
 			},
@@ -75,7 +75,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 		},
 		{
 			name: "a fresh renewal",
-			renew: func(ctx context.Context, t *testing.T, m *session.Manager, s *session.Session) {
+			renew: func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session) {
 				_, _, err := m.RotateWithGrace(ctx, s, 30*time.Second)
 				require.NoError(t, err)
 			},
@@ -83,7 +83,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 		},
 		{
 			name: "a renewal with a successor lifetime",
-			renew: func(ctx context.Context, t *testing.T, m *session.Manager, s *session.Session) {
+			renew: func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session) {
 				_, _, err := m.RotateWithGrace(ctx, s, 30*time.Second, session.WithSuccessorLifetime(12*time.Hour))
 				require.NoError(t, err)
 			},
@@ -91,7 +91,7 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 		},
 		{
 			name: "a re-rotation inside the window",
-			renew: func(ctx context.Context, t *testing.T, m *session.Manager, s *session.Session) {
+			renew: func(ctx context.Context, t *testing.T, m *session.Sessions, s *session.Session) {
 				_, _, err := m.RotateWithGrace(ctx, s, 30*time.Second)
 				require.NoError(t, err)
 				_, kind, err := m.RotateWithGrace(ctx, s, 30*time.Second)
@@ -129,11 +129,11 @@ func TestSupersession_RetainUntilIsTheFamilyDeadline(t *testing.T) {
 // twoDeploys returns two managers over one memory store and clock, as a
 // rolling deploy that changes the family maximum leaves them: the first
 // manager's lifetimes and family maximum are first, the second's are second.
-func twoDeploys(t *testing.T, clk *clockwork.FakeClock, first, second time.Duration) (before, after *session.Manager, store *session.MemoryStore) {
+func twoDeploys(t *testing.T, clk *clockwork.FakeClock, first, second time.Duration) (before, after *session.Sessions, store *session.MemoryStore) {
 	t.Helper()
 
 	store = session.NewMemoryStore(session.WithMemoryStoreClock(clk))
-	build := func(lifetime time.Duration, family time.Duration) *session.Manager {
+	build := func(lifetime time.Duration, family time.Duration) *session.Sessions {
 		return managerFor(t,
 			session.WithStore(store),
 			session.WithClock(clk),
@@ -158,14 +158,14 @@ func TestRotateWithGrace_LoweredFamilyMaximum(t *testing.T) {
 	type testCase struct {
 		name   string
 		renew  time.Duration
-		assert func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, old, next *session.Session, err error)
+		assert func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, old, next *session.Session, err error)
 	}
 
 	cases := []testCase{
 		{
 			name:  "the grace window of a record renewed before the new family end is kept",
 			renew: 5*time.Hour + 59*time.Minute + 50*time.Second,
-			assert: func(t *testing.T, m *session.Manager, clk *clockwork.FakeClock, old, next *session.Session, err error) {
+			assert: func(t *testing.T, m *session.Sessions, clk *clockwork.FakeClock, old, next *session.Session, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, old.FamilyCreatedAt.Add(6*time.Hour), next.AbsoluteExpiresAt,
 					"the successor is cut at the family's end under the lowered maximum")
@@ -179,9 +179,9 @@ func TestRotateWithGrace_LoweredFamilyMaximum(t *testing.T) {
 		{
 			name:  "a renewal past the new family end is refused as expired",
 			renew: 6*time.Hour + 30*time.Minute,
-			assert: func(t *testing.T, m *session.Manager, _ *clockwork.FakeClock, old, next *session.Session, err error) {
-				require.ErrorIs(t, err, session.ErrSessionExpired)
-				assert.NotErrorIs(t, err, session.ErrSessionReused)
+			assert: func(t *testing.T, m *session.Sessions, _ *clockwork.FakeClock, old, next *session.Session, err error) {
+				require.ErrorIs(t, err, session.ErrExpired)
+				assert.NotErrorIs(t, err, session.ErrReused)
 				assert.Nil(t, next)
 
 				loaded, err := m.Load(t.Context(), old.ID)
@@ -234,8 +234,8 @@ func TestRotateWithGrace_RaisedFamilyMaximumReadsAsExpired(t *testing.T) {
 
 	clk.Advance(3 * time.Hour) // 23:00, past the old record's retention
 	_, err = after.Load(t.Context(), s.ID)
-	require.ErrorIs(t, err, session.ErrSessionExpired)
-	assert.NotErrorIs(t, err, session.ErrSessionReused, "the limit: reuse is not detected past the old retention")
+	require.ErrorIs(t, err, session.ErrExpired)
+	assert.NotErrorIs(t, err, session.ErrReused, "the limit: reuse is not detected past the old retention")
 
 	_, err = after.Load(t.Context(), head.ID)
 	require.NoError(t, err, "the family was not revoked: its head still loads")

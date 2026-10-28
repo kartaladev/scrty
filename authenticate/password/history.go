@@ -38,10 +38,10 @@ type History interface {
 }
 
 var (
-	// ErrPasswordReused refuses a new password that matches the user's current
+	// ErrReused refuses a new password that matches the user's current
 	// password or one of their recent ones. Its text is fixed and carries no
 	// password, hash or user reference.
-	ErrPasswordReused = errors.New("password: matches a recent password")
+	ErrReused = errors.New("password: matches a recent password")
 
 	// ErrHistoryUnavailable refuses a change whose history could not be read or
 	// recorded. The guard fails closed: it never reads a failure as "no

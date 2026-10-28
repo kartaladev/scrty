@@ -21,7 +21,7 @@ import (
 func ExampleChain_ExpiryTasks() {
 	sessionStore := session.NewMemoryStore()
 
-	sessions, err := session.NewManager(session.WithStore(sessionStore))
+	sessions, err := session.New(session.WithStore(sessionStore))
 	if err != nil {
 		log.Fatal(err)
 	}

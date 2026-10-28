@@ -62,7 +62,7 @@ func TestMFAMethodLookupContract(t *testing.T) {
 				assert.Equal(t, policy.Allow, challenge.Outcome,
 					"an unconfirmed enrolment was challenged for, which nobody could answer")
 				require.Equal(t, policy.Deny, requirement.Outcome)
-				assert.ErrorIs(t, requirement.Reason, policy.ErrMFAEnrollmentRequired,
+				assert.ErrorIs(t, requirement.Reason, policy.ErrMFAEnrolmentRequired,
 					"a required user with no confirmed enrolment was not asked to enrol")
 			},
 		},

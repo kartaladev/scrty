@@ -24,7 +24,7 @@ type SessionBearerDeps struct {
 	// Sessions loads the session the presented reference names. It looks the
 	// session up by the reference's digest, and judges its deadlines and any
 	// reuse of a superseded reference.
-	Sessions *session.Manager
+	Sessions *session.Sessions
 
 	// Users reloads the session's user by the user reference the session
 	// records (LoadByUserID), never by username, so the roles a request is
@@ -52,7 +52,7 @@ type SessionBearerOption func(*sessionBearer) error
 // identifier presented with no signed token around it, against a live session
 // and a live user.
 type sessionBearer struct {
-	sessions *session.Manager
+	sessions *session.Sessions
 	users    identity.UserLoader
 
 	// resolver is the resolution core, built by wire over the bearer's own

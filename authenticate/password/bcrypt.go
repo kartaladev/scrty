@@ -27,14 +27,14 @@ const bcryptMaxInput = 72
 // default stays at the floor.
 const maxRecordCost = 16
 
-// ErrPasswordContainsNUL is returned by the bcrypt encoder's Encode for a
+// ErrContainsNUL is returned by the bcrypt encoder's Encode for a
 // password containing a NUL byte. Match reports no match for one.
 //
 // bcrypt appends a NUL to the key and its key schedule cycles the key, so
 // "hunter2" and "hunter2\x00hunter2" expand to the same schedule: one
 // credential under two spellings. Refusing every NUL, rather than only the
 // 72-byte shape, closes the whole family.
-var ErrPasswordContainsNUL = errors.New("password: password contains a NUL byte")
+var ErrContainsNUL = errors.New("password: password contains a NUL byte")
 
 type bcryptEncoder struct {
 	cost int
@@ -87,16 +87,16 @@ func NewBcryptEncoder(opts ...BcryptOption) (Encoder, error) {
 // bcrypt generates and embeds its own salt, so unlike the Argon2id and scrypt
 // encoders there is no salt to read here and no read to fail.
 //
-// A password longer than 72 bytes is refused with [ErrPasswordTooLong], and one
-// containing a NUL byte with [ErrPasswordContainsNUL].
+// A password longer than 72 bytes is refused with [ErrTooLong], and one
+// containing a NUL byte with [ErrContainsNUL].
 func (e *bcryptEncoder) Encode(input string) ([]byte, error) {
 	if len(input) > bcryptMaxInput {
 		return nil, fmt.Errorf("%w: %d bytes; bcrypt hashes at most %d",
-			ErrPasswordTooLong, len(input), bcryptMaxInput)
+			ErrTooLong, len(input), bcryptMaxInput)
 	}
 
 	if strings.IndexByte(input, 0) >= 0 {
-		return nil, ErrPasswordContainsNUL
+		return nil, ErrContainsNUL
 	}
 
 	encoded, err := bcrypt.GenerateFromPassword([]byte(input), e.cost)

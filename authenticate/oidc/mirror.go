@@ -15,9 +15,9 @@ import (
 // is copied back onto the login's details.
 type mirroredField struct {
 	field  identity.Field
-	same   func(stored *identity.Details, proposed *identity.NewUser) bool
-	option func(proposed *identity.NewUser) identity.UserOption
-	copy   func(dst *identity.Details, src *identity.NewUser)
+	same   func(stored *identity.Details, proposed *identity.UserChange) bool
+	option func(proposed *identity.UserChange) identity.UserOption
+	copy   func(dst *identity.Details, src *identity.UserChange)
 }
 
 // mirroredFields is the one table comparison, the update and copy-back read,
@@ -26,15 +26,15 @@ type mirroredField struct {
 var mirroredFields = []mirroredField{
 	{
 		field:  identity.FieldName,
-		same:   func(d *identity.Details, u *identity.NewUser) bool { return d.Name == u.Name },
-		option: func(u *identity.NewUser) identity.UserOption { return identity.WithUserName(u.Name) },
-		copy:   func(dst *identity.Details, src *identity.NewUser) { dst.Name = src.Name },
+		same:   func(d *identity.Details, u *identity.UserChange) bool { return d.Name == u.Name },
+		option: func(u *identity.UserChange) identity.UserOption { return identity.WithUserName(u.Name) },
+		copy:   func(dst *identity.Details, src *identity.UserChange) { dst.Name = src.Name },
 	},
 	{
 		field:  identity.FieldPassword,
-		same:   func(d *identity.Details, u *identity.NewUser) bool { return bytes.Equal(d.Password, u.Password) },
-		option: func(u *identity.NewUser) identity.UserOption { return identity.WithUserPassword(u.Password) },
-		copy:   func(dst *identity.Details, src *identity.NewUser) { dst.Password = bytes.Clone(src.Password) },
+		same:   func(d *identity.Details, u *identity.UserChange) bool { return bytes.Equal(d.Password, u.Password) },
+		option: func(u *identity.UserChange) identity.UserOption { return identity.WithUserPassword(u.Password) },
+		copy:   func(dst *identity.Details, src *identity.UserChange) { dst.Password = bytes.Clone(src.Password) },
 	},
 }
 

@@ -94,7 +94,7 @@ func TestLogout(t *testing.T) {
 				gomock.InOrder(
 					h.store.EXPECT().Load(gomock.Any(), testJTI).Return(familiedSession(), nil),
 					h.store.EXPECT().Load(gomock.Any(), testJTI).
-						Return(nil, session.ErrSessionNotFound).AnyTimes(),
+						Return(nil, session.ErrNotFound).AnyTimes(),
 				)
 				h.acceptsFirstPresentation()
 				h.store.EXPECT().DeleteFamily(gomock.Any(), testFamily).Return(1, nil).Times(1)

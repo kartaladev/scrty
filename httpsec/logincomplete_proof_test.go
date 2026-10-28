@@ -115,17 +115,17 @@ func TestCompleteLogin_Proof(t *testing.T) {
 
 			lookups := []policy.MFAMethodLookup{passkey, totp}
 
-			requirement, err := policy.NewMFARequirementPolicy(nil, lookups, policy.WithMFARequiredForAll())
+			requirement, err := policy.NewMFARequirement(nil, lookups, policy.WithMFARequiredForAll())
 			require.NoError(t, err)
 
-			challenge, err := policy.NewMFAPolicy(lookups)
+			challenge, err := policy.NewMFA(lookups)
 			require.NoError(t, err)
 
 			policies := []policy.Policy{requirement, challenge}
 			passwordChangedAt := start.Add(-time.Hour)
 
 			if tc.passwordAge {
-				age, err := policy.NewPasswordAgePolicy(policy.WithMaxPasswordAge(maxPasswordAge))
+				age, err := policy.NewPasswordAge(policy.WithMaxPasswordAge(maxPasswordAge))
 				require.NoError(t, err)
 
 				policies = append(policies, age)
@@ -135,7 +135,7 @@ func TestCompleteLogin_Proof(t *testing.T) {
 			store := NewMockStore(ctrl)
 			tokens := NewMockGenerator(ctrl)
 
-			sessions, err := session.NewManager(session.WithStore(store),
+			sessions, err := session.New(session.WithStore(store),
 				session.WithClock(clockwork.NewFakeClockAt(start)))
 			require.NoError(t, err)
 

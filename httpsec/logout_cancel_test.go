@@ -46,10 +46,10 @@ func TestLogout_EndsTheSignInWhenTheClientHangsUp(t *testing.T) {
 		return held.DeleteFamily(ctx, family)
 	}).Times(1)
 
-	sessions, err := session.NewManager(session.WithClock(clk), session.WithStore(store))
+	sessions, err := session.New(session.WithClock(clk), session.WithStore(store))
 	require.NoError(t, err)
 
-	signIn, err := session.NewManager(session.WithClock(clk), session.WithStore(held))
+	signIn, err := session.New(session.WithClock(clk), session.WithStore(held))
 	require.NoError(t, err)
 	s, err := signIn.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
 	require.NoError(t, err)
@@ -91,6 +91,6 @@ func TestLogout_EndsTheSignInWhenTheClientHangsUp(t *testing.T) {
 	require.NoError(t, seen, "the revocation ran on the request's cancelled context, and a context-honouring store aborted it")
 	for name, sessionID := range map[string]string{"the superseded original": s.ID, "the successor": successor.ID} {
 		_, err = held.Load(t.Context(), sessionID)
-		assert.ErrorIs(t, err, session.ErrSessionNotFound, "%s of the renewed sign-in is still live", name)
+		assert.ErrorIs(t, err, session.ErrNotFound, "%s of the renewed sign-in is still live", name)
 	}
 }

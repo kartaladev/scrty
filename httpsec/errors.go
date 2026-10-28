@@ -66,7 +66,7 @@ var (
 	// It wraps session.ErrSessionRenewalConflict, so a consumer matching either
 	// identity reaches both. Its text carries no session identifier.
 	ErrSessionRenewalConflict = fmt.Errorf("httpsec: the session was renewed concurrently: %w",
-		session.ErrSessionRenewalConflict)
+		session.ErrRenewalConflict)
 
 	// ErrRenewalThrottled refuses a renewal of a session family that has
 	// renewed too often in the window, or whose renewal limiter could not

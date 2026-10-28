@@ -9,7 +9,7 @@ import (
 //
 // Every option replaces a default that already works, so a consumer who passes
 // none gets a manager that behaves safely. A nil option is ignored.
-type Option func(*Manager)
+type Option func(*Links)
 
 // WithConfirmPath sets the path on the link base URL that the emailed link
 // points at — the page that posts the token back.
@@ -19,7 +19,7 @@ type Option func(*Manager)
 // sign-in link somewhere other than the consumer's own application, so it
 // fails construction with ErrConfig.
 func WithConfirmPath(path string) Option {
-	return func(m *Manager) { m.confirmPath = path }
+	return func(m *Links) { m.confirmPath = path }
 }
 
 // WithIssuanceLimit sets how many links one user may be issued within the
@@ -36,7 +36,7 @@ func WithConfirmPath(path string) Option {
 // onetime.WithIssuanceWindow, so a one-time credential's timing is set in one
 // place.
 func WithIssuanceLimit(n int) Option {
-	return func(m *Manager) { m.issuanceLimit = n }
+	return func(m *Links) { m.issuanceLimit = n }
 }
 
 // WithAddressResolver replaces how a submitted address becomes a user.
@@ -48,7 +48,7 @@ func WithIssuanceLimit(n int) Option {
 //
 // A nil resolver is ignored and the default is kept.
 func WithAddressResolver(r AddressResolver) Option {
-	return func(m *Manager) {
+	return func(m *Links) {
 		if r != nil {
 			m.resolver = r
 		}
@@ -67,7 +67,7 @@ func WithAddressResolver(r AddressResolver) Option {
 // Whatever a renderer returns, the recipient is forced to the submitted
 // address.
 func WithRenderer(r Renderer) Option {
-	return func(m *Manager) { m.renderer = r }
+	return func(m *Links) { m.renderer = r }
 }
 
 // WithSameDeviceBinding turns same-device binding on or off.
@@ -78,7 +78,7 @@ func WithRenderer(r Renderer) Option {
 // a link to be followable from any device turns it off, and redemption then
 // ignores any binding presented.
 func WithSameDeviceBinding(enabled bool) Option {
-	return func(m *Manager) { m.binding = enabled }
+	return func(m *Links) { m.binding = enabled }
 }
 
 // WithSynchronousDelivery accepts a sender that waits for delivery.
@@ -93,7 +93,7 @@ func WithSameDeviceBinding(enabled bool) Option {
 // The alternative is to wrap the sender in notify.NewQueuedSender, which
 // declares itself non-blocking and needs no option here.
 func WithSynchronousDelivery() Option {
-	return func(m *Manager) { m.acceptSyncDelivery = true }
+	return func(m *Links) { m.acceptSyncDelivery = true }
 }
 
 // WithLogger replaces the logger. The default is slog.Default().
@@ -110,7 +110,7 @@ func WithSynchronousDelivery() Option {
 // text; a consumer who wants that detail logs it inside their own
 // implementation of the port.
 func WithLogger(l *slog.Logger) Option {
-	return func(m *Manager) {
+	return func(m *Links) {
 		if l != nil {
 			m.logger = l
 		}
@@ -123,5 +123,5 @@ func WithLogger(l *slog.Logger) Option {
 // It exists so a test can make the source fail and watch the request refuse
 // without sending anything. A nil source fails construction with ErrConfig.
 func WithRandom(r io.Reader) Option {
-	return func(m *Manager) { m.random = r }
+	return func(m *Links) { m.random = r }
 }

@@ -86,20 +86,20 @@ func TestProvisionerWrite_Write(t *testing.T) {
 	type testCase struct {
 		name   string
 		user   *identity.Details
-		update func(m *MockUserProvisioner, got **identity.NewUser)
+		update func(m *MockUserProvisioner, got **identity.UserChange)
 		// invoke runs the write; nil calls it directly with newHash and at.
 		invoke func(t *testing.T, write password.WriteFunc, user *identity.Details) error
-		assert func(t *testing.T, err error, got *identity.NewUser)
+		assert func(t *testing.T, err error, got *identity.UserChange)
 	}
 
-	capture := func(got **identity.NewUser, err error) func(context.Context, string, ...identity.UserOption) (*identity.Details, error) {
+	capture := func(got **identity.UserChange, err error) func(context.Context, string, ...identity.UserOption) (*identity.Details, error) {
 		return func(_ context.Context, _ string, opts ...identity.UserOption) (*identity.Details, error) {
 			*got = identity.ApplyUserOptions(opts...)
 			return &identity.Details{}, err
 		}
 	}
 
-	namesPasswordChangeOnly := func(t *testing.T, got *identity.NewUser, wantHash func([]byte) bool) {
+	namesPasswordChangeOnly := func(t *testing.T, got *identity.UserChange, wantHash func([]byte) bool) {
 		t.Helper()
 
 		require.NotNil(t, got, "Update was called")
@@ -115,10 +115,10 @@ func TestProvisionerWrite_Write(t *testing.T) {
 		{
 			name: "updates the username naming exactly the hash and the time",
 			user: &identity.Details{ID: "u-1", Username: "ada", Password: current},
-			update: func(m *MockUserProvisioner, got **identity.NewUser) {
+			update: func(m *MockUserProvisioner, got **identity.UserChange) {
 				m.EXPECT().Update(gomock.Any(), "ada", gomock.Any()).Times(1).DoAndReturn(capture(got, nil))
 			},
-			assert: func(t *testing.T, err error, got *identity.NewUser) {
+			assert: func(t *testing.T, err error, got *identity.UserChange) {
 				require.NoError(t, err)
 				namesPasswordChangeOnly(t, got, func(h []byte) bool { return string(h) == string(newHash) })
 			},
@@ -126,18 +126,18 @@ func TestProvisionerWrite_Write(t *testing.T) {
 		{
 			name: "returns the provisioner's error unchanged",
 			user: &identity.Details{ID: "u-1", Username: "ada", Password: current},
-			update: func(m *MockUserProvisioner, got **identity.NewUser) {
+			update: func(m *MockUserProvisioner, got **identity.UserChange) {
 				m.EXPECT().Update(gomock.Any(), "ada", gomock.Any()).DoAndReturn(capture(got, errStore))
 			},
-			assert: func(t *testing.T, err error, _ *identity.NewUser) {
+			assert: func(t *testing.T, err error, _ *identity.UserChange) {
 				require.ErrorIs(t, err, errStore)
 				assert.Same(t, errStore, err, "returned as is, not wrapped")
 			},
 		},
 		{
 			name:   "a nil user is a wiring mistake and updates nothing",
-			update: func(*MockUserProvisioner, **identity.NewUser) {},
-			assert: func(t *testing.T, err error, got *identity.NewUser) {
+			update: func(*MockUserProvisioner, **identity.UserChange) {},
+			assert: func(t *testing.T, err error, got *identity.UserChange) {
 				require.ErrorIs(t, err, password.ErrConfig)
 				assert.Nil(t, got)
 			},
@@ -145,7 +145,7 @@ func TestProvisionerWrite_Write(t *testing.T) {
 		{
 			name: "through a guard with a fixed clock, the change records its time",
 			user: &identity.Details{ID: "u-1", Username: "ada", Password: current},
-			update: func(m *MockUserProvisioner, got **identity.NewUser) {
+			update: func(m *MockUserProvisioner, got **identity.UserChange) {
 				m.EXPECT().Update(gomock.Any(), "ada", gomock.Any()).Times(1).DoAndReturn(capture(got, nil))
 			},
 			invoke: func(t *testing.T, write password.WriteFunc, user *identity.Details) error {
@@ -155,7 +155,7 @@ func TestProvisionerWrite_Write(t *testing.T) {
 
 				return g.Change(t.Context(), user, "p2", write)
 			},
-			assert: func(t *testing.T, err error, got *identity.NewUser) {
+			assert: func(t *testing.T, err error, got *identity.UserChange) {
 				require.NoError(t, err)
 				namesPasswordChangeOnly(t, got, func(h []byte) bool { return fast.Match("p2", h) })
 			},
@@ -167,7 +167,7 @@ func TestProvisionerWrite_Write(t *testing.T) {
 			t.Parallel()
 
 			m := NewMockUserProvisioner(gomock.NewController(t))
-			var got *identity.NewUser
+			var got *identity.UserChange
 			tc.update(m, &got)
 
 			write, err := password.ProvisionerWrite(m)

@@ -92,7 +92,7 @@ func TestHandoffIssue(t *testing.T) {
 	type deps struct {
 		store oidc.HandoffStore
 		clock *clockwork.FakeClock
-		m     *oidc.HandoffManager
+		m     *oidc.Handoff
 		users *MockUserLoader
 	}
 
@@ -176,7 +176,7 @@ func TestHandoffIssue(t *testing.T) {
 			},
 			assert: func(t *testing.T, d deps, code string, err error) {
 				require.NoError(t, err)
-				m, err := oidc.NewHandoffManager(d.store, NewMockUserLoader(gomock.NewController(t)))
+				m, err := oidc.NewHandoff(d.store, NewMockUserLoader(gomock.NewController(t)))
 				require.NoError(t, err)
 				other, err := m.Issue(t.Context(), handoffCallback())
 				require.NoError(t, err)
@@ -314,7 +314,7 @@ func TestHandoffIssue(t *testing.T) {
 			opts = append([]oidc.HandoffOption{oidc.WithHandoffClock(clock)}, opts...)
 
 			users := NewMockUserLoader(ctrl)
-			m, err := oidc.NewHandoffManager(store, users, opts...)
+			m, err := oidc.NewHandoff(store, users, opts...)
 			require.NoError(t, err)
 
 			ctx := t.Context()
@@ -343,16 +343,16 @@ func TestHandoffIssueConstruction(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		build  func(t *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error)
-		assert func(t *testing.T, m *oidc.HandoffManager, err error)
+		build  func(t *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error)
+		assert func(t *testing.T, m *oidc.Handoff, err error)
 	}
 
-	refusedAsMissingPort := func(t *testing.T, m *oidc.HandoffManager, err error) {
+	refusedAsMissingPort := func(t *testing.T, m *oidc.Handoff, err error) {
 		require.ErrorIs(t, err, oidc.ErrConfig)
 		require.ErrorIs(t, err, identity.ErrMissingPort)
 		assert.Nil(t, m)
 	}
-	refusedAsConfig := func(t *testing.T, m *oidc.HandoffManager, err error) {
+	refusedAsConfig := func(t *testing.T, m *oidc.Handoff, err error) {
 		require.ErrorIs(t, err, oidc.ErrConfig)
 		assert.Nil(t, m)
 	}
@@ -360,10 +360,10 @@ func TestHandoffIssueConstruction(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "the defaults issue a code",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl))
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl))
 			},
-			assert: func(t *testing.T, m *oidc.HandoffManager, err error) {
+			assert: func(t *testing.T, m *oidc.Handoff, err error) {
 				require.NoError(t, err)
 				code, err := m.Issue(t.Context(), handoffCallback())
 				require.NoError(t, err)
@@ -374,86 +374,86 @@ func TestHandoffIssueConstruction(t *testing.T) {
 		},
 		{
 			name: "a nil option is ignored",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl), nil)
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl), nil)
 			},
-			assert: func(t *testing.T, m *oidc.HandoffManager, err error) {
+			assert: func(t *testing.T, m *oidc.Handoff, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			},
 		},
 		{
 			name: "a nil store is a missing port",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(nil, NewMockUserLoader(ctrl))
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(nil, NewMockUserLoader(ctrl))
 			},
 			assert: refusedAsMissingPort,
 		},
 		{
 			name: "a typed nil store is a missing port",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(typedNilStore, NewMockUserLoader(ctrl))
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(typedNilStore, NewMockUserLoader(ctrl))
 			},
 			assert: refusedAsMissingPort,
 		},
 		{
 			name: "a nil loader is a missing port",
-			build: func(*testing.T, *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), nil)
+			build: func(*testing.T, *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), nil)
 			},
 			assert: refusedAsMissingPort,
 		},
 		{
 			name: "a typed nil loader is a missing port",
-			build: func(*testing.T, *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), typedNilLoader)
+			build: func(*testing.T, *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), typedNilLoader)
 			},
 			assert: refusedAsMissingPort,
 		},
 		{
 			name: "WithHandoffRandom(nil) is refused",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffRandom(nil))
 			},
 			assert: refusedAsConfig,
 		},
 		{
 			name: "WithHandoffRandom of a typed nil is refused",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffRandom(typedNilReader))
 			},
 			assert: refusedAsConfig,
 		},
 		{
 			name: "WithHandoffClock(nil) is refused",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffClock(nil))
 			},
 			assert: refusedAsConfig,
 		},
 		{
 			name: "WithHandoffClock with a typed-nil clock is refused like an untyped one",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffClock((*nilClock)(nil)))
 			},
 			assert: refusedAsConfig,
 		},
 		{
 			name: "WithHandoffIDGenerator(nil) is refused",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffIDGenerator(nil))
 			},
 			assert: refusedAsConfig,
 		},
 		{
 			name: "WithHandoffLogger(nil) is refused",
-			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.HandoffManager, error) {
-				return oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
+			build: func(_ *testing.T, ctrl *gomock.Controller) (*oidc.Handoff, error) {
+				return oidc.NewHandoff(oidc.NewMemoryHandoffStore(), NewMockUserLoader(ctrl),
 					oidc.WithHandoffLogger(nil))
 			},
 			assert: refusedAsConfig,

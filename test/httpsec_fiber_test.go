@@ -235,7 +235,7 @@ func TestSessionBearerFiber(t *testing.T) {
 				assert.Empty(t, seen, "the route never ran")
 
 				_, err := f.sessions.Load(t.Context(), f.successor)
-				require.ErrorIs(t, err, session.ErrSessionNotFound, "the family was revoked, successor included")
+				require.ErrorIs(t, err, session.ErrNotFound, "the family was revoked, successor included")
 			},
 		},
 	}
