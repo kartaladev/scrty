@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -78,7 +78,7 @@ func (s *APIKeyStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error) 
 
 	var row apiKeyRow
 	err := s.c.queryRow(ctx, op, pgschema.APIKeySelect, []any{uuidArg(keyID)}, row.dest()...)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return apikey.Key{}, apikey.ErrKeyNotFound
 	}
 	if err != nil {
@@ -124,7 +124,7 @@ func (s *APIKeyStore) List(ctx context.Context, principal identity.UserID) ([]ap
 	}
 
 	keys := []apikey.Key{}
-	err := s.c.query(ctx, "list API keys", pgschema.APIKeyList, []any{string(principal)}, func(rows pgxv5.Rows) error {
+	err := s.c.query(ctx, "list API keys", pgschema.APIKeyList, []any{string(principal)}, func(rows pgx.Rows) error {
 		var row apiKeyRow
 		if err := rows.Scan(row.dest()...); err != nil {
 			return err

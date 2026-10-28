@@ -129,3 +129,16 @@ func TestDefaultMessages_RecoveredNotice(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultMessages_IssuedCode(t *testing.T) {
+	t.Parallel()
+
+	subject, body := recovery.DefaultMessages().IssuedCode("tok.secret", monday1000.Add(15*time.Minute))
+
+	assert.NotEmpty(t, subject)
+	assert.Contains(t, body, "tok.secret")
+	assert.Contains(t, body, "28 September 2026 10:15 UTC", "the expiry is stated")
+	assert.Contains(t, body, "once", "single use is stated")
+	assert.NotContains(t, body, "<", "plain text")
+	assert.NotContains(t, strings.ToLower(body+subject), "scrty", "no brand is named")
+}

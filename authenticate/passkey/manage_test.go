@@ -9,72 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
-
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
-
-// manageEnv is a manager whose user u-1 holds the login fixture's active
-// security key and a suspended passkey, and u-2 one active passkey.
-type manageEnv struct {
-	*loginEnv
-	suspendedCred, theirs *passkey.Credential
-}
-
-// seedSessions stores the fixture's sessions (see fixture.seedSessions).
-func (e *manageEnv) seedSessions(t *testing.T) {
-	t.Helper()
-
-	e.sids = e.f.seedSessions(t)
-}
-
-// loads reports whether the session stored for device still loads.
-func (e *manageEnv) loads(t *testing.T, device string) bool {
-	t.Helper()
-
-	return e.f.loads(t, e.sids[device])
-}
-
-// mockRevoker wires a gomock session revoker in place of the session manager.
-func (e *manageEnv) mockRevoker() *MockSessionRevoker { return e.f.mockRevoker() }
-
-// lastNotice returns the body of the only notice queued.
-func (e *manageEnv) lastNotice(t *testing.T) string {
-	t.Helper()
-
-	msgs := e.f.messages()
-	require.Len(t, msgs, 1)
-
-	return msgs[0].TextBody
-}
-
-func newManageEnv(t *testing.T) *manageEnv {
-	t.Helper()
-
-	e := &manageEnv{loginEnv: newLoginEnv(t, func(c *passkey.Credential) {
-		c.Transports = []string{"usb"}
-		c.BackupEligible = false
-	})}
-	e.suspendedCred = addCredential(t, e.loginEnv, "u-1", "key-suspended", passkey.StateSuspended)
-	e.theirs = addCredential(t, e.loginEnv, "u-2", "key-of-u-2", passkey.StateActive)
-
-	return e
-}
-
-// exists reports whether user still holds credential cid.
-func (e *manageEnv) exists(t *testing.T, user identity.UserID, cid id.ID) bool {
-	t.Helper()
-
-	_, err := e.f.creds.Find(t.Context(), user, cid)
-
-	return err == nil
-}
 
 // assertNoKeyBytes fails when any field of any summary, at any depth, holds
 // one of keys' bytes.
@@ -762,6 +705,84 @@ func TestManageRemove(t *testing.T) {
 
 			err := m.Remove(ctx, tc.session(e), tc.target(e), rc, tc.opts...)
 			tc.assert(t, e, err)
+		})
+	}
+}
+
+// TestRemove_EndsOtherSessionsByFamily pins that a removal ending the user's
+// other sessions keeps the whole sign-in that made it, whichever of its
+// identifiers is presented: the predecessor A still inside its renewal window,
+// or its successor B. Only the user's other sign-ins end.
+//
+// Standalone from TestManageRemove: it seeds a renewed sign-in and hands each case its sessions.
+func TestRemove_EndsOtherSessionsByFamily(t *testing.T) {
+	t.Parallel()
+
+	const grace = 30 * time.Second
+
+	type signIn struct{ predecessor, successor, other *session.Session }
+
+	type testCase struct {
+		name    string
+		present func(si signIn) *session.Session
+		assert  func(t *testing.T, e *manageEnv, si signIn, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:    "presenting the predecessor inside its window keeps its live successor",
+			present: func(si signIn) *session.Session { return si.predecessor },
+			assert: func(t *testing.T, e *manageEnv, si signIn, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.True(t, e.f.loads(t, si.predecessor.ID),
+					"the removing session itself must still load, beside its successor")
+				assert.True(t, e.f.loads(t, si.successor.ID),
+					"the removing sign-in's live successor must still load")
+				assert.False(t, e.f.loads(t, si.other.ID), "the user's other sign-in must end")
+			},
+		},
+		{
+			name:    "presenting the successor keeps it, ends its superseded predecessor and the other sign-in",
+			present: func(si signIn) *session.Session { return si.successor },
+			assert: func(t *testing.T, e *manageEnv, si signIn, err error) {
+				t.Helper()
+				require.NoError(t, err)
+				assert.True(t, e.f.loads(t, si.successor.ID), "the removing session must still load")
+				assert.False(t, e.f.loads(t, si.predecessor.ID),
+					"a superseded predecessor, which a thief may hold, must end with the credential change")
+				assert.False(t, e.f.loads(t, si.other.ID), "the user's other sign-in must end")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			e := newManageEnv(t)
+			ctx := t.Context()
+
+			a, err := e.f.sessions.Create(ctx, "u-1")
+			require.NoError(t, err)
+			other, err := e.f.sessions.Create(ctx, "u-1")
+			require.NoError(t, err)
+
+			b, _, err := e.f.sessions.RotateWithGrace(ctx, a, grace)
+			require.NoError(t, err)
+
+			e.f.clock.Advance(grace / 2)
+
+			loadedA, err := e.f.sessions.Load(ctx, a.ID)
+			require.NoError(t, err, "the predecessor must load inside its window")
+			loadedB, err := e.f.sessions.Load(ctx, b.ID)
+			require.NoError(t, err)
+
+			si := signIn{predecessor: loadedA, successor: loadedB, other: other}
+
+			m := e.manager(t)
+			err = m.Remove(ctx, tc.present(si), e.cred.ID, passkey.RegistrationContext{}, passkey.EndOtherSessions())
+			tc.assert(t, e, si, err)
 		})
 	}
 }

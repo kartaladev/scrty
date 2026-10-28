@@ -3,7 +3,6 @@ package passkey_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,19 +19,6 @@ import (
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 )
-
-// countRecords counts the log records whose message is msg.
-func countRecords(logs *logBuffer, msg string) int {
-	n := 0
-
-	for _, r := range logs.records() {
-		if strings.Contains(r, `"msg":"`+msg+`"`) {
-			n++
-		}
-	}
-
-	return n
-}
 
 const msgCloneRecord = "passkey: suspected clone"
 

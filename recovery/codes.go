@@ -1,14 +1,18 @@
 package recovery
 
 //go:generate mockgen -destination=limiter_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/ratelimit Limiter,LimiterFactory
+//go:generate mockgen -source=codes.go -destination=codes_mock_test.go -package=recovery_test -typed
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
@@ -335,4 +339,309 @@ func causedByCaller(ctx context.Context, err error) bool {
 // colliding with it.
 func CodeThrottleKey(user identity.UserID) string {
 	return codeThrottleFlow + "|" + string(user)
+}
+
+// codeBytes is how much entropy a saved code carries: 128 bits, far beyond
+// guessing within any presentation limit. It is not an option, because the only
+// direction anyone would move it is down, and the tests pin it so no later
+// change can shorten the codes silently.
+const codeBytes = 16
+
+const (
+	// codeAlphabet is Crockford's base32 alphabet. It omits I, L, O and U, so a
+	// code read aloud or copied by hand has no look-alike characters.
+	codeAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+	// codeChars is how many alphabet characters a code has: 26 characters of 5
+	// bits hold 130 bits, the smallest multiple of 5 that fits 128. The two
+	// spare bits are the value's leading zeros, which is why the first
+	// character is always 0–7.
+	codeChars = 26
+
+	// codeGroup is how many characters sit between two dashes.
+	codeGroup = 4
+
+	// maxFirstChar is the highest value the first character may carry: with
+	// two leading zero bits its 5 bits hold at most 0b00111.
+	maxFirstChar = 7
+)
+
+// newCode draws one saved code from random and returns it as grouped Crockford
+// base32 text, with the SHA-256 hash of its 16 bytes that the store keeps.
+//
+// A random source that fails or runs short is an error, and no code is
+// returned: a code built from fewer bytes than codeBytes would carry less
+// entropy than the library promises.
+func newCode(random io.Reader) (text string, hash [32]byte, err error) {
+	var raw [codeBytes]byte
+	if _, err := io.ReadFull(random, raw[:]); err != nil {
+		// The reader's own text is not repeated: it belongs to a source the
+		// library does not know. The cause stays reachable through errors.Is.
+		return "", [32]byte{}, diag.Wrap(err, "recovery: random source failed")
+	}
+
+	return encodeCode(raw), sha256.Sum256(raw[:]), nil
+}
+
+// encodeCode writes raw as 26 Crockford base32 characters, most significant
+// first, grouped in fours with dashes.
+//
+// The 128 bits are read as a 130-bit big-endian value with two leading zero
+// bits, and taken 5 bits at a time. Package encoding/base32 is not used: its
+// alphabet differs and it pads a partial group rather than widening the value.
+func encodeCode(raw [codeBytes]byte) string {
+	out := make([]byte, 0, codeChars+codeChars/codeGroup)
+
+	for i := range codeChars {
+		if i > 0 && i%codeGroup == 0 {
+			out = append(out, '-')
+		}
+
+		out = append(out, codeAlphabet[fiveBits(raw, i)])
+	}
+
+	return string(out)
+}
+
+// fiveBits returns the i-th 5-bit group of raw read as a 130-bit value with two
+// leading zero bits. Group i covers bits [5i-2, 5i+3) of raw, counting from its
+// most significant bit; positions before bit 0 are the leading zeros.
+func fiveBits(raw [codeBytes]byte, i int) byte {
+	var v byte
+
+	for b := 5*i - 2; b < 5*i+3; b++ {
+		v <<= 1
+		if b >= 0 && raw[b/8]&(0x80>>(b%8)) != 0 {
+			v |= 1
+		}
+	}
+
+	return v
+}
+
+// codeValues maps an ASCII byte to its 5-bit value, or to -1 for a byte that is
+// not a code character. Lower case folds to upper case, and the look-alikes
+// O, I and L read as 0, 1 and 1, as Crockford's decoding defines.
+var codeValues = func() [256]int8 {
+	var t [256]int8
+	for i := range t {
+		t[i] = -1
+	}
+
+	for v, c := range []byte(codeAlphabet) {
+		t[c] = int8(v)
+		t[c|0x20] = int8(v) // lower case; a no-op on digits, which have no case
+	}
+
+	for _, alias := range []struct{ from, to byte }{{'O', '0'}, {'I', '1'}, {'L', '1'}} {
+		t[alias.from] = t[alias.to]
+		t[alias.from|0x20] = t[alias.to]
+	}
+
+	return t
+}()
+
+// parseCode reads a presented saved code and returns the hash the store keeps
+// it under.
+//
+// It ignores dashes wherever they fall and folds case, reads O as 0 and I or L
+// as 1, and refuses anything else: another character outside the alphabet
+// (spaces and U included), a length other than 26 characters, or a first
+// character above 7, which would not fit in 16 bytes. Every refusal is
+// ErrRefused, and its text never quotes the presented value.
+//
+// The hash is taken over the decoded bytes rather than the text, so every
+// accepted spelling of one code hashes alike.
+func parseCode(presented string) (hash [32]byte, err error) {
+	var (
+		raw [codeBytes]byte
+		n   int
+	)
+
+	for i := range len(presented) {
+		c := presented[i]
+		if c == '-' {
+			continue
+		}
+
+		v := codeValues[c]
+		if v < 0 || n == codeChars || (n == 0 && v > maxFirstChar) {
+			return [32]byte{}, ErrRefused
+		}
+
+		setFiveBits(&raw, n, byte(v))
+		n++
+	}
+
+	if n != codeChars {
+		return [32]byte{}, ErrRefused
+	}
+
+	return sha256.Sum256(raw[:]), nil
+}
+
+// setFiveBits writes v as the i-th 5-bit group of raw, read as fiveBits reads
+// it. The bits of group 0 that fall before bit 0 are the leading zeros, which
+// the caller has already checked are zero.
+func setFiveBits(raw *[codeBytes]byte, i int, v byte) {
+	for k := range 5 {
+		b := 5*i - 2 + k
+		if b >= 0 && v&(0x10>>k) != 0 {
+			raw[b/8] |= 0x80 >> (b % 8)
+		}
+	}
+}
+
+// CodeStore keeps the hashes of each user's saved recovery codes.
+//
+// It holds, per user reference, the SHA-256 hash of each code's 16 bytes, when
+// it was stored and, once spent, when it was spent. It never sees a code: what
+// it holds cannot be presented.
+//
+// A hash matches only within its own user's set. An unknown code and a spent
+// code have the same outcome — false with no error — so nothing above the
+// store can tell them apart. An error means the question could not be
+// answered, never that the answer was no.
+//
+// MemoryCodeStore is the default. A consumer supplies a durable one when codes
+// must survive a restart or be shared across replicas; any implementation of
+// this contract is usable in its place. An implementation must be safe for
+// concurrent use.
+type CodeStore interface {
+	// ReplaceSet removes every code of user and stores hashes as the user's new
+	// set, all stamped at, in one operation: a reader never sees a mix of the
+	// two sets, and a failure leaves the previous set whole. Inside a caller's
+	// transaction, a failure undoes only this operation's own statements.
+	//
+	// The store keeps its own copies of hashes; the caller may reuse or wipe
+	// the slices afterwards.
+	ReplaceSet(ctx context.Context, user identity.UserID, hashes [][]byte, at time.Time) error
+
+	// Match reports whether user holds an unspent code whose hash is hash.
+	// It writes nothing, whether it matches or not.
+	Match(ctx context.Context, user identity.UserID, hash []byte) (bool, error)
+
+	// Spend marks user's code whose hash is hash as spent at at, by one
+	// conditional write on "not yet spent", and reports whether this call spent
+	// it. Of any number of concurrent spends of one code at most one reports
+	// true. A refused spend changes nothing, so the first spending time is
+	// kept.
+	Spend(ctx context.Context, user identity.UserID, hash []byte, at time.Time) (bool, error)
+
+	// Remaining counts user's unspent codes. A user with no set has none.
+	Remaining(ctx context.Context, user identity.UserID) (int, error)
+
+	// DeleteUser removes every code of user, spent or not, and reports how
+	// many were removed.
+	DeleteUser(ctx context.Context, user identity.UserID) (int, error)
+}
+
+// MemoryCodeStore keeps saved-code hashes in process memory. It is the default
+// CodeStore, and it is safe for concurrent use.
+//
+// Its limit is stated: it holds this process's codes only. A restart forgets
+// every set, so every user's saved codes stop working, and behind several
+// replicas each keeps its own sets, so a code generated on one is unknown to
+// the others. Supply a durable, shared store through WithCodesStore for
+// anything beyond a single process.
+//
+// It keeps its own copies of every hash it is given, so a caller wiping or
+// reusing its buffers afterwards changes nothing stored.
+type MemoryCodeStore struct {
+	mu sync.Mutex
+	// sets maps a user to their codes, keyed by hash. A string key is a copy
+	// of the hash's bytes, never a view onto the caller's slice.
+	sets map[identity.UserID]map[string]*codeEntry
+}
+
+// codeEntry is one stored code: when it was stored and, once spent, when.
+type codeEntry struct {
+	createdAt time.Time
+	spentAt   time.Time
+}
+
+func (e *codeEntry) spent() bool { return !e.spentAt.IsZero() }
+
+// NewMemoryCodeStore returns an empty in-memory store.
+func NewMemoryCodeStore() *MemoryCodeStore {
+	return &MemoryCodeStore{sets: make(map[identity.UserID]map[string]*codeEntry)}
+}
+
+// ReplaceSet drops user's set and stores hashes in its place, under one lock,
+// so no reader sees a mix of the two sets. It cannot fail.
+func (s *MemoryCodeStore) ReplaceSet(_ context.Context, user identity.UserID, hashes [][]byte, at time.Time) error {
+	set := make(map[string]*codeEntry, len(hashes))
+	for _, h := range hashes {
+		set[string(h)] = &codeEntry{createdAt: at}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(set) == 0 {
+		delete(s.sets, user)
+
+		return nil
+	}
+
+	s.sets[user] = set
+
+	return nil
+}
+
+// Match reports whether user holds an unspent code whose hash is hash. It
+// writes nothing.
+func (s *MemoryCodeStore) Match(_ context.Context, user identity.UserID, hash []byte) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.sets[user][string(hash)]
+
+	return ok && !e.spent(), nil
+}
+
+// Spend marks user's code whose hash is hash as spent at at, if it is not spent
+// already, and reports whether this call spent it. The check and the write
+// happen under one lock, so of any number of concurrent spends exactly one
+// reports true.
+func (s *MemoryCodeStore) Spend(_ context.Context, user identity.UserID, hash []byte, at time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.sets[user][string(hash)]
+	if !ok || e.spent() {
+		return false, nil
+	}
+
+	e.spentAt = at
+
+	return true, nil
+}
+
+// Remaining counts user's unspent codes.
+func (s *MemoryCodeStore) Remaining(_ context.Context, user identity.UserID) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := 0
+
+	for _, e := range s.sets[user] {
+		if !e.spent() {
+			n++
+		}
+	}
+
+	return n, nil
+}
+
+// DeleteUser removes every code of user, spent or not, and reports how many
+// were removed.
+func (s *MemoryCodeStore) DeleteUser(_ context.Context, user identity.UserID) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	n := len(s.sets[user])
+	delete(s.sets, user)
+
+	return n, nil
 }

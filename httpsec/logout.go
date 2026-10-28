@@ -180,3 +180,95 @@ func logoutState(r Request) string {
 
 	return values.Get("state")
 }
+
+// LogoutDeps are the collaborators logout is wired to.
+//
+// The session manager is required. Logout exists to end a session, and one
+// wired without a store to end it in would answer every caller 200 while
+// leaving every session live — a logout that reports success and does nothing
+// is worse than no logout at all.
+type LogoutDeps struct {
+	// Sessions is where the caller's session is deleted. Supply the same
+	// manager the authentication interceptors load sessions from, or a logout
+	// deletes from a store nothing reads.
+	Sessions *session.Sessions
+
+	// EndSession builds the identity provider's end-session URL for a session
+	// a federated login created. It is optional: nil means no end-session
+	// step, and logout answers every caller as it answers a password session,
+	// unless EnableOIDCLogin on the same chain supplies its manager's step
+	// (see WithOIDCRPInitiatedLogout). A step set here always takes precedence.
+	EndSession EndSessionBuilder
+}
+
+// LogoutOption configures logout. Each replaces one of the defaults named on
+// EnableLogout.
+type LogoutOption func(*logout) error
+
+// EnableLogout ends the caller's session at the logout slot.
+//
+// Default: POST on DefaultLogoutPath, answered 200 with an empty body. The
+// downstream handler is never called, because logout is this library's own
+// endpoint. A request with no authentication result is refused with
+// ErrAuthenticationRequired, and a session that is already gone is a success:
+// two clients ending one session is ordinary.
+//
+// Every other request, including a GET on that path, passes through untouched.
+//
+// With LogoutDeps.EndSession set, a session that records an identity provider
+// is deleted first, then the builder is asked for the provider's end-session
+// URL, handed the deleted session and the request's "state" form value. A URL
+// is answered 200 with {"end_session_url": ...} and Cache-Control: no-store;
+// an empty URL, or a builder error, which is logged, keeps the empty 200. The
+// default is nil: no end-session step, and every logout answers as above,
+// unless EnableOIDCLogin is on the chain, which supplies its manager's step
+// when this one is nil (WithOIDCRPInitiatedLogout turns that off).
+func EnableLogout(d LogoutDeps, opts ...LogoutOption) Option {
+	const option = "EnableLogout"
+
+	return func(c *config) error {
+		l := &logout{sessions: d.Sessions, endSession: d.EndSession, path: DefaultLogoutPath}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(l); err != nil {
+				return err
+			}
+		}
+
+		c.enable(option, func() error {
+			return requireDep(option, "session manager", d.Sessions)
+		})
+
+		// Recorded for the gates, which exempt this path so a session stranded
+		// mid-challenge can still be ended. See wireMFA and wirePasswordChange.
+		c.logoutPath = l.path
+		c.logout = l
+
+		c.useSessions(d.Sessions)
+		c.wire(l.wire)
+		c.register(l, OrderLogout)
+
+		return nil
+	}
+}
+
+// WithLogoutRequestPath answers logouts on path instead.
+//
+// Default: DefaultLogoutPath, which keeps passing through once the consumer
+// moves the endpoint. An empty path is refused: it would match nothing, so the
+// endpoint the consumer asked for would silently not exist.
+func WithLogoutRequestPath(path string) LogoutOption {
+	return func(l *logout) error {
+		if path == "" {
+			return newConfigError("WithLogoutRequestPath was given no path, so logout would " +
+				"answer nothing")
+		}
+
+		l.path = path
+
+		return nil
+	}
+}

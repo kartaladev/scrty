@@ -101,54 +101,67 @@ func TestUnavailable_RefuseHoldIsBoundedUnderKeySpray(t *testing.T) {
 	}
 }
 
-// TestHold_SweepsAfterClockStepsBackwards covers the sweep's re-arming: a clock
-// stepped back must not leave the sweep waiting for the clock to catch up.
-func TestHold_SweepsAfterClockStepsBackwards(t *testing.T) {
+// TestHold_ClockStepsBackwards covers the sweep when the clock steps back. A
+// clock stepped back must not leave the sweep waiting for the clock to catch up
+// (the sweep's re-arming), and a hold seen to have ended, but not yet swept, is
+// released by the next sweep after the step, not held again for as long as the
+// step was long.
+func TestHold_ClockStepsBackwards(t *testing.T) {
 	t.Parallel()
 
-	h := newHarness(t, ratelimit.UnavailableRefuse)
-	h.writesFailReadsSucceed()
+	tests := []struct {
+		name   string
+		assert func(t *testing.T, h *harness)
+	}{
+		{
+			name: "sweeps after clock steps backwards",
+			assert: func(t *testing.T, h *harness) {
+				h.recordN(t, testKey, 1)
+				h.clock.Advance(-time.Hour)
+				h.recordN(t, otherKey, 1)
 
-	h.recordN(t, testKey, 1)
-	h.clock.Advance(-time.Hour)
-	h.recordN(t, otherKey, 1)
+				h.clock.Advance(testWindow)
+				// Any lookup runs the sweep; its answer is not what is under test.
+				_, _ = h.limiter.Exceeded(t.Context(), "probe")
 
-	h.clock.Advance(testWindow)
-	// Any lookup runs the sweep; its answer is not what is under test.
-	_, _ = h.limiter.Exceeded(t.Context(), "probe")
+				// testKey's hold, taken before the step, still runs on the earlier clock's
+				// time and is kept; otherKey's, taken after it, has ended and must be swept.
+				assert.Equal(t, 1, unavailable.HeldLen(h.limiter), "ended holds were not swept after the clock stepped back")
+			},
+		},
+		{
+			name: "releases ended holds when clock steps backwards",
+			assert: func(t *testing.T, h *harness) {
+				h.clock.Advance(testWindow * 9 / 10)
+				h.recordN(t, testKey, 1)
+				h.clock.Advance(testWindow * 2 / 10)
+				// Runs the sweep that is due, so the next one is a window away.
+				_, _ = h.limiter.Exceeded(t.Context(), "probe")
+				h.clock.Advance(testWindow * 85 / 100)
+				// testKey's hold has ended and no sweep is due, so it is seen but not swept.
+				held, _ := h.limiter.Exceeded(t.Context(), testKey)
+				require.False(t, held, "the hold had not ended")
+				require.Equal(t, 1, unavailable.HeldLen(h.limiter))
 
-	// testKey's hold, taken before the step, still runs on the earlier clock's
-	// time and is kept; otherKey's, taken after it, has ended and must be swept.
-	assert.Equal(t, 1, unavailable.HeldLen(h.limiter), "ended holds were not swept after the clock stepped back")
-}
+				h.clock.Advance(-time.Hour)
+				h.clock.Advance(testWindow)
 
-// TestHold_ReleasesEndedHoldsWhenClockStepsBackwards covers the scenario as
-// written: a hold seen to have ended, but not yet swept, is released by the next
-// sweep after the clock steps back, not held again for as long as the step was
-// long.
-func TestHold_ReleasesEndedHoldsWhenClockStepsBackwards(t *testing.T) {
-	t.Parallel()
+				held, _ = h.limiter.Exceeded(t.Context(), testKey)
+				assert.False(t, held, "an ended hold answered exceeded again after the clock stepped back")
+				assert.Equal(t, 0, unavailable.HeldLen(h.limiter), "ended holds were not released after the clock stepped back")
+			},
+		},
+	}
 
-	h := newHarness(t, ratelimit.UnavailableRefuse)
-	h.writesFailReadsSucceed()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	h.clock.Advance(testWindow * 9 / 10)
-	h.recordN(t, testKey, 1)
-	h.clock.Advance(testWindow * 2 / 10)
-	// Runs the sweep that is due, so the next one is a window away.
-	_, _ = h.limiter.Exceeded(t.Context(), "probe")
-	h.clock.Advance(testWindow * 85 / 100)
-	// testKey's hold has ended and no sweep is due, so it is seen but not swept.
-	held, _ := h.limiter.Exceeded(t.Context(), testKey)
-	require.False(t, held, "the hold had not ended")
-	require.Equal(t, 1, unavailable.HeldLen(h.limiter))
-
-	h.clock.Advance(-time.Hour)
-	h.clock.Advance(testWindow)
-
-	held, _ = h.limiter.Exceeded(t.Context(), testKey)
-	assert.False(t, held, "an ended hold answered exceeded again after the clock stepped back")
-	assert.Equal(t, 0, unavailable.HeldLen(h.limiter), "ended holds were not released after the clock stepped back")
+			h := newHarness(t, ratelimit.UnavailableRefuse)
+			h.writesFailReadsSucceed()
+			tt.assert(t, h)
+		})
+	}
 }
 
 // TestHold_SweepsEndedHoldsBeforeDeclaringItselfFull covers the full check: holds

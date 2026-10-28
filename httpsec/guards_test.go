@@ -25,44 +25,6 @@ var (
 	errAuthorizerRoles = errors.New("guards_test: the role store is unreachable")
 )
 
-// guardRun is what putting one request through a guard produced.
-type guardRun struct {
-	rec      *httptest.ResponseRecorder
-	routeRan bool
-
-	// refusal is what the guard handed its error handler, and nil when the
-	// guard let the request through.
-	refusal error
-}
-
-// guardRequest builds the request a guard judges: a GET of one record, carrying
-// the principal and the authorizer the caller wants published on it.
-func guardRequest(t *testing.T, p *identity.Principal, az authorize.Authorizer) *http.Request {
-	t.Helper()
-
-	ctx := t.Context()
-	if p != nil {
-		ctx = identity.WithPrincipal(ctx, p)
-	}
-	if az != nil {
-		ctx = authorize.WithAuthorizer(ctx, az)
-	}
-
-	return httptest.NewRequestWithContext(ctx, http.MethodGet, "/records/r-1", nil)
-}
-
-// runGuard puts req through mw onto a route that records that it was reached.
-func runGuard(t *testing.T, mw func(http.Handler) http.Handler, req *http.Request) guardRun {
-	t.Helper()
-
-	out := guardRun{rec: httptest.NewRecorder()}
-	route := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { out.routeRan = true })
-
-	mw(route).ServeHTTP(out.rec, req)
-
-	return out
-}
-
 // capturing records what a guard refused with, so a test names the refusal
 // rather than reading it back out of a status code.
 func capturing(run *guardRun) httpsec.GuardOption {
@@ -77,16 +39,6 @@ func permittingAuthorizer(t *testing.T) *MockAuthorizer {
 
 	az := NewMockAuthorizer(gomock.NewController(t))
 	az.EXPECT().Authorize(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-	return az
-}
-
-// refusingAuthorizer refuses every attempt with err.
-func refusingAuthorizer(t *testing.T, err error) *MockAuthorizer {
-	t.Helper()
-
-	az := NewMockAuthorizer(gomock.NewController(t))
-	az.EXPECT().Authorize(gomock.Any(), gomock.Any()).Return(err).AnyTimes()
 
 	return az
 }
@@ -700,6 +652,85 @@ func TestConsumerFirstFactorPublishesCaller(t *testing.T) {
 			run.rec, run.routeRan = out.rec, out.routeRan
 
 			tc.assert(t, run, caller, known)
+		})
+	}
+}
+
+// TestOwnershipGuard_WiringPanics pins that an ownership guard with no
+// question to ask, or no way to find the record, fails when the consumer wires
+// it, before any traffic, rather than refusing every request it ever sees.
+func TestOwnershipGuard_WiringPanics(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		wire   func(g *httpsec.Guards)
+		assert func(t *testing.T, wire func())
+	}
+
+	panics := func(msg string) func(t *testing.T, wire func()) {
+		return func(t *testing.T, wire func()) {
+			t.Helper()
+			assert.PanicsWithValue(t, msg, wire)
+		}
+	}
+
+	cases := []testCase{
+		{
+			name: "ResourceOwnerships on a nil Guards",
+			wire: func(*httpsec.Guards) {
+				httpsec.ResourceOwnerships(nil, "admin", "user", recordOwner(true, nil))
+			},
+			assert: panics("httpsec: ResourceOwnerships needs non-nil Guards"),
+		},
+		{
+			name: "ResourcePrivileges on a nil Guards",
+			wire: func(*httpsec.Guards) {
+				var g *httpsec.Guards
+				g.ResourcePrivileges("admin", "user")
+			},
+			assert: panics("httpsec: ResourcePrivileges needs non-nil Guards"),
+		},
+		{
+			name: "RequireAuthenticated on a nil Guards",
+			wire: func(*httpsec.Guards) {
+				var g *httpsec.Guards
+				g.RequireAuthenticated()
+			},
+			assert: panics("httpsec: RequireAuthenticated needs non-nil Guards"),
+		},
+		{
+			name: "a nil checker",
+			wire: func(g *httpsec.Guards) {
+				httpsec.ResourceOwnerships[string](g, "admin", "user", nil)
+			},
+			assert: panics("httpsec: ResourceOwnerships needs a non-nil checker"),
+		},
+		{
+			name: "a nil extractor",
+			wire: func(g *httpsec.Guards) {
+				httpsec.ResourceOwnerships(g, "admin", "user", recordOwner(true, nil)).ForResource(nil)
+			},
+			assert: panics("httpsec: ForResource needs a non-nil extractor"),
+		},
+		{
+			name: "a checker and an extractor wire without a panic",
+			wire: func(g *httpsec.Guards) {
+				httpsec.ResourceOwnerships(g, "admin", "user", recordOwner(true, nil)).ForResource(recordID(nil))
+			},
+			assert: func(t *testing.T, wire func()) {
+				t.Helper()
+				assert.NotPanics(t, wire)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			g := httpsec.NewGuards(authorize.NewOwnershipAuthorizer())
+			tc.assert(t, func() { tc.wire(g) })
 		})
 	}
 }

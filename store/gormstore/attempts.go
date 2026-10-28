@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
@@ -37,7 +37,7 @@ type AttemptStore struct{ c *config }
 // truncated or altered into another. A streak failure for such an identifier
 // is refused the same way, and its streak reads as none. Counting or resetting
 // such an identifier matches nothing. Stored times are UTC, truncated to the microsecond.
-func NewAttemptStore(db *gormdb.DB, opts ...Option) (*AttemptStore, error) {
+func NewAttemptStore(db *gorm.DB, opts ...Option) (*AttemptStore, error) {
 	c, err := newConfig(db, opts, optIDGenerator)
 	if err != nil {
 		return nil, err
@@ -180,7 +180,7 @@ func (s *AttemptStore) AddStreakFailure(
 			heldAt  *time.Time
 			setHold bool
 		)
-		run := func(q *gormdb.DB) error {
+		run := func(q *gorm.DB) error {
 			return q.Raw(pgschema.StreakAdd,
 				rowID, username, storekit.Time(at), storekit.Time(since), limit,
 			).Row().Scan(&got.Failures, &got.Newest, &heldAt, &setHold)

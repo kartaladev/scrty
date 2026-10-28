@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/authenticate/password"
@@ -133,7 +133,7 @@ type IdentityStore struct {
 // other option, a nil db, a db that already carries an error, a nil option
 // and a nil option value with an error wrapping ErrConfig. It never touches
 // the database.
-func NewIdentityStore(db *gormdb.DB, opts ...Option) (*IdentityStore, error) {
+func NewIdentityStore(db *gorm.DB, opts ...Option) (*IdentityStore, error) {
 	c, err := newConfig(db, opts, optIDGenerator, optClock)
 	if err != nil {
 		return nil, err
@@ -322,7 +322,7 @@ func (s *IdentityStore) Provision(
 	}
 
 	var out *identity.Details
-	err = s.atomically(ctx, op, func(q *gormdb.DB) error {
+	err = s.atomically(ctx, op, func(q *gorm.DB) error {
 		res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "username"}}, DoNothing: true}).
 			Create(&user)
 		if res.Error != nil {
@@ -379,11 +379,11 @@ func (s *IdentityStore) Update(
 	}
 
 	var out *identity.Details
-	err = s.atomically(ctx, op, func(q *gormdb.DB) error {
+	err = s.atomically(ctx, op, func(q *gorm.DB) error {
 		var locked userRow
 		err := q.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
 			Select("id").Where("username = ?", username).Take(&locked).Error
-		if errors.Is(err, gormdb.ErrRecordNotFound) {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return failed(op, identity.ErrUserNotFound)
 		}
 		if err != nil {
@@ -467,7 +467,7 @@ func userColumns(u *identity.UserChange, org *id.ID) map[string]any {
 // gets a new grant, its identifier minted here, with no super role and no
 // window. It only reads; the caller holds the user's row lock.
 func (s *IdentityStore) planGrants(
-	q *gormdb.DB, op string, userID id.ID, roles []string, now time.Time,
+	q *gorm.DB, op string, userID id.ID, roles []string, now time.Time,
 ) ([]assignedRoleRow, error) {
 	existing, err := grantsInPosition(q, op, userID)
 	if err != nil {
@@ -495,7 +495,7 @@ func (s *IdentityStore) planGrants(
 
 // grantsInPosition returns the user's stored grants by name, keeping for each
 // name the grant first in stored position.
-func grantsInPosition(q *gormdb.DB, op string, userID id.ID) (map[string]assignedRoleRow, error) {
+func grantsInPosition(q *gorm.DB, op string, userID id.ID) (map[string]assignedRoleRow, error) {
 	rows, err := q.Raw(pgschema.GrantsByUserInPosition, userID).Rows()
 	if err != nil {
 		return nil, dbFailed(op, err)
@@ -530,7 +530,7 @@ func grantsInPosition(q *gormdb.DB, op string, userID id.ID) (map[string]assigne
 // queryRow runs query with args on q and scans its first row into dest,
 // reporting false, with no error, when there is none. The rows are closed
 // before it returns, so the connection is free for the next statement.
-func queryRow(q *gormdb.DB, op, query string, args []any, dest ...any) (bool, error) {
+func queryRow(q *gorm.DB, op, query string, args []any, dest ...any) (bool, error) {
 	rows, err := q.Raw(query, args...).Rows()
 	if err != nil {
 		return false, dbFailed(op, err)
@@ -555,7 +555,7 @@ func queryRow(q *gormdb.DB, op, query string, args []any, dest ...any) (bool, er
 
 // load reads the complete record of the user query selects with arg, through
 // q: the user row, then its grants, organization and group.
-func load(q *gormdb.DB, op, query string, arg any) (*identity.Details, error) {
+func load(q *gorm.DB, op, query string, arg any) (*identity.Details, error) {
 	var (
 		d                    identity.Details
 		userID               id.ID
@@ -593,7 +593,7 @@ func load(q *gormdb.DB, op, query string, arg any) (*identity.Details, error) {
 }
 
 // grants reads the user's grants, primary first, then in stored position.
-func grants(q *gormdb.DB, op string, userID id.ID) ([]*identity.AssignedRole, error) {
+func grants(q *gorm.DB, op string, userID id.ID) ([]*identity.AssignedRole, error) {
 	rows, err := q.Raw(pgschema.GrantsByUser, userID).Rows()
 	if err != nil {
 		return nil, dbFailed(op, err)
@@ -628,7 +628,7 @@ func grants(q *gormdb.DB, op string, userID id.ID) ([]*identity.AssignedRole, er
 // organization reads the organization orgID names and its group. A reference
 // naming no organization is none, and a group reference naming no group is an
 // organization without one; neither is an error.
-func organization(q *gormdb.DB, op string, orgID id.ID) (*identity.Organization, error) {
+func organization(q *gorm.DB, op string, orgID id.ID) (*identity.Organization, error) {
 	var (
 		org                  identity.Organization
 		rowID                id.ID

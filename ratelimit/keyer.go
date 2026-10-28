@@ -120,6 +120,21 @@ func NewSourceKeyer(opts ...KeyerOption) (*SourceKeyer, error) {
 	return k, nil
 }
 
+// KeyerOption configures a SourceKeyer.
+type KeyerOption func(*SourceKeyer)
+
+// WithIPv6SourcePrefix sets the prefix length IPv6 sources are keyed by.
+// Default: 64, the smallest allocation an IPv6 host is normally given.
+//
+// It must be between 1 and 128; anything else fails construction. A wider prefix
+// (a smaller number, such as 48) counts a whole allocation as one source, which
+// is stricter and pools tenants who share it. A narrower one (up to 128, per
+// address) lets a source move within its own allocation to buy a fresh
+// allowance. IPv4 is unaffected: it is always keyed per address.
+func WithIPv6SourcePrefix(bits int) KeyerOption {
+	return func(k *SourceKeyer) { k.ipv6Prefix = bits }
+}
+
 // Key returns the limiter key for clientAddr, or an error wrapping
 // ErrSourceUnattributable when the address names no single source.
 //

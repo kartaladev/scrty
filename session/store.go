@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"time"
 
+	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/id"
@@ -422,4 +424,26 @@ func storeFailed(err error, text string) error {
 	}
 
 	return diag.Wrap(err, text)
+}
+
+// sessionDigest is the digest a store keeps of a session identifier in place
+// of the identifier itself: its SHA-256. A superseded session's
+// SuccessorDigest is this digest of its successor's identifier. It is the same
+// digest the durable stores key their rows by, which a test pins, so a
+// successor digest means the same thing whichever store wrote it.
+func sessionDigest(id string) []byte {
+	sum := sha256.Sum256([]byte(id))
+
+	return sum[:]
+}
+
+// ExpiryTask returns the task that deletes the expired sessions of s, through
+// the store's own DeleteExpired.
+//
+// The task is named "sessions". It sets no Interval, because only the
+// deployment knows its cadence, and it accepts no cutoff: what counts as
+// expired is the store's own rule, judged by the store's own clock. It never
+// deletes a session that is still live.
+func ExpiryTask(s Store) expiry.Task {
+	return expiry.Task{Name: "sessions", Run: s.DeleteExpired}
 }

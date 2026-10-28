@@ -2,7 +2,6 @@ package policy_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,37 +12,6 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
 )
-
-// errAssuranceSource stands for an assurance source that could not answer.
-var errAssuranceSource = errors.New("the assurance evaluator could not reach its rules")
-
-// federatedEvidence is evidence from provider corp that asserted amr, minted
-// the way only library code can.
-func federatedEvidence(amr ...string) policy.FederatedAssurance {
-	return policy.MintFederatedForTest("corp", "https://idp.example", amr, "")
-}
-
-// federatedInput is a login of kind carrying ev.
-func federatedInput(kind factor.Kind, ev policy.FederatedAssurance) *policy.Input {
-	in := mfaInput(kind)
-	in.FederatedAssurance = ev
-
-	return in
-}
-
-// assuranceSource returns a source that answers met and err for every
-// question. A source not expected to be asked carries no expectation, so a
-// rule that asked it anyway fails the case.
-func assuranceSource(t *testing.T, asked, met bool, err error) *MockFederatedAssuranceSource {
-	t.Helper()
-
-	m := NewMockFederatedAssuranceSource(gomock.NewController(t))
-	if asked {
-		m.EXPECT().MeetsAssurance(gomock.Any(), gomock.Any(), gomock.Any()).Return(met, err).AnyTimes()
-	}
-
-	return m
-}
 
 func TestFederatedMet(t *testing.T) {
 	t.Parallel()

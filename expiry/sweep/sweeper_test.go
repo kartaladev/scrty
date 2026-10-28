@@ -825,9 +825,12 @@ func TestSweeper_Lifecycle(t *testing.T) {
 	}
 }
 
-// TestSweeper_ShutdownReleasesGoroutines is not parallel: goleak compares
-// against the goroutines alive when the case began, and a parallel test's
-// scheduler would be counted as this one's leak.
+// TestSweeper_ShutdownReleasesGoroutines stands apart from
+// TestSweeper_Lifecycle: each case checks goroutines with goleak.
+//
+// It is not parallel: goleak compares against the goroutines alive when the
+// case began, and a parallel test's scheduler would be counted as this one's
+// leak.
 func TestSweeper_ShutdownReleasesGoroutines(t *testing.T) {
 	type testCase struct {
 		name   string
@@ -915,6 +918,8 @@ func shutdownAsync(ctx context.Context, h *harness) <-chan error {
 	return ch
 }
 
+// TestSweeper_SecondShutdownWaitsForTheFirst stands apart from
+// TestSweeper_Lifecycle: every case starts from a run already in progress.
 func TestSweeper_SecondShutdownWaitsForTheFirst(t *testing.T) {
 	t.Parallel()
 
@@ -991,6 +996,9 @@ func TestSweeper_SecondShutdownWaitsForTheFirst(t *testing.T) {
 	}
 }
 
+// TestSweeper_StopTimeout stands apart from
+// TestSweeper_SecondShutdownWaitsForTheFirst: every case starts with a
+// Shutdown already waiting on a run, under its own stop timeout option.
 func TestSweeper_StopTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -1040,10 +1048,12 @@ func TestSweeper_StopTimeout(t *testing.T) {
 	}
 }
 
-// TestSweeper_ConcurrentStartAndShutdown races Start against Shutdown. At most
-// one Start returns nil, every other returns one of the lifecycle sentinels,
-// each Shutdown returns nil, and TestMain's goleak check proves no scheduler
-// outlives the test.
+// TestSweeper_ConcurrentStartAndShutdown stands apart from
+// TestSweeper_Lifecycle: it races calls from several goroutines.
+//
+// It races Start against Shutdown. At most one Start returns nil, every other
+// returns one of the lifecycle sentinels, each Shutdown returns nil, and
+// TestMain's goleak check proves no scheduler outlives the test.
 func TestSweeper_ConcurrentStartAndShutdown(t *testing.T) {
 	t.Parallel()
 

@@ -2,7 +2,10 @@ package token_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -163,12 +166,17 @@ func TestNewVerifierValidation(t *testing.T) {
 	}
 }
 
+// TestVerifyKeySelection includes the two classic verifier bypasses. Their
+// tokens are built by hand: asking the library to produce them would test its
+// refusal to create a forgery rather than this package's refusal to accept one.
+// If either row ever passes, verification is accepting a forged token.
 func TestVerifyKeySelection(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
 		token  func(t *testing.T, keys *signingkey.Keys) string
+		ctx    func(ctx context.Context) context.Context // nil means t.Context() unchanged
 		assert func(t *testing.T, claims *token.Claims, err error)
 	}
 
@@ -217,36 +225,6 @@ func TestVerifyKeySelection(t *testing.T) {
 				assert.Equal(t, "alice", claims.Subject())
 			},
 		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			keys := newKeySource(t)
-
-			ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
-			require.NoError(t, err)
-
-			claims, err := ver.Verify(t.Context(), tc.token(t, keys))
-			tc.assert(t, claims, err)
-		})
-	}
-}
-
-// TestVerifyAlgorithmPinning covers the two classic verifier bypasses. Both
-// tokens are built by hand: asking the library to produce them would test its
-// refusal to create a forgery rather than this package's refusal to accept one.
-// If either row ever passes, verification is accepting a forged token.
-func TestVerifyAlgorithmPinning(t *testing.T) {
-	t.Parallel()
-
-	type testCase struct {
-		name  string
-		token func(t *testing.T, keys *signingkey.Keys) string
-	}
-
-	cases := []testCase{
 		{
 			name: "alg none with an empty signature",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
@@ -258,6 +236,10 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 
 				// An empty third segment: no signature at all.
 				return header + "." + claims + "."
+			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.ErrorIs(t, err, token.ErrInvalid)
+				assert.Nil(t, claims)
 			},
 		},
 		{
@@ -282,11 +264,35 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 				return header + "." + claims + "." +
 					base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.ErrorIs(t, err, token.ErrInvalid)
+				assert.Nil(t, claims)
+			},
 		},
 		{
 			name: "one payload character changed on a validly signed token",
 			token: func(t *testing.T, keys *signingkey.Keys) string {
 				return tamperPayload(t, signClaims(t, keys, validClaims(time.Now())))
+			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.ErrorIs(t, err, token.ErrInvalid)
+				assert.Nil(t, claims)
+			},
+		},
+		{
+			name: "a cancelled context returns the context error",
+			token: func(t *testing.T, keys *signingkey.Keys) string {
+				return signClaims(t, keys, validClaims(time.Now()))
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cancelled
+			},
+			assert: func(t *testing.T, claims *token.Claims, err error) {
+				require.ErrorIs(t, err, context.Canceled)
+				assert.Nil(t, claims)
 			},
 		},
 	}
@@ -300,13 +306,18 @@ func TestVerifyAlgorithmPinning(t *testing.T) {
 			ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
 			require.NoError(t, err)
 
-			claims, err := ver.Verify(t.Context(), tc.token(t, keys))
-			require.ErrorIs(t, err, token.ErrInvalid)
-			assert.Nil(t, claims)
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			claims, err := ver.Verify(ctx, tc.token(t, keys))
+			tc.assert(t, claims, err)
 		})
 	}
 }
 
+// Standalone, a table of its own: each row signs its own claims and verifies on its own clock.
 func TestVerifyTimeChecks(t *testing.T) {
 	t.Parallel()
 
@@ -412,6 +423,7 @@ func TestVerifyTimeChecks(t *testing.T) {
 // Issuer and audience share the whole call shape, so they share one table:
 // kept apart, each gained rows the other lacked and neither absence was
 // visible.
+// Standalone, a table of its own: each row adds a claim and its own verifier options on a fixed clock.
 func TestVerifyClaimEnforcement(t *testing.T) {
 	t.Parallel()
 
@@ -548,6 +560,7 @@ func TestVerifyClaimEnforcement(t *testing.T) {
 // TestVerifyErrorClassification separates a refused token from a failure to
 // perform the check at all. Conflating them makes an outage look like an
 // authentication failure, so the second and third rows assert the negative.
+// Standalone, a table of its own: each row builds its own key source, on a fixed clock.
 func TestVerifyErrorClassification(t *testing.T) {
 	t.Parallel()
 
@@ -723,6 +736,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 // Every row is the issued token as far as the JOSE stack is concerned — the
 // shared body proves that first — so a row rejected below is rejected for its
 // encoding alone and the rejections are not vacuous.
+// Standalone, a table of its own: each row re-encodes an issued token and proves a naive verifier accepts it first.
 func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
 	t.Parallel()
 
@@ -846,6 +860,7 @@ func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
 // The oversized token is genuine: the row that raises the ceiling verifies
 // that exact string, so the default's refusal is about its size and nothing
 // else.
+// Standalone, a table of its own: every row verifies one shared oversized token, with its own key source and options.
 func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 	t.Parallel()
 
@@ -916,6 +931,7 @@ func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 // here.
 //
 // It mutates process-global state and therefore never runs in parallel.
+// Standalone: it mutates process-global JOSE settings between verifications of one token.
 func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
 	at := time.Date(2030, 1, 1, 10, 0, 0, 0, time.UTC)
 	keys := newKeySource(t)
@@ -956,4 +972,130 @@ func TestVerifyTimeChecksResistProcessGlobalJWXSettings(t *testing.T) {
 
 	claims, err = ver.Verify(t.Context(), raw)
 	rejected(t, claims, err)
+}
+
+// nilKeyVerificationSource is a consumer key source whose published key is a
+// nil value inside a non-nil interface: the shape an unchecked constructor
+// error leaves behind.
+type nilKeyVerificationSource struct {
+	signingkey.KeySource
+
+	alg signingkey.Alg
+	key any
+}
+
+func (s nilKeyVerificationSource) VerificationKeys() ([]signingkey.PublicKey, error) {
+	return []signingkey.PublicKey{{Kid: "k-1", Alg: s.alg, Key: s.key}}, nil
+}
+
+// Standalone, a table of its own: it verifies a generated token against a consumer key source publishing a nil key.
+func TestVerify_NilPublicKeyIsAnUnusableKeySet(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		source nilKeyVerificationSource
+		assert func(t *testing.T, claims *token.Claims, err error)
+	}
+
+	unusable := func(t *testing.T, claims *token.Claims, err error) {
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, token.ErrInvalid,
+			"an unusable key set is an outage, not a verdict on the token")
+		assert.Nil(t, claims)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a typed-nil RSA public key",
+			source: nilKeyVerificationSource{alg: signingkey.RS256, key: (*rsa.PublicKey)(nil)},
+			assert: unusable,
+		},
+		{
+			name:   "a typed-nil ECDSA public key",
+			source: nilKeyVerificationSource{alg: signingkey.ES256, key: (*ecdsa.PublicKey)(nil)},
+			assert: unusable,
+		},
+		{
+			name:   "a nil Ed25519 public key",
+			source: nilKeyVerificationSource{alg: signingkey.EdDSA, key: ed25519.PublicKey(nil)},
+			assert: unusable,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			gen, err := token.NewGenerator(newKeySource(t))
+			require.NoError(t, err)
+			raw, err := gen.Generate(t.Context(), "s-1", alice())
+			require.NoError(t, err)
+
+			ver, err := token.NewVerifier(token.WithVerifyKeySource(tc.source))
+			require.NoError(t, err)
+
+			var (
+				claims *token.Claims
+				verr   error
+			)
+			require.NotPanics(t, func() { claims, verr = ver.Verify(t.Context(), raw) })
+
+			tc.assert(t, claims, verr)
+		})
+	}
+}
+
+// TestVerifierReturnedErrors pins the diagnostic-redaction requirement for
+// Verify's own returned error (design decision 8): a key source that cannot
+// supply its verification keys comes back as fixed library text, with the key
+// source's own error still reachable by identity, and still not matching
+// ErrInvalid — an outage in obtaining the keys is not a verdict on the
+// token.
+// Standalone: it verifies through a mock key source that fails to supply its keys.
+func TestVerifierReturnedErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		run    func(t *testing.T) error
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "the key source cannot supply its verification keys",
+			run: func(t *testing.T) error {
+				t.Helper()
+
+				keys := NewMockKeySource(gomock.NewController(t))
+				keys.EXPECT().VerificationKeys().Return(nil, errKeySourceFixture)
+
+				ver, err := token.NewVerifier(token.WithVerifyKeySource(keys))
+				require.NoError(t, err)
+
+				_, verifyErr := ver.Verify(t.Context(), "any.token.here")
+
+				return verifyErr
+			},
+			assert: func(t *testing.T, err error) {
+				t.Helper()
+
+				require.Error(t, err)
+				assert.NotContains(t, err.Error(), "alice@example.com",
+					"the returned error quoted the key source's own text")
+				assert.NotContains(t, err.Error(), "u-123",
+					"the returned error quoted the key source's own text")
+				assert.ErrorIs(t, err, errKeySourceFixture, "the key source's own error is no longer reachable")
+				assert.NotErrorIs(t, err, token.ErrInvalid,
+					"an unavailable key set must still not be reported as a refused token")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.run(t))
+		})
+	}
 }

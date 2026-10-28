@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -86,7 +86,7 @@ func (s *signingKeyStore) Store(ctx context.Context, rec signingkey.Record) erro
 // LoadAll returns every stored key, oldest first.
 func (s *signingKeyStore) LoadAll(ctx context.Context) ([]signingkey.Record, error) {
 	var recs []signingkey.Record
-	err := s.c.query(ctx, "load signing keys", pgschema.SigningKeyLoadAll, nil, func(rows pgxv5.Rows) error {
+	err := s.c.query(ctx, "load signing keys", pgschema.SigningKeyLoadAll, nil, func(rows pgx.Rows) error {
 		var rec signingkey.Record
 		var created time.Time
 		if err := rows.Scan(&rec.Kid, &rec.Alg, &rec.Private, &rec.PublicJWK, &created); err != nil {

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
@@ -36,7 +36,7 @@ type OneTimeStore struct{ c *config }
 // names the field, never the value, and nothing is written; a count or purge
 // by such a value matches nothing. Stored times are UTC, truncated to the
 // microsecond.
-func NewOneTimeStore(db *gormdb.DB, opts ...Option) (*OneTimeStore, error) {
+func NewOneTimeStore(db *gorm.DB, opts ...Option) (*OneTimeStore, error) {
 	c, err := newConfig(db, opts, optClock)
 	if err != nil {
 		return nil, err
@@ -82,7 +82,7 @@ func (s *OneTimeStore) FindByID(ctx context.Context, tokenID id.ID) (*onetime.To
 	}
 	var row oneTimeTokenRow
 	err = q.Where("id = ?", tokenID).Take(&row).Error
-	if errors.Is(err, gormdb.ErrRecordNotFound) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, onetime.ErrTokenNotFound
 	}
 	if err != nil {
@@ -177,7 +177,7 @@ func (s *OneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, sinc
 	}
 
 	var stored bool
-	decide := func(q *gormdb.DB) error {
+	decide := func(q *gorm.DB) error {
 		if err := q.Exec(pgschema.OneTimeLockSubject, tok.Purpose, tok.Subject).Error; err != nil {
 			return err
 		}
@@ -223,7 +223,7 @@ func (s *OneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, sinc
 
 // insertOneTimeRow inserts tok on q, skipping an identifier already stored,
 // and reports how many rows it inserted.
-func insertOneTimeRow(q *gormdb.DB, tok onetime.Token) (int64, error) {
+func insertOneTimeRow(q *gorm.DB, tok onetime.Token) (int64, error) {
 	row := oneTimeTokenRow{
 		ID:         tok.ID,
 		Purpose:    tok.Purpose,

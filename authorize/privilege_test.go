@@ -7,6 +7,7 @@ package authorize_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -441,6 +442,25 @@ func TestPrivilegeAuthorizerLoaderFailures(t *testing.T) {
 				require.ErrorIs(t, err, authorize.ErrAccessDenied)
 			},
 		},
+		{
+			// A failing RoleLoader's error comes back behind fixed text, its
+			// cause still reachable, and matching no authorize sentinel the
+			// unwrapped error did not already match.
+			name:    "returned errors",
+			loadErr: errFixture,
+			assert: func(t *testing.T, authErr error) {
+				require.Error(t, authErr)
+
+				text := authErr.Error()
+				assert.NotContains(t, text, "alice@example.com", "the returned error quotes the dependency")
+				assert.NotContains(t, text, "u-123", "the returned error quotes the dependency")
+				require.ErrorIs(t, authErr, errFixture, "the dependency's error is no longer reachable")
+
+				for _, sentinel := range authorizeSentinelsNotMatched {
+					assert.NotErrorIs(t, authErr, sentinel, "the refusal newly matches %v", sentinel)
+				}
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -463,4 +483,99 @@ func TestPrivilegeAuthorizerLoaderFailures(t *testing.T) {
 			}))
 		})
 	}
+}
+
+func TestPrivilegeAuthorizer_DefaultComparerDoesNotFoldDistinctUnicodeNames(t *testing.T) {
+	t.Parallel()
+
+	// names is the group, resource and privilege of one side of a comparison.
+	type names struct{ group, resource, privilege string }
+
+	type testCase struct {
+		name    string
+		granted names // what the role holds
+		asked   names // what the attempt requires
+		assert  func(t *testing.T, err error)
+	}
+
+	allowed := func(t *testing.T, err error) { require.NoError(t, err) }
+	denied := func(t *testing.T, err error) { require.ErrorIs(t, err, authorize.ErrAccessDenied) }
+
+	cases := []testCase{
+		{
+			name:    "the Kelvin sign is not a k in a privilege name",
+			granted: names{"billing", "invoice", "Kill"}, asked: names{"billing", "invoice", "kill"},
+			assert: denied,
+		},
+		{
+			name:    "the long s is not an s in a group name",
+			granted: names{"ſales", "invoice", "read"}, asked: names{"sales", "invoice", "read"},
+			assert: denied,
+		},
+		{
+			name:    "the Kelvin sign is not a k in a resource name",
+			granted: names{"billing", "Kiosk", "read"}, asked: names{"billing", "kiosk", "read"},
+			assert: denied,
+		},
+		{
+			name:    "a no-break space around a required privilege name is not trimmed",
+			granted: names{"billing", "invoice", "write"}, asked: names{"billing", "invoice", " write"},
+			assert: denied,
+		},
+		{
+			name:    "a no-break space around a granted privilege name is not trimmed",
+			granted: names{"billing", "invoice", "write "}, asked: names{"billing", "invoice", "write"},
+			assert: denied,
+		},
+		{
+			name:    "a no-break space around a group name is not trimmed",
+			granted: names{" billing", "invoice", "write"}, asked: names{"billing", "invoice", "write"},
+			assert: denied,
+		},
+		{
+			name:    "ASCII case and ASCII whitespace are still ignored",
+			granted: names{" Billing ", "\tInvoice\n", " WRITE "}, asked: names{"billing", "invoice", "write"},
+			assert: allowed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			roles := NewMockRoleLoader(ctrl)
+			roles.EXPECT().LoadPrivileges(gomock.Any(), "clerk").
+				Return(grantOn(tc.granted.group, tc.granted.resource,
+					map[string]bool{tc.granted.privilege: true}), nil)
+
+			authorizer, err := authorize.NewPrivilegeAuthorizer(roles)
+			require.NoError(t, err)
+
+			tc.assert(t, authorizer.Authorize(withRole(t.Context(), "clerk"), authorize.PrivilegeAttributes{
+				Group:    tc.asked.group,
+				Resource: tc.asked.resource,
+				Required: []string{tc.asked.privilege},
+				Mode:     authorize.MatchAnyOf,
+			}))
+		})
+	}
+}
+
+// errFixture is the dependency error the role loader fails with: its text
+// quotes an address and a user reference that the returned error must never
+// carry.
+var errFixture = errors.New("store: Key (username)=(alice@example.com) for user u-123")
+
+// authorizeSentinelsNotMatched are this package's own sentinels. The
+// unwrapped role-loader failure at HEAD matches none of them (it is neither
+// ErrAccessDenied nor a configuration error), so the wrapped error must not
+// newly match any of them either.
+var authorizeSentinelsNotMatched = []error{
+	authorize.ErrConfig,
+	authorize.ErrUnsupportedAttributes,
+	authorize.ErrInvalidAttributes,
+	authorize.ErrAccessDenied,
+	authorize.ErrAuthenticationRequired,
 }

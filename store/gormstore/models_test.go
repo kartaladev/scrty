@@ -66,19 +66,23 @@ func migratedColumns(t *testing.T, set migrate.Set) map[string]map[string]string
 	return tables
 }
 
-// TestModels pins each model to the table the migration creates: the table
-// name, every column and its type, whatever naming strategy the consumer's
-// *gorm.DB carries. No AutoMigrate runs anywhere, so a model that drifted from
-// the migration would only show at run time.
+// TestModels pins each model, of the security state and of the identity, to
+// the table its migration creates: the table name, every column and its type,
+// whatever naming strategy the consumer's *gorm.DB carries. No AutoMigrate
+// runs anywhere, so a model that drifted from the migration would only show
+// at run time.
 //
 // It also pins that no column carries a default or an automatic time: gorm
 // leaves a zero value out of an insert for a column with a default, and fills
 // an automatic time itself, and either would store something other than the
-// record the store was given.
+// record the store was given. An automatic created_at or updated_at in
+// particular would let gorm stamp its own clock where the store's clock
+// (WithClock) must.
 func TestModels(t *testing.T) {
 	t.Parallel()
 
-	migrated := migratedColumns(t, migrate.SecurityState())
+	securityState := migratedColumns(t, migrate.SecurityState())
+	identity := migratedColumns(t, migrate.Identity())
 
 	// A consumer's naming strategy: models must not depend on gorm's default.
 	namers := map[string]schema.Namer{
@@ -87,25 +91,28 @@ func TestModels(t *testing.T) {
 	}
 
 	type testCase struct {
-		name  string
-		model any
-		table string
+		name     string
+		model    any
+		table    string
+		migrated map[string]map[string]string // the columns of the tables the model's migration creates
 	}
 
 	cases := []testCase{
-		{name: "sessions", model: &sessionRow{}, table: "sessions"},
-		{name: "one-time tokens", model: &oneTimeTokenRow{}, table: "one_time_tokens"},
-		{name: "login attempts", model: &loginAttemptRow{}, table: "login_attempts"},
-		{name: "signing keys", model: &signingKeyRow{}, table: "signing_keys"},
-		{name: "MFA enrolments", model: &enrolmentRow{}, table: "mfa_enrolments"},
-		{name: "API keys", model: &apiKeyRow{}, table: "api_keys"},
-		{name: "OIDC links", model: &linkRow{}, table: "oidc_links"},
-		{name: "OIDC flows", model: &flowRow{}, table: "oidc_flows"},
-		{name: "OIDC handoffs", model: &handoffRow{}, table: "oidc_handoffs"},
-		{name: "recovery codes", model: &recoveryCodeRow{}, table: "recovery_codes"},
-		{name: "account recoveries", model: &accountRecoveryRow{}, table: "account_recoveries"},
-		{name: "passkey credentials", model: &passkeyCredentialRow{}, table: "passkey_credentials"},
-		{name: "passkey user handles", model: &passkeyHandleRow{}, table: "passkey_user_handles"},
+		{name: "sessions", model: &sessionRow{}, table: "sessions", migrated: securityState},
+		{name: "one-time tokens", model: &oneTimeTokenRow{}, table: "one_time_tokens", migrated: securityState},
+		{name: "login attempts", model: &loginAttemptRow{}, table: "login_attempts", migrated: securityState},
+		{name: "signing keys", model: &signingKeyRow{}, table: "signing_keys", migrated: securityState},
+		{name: "MFA enrolments", model: &enrolmentRow{}, table: "mfa_enrolments", migrated: securityState},
+		{name: "API keys", model: &apiKeyRow{}, table: "api_keys", migrated: securityState},
+		{name: "OIDC links", model: &linkRow{}, table: "oidc_links", migrated: securityState},
+		{name: "OIDC flows", model: &flowRow{}, table: "oidc_flows", migrated: securityState},
+		{name: "OIDC handoffs", model: &handoffRow{}, table: "oidc_handoffs", migrated: securityState},
+		{name: "recovery codes", model: &recoveryCodeRow{}, table: "recovery_codes", migrated: securityState},
+		{name: "account recoveries", model: &accountRecoveryRow{}, table: "account_recoveries", migrated: securityState},
+		{name: "passkey credentials", model: &passkeyCredentialRow{}, table: "passkey_credentials", migrated: securityState},
+		{name: "passkey user handles", model: &passkeyHandleRow{}, table: "passkey_user_handles", migrated: securityState},
+		{name: "users", model: &userRow{}, table: "users", migrated: identity},
+		{name: "role grants", model: &assignedRoleRow{}, table: "assigned_roles", migrated: identity},
 	}
 
 	for _, tc := range cases {
@@ -113,6 +120,7 @@ func TestModels(t *testing.T) {
 			t.Run(tc.name+" under "+namerName, func(t *testing.T) {
 				t.Parallel()
 
+				migrated := tc.migrated
 				s, err := schema.Parse(tc.model, &sync.Map{}, namer)
 				require.NoError(t, err)
 				assert.Equal(t, tc.table, s.Table)

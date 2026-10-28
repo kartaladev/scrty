@@ -64,3 +64,60 @@ func (j *jwksEndpoint) Intercept(ex *Exchange, next Next) error {
 
 	return err
 }
+
+// JWKSOption configures the key set endpoint. Each replaces one of the
+// defaults named on EnableJWKSEndpoint.
+type JWKSOption func(*jwksEndpoint) error
+
+// EnableJWKSEndpoint serves the public key set at the key set slot.
+//
+// Default: GET on DefaultJWKSPath, answered 200 with a JSON content type and
+// whatever the provider returned, unchanged. The downstream handler is never
+// called, and every other request — including a POST on that path — passes
+// through untouched.
+//
+// The slot is the outermost of the built-ins, because a client fetching the
+// keys to verify a token with has no token to be authenticated by.
+func EnableJWKSEndpoint(keys KeySetProvider, opts ...JWKSOption) Option {
+	const option = "EnableJWKSEndpoint"
+
+	return func(c *config) error {
+		j := &jwksEndpoint{keys: keys, path: DefaultJWKSPath}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(j); err != nil {
+				return err
+			}
+		}
+
+		c.enable(option, func() error {
+			return requireDep(option, "key set provider", keys)
+		})
+
+		c.register(j, OrderJWKS)
+
+		return nil
+	}
+}
+
+// WithJWKSEndpointPath serves the key set on path instead.
+//
+// Default: DefaultJWKSPath, which keeps passing through once the consumer
+// moves the endpoint — a deployment that serves the conventional location
+// through its own route is free to. An empty path is refused: it would match
+// nothing, so the endpoint the consumer asked for would silently not exist.
+func WithJWKSEndpointPath(path string) JWKSOption {
+	return func(j *jwksEndpoint) error {
+		if path == "" {
+			return newConfigError("WithJWKSEndpointPath was given no path, so the key set " +
+				"would be served nowhere")
+		}
+
+		j.path = path
+
+		return nil
+	}
+}

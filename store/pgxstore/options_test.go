@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
@@ -79,7 +79,7 @@ func TestNewConfig(t *testing.T) {
 			base:    base,
 			honours: []optionKind{optIDGenerator, optClock, optResealOnRead},
 			opts: []Option{
-				WithTxResolver(func(context.Context) (pgxv5.Tx, bool) { return nil, false }),
+				WithTxResolver(func(context.Context) (pgx.Tx, bool) { return nil, false }),
 				WithIDGenerator(gen),
 				WithClock(clockwork.NewFakeClockAt(fixed)),
 				WithResealOnRead(false),
@@ -156,7 +156,7 @@ func TestNewConfig(t *testing.T) {
 			base: base,
 			opts: []Option{
 				WithTxResolver(nil),
-				WithTxResolver(func(context.Context) (pgxv5.Tx, bool) { return nil, false }),
+				WithTxResolver(func(context.Context) (pgx.Tx, bool) { return nil, false }),
 			},
 			assert: refusedWith("the transaction resolver is nil"),
 		},
@@ -235,7 +235,7 @@ func TestNewConfigHonouredOptions(t *testing.T) {
 		kind optionKind // zero for an option every store honours
 		opt  Option
 	}{
-		{"WithTxResolver", 0, WithTxResolver(func(context.Context) (pgxv5.Tx, bool) { return nil, false })},
+		{"WithTxResolver", 0, WithTxResolver(func(context.Context) (pgx.Tx, bool) { return nil, false })},
 		{"WithIDGenerator", optIDGenerator, WithIDGenerator(&fixedGenerator{})},
 		{"WithClock", optClock, WithClock(clockwork.NewRealClock())},
 		{"WithResealOnRead", optResealOnRead, WithResealOnRead(false)},

@@ -217,6 +217,9 @@ func TestFiberGuards(t *testing.T) {
 
 // TestFiberGuardsAttributes pins what each guard builder asks the authorizer, so
 // a route guarded by "all of" cannot quietly be judged as "any of".
+//
+// It stands apart from TestFiberGuards: each case lets the request through and
+// records what the authorizer was asked.
 func TestFiberGuardsAttributes(t *testing.T) {
 	t.Parallel()
 
@@ -319,6 +322,91 @@ func TestFiberGuardsAttributes(t *testing.T) {
 			require.NotNil(t, seen, "the guard asked the authorizer something")
 
 			tc.assert(t, seen)
+		})
+	}
+}
+
+// ownedByAnyone is a checker that is never reached: the wiring cases fail first.
+func ownedByAnyone(context.Context, *identity.Principal, string) (bool, error) { return true, nil }
+
+// TestFiber_OwnershipGuardFailsAtWiring pins that a guard built without what
+// it cannot work without panics when it is wired, naming the missing
+// dependency, instead of refusing every request once traffic arrives.
+func TestFiber_OwnershipGuardFailsAtWiring(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T)
+	}
+
+	cases := []testCase{
+		{
+			name: "with nil checker",
+			assert: func(t *testing.T) {
+				assert.PanicsWithValue(t, "fibersec: ResourceOwnerships needs a non-nil checker", func() {
+					fibersec.ResourceOwnerships[string](fibersec.NewGuards(nil), "orders", "order", nil)
+				})
+			},
+		},
+		{
+			name: "with nil extractor",
+			assert: func(t *testing.T) {
+				owned := fibersec.ResourceOwnerships[string](fibersec.NewGuards(nil), "orders", "order", ownedByAnyone)
+
+				assert.PanicsWithValue(t, "fibersec: ForResource needs a non-nil extractor", func() {
+					owned.ForResource(nil)
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t)
+		})
+	}
+}
+
+// TestFiber_GuardsBuildersWithNilGuardsFailAtWiring stands apart from
+// TestFiber_OwnershipGuardFailsAtWiring: its cases are named after the builder
+// called on nil Guards, and folding them would need a nested group.
+func TestFiber_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		build  func()
+		panics string
+	}
+
+	cases := []testCase{
+		{
+			name:   "RequireAuthenticated",
+			build:  func() { (*fibersec.Guards)(nil).RequireAuthenticated() },
+			panics: "fibersec: RequireAuthenticated needs non-nil Guards",
+		},
+		{
+			name:   "ResourcePrivileges",
+			build:  func() { (*fibersec.Guards)(nil).ResourcePrivileges("orders", "order") },
+			panics: "fibersec: ResourcePrivileges needs non-nil Guards",
+		},
+		{
+			name: "ResourceOwnerships",
+			build: func() {
+				fibersec.ResourceOwnerships[string](nil, "orders", "order", ownedByAnyone)
+			},
+			panics: "fibersec: ResourceOwnerships needs non-nil Guards",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.PanicsWithValue(t, tc.panics, tc.build)
 		})
 	}
 }

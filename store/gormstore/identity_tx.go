@@ -5,14 +5,14 @@ import (
 	"errors"
 	"strconv"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 )
 
 // atomically runs fn as one unit on the handle ctx resolves to: under a
 // savepoint inside a caller's transaction, otherwise in a transaction of the
 // store's own begun on its *gorm.DB. fn receives a session with gorm's
 // logger discarded, like every statement of this package.
-func (s *IdentityStore) atomically(ctx context.Context, op string, fn func(q *gormdb.DB) error) error {
+func (s *IdentityStore) atomically(ctx context.Context, op string, fn func(q *gorm.DB) error) error {
 	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
 		return failed(op, err)
@@ -62,7 +62,7 @@ func (s *IdentityStore) atomically(ctx context.Context, op string, fn func(q *go
 // statements that close the savepoint run even when ctx is done, since
 // leaving it open would leave the caller's transaction aborted, or would
 // commit fn's writes with the caller's.
-func (s *IdentityStore) underSavepoint(ctx context.Context, q *gormdb.DB, op string, fn func(q *gormdb.DB) error) error {
+func (s *IdentityStore) underSavepoint(ctx context.Context, q *gorm.DB, op string, fn func(q *gorm.DB) error) error {
 	name := "scrty_identity_" + strconv.FormatUint(s.savepoints.Add(1), 10)
 
 	sp := savepointSession(ctx, q)
@@ -123,9 +123,9 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q *gormdb.DB, op str
 // savepointSession is a session on q's connection, under ctx, for the
 // savepoint statements: q's own, or the transaction beneath it when q runs
 // on gorm's prepared-statement connection.
-func savepointSession(ctx context.Context, q *gormdb.DB) *gormdb.DB {
-	h := q.Session(&gormdb.Session{NewDB: true, Context: ctx})
-	if p, ok := h.Statement.ConnPool.(*gormdb.PreparedStmtTX); ok {
+func savepointSession(ctx context.Context, q *gorm.DB) *gorm.DB {
+	h := q.Session(&gorm.Session{NewDB: true, Context: ctx})
+	if p, ok := h.Statement.ConnPool.(*gorm.PreparedStmtTX); ok {
 		h.Statement.ConnPool = p.Tx
 	}
 

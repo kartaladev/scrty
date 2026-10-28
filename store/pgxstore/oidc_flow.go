@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
@@ -87,7 +87,7 @@ func (s *FlowStore) Complete(ctx context.Context, handle, provider, state string
 	err := s.c.queryRow(ctx, "complete login flow", pgschema.FlowComplete,
 		[]any{handle, provider, state, storekit.Time(s.c.clock.Now())},
 		&f.Provider, &f.State, &f.Nonce, &f.Verifier, &f.Next, &expires)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return oidc.Flow{}, oidc.ErrInvalidState
 	}
 	if err != nil {

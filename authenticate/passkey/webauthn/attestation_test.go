@@ -2,7 +2,6 @@ package webauthn_test
 
 import (
 	"context"
-	"crypto/x509/pkix"
 	"errors"
 	"testing"
 	"time"
@@ -16,37 +15,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 	"github.com/kartaladev/scrty/outbound"
 )
-
-// attestationEnv is a test PKI: an authenticator model's attestation root
-// and certificate, and a metadata BLOB signer under a test MDS root.
-type attestationEnv struct {
-	aaguid  [16]byte
-	attRoot *testCA
-	att     *testCA
-	mdsRoot *testCA
-	signer  *testCA
-}
-
-func newAttestationEnv(t *testing.T) *attestationEnv {
-	t.Helper()
-	attRoot := newRoot(t, "Test Attestation Root")
-	mdsRoot := newRoot(t, "Test MDS Root")
-	return &attestationEnv{
-		aaguid:  [16]byte{0xa1, 0xa2, 0xa3, 0xa4, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
-		attRoot: attRoot,
-		att:     attestationCert(t, attRoot),
-		mdsRoot: mdsRoot,
-		signer:  issue(t, mdsRoot, pkix.Name{CommonName: "Test MDS Signer"}, false, ""),
-	}
-}
-
-// source is a consumer-supplied metadata source serving one BLOB with
-// entries, signed under the env's MDS root.
-func (e *attestationEnv) source(t *testing.T, entries ...map[string]any) webauthn.MetadataSource {
-	t.Helper()
-	raw := blob{no: 1, nextUpdate: time.Now().Add(72 * time.Hour), entries: entries}.sign(t, e.signer, e.mdsRoot.cert)
-	return webauthn.MetadataBlob(func(context.Context) ([]byte, error) { return raw, nil }, webauthn.WithMDSRoot(e.mdsRoot.cert))
-}
 
 func TestAttestation(t *testing.T) {
 	t.Parallel()

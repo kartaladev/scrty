@@ -16,12 +16,6 @@ import (
 	"github.com/kartaladev/scrty/token/signingkey"
 )
 
-// privateSentinel marks signing-key private material, so a test can tell
-// whether plaintext reached the inner store or an error's text.
-const privateSentinel = "PKCS8-SENTINEL-private-material"
-
-var errCipherDown = errors.New("consumer cipher: kms endpoint kms.internal refused the request")
-
 // signingRecord returns a signing key record whose private material is
 // privateSentinel followed by kid; n orders it by creation time.
 func signingRecord(kid string, n int) signingkey.Record {
@@ -31,23 +25,6 @@ func signingRecord(kid string, n int) signingkey.Record {
 		Private:   []byte(privateSentinel + kid),
 		PublicJWK: []byte(`{"kid":"` + kid + `"}`),
 		CreatedAt: time.Date(2026, 9, 1, 0, 0, n, 0, time.UTC),
-	}
-}
-
-// ciphers are the three views of one rotation every sealing test uses.
-type ciphers struct {
-	retired seal.Cipher // active k1: seals values as they were before the rotation
-	current seal.Cipher // active k2, retired k1: what a store is built with
-	k2Only  seal.Cipher // k2 alone: opens only what was sealed after the rotation
-}
-
-func newCiphers(t *testing.T) ciphers {
-	t.Helper()
-
-	return ciphers{
-		retired: mustCipher(t, seal.WithKeyringEncryptionKey("k1", keyOne)),
-		current: mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo), seal.WithKeyringRetiredEncryptionKey("k1", keyOne)),
-		k2Only:  mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo)),
 	}
 }
 
@@ -79,15 +56,6 @@ func innerRecord(t *testing.T, inner signingkey.KeyStore, kid string) signingkey
 	require.FailNow(t, "no inner record", "kid %s", kid)
 
 	return signingkey.Record{}
-}
-
-// assertNoLeak checks that an error's text names no key id or secret.
-func assertNoLeak(t *testing.T, err error, values ...string) {
-	t.Helper()
-
-	for _, v := range append(values, privateSentinel, "kms.internal") {
-		assert.NotContains(t, err.Error(), v)
-	}
 }
 
 func TestNewSigningKeyStore(t *testing.T) {

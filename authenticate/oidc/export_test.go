@@ -88,3 +88,7 @@ var AssuranceForTest = (*RelyingParty).assuranceFor
 // MatchAssuranceForTest exposes the pure matcher of asserted values against
 // an assurance configuration.
 var MatchAssuranceForTest = matchAssurance
+
+// ReadAssuranceForTest exposes the reader of the amr and acr claims of a
+// parsed ID token.
+var ReadAssuranceForTest = readAssurance

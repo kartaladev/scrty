@@ -196,6 +196,8 @@ func TestAllowlistConstruction(t *testing.T) {
 	}
 }
 
+// TestAllowlistConstructionCopiesItsInput stands apart from TestAllowlistConstruction: it
+// changes the caller's slices after construction and then asserts through Resolve.
 func TestAllowlistConstructionCopiesItsInput(t *testing.T) {
 	t.Parallel()
 

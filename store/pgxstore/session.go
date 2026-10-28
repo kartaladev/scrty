@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -226,7 +226,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 		&sess.ExternalIDToken, &encoded, &origin, &generation, &recovered, &sess.MFAAtFirstFactor,
 		&amr, &sess.FederatedACR, &family, &familyCreated, &superseded, &acceptUntil,
 		&sess.SuccessorDigest, &presented, &authenticated, &retain)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, session.ErrNotFound
 	}
 	if err != nil {
@@ -564,7 +564,7 @@ type supersession struct {
 	// insert is the successor's SessionInsert arguments.
 	insert []any
 	// tx is the transaction Begin began, when the store owns the unit.
-	tx pgxv5.Tx
+	tx pgx.Tx
 }
 
 // Begin begins a transaction of the store's own on its pool.
@@ -714,9 +714,25 @@ func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string)
 	var used bool
 	err := s.c.queryRow(ctx, "read whether session successor was used", pgschema.SessionSuccessorPresented,
 		[]any{storekit.SessionDigest(sessionID), storekit.Time(s.c.clock.Now())}, &used)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, session.ErrNotFound
 	}
 
 	return used, err
+}
+
+// ErrDeleteDidNotSettle is wrapped by the error a user-wide session delete
+// (DeleteByUser, DeleteByUserExcept, DeleteByExternalSession and
+// DeleteByUserAndExternalIssuer) returns when each of its 64 bounded passes
+// removed sessions. It is session.ErrDeleteDidNotSettle under this package's
+// name, so errors.Is matches either.
+var ErrDeleteDidNotSettle = session.ErrDeleteDidNotSettle
+
+// deleteUntilSettled runs statement, a user-wide delete of sessions, through
+// storekit.UntilSettled.
+func (s *sessionStore) deleteUntilSettled(ctx context.Context, op, statement string, args ...any) (int, error) {
+	return storekit.UntilSettled(op, func() (int, error) {
+		n, err := s.c.exec(ctx, op, statement, args...)
+		return int(n), err
+	}, failed)
 }

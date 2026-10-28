@@ -1,8 +1,12 @@
 package password_test
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -213,7 +217,7 @@ func TestEncodeReportsASaltThatCannotBeRead(t *testing.T) {
 func TestDecoyFollowsConsumerParameters(t *testing.T) {
 	t.Parallel()
 
-	// mib128 is declared in argon2id_test.go, in this same test package.
+	// mib128 is declared in helpers_test.go, in this same test package.
 	enc, err := password.NewArgon2idEncoder(password.WithArgon2idMemory(mib128))
 	require.NoError(t, err)
 
@@ -228,16 +232,41 @@ func TestDecoyFollowsConsumerParameters(t *testing.T) {
 			"matches it")
 }
 
-// A nil salt source is meaningless configuration, not a weak parameter: it
-// cannot produce a salt at all. It is refused by the constructor, because the
-// alternative is a panic inside io.ReadFull at the first login, long after
-// whoever wired it has stopped watching.
-func TestConstructionRefusesANilRandomSource(t *testing.T) {
+func TestEncoderConstruction(t *testing.T) {
 	t.Parallel()
+
+	const twoGiBInKiB = 2 * 1024 * 1024
 
 	assertRefused := func(t *testing.T, enc password.Encoder, err error) {
 		require.ErrorIs(t, err, password.ErrNoRandomSource)
 		assert.Nil(t, enc, "no encoder is returned from a refused configuration")
+	}
+
+	// aboveCeiling refuses a parameter above its ceiling, naming it in the error.
+	aboveCeiling := func(param string) func(t *testing.T, enc password.Encoder, err error) {
+		return func(t *testing.T, enc password.Encoder, err error) {
+			require.ErrorIs(t, err, password.ErrInvalidParameters)
+			assert.True(t, strings.Contains(err.Error(), param), "the error must name the parameter: %v", err)
+			assert.Nil(t, enc)
+		}
+	}
+
+	atCeiling := func(t *testing.T, enc password.Encoder, err error) {
+		require.NoError(t, err)
+		assert.NotNil(t, enc)
+	}
+
+	// encodesIfAccepted holds when construction refuses the configuration, or
+	// when the encoder it built can encode.
+	encodesIfAccepted := func(t *testing.T, enc password.Encoder, err error) {
+		if err != nil {
+			return // refused at construction, which is the rule
+		}
+
+		_, encErr := enc.Encode("hunter2")
+		require.NoError(t, encErr,
+			"a configuration the constructor accepted must not fail at the first "+
+				"login: a wiring mistake is a construction error")
 	}
 
 	type testCase struct {
@@ -247,6 +276,10 @@ func TestConstructionRefusesANilRandomSource(t *testing.T) {
 	}
 
 	cases := []testCase{
+		// A nil salt source is meaningless configuration, not a weak parameter: it
+		// cannot produce a salt at all. It is refused by the constructor, because the
+		// alternative is a panic inside io.ReadFull at the first login, long after
+		// whoever wired it has stopped watching.
 		{
 			name: "argon2id",
 			new: func() (password.Encoder, error) {
@@ -261,6 +294,93 @@ func TestConstructionRefusesANilRandomSource(t *testing.T) {
 			},
 			assert: assertRefused,
 		},
+		{
+			name:   "scrypt p above the ceiling",
+			new:    func() (password.Encoder, error) { return password.NewScryptEncoder(password.WithScryptP(32)) },
+			assert: aboveCeiling("p=32"),
+		},
+		{
+			name:   "scrypt working memory above the ceiling",
+			new:    func() (password.Encoder, error) { return password.NewScryptEncoder(password.WithScryptN(1 << 20)) },
+			assert: aboveCeiling("N="),
+		},
+		{
+			name:   "bcrypt cost above the ceiling",
+			new:    func() (password.Encoder, error) { return password.NewBcryptEncoder(password.WithBcryptCost(17)) },
+			assert: aboveCeiling("cost 17"),
+		},
+		{
+			name: "Argon2id memory above the ceiling",
+			new: func() (password.Encoder, error) {
+				return password.NewArgon2idEncoder(password.WithArgon2idMemory(twoGiBInKiB))
+			},
+			assert: aboveCeiling("memory"),
+		},
+		{
+			name: "Argon2id iterations above the ceiling",
+			new: func() (password.Encoder, error) {
+				return password.NewArgon2idEncoder(password.WithArgon2idIterations(17))
+			},
+			assert: aboveCeiling("iterations"),
+		},
+		{
+			name:   "Argon2id threads above the ceiling",
+			new:    func() (password.Encoder, error) { return password.NewArgon2idEncoder(password.WithArgon2idThreads(17)) },
+			assert: aboveCeiling("threads"),
+		},
+		{
+			name: "Argon2id salt above the ceiling",
+			new: func() (password.Encoder, error) {
+				return password.NewArgon2idEncoder(password.WithArgon2idSaltLength(65))
+			},
+			assert: aboveCeiling("salt"),
+		},
+		{
+			name: "Argon2id key above the ceiling",
+			new: func() (password.Encoder, error) {
+				return password.NewArgon2idEncoder(password.WithArgon2idKeyLength(65))
+			},
+			assert: aboveCeiling("derived key"),
+		},
+		{
+			name:   "scrypt p=16",
+			new:    func() (password.Encoder, error) { return password.NewScryptEncoder(password.WithScryptP(16)) },
+			assert: atCeiling,
+		},
+		{
+			name: "bcrypt cost 16",
+			new: func() (password.Encoder, error) {
+				return password.NewBcryptEncoder(password.WithBcryptCost(16))
+			},
+			assert: atCeiling,
+		},
+		{
+			name: "Argon2id at every ceiling",
+			new: func() (password.Encoder, error) {
+				return password.NewArgon2idEncoder(
+					password.WithArgon2idMemory(1024*1024), password.WithArgon2idIterations(16),
+					password.WithArgon2idThreads(16), password.WithArgon2idSaltLength(64),
+					password.WithArgon2idKeyLength(64))
+			},
+			assert: atCeiling,
+		},
+		// The constructors must refuse what the algorithm itself rejects, so a
+		// configuration that would fail at the first login fails at construction
+		// instead.
+		{
+			name: "scrypt N above the floor but not a power of two",
+			new: func() (password.Encoder, error) {
+				return password.NewScryptEncoder(password.WithScryptN(40000))
+			},
+			assert: encodesIfAccepted,
+		},
+		{
+			name: "bcrypt cost above what bcrypt accepts",
+			new: func() (password.Encoder, error) {
+				return password.NewBcryptEncoder(password.WithBcryptCost(32))
+			},
+			assert: encodesIfAccepted,
+		},
 	}
 
 	for _, tc := range cases {
@@ -269,6 +389,144 @@ func TestConstructionRefusesANilRandomSource(t *testing.T) {
 
 			enc, err := tc.new()
 			tc.assert(t, enc, err)
+		})
+	}
+}
+
+// ErrNoRandomSource must not be bypassed by a typed nil.
+//
+// validate checks `e.random == nil`, which is false for an interface holding a
+// nil *bytes.Reader. Construction succeeds and the first Encode panics, which is
+// exactly what ErrNoRandomSource's godoc promises cannot happen.
+// Standalone: its rows are named argon2id and scrypt, as TestEncoderConstruction's nil-source rows are.
+func TestConstructionRefusesATypedNilRandomSource(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *bytes.Reader // nil pointer in a non-nil io.Reader
+
+	type testCase struct {
+		name string
+		new  func(io.Reader) (password.Encoder, error)
+	}
+
+	cases := []testCase{
+		{name: "argon2id", new: func(r io.Reader) (password.Encoder, error) {
+			return password.NewArgon2idEncoder(password.WithArgon2idRandom(r))
+		}},
+		{name: "scrypt", new: func(r io.Reader) (password.Encoder, error) {
+			return password.NewScryptEncoder(password.WithScryptRandom(r))
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			enc, err := tc.new(typedNil)
+			require.ErrorIs(t, err, password.ErrNoRandomSource,
+				"a salt source that cannot deliver is meaningless configuration and is "+
+					"refused at construction, whether the nil is typed or not")
+			assert.Nil(t, enc)
+		})
+	}
+}
+
+func TestRecognizer_BuiltInEncodersRecognizeOnlyWhatTheyWouldVerify(t *testing.T) {
+	t.Parallel()
+
+	encoders := map[string]func() (password.Encoder, error){
+		"argon2id": func() (password.Encoder, error) { return password.NewArgon2idEncoder() },
+		"bcrypt":   func() (password.Encoder, error) { return password.NewBcryptEncoder() },
+		"scrypt":   func() (password.Encoder, error) { return password.NewScryptEncoder() },
+	}
+
+	// One hash of each algorithm, produced by the real encoders, so each
+	// encoder can be shown the others' formats.
+	hashes := map[string][]byte{}
+	for name, build := range encoders {
+		enc, err := build()
+		require.NoError(t, err)
+
+		hashes[name], err = enc.Encode("hunter2")
+		require.NoError(t, err)
+	}
+
+	b64 := base64.RawStdEncoding
+	salt := b64.EncodeToString(make([]byte, 16))
+	key := b64.EncodeToString(make([]byte, 32))
+
+	type testCase struct {
+		name    string
+		encoder string
+		encoded []byte
+		assert  func(t *testing.T, recognized bool)
+	}
+
+	recognized := func(t *testing.T, got bool) {
+		t.Helper()
+		assert.True(t, got, "a hash the encoder verifies was reported unrecognised")
+	}
+	unrecognized := func(t *testing.T, got bool) {
+		t.Helper()
+		assert.False(t, got, "a hash Match refuses unread was reported recognised")
+	}
+
+	var cases []testCase
+	for name := range encoders {
+		cases = append(cases,
+			testCase{name: name + " recognises its own hash", encoder: name, encoded: hashes[name], assert: recognized},
+			testCase{name: name + " does not recognise an empty hash", encoder: name, encoded: []byte{}, assert: unrecognized},
+			testCase{name: name + " does not recognise a nil hash", encoder: name, encoded: nil, assert: unrecognized},
+			testCase{name: name + " does not recognise garbage", encoder: name, encoded: []byte("not a hash"), assert: unrecognized},
+		)
+		for other := range encoders {
+			if other != name {
+				cases = append(cases, testCase{
+					name: name + " does not recognise a " + other + " hash", encoder: name,
+					encoded: hashes[other], assert: unrecognized,
+				})
+			}
+		}
+	}
+
+	cases = append(cases,
+		testCase{
+			name: "argon2id does not recognise a record demanding memory above the ceiling", encoder: "argon2id",
+			encoded: fmt.Appendf(nil, "argon2id$%d$3$1$%s$%s", 1<<30, salt, key), assert: unrecognized,
+		},
+		testCase{
+			name: "scrypt does not recognise a record demanding parallelism above the ceiling", encoder: "scrypt",
+			encoded: fmt.Appendf(nil, "scrypt$32768$8$128$%s$%s", salt, key), assert: unrecognized,
+		},
+		testCase{
+			name: "bcrypt does not recognise a record whose cost is above the ceiling", encoder: "bcrypt",
+			encoded: []byte("$2a$20$abcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890"), assert: unrecognized,
+		},
+		testCase{
+			name: "bcrypt does not recognise a record whose salt is outside bcrypt's alphabet", encoder: "bcrypt",
+			encoded: []byte("$2a$10$!bcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[:60]), assert: unrecognized,
+		},
+		testCase{
+			name: "scrypt does not recognise a record whose N is not a power of two", encoder: "scrypt",
+			encoded: fmt.Appendf(nil, "scrypt$3$8$1$%s$%s", salt, key), assert: unrecognized,
+		},
+		testCase{
+			name: "scrypt does not recognise a record whose N is one", encoder: "scrypt",
+			encoded: fmt.Appendf(nil, "scrypt$1$8$1$%s$%s", salt, key), assert: unrecognized,
+		},
+	)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			enc, err := encoders[tc.encoder]()
+			require.NoError(t, err)
+
+			rec, ok := enc.(password.Recognizer)
+			require.True(t, ok, "the built-in %s encoder does not implement Recognizer", tc.encoder)
+
+			tc.assert(t, rec.Recognizes(tc.encoded))
 		})
 	}
 }

@@ -12,7 +12,7 @@
 // module's own options, never directly. It starts no goroutine and needs
 // nothing stopped.
 //
-//go:generate mockgen -source=../../ratelimit/limiter.go -package=unavailable_test -destination=limiter_mock_test.go -typed
+//go:generate mockgen -source=../../ratelimit/limiter.go -package=unavailable_test -destination=limiter_mock_test.go -exclude_interfaces=LimiterFactory,Verifier,PolicyReporter,Pruner -typed
 package unavailable
 
 import (

@@ -15,14 +15,6 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-// refusedUnavailable asserts a fail-closed answer that names the outage.
-func refusedUnavailable(t *testing.T, exceeded bool, err error) {
-	t.Helper()
-
-	require.ErrorIs(t, err, ratelimit.ErrBackendUnavailable)
-	assert.True(t, exceeded)
-}
-
 // TestUnavailable_Breaker covers task 4.2: an unavailable error opens the
 // breaker, an open breaker answers without calling the backend, and after the
 // probe interval exactly one call probes, closing the breaker on success and

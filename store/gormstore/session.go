@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	gormdb "gorm.io/gorm"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/authenticate/factor"
@@ -62,7 +62,7 @@ import (
 //     values or acr hold either is refused with an error that names the
 //     field, never the value, and nothing is written; the value is never
 //     altered.
-func NewSessionStore(db *gormdb.DB, c seal.Cipher, opts ...Option) (session.Store, error) {
+func NewSessionStore(db *gorm.DB, c seal.Cipher, opts ...Option) (session.Store, error) {
 	cfg, err := newConfig(db, opts, optIDGenerator, optClock)
 	if err != nil {
 		return nil, err
@@ -196,7 +196,7 @@ func (s *sessionStore) newRow(op string, sess *session.Session) (sessionRow, err
 
 // insertSession runs the insert of row on q, and reports false when its
 // digest is already stored.
-func insertSession(q *gormdb.DB, op string, row *sessionRow) (bool, error) {
+func insertSession(q *gorm.DB, op string, row *sessionRow) (bool, error) {
 	res := q.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id_digest"}}, DoNothing: true}).Create(row)
 	if res.Error != nil {
 		return false, failed(op, res.Error)
@@ -241,9 +241,9 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 		"user_id":          row.UserID,
 		"created_at":       row.CreatedAt,
 		"last_accessed_at": row.LastAccessedAt,
-		"idle_expires_at": gormdb.Expr(
+		"idle_expires_at": gorm.Expr(
 			"CASE WHEN superseded_at IS NULL THEN ? ELSE idle_expires_at END", row.IdleExpiresAt),
-		"absolute_expires_at": gormdb.Expr(
+		"absolute_expires_at": gorm.Expr(
 			"CASE WHEN superseded_at IS NULL THEN ? ELSE absolute_expires_at END", row.AbsoluteExpiresAt),
 		"first_factor":              row.FirstFactor,
 		"mfa_state":                 row.MFAState,
@@ -286,7 +286,7 @@ func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Ses
 	}
 	var row sessionRow
 	err = q.Where("id_digest = ?", storekit.SessionDigest(sessionID)).Take(&row).Error
-	if errors.Is(err, gormdb.ErrRecordNotFound) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, session.ErrNotFound
 	}
 	if err != nil {
@@ -580,7 +580,7 @@ func (s *sessionStore) RecordActivity(
 // stored reports whether a session with digest is stored, expired or not,
 // reading through q: what a conditional write that changed no row runs to
 // tell a missing session from one whose condition did not hold.
-func stored(q *gormdb.DB, op string, digest []byte) (bool, error) {
+func stored(q *gorm.DB, op string, digest []byte) (bool, error) {
 	var exists bool
 	if err := q.Raw(pgschema.SessionExists, digest).Scan(&exists).Error; err != nil {
 		return false, failed(op, err)
@@ -671,12 +671,12 @@ type supersession struct {
 	// row is the successor's row.
 	row sessionRow
 	// tx is the transaction Begin began, when the store owns the unit.
-	tx *gormdb.DB
+	tx *gorm.DB
 }
 
 // Begin begins a transaction of the store's own on q, the handle the call
 // resolved to on the store's *gorm.DB.
-func (u *supersession) Begin(ctx context.Context, q *gormdb.DB) (*gormdb.DB, error) {
+func (u *supersession) Begin(ctx context.Context, q *gorm.DB) (*gorm.DB, error) {
 	tx, err := beginReadCommitted(ctx, q)
 	if err != nil {
 		return nil, failed(u.op, err)
@@ -705,7 +705,7 @@ func (u *supersession) SavepointName() string {
 // ExecSavepoint runs stmt through Exec, as the identity store's savepoints
 // do, so its error is seen, and bypasses a prepared-statement connection. The
 // name comes from the store's own counter, never from input.
-func (u *supersession) ExecSavepoint(ctx context.Context, q *gormdb.DB, stmt string) error {
+func (u *supersession) ExecSavepoint(ctx context.Context, q *gorm.DB, stmt string) error {
 	if err := savepointSession(ctx, q).Exec(stmt).Error; err != nil {
 		return failed(u.op, err)
 	}
@@ -713,7 +713,7 @@ func (u *supersession) ExecSavepoint(ctx context.Context, q *gormdb.DB, stmt str
 	return nil
 }
 
-func (u *supersession) Exec(_ context.Context, q *gormdb.DB, stmt string, args ...any) (int64, error) {
+func (u *supersession) Exec(_ context.Context, q *gorm.DB, stmt string, args ...any) (int64, error) {
 	res := q.Exec(stmt, args...)
 	if res.Error != nil {
 		return 0, failed(u.op, res.Error)
@@ -722,7 +722,7 @@ func (u *supersession) Exec(_ context.Context, q *gormdb.DB, stmt string, args .
 	return res.RowsAffected, nil
 }
 
-func (u *supersession) QueryInt(_ context.Context, q *gormdb.DB, stmt string, args ...any) (int, error) {
+func (u *supersession) QueryInt(_ context.Context, q *gorm.DB, stmt string, args ...any) (int, error) {
 	var n int
 	if err := q.Raw(stmt, args...).Scan(&n).Error; err != nil {
 		return 0, failed(u.op, err)
@@ -731,7 +731,7 @@ func (u *supersession) QueryInt(_ context.Context, q *gormdb.DB, stmt string, ar
 	return n, nil
 }
 
-func (u *supersession) InsertSuccessor(_ context.Context, q *gormdb.DB) (bool, error) {
+func (u *supersession) InsertSuccessor(_ context.Context, q *gorm.DB) (bool, error) {
 	return insertSession(q, u.op, &u.row)
 }
 
@@ -853,3 +853,10 @@ func (s *sessionStore) SuccessorPresented(ctx context.Context, sessionID string)
 
 	return used, nil
 }
+
+// ErrDeleteDidNotSettle is wrapped by the error a user-wide session delete
+// (DeleteByUser, DeleteByUserExcept, DeleteByExternalSession and
+// DeleteByUserAndExternalIssuer) returns when each of its 64 bounded passes
+// removed sessions. It is session.ErrDeleteDidNotSettle under this package's
+// name, so errors.Is matches either.
+var ErrDeleteDidNotSettle = session.ErrDeleteDidNotSettle

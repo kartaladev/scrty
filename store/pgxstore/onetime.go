@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	pgxv5 "github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -82,7 +82,7 @@ func (s *OneTimeStore) FindByID(ctx context.Context, tokenID id.ID) (*onetime.To
 	var consumed pgtype.Timestamptz
 	err := s.c.queryRow(ctx, op, pgschema.OneTimeSelect, []any{uuidArg(tokenID)},
 		&tok.Purpose, &tok.Subject, &tok.SecretHash, &tok.BindingHash, &issued, &expires, &consumed)
-	if errors.Is(err, pgxv5.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, onetime.ErrTokenNotFound
 	}
 	if err != nil {
@@ -188,7 +188,7 @@ func (s *OneTimeStore) InsertWithin(ctx context.Context, tok onetime.Token, sinc
 			err = decide(q)
 		}
 	} else {
-		err = s.c.readCommitted(ctx, func(tx pgxv5.Tx) error { return decide(tx) })
+		err = s.c.readCommitted(ctx, func(tx pgx.Tx) error { return decide(tx) })
 	}
 	if err != nil {
 		return false, failed(op, err)

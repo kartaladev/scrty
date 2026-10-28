@@ -1,6 +1,7 @@
 package identity_test
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
@@ -545,5 +546,158 @@ func TestDetailsActiveIsNotInverted(t *testing.T) {
 		assert.False(t, found,
 			"Details.%s inverts the zero value: a user would be active until explicitly marked otherwise",
 			inverted)
+	}
+}
+
+func TestPrincipalContext(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		ctx    func(ctx context.Context) context.Context // nil leaves the context unchanged
+		assert func(t *testing.T, ctx context.Context)
+	}
+
+	cases := []testCase{
+		{
+			name: "a principal attached is read back from a child context",
+			ctx: func(ctx context.Context) context.Context {
+				return context.WithoutCancel(identity.WithPrincipal(ctx, &identity.Principal{ID: "u-1"}))
+			},
+			assert: func(t *testing.T, ctx context.Context) {
+				p, ok := identity.PrincipalFromContext(ctx)
+				require.True(t, ok)
+				require.NotNil(t, p)
+				assert.Equal(t, identity.UserID("u-1"), p.ID)
+			},
+		},
+		{
+			name: "a cancelled context still carries its principal",
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(
+					identity.WithPrincipal(ctx, &identity.Principal{ID: "u-2"}))
+				cancel()
+
+				return cctx
+			},
+			assert: func(t *testing.T, ctx context.Context) {
+				require.ErrorIs(t, ctx.Err(), context.Canceled)
+
+				p, ok := identity.PrincipalFromContext(ctx)
+				require.True(t, ok, "cancellation ends the request, it does not erase who made it")
+				assert.Equal(t, identity.UserID("u-2"), p.ID)
+			},
+		},
+		{
+			name: "the optional read reports absence",
+			assert: func(t *testing.T, ctx context.Context) {
+				p, ok := identity.PrincipalFromContext(ctx)
+				assert.False(t, ok)
+				assert.Nil(t, p)
+			},
+		},
+		{
+			name: "a nil principal does not read back as present",
+			ctx: func(ctx context.Context) context.Context {
+				return identity.WithPrincipal(ctx, nil)
+			},
+			assert: func(t *testing.T, ctx context.Context) {
+				p, ok := identity.PrincipalFromContext(ctx)
+				assert.False(t, ok,
+					"reporting a nil principal as present would hand callers a nil to dereference")
+				assert.Nil(t, p)
+			},
+		},
+		{
+			name: "the mandatory read returns the principal when one is present",
+			ctx: func(ctx context.Context) context.Context {
+				return identity.WithPrincipal(ctx, &identity.Principal{ID: "u-3"})
+			},
+			assert: func(t *testing.T, ctx context.Context) {
+				p := identity.MustPrincipalFromContext(ctx)
+				require.NotNil(t, p)
+				assert.Equal(t, identity.UserID("u-3"), p.ID)
+			},
+		},
+		{
+			name: "the mandatory read panics with an identifiable error",
+			assert: func(t *testing.T, ctx context.Context) {
+				defer func() {
+					r := recover()
+					require.NotNil(t, r, "the mandatory read must panic when no principal is present")
+
+					err, ok := r.(error)
+					require.True(t, ok, "the panic value must be an error a recovering caller can inspect")
+					assert.ErrorIs(t, err, identity.ErrNoPrincipal)
+				}()
+
+				identity.MustPrincipalFromContext(ctx)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			tc.assert(t, ctx)
+		})
+	}
+}
+
+// TestPrivilegeShapeCanExpressARefusal pins that these types can still express
+// the contract the role loader port relies on: a privilege that is not granted
+// is carried as refused rather than omitted, so a caller can tell "refused"
+// apart from "not mentioned".
+//
+// It guards the shape, not the behaviour, and says so deliberately. Privilege
+// and ResourcePrivileges are data carriers — this package exposes no function
+// that reads one, so there is nothing here to call: a test that built a literal
+// and read its fields back would assert its own input and hold however the
+// package changed. Whether a loader really returns a refusal is the
+// implementation's behaviour, and it is checked against a real implementation by
+// the conformance suite in scrty's test module, which seeds a refused privilege
+// and requires the loader to carry it.
+//
+// What a change could still break without breaking the build is the shape: a
+// list of granted names, or an inverted flag, could not express a refusal at
+// all, and every caller would then read "refused" as "not mentioned" — which is
+// how a revoked privilege becomes a privilege nobody decided.
+func TestPrivilegeShapeCanExpressARefusal(t *testing.T) {
+	t.Parallel()
+
+	privilege := reflect.TypeFor[identity.Privilege]()
+
+	granted, ok := privilege.FieldByName("Granted")
+	require.True(t, ok, "Privilege must keep a granted flag for authorization to read")
+	assert.Equal(t, reflect.TypeFor[bool](), granted.Type,
+		"the granted flag is a bool: a privilege is granted or it is not")
+
+	for _, inverted := range []string{"Refused", "Denied", "Revoked", "Forbidden"} {
+		_, found := privilege.FieldByName(inverted)
+		assert.False(t, found,
+			"Privilege.%s inverts the zero value: a privilege nobody vouched for would read as "+
+				"granted, and two flags disagreeing leaves no answer at all", inverted)
+	}
+
+	entry := reflect.TypeFor[identity.ResourcePrivileges]()
+
+	privileges, ok := entry.FieldByName("Privileges")
+	require.True(t, ok, "a resource entry must carry the privileges it is about")
+	assert.Equal(t, reflect.TypeFor[[]identity.Privilege](), privileges.Type,
+		"the entry carries every named privilege with its own flag; a list of granted names "+
+			"could not carry a refusal, so a caller could never tell one from silence")
+
+	for _, filtering := range []string{"GrantedOnly", "Allowed", "Effective", "Filtered"} {
+		_, found := entry.FieldByName(filtering)
+		assert.False(t, found,
+			"ResourcePrivileges.%s suggests the entry carries a selection rather than what the "+
+				"role holds: a row that filters its refusals away hides them from every caller",
+			filtering)
 	}
 }

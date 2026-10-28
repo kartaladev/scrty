@@ -1,14 +1,9 @@
 package redisstore_test
 
 import (
-	"context"
 	"encoding/hex"
-	"errors"
-	"log/slog"
-	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,131 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/internal/unavailable"
-	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/ratelimit/redisstore"
-)
-
-// recorder stands in for the network under a real go-redis client: it records
-// every command the client would send, answers each script call with reply,
-// and refuses to dial, so a test sees exactly what the limiter asks the
-// server and proves when it asks nothing.
-type recorder struct {
-	mu    sync.Mutex
-	cmds  [][]any
-	dials int
-	reply any
-	// info is the reply to INFO; CONFIG GET answers noeviction, and SCRIPT
-	// LOAD a digest, so Verify can run against a recorder.
-	info string
-}
-
-func (r *recorder) DialHook(redis.DialHook) redis.DialHook {
-	return func(context.Context, string, string) (net.Conn, error) {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.dials++
-		return nil, errors.New("recorder: dial attempted")
-	}
-}
-
-func (r *recorder) ProcessHook(redis.ProcessHook) redis.ProcessHook {
-	return func(_ context.Context, cmd redis.Cmder) error {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		r.cmds = append(r.cmds, cmd.Args())
-		switch c := cmd.(type) {
-		case *redis.Cmd:
-			c.SetVal(r.reply)
-		case *redis.StringCmd:
-			c.SetVal(r.info) // INFO, and SCRIPT LOAD, whose digest is unused
-		case *redis.MapStringStringCmd:
-			c.SetVal(map[string]string{"maxmemory-policy": "noeviction"})
-		}
-		return nil
-	}
-}
-
-func (r *recorder) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
-	return next
-}
-
-func (r *recorder) commands() [][]any {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([][]any(nil), r.cmds...)
-}
-
-func (r *recorder) dialled() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.dials
-}
-
-// recordingClient returns a client over a recorder, pointed at an address
-// nothing listens on.
-func recordingClient(t *testing.T, reply any) (*redis.Client, *recorder) {
-	t.Helper()
-
-	rec := &recorder{reply: reply}
-	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1", MaxRetries: -1, ContextTimeoutEnabled: true})
-	client.AddHook(rec)
-	t.Cleanup(func() { _ = client.Close() })
-	return client, rec
-}
-
-func quietLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
-
-// clusterClient returns a NewLimiter client factory for a cluster client
-// whose options, ContextTimeoutEnabled set, set changes, pointed at an
-// address nothing listens on. Building one performs no I/O.
-func clusterClient(set func(*redis.ClusterOptions)) func(t *testing.T) redis.UniversalClient {
-	return func(t *testing.T) redis.UniversalClient {
-		opts := &redis.ClusterOptions{Addrs: []string{"127.0.0.1:1"}, ContextTimeoutEnabled: true}
-		if set != nil {
-			set(opts)
-		}
-		c := redis.NewClusterClient(opts)
-		t.Cleanup(func() { _ = c.Close() })
-		return c
-	}
-}
-
-// plainClient returns a NewLimiter client factory for a single-node client
-// whose options, ContextTimeoutEnabled set, set changes, pointed at an
-// address nothing listens on.
-func plainClient(set func(*redis.Options)) func(t *testing.T) redis.UniversalClient {
-	return func(t *testing.T) redis.UniversalClient {
-		opts := &redis.Options{Addr: "127.0.0.1:1", ContextTimeoutEnabled: true}
-		if set != nil {
-			set(opts)
-		}
-		c := redis.NewClient(opts)
-		t.Cleanup(func() { _ = c.Close() })
-		return c
-	}
-}
-
-// ringClient returns a NewLimiter client factory for a ring whose options,
-// ContextTimeoutEnabled set, set changes, over one shard nothing listens on.
-func ringClient(set func(*redis.RingOptions)) func(t *testing.T) redis.UniversalClient {
-	return func(t *testing.T) redis.UniversalClient {
-		opts := &redis.RingOptions{Addrs: map[string]string{"shard": "127.0.0.1:1"}, ContextTimeoutEnabled: true}
-		if set != nil {
-			set(opts)
-		}
-		c := redis.NewRing(opts)
-		t.Cleanup(func() { _ = c.Close() })
-		return c
-	}
-}
-
-// Setters that leave each client type's ContextTimeoutEnabled off.
-var (
-	noClientContextTimeout  = func(o *redis.Options) { o.ContextTimeoutEnabled = false }
-	noClusterContextTimeout = func(o *redis.ClusterOptions) { o.ContextTimeoutEnabled = false }
-	noRingContextTimeout    = func(o *redis.RingOptions) { o.ContextTimeoutEnabled = false }
 )
 
 func TestNewLimiter(t *testing.T) {
@@ -345,78 +217,6 @@ func TestNewLimiter(t *testing.T) {
 	}
 }
 
-func TestNewLimiter_DecoratorConfig(t *testing.T) {
-	t.Parallel()
-
-	fake := clockwork.NewFakeClock()
-	logger := quietLogger()
-
-	type testCase struct {
-		name   string
-		opts   []redisstore.Option
-		assert func(t *testing.T, cfg unavailable.Config)
-	}
-
-	cases := []testCase{
-		{
-			// A Config built by hand would leave LogInterval at zero, which
-			// turns allow mode's log sampling off.
-			name: "starts from the decorator's defaults",
-			assert: func(t *testing.T, cfg unavailable.Config) {
-				def := unavailable.DefaultConfig()
-				assert.Equal(t, def.Mode, cfg.Mode)
-				assert.Equal(t, def.Timeout, cfg.Timeout)
-				assert.Equal(t, def.ProbeInterval, cfg.ProbeInterval)
-				assert.Equal(t, ratelimit.DefaultLogInterval, cfg.LogInterval)
-				assert.Same(t, slog.Default(), cfg.Logger)
-				assert.NotNil(t, cfg.Clock)
-			},
-		},
-		{
-			name: "options reach the decorator",
-			opts: []redisstore.Option{
-				redisstore.WithOnUnavailable(ratelimit.UnavailableAllow),
-				redisstore.WithOperationTimeout(time.Second),
-				redisstore.WithProbeInterval(3 * time.Second),
-				redisstore.WithClock(fake),
-				redisstore.WithLogger(logger),
-			},
-			assert: func(t *testing.T, cfg unavailable.Config) {
-				assert.Equal(t, ratelimit.UnavailableAllow, cfg.Mode)
-				assert.Equal(t, time.Second, cfg.Timeout)
-				assert.Equal(t, 3*time.Second, cfg.ProbeInterval)
-				assert.Equal(t, clock.Clock(fake), cfg.Clock)
-				assert.Same(t, logger, cfg.Logger)
-				assert.Equal(t, ratelimit.DefaultLogInterval, cfg.LogInterval)
-			},
-		},
-		{
-			name: "log interval override reaches the decorator",
-			opts: []redisstore.Option{redisstore.WithUnavailableLogInterval(10 * time.Second)},
-			assert: func(t *testing.T, cfg unavailable.Config) {
-				assert.Equal(t, 10*time.Second, cfg.LogInterval)
-			},
-		},
-		{
-			// Zero writes every allow-mode record, for a consumer whose own
-			// handler samples.
-			name: "zero log interval turns sampling off",
-			opts: []redisstore.Option{redisstore.WithUnavailableLogInterval(0)},
-			assert: func(t *testing.T, cfg unavailable.Config) {
-				assert.Zero(t, cfg.LogInterval)
-			},
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			tc.assert(t, redisstore.DecoratorConfig(tc.opts...))
-		})
-	}
-}
-
 func TestStorageKey(t *testing.T) {
 	t.Parallel()
 
@@ -612,6 +412,53 @@ func TestLimiter_ScriptCalls(t *testing.T) {
 
 			exceeded, err := tc.call(t, l)
 			tc.assert(t, rec.commands(), exceeded, err)
+		})
+	}
+}
+
+// TestLimiter_Policy pins the "Shared limiter" scenario: the limiter reports,
+// through the optional contract, the limit and window it was built with, the
+// window as the backend counts it. Construction does no I/O, so a client
+// pointed at nothing is enough.
+func TestLimiter_Policy(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		window time.Duration
+		assert func(t *testing.T, limit int, window time.Duration)
+	}
+
+	cases := []testCase{
+		{
+			name:   "limit and window as built",
+			window: 15 * time.Minute,
+			assert: func(t *testing.T, limit int, window time.Duration) {
+				assert.Equal(t, 10, limit)
+				assert.Equal(t, 15*time.Minute, window)
+			},
+		},
+		{
+			name:   "window finer than the backend counts is truncated",
+			window: 15*time.Minute + 500*time.Nanosecond,
+			assert: func(t *testing.T, limit int, window time.Duration) {
+				assert.Equal(t, 10, limit)
+				assert.Equal(t, 15*time.Minute, window)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, _ := recordingClient(t, nil)
+			l, err := redisstore.NewLimiter(client, "ns", 10, tc.window)
+			require.NoError(t, err)
+
+			var r ratelimit.PolicyReporter = l
+			limit, window := r.Policy()
+			tc.assert(t, limit, window)
 		})
 	}
 }

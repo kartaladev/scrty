@@ -18,103 +18,13 @@ import (
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
-)
-
-// The machine caller these tests authenticate.
-const (
-	apiKeyPrincipal identity.UserID = "svc-billing"
-	apiKeySource    string          = "203.0.113.7"
 )
 
 // errAPIKeyDenied is what a consumer's stateless policy refuses a valid key
 // with.
 var errAPIKeyDenied = errors.New("apikey_test: outside office hours")
-
-// countingStore forwards to the real store and counts the reads a verification
-// makes, which is how a test pins that a request refused earlier never reached
-// the store at all.
-type countingStore struct {
-	apikey.Store
-
-	reads atomic.Int64
-}
-
-func (s *countingStore) Get(ctx context.Context, keyID id.ID) (apikey.Key, error) {
-	s.reads.Add(1)
-
-	return s.Store.Get(ctx, keyID)
-}
-
-// apiKeyHarness is a real key manager holding one live key, because what is
-// being pinned is which requests reach the verification at all.
-type apiKeyHarness struct {
-	keys  *apikey.Keys
-	store *countingStore
-	valid string
-
-	keyOpts []httpsec.APIKeyOption
-	engine  *policy.Engine
-}
-
-func newAPIKeyHarness(t *testing.T) *apiKeyHarness {
-	t.Helper()
-
-	store := &countingStore{Store: apikey.NewMemoryStore()}
-
-	keys, err := apikey.New(apikey.WithStore(store))
-	require.NoError(t, err)
-
-	presented, _, err := keys.Issue(
-		t.Context(), apiKeyPrincipal, "billing", []string{"invoices:read"}, 0)
-	require.NoError(t, err)
-
-	// The issuance wrote a record; only what a verification reads is counted.
-	store.reads.Store(0)
-
-	return &apiKeyHarness{keys: keys, store: store, valid: presented}
-}
-
-func (h *apiKeyHarness) chain(t *testing.T) *httpsec.Chain {
-	t.Helper()
-
-	c, err := h.build()
-	require.NoError(t, err)
-
-	return c
-}
-
-func (h *apiKeyHarness) build() (*httpsec.Chain, error) {
-	opts := []httpsec.Option{httpsec.EnableAPIKey(h.keys, h.keyOpts...)}
-	if h.engine != nil {
-		opts = append(opts, httpsec.WithPolicyEngine(h.engine))
-	}
-
-	return httpsec.New(opts...)
-}
-
-// present sends a request carrying header, from source.
-func (h *apiKeyHarness) present(t *testing.T, c *httpsec.Chain, source, header string) served {
-	t.Helper()
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil)
-	req.RemoteAddr = source + ":51000"
-
-	if header != "" {
-		req.Header.Set("Authorization", header)
-	}
-
-	return serve(t, c, req)
-}
-
-// withKey presents the live key under the default scheme.
-func (h *apiKeyHarness) withKey(t *testing.T, c *httpsec.Chain, source, key string) served {
-	t.Helper()
-
-	return h.present(t, c, source, httpsec.DefaultAPIKeyScheme+key)
-}
 
 // TestEnableAPIKey pins what the chain refuses to be built with.
 func TestEnableAPIKey(t *testing.T) {

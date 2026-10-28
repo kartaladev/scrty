@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -46,26 +45,6 @@ func TestLockoutObserverViewIsOneValue(t *testing.T) {
 	first, second := p.Attempts(), p.Attempts()
 	assert.Same(t, first, second, "two calls handed out different views")
 	assert.True(t, first == second, "the views must compare equal as interface values")
-}
-
-// reportLog collects what an observer is told, safe for concurrent reports.
-type reportLog struct {
-	mu  sync.Mutex
-	got []lockout.Report
-}
-
-func (l *reportLog) observe(_ context.Context, r lockout.Report) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	l.got = append(l.got, r)
-}
-
-func (l *reportLog) all() []lockout.Report {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return slices.Clone(l.got)
 }
 
 // countKind counts the reports of kind k.

@@ -5,80 +5,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
-
-// resolveFixture is a session manager over the memory store on a fake clock,
-// and a session created in it ten minutes before the request.
-type resolveFixture struct {
-	start    time.Time
-	clk      *clockwork.FakeClock
-	sessions *session.Sessions
-	session  *session.Session
-}
-
-func newResolveFixture(t *testing.T) resolveFixture {
-	t.Helper()
-
-	start := time.Date(2026, 9, 26, 9, 0, 0, 0, time.UTC)
-	clk := clockwork.NewFakeClockAt(start)
-
-	// The store judges expiry by the manager's clock, so deadlines drawn from
-	// the fake clock are read against it.
-	sessions, err := session.New(session.WithClock(clk), session.WithStore(
-		session.NewMemoryStore(session.WithMemoryStoreClock(clk))))
-	require.NoError(t, err)
-
-	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
-	require.NoError(t, err)
-
-	clk.Advance(10 * time.Minute)
-
-	return resolveFixture{start: start, clk: clk, sessions: sessions, session: s}
-}
-
-// consumerAuthenticating is a consumer's own authenticating interceptor: it
-// loads the fixture's session, publishes it with the caller through
-// PublishSession, and, when evaluate is set, runs the per-request phase
-// through EvaluatePerRequest, as a built-in authenticator does.
-func consumerAuthenticating(f resolveFixture, evaluate bool) httpsec.Interceptor {
-	return httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
-		s, err := f.sessions.Load(ex.Context(), f.session.ID)
-		if err != nil {
-			return err
-		}
-
-		details := storedUser()
-		p := identity.PrincipalFromDetails(details)
-
-		if err := ex.PublishSession(&authenticate.Authentication{
-			Principal:         p,
-			Time:              f.clk.Now(),
-			PasswordChangedAt: details.PasswordChangedAt,
-		}, s); err != nil {
-			return err
-		}
-
-		if evaluate {
-			if err := ex.EvaluatePerRequest(s, p); err != nil {
-				return err
-			}
-		}
-
-		return next(ex)
-	})
-}
 
 // TestExchangePublishSession pins that a session a consumer interceptor
 // publishes is the one the handler reads, with its caller, and that its

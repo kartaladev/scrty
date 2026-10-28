@@ -15,43 +15,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 )
 
-const (
-	rpID      = "example.com"
-	rpOrigin  = "https://example.com"
-	challenge = "passkey-registration.c2VjcmV0LXRva2VuLXN0cmluZw"
-)
-
-func relyingParty() passkey.RelyingParty {
-	return passkey.RelyingParty{ID: rpID, Name: "Example", Origins: []string{rpOrigin, "https://login.example.com"}}
-}
-
-func newVerifier(t *testing.T, opts ...webauthn.Option) *webauthn.Verifier {
-	t.Helper()
-	v, err := webauthn.New(relyingParty(), opts...)
-	require.NoError(t, err)
-	return v
-}
-
 func b64(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
-
-// register runs a registration of a through v and returns the credential the
-// core would store.
-func register(t *testing.T, v *webauthn.Verifier, a *webauthntest.Authenticator) *passkey.Credential {
-	t.Helper()
-	p, err := v.ParseRegistration(a.Create(rpID, rpOrigin, challenge, []byte("handle-0123456789"), webauthntest.AttestationNone))
-	require.NoError(t, err)
-	nc, err := v.VerifyRegistration(t.Context(), p, passkey.RegistrationExpectation{Challenge: challenge, UV: passkey.UserVerificationRequired})
-	require.NoError(t, err)
-	return &passkey.Credential{CredentialID: nc.CredentialID, PublicKey: nc.PublicKey, SignCount: nc.SignCount}
-}
-
-// decode unmarshals rendered options into a generic map.
-func decode(t *testing.T, raw json.RawMessage) map[string]any {
-	t.Helper()
-	var m map[string]any
-	require.NoError(t, json.Unmarshal(raw, &m))
-	return m
-}
 
 func TestNew(t *testing.T) {
 	t.Parallel()

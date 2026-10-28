@@ -15,10 +15,6 @@ import (
 	"github.com/kartaladev/scrty/token"
 )
 
-// presentedToken stands for a compact JWS a caller presents. Nothing here
-// parses it: the verifier is the only thing that reads a token.
-const presentedToken = "header.payload.signature"
-
 func TestNewJwtAuthenticator(t *testing.T) {
 	t.Parallel()
 
@@ -327,10 +323,6 @@ func TestBearerToken(t *testing.T) {
 		assert.Empty(t, absent.Token())
 	})
 }
-
-// tokenID is the identifier a verified token carries as jti, in the canonical
-// layout a consumer's own records would key on.
-var tokenID = id.MustParse("0192f3a4-5b6c-7d8e-9f01-fedcba987654")
 
 // errTokenExpired stands for a verifier's own refusal, which must stay
 // matchable alongside the uniform failure.

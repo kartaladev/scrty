@@ -1,3 +1,7 @@
+// The queued sender cases are separate TestXxx functions where their setup
+// differs in kind — a blocking, recording, panicking or concurrency-measuring
+// inner sender, inside or outside a synctest bubble — and tables wherever the
+// rows share one call shape.
 package notify_test
 
 import (
@@ -15,12 +19,6 @@ import (
 
 	"github.com/kartaladev/scrty/notify"
 )
-
-// senderFunc adapts a function to the Sender port, for the cases whose whole
-// subject is what the wrapped sender does.
-type senderFunc func(ctx context.Context, msg notify.Message) error
-
-func (f senderFunc) Send(ctx context.Context, msg notify.Message) error { return f(ctx, msg) }
 
 // recordingSender counts what reached it, optionally taking its time.
 type recordingSender struct {

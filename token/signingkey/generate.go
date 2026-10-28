@@ -16,6 +16,38 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jwk"
 )
 
+// Alg names a signature algorithm. It is a string alias so a consumer can pass
+// an algorithm name through their own configuration without importing a JOSE
+// library.
+type Alg = string
+
+// The signature algorithms scrty supports. RS256 is the default.
+const (
+	RS256 Alg = "RS256"
+	ES256 Alg = "ES256"
+	EdDSA Alg = "EdDSA"
+)
+
+// SupportedAlg reports whether scrty can produce signatures for alg.
+//
+// It is the single authority on that question, and it is exported because
+// another package needs to ask it: a JOSE library's own algorithm registry
+// answers a different question — whether the name exists — and resolves HS256
+// and none, neither of which this package can produce. Validating against the
+// registry therefore accepts a configuration that fails at the first signature.
+func SupportedAlg(alg Alg) bool {
+	return supportedAlg(alg)
+}
+
+func supportedAlg(alg Alg) bool {
+	switch alg {
+	case RS256, ES256, EdDSA:
+		return true
+	default:
+		return false
+	}
+}
+
 // rsaKeyBits is the modulus size of generated RSA keys.
 const rsaKeyBits = 2048
 
