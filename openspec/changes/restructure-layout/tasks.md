@@ -42,7 +42,7 @@ Test-first applies to every task that adds or changes behaviour that a test can 
   - `go doc ./policy AttemptStore` still resolves, and `lockout.Policy` still satisfies `policy.AttemptViewRequirer` (a compile-time assertion in `lockout`'s tests);
   - the lockout tests pass under `lockout`, and `policy`'s tests pass;
   - `evidence/check.sh` maps every former lockout test, and every moved `Example` function, to a passing test.
-- [ ] 2.6 Phase-1 gate: run `evidence/check.sh` (tests, API, declarations, coverage) and `make check`, push, and confirm CI is green, including the Docker suites. Then run the phase review against D1–D4 and the `module-layout` delta. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.
+- [x] 2.6 Phase-1 gate: run `evidence/check.sh` (tests, API, declarations, coverage) and `make check`, push, and confirm CI is green, including the Docker suites. Then run the phase review against D1–D4 and the `module-layout` delta. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.
 
 ## 3. Phase 2: renames (D8–D11)
 
