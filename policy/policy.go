@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
-//go:generate mockgen -source=policy.go -package=policy_test -destination=mocks_test.go -typed
+//go:generate mockgen -source=policy.go -package=policy_test -destination=policy_mock_test.go -typed -exclude_interfaces=LoginAdmission
 
 // ErrConfig is wrapped by every error a constructor in this package returns for
 // a configuration it will not accept.
@@ -404,4 +404,25 @@ type SecondFactorProof = assurance.Proof
 // as one it does.
 func unnamed(kind string, value int) string {
 	return kind + "(" + strconv.Itoa(value) + ")"
+}
+
+// LoginAdmission answers, ahead of any login, whether a login of a given kind
+// would be admitted without a local second factor. A component that must
+// judge a login it is not evaluating, such as the account-recovery way-back
+// check, asks it rather than repeating the policy's rules, so the two cannot
+// disagree.
+//
+// The requirement policy NewMFARequirement returns implements it, and
+// answers for itself alone: the challenge policy under
+// WithMFAFederatedChallengeWhenUnmet(true) may still challenge a federated login
+// this answer admits.
+type LoginAdmission interface {
+	// AdmitsWithoutLocalSecondFactor reports whether a login of kind for user
+	// would be admitted without a local second factor, whatever its provider
+	// asserts. Provider assurance is never assumed: it is known only at a
+	// login, so an answer that would depend on it is false.
+	//
+	// A lookup the answer depends on that fails is returned as an error,
+	// never as false or true.
+	AdmitsWithoutLocalSecondFactor(ctx context.Context, user identity.UserID, kind factor.Kind) (bool, error)
 }

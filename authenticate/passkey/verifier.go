@@ -1,5 +1,7 @@
 package passkey
 
+//go:generate mockgen -source=verifier.go -destination=verifier_mock_test.go -package=passkey_test -typed
+
 import (
 	"context"
 	"encoding/json"

@@ -230,3 +230,10 @@ func (a CloneAction) String() string {
 		return "unknown"
 	}
 }
+
+// WithoutSessionRevocationOnClone keeps the user's sessions when a suspected
+// clone suspends a passkey, replacing the default of ending every one of them,
+// the session that presented the clone included.
+func WithoutSessionRevocationOnClone() Option {
+	return func(m *Passkeys) { m.keepOnClone = true }
+}

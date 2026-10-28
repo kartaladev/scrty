@@ -1,15 +1,9 @@
 package passkey_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/hex"
 	"errors"
-	"log/slog"
 	"strconv"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -22,62 +16,6 @@ import (
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
-
-// logBuffer collects JSON log records written by concurrent goroutines.
-type logBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *logBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.buf.Write(p)
-}
-
-// String returns everything written so far.
-func (b *logBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.buf.String()
-}
-
-// records returns the written records, one line each.
-func (b *logBuffer) records() []string {
-	s := strings.TrimSpace(b.String())
-	if s == "" {
-		return nil
-	}
-
-	return strings.Split(s, "\n")
-}
-
-// logger returns a debug-level JSON logger writing to b.
-func (b *logBuffer) logger() *slog.Logger {
-	return slog.New(slog.NewJSONHandler(b, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
-
-// assertNoSecrets fails when any of secrets, raw or in base64 (padded,
-// unpadded, standard and URL alphabets) or hex, appears in out.
-func assertNoSecrets(t *testing.T, out string, secrets ...[]byte) {
-	t.Helper()
-
-	for _, s := range secrets {
-		forms := []string{
-			string(s),
-			base64.StdEncoding.EncodeToString(s),
-			base64.RawStdEncoding.EncodeToString(s),
-			base64.URLEncoding.EncodeToString(s),
-			base64.RawURLEncoding.EncodeToString(s),
-			hex.EncodeToString(s),
-		}
-		for _, f := range forms {
-			assert.NotContains(t, out, f)
-		}
-	}
-}
 
 // customMessages renders every message with a fixed, recognisable text.
 type customMessages struct{}
