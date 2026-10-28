@@ -242,6 +242,31 @@ func TestCoreDependencies(t *testing.T) {
 			assert: hasViolation("go.mod", "github.com/go-co-op/gocron/v2"),
 		},
 		{
+			name:   "the Fiber framework is an integration module",
+			reqs:   []requirement{{Path: "github.com/gofiber/fiber/v3"}},
+			assert: hasViolation("go.mod", "github.com/gofiber/fiber/v3"),
+		},
+		{
+			name:   "the GORM ORM is an integration module",
+			reqs:   []requirement{{Path: "gorm.io/gorm"}},
+			assert: hasViolation("go.mod", "gorm.io/gorm"),
+		},
+		{
+			name:   "the samber do container is an integration module",
+			reqs:   []requirement{{Path: "github.com/samber/do/v2"}},
+			assert: hasViolation("go.mod", "github.com/samber/do/v2"),
+		},
+		{
+			name:   "the goose migrator is an integration module",
+			reqs:   []requirement{{Path: "github.com/pressly/goose/v3"}},
+			assert: hasViolation("go.mod", "github.com/pressly/goose/v3"),
+		},
+		{
+			name:   "the PostgreSQL test container module is an integration module",
+			reqs:   []requirement{{Path: "github.com/testcontainers/testcontainers-go/modules/postgres"}},
+			assert: hasViolation("go.mod", "github.com/testcontainers/testcontainers-go/modules/postgres"),
+		},
+		{
 			name:   "a major-version path of a listed driver is refused",
 			reqs:   []requirement{{Path: "github.com/jackc/pgx/v5"}},
 			assert: hasViolation("go.mod", "github.com/jackc/pgx/v5"),

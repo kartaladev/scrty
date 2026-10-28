@@ -15,20 +15,20 @@ func TestPolicy_RequiredAttemptView(t *testing.T) {
 	type testCase struct {
 		name   string
 		opts   []lockout.Option
-		assert func(t *testing.T, p *lockout.Policy, required bool)
+		assert func(t *testing.T, required bool)
 	}
 
 	tests := []testCase{
 		{
 			name: "with a cap the policy requires its view",
 			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
-			assert: func(t *testing.T, _ *lockout.Policy, required bool) {
+			assert: func(t *testing.T, required bool) {
 				assert.True(t, required)
 			},
 		},
 		{
 			name: "without a cap the policy does not require its view",
-			assert: func(t *testing.T, _ *lockout.Policy, required bool) {
+			assert: func(t *testing.T, required bool) {
 				assert.False(t, required)
 			},
 		},
@@ -44,7 +44,7 @@ func TestPolicy_RequiredAttemptView(t *testing.T) {
 			view, required := p.RequiredAttemptView()
 
 			assert.Same(t, p.Attempts(), view, "the view is the one the policy hands out")
-			tc.assert(t, p, required)
+			tc.assert(t, required)
 		})
 	}
 }
