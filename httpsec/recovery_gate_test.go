@@ -60,6 +60,9 @@ func TestRecoveryGate(t *testing.T) {
 		// recovery-pending one.
 		full bool
 
+		// noSession serves the request with no session at all.
+		noSession bool
+
 		// withoutEnrolment builds the chain with no enrolment path, so its
 		// prefixes are routes like any other.
 		withoutEnrolment bool
@@ -245,6 +248,18 @@ func TestRecoveryGate(t *testing.T) {
 				assert.True(t, w.consumer.Load())
 			},
 		},
+		{
+			// The gate guards sessions and nothing else: a request carrying
+			// none is the business of the authentication interceptors outside
+			// it.
+			name:      "anonymous",
+			noSession: true,
+			request:   get("/invoices"),
+			assert: func(t *testing.T, _ *enrolHarness, _ *session.Session, _ *gateWitnesses, out served) {
+				require.NoError(t, out.err)
+				assert.True(t, out.handlerRan)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -257,9 +272,11 @@ func TestRecoveryGate(t *testing.T) {
 			h.withoutGate = tc.withoutEnrolment
 
 			var s *session.Session
-			if tc.full {
+			switch {
+			case tc.noSession:
+			case tc.full:
 				s = h.sessionIn(t, factor.Password, session.MFASatisfied)
-			} else {
+			default:
 				s = h.recoveryPending(t)
 			}
 
@@ -269,21 +286,6 @@ func TestRecoveryGate(t *testing.T) {
 			tc.assert(t, h, s, w, serve(t, h.chain(t, s), tc.request(t.Context())))
 		})
 	}
-}
-
-// TestRecoveryGateAnonymous pins that the gate guards sessions and nothing
-// else: a request carrying none is the business of the authentication
-// interceptors outside it.
-func TestRecoveryGateAnonymous(t *testing.T) {
-	t.Parallel()
-
-	h := newEnrolHarness(t)
-	h.extra = []httpsec.Option{httpsec.EnableRecoveryGateForTest()}
-
-	out := serve(t, h.chain(t, nil), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/invoices", nil))
-
-	require.NoError(t, out.err)
-	assert.True(t, out.handlerRan)
 }
 
 // TestRecoveryGatePerRequestPhase pins what bearer authentication's
