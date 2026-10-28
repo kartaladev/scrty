@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/oidc"
@@ -20,9 +24,6 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // logoutRequest posts to path, carrying a bearer token when one is asked for.

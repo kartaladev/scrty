@@ -18,6 +18,12 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/totp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
@@ -28,11 +34,6 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
-	"github.com/pquerna/otp"
-	"github.com/pquerna/otp/totp"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // testMFAUser is who the second factor is being verified for. It is the

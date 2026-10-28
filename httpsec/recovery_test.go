@@ -15,6 +15,10 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/magiclink"
@@ -27,9 +31,6 @@ import (
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // errRecoveryCheck is what the consumer's refusal check refuses with.

@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // conveyanceCall is what a consumer's CallbackSuccess was handed.

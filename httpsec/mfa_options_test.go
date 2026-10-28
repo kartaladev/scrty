@@ -5,15 +5,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // TestChain_MFAEnabledTwice pins that one chain has one MFA configuration: a

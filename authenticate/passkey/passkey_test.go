@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/passkey"
@@ -18,9 +22,6 @@ import (
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token/onetime"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // synchronousSender is a sender that does not report notify.NonBlocking.

@@ -9,14 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // assertNoKeyBytes fails when any field of any summary, at any depth, holds

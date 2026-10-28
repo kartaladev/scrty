@@ -374,31 +374,31 @@ func TestMemoryRecordStore(t *testing.T) {
 	cases := append(recordStoreCases(),
 		recordStoreCase{
 			name: "keeps its own copies",
-			run: func(t *testing.T, _ context.Context, store recovery.RecordStore) {
+			run: func(t *testing.T, ctx context.Context, store recovery.RecordStore) {
 				r := pendingRecord(t, "u-1", recordThursday0900)
-				insertRecord(t.Context(), t, store, r)
+				insertRecord(ctx, t, store, r)
 
 				r.Proven[0].ID = "changed-after-insert"
-				got := findRecord(t.Context(), t, store, r.ID)
+				got := findRecord(ctx, t, store, r.ID)
 				assert.Equal(t, "code", got.Proven[0].ID)
 
 				got.Reported[0].ID = "changed-after-find"
 				got.NotBefore = recordMonday1000
-				again := findRecord(t.Context(), t, store, r.ID)
+				again := findRecord(ctx, t, store, r.ID)
 				assert.Equal(t, "totp", again.Reported[0].ID)
 				assertInstant(t, recordThursday0900, again.NotBefore)
 			},
 		},
 		recordStoreCase{
 			name: "refuses a record both completed and cancelled",
-			run: func(t *testing.T, _ context.Context, store recovery.RecordStore) {
+			run: func(t *testing.T, ctx context.Context, store recovery.RecordStore) {
 				r := pendingRecord(t, "u-1", recordThursday0900)
 				r.CompletedAt = recordThursday0900
 				r.CancelledAt = recordThursday0900
 
-				require.Error(t, store.Insert(t.Context(), r))
+				require.Error(t, store.Insert(ctx, r))
 
-				got, err := store.Find(t.Context(), r.ID)
+				got, err := store.Find(ctx, r.ID)
 				require.ErrorIs(t, err, recovery.ErrRecordNotFound)
 				assert.Nil(t, got)
 			},

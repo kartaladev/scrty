@@ -16,6 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/oidc"
@@ -24,9 +28,6 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // oidcAnotherSource is a source that has guessed at nothing, which is where a

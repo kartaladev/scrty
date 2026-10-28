@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
@@ -14,9 +18,6 @@ import (
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // recoveryCooldown is the cool-down the guard cases configure.

@@ -23,6 +23,13 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/pquerna/otp/totp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/factor"
@@ -44,12 +51,6 @@ import (
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 	"github.com/kartaladev/scrty/token/onetime"
-	"github.com/lestrrat-go/jwx/v4/jwa"
-	"github.com/lestrrat-go/jwx/v4/jws"
-	"github.com/pquerna/otp/totp"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
 // stubRequest and stubWriter stand in for a framework's request and response
