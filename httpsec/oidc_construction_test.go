@@ -78,13 +78,13 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		}
 	}
 
-	conveyed := httpsec.WithCallbackSuccess(func(*httpsec.Exchange, oidc.CallbackResult, string) error {
+	conveyed := httpsec.WithOIDCCallbackSuccess(func(*httpsec.Exchange, oidc.CallbackResult, string) error {
 		return nil
 	})
 
 	// convey enables federated login with the consumer's own conveyance, a
 	// nil handoff manager and no token generator: the handoff endpoint is
-	// never reached under WithCallbackSuccess, so neither is required.
+	// never reached under WithOIDCCallbackSuccess, so neither is required.
 	convey := func(opts ...httpsec.OIDCOption) func(f oidcFixture) httpsec.Option {
 		return func(f oidcFixture) httpsec.Option {
 			return httpsec.EnableOIDCLogin(f.manager, nil, append([]httpsec.OIDCOption{
@@ -113,8 +113,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 
 	syncingRoles := func(t *testing.T) *oidc.RelyingParty {
 		return newTestOIDCManager(t,
-			oidc.WithRoleClaim(testOIDCProvider, "realm_access.roles"),
-			oidc.WithRoleSync(testOIDCProvider, true))
+			oidc.WithBrokerRoleClaim(testOIDCProvider, "realm_access.roles"),
+			oidc.WithBrokerRoleSync(testOIDCProvider, true))
 	}
 
 	cases := []testCase{
@@ -141,16 +141,16 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 				httpsec.WithOIDCAuthorizePath("/auth/oidc/start/"),
 				httpsec.WithOIDCCallbackPath("/auth/oidc/callback/"),
 				httpsec.WithOIDCHandoffPath("/auth/oidc/handoff"),
-				httpsec.WithBackchannelLogoutPath("/auth/oidc/backchannel/"),
+				httpsec.WithOIDCBackchannelLogoutPath("/auth/oidc/backchannel/"),
 				httpsec.WithOIDCFlowCookieName("login_flow"),
 				httpsec.WithOIDCAllowedRedirects("/welcome", "https://app.example.com/home"),
 				httpsec.WithOIDCAllowedOrigins("https://app.example.com"),
-				httpsec.WithHandoffLimiter(mustLimiter(t)),
-				httpsec.WithHandoffRateLimit(3, time.Minute),
-				httpsec.WithHandoffCountRefusals(false),
-				httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll),
+				httpsec.WithOIDCHandoffLimiter(mustLimiter(t)),
+				httpsec.WithOIDCHandoffRateLimit(3, time.Minute),
+				httpsec.WithOIDCHandoffCountRefusals(false),
+				httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll),
 				httpsec.WithOIDCRPInitiatedLogout(false),
-				httpsec.WithHandoffRedeemer(newTestHandoffManager(t)),
+				httpsec.WithOIDCHandoffRedeemer(newTestHandoffManager(t)),
 			),
 			assert: built,
 		},
@@ -159,7 +159,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			enable: with(
 				httpsec.WithOIDCAuthorizePath("/auth/start"),
 				httpsec.WithOIDCCallbackPath("/auth/callback"),
-				httpsec.WithBackchannelLogoutPath("/auth/backchannel"),
+				httpsec.WithOIDCBackchannelLogoutPath("/auth/backchannel"),
 			),
 			assert: built,
 		},
@@ -183,7 +183,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			enable: func(f oidcFixture) httpsec.Option {
 				return httpsec.EnableOIDCLogin(f.manager, nil, f.required()...)
 			},
-			assert: refused("EnableOIDCLogin", "handoff manager", "WithCallbackSuccess"),
+			assert: refused("EnableOIDCLogin", "handoff manager", "WithOIDCCallbackSuccess"),
 		},
 		{
 			name: "no token generator",
@@ -233,8 +233,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		},
 		{
 			name:   "an empty back-channel path",
-			enable: with(httpsec.WithBackchannelLogoutPath("")),
-			assert: refused("WithBackchannelLogoutPath"),
+			enable: with(httpsec.WithOIDCBackchannelLogoutPath("")),
+			assert: refused("WithOIDCBackchannelLogoutPath"),
 		},
 		{
 			name:   "a path that is not absolute",
@@ -254,7 +254,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			// Spec oidc-logout, "Back-channel path shadows the callback".
 			name:   "the back-channel prefix equal to the callback prefix",
-			enable: with(httpsec.WithBackchannelLogoutPath(httpsec.DefaultOIDCCallbackPath)),
+			enable: with(httpsec.WithOIDCBackchannelLogoutPath(httpsec.DefaultOIDCCallbackPath)),
 			assert: refused("collide", httpsec.DefaultOIDCCallbackPath),
 		},
 		{
@@ -279,8 +279,8 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		},
 		{
 			name:   "the root path as the back-channel prefix",
-			enable: with(httpsec.WithBackchannelLogoutPath("/")),
-			assert: refused("WithBackchannelLogoutPath", "root path", "every one-segment path"),
+			enable: with(httpsec.WithOIDCBackchannelLogoutPath("/")),
+			assert: refused("WithOIDCBackchannelLogoutPath", "root path", "every one-segment path"),
 		},
 		{
 			name:   "an empty flow cookie name",
@@ -304,7 +304,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			name:   "an MFA requirement policy in refuse mode without an assurance source",
 			enable: with(),
-			chain:  mfaWired(policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)),
+			chain:  mfaWired(policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)),
 			assert: refused("EnableOIDCLogin", "mfa-requirement", "WithFederatedAssuranceSource"),
 		},
 		{
@@ -322,7 +322,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		{
 			name:   "an MFA requirement policy in exempt mode needs no assurance source",
 			enable: with(),
-			chain:  mfaWired(policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)),
+			chain:  mfaWired(policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)),
 			assert: built,
 		},
 		{
@@ -367,48 +367,48 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 		// Conveyance and redemption.
 		{
 			name:   "a nil callback conveyance",
-			enable: with(httpsec.WithCallbackSuccess(nil)),
-			assert: refused("WithCallbackSuccess"),
+			enable: with(httpsec.WithOIDCCallbackSuccess(nil)),
+			assert: refused("WithOIDCCallbackSuccess"),
 		},
 		{
 			name:   "a nil handoff redeemer",
-			enable: with(httpsec.WithHandoffRedeemer(nil)),
-			assert: refused("WithHandoffRedeemer"),
+			enable: with(httpsec.WithOIDCHandoffRedeemer(nil)),
+			assert: refused("WithOIDCHandoffRedeemer"),
 		},
 		{
 			name:   "a handoff redeemer interface holding a nil pointer",
-			enable: with(httpsec.WithHandoffRedeemer((*oidc.Handoff)(nil))),
-			assert: refused("WithHandoffRedeemer"),
+			enable: with(httpsec.WithOIDCHandoffRedeemer((*oidc.Handoff)(nil))),
+			assert: refused("WithOIDCHandoffRedeemer"),
 		},
 		{
 			name:   "a nil handoff limiter",
-			enable: with(httpsec.WithHandoffLimiter(nil)),
-			assert: refused("WithHandoffLimiter"),
+			enable: with(httpsec.WithOIDCHandoffLimiter(nil)),
+			assert: refused("WithOIDCHandoffLimiter"),
 		},
 		{
 			name:   "a handoff limiter interface holding a nil pointer",
-			enable: with(httpsec.WithHandoffLimiter((*ratelimit.MemoryLimiter)(nil))),
-			assert: refused("WithHandoffLimiter"),
+			enable: with(httpsec.WithOIDCHandoffLimiter((*ratelimit.MemoryLimiter)(nil))),
+			assert: refused("WithOIDCHandoffLimiter"),
 		},
 		{
 			name:   "a zero handoff rate limit",
-			enable: with(httpsec.WithHandoffRateLimit(0, time.Minute)),
-			assert: refused("WithHandoffRateLimit"),
+			enable: with(httpsec.WithOIDCHandoffRateLimit(0, time.Minute)),
+			assert: refused("WithOIDCHandoffRateLimit"),
 		},
 		{
 			name:   "a negative handoff rate limit",
-			enable: with(httpsec.WithHandoffRateLimit(-1, time.Minute)),
-			assert: refused("WithHandoffRateLimit"),
+			enable: with(httpsec.WithOIDCHandoffRateLimit(-1, time.Minute)),
+			assert: refused("WithOIDCHandoffRateLimit"),
 		},
 		{
 			name:   "a zero handoff rate window",
-			enable: with(httpsec.WithHandoffRateLimit(10, 0)),
-			assert: refused("WithHandoffRateLimit"),
+			enable: with(httpsec.WithOIDCHandoffRateLimit(10, 0)),
+			assert: refused("WithOIDCHandoffRateLimit"),
 		},
 		{
 			name:   "a negative handoff rate window",
-			enable: with(httpsec.WithHandoffRateLimit(10, -time.Second)),
-			assert: refused("WithHandoffRateLimit"),
+			enable: with(httpsec.WithOIDCHandoffRateLimit(10, -time.Second)),
+			assert: refused("WithOIDCHandoffRateLimit"),
 		},
 		{
 			name: "a handoff manager given with the consumer conveyance",
@@ -416,39 +416,39 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 				return httpsec.EnableOIDCLogin(f.manager, f.handoffs,
 					httpsec.WithOIDCSessions(f.sessions), conveyed)
 			},
-			assert: refused("EnableOIDCLogin", "WithCallbackSuccess", "handoff manager"),
+			assert: refused("EnableOIDCLogin", "WithOIDCCallbackSuccess", "handoff manager"),
 		},
 		{
 			name:   "a handoff redeemer given with the consumer conveyance",
-			enable: convey(httpsec.WithHandoffRedeemer(newTestHandoffManager(t))),
-			assert: refused("WithHandoffRedeemer", "WithCallbackSuccess"),
+			enable: convey(httpsec.WithOIDCHandoffRedeemer(newTestHandoffManager(t))),
+			assert: refused("WithOIDCHandoffRedeemer", "WithOIDCCallbackSuccess"),
 		},
 		{
 			name:   "a handoff limiter given with the consumer conveyance",
-			enable: convey(httpsec.WithHandoffLimiter(mustLimiter(t))),
-			assert: refused("WithHandoffLimiter", "WithCallbackSuccess"),
+			enable: convey(httpsec.WithOIDCHandoffLimiter(mustLimiter(t))),
+			assert: refused("WithOIDCHandoffLimiter", "WithOIDCCallbackSuccess"),
 		},
 		{
 			name:   "a handoff rate limit given with the consumer conveyance",
-			enable: convey(httpsec.WithHandoffRateLimit(3, time.Minute)),
-			assert: refused("WithHandoffRateLimit", "WithCallbackSuccess"),
+			enable: convey(httpsec.WithOIDCHandoffRateLimit(3, time.Minute)),
+			assert: refused("WithOIDCHandoffRateLimit", "WithOIDCCallbackSuccess"),
 		},
 		{
 			name:   "handoff refusal counting given with the consumer conveyance",
-			enable: convey(httpsec.WithHandoffCountRefusals(false)),
-			assert: refused("WithHandoffCountRefusals", "WithCallbackSuccess"),
+			enable: convey(httpsec.WithOIDCHandoffCountRefusals(false)),
+			assert: refused("WithOIDCHandoffCountRefusals", "WithOIDCCallbackSuccess"),
 		},
 		{
 			name:   "a handoff path given with the consumer conveyance",
 			enable: convey(httpsec.WithOIDCHandoffPath("/login/oauth2/handoff-custom")),
-			assert: refused("WithOIDCHandoffPath", "WithCallbackSuccess"),
+			assert: refused("WithOIDCHandoffPath", "WithOIDCCallbackSuccess"),
 		},
 
 		// Logout.
 		{
 			name:   "an undefined back-channel logout scope",
-			enable: with(httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScope(7))),
-			assert: refused("WithBackchannelLogoutScope"),
+			enable: with(httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScope(7))),
+			assert: refused("WithOIDCBackchannelLogoutScope"),
 		},
 
 		// Role sync.
@@ -456,7 +456,7 @@ func TestEnableOIDCLoginConstruction(t *testing.T) {
 			name:    "role sync with the handoff conveyance",
 			manager: syncingRoles,
 			enable:  with(),
-			assert:  refused("role sync", testOIDCProvider, "WithCallbackSuccess"),
+			assert:  refused("role sync", testOIDCProvider, "WithOIDCCallbackSuccess"),
 		},
 	}
 

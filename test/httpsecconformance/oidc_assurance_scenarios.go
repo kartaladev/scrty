@@ -42,7 +42,7 @@ func assuranceOptions(t *testing.T, e *Effects, mode policy.FederatedAssuranceMo
 	require.NoError(t, err)
 
 	requirement, err := policy.NewMFARequirement(nil, lookups,
-		policy.WithMFARequiredForAll(), policy.WithFederatedAssurance(mode), source)
+		policy.WithMFARequiredForAll(), policy.WithMFARequirementFederatedAssurance(mode), source)
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(challenge, requirement)

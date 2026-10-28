@@ -46,7 +46,7 @@ func TestEnableMagicLink(t *testing.T) {
 			opts: []httpsec.MagicLinkOption{
 				httpsec.WithMagicLinkRequestPath("/auth/link"),
 				httpsec.WithMagicLinkConsumePath("/auth/link/consume"),
-				httpsec.WithBindingCookieName("binding"),
+				httpsec.WithMagicLinkBindingCookieName("binding"),
 				httpsec.WithMagicLinkCountRefusals(false),
 			},
 			assert: built,
@@ -73,7 +73,7 @@ func TestEnableMagicLink(t *testing.T) {
 		{
 			name:    "an empty cookie name",
 			manager: configured,
-			opts:    []httpsec.MagicLinkOption{httpsec.WithBindingCookieName("")},
+			opts:    []httpsec.MagicLinkOption{httpsec.WithMagicLinkBindingCookieName("")},
 			assert:  configError,
 		},
 		{

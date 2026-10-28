@@ -21,7 +21,7 @@ import (
 // not configured with included, exactly as VerificationKeys reports them and
 // in the same order: a replica sharing the store may have written that key,
 // and publishing it is what verifies the tokens it signed. Publishing a key is
-// not signing with it — GetSigner hands out none of them — and a key stops
+// not signing with it — Signer hands out none of them — and a key stops
 // being published once it is past the key lifetime, like any other. Nothing
 // private is rendered: each entry is built from the public half alone, so the
 // document is safe to serve to anyone who asks for it.

@@ -201,7 +201,7 @@ func TestBrokerPasswordClaim(t *testing.T) {
 		},
 		{
 			name:   "a consumer can widen the band to accept cost 4",
-			opts:   []oidc.BrokerOption{oidc.WithPasswordClaimCostRange(4, 15)},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerPasswordClaimCostRange(4, 15)},
 			logins: []oidc.ExternalIdentity{passwordClaimIdentity("s-1", hashCost04)},
 			expect: func(prov *MockUserProvisioner) {
 				prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", provisionedWithHash(hashCost04)).Return(created, nil)
@@ -212,7 +212,7 @@ func TestBrokerPasswordClaim(t *testing.T) {
 		},
 		{
 			name:   "a consumer can narrow the band to refuse cost 13",
-			opts:   []oidc.BrokerOption{oidc.WithPasswordClaimCostRange(10, 12)},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerPasswordClaimCostRange(10, 12)},
 			logins: []oidc.ExternalIdentity{passwordClaimIdentity("s-1", hashCost13)},
 			expect: func(prov *MockUserProvisioner) {
 				prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", provisionedWithHash("")).Return(created, nil)
@@ -248,10 +248,10 @@ func TestBrokerPasswordClaim(t *testing.T) {
 
 			var logs bytes.Buffer
 			opts := append([]oidc.BrokerOption{
-				oidc.WithProvisioner(prov),
-				oidc.WithJIT("corp"),
-				oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-				oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
+				oidc.WithBrokerProvisioner(prov),
+				oidc.WithBrokerJIT("corp"),
+				oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+				oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
 				oidc.WithBrokerLogger(testTextLogger(&logs)),
 				oidc.WithBrokerClock(clockwork.NewFakeClockAt(provisionClock)),
 			}, tc.opts...)
@@ -304,8 +304,8 @@ func TestBrokerPasswordClaimOptions(t *testing.T) {
 	}
 	claimed := func(t *testing.T, more ...oidc.BrokerOption) []oidc.BrokerOption {
 		return append([]oidc.BrokerOption{
-			oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-			oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
+			oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+			oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
 		}, more...)
 	}
 
@@ -321,7 +321,7 @@ func TestBrokerPasswordClaimOptions(t *testing.T) {
 		{
 			name: "a password claim without an encoder is refused",
 			opts: func(*testing.T) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithPasswordClaim("corp", "credentials.password_hash")}
+				return []oidc.BrokerOption{oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash")}
 			},
 			assert: refused("password encoder"),
 		},
@@ -331,8 +331,8 @@ func TestBrokerPasswordClaimOptions(t *testing.T) {
 				enc, err := password.NewArgon2idEncoder()
 				require.NoError(t, err)
 				return []oidc.BrokerOption{
-					oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-					oidc.WithPasswordEncoder(enc),
+					oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+					oidc.WithBrokerPasswordEncoder(enc),
 				}
 			},
 			assert: refused("bcrypt"),
@@ -340,80 +340,80 @@ func TestBrokerPasswordClaimOptions(t *testing.T) {
 		{
 			name: "a nil encoder is refused",
 			opts: func(*testing.T) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithPasswordEncoder(nil)}
+				return []oidc.BrokerOption{oidc.WithBrokerPasswordEncoder(nil)}
 			},
-			assert: refused("WithPasswordEncoder"),
+			assert: refused("WithBrokerPasswordEncoder"),
 		},
 		{
 			name: "a band below bcrypt's minimum is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(3, 15))
+				return claimed(t, oidc.WithBrokerPasswordClaimCostRange(3, 15))
 			},
-			assert: refused("WithPasswordClaimCostRange"),
+			assert: refused("WithBrokerPasswordClaimCostRange"),
 		},
 		{
 			name: "a band above bcrypt's maximum is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(10, 32))
+				return claimed(t, oidc.WithBrokerPasswordClaimCostRange(10, 32))
 			},
-			assert: refused("WithPasswordClaimCostRange"),
+			assert: refused("WithBrokerPasswordClaimCostRange"),
 		},
 		{
 			name: "an inverted band is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(12, 10))
+				return claimed(t, oidc.WithBrokerPasswordClaimCostRange(12, 10))
 			},
-			assert: refused("WithPasswordClaimCostRange"),
+			assert: refused("WithBrokerPasswordClaimCostRange"),
 		},
 		{
 			name: "a band up to the record ceiling of 16 is accepted",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(4, 16))
+				return claimed(t, oidc.WithBrokerPasswordClaimCostRange(4, 16))
 			},
 			assert: func(t *testing.T, _ *oidc.Broker, err error) { require.NoError(t, err) },
 		},
 		{
 			name: "a band beyond the record ceiling is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(10, 20))
+				return claimed(t, oidc.WithBrokerPasswordClaimCostRange(10, 20))
 			},
-			assert: refused("WithPasswordClaimCostRange"),
+			assert: refused("WithBrokerPasswordClaimCostRange"),
 		},
 		{
 			name: "a band one above the record ceiling is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithPasswordClaimCostRange(10, 17))
+				return claimed(t, oidc.WithBrokerPasswordClaimCostRange(10, 17))
 			},
-			assert: refused("WithPasswordClaimCostRange"),
+			assert: refused("WithBrokerPasswordClaimCostRange"),
 		},
 		{
 			name: "an empty provider key is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
 				return []oidc.BrokerOption{
-					oidc.WithPasswordClaim("", "credentials.password_hash"),
-					oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
+					oidc.WithBrokerPasswordClaim("", "credentials.password_hash"),
+					oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
 				}
 			},
-			assert: refused("WithPasswordClaim"),
+			assert: refused("WithBrokerPasswordClaim"),
 		},
 		{
 			name: "an empty claim path is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithPasswordClaim("corp", ""), oidc.WithPasswordEncoder(fastBcryptEncoder(t))}
+				return []oidc.BrokerOption{oidc.WithBrokerPasswordClaim("corp", ""), oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t))}
 			},
-			assert: refused("WithPasswordClaim"),
+			assert: refused("WithBrokerPasswordClaim"),
 		},
 		{
 			name: "a display-name path equal to the password path is refused",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithNameClaim("corp", "credentials.password_hash"))
+				return claimed(t, oidc.WithBrokerNameClaim("corp", "credentials.password_hash"))
 			},
 			assert: refused("corp", "display-name"),
 		},
 		{
 			name: "the same path for another provider's display name is accepted",
 			opts: func(t *testing.T) []oidc.BrokerOption {
-				return claimed(t, oidc.WithNameClaim("social", "credentials.password_hash"))
+				return claimed(t, oidc.WithBrokerNameClaim("social", "credentials.password_hash"))
 			},
 			assert: func(t *testing.T, _ *oidc.Broker, err error) { require.NoError(t, err) },
 		},
@@ -424,7 +424,7 @@ func TestBrokerPasswordClaimOptions(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			opts := append([]oidc.BrokerOption{oidc.WithProvisioner(NewMockUserProvisioner(ctrl))}, tc.opts(t)...)
+			opts := append([]oidc.BrokerOption{oidc.WithBrokerProvisioner(NewMockUserProvisioner(ctrl))}, tc.opts(t)...)
 			b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl), opts...)
 			tc.assert(t, b, err)
 		})

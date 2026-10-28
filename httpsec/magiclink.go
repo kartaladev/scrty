@@ -82,7 +82,7 @@ type MagicLinkResponder func(ex *Exchange, result MagicLinkResult) error
 
 // Redeemer is the redemption step, replaceable by a consumer.
 //
-// The default is the *magiclink.Manager given to EnableMagicLink, which runs
+// The default is the *magiclink.Links given to EnableMagicLink, which runs
 // every check before it consumes the link. A replacement takes on that
 // contract: it must run the checks it is handed, against the user it will
 // return and that user's password-change time, return the first check's error
@@ -93,7 +93,7 @@ type MagicLinkResponder func(ex *Exchange, result MagicLinkResult) error
 // the post-authentication policies a second time after the link is spent, so
 // a policy lookup failure never spends it. That decision is only reused for
 // the login it was made about. After a replacement reports success, the
-// endpoint refuses the request with policy.ErrPolicyDenied, and establishes
+// endpoint refuses the request with policy.ErrDenied, and establishes
 // no session, when that check never ran, or when the replacement returns a
 // user with a different reference (identity.Principal.ID) or a
 // password-change time that is not the same instant as the one the check was
@@ -231,7 +231,7 @@ func (i *magicLinkInterceptor) resolve(c *config) error {
 	// travel with the lists, because the consumer has to know which of their
 	// own settings to change.
 	allow, err := origin.NewAllowlist(i.allowedRedirects, i.allowedOrigins,
-		"WithAllowedRedirects", "WithAllowedOrigins")
+		"WithMagicLinkAllowedRedirects", "WithMagicLinkAllowedOrigins")
 	if err != nil {
 		return newConfigError("EnableMagicLink was given a redirect target it cannot use: %s", err)
 	}

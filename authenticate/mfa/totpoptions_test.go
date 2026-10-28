@@ -19,7 +19,7 @@ func TestNewTOTP(t *testing.T) {
 		name   string
 		store  mfa.EnrolmentStore
 		issuer string
-		opts   []mfa.TOTPOption
+		opts   []mfa.Option
 		assert func(t *testing.T, m *mfa.TOTP, err error)
 	}
 
@@ -68,61 +68,61 @@ func TestNewTOTP(t *testing.T) {
 		{
 			name:   "seven digits",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithDigits(7)},
+			opts:   []mfa.Option{mfa.WithDigits(7)},
 			assert: configError,
 		},
 		{
 			name:   "zero digits",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithDigits(0)},
+			opts:   []mfa.Option{mfa.WithDigits(0)},
 			assert: configError,
 		},
 		{
 			name:   "nil identifier generator",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithTOTPIDGenerator(nil)},
+			opts:   []mfa.Option{mfa.WithIDGenerator(nil)},
 			assert: configError,
 		},
 		{
 			name:   "zero period",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithPeriod(0)},
+			opts:   []mfa.Option{mfa.WithPeriod(0)},
 			assert: configError,
 		},
 		{
 			name:   "negative period",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithPeriod(-time.Second)},
+			opts:   []mfa.Option{mfa.WithPeriod(-time.Second)},
 			assert: configError,
 		},
 		{
 			name:   "zero verification attempts",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(0, time.Minute)},
+			opts:   []mfa.Option{mfa.WithVerifyAttempts(0, time.Minute)},
 			assert: sourceConfigError,
 		},
 		{
 			name:   "negative verification attempts",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(-1, time.Minute)},
+			opts:   []mfa.Option{mfa.WithVerifyAttempts(-1, time.Minute)},
 			assert: sourceConfigError,
 		},
 		{
 			name:   "zero verification attempt window",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(5, 0)},
+			opts:   []mfa.Option{mfa.WithVerifyAttempts(5, 0)},
 			assert: sourceConfigError,
 		},
 		{
 			name:   "negative verification attempt window",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(5, -time.Minute)},
+			opts:   []mfa.Option{mfa.WithVerifyAttempts(5, -time.Minute)},
 			assert: sourceConfigError,
 		},
 		{
 			name:   "a consumer verification attempt limit",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(3, 10*time.Minute)},
+			opts:   []mfa.Option{mfa.WithVerifyAttempts(3, 10*time.Minute)},
 			assert: func(t *testing.T, m *mfa.TOTP, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
@@ -131,7 +131,7 @@ func TestNewTOTP(t *testing.T) {
 		{
 			name:   "a nil clock",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithClock(nil)},
+			opts:   []mfa.Option{mfa.WithClock(nil)},
 			assert: sourceConfigError,
 		},
 		{
@@ -139,13 +139,13 @@ func TestNewTOTP(t *testing.T) {
 			// nil, rather than read at the first verification.
 			name:   "a typed-nil clock",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithClock((*nilClock)(nil))},
+			opts:   []mfa.Option{mfa.WithClock((*nilClock)(nil))},
 			assert: sourceConfigError,
 		},
 		{
 			name:   "a consumer clock with only Now",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})},
+			opts:   []mfa.Option{mfa.WithClock(fixedClock{at: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)})},
 			assert: func(t *testing.T, m *mfa.TOTP, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
@@ -154,7 +154,7 @@ func TestNewTOTP(t *testing.T) {
 		{
 			name:   "a nil random source",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithRandom(nil)},
+			opts:   []mfa.Option{mfa.WithRandom(nil)},
 			assert: sourceConfigError,
 		},
 		{
@@ -165,19 +165,19 @@ func TestNewTOTP(t *testing.T) {
 			// reads from a nil receiver.
 			name:   "a typed-nil random source",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithRandom((*failAfterReader)(nil))},
+			opts:   []mfa.Option{mfa.WithRandom((*failAfterReader)(nil))},
 			assert: sourceConfigError,
 		},
 		{
 			name:   "a nil logger",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithTOTPLogger(nil)},
+			opts:   []mfa.Option{mfa.WithLogger(nil)},
 			assert: configError,
 		},
 		{
 			name:   "eight digits and a consumer period",
 			issuer: "Example",
-			opts:   []mfa.TOTPOption{mfa.WithDigits(8), mfa.WithPeriod(60 * time.Second)},
+			opts:   []mfa.Option{mfa.WithDigits(8), mfa.WithPeriod(60 * time.Second)},
 			assert: func(t *testing.T, m *mfa.TOTP, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 8, m.Digits())

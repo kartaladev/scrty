@@ -30,7 +30,7 @@ func OptionalDigestArg(b []byte) any {
 
 // NotFoundUnless is the outcome of a conditional session write that changed
 // no row, given whether the session is stored: err when reading that failed,
-// nil when the session is stored, and session.ErrSessionNotFound when not.
+// nil when the session is stored, and session.ErrNotFound when not.
 func NotFoundUnless(exists bool, err error) error {
 	if err != nil {
 		return err
@@ -44,9 +44,9 @@ func NotFoundUnless(exists bool, err error) error {
 
 // SupersedeRefusal is the outcome of a supersession whose conditional update
 // of the old session changed no row, given the cause pgschema's
-// SessionSupersedeRefusal read: session.ErrSessionNotFound when the session
+// SessionSupersedeRefusal read: session.ErrNotFound when the session
 // is not stored, noFamily when it is stored in no family, and
-// session.ErrSessionRenewalConflict otherwise. noFamily is the adapter's own
+// session.ErrRenewalConflict otherwise. noFamily is the adapter's own
 // error, returned as it is.
 func SupersedeRefusal(cause int, noFamily error) error {
 	switch cause {
@@ -60,8 +60,8 @@ func SupersedeRefusal(cause int, noFamily error) error {
 }
 
 // PresentationRefusal is the outcome of a first-presentation mark that
-// changed no row: err when reading why failed, session.ErrSessionNotFound
-// when the session is not stored, session.ErrSessionSuperseded when it is
+// changed no row: err when reading why failed, session.ErrNotFound
+// when the session is not stored, session.ErrSuperseded when it is
 // superseded, and nil when its first presentation is recorded already.
 func PresentationRefusal(exists, superseded bool, err error) error {
 	switch {

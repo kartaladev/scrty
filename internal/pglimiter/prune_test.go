@@ -127,7 +127,7 @@ func TestPrune(t *testing.T) {
 			assert: func(t *testing.T, removed int, err error) {
 				assert.Equal(t, 2, removed, "the committed batch is counted")
 				require.ErrorIs(t, err, context.Canceled)
-				assert.EqualError(t, err, "pgx: rate-limit prune: stopped after 2 keys: context canceled")
+				assert.EqualError(t, err, "pgxstore: rate-limit prune: stopped after 2 keys: context canceled")
 			},
 		},
 		{
@@ -143,7 +143,7 @@ func TestPrune(t *testing.T) {
 			assert: func(t *testing.T, removed int, err error) {
 				assert.Equal(t, 2, removed, "the first batch's keys are counted")
 				require.Error(t, err)
-				assert.EqualError(t, err, "pgx: rate-limit prune: a batch could not be deleted")
+				assert.EqualError(t, err, "pgxstore: rate-limit prune: a batch could not be deleted")
 				assert.NotContains(t, err.Error(), "secret-xyz")
 				assert.ErrorIs(t, err, errBatch, "the cause is kept")
 			},
@@ -176,7 +176,7 @@ func TestPrune(t *testing.T) {
 			assert: func(t *testing.T, removed int, err error) {
 				assert.Zero(t, removed)
 				require.Error(t, err)
-				assert.EqualError(t, err, "pgx: rate-limit prune: a batch's row count could not be read")
+				assert.EqualError(t, err, "pgxstore: rate-limit prune: a batch's row count could not be read")
 				assert.NotContains(t, err.Error(), "secret-rows")
 				assert.ErrorIs(t, err, errCount, "the cause is kept")
 			},
@@ -190,7 +190,7 @@ func TestPrune(t *testing.T) {
 			assert: func(t *testing.T, removed int, err error) {
 				assert.Zero(t, removed)
 				require.Error(t, err)
-				assert.EqualError(t, err, "pgx: rate-limit prune: the database clock could not be read")
+				assert.EqualError(t, err, "pgxstore: rate-limit prune: the database clock could not be read")
 				assert.NotContains(t, err.Error(), "secret-abc")
 				assert.ErrorIs(t, err, errClock, "the cause is kept")
 			},
@@ -212,7 +212,7 @@ func TestPrune(t *testing.T) {
 			r := NewMockRunner(ctrl)
 			tc.script(ctrl, r, cancel)
 
-			removed, err := pglimiter.Prune(ctx, r, "pgx", cfg)
+			removed, err := pglimiter.Prune(ctx, r, "pgxstore", cfg)
 			tc.assert(t, removed, err)
 		})
 	}

@@ -61,7 +61,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
-			store := session.NewMemoryStore(session.WithHousekeepingInterval(time.Minute))
+			store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute))
 			_, liveID := seedForHousekeeping(t, store)
 
 			require.NoError(t, store.Start(t.Context()))
@@ -103,7 +103,7 @@ func TestMemoryStoreHousekeeping(t *testing.T) {
 		t.Parallel()
 
 		synctest.Test(t, func(t *testing.T) {
-			store := session.NewMemoryStore(session.WithHousekeepingInterval(time.Minute))
+			store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(time.Minute))
 			seedForHousekeeping(t, store)
 
 			require.NoError(t, store.Start(t.Context()))
@@ -150,7 +150,7 @@ func TestHousekeepingExitsWithItsContext(t *testing.T) {
 	ignore := goleak.IgnoreCurrent()
 
 	ctx, cancel := context.WithCancel(t.Context())
-	store := session.NewMemoryStore(session.WithHousekeepingInterval(5 * time.Millisecond))
+	store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(5 * time.Millisecond))
 
 	now := time.Now()
 	require.NoError(t, store.Create(ctx, &session.Session{
@@ -298,7 +298,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				clk := clockwork.NewFakeClockAt(createdAt)
 				store := session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
-					session.WithHousekeepingInterval(10*time.Second),
+					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
 				)
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("live", createdAt.Add(time.Hour))))
@@ -324,7 +324,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				clk := clockwork.NewFakeClockAt(createdAt)
 				store := session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
-					session.WithHousekeepingInterval(time.Hour),
+					session.WithMemoryStoreHousekeepingInterval(time.Hour),
 				)
 				m, err := session.New(session.WithClock(clk), session.WithStore(store))
 				require.NoError(t, err)
@@ -358,7 +358,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				clk := &countingClock{FakeClock: clockwork.NewFakeClockAt(createdAt)}
 				store := session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
-					session.WithHousekeepingInterval(10*time.Second),
+					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
 				)
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expiring", createdAt.Add(5*time.Second))))
 
@@ -392,7 +392,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				clk := &countingClock{FakeClock: clockwork.NewFakeClockAt(createdAt)}
 				store := session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
-					session.WithHousekeepingInterval(10*time.Second),
+					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
 				)
 				require.NoError(t, store.Start(t.Context()))
 				t.Cleanup(func() { _ = store.Stop() })
@@ -418,7 +418,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 				clk := &slowSweepClock{FakeClock: clockwork.NewFakeClockAt(createdAt), took: 3 * time.Second}
 				store := session.NewMemoryStore(
 					session.WithMemoryStoreClock(clk),
-					session.WithHousekeepingInterval(10*time.Second),
+					session.WithMemoryStoreHousekeepingInterval(10*time.Second),
 				)
 				require.NoError(t, store.Start(t.Context()))
 				t.Cleanup(func() { _ = store.Stop() })
@@ -450,7 +450,7 @@ func TestMemoryStoreHousekeepingOnItsClock(t *testing.T) {
 			// The only clock a consumer ships with.
 			name: "the default system clock still sweeps",
 			assert: func(t *testing.T) {
-				store := session.NewMemoryStore(session.WithHousekeepingInterval(10 * time.Millisecond))
+				store := session.NewMemoryStore(session.WithMemoryStoreHousekeepingInterval(10 * time.Millisecond))
 				now := time.Now()
 				require.NoError(t, store.Create(t.Context(), sessionExpiringAt("expired", now.Add(-time.Second))))
 				require.NoError(t, store.Start(t.Context()))

@@ -116,7 +116,7 @@ func refuseCharge(ctx context.Context, t *testing.T, s mfa.DeviceProofStore, gen
 // generation, once, at a later step; a completion confirms only a proven
 // enrolment on its generation, once, clearing the code and keeping its expiry;
 // a charge counts an attempt only against an outstanding, unexpired code on
-// its generation, at most mfa.MaxEmailCodeFailures times; and the nil
+// its generation, at most mfa.MaxEmailCodeAttempts times; and the nil
 // generation matches nothing, even an enrolment stored without one. Every
 // refused write changes nothing. The cases are sequential; RunCompleteRace and
 // RunChargeRace hold the same writes under contention.

@@ -96,7 +96,7 @@ func (s *RecoveryRecordStore) Insert(ctx context.Context, r recovery.Record) err
 		return failed(op, res.Error)
 	}
 	if res.RowsAffected == 0 {
-		return errors.New("gorm: insert recovery record: the identifier is already in use")
+		return errors.New("gormstore: insert recovery record: the identifier is already in use")
 	}
 
 	return nil

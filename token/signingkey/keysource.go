@@ -107,12 +107,12 @@ func clonePublicKey(key crypto.PublicKey) (crypto.PublicKey, error) {
 }
 
 // KeySource supplies the key to sign with and the set to verify against.
-// *KeyManager implements it, and it is the only contract token issuance and
+// *Keys implements it, and it is the only contract token issuance and
 // verification depend on.
 //
 // A consumer may supply any implementation instead — one backed by an external
 // key service or an HSM, for example — and tokens are then issued and verified
-// with its keys, with no KeyManager constructed at all. There is no default:
+// with its keys, with no Keys constructed at all. There is no default:
 // something has to hold the keys, so the source is always supplied by the
 // caller.
 type KeySource interface {

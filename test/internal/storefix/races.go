@@ -132,7 +132,7 @@ func CompleteRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 // enrolment on a generation of its own and proves its device with an emailed
 // code, and every racer charges an attempt against that code before it
 // expires. Check then requires each enrolment to hold exactly
-// mfa.MaxEmailCodeFailures attempts and its code, still stored with its
+// mfa.MaxEmailCodeAttempts attempts and its code, still stored with its
 // expiry.
 func ChargeRace[S storetest.DeviceProofEnrolmentStore]() storetest.Race[S] {
 	gen := id.NewV7Generator()

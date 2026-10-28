@@ -69,7 +69,7 @@ func WithPasswordIDGenerator(g id.Generator) PasswordOption {
 	return func(a *passwordAuthenticator) { a.ids = g; a.idsSet = true }
 }
 
-// WithPasswordAuthenticatorLogInterval sets how often one refusal reason may be
+// WithPasswordLogInterval sets how often one refusal reason may be
 // recorded.
 //
 // The default is one minute. It governs this provider's refusal logs and
@@ -81,18 +81,18 @@ func WithPasswordIDGenerator(g id.Generator) PasswordOption {
 // override for a deployment that ships its logs somewhere that wants the whole
 // stream — and the stated cost is that an attacker choosing the traffic then
 // chooses the log volume.
-func WithPasswordAuthenticatorLogInterval(d time.Duration) PasswordOption {
+func WithPasswordLogInterval(d time.Duration) PasswordOption {
 	return func(a *passwordAuthenticator) { a.logEvery = d; a.logEverySet = true }
 }
 
-// WithPasswordAuthenticatorLogger replaces the logger. The default is
+// WithPasswordLogger replaces the logger. The default is
 // slog.Default().
 //
 // A nil logger is ignored rather than refused: unlike a port the provider
 // cannot work without, a nil logger has an obvious safe reading — the caller
 // does not want to choose this component's logger — and refusing it would make
 // configuring logging mandatory.
-func WithPasswordAuthenticatorLogger(l *slog.Logger) PasswordOption {
+func WithPasswordLogger(l *slog.Logger) PasswordOption {
 	return func(a *passwordAuthenticator) {
 		if l != nil {
 			a.logger = l
@@ -100,12 +100,12 @@ func WithPasswordAuthenticatorLogger(l *slog.Logger) PasswordOption {
 	}
 }
 
-// WithUsernameInRefusalLogs writes the submitted username in refusal records,
+// WithPasswordUsernameInRefusalLogs writes the submitted username in refusal records,
 // which by default carry the reason only.
 //
 // Users type email addresses, and sometimes passwords, into the username
 // field, and every unknown username then reaches the log.
-func WithUsernameInRefusalLogs() PasswordOption {
+func WithPasswordUsernameInRefusalLogs() PasswordOption {
 	return func(a *passwordAuthenticator) { a.logUsername = true }
 }
 
@@ -162,7 +162,7 @@ type passwordAuthenticator struct {
 	logEverySet bool
 
 	// logUsername writes the submitted username into a refusal record. Off by
-	// default; set by WithUsernameInRefusalLogs.
+	// default; set by WithPasswordUsernameInRefusalLogs.
 	logUsername bool
 
 	// refusals holds back repeated refusal records. Its reporter writes to the
@@ -194,7 +194,7 @@ type passwordAuthenticator struct {
 // A refusal record caused by the user loader carries a fixed reason and the
 // error's Go type, never its text: log inside your own implementation of the
 // user loader for full detail. Refusal records omit the submitted username
-// unless WithUsernameInRefusalLogs is set; see its documentation for why that
+// unless WithPasswordUsernameInRefusalLogs is set; see its documentation for why that
 // is not the default.
 func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...PasswordOption) (Authenticator, error) {
 	if nilcheck.IsNil(users) {
@@ -413,7 +413,7 @@ func (a *passwordAuthenticator) usableHash(stored []byte) (reason string, level 
 // the reason it is keyed by: what a refusal reveals belongs in the log, not in
 // the error, and a record that quoted the secret would move the secret into
 // every system the logs are shipped to. It also never carries the submitted
-// username, unless the consumer set WithUsernameInRefusalLogs: users type
+// username, unless the consumer set WithPasswordUsernameInRefusalLogs: users type
 // email addresses, and sometimes passwords, into that field, and every
 // unknown username would otherwise reach the log.
 //

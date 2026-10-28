@@ -84,7 +84,7 @@ func (s *RecoveryRecordStore) Insert(ctx context.Context, r recovery.Record) err
 		return err
 	}
 	if n == 0 {
-		return errors.New("pgx: insert recovery record: the identifier is already in use")
+		return errors.New("pgxstore: insert recovery record: the identifier is already in use")
 	}
 
 	return nil

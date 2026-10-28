@@ -72,7 +72,7 @@ type Assurance struct {
 	RequestACR []string
 
 	// Match says how the amr and acr criteria combine. The default, the zero
-	// value, is MatchAny.
+	// value, is AssuranceMatchAny.
 	Match AssuranceMatch
 }
 
@@ -155,7 +155,7 @@ func (m *RelyingParty) checkAssuranceProviders() error {
 // The amr criterion holds when any asserted value is in a.AcceptedAMR; the
 // acr criterion holds when acr is non-empty and in a.AcceptedACR. Both
 // compare exactly. A criterion whose accepted set is empty is not configured:
-// under MatchAny it cannot hold, and under MatchAll it is skipped, though a
+// under AssuranceMatchAny it cannot hold, and under AssuranceMatchAll it is skipped, though a
 // configuration with no criterion at all never matches. An undefined mode
 // never matches.
 func matchAssurance(a Assurance, amr []string, acr string) bool {

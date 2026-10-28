@@ -85,7 +85,7 @@ const (
 	//
 	// Recording activity persists only the session's last-access time and idle
 	// deadline. A handler that changes any other field of the session, such as
-	// its Data, must persist it with Manager.Save (or the store's Save): this
+	// its Data, must persist it with Sessions.Save (or the store's Save): this
 	// step never saves it.
 	OrderSessionTouch Order = 800
 

@@ -14,7 +14,7 @@ import (
 )
 
 // TestPasswordRefusalRecords covers task 2.1: refusal records carry no
-// submitted username by default, WithUsernameInRefusalLogs restores it, and
+// submitted username by default, WithPasswordUsernameInRefusalLogs restores it, and
 // the sampling key stays per reason rather than per username.
 func TestPasswordRefusalRecords(t *testing.T) {
 	t.Parallel()
@@ -63,7 +63,7 @@ func TestPasswordRefusalRecords(t *testing.T) {
 			name:      "with the option, the record carries the submitted username",
 			loadErr:   identity.ErrUserNotFound,
 			usernames: []string{"alice@example.com"},
-			opts:      []authenticate.PasswordOption{authenticate.WithUsernameInRefusalLogs()},
+			opts:      []authenticate.PasswordOption{authenticate.WithPasswordUsernameInRefusalLogs()},
 			assert: func(t *testing.T, buf *bytes.Buffer) {
 				t.Helper()
 
@@ -76,7 +76,7 @@ func TestPasswordRefusalRecords(t *testing.T) {
 			name:      "with the option and the default interval, two usernames refused for the same reason still produce one record",
 			loadErr:   identity.ErrUserNotFound,
 			usernames: []string{"alice", "bob"},
-			opts:      []authenticate.PasswordOption{authenticate.WithUsernameInRefusalLogs()},
+			opts:      []authenticate.PasswordOption{authenticate.WithPasswordUsernameInRefusalLogs()},
 			assert: func(t *testing.T, buf *bytes.Buffer) {
 				t.Helper()
 
@@ -104,7 +104,7 @@ func TestPasswordRefusalRecords(t *testing.T) {
 			buf := &bytes.Buffer{}
 			opts := append([]authenticate.PasswordOption{
 				authenticate.WithPasswordEncoder(enc),
-				authenticate.WithPasswordAuthenticatorLogger(debugLogger(buf)),
+				authenticate.WithPasswordLogger(debugLogger(buf)),
 			}, tc.opts...)
 
 			auth, err := authenticate.NewUsernamePasswordAuthenticator(users, opts...)
@@ -140,7 +140,7 @@ func TestPasswordLoaderFailureRecord(t *testing.T) {
 	buf := &bytes.Buffer{}
 	auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
 		authenticate.WithPasswordEncoder(enc),
-		authenticate.WithPasswordAuthenticatorLogger(debugLogger(buf)))
+		authenticate.WithPasswordLogger(debugLogger(buf)))
 	require.NoError(t, err)
 
 	_, _ = auth.Authenticate(t.Context(),

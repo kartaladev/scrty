@@ -108,7 +108,7 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 			tc.lookup(lookup)
 
 			p, err := policy.NewMFARequirement(lookup, nil,
-				append([]policy.MFARequirementOption{policy.WithFederatedAssurance(tc.mode)}, tc.opts...)...)
+				append([]policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(tc.mode)}, tc.opts...)...)
 			require.NoError(t, err)
 			adm, ok := p.(policy.LoginAdmission)
 			require.True(t, ok, "the requirement policy must implement LoginAdmission")
@@ -118,7 +118,7 @@ func TestHasWayBack_LinkedProvider(t *testing.T) {
 
 			c, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
 				Users: m.users,
-				Codes: newCodes(t, recovery.WithCodeStore(m.codes)),
+				Codes: newCodes(t, recovery.WithCodesStore(m.codes)),
 				Kinds: []recovery.AuthenticatorKind{m.kind},
 				LinkedLogins: func(context.Context, identity.UserID) ([]factor.Kind, error) {
 					return []factor.Kind{factor.OIDC}, nil

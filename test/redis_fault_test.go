@@ -396,7 +396,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 			buildOn := func(client redis.UniversalClient, opts ...redisstore.Option) *redisstore.Limiter {
 				opts = append([]redisstore.Option{
 					redisstore.WithOperationTimeout(faultTimeout),
-					redisstore.WithUnavailableProbeInterval(faultProbeInterval),
+					redisstore.WithProbeInterval(faultProbeInterval),
 					redisstore.WithLogger(slog.New(logs)),
 				}, opts...)
 				l, err := redisstore.NewLimiter(client, "api-key", faultLimit, faultWindow, opts...)

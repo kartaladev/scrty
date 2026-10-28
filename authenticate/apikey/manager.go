@@ -34,7 +34,7 @@ const compensatingRevokeTimeout = 5 * time.Second
 // through WithDigest, and a test moves time through WithClock without waiting
 // for it.
 //
-// A Keys is safe for concurrent use as far as its store is: it holds no
+// A Keys value is safe for concurrent use as far as its store is: it holds no
 // mutable state of its own after construction.
 type Keys struct {
 	store  Store
@@ -114,7 +114,7 @@ func New(opts ...Option) (*Keys, error) {
 // what WithPrefix configured.
 func (m *Keys) Prefix() string { return m.prefix }
 
-// digestProbes are the two inputs NewManager hands the digest once, each the
+// digestProbes are the two inputs New hands the digest once, each the
 // size of a real secret. Neither starts with a zero byte, and they differ in
 // every byte.
 var digestProbes = [2][secretBytes]byte{
@@ -172,7 +172,7 @@ func sha256Digest(b []byte) []byte {
 // source that cannot answer and a generator that cannot mint an identifier are
 // each reported, and neither leaves a record behind. A digest that returns an
 // empty value for the secret is refused with ErrConfig, and stores nothing:
-// NewManager's probe refuses a digest that always does, and this refuses one
+// New's probe refuses a digest that always does, and this refuses one
 // that does only for some inputs.
 func (m *Keys) Issue(
 	ctx context.Context,

@@ -279,9 +279,9 @@ func TestRedisLimiter_TTL(t *testing.T) {
 	skewedLongRecord := func(t *testing.T, client *redis.Client, limit int) (exceeded bool, ttl time.Duration) {
 		t.Helper()
 		const skewNS = "skew"
-		short := newTestRedisLimiter(t, client, skewNS, limit, time.Second, redisstore.WithLimiterClock(fastClock{}))
-		long := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, redisstore.WithLimiterClock(fastClock{skew: -50 * time.Millisecond}))
-		reader := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, redisstore.WithLimiterClock(fastClock{}))
+		short := newTestRedisLimiter(t, client, skewNS, limit, time.Second, redisstore.WithClock(fastClock{}))
+		long := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, redisstore.WithClock(fastClock{skew: -50 * time.Millisecond}))
+		reader := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, redisstore.WithClock(fastClock{}))
 
 		require.NoError(t, short.RecordFailure(t.Context(), "k"))
 		time.Sleep(10 * time.Millisecond)
@@ -486,7 +486,7 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 		},
 		{
 			name: "skewed replica: a failure no longer counts one window later",
-			// No WithLimiterClock: whatever the writer's host clock reads,
+			// No WithClock: whatever the writer's host clock reads,
 			// the stamp is the server's.
 			assert: func(t *testing.T, writer, reader *redisstore.Limiter) {
 				assert.False(t, skewScenario(t, writer, reader), "the writer's failure still counts one window later")
@@ -497,7 +497,7 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 			// fast, so its failure still counts one window later. This is
 			// the hazard the server-clock default removes.
 			name:       "control: a writer stamping by a fast host clock is still counted one window later",
-			writerOpts: []redisstore.Option{redisstore.WithLimiterClock(fastClock{skew: 30 * time.Second})},
+			writerOpts: []redisstore.Option{redisstore.WithClock(fastClock{skew: 30 * time.Second})},
 			assert: func(t *testing.T, writer, reader *redisstore.Limiter) {
 				assert.True(t, skewScenario(t, writer, reader), "the fast stamp aged by the server's clock; the control no longer shows the hazard")
 			},

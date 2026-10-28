@@ -268,7 +268,7 @@ func (c *config) warnWithoutDecoy(option string, authn authenticate.Authenticato
 
 // offersDecoy reports whether authn may spend a decoy verification: it is an
 // authenticate.DecoyVerifier and, if it can also say whether any of its own
-// delegates offers one, as authenticate.Manager can, it says so. A Manager is
+// delegates offers one, as authenticate.FirstOf can, it says so. A FirstOf is
 // always a DecoyVerifier, so the type alone does not tell.
 func offersDecoy(authn authenticate.Authenticator) bool {
 	if _, ok := authn.(authenticate.DecoyVerifier); !ok {

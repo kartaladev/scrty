@@ -77,7 +77,7 @@
 //
 // Refusals return the owning package's sentinels. Database failures, a
 // cancelled context among them, are returned wrapped with the name of the
-// operation ("pgx: consume one-time token: ..."), and are never reported as a
+// operation ("pgxstore: consume one-time token: ..."), and are never reported as a
 // refusal or as absence: pgx.ErrNoRows is the only error read as absence.
 // Error text never contains stored values, secrets or user references. The
 // security-state stores keep the driver's error in the chain. The identity

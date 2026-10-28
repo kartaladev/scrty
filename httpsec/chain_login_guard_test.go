@@ -1106,7 +1106,7 @@ var lockReferenceHash = []byte("reference-hash")
 var errPreAuthStoreDown = errors.New("test: attempt store unavailable")
 
 // lockResponseHarness is a chain whose pre-authentication phase denies ada,
-// over an authenticator that is either a Manager over the password provider,
+// over an authenticator that is either a FirstOf over the password provider,
 // whose encoder and user loader are strict doubles, or a bare Authenticator
 // offering no decoy.
 type lockResponseHarness struct {
@@ -1139,7 +1139,7 @@ func newLockResponseHarness(t *testing.T, decoy bool) *lockResponseHarness {
 
 	provider, err := authenticate.NewUsernamePasswordAuthenticator(h.users,
 		authenticate.WithPasswordEncoder(h.enc),
-		authenticate.WithPasswordAuthenticatorLogger(slog.New(slog.DiscardHandler)))
+		authenticate.WithPasswordLogger(slog.New(slog.DiscardHandler)))
 	require.NoError(t, err)
 
 	m, err := authenticate.NewFirstOf(provider)

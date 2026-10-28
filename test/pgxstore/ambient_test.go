@@ -37,7 +37,7 @@ func TestAmbientTx(t *testing.T) {
 	db := migrated(t)
 	c := storefix.TestCipher(t)
 
-	foreign := storefix.CipherOf(t, seal.WithEncryptionKey("k-foreign", storefix.SealKey(t)))
+	foreign := storefix.CipherOf(t, seal.WithKeyringEncryptionKey("k-foreign", storefix.SealKey(t)))
 
 	t.Run("sessions", runAmbient(db, func(t *testing.T, pool *pgxpool.Pool, opts ...pgxstore.Option) session.Store {
 		return newSessionStore(t, pool, c, opts...)

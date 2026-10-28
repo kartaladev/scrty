@@ -34,7 +34,7 @@ import (
 // session's MFA state. A user issued the registration challenge limit
 // within the hour is refused with ErrRegistrationThrottled, as is one the
 // challenge store cannot decide the issue for. The count and the issue are one
-// decision of the challenge store's (onetime.Manager.IssueWithin), so begins
+// decision of the challenge store's (onetime.Tokens.IssueWithin), so begins
 // racing for one user never together exceed the limit. Nothing is issued on
 // any refusal.
 //
@@ -238,7 +238,7 @@ type RegistrationResult struct {
 // which registering again replaces.
 //
 // The passkey is named by the response's proposed name, normalised by
-// NormaliseName: a name that is too long or holds a control or format
+// NormalizeName: a name that is too long or holds a control or format
 // character is replaced by the default date name, never truncated or refused.
 func (m *Passkeys) FinishRegistration(
 	ctx context.Context, s *session.Session, body []byte, rc RegistrationContext,

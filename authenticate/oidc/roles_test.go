@@ -46,7 +46,7 @@ func TestBrokerRoles(t *testing.T) {
 	realmRoles := func(roles ...any) map[string]any {
 		return map[string]any{"realm_access": map[string]any{"roles": roles}}
 	}
-	realmPath := oidc.WithRoleClaim("corp", "realm_access.roles")
+	realmPath := oidc.WithBrokerRoleClaim("corp", "realm_access.roles")
 	created := &identity.Details{ID: "u-9", Username: "alice@corp.example", Active: true}
 
 	// provisionsWith expects one Provision naming exactly roles.
@@ -82,7 +82,7 @@ func TestBrokerRoles(t *testing.T) {
 		// Provisioning.
 		{
 			name:   "with no claim path the default role is given",
-			opts:   []oidc.BrokerOption{oidc.WithDefaultRole("member")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerDefaultRole("member")},
 			expect: provisionsWith("member"),
 			assert: provisioned,
 		},
@@ -93,7 +93,7 @@ func TestBrokerRoles(t *testing.T) {
 		},
 		{
 			name:   "a nested claim path gives the roles it holds",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithDefaultRole("member")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerDefaultRole("member")},
 			claims: realmRoles("editor", "viewer"),
 			expect: provisionsWith("editor", "viewer"),
 			assert: provisioned,
@@ -107,27 +107,27 @@ func TestBrokerRoles(t *testing.T) {
 		},
 		{
 			name:   "a single string leaf is one role",
-			opts:   []oidc.BrokerOption{oidc.WithRoleClaim("corp", "role")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleClaim("corp", "role")},
 			claims: map[string]any{"role": "editor"},
 			expect: provisionsWith("editor"),
 			assert: provisioned,
 		},
 		{
 			name:   "an explicitly empty claim path gives no role and no default",
-			opts:   []oidc.BrokerOption{oidc.WithRoleClaim("corp", ""), oidc.WithDefaultRole("member")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleClaim("corp", ""), oidc.WithBrokerDefaultRole("member")},
 			claims: realmRoles("editor"),
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "a claim path that resolves to nothing does not fall back to the default",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithDefaultRole("member")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerDefaultRole("member")},
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "a claim path resolving to a number gives no role and one log record",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithDefaultRole("member")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerDefaultRole("member")},
 			claims: map[string]any{"realm_access": map[string]any{"roles": 42.0}},
 			expect: provisionsWith(),
 			assert: func(t *testing.T, _ *identity.Principal, err error, logs string) {
@@ -157,7 +157,7 @@ func TestBrokerRoles(t *testing.T) {
 		},
 		{
 			name:   "the allowlist drops a self-assigned administrative role",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithAllowedRoles("corp", "editor", "viewer")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerAllowedRoles("corp", "editor", "viewer")},
 			claims: realmRoles("admin", "viewer"),
 			expect: provisionsWith("viewer"),
 			assert: func(t *testing.T, _ *identity.Principal, err error, logs string) {
@@ -167,7 +167,7 @@ func TestBrokerRoles(t *testing.T) {
 		},
 		{
 			name:   "the mapping drops an unmapped value",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleMapping("corp", map[string]string{"corp-editors": "editor"})},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleMapping("corp", map[string]string{"corp-editors": "editor"})},
 			claims: realmRoles("corp-editors", "corp-admins"),
 			expect: provisionsWith("editor"),
 			assert: provisioned,
@@ -176,8 +176,8 @@ func TestBrokerRoles(t *testing.T) {
 			name: "the allowlist applies to the mapped names",
 			opts: []oidc.BrokerOption{
 				realmPath,
-				oidc.WithRoleMapping("corp", map[string]string{"corp-editors": "editor", "corp-admins": "admin"}),
-				oidc.WithAllowedRoles("corp", "editor"),
+				oidc.WithBrokerRoleMapping("corp", map[string]string{"corp-editors": "editor", "corp-admins": "admin"}),
+				oidc.WithBrokerAllowedRoles("corp", "editor"),
 			},
 			claims: realmRoles("corp-admins", "corp-editors"),
 			expect: provisionsWith("editor"),
@@ -185,48 +185,48 @@ func TestBrokerRoles(t *testing.T) {
 		},
 		{
 			name:   "a mapping configured empty drops every role",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleMapping("corp", map[string]string{})},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleMapping("corp", map[string]string{})},
 			claims: realmRoles("editor"),
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "a nil mapping is a mapping configured empty",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleMapping("corp", nil)},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleMapping("corp", nil)},
 			claims: realmRoles("editor"),
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "an allowlist configured empty drops every role",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithAllowedRoles("corp")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerAllowedRoles("corp")},
 			claims: realmRoles("editor"),
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "the allowlist also applies to the default role",
-			opts:   []oidc.BrokerOption{oidc.WithDefaultRole("member"), oidc.WithAllowedRoles("corp", "editor")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerDefaultRole("member"), oidc.WithBrokerAllowedRoles("corp", "editor")},
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "the allowlist matches case-sensitively",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithAllowedRoles("corp", "Editor")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerAllowedRoles("corp", "Editor")},
 			claims: realmRoles("editor"),
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "the mapping matches case-sensitively",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleMapping("corp", map[string]string{"Corp-Editors": "editor"})},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleMapping("corp", map[string]string{"Corp-Editors": "editor"})},
 			claims: realmRoles("corp-editors"),
 			expect: provisionsWith(),
 			assert: provisioned,
 		},
 		{
 			name:   "another provider's mapping and allowlist leave corp alone",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleMapping("social", map[string]string{}), oidc.WithAllowedRoles("social")},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleMapping("social", map[string]string{}), oidc.WithBrokerAllowedRoles("social")},
 			claims: realmRoles("editor"),
 			expect: provisionsWith("editor"),
 			assert: provisioned,
@@ -236,7 +236,7 @@ func TestBrokerRoles(t *testing.T) {
 		{
 			name:   "role sync replaces the stored roles and writes nothing",
 			linked: true,
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleSync("corp", true)},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleSync("corp", true)},
 			claims: realmRoles("editor"),
 			expect: loads(storedWith(&identity.AssignedRole{ID: "g-1", Name: "viewer", Primary: true})),
 			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
@@ -250,7 +250,7 @@ func TestBrokerRoles(t *testing.T) {
 		{
 			name:   "a stored super role does not survive sync",
 			linked: true,
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleSync("corp", true)},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleSync("corp", true)},
 			claims: realmRoles("admin", "viewer"),
 			expect: loads(storedWith(&identity.AssignedRole{
 				ID: "g-1", Name: "admin", Primary: true, SuperRole: true,
@@ -268,9 +268,9 @@ func TestBrokerRoles(t *testing.T) {
 			name:   "role sync applies the mapping and the allowlist",
 			linked: true,
 			opts: []oidc.BrokerOption{
-				realmPath, oidc.WithRoleSync("corp", true),
-				oidc.WithRoleMapping("corp", map[string]string{"corp-admins": "admin", "corp-viewers": "viewer"}),
-				oidc.WithAllowedRoles("corp", "viewer"),
+				realmPath, oidc.WithBrokerRoleSync("corp", true),
+				oidc.WithBrokerRoleMapping("corp", map[string]string{"corp-admins": "admin", "corp-viewers": "viewer"}),
+				oidc.WithBrokerAllowedRoles("corp", "viewer"),
 			},
 			claims: realmRoles("corp-admins", "corp-viewers", "corp-editors"),
 			expect: loads(storedWith()),
@@ -283,7 +283,7 @@ func TestBrokerRoles(t *testing.T) {
 		{
 			name:   "role sync with nothing at the path leaves the principal with no role",
 			linked: true,
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleSync("corp", true)},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleSync("corp", true)},
 			expect: loads(storedWith(&identity.AssignedRole{Name: "viewer", Primary: true})),
 			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
 				require.NoError(t, err)
@@ -305,7 +305,7 @@ func TestBrokerRoles(t *testing.T) {
 		{
 			name:   "role sync for another provider leaves corp's stored roles",
 			linked: true,
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleClaim("social", "roles"), oidc.WithRoleSync("social", true)},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleClaim("social", "roles"), oidc.WithBrokerRoleSync("social", true)},
 			claims: realmRoles("editor"),
 			expect: loads(storedWith(&identity.AssignedRole{Name: "viewer", Primary: true})),
 			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
@@ -315,7 +315,7 @@ func TestBrokerRoles(t *testing.T) {
 		},
 		{
 			name:   "role sync applies to a provisioned login too",
-			opts:   []oidc.BrokerOption{realmPath, oidc.WithRoleSync("corp", true)},
+			opts:   []oidc.BrokerOption{realmPath, oidc.WithBrokerRoleSync("corp", true)},
 			claims: realmRoles("editor"),
 			expect: func(prov *MockUserProvisioner, _ *MockUserLoader) {
 				prov.EXPECT().Provision(gomock.Any(), "alice@corp.example", provisionedWithRoles("editor")).
@@ -347,8 +347,8 @@ func TestBrokerRoles(t *testing.T) {
 
 			var logs bytes.Buffer
 			opts := append([]oidc.BrokerOption{
-				oidc.WithProvisioner(prov),
-				oidc.WithJIT("corp"),
+				oidc.WithBrokerProvisioner(prov),
+				oidc.WithBrokerJIT("corp"),
 				oidc.WithBrokerLogger(testTextLogger(&logs)),
 			}, tc.opts...)
 			b, err := oidc.NewBroker(links, users, opts...)
@@ -375,8 +375,8 @@ func TestBrokerRolesSyncIsNotPersisted(t *testing.T) {
 	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(stored, nil).Times(2)
 
 	b, err := oidc.NewBroker(brokerSeededLinks(t), users,
-		oidc.WithProvisioner(NewMockUserProvisioner(ctrl)), // no Update expected
-		oidc.WithRoleClaim("corp", "roles"), oidc.WithRoleSync("corp", true))
+		oidc.WithBrokerProvisioner(NewMockUserProvisioner(ctrl)), // no Update expected
+		oidc.WithBrokerRoleClaim("corp", "roles"), oidc.WithBrokerRoleSync("corp", true))
 	require.NoError(t, err)
 
 	first, err := b.Broker(t.Context(), rolesIdentity(map[string]any{"roles": []any{"editor"}}))
@@ -413,17 +413,17 @@ func TestBrokerRolesOptions(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "role sync without a claim path is refused naming the provider",
-			opts:   []oidc.BrokerOption{oidc.WithRoleSync("corp", true)},
-			assert: refused(`"corp"`, "WithRoleSync"),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleSync("corp", true)},
+			assert: refused(`"corp"`, "WithBrokerRoleSync"),
 		},
 		{
 			name:   "role sync with an explicitly empty claim path is refused",
-			opts:   []oidc.BrokerOption{oidc.WithRoleClaim("corp", ""), oidc.WithRoleSync("corp", true)},
-			assert: refused(`"corp"`, "WithRoleSync"),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleClaim("corp", ""), oidc.WithBrokerRoleSync("corp", true)},
+			assert: refused(`"corp"`, "WithBrokerRoleSync"),
 		},
 		{
 			name: "role sync turned off needs no claim path",
-			opts: []oidc.BrokerOption{oidc.WithRoleSync("corp", false)},
+			opts: []oidc.BrokerOption{oidc.WithBrokerRoleSync("corp", false)},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				require.NoError(t, err)
 				assert.Empty(t, b.RoleSyncProviders())
@@ -433,9 +433,9 @@ func TestBrokerRolesOptions(t *testing.T) {
 		{
 			name: "RoleSyncProviders lists exactly the providers with sync on, sorted",
 			opts: []oidc.BrokerOption{
-				oidc.WithRoleClaim("social", "roles"), oidc.WithRoleSync("social", true),
-				oidc.WithRoleClaim("corp", "roles"), oidc.WithRoleSync("corp", true),
-				oidc.WithRoleClaim("partner", "roles"), oidc.WithRoleSync("partner", false),
+				oidc.WithBrokerRoleClaim("social", "roles"), oidc.WithBrokerRoleSync("social", true),
+				oidc.WithBrokerRoleClaim("corp", "roles"), oidc.WithBrokerRoleSync("corp", true),
+				oidc.WithBrokerRoleClaim("partner", "roles"), oidc.WithBrokerRoleSync("partner", false),
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				require.NoError(t, err)
@@ -446,9 +446,9 @@ func TestBrokerRolesOptions(t *testing.T) {
 			},
 		},
 		{
-			name: "a later WithRoleSync for a provider replaces an earlier one",
+			name: "a later WithBrokerRoleSync for a provider replaces an earlier one",
 			opts: []oidc.BrokerOption{
-				oidc.WithRoleClaim("corp", "roles"), oidc.WithRoleSync("corp", true), oidc.WithRoleSync("corp", false),
+				oidc.WithBrokerRoleClaim("corp", "roles"), oidc.WithBrokerRoleSync("corp", true), oidc.WithBrokerRoleSync("corp", false),
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				require.NoError(t, err)
@@ -458,16 +458,16 @@ func TestBrokerRolesOptions(t *testing.T) {
 		{
 			name: "a role claim path equal to the password path is refused",
 			opts: []oidc.BrokerOption{
-				oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-				oidc.WithRoleClaim("corp", "credentials.password_hash"),
+				oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+				oidc.WithBrokerRoleClaim("corp", "credentials.password_hash"),
 			},
 			assert: refused(`"corp"`, "role"),
 		},
 		{
 			name: "role options name their providers",
 			opts: []oidc.BrokerOption{
-				oidc.WithRoleClaim("corp", "roles"), oidc.WithRoleMapping("social", map[string]string{"a": "b"}),
-				oidc.WithAllowedRoles("partner", "viewer"),
+				oidc.WithBrokerRoleClaim("corp", "roles"), oidc.WithBrokerRoleMapping("social", map[string]string{"a": "b"}),
+				oidc.WithBrokerAllowedRoles("partner", "viewer"),
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				require.NoError(t, err)
@@ -476,33 +476,33 @@ func TestBrokerRolesOptions(t *testing.T) {
 		},
 		{
 			name:   "an empty provider for the role claim is refused",
-			opts:   []oidc.BrokerOption{oidc.WithRoleClaim("", "roles")},
-			assert: refused("WithRoleClaim"),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleClaim("", "roles")},
+			assert: refused("WithBrokerRoleClaim"),
 		},
 		{
 			name:   "an empty provider for the role mapping is refused",
-			opts:   []oidc.BrokerOption{oidc.WithRoleMapping("", map[string]string{"a": "b"})},
-			assert: refused("WithRoleMapping"),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleMapping("", map[string]string{"a": "b"})},
+			assert: refused("WithBrokerRoleMapping"),
 		},
 		{
 			name:   "an empty local role in the mapping is refused",
-			opts:   []oidc.BrokerOption{oidc.WithRoleMapping("corp", map[string]string{"corp-editors": ""})},
-			assert: refused("WithRoleMapping", `"corp"`),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleMapping("corp", map[string]string{"corp-editors": ""})},
+			assert: refused("WithBrokerRoleMapping", `"corp"`),
 		},
 		{
 			name:   "an empty provider for the allowlist is refused",
-			opts:   []oidc.BrokerOption{oidc.WithAllowedRoles("", "viewer")},
-			assert: refused("WithAllowedRoles"),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerAllowedRoles("", "viewer")},
+			assert: refused("WithBrokerAllowedRoles"),
 		},
 		{
 			name:   "an empty role in the allowlist is refused",
-			opts:   []oidc.BrokerOption{oidc.WithAllowedRoles("corp", "viewer", "")},
-			assert: refused("WithAllowedRoles", `"corp"`),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerAllowedRoles("corp", "viewer", "")},
+			assert: refused("WithBrokerAllowedRoles", `"corp"`),
 		},
 		{
 			name:   "an empty provider for role sync is refused",
-			opts:   []oidc.BrokerOption{oidc.WithRoleSync("", true)},
-			assert: refused("WithRoleSync"),
+			opts:   []oidc.BrokerOption{oidc.WithBrokerRoleSync("", true)},
+			assert: refused("WithBrokerRoleSync"),
 		},
 	}
 
@@ -511,7 +511,7 @@ func TestBrokerRolesOptions(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			opts := append([]oidc.BrokerOption{oidc.WithPasswordEncoder(fastBcryptEncoder(t))}, tc.opts...)
+			opts := append([]oidc.BrokerOption{oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t))}, tc.opts...)
 			b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl), opts...)
 			tc.assert(t, b, err)
 		})
@@ -531,8 +531,8 @@ func TestBrokerRolesMappingIsCopied(t *testing.T) {
 	mapping := map[string]string{"corp-editors": "editor"}
 	allowed := []string{"editor"}
 	b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl),
-		oidc.WithProvisioner(prov), oidc.WithJIT("corp"),
-		oidc.WithRoleClaim("corp", "roles"), oidc.WithRoleMapping("corp", mapping), oidc.WithAllowedRoles("corp", allowed...))
+		oidc.WithBrokerProvisioner(prov), oidc.WithBrokerJIT("corp"),
+		oidc.WithBrokerRoleClaim("corp", "roles"), oidc.WithBrokerRoleMapping("corp", mapping), oidc.WithBrokerAllowedRoles("corp", allowed...))
 	require.NoError(t, err)
 	mapping["corp-editors"] = "admin"
 	allowed[0] = "admin"

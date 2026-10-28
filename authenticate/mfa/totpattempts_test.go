@@ -72,13 +72,13 @@ func wrongCodeAt(t *testing.T, secret []byte, at time.Time) string {
 // how many were compared (refused as ErrInvalidCode rather than refused before
 // the compare). It also returns a func that verifies a valid code of the same
 // window afterwards, so a caller can see what the race left behind.
-func raceWrongCodes(t *testing.T, racers int, opts ...mfa.TOTPOption) (int, func() error) {
+func raceWrongCodes(t *testing.T, racers int, opts ...mfa.Option) (int, func() error) {
 	t.Helper()
 
 	ctx := t.Context()
 	clk := clockwork.NewFakeClockAt(attemptsEpoch)
 	store := mfa.NewMemoryEnrolmentStore()
-	totp, err := mfa.NewTOTP(store, "scrty-test", append([]mfa.TOTPOption{mfa.WithClock(clk)}, opts...)...)
+	totp, err := mfa.NewTOTP(store, "scrty-test", append([]mfa.Option{mfa.WithClock(clk)}, opts...)...)
 	require.NoError(t, err)
 
 	user := identity.UserID("u-1")
@@ -86,7 +86,7 @@ func raceWrongCodes(t *testing.T, racers int, opts ...mfa.TOTPOption) (int, func
 	enrolConfirmed(t, store, user, secret)
 	wrong := wrongCodeAt(t, secret, clk.Now())
 
-	throttle, err := mfa.NewVerifyThrottle(mfa.WithVerifyLimiter(newBarrierLimiter(racers)))
+	throttle, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(newBarrierLimiter(racers)))
 	require.NoError(t, err)
 
 	var compared atomic.Int32
@@ -119,7 +119,7 @@ func TestTOTP_VerifyAttemptLimit(t *testing.T) {
 	type testCase struct {
 		name   string
 		racers int
-		opts   []mfa.TOTPOption
+		opts   []mfa.Option
 		assert func(t *testing.T, compared int)
 	}
 
@@ -134,7 +134,7 @@ func TestTOTP_VerifyAttemptLimit(t *testing.T) {
 		{
 			name:   "consumer limit",
 			racers: 4,
-			opts:   []mfa.TOTPOption{mfa.WithVerifyAttempts(3, 10*time.Minute)},
+			opts:   []mfa.Option{mfa.WithVerifyAttempts(3, 10*time.Minute)},
 			assert: func(t *testing.T, compared int) {
 				assert.Equal(t, 3, compared)
 			},
@@ -179,7 +179,7 @@ type attemptsFixture struct {
 
 // newAttemptsFixture builds the method over store, or over a memory store
 // holding a confirmed enrolment for the fixture's user when store is nil.
-func newAttemptsFixture(t *testing.T, store mfa.EnrolmentStore, opts ...mfa.TOTPOption) *attemptsFixture {
+func newAttemptsFixture(t *testing.T, store mfa.EnrolmentStore, opts ...mfa.Option) *attemptsFixture {
 	t.Helper()
 
 	f := &attemptsFixture{
@@ -201,7 +201,7 @@ func newAttemptsFixture(t *testing.T, store mfa.EnrolmentStore, opts ...mfa.TOTP
 	logger := slog.New(slog.NewJSONHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	m, err := mfa.NewTOTP(store, "scrty-test",
-		append([]mfa.TOTPOption{mfa.WithClock(f.clk), mfa.WithTOTPLogger(logger)}, opts...)...)
+		append([]mfa.Option{mfa.WithClock(f.clk), mfa.WithLogger(logger)}, opts...)...)
 	require.NoError(t, err)
 
 	f.totp = m
@@ -251,7 +251,7 @@ func TestTOTP_VerifyCharges(t *testing.T) {
 	type testCase struct {
 		name    string
 		store   func(t *testing.T, ctrl *gomock.Controller) mfa.EnrolmentStore // nil: memory, confirmed
-		opts    []mfa.TOTPOption
+		opts    []mfa.Option
 		prepare func(t *testing.T, f *attemptsFixture)
 		code    func(t *testing.T, f *attemptsFixture) []byte
 		assert  func(t *testing.T, f *attemptsFixture, err error)
@@ -362,7 +362,7 @@ func TestTOTP_VerifyCharges(t *testing.T) {
 		},
 		{
 			name: "a consumer window opens anew at its own end",
-			opts: []mfa.TOTPOption{mfa.WithVerifyAttempts(1, 10*time.Minute)},
+			opts: []mfa.Option{mfa.WithVerifyAttempts(1, 10*time.Minute)},
 			prepare: func(t *testing.T, f *attemptsFixture) {
 				require.ErrorIs(t, f.totp.Verify(t.Context(), f.user, f.wrong(t)), mfa.ErrInvalidCode)
 				f.clk.Advance(10 * time.Minute)

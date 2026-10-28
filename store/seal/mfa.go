@@ -107,7 +107,7 @@ type provingEnrolmentStore struct {
 // When inner does not, neither does the returned store.
 //
 // A nil inner store or a nil cipher, typed nil included, or a nil option is a
-// configuration error matching ErrInvalidConfiguration, and so is a nil r
+// configuration error matching ErrConfig, and so is a nil r
 // unless re-sealing on read is turned off, and a nil clock given to
 // WithClock. With re-sealing off, r is not used and may be nil.
 func NewEnrolmentStore(

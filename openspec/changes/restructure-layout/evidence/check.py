@@ -147,7 +147,8 @@ def check_api(m, ev, fresh, apidiff, empty):
     return problems
 
 
-TOKEN = re.compile(r"\b([a-z]\w*)\.([A-Z]\w*)\b")
+# Names in go test -json have "_" for spaces, so a token is bounded by any non-alphanumeric.
+TOKEN = re.compile(r"(?<![A-Za-z0-9])([a-z][A-Za-z0-9]*)\.([A-Z][A-Za-z0-9]*)(?![A-Za-z0-9])")
 
 
 def short_idents(m):
@@ -165,10 +166,43 @@ def short_idents(m):
     return m._short
 
 
+BARE = re.compile(r"(?<![A-Za-z0-9])(Example)?([A-Z][A-Za-z0-9]*)(?![A-Za-z0-9])")
+
+
+def bare_idents(m):
+    """Bare old name -> new name: globally when unambiguous, else per final package."""
+    if not hasattr(m, "_bare"):
+        by_name = collections.defaultdict(set)
+        per_pkg = collections.defaultdict(dict)
+        for old, new in m.idents.items():
+            opkg, oname = split_qualified(old)
+            npkg, nname = split_qualified(new)
+            if "." in oname:
+                continue
+            by_name[oname].add(nname)
+            per_pkg[m.path(opkg)][oname] = nname
+            per_pkg[npkg][oname] = nname
+        m._bare = ({k: next(iter(v)) for k, v in by_name.items() if len(v) == 1}, per_pkg)
+    return m._bare
+
+
+def rename_bare(m, pkg, name):
+    """Identifiers named bare inside a test or Example name follow their renames."""
+    unique, per_pkg = bare_idents(m)
+    scoped = per_pkg.get(m.path(pkg), {})
+
+    def sub(mo):
+        word = mo.group(2)
+        new = scoped.get(word) or unique.get(word)
+        return (mo.group(1) or "") + (new or word)
+    return BARE.sub(sub, name)
+
+
 def map_test(m, pkg, name):
     # A subtest named after an identifier ("session.ErrSessionExpired") follows its rename.
     short = short_idents(m)
     name = TOKEN.sub(lambda mo: short.get(mo.group(0), mo.group(0)), name)
+    name = rename_bare(m, pkg, name)
     best = None
     for old, new in m.tests:
         opkg, oname = split_test(old)

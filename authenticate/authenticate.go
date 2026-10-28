@@ -22,7 +22,7 @@ import (
 var ErrConfig = errors.New("authenticate: invalid configuration")
 
 // ErrUnsupportedCredentials is the answer a provider gives for credentials it
-// does not handle, and the only error a Manager treats as "ask the next one".
+// does not handle, and the only error a FirstOf treats as "ask the next one".
 //
 // It is not a failure to authenticate. A provider returns it before looking at
 // the secret at all, so returning it says nothing about the caller, and a
@@ -51,13 +51,13 @@ var ErrNoEligibleAuthenticator = errors.New("authenticate: no eligible authentic
 // Authenticator resolves presented credentials to an authenticated caller.
 //
 // It is the port a consumer implements to add an authentication method of their
-// own. Manager is itself an Authenticator, so a manager composes into another
-// manager without a wrapper.
+// own. FirstOf is itself an Authenticator, so a FirstOf composes into another
+// FirstOf without a wrapper.
 type Authenticator interface {
 	// Authenticate resolves c, or reports why it could not.
 	//
 	// Credentials of a kind this provider does not handle return
-	// ErrUnsupportedCredentials and nothing else, so a Manager can offer them to
+	// ErrUnsupportedCredentials and nothing else, so a FirstOf can offer them to
 	// the next provider. Every refusal of credentials this provider does handle
 	// returns an error matching ErrAuthenticationFailed, and carries no detail
 	// that would let a caller tell one refusal from another.
@@ -66,7 +66,7 @@ type Authenticator interface {
 
 // Authentication is what a successful authentication produced.
 //
-// A provider fills it; a Manager decides whether it may be returned at all. It
+// A provider fills it; a FirstOf decides whether it may be returned at all. It
 // never carries the password hash: the outward identity is Principal, which
 // identity builds without one.
 type Authentication struct {
@@ -83,7 +83,7 @@ type Authentication struct {
 	// request; the secret they held is gone by the time this is returned.
 	Credentials identity.Credentials
 
-	// Principal is the resolved caller. A Manager never returns an
+	// Principal is the resolved caller. A FirstOf never returns an
 	// Authentication whose Principal is absent, so a caller that saw no error
 	// may read it without a check.
 	Principal *identity.Principal

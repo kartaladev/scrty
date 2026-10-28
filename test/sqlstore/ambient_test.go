@@ -36,7 +36,7 @@ func TestAmbientTx(t *testing.T) {
 	// Every store has a table of its own, so the stores share one database.
 	conn := migratedDB(t)
 	c := storefix.TestCipher(t)
-	foreign := storefix.CipherOf(t, seal.WithEncryptionKey("k-foreign", storefix.SealKey(t)))
+	foreign := storefix.CipherOf(t, seal.WithKeyringEncryptionKey("k-foreign", storefix.SealKey(t)))
 
 	t.Run("sessions", runAmbient(conn, func(t *testing.T, db *sql.DB, opts ...sqlstore.Option) session.Store {
 		return newSessionStore(t, db, c, opts...)

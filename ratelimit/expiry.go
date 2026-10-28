@@ -12,7 +12,7 @@ import (
 // has already released.
 //
 // There are two built-in pruners: the in-memory limiter, *MemoryLimiter, and the
-// PostgreSQL limiter factories of the sqlstore and pgx packages.
+// PostgreSQL limiter factories of the sqlstore and pgxstore packages.
 // A consumer may implement Pruner for a limiter of its own and hand it to
 // ExpiryTask.
 type Pruner interface {
@@ -24,7 +24,7 @@ var _ Pruner = (*MemoryLimiter)(nil)
 // ExpiryTask returns the expiry task for p, to run in an expiry.Runner beside
 // the tasks of the stores that hold expired state. The built-in pruners are the
 // in-memory limiter and the PostgreSQL limiter factories of the sqlstore and
-// pgx packages. p must not be nil.
+// pgxstore packages. p must not be nil.
 //
 // The task is named "ratelimit" and has no Interval, so a scheduler uses its
 // own default and a manual run ignores it. A deployment with two pruners

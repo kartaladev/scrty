@@ -49,11 +49,11 @@ type Cipher interface {
 // rotation's machinery, so it is not something a consumer configures.
 const aadPrefix = "scrty/session:external-id-token:"
 
-// textSessionUnreadableIDTokenNotOpened is ErrSessionUnreadable's own words,
-// kept as a constant (never ErrSessionUnreadable.Error(), which forbidigo
+// textSessionUnreadableIDTokenNotOpened is ErrUnreadable's own words,
+// kept as a constant (never ErrUnreadable.Error(), which forbidigo
 // forbids outside a stated exception) so this fixed text is never a
 // dependency's error rendered at runtime. It must read exactly as
-// ErrSessionUnreadable.Error() does, followed by what additionally failed.
+// ErrUnreadable.Error() does, followed by what additionally failed.
 const textSessionUnreadableIDTokenNotOpened = "session: session cannot be read: the provider ID token would not open"
 
 // encryptedStore seals Session.ExternalIDToken on the way to inner and opens
@@ -75,7 +75,7 @@ type encryptedStore struct {
 // package — never naming the session identifier, which is the bearer
 // credential — and still matches the original error through errors.Is and
 // errors.As; a cipher that will not open a value is also
-// ErrSessionUnreadable. A sentinel of this package that inner returns bare
+// ErrUnreadable. A sentinel of this package that inner returns bare
 // comes back as itself.
 //
 // The sealed value is bound to the session identifier, so an envelope moved to
@@ -146,7 +146,7 @@ func (s *encryptedStore) Save(ctx context.Context, sess *Session) error {
 
 // Load opens the stored ID token and returns the session with plaintext in it.
 //
-// A value that will not open is ErrSessionUnreadable, and the session is not
+// A value that will not open is ErrUnreadable, and the session is not
 // returned at all. Returning it with the token blanked would turn a retired
 // key — an operational mistake affecting every federated session at once —
 // into a session that works until something reaches for the token, and by then
@@ -249,8 +249,8 @@ func (s *encryptedStore) DeleteFamily(ctx context.Context, family id.ID) (int, e
 	return n, storeFailed(err, "session: the inner store could not delete the session family")
 }
 
-// MarkPresented passes the mark on. The inner store's ErrSessionNotFound and
-// ErrSessionSuperseded come back bare, as Supersede's refusals do.
+// MarkPresented passes the mark on. The inner store's ErrNotFound and
+// ErrSuperseded come back bare, as Supersede's refusals do.
 func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.Time) error {
 	return storeFailed(s.inner.MarkPresented(ctx, id, at),
 		"session: the inner store could not record the session's first presentation")
@@ -258,7 +258,7 @@ func (s *encryptedStore) MarkPresented(ctx context.Context, id string, at time.T
 
 // SuccessorPresented passes the read on: it reads only presentation and
 // supersession state, which is not sealed. The inner store's
-// ErrSessionNotFound comes back bare.
+// ErrNotFound comes back bare.
 func (s *encryptedStore) SuccessorPresented(ctx context.Context, id string) (bool, error) {
 	used, err := s.inner.SuccessorPresented(ctx, id)
 

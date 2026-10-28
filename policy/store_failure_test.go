@@ -120,7 +120,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 			name: "second-factor challenge: the enrolment could not be read",
 			build: func(t *testing.T, buf *bytes.Buffer) policy.Policy {
 				return mfaPolicyFor(t, mfaMethod(t, factor.AuthenticatorApp, false, errLeakyStore),
-					policy.WithMFAPolicyLogger(mfaLogger(buf)))
+					policy.WithMFALogger(mfaLogger(buf)))
 			},
 			input: mfaInput(factor.Password),
 			assert: func(t *testing.T, d policy.Decision, buf *bytes.Buffer) {

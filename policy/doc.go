@@ -42,10 +42,10 @@
 //
 // A login on the federated channel (OIDC) is not exempt from the second factor
 // by its kind; only api-key logins are. The provider's amr and acr are matched
-// by a FederatedAssuranceSource (the oidc Manager) that the second-factor
+// by a FederatedAssuranceSource (the oidc RelyingParty) that the second-factor
 // policies are given through WithFederatedAssuranceSource, and the evidence is
 // minted by the library, never read from a claim on the input. For a required
-// user, WithFederatedAssurance chooses what an unmet login gets: a challenge
+// user, WithMFARequirementFederatedAssurance chooses what an unmet login gets: a challenge
 // for the library's own second factor (the default), a refusal, or none at all.
 // The last, FederatedAssuranceExempt, is a bypass of the requirement for OIDC
 // logins, as is a WithMFAExemption rule that exempts factor.OIDC. The

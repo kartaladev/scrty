@@ -63,7 +63,7 @@ var (
 	// credential. Nothing was written. It maps to 409, so the client retries
 	// with the credential it now holds rather than signing in again.
 	//
-	// It wraps session.ErrSessionRenewalConflict, so a consumer matching either
+	// It wraps session.ErrRenewalConflict, so a consumer matching either
 	// identity reaches both. Its text carries no session identifier.
 	ErrSessionRenewalConflict = fmt.Errorf("httpsec: the session was renewed concurrently: %w",
 		session.ErrRenewalConflict)

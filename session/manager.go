@@ -32,11 +32,11 @@ import (
 // A store's failure is returned behind fixed text of this package, because
 // the store's own text may quote values the library never handed it; the
 // store's error still matches through errors.Is and errors.As. A store that
-// answers with one of this package's sentinels — ErrSessionNotFound,
-// ErrSessionExpired, ErrSessionUnreadable — bare gets that same value back. A
+// answers with one of this package's sentinels — ErrNotFound,
+// ErrExpired, ErrUnreadable — bare gets that same value back. A
 // consumer who wants the store's full error logs it inside their own Store.
 //
-// A Sessions is safe for concurrent use as far as its store is: after
+// A Sessions value is safe for concurrent use as far as its store is: after
 // construction it holds no mutable state of its own beyond the lock that
 // serialises Rotate.
 type Sessions struct {
@@ -92,7 +92,7 @@ type Sessions struct {
 	// record between the first's supersession and its delete, find a window
 	// that has already ended, and revoke the family as reuse; with it, the
 	// second finds the record deleted and is refused with
-	// ErrSessionNotFound. The lock follows the session rather than the
+	// ErrNotFound. The lock follows the session rather than the
 	// manager, so two users completing a second factor at the same moment do
 	// not take turns.
 	rotating keyedMutex
@@ -332,14 +332,14 @@ func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...Cre
 //
 // A session superseded by RotateWithGrace loads until its grace window ends,
 // while its own deadlines are unexpired; inside the window, one past either
-// of them is ErrSessionExpired and nothing is revoked. Presenting it at or
+// of them is ErrExpired and nothing is revoked. Presenting it at or
 // after the window's end is reuse, whatever its own deadlines say: Load
-// revokes its whole family and returns ErrSessionReused (see there for what a
+// revokes its whole family and returns ErrReused (see there for what a
 // consumer's transaction must do with it). Every endpoint that reaches a
 // session through Load — logout included — therefore gives the same verdict.
 //
 // With WithUnusedSuccessorRecovery on, a superseded session past its window
-// that names a successor is refused with ErrSessionRenewalRequired instead,
+// that names a successor is refused with ErrRenewalRequired instead,
 // and nothing is revoked: only a renewal (LoadForRenewal, then
 // RotateWithGrace) judges it. A superseded session with no successor of its
 // own, knocked out by a re-rotation or a recovery, is reuse either way, and
@@ -349,12 +349,12 @@ func (m *Sessions) Create(ctx context.Context, user identity.UserID, opts ...Cre
 // The first time a session that is not superseded loads, Load records it as
 // presented (Store.MarkPresented), which is what tells an unused successor
 // from a used one. The store refuses the mark of a session superseded since
-// it was read (ErrSessionSuperseded), and only then does Load read it again
+// it was read (ErrSuperseded), and only then does Load read it again
 // and judge it at a time read after the re-read: a recovery that superseded
 // it between the read and the mark makes this load reuse, rather than
 // leaving two live sessions in the family. A live session's first
 // presentation therefore costs one read and one write. A session gone by the
-// time of the mark is ErrSessionNotFound. Any other failure to record the
+// time of the mark is ErrNotFound. Any other failure to record the
 // mark is logged at debug and the session is read again and judged the same
 // way, since the mark may have lost the race before the failure was
 // reported; if that read fails too, the load fails. With
@@ -392,7 +392,7 @@ func (m *Sessions) load(ctx context.Context, id string, p purpose) (*Session, er
 }
 
 // loadStored reads the session with this identifier from the store. A store
-// that answers with neither a session nor an error is read as ErrSessionNotFound,
+// that answers with neither a session nor an error is read as ErrNotFound,
 // so no caller dereferences it; any other failure is a store failure carrying
 // text.
 func (m *Sessions) loadStored(ctx context.Context, id, text string) (*Session, error) {
@@ -408,8 +408,8 @@ func (m *Sessions) loadStored(ctx context.Context, id, text string) (*Session, e
 }
 
 // reloadSuperseded answers a load whose mark failed with err:
-// ErrSessionNotFound when the session is gone, and for any other failure,
-// ErrSessionSuperseded included, the verdict on the session read again. A
+// ErrNotFound when the session is gone, and for any other failure,
+// ErrSuperseded included, the verdict on the session read again. A
 // failure that is not a refusal is read again too when recovery is off (with
 // it on, load fails on such a failure before calling this), because the mark may have
 // reached the store and lost the race to a recovery before the failure was
@@ -449,7 +449,7 @@ func (m *Sessions) reloadSuperseded(ctx context.Context, id string, p purpose, e
 // markPresented records s's first presentation at now, and on success sets it
 // on s too. It returns the store's failure, which the load answers by reading
 // the session again (reloadSuperseded). A failure other than
-// ErrSessionSuperseded and ErrSessionNotFound is logged first at debug, with
+// ErrSuperseded and ErrNotFound is logged first at debug, with
 // the store's text left out.
 func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time) error {
 	err := m.store.MarkPresented(ctx, s.ID, now)
@@ -489,7 +489,7 @@ func (m *Sessions) markPresented(ctx context.Context, s *Session, now time.Time)
 // to end at, and the second deadline stops meaning anything.
 //
 // Activity on a session that is already past either deadline is refused with
-// ErrSessionExpired and nothing is written: an expired session is not one a
+// ErrExpired and nothing is written: an expired session is not one a
 // request can revive by being made.
 func (m *Sessions) Touch(ctx context.Context, s *Session) error {
 	now := m.clock.Now()
@@ -515,7 +515,7 @@ func (m *Sessions) Touch(ctx context.Context, s *Session) error {
 }
 
 // Save persists changes made to s, and never re-creates a session that has
-// been deleted: a session that is no longer stored is ErrSessionNotFound.
+// been deleted: a session that is no longer stored is ErrNotFound.
 func (m *Sessions) Save(ctx context.Context, s *Session) error {
 	return storeFailed(m.store.Save(ctx, s), "session: the session could not be saved")
 }
@@ -671,20 +671,20 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // so it is returned, and the failure is logged at error with the family and
 // never an identifier. The old entry is then left superseded; it loads until
 // its in-flight window ends, and presenting it after that is reuse (see
-// ErrSessionReused).
+// ErrReused).
 //
 // A session the store no longer holds, or that is past either deadline, is
 // refused with the store's sentinel, as itself, and nothing is written:
 // rotation is a move, not a way to bring a revoked session back under a fresh
 // handle. Two rotations of one handle through one manager are serialised on
 // that identifier, so the second finds the old entry already gone and is
-// refused with ErrSessionNotFound. Rotations of different sessions do not
+// refused with ErrNotFound. Rotations of different sessions do not
 // wait for each other.
 //
 // Racing rotations that the lock does not see — a RotateWithGrace of the
 // same session, or a Rotate on another manager over the same store — are
 // settled by the store's condition: exactly one produces a successor, and the
-// one that supersedes second is refused with ErrSessionRenewalConflict and
+// one that supersedes second is refused with ErrRenewalConflict and
 // stores nothing. A grace rotation that reads the old entry only after this
 // rotation superseded it finds it inside the in-flight window, and is a
 // re-rotation (see RotateWithGrace): this rotation's successor is knocked out,
@@ -702,10 +702,10 @@ func (m *Sessions) AbsoluteTimeout() time.Duration { return m.absoluteTimeout }
 // second successor.
 //
 // A session superseded by RotateWithGrace is refused. Inside its window the
-// refusal is ErrSessionRenewalConflict and nothing is written, so the client
+// refusal is ErrRenewalConflict and nothing is written, so the client
 // retries with its current credential and the family keeps one live head.
 // Past its window it is judged as Load judges it: reuse (see
-// ErrSessionReused), or ErrSessionRenewalRequired with
+// ErrReused), or ErrRenewalRequired with
 // WithUnusedSuccessorRecovery on. A successor knocked out by a re-rotation or
 // a recovery has no window left, whatever this manager's clock says, and is
 // reuse.

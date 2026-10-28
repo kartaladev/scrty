@@ -564,7 +564,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "an expired token is ErrTokenInvalid and keeps the expiry cause",
+			name: "an expired token is ErrInvalid and keeps the expiry cause",
 			keys: func(t *testing.T) signingkey.KeySource { return newKeySource(t) },
 			token: func(t *testing.T, keys signingkey.KeySource) string {
 				return signClaims(t, keys, map[string]any{
@@ -580,7 +580,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			},
 		},
 		{
-			name: "a key source that cannot supply its key set is not ErrTokenInvalid",
+			name: "a key source that cannot supply its key set is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
 				keys.EXPECT().VerificationKeys().Return(nil, unreachable).Times(1)
@@ -596,7 +596,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			},
 		},
 		{
-			name: "a key source that hands over no keys at all is not ErrTokenInvalid",
+			name: "a key source that hands over no keys at all is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
 				keys.EXPECT().VerificationKeys().Return(nil, nil).Times(1)
@@ -614,7 +614,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			},
 		},
 		{
-			name: "a key source holding no keys at all is not ErrTokenInvalid",
+			name: "a key source holding no keys at all is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource {
 				keys := NewMockKeySource(gomock.NewController(t))
 				keys.EXPECT().VerificationKeys().Return([]signingkey.PublicKey{}, nil).Times(1)
@@ -668,7 +668,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 			},
 		},
 		{
-			name: "a cancelled context is not ErrTokenInvalid",
+			name: "a cancelled context is not ErrInvalid",
 			keys: func(t *testing.T) signingkey.KeySource { return newKeySource(t) },
 			token: func(t *testing.T, keys signingkey.KeySource) string {
 				return signClaims(t, keys, validClaims(at))

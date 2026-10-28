@@ -87,7 +87,7 @@ func newFixture(t *testing.T) *fixture {
 	flt := newFaults()
 
 	codes, err := recovery.NewCodes(recovery.WithCodesClock(clk),
-		recovery.WithCodeStore(faultyCodeStore{CodeStore: recovery.NewMemoryCodeStore(), f: flt}))
+		recovery.WithCodesStore(faultyCodeStore{CodeStore: recovery.NewMemoryCodeStore(), f: flt}))
 	require.NoError(t, err)
 
 	// The store judges expiry on its own clock, so it gets the same one.

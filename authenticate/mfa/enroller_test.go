@@ -189,7 +189,7 @@ type enrolFixture struct {
 	clk   *clockwork.FakeClock
 }
 
-func newEnrolFixture(t *testing.T, opts ...mfa.TOTPOption) *enrolFixture {
+func newEnrolFixture(t *testing.T, opts ...mfa.Option) *enrolFixture {
 	t.Helper()
 
 	f := &enrolFixture{
@@ -198,7 +198,7 @@ func newEnrolFixture(t *testing.T, opts ...mfa.TOTPOption) *enrolFixture {
 	}
 
 	m, err := mfa.NewTOTP(f.store, "Example",
-		append([]mfa.TOTPOption{mfa.WithClock(f.clk)}, opts...)...)
+		append([]mfa.Option{mfa.WithClock(f.clk)}, opts...)...)
 	require.NoError(t, err)
 
 	f.m = m
@@ -274,7 +274,7 @@ func TestTOTPEnroller(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		opts   []mfa.TOTPOption
+		opts   []mfa.Option
 		run    func(t *testing.T, f *enrolFixture) (outcome, error)
 		assert func(t *testing.T, f *enrolFixture, got outcome, err error)
 	}
@@ -465,7 +465,7 @@ func TestTOTPEnroller(t *testing.T) {
 		},
 		{
 			name: "a random-source failure while drawing the emailed code proves nothing",
-			opts: []mfa.TOTPOption{mfa.WithRandom(&failAfterReader{n: 20})},
+			opts: []mfa.Option{mfa.WithRandom(&failAfterReader{n: 20})},
 			run: func(t *testing.T, f *enrolFixture) (outcome, error) {
 				gen, device := f.begin(t)
 				code, err := f.m.ProveDevice(t.Context(), "u-1", gen, device, true, 10*time.Minute)
@@ -498,7 +498,7 @@ func TestTOTPEnroller(t *testing.T) {
 			// rand.Int over 10^6 reads three bytes and keeps the low 20 bits:
 			// 0x00002A is a draw of 42.
 			name: "a small draw is zero-padded to six digits",
-			opts: []mfa.TOTPOption{mfa.WithRandom(newScriptedReader(0x00, 0x00, 0x2A))},
+			opts: []mfa.Option{mfa.WithRandom(newScriptedReader(0x00, 0x00, 0x2A))},
 			run: func(t *testing.T, f *enrolFixture) (outcome, error) {
 				gen, device := f.begin(t)
 				code, err := f.m.ProveDevice(t.Context(), "u-1", gen, device, true, 10*time.Minute)
@@ -513,7 +513,7 @@ func TestTOTPEnroller(t *testing.T) {
 		{
 			// 0x0F423F is 999999, the top of the range.
 			name: "the top draw is the largest six-digit code",
-			opts: []mfa.TOTPOption{mfa.WithRandom(newScriptedReader(0x0F, 0x42, 0x3F))},
+			opts: []mfa.Option{mfa.WithRandom(newScriptedReader(0x0F, 0x42, 0x3F))},
 			run: func(t *testing.T, f *enrolFixture) (outcome, error) {
 				gen, device := f.begin(t)
 				code, err := f.m.ProveDevice(t.Context(), "u-1", gen, device, true, 10*time.Minute)
@@ -972,7 +972,7 @@ func TestTOTPEnrollerLogs(t *testing.T) {
 	now := time.Date(2026, 9, 24, 10, 0, 15, 0, time.UTC)
 	logger := slog.New(slog.NewTextHandler(&lockedWriter{w: &buf}, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	m, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example",
-		mfa.WithClock(clockwork.NewFakeClockAt(now)), mfa.WithTOTPLogger(logger))
+		mfa.WithClock(clockwork.NewFakeClockAt(now)), mfa.WithLogger(logger))
 	require.NoError(t, err)
 
 	p, gen, err := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice@example.com")

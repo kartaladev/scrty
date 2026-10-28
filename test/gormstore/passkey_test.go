@@ -196,7 +196,7 @@ func TestPasskeyCredentialStore_Rows(t *testing.T) {
 				err := s.Insert(ctx, storefix.PasskeyCredential(id.Nil, "rows-zero", "rows-zero"))
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, passkey.ErrDuplicateCredential)
-				assert.ErrorContains(t, err, "gorm: insert passkey credential")
+				assert.ErrorContains(t, err, "gormstore: insert passkey credential")
 			},
 		},
 		{

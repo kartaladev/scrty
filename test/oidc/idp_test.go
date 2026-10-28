@@ -35,7 +35,7 @@ const (
 )
 
 // loginHarness is a full federated-login chain over one IdentityProvider: a
-// real oidc.Manager, broker, handoff manager and session manager, wired
+// real oidc.RelyingParty, broker, handoff manager and session manager, wired
 // through httpsec.EnableOIDCLogin and served over net/http.
 type loginHarness struct {
 	provider *oidctest.IdentityProvider

@@ -23,8 +23,8 @@ var errStoreDown = errors.New("dial tcp: connection refused")
 const testPurpose = "magic-link"
 
 // clocks lets a helper reach the clock of a manager another helper built, so
-// the tests can keep passing *onetime.Manager around.
-var clocks sync.Map // *onetime.Manager -> *clockwork.FakeClock
+// the tests can keep passing *onetime.Tokens around.
+var clocks sync.Map // *onetime.Tokens -> *clockwork.FakeClock
 
 func testTokens(t *testing.T) *onetime.Tokens {
 	t.Helper()

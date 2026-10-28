@@ -217,7 +217,7 @@ func TestRecoveryGate(t *testing.T) {
 			// With email confirmation off the path serves no confirm-email
 			// endpoint, so its prefix is a route like any other.
 			name:      "the email-confirm prefix without email confirmation",
-			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithoutEmailConfirmation()},
+			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithoutEnrolmentEmailConfirmation()},
 			request:   postTo(httpsec.DefaultEnrolmentEmailConfirmPrefix+"/totp", "code=000000"),
 			assert:    challenged,
 		},

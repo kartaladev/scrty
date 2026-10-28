@@ -185,10 +185,10 @@ func TestNewLimiter(t *testing.T) {
 			name: "every option accepted", namespace: "api-key", limit: 5, window: time.Minute,
 			opts: []redisstore.Option{
 				redisstore.WithKeyPrefix("app:rl:"),
-				redisstore.WithLimiterClock(clockwork.NewFakeClock()),
+				redisstore.WithClock(clockwork.NewFakeClock()),
 				redisstore.WithOnUnavailable(ratelimit.UnavailableFallbackToLocal),
 				redisstore.WithOperationTimeout(time.Second),
-				redisstore.WithUnavailableProbeInterval(5 * time.Second),
+				redisstore.WithProbeInterval(5 * time.Second),
 				redisstore.WithUnavailableLogInterval(10 * time.Second),
 				redisstore.WithLogger(quietLogger()),
 			},
@@ -292,12 +292,12 @@ func TestNewLimiter(t *testing.T) {
 		},
 		{
 			name: "nil clock", namespace: "api-key", limit: 5, window: time.Minute,
-			opts:   []redisstore.Option{redisstore.WithLimiterClock(nil)},
+			opts:   []redisstore.Option{redisstore.WithClock(nil)},
 			assert: refused("clock"),
 		},
 		{
 			name: "typed nil clock", namespace: "api-key", limit: 5, window: time.Minute,
-			opts:   []redisstore.Option{redisstore.WithLimiterClock(nilFake)},
+			opts:   []redisstore.Option{redisstore.WithClock(nilFake)},
 			assert: refused("clock"),
 		},
 		{
@@ -312,7 +312,7 @@ func TestNewLimiter(t *testing.T) {
 		},
 		{
 			name: "negative probe interval", namespace: "api-key", limit: 5, window: time.Minute,
-			opts:   []redisstore.Option{redisstore.WithUnavailableProbeInterval(-time.Second)},
+			opts:   []redisstore.Option{redisstore.WithProbeInterval(-time.Second)},
 			assert: refused("probe interval"),
 		},
 		{
@@ -377,8 +377,8 @@ func TestNewLimiter_DecoratorConfig(t *testing.T) {
 			opts: []redisstore.Option{
 				redisstore.WithOnUnavailable(ratelimit.UnavailableAllow),
 				redisstore.WithOperationTimeout(time.Second),
-				redisstore.WithUnavailableProbeInterval(3 * time.Second),
-				redisstore.WithLimiterClock(fake),
+				redisstore.WithProbeInterval(3 * time.Second),
+				redisstore.WithClock(fake),
 				redisstore.WithLogger(logger),
 			},
 			assert: func(t *testing.T, cfg unavailable.Config) {
@@ -561,7 +561,7 @@ func TestLimiter_ScriptCalls(t *testing.T) {
 		},
 		{
 			name: "record, application clock", reply: 1, call: record,
-			opts: []redisstore.Option{redisstore.WithLimiterClock(clockwork.NewFakeClockAt(at))},
+			opts: []redisstore.Option{redisstore.WithClock(clockwork.NewFakeClockAt(at))},
 			assert: func(t *testing.T, cmds [][]any, _ bool, err error) {
 				require.NoError(t, err)
 				_, _, args := script(t, cmds, 0)
@@ -582,7 +582,7 @@ func TestLimiter_ScriptCalls(t *testing.T) {
 		},
 		{
 			name: "check, application clock", reply: 3, call: check,
-			opts: []redisstore.Option{redisstore.WithLimiterClock(clockwork.NewFakeClockAt(at))},
+			opts: []redisstore.Option{redisstore.WithClock(clockwork.NewFakeClockAt(at))},
 			assert: func(t *testing.T, cmds [][]any, exceeded bool, err error) {
 				require.NoError(t, err)
 				assert.True(t, exceeded, "three of three is exceeded")

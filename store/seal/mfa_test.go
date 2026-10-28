@@ -555,7 +555,7 @@ func TestEnrolmentStore_Get(t *testing.T) {
 	t.Parallel()
 
 	cs := newCiphers(t)
-	gone := mustCipher(t, seal.WithEncryptionKey("gone", keyThree))
+	gone := mustCipher(t, seal.WithKeyringEncryptionKey("gone", keyThree))
 	secret := []byte(mfaSentinel + string(userRef))
 
 	// Every case reads at codeLive, before proveSealed's code expires, unless

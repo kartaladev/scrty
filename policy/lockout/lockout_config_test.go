@@ -110,7 +110,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithCapRetention(time.Hour),
 				lockout.WithCap(lockout.NISTCap),
 			},
-			assert: refusedNaming("WithLockoutCapRetention"),
+			assert: refusedNaming("WithCapRetention"),
 		},
 		{
 			name: "a store that keeps streaks given after the cap is accepted",
@@ -130,7 +130,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithCap(lockout.NISTCap),
 				lockout.WithAttemptStore(streaklessStore),
 			},
-			assert: refusedNaming("WithLockoutCap needs"),
+			assert: refusedNaming("WithCap needs"),
 		},
 		{
 			// NIST's 100 is an upper bound; a higher cap is the consumer's
@@ -162,14 +162,14 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithAttemptStore(streaklessStore),
 				lockout.WithCap(lockout.NISTCap),
 			},
-			assert: refusedNaming("WithLockoutCap needs"),
+			assert: refusedNaming("WithCap needs"),
 		},
 		{
 			// Spec: "Cap at the threshold": the first lock would already be a
 			// hold.
 			name:   "a cap at the threshold is refused",
 			opts:   []lockout.Option{lockout.WithCap(5)},
-			assert: refusedNaming("WithLockoutCap must be above"),
+			assert: refusedNaming("WithCap must be above"),
 		},
 		{
 			name: "a cap below a consumer threshold is refused",
@@ -177,23 +177,23 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithThreshold(10),
 				lockout.WithCap(8),
 			},
-			assert: refusedNaming("WithLockoutCap must be above"),
+			assert: refusedNaming("WithCap must be above"),
 		},
 		{
 			name:   "a cap of zero is refused",
 			opts:   []lockout.Option{lockout.WithCap(0)},
-			assert: refusedNaming("WithLockoutCap must be positive"),
+			assert: refusedNaming("WithCap must be positive"),
 		},
 		{
 			name:   "a negative cap is refused",
 			opts:   []lockout.Option{lockout.WithCap(-1)},
-			assert: refusedNaming("WithLockoutCap must be positive"),
+			assert: refusedNaming("WithCap must be positive"),
 		},
 		{
 			// Spec: "Retention without a cap".
 			name:   "a retention without a cap is refused",
 			opts:   []lockout.Option{lockout.WithCapRetention(30 * 24 * time.Hour)},
-			assert: refusedNaming("WithLockoutCapRetention"),
+			assert: refusedNaming("WithCapRetention"),
 		},
 		{
 			name: "a retention of zero is refused",
@@ -201,7 +201,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithCap(lockout.NISTCap),
 				lockout.WithCapRetention(0),
 			},
-			assert: refusedNaming("WithLockoutCapRetention"),
+			assert: refusedNaming("WithCapRetention"),
 		},
 		{
 			name: "a negative retention is refused",
@@ -209,7 +209,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithCap(lockout.NISTCap),
 				lockout.WithCapRetention(-time.Hour),
 			},
-			assert: refusedNaming("WithLockoutCapRetention"),
+			assert: refusedNaming("WithCapRetention"),
 		},
 		{
 			// A count would expire while the window still counts its failures.
@@ -218,7 +218,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 				lockout.WithCap(lockout.NISTCap),
 				lockout.WithCapRetention(time.Hour),
 			},
-			assert: refusedNaming("WithLockoutCapRetention"),
+			assert: refusedNaming("WithCapRetention"),
 		},
 		{
 			name: "a retention equal to the window is accepted",
@@ -355,7 +355,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				refused(t, p, err)
-				assert.ErrorContains(t, err, "WithSlidingLockout")
+				assert.ErrorContains(t, err, "WithSliding")
 				assert.NotContains(t, err.Error(), "WithFixedLockout")
 			},
 		},
@@ -367,10 +367,10 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				refused(t, p, err)
-				assert.Contains(t, err.Error(), "WithLockoutCeiling")
-				assert.NotContains(t, err.Error(), "WithLockoutWait", "the error named an option that was not combined")
-				assert.NotContains(t, err.Error(), "WithLockoutThreshold", "the error named an option that was not combined")
-				assert.NotContains(t, err.Error(), "WithLockoutWindow", "the error named an option that was not combined")
+				assert.Contains(t, err.Error(), "WithCeiling")
+				assert.NotContains(t, err.Error(), "WithWait", "the error named an option that was not combined")
+				assert.NotContains(t, err.Error(), "WithThreshold", "the error named an option that was not combined")
+				assert.NotContains(t, err.Error(), "WithWindow", "the error named an option that was not combined")
 			},
 		},
 		{
@@ -382,9 +382,9 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				refused(t, p, err)
-				assert.Contains(t, err.Error(), "WithLockoutThreshold")
-				assert.Contains(t, err.Error(), "WithLockoutWait")
-				assert.NotContains(t, err.Error(), "WithLockoutCeiling")
+				assert.Contains(t, err.Error(), "WithThreshold")
+				assert.Contains(t, err.Error(), "WithWait")
+				assert.NotContains(t, err.Error(), "WithCeiling")
 			},
 		},
 		{

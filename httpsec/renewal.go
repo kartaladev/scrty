@@ -42,9 +42,9 @@ const (
 // for every endpoint that issues a credential; a missing or typed-nil
 // required field is refused when the chain is built.
 type SessionRenewalDeps struct {
-	// Sessions rotates the renewed session (session.Manager.RotateWithGrace),
+	// Sessions rotates the renewed session (session.Sessions.RotateWithGrace),
 	// and loads a late one under unused-successor recovery
-	// (session.Manager.LoadForRenewal).
+	// (session.Sessions.LoadForRenewal).
 	//
 	// Default: the manager the chain's bearer resolves sessions through,
 	// whichever bearer mode is enabled and in whatever option order. Given
@@ -374,7 +374,7 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //     ErrAuthenticationRequired;
 //  2. reloads the session's user with LoadByUserID, refusing a missing one
 //     with ErrAuthenticationRequired;
-//  3. rotates the session with session.Manager.RotateWithGrace. A
+//  3. rotates the session with session.Sessions.RotateWithGrace. A
 //     credential renewed again inside its window is re-rotated
 //     (session.RenewalReRotation), so a client that lost a renewal response
 //     can retry with the credential it holds. A lost race with a concurrent
@@ -382,7 +382,7 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //     a 409, and the client retries with the credential it holds. A renewed
 //     credential presented after its window is reuse: the manager revokes the
 //     session's whole family, and the refusal is ErrAuthenticationRequired
-//     joined to session.ErrSessionReused;
+//     joined to session.ErrReused;
 //  4. issues the successor's credential through the chain's bearer mode: the
 //     successor's identifier with EnableSessionBearer on, and a token from
 //     SessionRenewalDeps.Tokens otherwise;
@@ -397,12 +397,12 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 //
 // With session.WithUnusedSuccessorRecovery on the manager, a renewed
 // credential presented after its window by an ordinary request is refused
-// with ErrAuthenticationRequired (it matches session.ErrSessionRenewalRequired)
+// with ErrAuthenticationRequired (it matches session.ErrRenewalRequired)
 // and nothing is revoked. The same credential posted to this endpoint is let
 // through the bearer to the endpoint alone, publishing no caller and no
 // session, so nothing between the bearer and the endpoint, and no handler,
 // sees it authenticated. The endpoint then loads it with
-// session.Manager.LoadForRenewal, refuses a confined session and anything the
+// session.Sessions.LoadForRenewal, refuses a confined session and anything the
 // per-request policy phase does not allow, and rotates it: while its successor
 // was never presented it is recovered (session.RenewalRecovery); otherwise it
 // is reuse, refused as above with the family revoked.
@@ -441,7 +441,7 @@ func writeRenewalResult(ex *Exchange, r RenewalResult) error {
 // The family revocation on reuse is a store write, and like every store write
 // joins a transaction the consumer attached to the request's context. A
 // consumer that rolls its request transaction back on a refusal must commit
-// when errors.Is(err, session.ErrSessionReused), or it rolls the revocation
+// when errors.Is(err, session.ErrReused), or it rolls the revocation
 // back and leaves the stolen family alive.
 func EnableSessionRenewal(d SessionRenewalDeps, opts ...SessionRenewalOption) Option {
 	const option = "EnableSessionRenewal"
@@ -614,7 +614,7 @@ func WithRenewalPath(path string) SessionRenewalOption {
 // A renewed credential presented after its window is reuse: the manager
 // revokes the session's whole family. That revocation is a store write, so a
 // consumer that rolls its request transaction back on a refusal must commit
-// when errors.Is(err, session.ErrSessionReused) (see EnableSessionRenewal).
+// when errors.Is(err, session.ErrReused) (see EnableSessionRenewal).
 // Clients should switch to the successor as soon as renewal returns, and retry
 // the requests they queued with it, so they rarely need the window at all.
 func WithRenewalGrace(d time.Duration) SessionRenewalOption {

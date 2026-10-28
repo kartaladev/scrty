@@ -65,7 +65,7 @@ func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 		return failed(op, err)
 	}
 	if affected == 0 {
-		return errors.New("gorm: insert one-time token: the identifier is already in use")
+		return errors.New("gormstore: insert one-time token: the identifier is already in use")
 	}
 
 	return nil

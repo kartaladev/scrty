@@ -469,7 +469,7 @@ func signsWith(k jwk.Key, algs []string) bool {
 // wrapping ErrDiscoveryFailed, or the context's error.
 //
 // Calling it is optional. By default nothing is fetched until the first login
-// needs it, because NewManager takes no context and so makes no request; a
+// needs it, because NewRelyingParty takes no context and so makes no request; a
 // consumer who would rather find an unreachable provider at start-up calls
 // Prefetch then. It starts no background work: entries still expire after the
 // TTL and are refetched on demand.

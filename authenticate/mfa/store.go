@@ -234,12 +234,12 @@ type DeviceProofStore interface {
 	// user's enrolment on generation gen, at time at, and reports the attempt
 	// count after the write. It charges only where the enrolment is pending on
 	// gen, its device is proven, its code is outstanding and not expired at at,
-	// and fewer than MaxEmailCodeFailures attempts have been charged. Otherwise
+	// and fewer than MaxEmailCodeAttempts attempts have been charged. Otherwise
 	// it reports false with a count of 0, and changes nothing.
 	//
 	// The charge comes before the presented code is compared, and it is the
 	// write that decides, so however many requests race on one code, no more
-	// than MaxEmailCodeFailures of them ever reach a comparison. A correct code
+	// than MaxEmailCodeAttempts of them ever reach a comparison. A correct code
 	// charged as the last allowed attempt still completes; the attempt after it
 	// is refused whatever it presents.
 	ChargeEmailCode(ctx context.Context, user identity.UserID, gen id.ID, at time.Time) (int, bool, error)

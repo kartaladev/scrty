@@ -65,7 +65,7 @@ func (l *logout) wire(c *Chain) {
 
 // Intercept ends the caller's sign-in and answers the request itself.
 //
-// The sign-in is the session's whole family (Manager.RevokeFamily), so a
+// The sign-in is the session's whole family (Sessions.RevokeFamily), so a
 // logout bearing an identifier that was renewed inside its window also ends
 // its successor. A family already gone is not an error.
 //

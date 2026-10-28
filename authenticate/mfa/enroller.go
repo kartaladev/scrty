@@ -65,7 +65,7 @@ type Enroller interface {
 	// RedeemEmailCode charges one attempt against the emailed code of
 	// generation gen, compares code with it in constant time, and completes
 	// the enrolment last. It charges before it reads or compares, so a
-	// malformed code is charged too, and once MaxEmailCodeFailures attempts
+	// malformed code is charged too, and once MaxEmailCodeAttempts attempts
 	// have been charged against one code it refuses every later attempt,
 	// correct or not: the cap is fixed, not the method's to raise.
 	// VoidEmailCode relies on both. Every refusal is ErrEmailCodeInvalid and
@@ -259,7 +259,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 //
 //  1. charge one attempt, in a conditional write that succeeds only while the
 //     enrolment is pending on gen, its device is proven, its code is
-//     outstanding and unexpired, and fewer than MaxEmailCodeFailures attempts
+//     outstanding and unexpired, and fewer than MaxEmailCodeAttempts attempts
 //     have been charged;
 //  2. read the enrolment, and refuse a presented code that is not exactly six
 //     ASCII digits — it is never trimmed or normalised into a match;
@@ -267,7 +267,7 @@ func (t *TOTP) CompleteEnrolment(ctx context.Context, user identity.UserID, gen 
 //  4. complete the enrolment, in one conditional write, last.
 //
 // Charging first, in the write that decides, is what caps the comparisons
-// against one code at MaxEmailCodeFailures however many requests race: a
+// against one code at MaxEmailCodeAttempts however many requests race: a
 // failure counted after the comparison would let every request that read the
 // count before the fifth failure landed compare too. A correct code charged
 // as the last allowed attempt still completes.
@@ -333,7 +333,7 @@ const voidingCode = ""
 // VoidEmailCode voids the emailed code of generation gen, so that no later
 // RedeemEmailCode can complete the proof that issued it: it charges every
 // attempt the code has left by presenting a code that can never match, at most
-// MaxEmailCodeFailures times.
+// MaxEmailCodeAttempts times.
 //
 // It is how a caller that could not deliver the code fails closed. A code
 // nobody received must not stay redeemable, or whoever learned it some other
@@ -342,8 +342,8 @@ const voidingCode = ""
 //
 // It works through the Enroller contract alone, which charges an attempt
 // before it reads or compares the presented code and refuses every attempt
-// once MaxEmailCodeFailures have been charged against one code, so
-// MaxEmailCodeFailures refused attempts spend the code whatever it had left.
+// once MaxEmailCodeAttempts have been charged against one code, so
+// MaxEmailCodeAttempts refused attempts spend the code whatever it had left.
 // It therefore holds for a consumer's method that honours that contract as
 // for the built-in one; a method that charges late, or allows more attempts,
 // may leave the code redeemable. A method that completes the enrolment on

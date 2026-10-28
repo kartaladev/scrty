@@ -53,7 +53,7 @@ func (w *gateWitnesses) options(h *enrolHarness) []httpsec.Option {
 
 	return []httpsec.Option{
 		httpsec.EnablePasswordChangeGate(h.sessions,
-			httpsec.WithChangePasswordEndpoint(passwordResolvePath, change)),
+			httpsec.WithPasswordChangeEndpoint(passwordResolvePath, change)),
 		httpsec.RegisterInterceptor(consumer, httpsec.After(httpsec.OrderPasswordChange)),
 		httpsec.EnableAuthorization(NewMockAuthorizer(gomock.NewController(h.t)), everything),
 	}
@@ -233,7 +233,7 @@ func TestEnrolmentGate(t *testing.T) {
 			// its path is a route like any other.
 			name:      "the emailed-code path with email confirmation off",
 			state:     session.MFAEnrolmentPending,
-			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithoutEmailConfirmation()},
+			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithoutEnrolmentEmailConfirmation()},
 			request:   postTo(enrolEmailPath, "code=123456"),
 			refused:   true,
 			assert:    challenged,

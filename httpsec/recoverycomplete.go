@@ -111,7 +111,7 @@ func (i *recoveryInterceptor) check(c *config, option string) error {
 	if !c.hasRecoveryBinding() {
 		return newConfigError("%s needs a way to bind the recovered session: enable "+
 			"EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA, or a "+
-			"password-change resolve endpoint (WithChangePasswordEndpoint), or a "+
+			"password-change resolve endpoint (WithPasswordChangeEndpoint), or a "+
 			"recovery-pending session could never become a full one", option)
 	}
 

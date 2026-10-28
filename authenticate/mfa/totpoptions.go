@@ -9,19 +9,19 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// TOTPOption configures the method NewTOTP returns. Every default that
+// Option configures the method NewTOTP returns. Every default that
 // constructor applies has an option here that replaces it.
 //
 // A nil option is ignored, so a consumer may build a slice with conditional
 // entries without guarding each one.
-type TOTPOption func(*TOTP)
+type Option func(*TOTP)
 
 // WithDigits sets how many digits a code has, replacing the default of 6.
 //
 // The only other value is 8; anything else is a construction error. RFC 6238
 // admits other lengths, but authenticator apps generate 6 or 8, so a third
 // value would produce enrolments whose codes no app can show.
-func WithDigits(n int) TOTPOption {
+func WithDigits(n int) Option {
 	return func(t *TOTP) { t.digits = n }
 }
 
@@ -34,7 +34,7 @@ func WithDigits(n int) TOTPOption {
 // 30 seconds is what authenticator apps assume when a provisioning URI omits
 // the period. A deployment that changes it is relying on the app reading the
 // period parameter, which not every app does.
-func WithPeriod(d time.Duration) TOTPOption {
+func WithPeriod(d time.Duration) Option {
 	return func(t *TOTP) { t.period = d }
 }
 
@@ -51,7 +51,7 @@ func WithPeriod(d time.Duration) TOTPOption {
 // whether that code has expired and is no longer opened (seal.WithClock, and
 // WithClock on the durable stores): give it the same clock, or a store clock
 // running ahead reads a live code as none and a correct code is refused.
-func WithClock(clk clock.Clock) TOTPOption {
+func WithClock(clk clock.Clock) Option {
 	return func(t *TOTP) { t.clock = clk }
 }
 
@@ -62,11 +62,11 @@ func WithClock(clk clock.Clock) TOTPOption {
 // is what a shared secret must come from. This option is for tests that need a
 // fixed secret or a failing source; a consumer who replaces it in production
 // owns the consequences of whatever they supply.
-func WithRandom(r io.Reader) TOTPOption {
+func WithRandom(r io.Reader) Option {
 	return func(t *TOTP) { t.random = r }
 }
 
-// WithTOTPLogger replaces slog.Default as the destination for the records this
+// WithLogger replaces slog.Default as the destination for the records this
 // method writes: a verification refused or accepted, and an enrolment begun,
 // confirmed or removed.
 //
@@ -79,17 +79,17 @@ func WithRandom(r io.Reader) TOTPOption {
 // EnrolmentStore. A nil logger is a configuration error; a
 // consumer who wants silence supplies one with a discarding handler, which says
 // so at the wiring.
-func WithTOTPLogger(l *slog.Logger) TOTPOption {
+func WithLogger(l *slog.Logger) Option {
 	return func(t *TOTP) { t.logger = l }
 }
 
-// WithTOTPIDGenerator replaces id.NewV7Generator as the source of enrolment
+// WithIDGenerator replaces id.NewV7Generator as the source of enrolment
 // generations, the identifier every begin gives its pending enrolment. A nil
 // generator is a construction error.
 //
 // A generation is not a secret: it binds a device proof and a completion to
 // one begin, and only needs to differ from every earlier one for the user.
-func WithTOTPIDGenerator(g id.Generator) TOTPOption {
+func WithIDGenerator(g id.Generator) Option {
 	return func(t *TOTP) { t.ids = g }
 }
 
@@ -114,7 +114,7 @@ func WithTOTPIDGenerator(g id.Generator) TOTPOption {
 // There is no way to turn the charge off. It is what bounds the codes compared
 // when concurrent requests all pass a VerifyThrottle check before any of their
 // failures is recorded; a consumer wanting a looser bound raises the limit.
-func WithVerifyAttempts(limit int, window time.Duration) TOTPOption {
+func WithVerifyAttempts(limit int, window time.Duration) Option {
 	return func(t *TOTP) {
 		t.verifyLimit = limit
 		t.verifyWindow = window

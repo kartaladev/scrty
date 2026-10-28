@@ -597,7 +597,7 @@ func TestIdentityStore_DriverErrorText(t *testing.T) {
 				require.Error(t, err)
 				var pgErr *pgconn.PgError
 				assert.False(t, errors.As(err, &pgErr), "the driver's error is reachable")
-				assert.Equal(t, "pgx: "+op+": database failure (SQLSTATE 22P02)", err.Error())
+				assert.Equal(t, "pgxstore: "+op+": database failure (SQLSTATE 22P02)", err.Error())
 				assertNoneContains(t, err, "secret-xyz", "invalid input syntax")
 			},
 		},
@@ -607,7 +607,7 @@ func TestIdentityStore_DriverErrorText(t *testing.T) {
 			assert: func(t *testing.T, err error, op string) {
 				require.Error(t, err)
 				assert.False(t, errors.Is(err, plain), "the wrapper's error is reachable")
-				assert.Equal(t, "pgx: "+op+": database failure", err.Error())
+				assert.Equal(t, "pgxstore: "+op+": database failure", err.Error())
 				assertNoneContains(t, err, "secret-host", "10.0.0.1", "dial tcp")
 			},
 		},
@@ -617,7 +617,7 @@ func TestIdentityStore_DriverErrorText(t *testing.T) {
 			assert: func(t *testing.T, err error, op string) {
 				require.Error(t, err)
 				require.ErrorIs(t, err, context.Canceled)
-				assert.Equal(t, "pgx: "+op+": database failure", err.Error())
+				assert.Equal(t, "pgxstore: "+op+": database failure", err.Error())
 			},
 		},
 	}

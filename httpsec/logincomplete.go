@@ -26,7 +26,7 @@ const msgTokenNotIssued = "httpsec: the access token could not be issued"
 // policyDenyReason is the error a deny is refused with.
 //
 // policy.Engine already guarantees a deny carries a reason, substituting
-// policy.ErrPolicyDenied where the policy left it nil, so this is a named
+// policy.ErrDenied where the policy left it nil, so this is a named
 // reader rather than a fallback: every deny site refuses with the reason the
 // engine reduced to, and none of them returns nil for a refusal.
 func policyDenyReason(d policy.Decision) error { return d.Reason }

@@ -143,7 +143,7 @@ func TestWithSessionManager_MustBeTheBearers(t *testing.T) {
 		t.Helper()
 
 		require.ErrorIs(t, err, httpsec.ErrConfig)
-		assert.Contains(t, err.Error(), "WithSessionManager")
+		assert.Contains(t, err.Error(), "WithSessions")
 		assert.Nil(t, chain)
 	}
 

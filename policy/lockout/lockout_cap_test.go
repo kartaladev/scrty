@@ -236,7 +236,7 @@ func failDaily(
 
 // heldText is the text of a held refusal after n consecutive failures.
 func heldText(n int) string {
-	return fmt.Sprintf("policy: account locked after repeated failures: held after %d consecutive failures", n)
+	return fmt.Sprintf("lockout: account locked after repeated failures: held after %d consecutive failures", n)
 }
 
 // deniedAsHeld asserts the refusal of a held identifier: the account-locked
@@ -390,7 +390,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 				var locked *lockout.Error
 				require.ErrorAs(t, d.Reason, &locked)
 				assert.Equal(t, 120*time.Second, locked.Wait)
-				assert.Equal(t, "policy: account locked after repeated failures: 7 failures within 24h0m0s",
+				assert.Equal(t, "lockout: account locked after repeated failures: 7 failures within 24h0m0s",
 					d.Reason.Error())
 			},
 		},

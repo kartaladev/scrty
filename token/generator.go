@@ -19,7 +19,7 @@ type Generator interface {
 	// rather than issuing an unsigned token or one signed with an algorithm
 	// other than the configured one, and rather than issuing one that
 	// identifies nobody: an empty id, a nil principal and a principal with no
-	// username are each refused. No failure here matches ErrTokenInvalid.
+	// username are each refused. No failure here matches ErrInvalid.
 	// A key source's own crypto.Signer failing to sign comes back behind
 	// fixed library text; the signer's own error stays reachable through
 	// errors.Is and errors.As, but its text never is.
@@ -33,7 +33,7 @@ type generator struct{ cfg *config }
 // NewGenerator returns a Generator signing with keys.
 //
 // Defaults: no issuer; no audience; a 15-minute lifetime; RS256; the system
-// clock. Each is a GenerateOption naming its own default.
+// clock. Each is an Option naming its own default.
 //
 // A nil option is skipped, so a consumer may build the slice conditionally.
 //
@@ -44,7 +44,7 @@ type generator struct{ cfg *config }
 // number of seconds, and when a key source that reports its own key lifetime
 // and rotation interval could not keep a key published for as long as the
 // tokens would live.
-func NewGenerator(keys signingkey.KeySource, opts ...GenerateOption) (Generator, error) {
+func NewGenerator(keys signingkey.KeySource, opts ...Option) (Generator, error) {
 	cfg := newConfig()
 	cfg.keys = keys
 	for _, opt := range opts {
@@ -70,9 +70,9 @@ func (g *generator) Verify(ctx context.Context, raw string) (*Claims, error) {
 }
 
 func (g *generator) Generate(_ context.Context, id string, p *identity.Principal) (string, error) {
-	// Never ErrTokenInvalid: that is the verdict on a token a caller
+	// Never ErrInvalid: that is the verdict on a token a caller
 	// presented, and there is no token here. A consumer mapping
-	// ErrTokenInvalid to "credential refused" must not see this.
+	// ErrInvalid to "credential refused" must not see this.
 	//
 	// A principal that names nobody is refused alongside no principal at all.
 	// identity.Principal is a plain exported struct, so a store row with a

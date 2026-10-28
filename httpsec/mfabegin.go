@@ -96,7 +96,7 @@ func (i *mfaInterceptor) isBeginRequest(r Request) bool {
 // store without limit. A user already issued the challenge limit for the
 // method within the manager's issuance window is refused as
 // mfa.ErrVerifyThrottled, and nothing is issued. The count and the issue are
-// one decision of the store's (onetime.Manager.IssueWithin), so begins racing
+// one decision of the store's (onetime.Tokens.IssueWithin), so begins racing
 // for one user never together exceed the limit. A store that cannot decide is
 // a refusal too, behind fixed text, because a limit that lifted whenever the
 // store was down would be no limit. And at most once per issuance window,

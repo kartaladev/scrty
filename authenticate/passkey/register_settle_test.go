@@ -208,7 +208,7 @@ func TestFinishRegistration_RefusedOrFailedFinishLeavesNothing(t *testing.T) {
 
 			if tc.codes != nil {
 				e.codes = tc.codes(cancel)
-				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{}, recovery.WithCodeStore(e.codes))
+				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{}, recovery.WithCodesStore(e.codes))
 			}
 
 			f.deps.Credentials = tc.creds(f.creds)
@@ -283,7 +283,7 @@ func TestFinishRegistration_AbandonedRegistrationReplacedAtLimitOne(t *testing.T
 				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
 			}
 
-			e := &env{f: f, m: f.manager(t, passkey.WithPasskeyLimit(1)), s: tc.session}
+			e := &env{f: f, m: f.manager(t, passkey.WithLimit(1)), s: tc.session}
 
 			first, err := e.m.FinishRegistration(t.Context(), e.s,
 				regBody(f.begin(t, e.m, e.s), "cred-first", ""), tc.rc)

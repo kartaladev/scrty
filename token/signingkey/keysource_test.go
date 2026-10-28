@@ -16,7 +16,7 @@ import (
 )
 
 // externalKeySource stands in for a consumer's own key service: it holds a key
-// no KeyManager ever generated, published, or knows about, and satisfies the
+// no Keys ever generated, published, or knows about, and satisfies the
 // port on its own. It deliberately does not report a lifetime.
 //
 // It names no JOSE type, which is the point of the port's shape: a consumer

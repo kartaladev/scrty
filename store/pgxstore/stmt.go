@@ -16,7 +16,7 @@ import (
 // operation's name: a statement's failure, or a refusal internal/storekit
 // judged. It never maps err to a sentinel refusal or to absence.
 func failed(op string, err error) error {
-	return fmt.Errorf("pgx: %s: %w", op, err)
+	return fmt.Errorf("pgxstore: %s: %w", op, err)
 }
 
 // exec runs query, one statement, on the handle ctx resolves to, and reports

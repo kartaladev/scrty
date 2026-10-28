@@ -401,7 +401,7 @@ func TestChangePasswordEndpoint(t *testing.T) {
 				httpsec.WithLogger(h.logger()),
 				httpsec.EnableBearerToken(h.bearerTokenDeps()),
 				httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithChangePasswordEndpoint(testChangePasswordPath, tc.change(t, &ran))),
+					httpsec.WithPasswordChangeEndpoint(testChangePasswordPath, tc.change(t, &ran))),
 			)
 			require.NoError(t, err)
 
@@ -454,21 +454,21 @@ func TestPasswordChangeConstruction(t *testing.T) {
 			build: func(h *authHarness) []httpsec.Option {
 				return []httpsec.Option{
 					httpsec.EnablePasswordChangeGate(h.sessions,
-						httpsec.WithChangePasswordEndpoint("",
+						httpsec.WithPasswordChangeEndpoint("",
 							func(*httpsec.Exchange) error { return nil })),
 				}
 			},
-			assert: refused("WithChangePasswordEndpoint"),
+			assert: refused("WithPasswordChangeEndpoint"),
 		},
 		{
 			name: "a resolve endpoint with no function",
 			build: func(h *authHarness) []httpsec.Option {
 				return []httpsec.Option{
 					httpsec.EnablePasswordChangeGate(h.sessions,
-						httpsec.WithChangePasswordEndpoint(testChangePasswordPath, nil)),
+						httpsec.WithPasswordChangeEndpoint(testChangePasswordPath, nil)),
 				}
 			},
-			assert: refused("WithChangePasswordEndpoint"),
+			assert: refused("WithPasswordChangeEndpoint"),
 		},
 	}
 
@@ -610,7 +610,7 @@ func TestPasswordChangeGateLogout(t *testing.T) {
 			chain, err := httpsec.New(
 				carryingSession(s),
 				httpsec.EnablePasswordChangeGate(sessions,
-					httpsec.WithChangePasswordEndpoint(testChangePasswordPath, func(ex *httpsec.Exchange) error {
+					httpsec.WithPasswordChangeEndpoint(testChangePasswordPath, func(ex *httpsec.Exchange) error {
 						ex.Writer.WriteHeader(http.StatusNoContent)
 
 						return nil
@@ -925,7 +925,7 @@ func TestChangePasswordEndpointClearsLockoutFailures(t *testing.T) {
 				httpsec.WithLogger(h.logger()),
 				httpsec.EnableBearerToken(h.bearerTokenDeps()),
 				httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithChangePasswordEndpoint(testChangePasswordPath, tc.change)),
+					httpsec.WithPasswordChangeEndpoint(testChangePasswordPath, tc.change)),
 			}, tc.options(t, h, other)...)
 
 			chain, err := httpsec.New(opts...)
@@ -1022,7 +1022,7 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 		httpsec.EnableBearerToken(h.bearerTokenDeps()),
 		httpsec.EnableFormLogin(login),
 		httpsec.EnablePasswordChangeGate(h.sessions,
-			httpsec.WithChangePasswordEndpoint(testChangePasswordPath, func(ex *httpsec.Exchange) error {
+			httpsec.WithPasswordChangeEndpoint(testChangePasswordPath, func(ex *httpsec.Exchange) error {
 				ex.Writer.WriteHeader(http.StatusNoContent)
 
 				return nil

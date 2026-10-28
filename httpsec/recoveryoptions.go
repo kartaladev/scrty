@@ -203,7 +203,7 @@ type RecoveryOption func(*recoveryInterceptor) error
 //     regenerates the set through recovery.Recoverer.Regenerate, which
 //     notifies the user, when the session's latest authentication — the
 //     later of its creation and its second factor's satisfaction — is within
-//     15 minutes (WithRegenerationFreshness), and is refused with
+//     15 minutes (WithRecoveryRegenerationFreshness), and is refused with
 //     recovery.ErrReauthenticationRequired (403) otherwise; it answers 200
 //     with {"recovery_codes":[…]} and Cache-Control: no-store
 //     (WithRecoveryCodesResponder). A GET answers 200 with
@@ -227,7 +227,7 @@ type RecoveryOption func(*recoveryInterceptor) error
 // New fails when the chain has no way to bind the recovered session — neither
 // EnableMFAEnrolment, EnablePasskeys with the passkey method on EnableMFA
 // (whose verify endpoint proves the new passkey), nor a password-change
-// resolve endpoint (WithChangePasswordEndpoint) — since a recovery-pending
+// resolve endpoint (WithPasswordChangeEndpoint) — since a recovery-pending
 // session could then never become a full one. It fails too when any recovery path is empty, lacks
 // a leading "/", or equals another recovery path, the login path or the logout
 // path. One chain has one recovery; a second EnableAccountRecovery is refused.
@@ -433,7 +433,7 @@ func WithRecoveryStartLimiter(l ratelimit.Limiter) RecoveryOption {
 // user per 15 minutes, per process; either way keyed by
 // recovery.UserThrottleKey.
 //
-// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallbackToLocal
 // mode is the recommended choice: during an outage of the shared store each
 // replica still bounds guessing on its own, and users are not locked out.
 //

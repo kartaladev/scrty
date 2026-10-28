@@ -664,7 +664,7 @@ func TestRecoverer_Verify(t *testing.T) {
 				codeLimiter := NewMockLimiter(e.ctrl)
 				codeLimiter.EXPECT().Exceeded(gomock.Any(), recovery.CodeThrottleKey(anaID)).Return(true, nil).AnyTimes()
 				// The limiter is valid, so construction cannot fail.
-				e.codes, _ = recovery.NewCodes(recovery.WithCodeLimiter(codeLimiter))
+				e.codes, _ = recovery.NewCodes(recovery.WithCodesLimiter(codeLimiter))
 
 				return e.opts()
 			},
@@ -825,12 +825,12 @@ func newMockedStoresEnv(t *testing.T) (*recoverEnv, *MockTokenStore, *MockCodeSt
 	codeStore := NewMockCodeStore(e.ctrl)
 
 	mem := recovery.NewMemoryCodeStore()
-	codes, err := recovery.NewCodes(recovery.WithCodeStore(mem), recovery.WithCodesClock(e.clock))
+	codes, err := recovery.NewCodes(recovery.WithCodesStore(mem), recovery.WithCodesClock(e.clock))
 	require.NoError(t, err)
 	e.saved, err = codes.Generate(t.Context(), anaID)
 	require.NoError(t, err)
 
-	spending, err := recovery.NewCodes(recovery.WithCodeStore(codeStore), recovery.WithCodesClock(e.clock))
+	spending, err := recovery.NewCodes(recovery.WithCodesStore(codeStore), recovery.WithCodesClock(e.clock))
 	require.NoError(t, err)
 	e.codes = spending
 

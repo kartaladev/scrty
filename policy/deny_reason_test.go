@@ -14,7 +14,7 @@ import (
 // reason therefore hands it nil, which every caller in Go reads as success, and
 // the request the policy meant to refuse is served.
 //
-// The engine substitutes ErrPolicyDenied so that this cannot happen, whichever
+// The engine substitutes ErrDenied so that this cannot happen, whichever
 // policy did the denying — closing it once here rather than asking every policy
 // that will ever be written to remember.
 func TestADenyAlwaysCarriesAReason(t *testing.T) {

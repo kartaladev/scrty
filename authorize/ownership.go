@@ -17,7 +17,7 @@ import (
 // question whose answer lives entirely in the consumer's tables, and a library
 // that guessed at it would be guessing about their schema.
 //
-// It declines every other kind of attributes, so it can sit in a Manager beside
+// It declines every other kind of attributes, so it can sit in a FirstOf beside
 // authorizers that judge them.
 type OwnershipAuthorizer struct{}
 

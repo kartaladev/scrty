@@ -23,8 +23,8 @@ type OIDCOption func(*oidcInterceptor) error
 // The manager is required and holds everything about the providers: the
 // registry, discovery, the broker and its role options all belong to the oidc
 // constructors, and only transport lives here. The handoff manager is
-// required unless WithCallbackSuccess conveys the login instead, because the
-// default conveyance issues its code through it; with WithCallbackSuccess
+// required unless WithOIDCCallbackSuccess conveys the login instead, because the
+// default conveyance issues its code through it; with WithOIDCCallbackSuccess
 // given, h must be nil, since the conveyance replaces it and issues no code
 // for it, or any redemption-only option, to govern.
 //
@@ -34,17 +34,17 @@ type OIDCOption func(*oidcInterceptor) error
 // (WithOIDCCallbackPath), matched to the browser by the
 // DefaultOIDCFlowCookieName cookie (WithOIDCFlowCookieName). The callback
 // creates no session: it redirects with a single-use handoff code
-// (WithCallbackSuccess replaces that), redeemed by POST on
+// (WithOIDCCallbackSuccess replaces that), redeemed by POST on
 // DefaultOIDCHandoffPath (WithOIDCHandoffPath) through the handoff manager
-// (WithHandoffRedeemer). No post-login destination is allowed, so every
+// (WithOIDCHandoffRedeemer). No post-login destination is allowed, so every
 // requested one becomes "/" (WithOIDCAllowedRedirects,
 // WithOIDCAllowedOrigins). Every failed redemption counts against the
-// source (WithHandoffCountRefusals), at 10 per 5 minutes through a limiter
-// redemption alone uses (WithHandoffLimiter, WithHandoffRateLimit).
+// source (WithOIDCHandoffCountRefusals), at 10 per 5 minutes through a limiter
+// redemption alone uses (WithOIDCHandoffLimiter, WithOIDCHandoffRateLimit).
 // Back-channel logout tokens are received by POST on
 // DefaultOIDCBackchannelPath followed by the provider's name
-// (WithBackchannelLogoutPath), and one naming no session ends only the
-// sessions the token's issuer created (WithBackchannelLogoutScope). A token
+// (WithOIDCBackchannelLogoutPath), and one naming no session ends only the
+// sessions the token's issuer created (WithOIDCBackchannelLogoutScope). A token
 // naming only a subject is resolved to a user through the broker's link
 // store: the library's own broker has one, and a consumer IdentityBroker that
 // also exposes Links() oidc.LinkStore gets subject-only logout resolved
@@ -64,9 +64,9 @@ type OIDCOption func(*oidcInterceptor) error
 // errors.Is and errors.As. A consumer who wants a dependency's own text logs
 // it inside their own implementation of the store or loader.
 //
-// The token generator is required (WithOIDCTokens) unless WithCallbackSuccess
+// The token generator is required (WithOIDCTokens) unless WithOIDCCallbackSuccess
 // is given: the library ships no signing key, and a redeemed code opens a
-// session its caller must be able to present, but WithCallbackSuccess issues
+// session its caller must be able to present, but WithOIDCCallbackSuccess issues
 // no code, so nothing here mints a token for it. The session manager is taken
 // from the chain when WithOIDCSessions is not given, and a chain with
 // neither is refused.
@@ -78,9 +78,9 @@ type OIDCOption func(*oidcInterceptor) error
 // sync on any provider while the default conveyance is kept (a handoff
 // rebuilds the principal from the user's stored roles, so the synced ones
 // would be silently lost between the callback and the session), and, with
-// WithCallbackSuccess given, a non-nil handoff manager or any of
-// WithHandoffRedeemer, WithHandoffLimiter, WithHandoffRateLimit,
-// WithHandoffCountRefusals or WithOIDCHandoffPath, since none of them
+// WithOIDCCallbackSuccess given, a non-nil handoff manager or any of
+// WithOIDCHandoffRedeemer, WithOIDCHandoffLimiter, WithOIDCHandoffRateLimit,
+// WithOIDCHandoffCountRefusals or WithOIDCHandoffPath, since none of them
 // govern anything once no handoff code is issued.
 func EnableOIDCLogin(m *oidc.RelyingParty, h *oidc.Handoff, opts ...OIDCOption) Option {
 	const option = "EnableOIDCLogin"
@@ -145,7 +145,7 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 	} else {
 		if i.handoffs == nil {
 			return newConfigError("%s needs a handoff manager to convey a login with, unless "+
-				"WithCallbackSuccess conveys it instead", option)
+				"WithOIDCCallbackSuccess conveys it instead", option)
 		}
 
 		if c.sessionBearer {
@@ -191,20 +191,20 @@ func (i *oidcInterceptor) check(c *config, option string) error {
 	if syncing := i.manager.RoleSyncProviders(); len(syncing) > 0 && i.callbackSuccess == nil {
 		return newConfigError("%s cannot keep role sync for %s with the handoff conveyance, "+
 			"which rebuilds the principal from stored roles; convey the login with "+
-			"WithCallbackSuccess, or turn role sync off", option, strings.Join(syncing, ", "))
+			"WithOIDCCallbackSuccess, or turn role sync off", option, strings.Join(syncing, ", "))
 	}
 
 	return nil
 }
 
 // checkConveyance refuses the redemption-only wiring that a consumer's own
-// WithCallbackSuccess makes meaningless: with it configured, no handoff code
+// WithOIDCCallbackSuccess makes meaningless: with it configured, no handoff code
 // is ever issued, so a handoff manager and every redemption-only option are
 // a contradiction the consumer should hear about at construction, not have
 // silently ignored.
 func (i *oidcInterceptor) checkConveyance(option string) error {
 	if i.handoffs != nil {
-		return newConfigError("%s was given both a handoff manager and WithCallbackSuccess, "+
+		return newConfigError("%s was given both a handoff manager and WithOIDCCallbackSuccess, "+
 			"which replaces the handoff conveyance and issues no code for it to redeem; "+
 			"pass nil for the handoff manager", option)
 	}
@@ -213,16 +213,16 @@ func (i *oidcInterceptor) checkConveyance(option string) error {
 		name string
 		set  bool
 	}{
-		{"WithHandoffRedeemer", i.handoffRedeemerSet},
-		{"WithHandoffLimiter", i.handoffLimiterSet},
-		{"WithHandoffRateLimit", i.handoffRateLimitSet},
-		{"WithHandoffCountRefusals", i.handoffCountRefusalsSet},
+		{"WithOIDCHandoffRedeemer", i.handoffRedeemerSet},
+		{"WithOIDCHandoffLimiter", i.handoffLimiterSet},
+		{"WithOIDCHandoffRateLimit", i.handoffRateLimitSet},
+		{"WithOIDCHandoffCountRefusals", i.handoffCountRefusalsSet},
 		{"WithOIDCHandoffPath", i.handoffPathSet},
 	}
 
 	for _, opt := range redemptionOnly {
 		if opt.set {
-			return newConfigError("%s was given %s and WithCallbackSuccess, but the "+
+			return newConfigError("%s was given %s and WithOIDCCallbackSuccess, but the "+
 				"conveyance issues no handoff code for %s to govern", option, opt.name, opt.name)
 		}
 	}
@@ -242,7 +242,7 @@ func (i *oidcInterceptor) checkPaths(option string) error {
 	prefixes := []struct{ name, path string }{
 		{"WithOIDCAuthorizePath", i.authorizePath},
 		{"WithOIDCCallbackPath", i.callbackPath},
-		{"WithBackchannelLogoutPath", i.backchannelPath},
+		{"WithOIDCBackchannelLogoutPath", i.backchannelPath},
 	}
 
 	for a := range prefixes {
@@ -419,7 +419,7 @@ func WithOIDCCallbackPath(prefix string) OIDCOption {
 // path, or one that does not start with "/", is refused, and so is a path
 // that collides with an authorize, callback or back-channel prefix, with or
 // without that prefix's trailing slash. This option is redemption-only:
-// given beside WithCallbackSuccess, which issues no handoff code for it to
+// given beside WithOIDCCallbackSuccess, which issues no handoff code for it to
 // govern, it is refused.
 func WithOIDCHandoffPath(path string) OIDCOption {
 	return func(i *oidcInterceptor) error {
@@ -434,7 +434,7 @@ func WithOIDCHandoffPath(path string) OIDCOption {
 	}
 }
 
-// WithBackchannelLogoutPath receives back-channel logout tokens by POST under
+// WithOIDCBackchannelLogoutPath receives back-channel logout tokens by POST under
 // prefix instead: a provider delivers to prefix followed by its registered
 // name, which is the back-channel logout URI registered with the provider.
 //
@@ -442,9 +442,9 @@ func WithOIDCHandoffPath(path string) OIDCOption {
 // one appended. An empty prefix, one that does not start with "/", or the
 // root path "/" itself (which would claim every one-segment path of the
 // application), is refused.
-func WithBackchannelLogoutPath(prefix string) OIDCOption {
+func WithOIDCBackchannelLogoutPath(prefix string) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		p, err := oidcPrefix("WithBackchannelLogoutPath", prefix)
+		p, err := oidcPrefix("WithOIDCBackchannelLogoutPath", prefix)
 		if err != nil {
 			return err
 		}
@@ -544,23 +544,23 @@ func WithOIDCAllowedOrigins(origins ...string) OIDCOption {
 	}
 }
 
-// WithCallbackSuccess replaces the handoff conveyance with fn, which then
+// WithOIDCCallbackSuccess replaces the handoff conveyance with fn, which then
 // writes the whole response to a successful callback, for example for a
 // backend-for-frontend that establishes its own session. No handoff code is
 // issued, so the handoff manager given to EnableOIDCLogin must be nil, no
 // token generator is required (WithOIDCTokens), and every redemption-only
-// option (WithHandoffRedeemer, WithHandoffLimiter, WithHandoffRateLimit,
-// WithHandoffCountRefusals, WithOIDCHandoffPath) is refused if given
+// option (WithOIDCHandoffRedeemer, WithOIDCHandoffLimiter, WithOIDCHandoffRateLimit,
+// WithOIDCHandoffCountRefusals, WithOIDCHandoffPath) is refused if given
 // alongside it: none of them would govern anything.
 //
 // Default: redirect to the allowlisted destination with a single-use handoff
 // code, redeemed through the required handoff manager by the required token
 // generator. It is also the only way to keep role sync, which the default
 // conveyance cannot carry. A nil function is refused.
-func WithCallbackSuccess(fn CallbackSuccess) OIDCOption {
+func WithOIDCCallbackSuccess(fn CallbackSuccess) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if fn == nil {
-			return newConfigError("WithCallbackSuccess was given no function; omit the " +
+			return newConfigError("WithOIDCCallbackSuccess was given no function; omit the " +
 				"option to keep the handoff conveyance")
 		}
 
@@ -570,9 +570,9 @@ func WithCallbackSuccess(fn CallbackSuccess) OIDCOption {
 	}
 }
 
-// WithHandoffRedeemer redeems handoff codes through r instead.
+// WithOIDCHandoffRedeemer redeems handoff codes through r instead.
 //
-// Default: the *oidc.HandoffManager given to EnableOIDCLogin, which runs
+// Default: the *oidc.Handoff given to EnableOIDCLogin, which runs
 // every check before it consumes the code. A replacement takes on that
 // contract (see HandoffRedeemer). The login completion reuses the decision the
 // endpoint's check made before the code was spent, with no second evaluation
@@ -581,11 +581,11 @@ func WithCallbackSuccess(fn CallbackSuccess) OIDCOption {
 // password-change instant than the check was handed, but it cannot un-spend a
 // code the replacement consumed. A nil
 // redeemer, including an interface holding a nil pointer, is refused. This
-// option is redemption-only: given beside WithCallbackSuccess, which issues
+// option is redemption-only: given beside WithOIDCCallbackSuccess, which issues
 // no handoff code for it to redeem, it is refused.
-func WithHandoffRedeemer(r HandoffRedeemer) OIDCOption {
+func WithOIDCHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := requireDep("WithHandoffRedeemer", "redeemer", r); err != nil {
+		if err := requireDep("WithOIDCHandoffRedeemer", "redeemer", r); err != nil {
 			return err
 		}
 
@@ -596,11 +596,11 @@ func WithHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 	}
 }
 
-// WithHandoffLimiter counts failed handoff redemptions through l.
+// WithOIDCHandoffLimiter counts failed handoff redemptions through l.
 //
 // Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
 // namespace "oidc.handoff", or else an in-memory limiter of 10 failures per
-// source per 5 minutes; either way at the limit WithHandoffRateLimit sets, and
+// source per 5 minutes; either way at the limit WithOIDCHandoffRateLimit sets, and
 // used by redemption alone. A deployment running more than one replica supplies
 // a factory or a limiter its replicas share, or the limit is per process. A
 // shared limiter shares its store, not the allowance: every key carries the
@@ -618,11 +618,11 @@ func WithHandoffRedeemer(r HandoffRedeemer) OIDCOption {
 //
 // A nil limiter, including an interface holding a nil pointer, is refused: it
 // would read as "no limit". This option is redemption-only: given beside
-// WithCallbackSuccess, which issues no code for anything to be limited on, it
+// WithOIDCCallbackSuccess, which issues no code for anything to be limited on, it
 // is refused.
-func WithHandoffLimiter(l ratelimit.Limiter) OIDCOption {
+func WithOIDCHandoffLimiter(l ratelimit.Limiter) OIDCOption {
 	return func(i *oidcInterceptor) error {
-		if err := requireDep("WithHandoffLimiter", "limiter", l); err != nil {
+		if err := requireDep("WithOIDCHandoffLimiter", "limiter", l); err != nil {
 			return err
 		}
 
@@ -633,18 +633,18 @@ func WithHandoffLimiter(l ratelimit.Limiter) OIDCOption {
 	}
 }
 
-// WithHandoffRateLimit sets the allowance of the default redemption limiter:
+// WithOIDCHandoffRateLimit sets the allowance of the default redemption limiter:
 // limit failures per source per window.
 //
 // Default: 10 per 5 minutes. It does not apply to a limiter supplied with
-// WithHandoffLimiter, which carries its own. A limit or window that is zero
+// WithOIDCHandoffLimiter, which carries its own. A limit or window that is zero
 // or negative is refused, since it would refuse every redemption or none.
-// This option is redemption-only: given beside WithCallbackSuccess, which
+// This option is redemption-only: given beside WithOIDCCallbackSuccess, which
 // issues no code for it to rate limit, it is refused.
-func WithHandoffRateLimit(limit int, window time.Duration) OIDCOption {
+func WithOIDCHandoffRateLimit(limit int, window time.Duration) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if limit <= 0 || window <= 0 {
-			return newConfigError("WithHandoffRateLimit was given %d per %s; both must be "+
+			return newConfigError("WithOIDCHandoffRateLimit was given %d per %s; both must be "+
 				"positive", limit, window)
 		}
 
@@ -655,7 +655,7 @@ func WithHandoffRateLimit(limit int, window time.Duration) OIDCOption {
 	}
 }
 
-// WithHandoffCountRefusals decides whether a policy denial or a consumer
+// WithOIDCHandoffCountRefusals decides whether a policy denial or a consumer
 // check refusal of a valid handoff code counts against the source's
 // allowance.
 //
@@ -666,9 +666,9 @@ func WithHandoffRateLimit(limit int, window time.Duration) OIDCOption {
 // the methods a raised second-factor challenge offers: a failure, not a
 // refusal. A policy that reads the outage as a reason to deny is a denial like
 // any other, and is exempted. This
-// option is redemption-only: given beside WithCallbackSuccess, which issues
+// option is redemption-only: given beside WithOIDCCallbackSuccess, which issues
 // no code for a refusal to count against, it is refused.
-func WithHandoffCountRefusals(count bool) OIDCOption {
+func WithOIDCHandoffCountRefusals(count bool) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		i.countRefusals = count
 		i.handoffCountRefusalsSet = true
@@ -677,19 +677,19 @@ func WithHandoffCountRefusals(count bool) OIDCOption {
 	}
 }
 
-// WithBackchannelLogoutScope sets which sessions a back-channel logout token
+// WithOIDCBackchannelLogoutScope sets which sessions a back-channel logout token
 // that names a subject but no session ends.
 //
-// Default: IssuerSessions, only the sessions a login through the token's
-// issuer created. AllSessions ends every session of the user, and so lets the
+// Default: BackchannelLogoutScopeIssuer, only the sessions a login through the token's
+// issuer created. BackchannelLogoutScopeAll ends every session of the user, and so lets the
 // provider end sessions it did not establish: the user's password sessions and
 // sessions opened through other providers. A token naming a session (sid) is
 // unaffected by the scope. Any other value is refused.
-func WithBackchannelLogoutScope(s BackchannelLogoutScope) OIDCOption {
+func WithOIDCBackchannelLogoutScope(s BackchannelLogoutScope) OIDCOption {
 	return func(i *oidcInterceptor) error {
 		if !s.valid() {
-			return newConfigError("WithBackchannelLogoutScope was given %d, which is not "+
-				"IssuerSessions or AllSessions", s)
+			return newConfigError("WithOIDCBackchannelLogoutScope was given %d, which is not "+
+				"BackchannelLogoutScopeIssuer or BackchannelLogoutScopeAll", s)
 		}
 
 		i.scope = s
@@ -703,7 +703,7 @@ func WithBackchannelLogoutScope(s BackchannelLogoutScope) OIDCOption {
 //
 // Default: true: when EnableLogout is on the same chain, in either order, with
 // no LogoutDeps.EndSession of its own, logout is given the manager's
-// end-session step (oidc.Manager.EndSessionBuilder). An explicit
+// end-session step (oidc.RelyingParty.EndSessionBuilder). An explicit
 // LogoutDeps.EndSession always wins, whatever this option says. Passing false
 // leaves logout without that step, answering every session as it answers a
 // password session. A chain without EnableLogout is unaffected.

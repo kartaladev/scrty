@@ -96,10 +96,10 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //     but reports to the chain's reporter, as item 1 does.
 //  5. The authenticator given to EnableFormLogin or EnableBasicAuth, when it
 //     implements authenticate.RefusalLogFlusher.
-//  6. The oidc.Manager given to EnableOIDCLogin, which in turn flushes its
-//     identity broker when that can flush, and the oidc.HandoffManager given
+//  6. The oidc.RelyingParty given to EnableOIDCLogin, which in turn flushes its
+//     identity broker when that can flush, and the oidc.Handoff given
 //     beside it, when there is one.
-//  7. The passkey.Manager given to EnablePasskeys.
+//  7. The passkey.Passkeys given to EnablePasskeys.
 //  8. The policy engine given to WithPolicyEngine, which flushes every
 //     registered policy implementing policy.RefusalLogFlusher, including one
 //     registered after the chain was built.
@@ -116,7 +116,7 @@ type refusalLogFlusher interface{ flushRefusalLogs() }
 //
 //   - A component the consumer holds but never gave the chain, such as an
 //     authenticator used only outside it. The consumer flushes that itself.
-//   - A signingkey.KeyManager, which is not a chain dependency and flushes its
+//   - A signingkey.Keys, which is not a chain dependency and flushes its
 //     own refusal logs when its background loops stop.
 func (c *Chain) FlushRefusalLogs() {
 	c.sampler.Flush()

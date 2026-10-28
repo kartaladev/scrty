@@ -74,20 +74,20 @@ func TestAdmitsWithoutLocalSecondFactor(t *testing.T) {
 		{
 			name:     "exempt mode admits a federated kind without looking the requirement up",
 			required: notConsulted,
-			opts:     []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
+			opts:     []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
 			kind:     factor.OIDC,
 			assert:   admits,
 		},
 		{
 			name:   "exempt mode admits even when everyone is required",
-			opts:   []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
+			opts:   []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
 			kind:   factor.OIDC,
 			assert: admits,
 		},
 		{
 			name:     "exempt mode does not cover a kind off the federated channel",
 			required: required,
-			opts:     []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
+			opts:     []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
 			kind:     factor.Password,
 			assert:   refuses,
 		},
@@ -121,7 +121,7 @@ func TestAdmitsWithoutLocalSecondFactor(t *testing.T) {
 		{
 			name:     "a required user under refuse mode is not admitted",
 			required: required,
-			opts:     []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:     []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			kind:     factor.OIDC,
 			assert:   refuses,
 		},

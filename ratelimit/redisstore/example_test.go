@@ -49,7 +49,7 @@ func Example_sharedLimiter() {
 	// limiters with their own namespace, limit and window:
 	//
 	//	chain, err := httpsec.New(httpsec.WithRateLimiterFactory(factory), ...)
-	//	throttle, err := mfa.NewVerifyThrottle(mfa.WithVerifyLimiterFactory(secondFactor), ...)
+	//	throttle, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiterFactory(secondFactor), ...)
 
 	limiter, err := factory.NewLimiter("api-key", 20, time.Minute)
 	fmt.Println(limiter != nil, err)

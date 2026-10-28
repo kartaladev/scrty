@@ -13,7 +13,7 @@ import (
 var errHandoffTokenIDTaken = errors.New("oidc: a handoff record with this token id is already stored")
 
 // MemoryHandoffStore keeps handoff codes in process memory. It is the store a
-// consumer passes to NewHandoffManager when it has no shared one, and it is
+// consumer passes to NewHandoff when it has no shared one, and it is
 // safe for concurrent use.
 //
 // It is not durable and not shared: a code issued by one process cannot be
@@ -23,7 +23,7 @@ var errHandoffTokenIDTaken = errors.New("oidc: a handoff record with this token 
 //
 // Nothing purges it on a timer. Expired records stay until DeleteExpired is
 // called; an expired record that is still held is never honoured, because
-// HandoffManager judges expiry at every redemption.
+// Handoff judges expiry at every redemption.
 type MemoryHandoffStore struct {
 	mu      sync.Mutex
 	records map[string]HandoffRecord

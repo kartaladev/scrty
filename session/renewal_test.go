@@ -377,7 +377,7 @@ func TestReuseObserver(t *testing.T) {
 				mu sync.Mutex
 			)
 			logs := &bytes.Buffer{}
-			opts := []session.Option{session.WithSessionLogger(
+			opts := []session.Option{session.WithLogger(
 				slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))}
 			if tc.observe {
 				opts = append(opts, session.WithReuseObserver(func(_ context.Context, rep session.ReuseReport) {

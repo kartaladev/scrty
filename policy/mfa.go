@@ -117,7 +117,7 @@ func (m SameChannelMode) String() string {
 	}
 }
 
-// MFAOption configures the policy NewMFAPolicy returns. Every default that
+// MFAOption configures the policy NewMFA returns. Every default that
 // constructor applies has an option that replaces it.
 //
 // It is an interface rather than a function type so that WithMFAExemption,
@@ -134,7 +134,7 @@ type mfaOption func(*mfaPolicy)
 func (f mfaOption) applyMFA(p *mfaPolicy) { f(p) }
 
 // MFAExemptionOption is returned by WithMFAExemption. It is accepted by both
-// NewMFAPolicy and NewMFARequirementPolicy, so a deployment states its
+// NewMFA and NewMFARequirement, so a deployment states its
 // exemption rule once and gives the same value to each.
 type MFAExemptionOption struct {
 	exempt func(factor.Kind) bool
@@ -165,21 +165,21 @@ func WithMFAExemption(exempt func(factor.Kind) bool) MFAExemptionOption {
 	return MFAExemptionOption{exempt: exempt}
 }
 
-// WithSameChannelEnrolment replaces what the policy does with an enrolment on
+// WithMFASameChannelEnrolment replaces what the policy does with an enrolment on
 // the first factor's own channel. The default is SameChannelRefuse.
 //
 // SameChannelCompleteOnFirstFactor is the documented alternative, for a
 // deployment that would rather complete such logins than refuse them. It cannot
 // be used to let a user who is required to use a second factor through: that
-// user is governed by the policy NewMFARequirementPolicy returns, which counts
+// user is governed by the policy NewMFARequirement returns, which counts
 // a same-channel enrolment as no usable enrolment whatever this is set to.
 //
 // A mode naming neither constant is a configuration error.
-func WithSameChannelEnrolment(mode SameChannelMode) MFAOption {
+func WithMFASameChannelEnrolment(mode SameChannelMode) MFAOption {
 	return mfaOption(func(p *mfaPolicy) { p.sameChannel = mode })
 }
 
-// WithMFAPolicyLogger replaces where the policy writes its same-channel
+// WithMFALogger replaces where the policy writes its same-channel
 // warnings. The default is slog.Default.
 //
 // Its records name the user by the opaque reference in Input.User, on purpose,
@@ -189,7 +189,7 @@ func WithSameChannelEnrolment(mode SameChannelMode) MFAOption {
 // A nil logger is ignored rather than refused: it has an obvious safe reading —
 // the caller does not want to choose this policy's logger — and refusing it
 // would make configuring logging mandatory.
-func WithMFAPolicyLogger(l *slog.Logger) MFAOption {
+func WithMFALogger(l *slog.Logger) MFAOption {
 	return mfaOption(func(p *mfaPolicy) {
 		if l != nil {
 			p.logger = l
@@ -197,7 +197,7 @@ func WithMFAPolicyLogger(l *slog.Logger) MFAOption {
 	})
 }
 
-// WithMFAPolicyLogInterval replaces how long one written same-channel record
+// WithMFALogInterval replaces how long one written same-channel record
 // suppresses further records about the same user. The default is
 // DefaultLogInterval, one minute.
 //
@@ -206,14 +206,14 @@ func WithMFAPolicyLogger(l *slog.Logger) MFAOption {
 // never loses the count. An interval of zero or less writes every record, for a
 // consumer whose own handler samples.
 //
-// It governs this policy alone. The policy NewMFARequirementPolicy returns
+// It governs this policy alone. The policy NewMFARequirement returns
 // keeps its own window under WithMFARequirementLogInterval, so one subsystem's
 // flood cannot silence another's.
-func WithMFAPolicyLogInterval(d time.Duration) MFAOption {
+func WithMFALogInterval(d time.Duration) MFAOption {
 	return mfaOption(func(p *mfaPolicy) { p.logInterval = d })
 }
 
-// WithMFAPolicyClock replaces the time source the policy samples its records
+// WithMFAClock replaces the time source the policy samples its records
 // by. The default is clock.System().
 //
 // It is not the instant a decision is judged against — that is Input.Now, taken
@@ -221,11 +221,11 @@ func WithMFAPolicyLogInterval(d time.Duration) MFAOption {
 // measures the sampling window alone, which is how a test crosses a window
 // boundary without waiting for one. A nil clock, typed nil included, is a
 // configuration error.
-func WithMFAPolicyClock(clk clock.Clock) MFAOption {
+func WithMFAClock(clk clock.Clock) MFAOption {
 	return mfaOption(func(p *mfaPolicy) { p.clock = clk })
 }
 
-// WithFederatedChallengeWhenUnmet replaces what the policy does with a login
+// WithMFAFederatedChallengeWhenUnmet replaces what the policy does with a login
 // on the factor.Federated channel. The default, false, allows every such login
 // without consulting any lookup or the assurance source.
 //
@@ -233,13 +233,13 @@ func WithMFAPolicyClock(clk clock.Clock) MFAOption {
 // login's Input.FederatedAssurance. Met assurance allows. An unmet login,
 // including one whose evidence asserts nothing, is judged like any other
 // login: challenged for MFA when the user can use a configured method, and so
-// on down the order NewMFAPolicy documents. A source error denies, with fixed
+// on down the order NewMFA documents. A source error denies, with fixed
 // text wrapping it, and is never read as met.
 //
 // Choose it for users who are not required to use a second factor but have
 // enrolled one, so their federated logins are challenged unless the provider
 // vouched for a second factor. A required user's federated login is decided
-// by NewMFARequirementPolicy (see WithFederatedAssurance), and this option
+// by NewMFARequirement (see WithMFARequirementFederatedAssurance), and this option
 // does not change that policy's verdict. The engine combines the two,
 // though, and this policy does not know who is required: with
 // FederatedAssuranceExempt on the requirement policy, this option still
@@ -255,7 +255,7 @@ func WithMFAPolicyClock(clk clock.Clock) MFAOption {
 // construction: with no source nothing is met, so every federated login of an
 // enrolled user would be challenged while the configuration reads as if the
 // provider's assurance counted.
-func WithFederatedChallengeWhenUnmet(on bool) MFAOption {
+func WithMFAFederatedChallengeWhenUnmet(on bool) MFAOption {
 	return mfaOption(func(p *mfaPolicy) { p.challengeUnmetFederated = on })
 }
 
@@ -297,8 +297,8 @@ type mfaPolicy struct {
 //     is not exempt by its kind; this is the policy's own default for users
 //     who are not required to use a second factor. Whether a required user's
 //     federated login meets the requirement is decided by
-//     NewMFARequirementPolicy (see WithFederatedAssurance). With
-//     WithFederatedChallengeWhenUnmet(true) the source matches the login's
+//     NewMFARequirement (see WithMFARequirementFederatedAssurance). With
+//     WithMFAFederatedChallengeWhenUnmet(true) the source matches the login's
 //     Input.FederatedAssurance instead: met allows, a source error denies
 //     with fixed text wrapping it, and an unmet login goes on down this list
 //     like any other. Federated evidence is never the proof in
@@ -312,7 +312,7 @@ type mfaPolicy struct {
 //     they are enrolled on whose channel differs from the first factor's:
 //     challenge for MFA, whatever else they are enrolled on;
 //   - enrolled only on methods on the first factor's own channel: whatever
-//     WithSameChannelEnrolment says, which by default is a refusal;
+//     WithMFASameChannelEnrolment says, which by default is a refusal;
 //   - enrolled on no method: allow.
 //
 // A consumer who wants a separate second factor even after a user-verified
@@ -320,7 +320,7 @@ type mfaPolicy struct {
 // so no proof is minted and this policy never sees one.
 //
 // It decides nothing about users who are *required* to use a second factor;
-// that is the policy NewMFARequirementPolicy returns, and a deployment that
+// that is the policy NewMFARequirement returns, and a deployment that
 // enforces a requirement registers both, over the same methods.
 //
 // An empty set is a configuration error wrapping ErrConfig: a policy with
@@ -331,14 +331,14 @@ type mfaPolicy struct {
 // which nothing downstream could tell apart. The policy keeps its own copy of
 // the set. It also fails, wrapping ErrConfig, when
 // WithFederatedAssuranceSource was given an absent source, and when
-// WithFederatedChallengeWhenUnmet(true) is set with no source at all.
+// WithMFAFederatedChallengeWhenUnmet(true) is set with no source at all.
 //
-// Defaults: SameChannelRefuse (WithSameChannelEnrolment),
+// Defaults: SameChannelRefuse (WithMFASameChannelEnrolment),
 // factor.Kind.MFAExempt (WithMFAExemption), no federated assurance source
 // (WithFederatedAssuranceSource), federated logins allowed without a local
-// challenge (WithFederatedChallengeWhenUnmet), slog.Default
-// (WithMFAPolicyLogger), clock.System() (WithMFAPolicyClock) and
-// DefaultLogInterval for its sampled records (WithMFAPolicyLogInterval).
+// challenge (WithMFAFederatedChallengeWhenUnmet), slog.Default
+// (WithMFALogger), clock.System() (WithMFAClock) and
+// DefaultLogInterval for its sampled records (WithMFALogInterval).
 func NewMFA(methods []MFAMethodLookup, opts ...MFAOption) (Policy, error) {
 	p := &mfaPolicy{
 		sameChannel: SameChannelRefuse,
@@ -403,7 +403,7 @@ func (p *mfaPolicy) Phases() []Phase { return []Phase{PostAuthentication} }
 // this policy keeps no state a caller could reach through it.
 func (p *mfaPolicy) Challenges() []ChallengeKind { return []ChallengeKind{ChallengeMFA} }
 
-// Evaluate answers for one login, in the order NewMFAPolicy documents.
+// Evaluate answers for one login, in the order NewMFA documents.
 //
 // It reads the Input and never writes to it: an allow here records no satisfied
 // second factor, because none happened.

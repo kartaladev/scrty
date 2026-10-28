@@ -33,7 +33,7 @@ type RecoveryCodesResponder func(ex *Exchange, codes []string) error
 // WithRecoveryCountResponder.
 type RecoveryCountResponder func(ex *Exchange, count recovery.Count) error
 
-// WithRegenerationFreshness sets how recent a session's latest authentication
+// WithRecoveryRegenerationFreshness sets how recent a session's latest authentication
 // must be for it to regenerate the user's saved codes. The latest
 // authentication is the later of the session's creation and its second
 // factor's satisfaction.
@@ -42,10 +42,10 @@ type RecoveryCountResponder func(ex *Exchange, count recovery.Count) error
 // so the default asks for a recent login; a consumer who wants a longer window,
 // such as two hours, sets it here. A window of zero or less is refused, since
 // it would refuse every regeneration.
-func WithRegenerationFreshness(d time.Duration) RecoveryOption {
+func WithRecoveryRegenerationFreshness(d time.Duration) RecoveryOption {
 	return func(i *recoveryInterceptor) error {
 		if d <= 0 {
-			return newConfigError("WithRegenerationFreshness was given %s; the window must be above "+
+			return newConfigError("WithRecoveryRegenerationFreshness was given %s; the window must be above "+
 				"zero, or no session could ever regenerate its codes", d)
 		}
 

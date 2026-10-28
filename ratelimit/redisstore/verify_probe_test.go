@@ -61,7 +61,7 @@ func TestVerify_Probe(t *testing.T) {
 		},
 		{
 			name: "application clock, as the limiter runs the scripts",
-			opts: []redisstore.Option{redisstore.WithLimiterClock(clockwork.NewFakeClockAt(at))},
+			opts: []redisstore.Option{redisstore.WithClock(clockwork.NewFakeClockAt(at))},
 			assert: func(t *testing.T, record, check []any) {
 				now := strconv.FormatInt(at.UnixMicro(), 10)
 				assert.Equal(t, now, record[4])

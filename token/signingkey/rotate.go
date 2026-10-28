@@ -36,7 +36,7 @@ func (km *Keys) rotateAll(ctx context.Context) {
 // receives the failure's full error.
 //
 // Both reach consumer code, so no caller may hold the keyring lock across it:
-// WithErrorHook promises a hook that GetSigner and VerificationKeys answer,
+// WithErrorHook promises a hook that Signer and VerificationKeys answer,
 // and either one
 // under the lock a caller already held would deadlock on the loop goroutine.
 // The hook also runs on that goroutine, so it may not call Start or Stop —

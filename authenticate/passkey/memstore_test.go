@@ -40,7 +40,7 @@ func credential(user identity.UserID, n byte, credID string) *passkey.Credential
 }
 
 // pending returns c pending on reasons, with an emailed code when
-// AwaitingEmailCode is among them.
+// PendingEmailCode is among them.
 func pending(c *passkey.Credential, reasons passkey.PendingReason) *passkey.Credential {
 	c.State = passkey.StatePending
 	c.Pending = reasons

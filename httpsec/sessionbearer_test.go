@@ -104,7 +104,7 @@ func passwordlessReferenceChain(t *testing.T, d *pwlDeployment, withTokens bool)
 		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: d.sessions, Users: d.users}),
 		httpsec.EnablePasskeys(
 			httpsec.PasskeyDeps{Passkeys: d.manager, Sessions: d.sessions, Users: d.users},
-			httpsec.WithPasswordlessLogin(settings...)),
+			httpsec.WithPasskeyPasswordlessLogin(settings...)),
 	)
 	d.chain = chain
 
@@ -594,7 +594,7 @@ func TestSessionBearerConstruction(t *testing.T) {
 				_, err := h.assemble(nil,
 					httpsec.WithOIDCSessions(h.sessions),
 					httpsec.WithOIDCTokens(h.tokens),
-					httpsec.WithCallbackSuccess(func(*httpsec.Exchange, oidc.CallbackResult, string) error { return nil }))
+					httpsec.WithOIDCCallbackSuccess(func(*httpsec.Exchange, oidc.CallbackResult, string) error { return nil }))
 
 				return err
 			},

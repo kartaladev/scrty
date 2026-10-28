@@ -80,7 +80,7 @@ func (h *redisHarness) build(t *testing.T, prefix, namespace string, limit int, 
 
 	l, err := redisstore.NewLimiter(h.client, namespace, limit, window,
 		redisstore.WithKeyPrefix(prefix),
-		redisstore.WithLimiterClock(h.clock),
+		redisstore.WithClock(h.clock),
 		redisstore.WithOperationTimeout(redisTestTimeout),
 		redisstore.WithLogger(slog.New(slog.DiscardHandler)))
 	require.NoError(t, err)

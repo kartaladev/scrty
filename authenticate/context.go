@@ -16,7 +16,7 @@ var authenticationKey contextKey
 
 // WithAuthentication returns a copy of ctx carrying a.
 //
-// An authentication interceptor calls this once a Manager has resolved the
+// An authentication interceptor calls this once a FirstOf has resolved the
 // caller, and everything downstream reads the result back rather than
 // authenticating again.
 //

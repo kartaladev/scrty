@@ -244,7 +244,7 @@ func (km *Keys) repickCurrentLocked(recs []Record, now time.Time) {
 // replica on the other side of it may be configured differently, so it holds
 // keys for algorithms this manager was never asked about. Such a key stays
 // published while it is within the lifetime — that is what lets this replica
-// verify the other's tokens — but making it current would hand it to GetSigner
+// verify the other's tokens — but making it current would hand it to Signer
 // for an algorithm SupportedAlgs denies, and would exempt it from housekeeping
 // for as long as the process lived, because the current key of an algorithm is
 // never expired.
@@ -367,7 +367,7 @@ func (km *Keys) Signer(alg Alg) (string, crypto.Signer, bool) {
 // Every key held is published, a key stored for an algorithm this manager was
 // not configured with included: a replica sharing the store may have written
 // it, and publishing it is what verifies the tokens it signed. Publishing a
-// key is not signing with it — GetSigner hands out none of them — and such a
+// key is not signing with it — Signer hands out none of them — and such a
 // key stops being published once it is past the key lifetime, like any other.
 //
 // The error is never non-nil here, because a manager already holds its keys

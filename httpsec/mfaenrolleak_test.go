@@ -112,7 +112,7 @@ func TestEnrolmentNotificationLogsCarryNoAddress(t *testing.T) {
 		{
 			name: "a contact resolver that cannot resolve the address",
 			prepare: func(_ *testing.T, h *enrolHarness, o *outbox) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithContactResolver(failingResolver(errAddressUnusable)))
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentContactResolver(failingResolver(errAddressUnusable)))
 				o.accepting(h, nil)
 			},
 			reason: "contact-unresolved",
@@ -127,7 +127,7 @@ func TestEnrolmentNotificationLogsCarryNoAddress(t *testing.T) {
 			o := &outbox{}
 			logs := &capturingHandler{}
 
-			h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEmailConfirmation())
+			h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEnrolmentEmailConfirmation())
 			h.extra = append(h.extra, httpsec.WithLogger(slog.New(logs)))
 			tc.prepare(t, h, o)
 
@@ -250,7 +250,7 @@ func TestEnrolmentRefusalsCarryNoAddress(t *testing.T) {
 		{
 			name: "a begin whose label cannot be resolved",
 			prepare: func(_ *testing.T, h *enrolHarness, _ *outbox) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithLabelResolver(failingResolver(errAddressUnusable)))
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentLabelResolver(failingResolver(errAddressUnusable)))
 			},
 			leaked: enrolUsername,
 			assert: is(errAddressUnusable),
@@ -280,7 +280,7 @@ func TestEnrolmentRefusalsCarryNoAddress(t *testing.T) {
 		{
 			name: "a confirm whose contact cannot be resolved",
 			prepare: func(_ *testing.T, h *enrolHarness, o *outbox) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithContactResolver(failingResolver(errAddressUnusable)))
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentContactResolver(failingResolver(errAddressUnusable)))
 				o.accepting(h, nil)
 			},
 			confirm: true,
@@ -612,7 +612,7 @@ func TestEnrolmentOutagesCarryNoAddress(t *testing.T) {
 			h.method = h.totp
 
 			if tc.emailOff {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEmailConfirmation())
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEnrolmentEmailConfirmation())
 			}
 
 			s := h.enrolmentOnly(t, factor.Password)

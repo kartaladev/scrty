@@ -38,7 +38,7 @@ func refusedWith(problem string) func(t *testing.T, c *config, err error) {
 	return func(t *testing.T, c *config, err error) {
 		t.Helper()
 		require.ErrorIs(t, err, ErrConfig)
-		require.EqualError(t, err, "pgx: invalid configuration: "+problem)
+		require.EqualError(t, err, "pgxstore: invalid configuration: "+problem)
 		assert.Nil(t, c)
 	}
 }

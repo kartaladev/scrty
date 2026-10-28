@@ -108,7 +108,7 @@ func newRenewalFixture(t *testing.T, setup renewalSetup) *renewalFixture {
 	managerOpts := []session.Option{
 		session.WithClock(f.clk),
 		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
-		session.WithSessionLogger(logger),
+		session.WithLogger(logger),
 		session.WithIdleTimeout(7 * 24 * time.Hour),
 		session.WithAbsoluteTimeout(30 * 24 * time.Hour),
 	}

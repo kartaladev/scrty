@@ -23,7 +23,7 @@ type config struct {
 	prefix string
 	// clock is the application clock; nil means the server's TIME.
 	clock clock.Clock
-	// clockSet records that WithLimiterClock was given, so that a nil clock
+	// clockSet records that WithClock was given, so that a nil clock
 	// passed to it is refused rather than read as "use the server's".
 	clockSet bool
 	// unavailable configures the decorator. It starts from
@@ -67,7 +67,7 @@ func WithKeyPrefix(p string) Option {
 	return func(c *config) { c.prefix = p }
 }
 
-// WithLimiterClock makes the limiter stamp failures and compute its window
+// WithClock makes the limiter stamp failures and compute its window
 // from clk, passed to the server as an argument, in place of the default: the
 // server's own clock, read with TIME inside each operation.
 //
@@ -83,7 +83,7 @@ func WithKeyPrefix(p string) Option {
 // and record-error hold by, which otherwise is the system clock.
 //
 // A nil clock, typed nil included, fails construction with ratelimit.ErrConfig.
-func WithLimiterClock(clk clock.Clock) Option {
+func WithClock(clk clock.Clock) Option {
 	return func(c *config) {
 		c.clock = clk
 		c.clockSet = true
@@ -95,7 +95,7 @@ func WithLimiterClock(clk clock.Clock) Option {
 // reached. Default: ratelimit.UnavailableRefuse, which answers every check as
 // exceeded, so every guarded flow refuses until the server is back.
 //
-// ratelimit.UnavailableFallBackToLocal counts in this process for the outage,
+// ratelimit.UnavailableFallbackToLocal counts in this process for the outage,
 // so the effective limit is multiplied by the number of replicas while it
 // lasts; it is the recommended mode for second-factor flows, whose users would
 // otherwise be locked out of sign-in by an outage. ratelimit.UnavailableAllow
@@ -120,13 +120,13 @@ func WithOperationTimeout(d time.Duration) Option {
 	return func(c *config) { c.unavailable.Timeout = d }
 }
 
-// WithUnavailableProbeInterval sets how long the limiter answers from its
+// WithProbeInterval sets how long the limiter answers from its
 // unavailable mode, without calling the server, after a call has failed; then
 // one call probes it. Default: 1s. It applies in every mode, so that refusing
 // during an outage costs nothing and does not exhaust the connection pool.
 //
 // A zero or negative interval fails construction with ratelimit.ErrConfig.
-func WithUnavailableProbeInterval(d time.Duration) Option {
+func WithProbeInterval(d time.Duration) Option {
 	return func(c *config) { c.unavailable.ProbeInterval = d }
 }
 

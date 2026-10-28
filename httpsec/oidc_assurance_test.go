@@ -329,7 +329,7 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 					return res, err
 				})
 
-			return []httpsec.OIDCOption{httpsec.WithHandoffRedeemer(r)}
+			return []httpsec.OIDCOption{httpsec.WithOIDCHandoffRedeemer(r)}
 		}
 	}
 
@@ -450,7 +450,7 @@ func TestOIDCRedeemAssurance(t *testing.T) {
 		},
 		{
 			name:     "refuse mode keeps the code and counts the refusal against the source",
-			cfg:      assuranceConfig{requirementOpts: []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)}},
+			cfg:      assuranceConfig{requirementOpts: []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)}},
 			enrolled: true,
 			act: func(t *testing.T, d *assuranceDeployment, code string) served {
 				for range 10 {

@@ -548,7 +548,7 @@ func TestEnrolmentNotification(t *testing.T) {
 		{
 			name: "a consumer contact resolver",
 			prepare: func(_ *testing.T, h *enrolHarness, o *outbox) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithContactResolver(
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentContactResolver(
 					func(context.Context, *identity.Details) (string, error) { return "ana.work@example.com", nil }))
 				o.accepting(h, nil)
 			},
@@ -721,7 +721,7 @@ func TestEnrolmentNotifiesWhenSessionUnsaved(t *testing.T) {
 			require.NoError(t, err)
 
 			if tc.emailOff {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEmailConfirmation())
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEnrolmentEmailConfirmation())
 			}
 
 			s := h.enrolmentOnly(t, factor.Password)

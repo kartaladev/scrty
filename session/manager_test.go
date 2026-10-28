@@ -32,7 +32,7 @@ func TestManagerLogger(t *testing.T) {
 		var buf bytes.Buffer
 		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-		_, err := session.New(session.WithSessionLogger(logger))
+		_, err := session.New(session.WithLogger(logger))
 		require.NoError(t, err)
 
 		// The stated limit of the default store, said out loud once: behind a
@@ -49,7 +49,7 @@ func TestManagerLogger(t *testing.T) {
 
 		_, err := session.New(
 			session.WithStore(session.NewMemoryStore()),
-			session.WithSessionLogger(logger))
+			session.WithLogger(logger))
 		require.NoError(t, err)
 
 		assert.Empty(t, buf.String(), "a consumer who supplied their own store was warned about the default")
@@ -61,7 +61,7 @@ func TestManagerLogger(t *testing.T) {
 		// Refusing a nil logger would make logging mandatory; ignoring it
 		// leaves the caller on slog.Default(), which is what "do not
 		// configure this" reasonably means.
-		m, err := session.New(session.WithSessionLogger(nil))
+		m, err := session.New(session.WithLogger(nil))
 		require.NoError(t, err)
 		require.NotNil(t, m)
 
@@ -213,7 +213,7 @@ func TestNewManager(t *testing.T) {
 			// A nil logger has an obvious safe reading — do not log from this
 			// component — and refusing it would make logging mandatory.
 			name: "a nil logger is ignored rather than refused",
-			opts: []session.Option{session.WithSessionLogger(nil)},
+			opts: []session.Option{session.WithLogger(nil)},
 			assert: func(t *testing.T, m *session.Sessions, err error) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)

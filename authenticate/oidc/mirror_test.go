@@ -40,7 +40,7 @@ var errMirrorUpdate = errors.New("update of alice failed near " + hashCost13)
 func TestBrokerClaimMirroring(t *testing.T) {
 	t.Parallel()
 
-	mirrorCorp := oidc.WithClaimMirror("corp", true)
+	mirrorCorp := oidc.WithBrokerClaimMirror("corp", true)
 
 	type testCase struct {
 		name   string
@@ -202,7 +202,7 @@ func TestBrokerClaimMirroring(t *testing.T) {
 		},
 		{
 			name:   "mirroring turned off explicitly writes nothing",
-			opts:   []oidc.BrokerOption{oidc.WithClaimMirror("corp", false)},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerClaimMirror("corp", false)},
 			ext:    mirrorIdentity("Alice B.", hashCost13),
 			expect: func(*MockUserProvisioner) {},
 			assert: func(t *testing.T, _ *identity.Principal, err error, _ string) {
@@ -211,7 +211,7 @@ func TestBrokerClaimMirroring(t *testing.T) {
 		},
 		{
 			name:   "mirroring for another provider does not mirror corp",
-			opts:   []oidc.BrokerOption{oidc.WithClaimMirror("social", true), oidc.WithNameClaim("social", "name")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerClaimMirror("social", true), oidc.WithBrokerNameClaim("social", "name")},
 			ext:    mirrorIdentity("Alice B.", hashCost13),
 			expect: func(*MockUserProvisioner) {},
 			assert: func(t *testing.T, _ *identity.Principal, err error, _ string) {
@@ -232,10 +232,10 @@ func TestBrokerClaimMirroring(t *testing.T) {
 
 			var logs bytes.Buffer
 			opts := append([]oidc.BrokerOption{
-				oidc.WithProvisioner(prov),
-				oidc.WithNameClaim("corp", "name"),
-				oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-				oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
+				oidc.WithBrokerProvisioner(prov),
+				oidc.WithBrokerNameClaim("corp", "name"),
+				oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+				oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
 				oidc.WithBrokerLogger(testTextLogger(&logs)),
 			}, tc.opts...)
 			b, err := oidc.NewBroker(brokerSeededLinks(t), users, opts...)
@@ -271,17 +271,17 @@ func TestBrokerClaimMirroringOptions(t *testing.T) {
 		{
 			name: "mirroring without a provisioner is a missing port",
 			opts: func(identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithNameClaim("corp", "name"), oidc.WithClaimMirror("corp", true)}
+				return []oidc.BrokerOption{oidc.WithBrokerNameClaim("corp", "name"), oidc.WithBrokerClaimMirror("corp", true)}
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
-				refused("user provisioner", "WithClaimMirror")(t, b, err)
+				refused("user provisioner", "WithBrokerClaimMirror")(t, b, err)
 				require.ErrorIs(t, err, identity.ErrMissingPort)
 			},
 		},
 		{
 			name: "mirroring without a claim path is refused naming the provider",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithClaimMirror("corp", true)}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerClaimMirror("corp", true)}
 			},
 			assert: refused(`"corp"`),
 		},
@@ -289,7 +289,7 @@ func TestBrokerClaimMirroringOptions(t *testing.T) {
 			name: "mirroring with only a name claim is accepted",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
 				return []oidc.BrokerOption{
-					oidc.WithProvisioner(p), oidc.WithNameClaim("corp", "name"), oidc.WithClaimMirror("corp", true),
+					oidc.WithBrokerProvisioner(p), oidc.WithBrokerNameClaim("corp", "name"), oidc.WithBrokerClaimMirror("corp", true),
 				}
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
@@ -300,7 +300,7 @@ func TestBrokerClaimMirroringOptions(t *testing.T) {
 		{
 			name: "mirroring turned off needs neither a provisioner nor a path",
 			opts: func(identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithClaimMirror("corp", false)}
+				return []oidc.BrokerOption{oidc.WithBrokerClaimMirror("corp", false)}
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				require.NoError(t, err)
@@ -310,9 +310,9 @@ func TestBrokerClaimMirroringOptions(t *testing.T) {
 		{
 			name: "an empty provider is refused",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithClaimMirror("", true)}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerClaimMirror("", true)}
 			},
-			assert: refused("WithClaimMirror"),
+			assert: refused("WithBrokerClaimMirror"),
 		},
 	}
 

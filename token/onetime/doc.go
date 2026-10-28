@@ -1,6 +1,6 @@
 // Package onetime issues credentials that are spent exactly once.
 //
-// A Manager issues a token for a purpose and a subject, checks a presented one
+// A Tokens value issues a token for a purpose and a subject, checks a presented one
 // and consumes it. Password resets, magic links, address confirmations and
 // anything else of that shape each build their own manager with their own
 // purpose, and a token issued under one purpose never passes a check under

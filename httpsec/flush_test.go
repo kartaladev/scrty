@@ -108,8 +108,8 @@ func refusingAuthenticator(t *testing.T, log *slog.Logger) authenticate.Authenti
 		Return(nil, identity.ErrUserNotFound).AnyTimes()
 
 	authn, err := authenticate.NewUsernamePasswordAuthenticator(users,
-		authenticate.WithPasswordAuthenticatorLogger(log),
-		authenticate.WithPasswordAuthenticatorLogInterval(time.Hour))
+		authenticate.WithPasswordLogger(log),
+		authenticate.WithPasswordLogInterval(time.Hour))
 	require.NoError(t, err)
 
 	for range 3 {
@@ -266,7 +266,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				t.Helper()
 
 				c := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
-					httpsec.WithHandoffRateLimit(1, time.Hour))
+					httpsec.WithOIDCHandoffRateLimit(1, time.Hour))
 
 				// The first failure spends the allowance; the three after it
 				// are throttled, one written and two held back.
@@ -284,7 +284,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				t.Helper()
 
 				c := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
-					httpsec.WithHandoffLimiter(exceededLimiter(t)))
+					httpsec.WithOIDCHandoffLimiter(exceededLimiter(t)))
 				redeemGarbage(t, c, 3)
 
 				return []*httpsec.Chain{c}
@@ -350,9 +350,9 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 
 				shared := exceededLimiter(t)
 				a := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
-					httpsec.WithHandoffLimiter(shared))
+					httpsec.WithOIDCHandoffLimiter(shared))
 				b := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
-					httpsec.WithHandoffLimiter(shared))
+					httpsec.WithOIDCHandoffLimiter(shared))
 				redeemGarbage(t, a, 3)
 
 				return []*httpsec.Chain{a, b}
@@ -438,8 +438,8 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 				method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
 				p, err := policy.NewMFA([]policy.MFAMethodLookup{method},
-					policy.WithMFAPolicyLogger(log),
-					policy.WithMFAPolicyLogInterval(time.Hour))
+					policy.WithMFALogger(log),
+					policy.WithMFALogInterval(time.Hour))
 				require.NoError(t, err)
 
 				engine, err := policy.NewEngine(p)
@@ -511,10 +511,10 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 			},
 		},
 		{
-			// Review Focus 5: a login conveyed by WithCallbackSuccess has no
+			// Review Focus 5: a login conveyed by WithOIDCCallbackSuccess has no
 			// handoff manager and no redemption guard to flush; the manager
 			// is still reached.
-			name: "an OIDC chain with WithCallbackSuccess and no handoff manager",
+			name: "an OIDC chain with WithOIDCCallbackSuccess and no handoff manager",
 			arrange: func(t *testing.T, log *slog.Logger) []*httpsec.Chain {
 				t.Helper()
 
@@ -534,7 +534,7 @@ func TestFlushRefusalLogsReachesComponents(t *testing.T) {
 
 				conveyed := func(*httpsec.Exchange, oidc.CallbackResult, string) error { return nil }
 
-				return []*httpsec.Chain{oidcChain(t, log, m, nil, httpsec.WithCallbackSuccess(conveyed))}
+				return []*httpsec.Chain{oidcChain(t, log, m, nil, httpsec.WithOIDCCallbackSuccess(conveyed))}
 			},
 			assert: func(t *testing.T, flushed []slog.Record) {
 				assert.Equal(t, []int64{2}, summaries(t, flushed, summaryOIDC, "", ""))
@@ -626,7 +626,7 @@ func TestFlushRefusalLogsReachesEveryComponentOnOneChain(t *testing.T) {
 	method.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
 
 	p, err := policy.NewMFA([]policy.MFAMethodLookup{method},
-		policy.WithMFAPolicyLogger(log), policy.WithMFAPolicyLogInterval(time.Hour))
+		policy.WithMFALogger(log), policy.WithMFALogInterval(time.Hour))
 	require.NoError(t, err)
 
 	engine, err := policy.NewEngine(p)

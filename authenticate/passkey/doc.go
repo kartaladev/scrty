@@ -23,8 +23,8 @@
 //
 // # Admission
 //
-// Registering a passkey (Manager.BeginRegistration) and removing one
-// (Manager.Remove) change the user's authenticators, so both admit the session
+// Registering a passkey (Passkeys.BeginRegistration) and removing one
+// (Passkeys.Remove) change the user's authenticators, so both admit the session
 // first:
 //
 //   - a session with no user, or owing a password change, is refused;
@@ -67,7 +67,7 @@
 // is refused, never admitted.
 //
 // The passkey MFA method is recognised as this manager's route by identity:
-// the MFAMethod that (*Manager).MFAMethod returned, not a method that wraps or
+// the MFAMethod that (*Passkeys).MFAMethod returned, not a method that wraps or
 // decorates it, and never one of another manager or the same name. A wrapped
 // method still serves the MFA step-up, but it opens no route for admission.
 // Passwordless login as a route, and the check of the configured methods, do
@@ -89,7 +89,7 @@
 // # Expired challenges
 //
 // Ceremony challenges live in Deps.Challenges under one-time managers the
-// Manager builds itself. Manager.ExpiryTasks returns the tasks that delete the
+// Passkeys builds itself. Passkeys.ExpiryTasks returns the tasks that delete the
 // expired ones, "passkey-registration-challenges" and
 // "passkey-login-challenges", for an expiry.Runner or a scheduler. Pending and
 // active passkeys are never swept: they are created only by an authenticated

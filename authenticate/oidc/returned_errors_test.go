@@ -15,7 +15,7 @@ import (
 )
 
 // TestOidcReturnedErrors pins task 5.7: an error caused by a consumer-supplied
-// dependency at Authorize, Callback, AbortFlow, HandoffManager.Issue or
+// dependency at Authorize, Callback, AbortFlow, Handoff.Issue or
 // NewBroker's password-encoder probe carries fixed library text, with the
 // dependency's own error and any sentinel the path already matched (before
 // this change, regardless of cause) still reachable by identity.
@@ -106,7 +106,7 @@ func TestOidcReturnedErrors(t *testing.T) {
 			},
 		},
 		{
-			name: "HandoffManager.Issue's store insert fails",
+			name: "Handoff.Issue's store insert fails",
 			call: func(t *testing.T) (any, error) {
 				t.Helper()
 
@@ -137,7 +137,7 @@ func TestOidcReturnedErrors(t *testing.T) {
 				enc.EXPECT().Encode(gomock.Any()).Return(nil, errRedactionFixture)
 
 				return oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl),
-					oidc.WithPasswordEncoder(enc))
+					oidc.WithBrokerPasswordEncoder(enc))
 			},
 			assert: func(t *testing.T, _ any, err error) {
 				assertNoLeak(t, err)

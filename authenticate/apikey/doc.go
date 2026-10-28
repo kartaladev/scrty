@@ -1,7 +1,7 @@
 // Package apikey issues and verifies the credentials machine clients present
 // on every request, without a session.
 //
-// A Manager mints a key for a service principal, hands it back once, and
+// A Keys value mints a key for a service principal, hands it back once, and
 // afterwards knows it only by a digest. Verification turns a presented key into
 // an identity.Principal of the service kind carrying the reference, name and
 // scopes the key was issued with. Nothing here creates a session: a key
@@ -21,7 +21,7 @@
 // leaves no search space for a slow key-derivation function to defend; all a
 // slow hash would buy is latency on every machine request. A consumer whose
 // policy names another digest supplies it, and both issuance and verification
-// then use it. NewManager probes a supplied digest once and refuses one that
+// then use it. New probes a supplied digest once and refuses one that
 // returns an empty value or the same value for two different inputs, and an
 // empty digest, stored or computed, never verifies.
 //
@@ -85,5 +85,5 @@
 // read as "do not log from this component".
 //
 // A wiring mistake — an impossible prefix, a nil port — is a configuration
-// error from NewManager, before any key is issued.
+// error from New, before any key is issued.
 package apikey

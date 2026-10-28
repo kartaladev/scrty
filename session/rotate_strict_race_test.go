@@ -73,7 +73,7 @@ type rotations struct {
 // rotation (second-factor verification) and a grace rotation (renewal) of
 // one session cannot both produce a successor, through one manager or two
 // sharing a store. Whichever supersedes second is refused by the store's
-// condition with ErrSessionRenewalConflict and stores nothing; a grace
+// condition with ErrRenewalConflict and stores nothing; a grace
 // rotation that reads the session only after the strict one superseded it
 // finds it inside the in-flight window and re-rotates it, which knocks the
 // strict successor out.
@@ -358,7 +358,7 @@ func TestRotate_OldIdentifierInFlight(t *testing.T) {
 			f.inner = session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))
 			f.store = tc.store(f.inner)
 			f.m = managerFor(t, session.WithStore(f.store), session.WithClock(f.clk),
-				session.WithSessionLogger(slog.New(slog.NewTextHandler(f.logs, nil))))
+				session.WithLogger(slog.New(slog.NewTextHandler(f.logs, nil))))
 
 			var err error
 			f.pending, err = f.m.Create(t.Context(), testUser)

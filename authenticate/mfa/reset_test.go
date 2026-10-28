@@ -175,7 +175,7 @@ func TestResetEnrolment(t *testing.T) {
 		},
 		{
 			name: "sessions kept: no session is deleted",
-			opts: []mfa.ResetOption{mfa.WithoutSessionRevocation()},
+			opts: []mfa.ResetOption{mfa.WithoutResetSessionRevocation()},
 			deps: func(m mocks) mfa.ResetDeps {
 				return mfa.ResetDeps{Enrolments: []mfa.EnrolmentRemover{m.enrolments}, Users: m.users, Sender: m.sender}
 			},
@@ -403,7 +403,7 @@ func TestResetEnrolmentClock(t *testing.T) {
 
 			var named time.Time
 			opts := append([]mfa.ResetOption{
-				mfa.WithoutSessionRevocation(),
+				mfa.WithoutResetSessionRevocation(),
 				mfa.WithResetMessage(func(at time.Time) (string, string) {
 					named = at
 

@@ -186,7 +186,7 @@ func TestMagicLinkSuccess(t *testing.T) {
 			t.Parallel()
 
 			h := newMagicLinkHarness(t)
-			h.linkOpts = []httpsec.MagicLinkOption{httpsec.WithAllowedRedirects(tc.allowed...)}
+			h.linkOpts = []httpsec.MagicLinkOption{httpsec.WithMagicLinkAllowedRedirects(tc.allowed...)}
 
 			c := h.chain(t)
 

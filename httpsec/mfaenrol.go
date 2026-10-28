@@ -101,7 +101,7 @@ func (i *enrolmentInterceptor) check(option string) error {
 	if nilcheck.IsNil(i.sender) {
 		return newConfigError("%s needs a Sender (EnrolmentDeps.Sender) while email "+
 			"confirmation or notification is on, which both are by default; turn each off "+
-			"explicitly with WithoutEmailConfirmation and WithoutEnrolmentNotification rather "+
+			"explicitly with WithoutEnrolmentEmailConfirmation and WithoutEnrolmentNotification rather "+
 			"than leaving the sender out", option)
 	}
 

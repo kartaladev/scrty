@@ -10,7 +10,7 @@
 // branch it took cannot leak it to the client, and so cannot be used to
 // enumerate which addresses have accounts. Each cause is logged server-side.
 // The same reasoning refuses a sender that waits for delivery: response time
-// would reveal what the result does not, so NewManager requires a sender that
+// would reveal what the result does not, so New requires a sender that
 // declares it does not block, unless the consumer accepts the channel
 // explicitly with WithSynchronousDelivery.
 //

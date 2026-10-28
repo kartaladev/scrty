@@ -50,7 +50,7 @@ func exampleManager() *oidc.RelyingParty {
 	return manager
 }
 
-// ExampleWithFederatedAssurance chooses what the requirement policy does with
+// ExampleWithMFARequirementFederatedAssurance chooses what the requirement policy does with
 // a required user's OIDC login whose provider did not assert a second factor.
 // The default, FederatedAssuranceChallenge, challenges for the library's own
 // second factor. FederatedAssuranceRefuse refuses the login. FederatedAssuranceExempt
@@ -62,7 +62,7 @@ func exampleManager() *oidc.RelyingParty {
 // The policy answers, ahead of any login, whether an OIDC login would be
 // admitted without a local second factor. Only Exempt admits it: provider
 // assurance is known at a login, never before.
-func ExampleWithFederatedAssurance() {
+func ExampleWithMFARequirementFederatedAssurance() {
 	totp, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Co")
 	if err != nil {
 		panic(err)
@@ -85,7 +85,7 @@ func ExampleWithFederatedAssurance() {
 
 		requirement, err := policy.NewMFARequirement(nil, lookups,
 			policy.WithMFARequiredForAll(),
-			policy.WithFederatedAssurance(mode),
+			policy.WithMFARequirementFederatedAssurance(mode),
 			source,
 		)
 		if err != nil {
@@ -107,12 +107,12 @@ func ExampleWithFederatedAssurance() {
 	// FederatedAssuranceExempt true
 }
 
-// ExampleWithFederatedChallengeWhenUnmet makes the second-factor challenge
+// ExampleWithMFAFederatedChallengeWhenUnmet makes the second-factor challenge
 // policy challenge an enrolled user's OIDC login when the provider's
 // assurance is not met. By default that policy allows OIDC logins, because the
 // requirement policy is the one that governs required users. The option needs
 // the source of provider assurance and is refused at construction without it.
-func ExampleWithFederatedChallengeWhenUnmet() {
+func ExampleWithMFAFederatedChallengeWhenUnmet() {
 	totp, err := mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Co")
 	if err != nil {
 		panic(err)
@@ -123,11 +123,11 @@ func ExampleWithFederatedChallengeWhenUnmet() {
 		panic(err)
 	}
 
-	_, err = policy.NewMFA(lookups, policy.WithFederatedChallengeWhenUnmet(true))
+	_, err = policy.NewMFA(lookups, policy.WithMFAFederatedChallengeWhenUnmet(true))
 	fmt.Println(err != nil)
 
 	_, err = policy.NewMFA(lookups,
-		policy.WithFederatedChallengeWhenUnmet(true),
+		policy.WithMFAFederatedChallengeWhenUnmet(true),
 		policy.WithFederatedAssuranceSource(exampleManager()),
 	)
 	fmt.Println(err)

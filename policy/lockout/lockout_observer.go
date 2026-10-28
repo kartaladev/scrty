@@ -206,7 +206,7 @@ type observedAttempts struct {
 
 // msgReportLost is the record for a failure that was recorded but could not
 // be counted afterwards: the lockout is intact, and only its report is gone.
-const msgReportLost = "policy: a lockout report was lost: the attempt store recorded the failure but could not count it"
+const msgReportLost = "lockout: a lockout report was lost: the attempt store recorded the failure but could not count it"
 
 func (o *observedAttempts) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	p := o.p
@@ -283,11 +283,11 @@ func joinWriteErrors(streakErr, logErr error) error {
 // msgClearReportLost is the record for a reset that succeeded but whose
 // failures could not be counted beforehand: the identifier is cleared, and only
 // the report of it is gone.
-const msgClearReportLost = "policy: a lockout report was lost: the attempt store could not count the failures before a reset"
+const msgClearReportLost = "lockout: a lockout report was lost: the attempt store could not count the failures before a reset"
 
 // msgObserverPanicked is the record for an observer that panicked. The
 // lockout outcome is the store's and the policy's, never the observer's.
-const msgObserverPanicked = "policy: the lockout observer panicked; the lockout outcome is unchanged"
+const msgObserverPanicked = "lockout: the lockout observer panicked; the lockout outcome is unchanged"
 
 // report tells the observer of r. A panic in the observer is recovered and
 // logged with fixed text and the report's kind, never the identifier or the

@@ -920,7 +920,7 @@ func TestRecoveryHold_OIDCLogin(t *testing.T) {
 
 			h.chainOpts = append(h.chainOpts,
 				httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithChangePasswordEndpoint(passwordResolvePath, func(*httpsec.Exchange) error { return nil })),
+					httpsec.WithPasswordChangeEndpoint(passwordResolvePath, func(*httpsec.Exchange) error { return nil })),
 				httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
 					Users: users, Sessions: h.sessions, Sender: &capturingSender{}, Codes: codes, Records: records,
 				},

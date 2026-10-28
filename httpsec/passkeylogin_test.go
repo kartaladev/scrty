@@ -55,7 +55,7 @@ const pwlMaxPasswordAge = 24 * time.Hour
 // pwlDeployment is a chain wired the way a consumer serving passwordless
 // login wires it: the real MFA policies over TOTP and the passkey method, a
 // real session manager, form login, bearer tokens, the MFA slot and the
-// passkey endpoints over a real passkey.Manager on the in-memory stores and
+// passkey endpoints over a real passkey.Passkeys on the in-memory stores and
 // the stub verifier. Only the user store and the token generator are
 // doubles.
 type pwlDeployment struct {
@@ -262,7 +262,7 @@ func (d *pwlDeployment) options(t *testing.T) []httpsec.Option {
 
 	passkeyOpts := d.passkeyOpts
 	if !d.withoutPasswordless {
-		passkeyOpts = append([]httpsec.PasskeyOption{httpsec.WithPasswordlessLogin(d.settings...)}, passkeyOpts...)
+		passkeyOpts = append([]httpsec.PasskeyOption{httpsec.WithPasskeyPasswordlessLogin(d.settings...)}, passkeyOpts...)
 	}
 
 	opts := []httpsec.Option{
@@ -844,7 +844,7 @@ func TestPasswordless(t *testing.T) {
 		{
 			name: "consumer settings",
 			setup: func(_ *testing.T, d *pwlDeployment) {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasswordlessPrefix("/signin/passkey"))
+				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("/signin/passkey"))
 				d.settings = append(d.settings,
 					httpsec.PasswordlessCookieName("pk"),
 					httpsec.PasswordlessBeginResponder(func(ex *httpsec.Exchange, options json.RawMessage) error {
@@ -1298,7 +1298,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 
 				return append(opts[:4:4], httpsec.EnablePasskeys(
 					httpsec.PasskeyDeps{Passkeys: m, Sessions: d.sessions, Users: d.users},
-					httpsec.WithPasswordlessLogin()))
+					httpsec.WithPasskeyPasswordlessLogin()))
 			},
 			assert: refused,
 		},
@@ -1309,7 +1309,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 
 				return append(opts[:4:4], httpsec.EnablePasskeys(
 					httpsec.PasskeyDeps{Passkeys: d.manager, Sessions: d.sessions},
-					httpsec.WithPasswordlessLogin()))
+					httpsec.WithPasskeyPasswordlessLogin()))
 			},
 			assert: refused,
 		},
@@ -1346,7 +1346,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 		{
 			name: "passwordless given twice",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasswordlessLogin())
+				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessLogin())
 
 				return d.options(t)
 			},
@@ -1356,7 +1356,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 			name: "a passwordless prefix without passwordless",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
 				d.withoutPasswordless = true
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasswordlessPrefix("/signin"))
+				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("/signin"))
 
 				return d.options(t)
 			},
@@ -1376,7 +1376,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 		{
 			name: "the begin path on the login path",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasswordlessPrefix("/login"))
+				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("/login"))
 				opts := d.options(t)
 
 				authn, err := authenticate.NewUsernamePasswordAuthenticator(d.users)
@@ -1393,7 +1393,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 		{
 			name: "a passwordless path under the MFA verify prefix",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasswordlessPrefix(httpsec.DefaultMFAVerifyPrefix))
+				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix(httpsec.DefaultMFAVerifyPrefix))
 
 				return d.options(t)
 			},
@@ -1402,7 +1402,7 @@ func TestPasswordlessConstruction(t *testing.T) {
 		{
 			name: "an invalid prefix",
 			setup: func(t *testing.T, d *pwlDeployment) []httpsec.Option {
-				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasswordlessPrefix("signin"))
+				d.passkeyOpts = append(d.passkeyOpts, httpsec.WithPasskeyPasswordlessPrefix("signin"))
 
 				return d.options(t)
 			},
@@ -1496,7 +1496,7 @@ func TestPasswordless_CancelsHeldRecovery(t *testing.T) {
 
 	h.chainOpts = append(h.chainOpts, httpsec.EnablePasskeys(
 		httpsec.PasskeyDeps{Passkeys: pm, Sessions: h.sessions, Users: h.users},
-		httpsec.WithPasswordlessLogin()))
+		httpsec.WithPasskeyPasswordlessLogin()))
 	h.build(t)
 
 	offered := make([]byte, passkey.HandleSize)

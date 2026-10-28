@@ -118,7 +118,7 @@ func openGormDB(t *testing.T, dsn string) *gormdb.DB {
 func testCipher(t *testing.T) seal.Cipher {
 	t.Helper()
 
-	return storefix.CipherOf(t, seal.WithEncryptionKey("k1", storefix.SealKey(t)))
+	return storefix.CipherOf(t, seal.WithKeyringEncryptionKey("k1", storefix.SealKey(t)))
 }
 
 // crossBackendID derives a stable identifier from seed: unique per seed and
@@ -193,7 +193,7 @@ func (b backends) sessionStore(t *testing.T, name string) session.Store {
 // clockedSessionStore is sessionStore, wired to clk instead of the system
 // clock, so a test can move a durable store's own expiry judgement without
 // waiting for it: each backend's session store judges expiry against its own
-// clock option, separately from whatever session.Manager it is wrapped in.
+// clock option, separately from whatever session.Sessions it is wrapped in.
 func (b backends) clockedSessionStore(t *testing.T, name string, clk clock.Clock) session.Store {
 	t.Helper()
 
@@ -563,7 +563,7 @@ func TestCrossBackend(t *testing.T) {
 		{name: "state survives a process restart", run: testSurvivesRestart},
 		{name: "another replica sees a consumption", run: testAnotherReplicaSeesConsumption},
 		{name: "enrolment fields shared across backends", run: testEnrolmentFieldsShared},
-		{name: "enrolment flow through session.Manager and mfa.TOTP", run: testEnrolmentDurableFlow},
+		{name: "enrolment flow through session.Sessions and mfa.TOTP", run: testEnrolmentDurableFlow},
 		{name: "recovery-pending session shared across backends", run: testRecoveryPendingSessionShared},
 		{name: "second factor at login shared across backends", run: testSecondFactorAtLoginShared},
 		{name: "federated assurance on a session shared across backends", run: testSessionAssuranceShared},
@@ -1032,7 +1032,7 @@ func testRecoveryCompletionShared(t *testing.T, b backends) {
 }
 
 // testEnrolmentDurableFlow proves the enrolment path's durable guarantees
-// hold when driven the way a real chain drives them: through session.Manager,
+// hold when driven the way a real chain drives them: through session.Sessions,
 // not a store's raw methods, and through mfa.TOTP's Enroller API, not the
 // enrolment store's raw methods. Each backend runs, on its own database
 // connection, one complete flow: a session is created, marked

@@ -58,7 +58,7 @@ func (e *kindEnv) remaining(t *testing.T, user identity.UserID) []id.ID {
 }
 
 // kindSource builds the passkey kind over e's credential store, the way a
-// Manager reports it or the way a consumer builds it before any Manager.
+// Passkeys reports it or the way a consumer builds it before any Passkeys.
 type kindSource struct {
 	name string
 	kind func(t *testing.T, e *kindEnv) recovery.AuthenticatorKind
@@ -67,7 +67,7 @@ type kindSource struct {
 // kindSources lists both ways to get the kind; each must behave identically.
 func kindSources() []kindSource {
 	return []kindSource{
-		{"Manager.RecoveryKind", func(t *testing.T, e *kindEnv) recovery.AuthenticatorKind {
+		{"Passkeys.RecoveryKind", func(t *testing.T, e *kindEnv) recovery.AuthenticatorKind {
 			t.Helper()
 
 			return e.manager(t).RecoveryKind()

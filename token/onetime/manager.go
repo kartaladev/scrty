@@ -32,7 +32,7 @@ import (
 // counting window through WithIssuanceWindow, and a test moves time through
 // WithClock without waiting for it.
 //
-// A Tokens is safe for concurrent use as far as its store is: it holds no
+// A Tokens value is safe for concurrent use as far as its store is: it holds no
 // mutable state of its own after construction.
 type Tokens struct {
 	purpose        string
@@ -118,7 +118,7 @@ func New(purpose string, opts ...Option) (*Tokens, error) {
 }
 
 // Purpose reports the purpose every token this manager issues carries, which is
-// what NewManager was given.
+// what New was given.
 func (m *Tokens) Purpose() string { return m.purpose }
 
 // TTL reports how long an issued token stays valid, which is what WithTTL

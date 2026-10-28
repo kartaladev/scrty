@@ -69,7 +69,7 @@ func WithLimiterClock(clk clock.Clock) LimiterOption {
 // every check as exceeded, so every guarded flow refuses until the database
 // is back.
 //
-// ratelimit.UnavailableFallBackToLocal counts in this process for the outage,
+// ratelimit.UnavailableFallbackToLocal counts in this process for the outage,
 // so the effective limit is multiplied by the number of replicas while it
 // lasts; it is the recommended mode for second-factor flows, whose users
 // would otherwise be locked out of sign-in by an outage.

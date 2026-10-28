@@ -86,7 +86,7 @@ func TestNewAEADCipher(t *testing.T) {
 		{
 			name: "a keyring builds a cipher that seals under its active key",
 			keyring: func(t *testing.T) seal.Keyring {
-				kr, err := seal.NewKeyring(seal.WithEncryptionKey("k2", keyTwo))
+				kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("k2", keyTwo))
 				require.NoError(t, err)
 
 				return kr
@@ -117,12 +117,12 @@ func TestAEADCipher(t *testing.T) {
 
 	// current rotated from k1 to k2; previous only ever knew k1.
 	current := mustCipher(t,
-		seal.WithEncryptionKey("k2", keyTwo),
-		seal.WithRetiredEncryptionKey("k1", keyOne),
+		seal.WithKeyringEncryptionKey("k2", keyTwo),
+		seal.WithKeyringRetiredEncryptionKey("k1", keyOne),
 	)
-	previous := mustCipher(t, seal.WithEncryptionKey("k1", keyOne))
-	impostor := mustCipher(t, seal.WithEncryptionKey("k2", keyThree))
-	unknown := mustCipher(t, seal.WithEncryptionKey("gone", keyThree))
+	previous := mustCipher(t, seal.WithKeyringEncryptionKey("k1", keyOne))
+	impostor := mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyThree))
+	unknown := mustCipher(t, seal.WithKeyringEncryptionKey("gone", keyThree))
 
 	type testCase struct {
 		name   string
@@ -309,7 +309,7 @@ func TestAEADCipher(t *testing.T) {
 func TestAEADCipher_Randomised(t *testing.T) {
 	t.Parallel()
 
-	c := mustCipher(t, seal.WithEncryptionKey("k2", keyTwo))
+	c := mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo))
 
 	first := mustSeal(t, c, secretPlaintext, boundAAD)
 	second := mustSeal(t, c, secretPlaintext, boundAAD)
@@ -323,8 +323,8 @@ func TestAEADCipher_ActiveKeyID(t *testing.T) {
 	t.Parallel()
 
 	c := mustCipher(t,
-		seal.WithRetiredEncryptionKey("k1", keyOne),
-		seal.WithEncryptionKey("k2", keyTwo),
+		seal.WithKeyringRetiredEncryptionKey("k1", keyOne),
+		seal.WithKeyringEncryptionKey("k2", keyTwo),
 	)
 
 	id, err := c.ActiveKeyID()
@@ -340,7 +340,7 @@ func TestAEADCipher_ConsumerKeyring(t *testing.T) {
 	errKMS := errors.New("kms: key key-two-0123456789abcdefghijklmn unavailable")
 
 	// A value sealed under "k2" by the default ring, for the open cases.
-	sealedK2 := mustSeal(t, mustCipher(t, seal.WithEncryptionKey("k2", keyTwo)), secretPlaintext, boundAAD)
+	sealedK2 := mustSeal(t, mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo)), secretPlaintext, boundAAD)
 
 	type testCase struct {
 		name   string
@@ -516,7 +516,7 @@ const fuzzSealed = "53435331026b32c1e93120085d80695e9a392a37a613523eba16eb3ad0d1
 // opens: anything but the one genuine value is refused as a decryption failure
 // or an unknown key id.
 func FuzzAEADCipherOpen(f *testing.F) {
-	kr, err := seal.NewKeyring(seal.WithEncryptionKey("k2", keyTwo))
+	kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("k2", keyTwo))
 	require.NoError(f, err)
 	c, err := seal.NewAEADCipher(kr)
 	require.NoError(f, err)

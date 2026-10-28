@@ -45,7 +45,7 @@
 // nothing; the chain answers it with 500. SessionFromContext then
 // returns the session to the handler, and the session-touch step records its
 // activity after the handler, through the session manager the chain was wired
-// with: the first enabled built-in's, or the one WithSessionManager names,
+// with: the first enabled built-in's, or the one WithSessions names,
 // which a chain whose only authenticator is the consumer's own needs. The
 // interceptor then calls Exchange.EvaluatePerRequest, which runs the
 // per-request policy phase with the challenge handling the built-ins apply: a
@@ -68,7 +68,7 @@
 // modes run the same resolution core after extraction, so they refuse
 // identically, including a superseded session presented after its renewal
 // window, which is refused with ErrAuthenticationRequired joined to
-// session.ErrSessionReused once its family is revoked. Enabling both modes, or
+// session.ErrReused once its family is revoked. Enabling both modes, or
 // giving a credential-issuing endpoint a token generator in the
 // session-reference mode, is a configuration error from New.
 //
@@ -139,7 +139,7 @@
 //   - "magic-link-redeem": EnableMagicLink, failures per source, 10 per 15
 //     minutes.
 //   - "oidc.handoff": EnableOIDCLogin's handoff redemption, failures per
-//     source, 10 per 5 minutes unless WithHandoffRateLimit says otherwise.
+//     source, 10 per 5 minutes unless WithOIDCHandoffRateLimit says otherwise.
 //   - "passkey-login": EnablePasskeys' passwordless begin, every begin per
 //     source, 30 per 15 minutes.
 //   - "account-recovery": EnableAccountRecovery's complete endpoint, failures
@@ -161,9 +161,9 @@
 // IPv6 aggregate each is given is built under "password-login-form-ipv6-aggregate"
 // or "password-login-basic-ipv6-aggregate" and shares nothing with the other
 // endpoint's. The components a consumer builds and hands
-// the chain — the recovery.Codes of RecoveryDeps and the passkey.Manager of
+// the chain — the recovery.Codes of RecoveryDeps and the passkey.Passkeys of
 // PasskeyDeps — build their limiters themselves, through their own factory
-// options (recovery.WithCodeLimiterFactory, passkey.WithConfirmLimiterFactory).
+// options (recovery.WithCodesLimiterFactory, passkey.WithConfirmLimiterFactory).
 // Every source guard the chain builds keys IPv6 clients by the chain's prefix
 // (WithIPv6SourcePrefix), and also counts them by an aggregate: by default a
 // /56 at 4 times the flow's limit, over the flow's window, built from the
@@ -212,6 +212,6 @@
 // outside the chain can reach those managers, so Chain.ExpiryTasks returns the
 // tasks that delete their expired records, one per enabled component, for an
 // expiry.Runner or a scheduler. Components the consumer builds and hands to the
-// chain, such as a session store or a passkey.Manager, are swept through their
+// chain, such as a session store or a passkey.Passkeys, are swept through their
 // own packages' tasks.
 package httpsec

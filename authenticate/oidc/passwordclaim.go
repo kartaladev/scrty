@@ -111,7 +111,7 @@ func (b *Broker) passwordClaimIgnored(ctx context.Context, provider string, reas
 // verified by the application, or that would publish a hash elsewhere.
 func (b *Broker) checkPasswordClaims() error {
 	if len(b.passwordClaims) > 0 && b.passwordEncoder == nil {
-		return fmt.Errorf("%w: WithPasswordClaim needs a bcrypt password encoder from WithPasswordEncoder", ErrConfig)
+		return fmt.Errorf("%w: WithBrokerPasswordClaim needs a bcrypt password encoder from WithBrokerPasswordEncoder", ErrConfig)
 	}
 	if b.passwordEncoder != nil {
 		probe, err := b.passwordEncoder.Encode("scrty password encoder probe")
@@ -120,10 +120,10 @@ func (b *Broker) checkPasswordClaims() error {
 			// this probe is a construction error, so it is named as a kind
 			// here rather than left to match only when it happens to be the
 			// cause.
-			return diag.Wrap(err, fmt.Sprintf("%s: WithPasswordEncoder: the encoder failed its probe", ErrConfig), ErrConfig)
+			return diag.Wrap(err, fmt.Sprintf("%s: WithBrokerPasswordEncoder: the encoder failed its probe", ErrConfig), ErrConfig)
 		}
 		if !bcryptHash.Match(probe) {
-			return fmt.Errorf("%w: WithPasswordEncoder: the encoder does not produce bcrypt hashes, "+
+			return fmt.Errorf("%w: WithBrokerPasswordEncoder: the encoder does not produce bcrypt hashes, "+
 				"so a mapped bcrypt hash could never be verified", ErrConfig)
 		}
 	}

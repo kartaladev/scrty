@@ -12,12 +12,12 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
-// ErrConfig is wrapped by every error NewKeyManager returns for a wiring
+// ErrConfig is wrapped by every error New returns for a wiring
 // mistake, so a consumer can tell a contradictory configuration from a store
 // failure without matching on message text.
 var ErrConfig = errors.New("signingkey: invalid configuration")
 
-// Option configures a KeyManager. Every default NewKeyManager applies has an
+// Option configures the Keys. Every default New applies has an
 // Option here that replaces it.
 type Option func(*Keys)
 
@@ -73,7 +73,7 @@ func WithLogSampleWindow(d time.Duration) Option {
 	return func(km *Keys) { km.sampleWindow = d }
 }
 
-// WithKeyStore sets where keys are persisted. Default: NewInMemoryKeyStore,
+// WithKeyStore sets where keys are persisted. Default: NewMemoryKeyStore,
 // which does not survive a restart.
 func WithKeyStore(store KeyStore) Option {
 	return func(km *Keys) { km.store = store }
@@ -95,7 +95,7 @@ func WithKeyStore(store KeyStore) Option {
 // and that loop waits a full interval from wherever the clock then stands.
 //
 // A nil clock, typed nil included, is a configuration error from
-// NewKeyManager.
+// New.
 func WithClock(clk clock.Timed) Option {
 	return func(km *Keys) { km.clock = clk }
 }
@@ -137,7 +137,7 @@ func WithLogger(logger *slog.Logger) Option {
 //     goroutine or a channel of the consumer's own and call Stop from there.
 //
 // Everything that reads the manager is safe from the hook, which is what a
-// hook needs in order to decide how bad an outage has become: GetSigner,
+// hook needs in order to decide how bad an outage has become: Signer,
 // VerificationKeys, SupportedAlgs, KeyLifetime and RotateInterval. The manager
 // never holds the keyring lock across the hook.
 func WithErrorHook(hook func(error)) Option {

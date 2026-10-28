@@ -62,7 +62,7 @@ type jwtAuthenticator struct {
 // NewJWTAuthenticator returns a provider that resolves BearerCredentials
 // through a token verifier.
 //
-// WithJwtVerifier is required. Defaults: id.NewV7Generator, for the identifier
+// WithJWTVerifier is required. Defaults: id.NewV7Generator, for the identifier
 // an authentication takes when its token carries none this library can use.
 //
 // Nothing here parses or trusts a token itself. The verifier is the only thing
@@ -77,7 +77,7 @@ func NewJWTAuthenticator(opts ...JWTOption) (Authenticator, error) {
 	}
 
 	if nilcheck.IsNil(a.verifier) {
-		return nil, fmt.Errorf("%w: a token verifier is required; supply WithJwtVerifier", ErrConfig)
+		return nil, fmt.Errorf("%w: a token verifier is required; supply WithJWTVerifier", ErrConfig)
 	}
 	if a.idsSet && nilcheck.IsNil(a.ids) {
 		return nil, fmt.Errorf("%w: the authentication identifier generator is nil", ErrConfig)

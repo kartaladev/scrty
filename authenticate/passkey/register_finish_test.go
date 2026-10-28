@@ -291,7 +291,7 @@ func TestFinishRegistration(t *testing.T) {
 		},
 		{
 			name: "consumer passkey limit counts pending credentials",
-			opts: []passkey.Option{passkey.WithPasskeyLimit(1)},
+			opts: []passkey.Option{passkey.WithLimit(1)},
 			setup: func(t *testing.T, f *fixture) {
 				require.NoError(t, f.creds.Insert(t.Context(), &passkey.Credential{
 					ID: id.ID{15: 9}, User: "u-1", CredentialID: []byte("old"), CreatedAt: regStart,

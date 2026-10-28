@@ -25,7 +25,7 @@ func TestRefusalLogsAreBoundedAndCarryNoPassword(t *testing.T) {
 
 		synctest.Test(t, func(t *testing.T) {
 			auth, buf := refusingAuthenticator(t, identity.ErrUserNotFound,
-				authenticate.WithPasswordAuthenticatorLogInterval(time.Minute))
+				authenticate.WithPasswordLogInterval(time.Minute))
 
 			for range 50 {
 				_, _ = auth.Authenticate(t.Context(),
@@ -78,7 +78,7 @@ func TestRefusalLogsAreBoundedAndCarryNoPassword(t *testing.T) {
 
 		synctest.Test(t, func(t *testing.T) {
 			auth, buf := refusingAuthenticator(t, identity.ErrUserNotFound,
-				authenticate.WithPasswordAuthenticatorLogInterval(time.Minute))
+				authenticate.WithPasswordLogInterval(time.Minute))
 
 			_, _ = auth.Authenticate(t.Context(),
 				identity.NewUsernamePassword("ada", []byte(presentedPassword)))
@@ -97,7 +97,7 @@ func TestRefusalLogsAreBoundedAndCarryNoPassword(t *testing.T) {
 
 		synctest.Test(t, func(t *testing.T) {
 			auth, buf := refusingAuthenticator(t, identity.ErrUserNotFound,
-				authenticate.WithPasswordAuthenticatorLogInterval(0))
+				authenticate.WithPasswordLogInterval(0))
 
 			for range 50 {
 				_, _ = auth.Authenticate(t.Context(),
@@ -199,7 +199,7 @@ func TestRefusalLogRecords(t *testing.T) {
 			buf := &bytes.Buffer{}
 			auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
 				authenticate.WithPasswordEncoder(enc),
-				authenticate.WithPasswordAuthenticatorLogger(debugLogger(buf)))
+				authenticate.WithPasswordLogger(debugLogger(buf)))
 			require.NoError(t, err)
 
 			_, _ = auth.Authenticate(t.Context(),
@@ -233,7 +233,7 @@ func TestPasswordAuthenticatorLoggerDefaults(t *testing.T) {
 
 		auth, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
 			authenticate.WithPasswordEncoder(enc),
-			authenticate.WithPasswordAuthenticatorLogger(nil))
+			authenticate.WithPasswordLogger(nil))
 		require.NoError(t, err, "a nil logger made logging mandatory")
 		assert.NotNil(t, auth)
 	})
@@ -248,7 +248,7 @@ func TestPasswordAuthenticatorLoggerDefaults(t *testing.T) {
 		buf := &bytes.Buffer{}
 		auth, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
 			authenticate.WithPasswordEncoder(enc),
-			authenticate.WithPasswordAuthenticatorLogger(debugLogger(buf)))
+			authenticate.WithPasswordLogger(debugLogger(buf)))
 		require.NoError(t, err)
 
 		flusher, ok := auth.(authenticate.RefusalLogFlusher)
@@ -277,7 +277,7 @@ func refusingAuthenticator(t *testing.T, loadErr error, opts ...authenticate.Pas
 	auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
 		append([]authenticate.PasswordOption{
 			authenticate.WithPasswordEncoder(enc),
-			authenticate.WithPasswordAuthenticatorLogger(debugLogger(buf)),
+			authenticate.WithPasswordLogger(debugLogger(buf)),
 		}, opts...)...)
 	require.NoError(t, err)
 

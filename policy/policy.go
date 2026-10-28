@@ -270,7 +270,7 @@ type Decision struct {
 	// Reason says why a Deny refused, and is what a caller reports when it
 	// turns the denial into an error of its own. A Deny returned by an Engine
 	// always carries one: where the policy left it nil the engine substitutes
-	// ErrPolicyDenied. It is nil on an Allow, and on a Challenge, which refuses
+	// ErrDenied. It is nil on an Allow, and on a Challenge, which refuses
 	// nothing.
 	Reason error
 

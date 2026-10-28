@@ -151,7 +151,7 @@ func heldAccountRecoversAndSignsInWithItsNewPassword() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, account.changePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, account.changePassword)),
 				},
 				Effects: effects,
 			}
@@ -243,7 +243,7 @@ func heldAccountPasswordProofIsRefused() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}

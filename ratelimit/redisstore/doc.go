@@ -32,7 +32,7 @@
 // strictly younger than the window. Stamps are stored to the microsecond, and
 // windows are counted in whole microseconds. Time is the server's, read with
 // TIME inside each operation, so every replica orders its stamps by one clock;
-// WithLimiterClock replaces it.
+// WithClock replaces it.
 //
 // One namespace holds one policy. A factory refuses a namespace asked for
 // twice with a different limit or window. The check covers that factory only:
@@ -81,8 +81,8 @@
 // every check is answered as exceeded, so every guarded flow refuses, and a
 // circuit breaker answers without waiting for the operation timeout until a
 // probe finds the server back (WithOnUnavailable, WithOperationTimeout,
-// WithUnavailableProbeInterval). For second-factor flows,
-// ratelimit.UnavailableFallBackToLocal is recommended instead: it keeps a
+// WithProbeInterval). For second-factor flows,
+// ratelimit.UnavailableFallbackToLocal is recommended instead: it keeps a
 // per-replica bound during the outage rather than locking every user out of
 // sign-in. The mode applies to every flow built from one factory, so keep the
 // default refusal for the source-keyed flows the chain guards, and give

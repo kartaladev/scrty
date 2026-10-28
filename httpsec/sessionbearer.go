@@ -203,7 +203,7 @@ func (b *sessionBearer) Intercept(ex *Exchange, next Next) error {
 //  2. loads the session, which the store looks up by digest, refusing a
 //     missing, expired or undecryptable one with ErrAuthenticationRequired,
 //     and a superseded one presented after its renewal window with
-//     ErrAuthenticationRequired joined to session.ErrSessionReused, by which
+//     ErrAuthenticationRequired joined to session.ErrReused, by which
 //     time the manager has revoked the session's family;
 //  3. reloads the user with LoadByUserID on the session's user reference,
 //     never by username, refusing a missing user with

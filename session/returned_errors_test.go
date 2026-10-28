@@ -114,7 +114,7 @@ func TestSessionReturnedErrors(t *testing.T) {
 	}
 
 	cases := []testCase{
-		// Manager: every store call.
+		// Sessions: every store call.
 		{
 			name: "manager create",
 			call: func(ctx context.Context, t *testing.T, d returnedErrorsDoubles) error {

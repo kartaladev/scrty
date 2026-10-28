@@ -21,15 +21,15 @@ func TestGenerateClaims(t *testing.T) {
 	type testCase struct {
 		name   string
 		algs   []signingkey.Alg
-		opts   func(clock *clockwork.FakeClock) []token.GenerateOption
+		opts   func(clock *clockwork.FakeClock) []token.Option
 		assert func(t *testing.T, keys *signingkey.Keys, raw string, err error)
 	}
 
 	cases := []testCase{
 		{
 			name: "the default token is RS256, lives 15 minutes and names the current key",
-			opts: func(clock *clockwork.FakeClock) []token.GenerateOption {
-				return []token.GenerateOption{
+			opts: func(clock *clockwork.FakeClock) []token.Option {
+				return []token.Option{
 					token.WithIssuer("https://auth.example"),
 					token.WithClock(clock),
 				}
@@ -56,8 +56,8 @@ func TestGenerateClaims(t *testing.T) {
 		{
 			name: "a consumer replaces the algorithm and the lifetime",
 			algs: []signingkey.Alg{signingkey.ES256},
-			opts: func(clock *clockwork.FakeClock) []token.GenerateOption {
-				return []token.GenerateOption{
+			opts: func(clock *clockwork.FakeClock) []token.Option {
+				return []token.Option{
 					token.WithSigningAlg(signingkey.ES256),
 					token.WithLifetime(5 * time.Minute),
 					token.WithClock(clock),
@@ -79,8 +79,8 @@ func TestGenerateClaims(t *testing.T) {
 		},
 		{
 			name: "a configured audience is carried",
-			opts: func(clock *clockwork.FakeClock) []token.GenerateOption {
-				return []token.GenerateOption{
+			opts: func(clock *clockwork.FakeClock) []token.Option {
+				return []token.Option{
 					token.WithAudience("api"),
 					token.WithClock(clock),
 				}
@@ -172,7 +172,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 	type testCase struct {
 		name   string
 		keys   func(t *testing.T) signingkey.KeySource
-		opts   []token.GenerateOption
+		opts   []token.Option
 		assert func(t *testing.T, gen token.Generator, err error)
 	}
 
@@ -199,7 +199,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 		{
 			name:   "a nil clock",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithClock(nil)},
+			opts:   []token.Option{token.WithClock(nil)},
 			assert: refused("clock"),
 		},
 		{
@@ -210,7 +210,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// nil receiver.
 			name:   "a typed-nil clock",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithClock((*clockwork.FakeClock)(nil))},
+			opts:   []token.Option{token.WithClock((*clockwork.FakeClock)(nil))},
 			assert: refused("clock"),
 		},
 		{
@@ -220,7 +220,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// to the fixed instant, not to the system clock's.
 			name: "a consumer's own read-only clock is the generator's time source",
 			keys: reporting,
-			opts: []token.GenerateOption{token.WithClock(fixedClock{at: consumerClockAt})},
+			opts: []token.Option{token.WithClock(fixedClock{at: consumerClockAt})},
 			assert: func(t *testing.T, gen token.Generator, err error) {
 				t.Helper()
 
@@ -239,13 +239,13 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// nil without thinking about it.
 			name:   "a nil option is skipped",
 			keys:   reporting,
-			opts:   []token.GenerateOption{nil, token.WithLifetime(time.Minute), nil},
+			opts:   []token.Option{nil, token.WithLifetime(time.Minute), nil},
 			assert: constructed,
 		},
 		{
 			name:   "an unknown signing algorithm",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithSigningAlg("RS256-but-misspelled")},
+			opts:   []token.Option{token.WithSigningAlg("RS256-but-misspelled")},
 			assert: refused("unsupported signing algorithm"),
 		},
 		{
@@ -256,7 +256,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// the first signature.
 			name:   "none as the signing algorithm",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithSigningAlg("none")},
+			opts:   []token.Option{token.WithSigningAlg("none")},
 			assert: refused("unsupported signing algorithm"),
 		},
 		{
@@ -264,25 +264,25 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// the signing key. This library's key sources cannot produce it.
 			name:   "a symmetric signing algorithm",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithSigningAlg("HS256")},
+			opts:   []token.Option{token.WithSigningAlg("HS256")},
 			assert: refused("unsupported signing algorithm"),
 		},
 		{
 			name:   "every algorithm the key sources can produce is accepted",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithSigningAlg(signingkey.ES256)},
+			opts:   []token.Option{token.WithSigningAlg(signingkey.ES256)},
 			assert: constructed,
 		},
 		{
 			name:   "a zero lifetime",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(0)},
+			opts:   []token.Option{token.WithLifetime(0)},
 			assert: refused("positive"),
 		},
 		{
 			name:   "a negative lifetime",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(-time.Second)},
+			opts:   []token.Option{token.WithLifetime(-time.Second)},
 			assert: refused("positive"),
 		},
 		{
@@ -290,37 +290,37 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// would issue tokens that expire at an instant nobody asked for.
 			name:   "a sub-second lifetime",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(500 * time.Millisecond)},
+			opts:   []token.Option{token.WithLifetime(500 * time.Millisecond)},
 			assert: refused("whole number of seconds"),
 		},
 		{
 			name:   "a lifetime that is not a whole number of seconds",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(1500 * time.Millisecond)},
+			opts:   []token.Option{token.WithLifetime(1500 * time.Millisecond)},
 			assert: refused("whole number of seconds"),
 		},
 		{
 			name:   "a one-second lifetime is accepted",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(time.Second)},
+			opts:   []token.Option{token.WithLifetime(time.Second)},
 			assert: constructed,
 		},
 		{
 			name:   "a lifetime that outlives the key",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(24 * time.Hour)},
+			opts:   []token.Option{token.WithLifetime(24 * time.Hour)},
 			assert: refused("outlive"),
 		},
 		{
 			name:   "a lifetime one second past the usable window",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(23*time.Hour + time.Second)},
+			opts:   []token.Option{token.WithLifetime(23*time.Hour + time.Second)},
 			assert: refused("outlive"),
 		},
 		{
 			name:   "a lifetime exactly filling the usable window is accepted",
 			keys:   reporting,
-			opts:   []token.GenerateOption{token.WithLifetime(23 * time.Hour)},
+			opts:   []token.Option{token.WithLifetime(23 * time.Hour)},
 			assert: constructed,
 		},
 		{
@@ -341,7 +341,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 }
 
 // TestGenerateRefusesRatherThanIssuingAnUnusableToken also pins the rule that
-// no failure on the issue path is identifiable as ErrTokenInvalid: that is the
+// no failure on the issue path is identifiable as ErrInvalid: that is the
 // verdict on a token a caller presented, and a consumer who maps it to
 // "credential refused" must not see it from a failed issue.
 func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
@@ -350,7 +350,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 	type testCase struct {
 		name      string
 		algs      []signingkey.Alg
-		opts      []token.GenerateOption
+		opts      []token.Option
 		id        string
 		principal func() *identity.Principal
 		assert    func(t *testing.T, raw string, err error)
@@ -359,7 +359,7 @@ func TestGenerateRefusesRatherThanIssuingAnUnusableToken(t *testing.T) {
 	cases := []testCase{
 		{
 			name:      "no current key for the configured algorithm",
-			opts:      []token.GenerateOption{token.WithSigningAlg(signingkey.EdDSA)},
+			opts:      []token.Option{token.WithSigningAlg(signingkey.EdDSA)},
 			id:        "s-1",
 			principal: alice,
 			assert: func(t *testing.T, raw string, err error) {
@@ -464,7 +464,7 @@ func TestGeneratorVerifiesItsOwnTokens(t *testing.T) {
 
 // TestConsumerSuppliedKeySource pins that a key source a consumer wrote — the
 // shape a KMS-backed or HSM-backed source takes — issues and verifies with no
-// KeyManager involved, and that a source which cannot report its lifetimes
+// Keys involved, and that a source which cannot report its lifetimes
 // simply gets no lifetime cap.
 func TestConsumerSuppliedKeySource(t *testing.T) {
 	t.Parallel()

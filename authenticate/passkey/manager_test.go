@@ -38,7 +38,7 @@ type nonBlocking struct{ notify.Sender }
 
 func (nonBlocking) NonBlocking() bool { return true }
 
-// fixture holds the doubles a Manager is built over, and what they captured.
+// fixture holds the doubles the Passkeys is built over, and what they captured.
 type fixture struct {
 	ctrl     *gomock.Controller
 	clock    *clockwork.FakeClock
@@ -226,7 +226,7 @@ func (f *fixture) begin(t *testing.T, m *passkey.Passkeys, s *session.Session) s
 	return in[before].Challenge
 }
 
-// manager builds a Manager over the fixture's deps, on its clock, with a
+// manager builds a Passkeys value over the fixture's deps, on its clock, with a
 // repudiation contact and opts.
 func (f *fixture) manager(t *testing.T, opts ...passkey.Option) *passkey.Passkeys {
 	t.Helper()
@@ -388,7 +388,7 @@ func TestNew(t *testing.T) {
 		{name: "zero challenge TTL", opts: []passkey.Option{passkey.WithChallengeTTL(0)}, assert: refused},
 		{name: "negative freshness", opts: []passkey.Option{passkey.WithManagementFreshness(-time.Minute)}, assert: refused},
 		{name: "zero issuance limit", opts: []passkey.Option{passkey.WithRegistrationChallengeLimit(0)}, assert: refused},
-		{name: "zero passkey limit", opts: []passkey.Option{passkey.WithPasskeyLimit(0)}, assert: refused},
+		{name: "zero passkey limit", opts: []passkey.Option{passkey.WithLimit(0)}, assert: refused},
 		{name: "unknown user verification", opts: []passkey.Option{passkey.WithUserVerification(0)}, assert: refused},
 		{name: "unknown resident key", opts: []passkey.Option{passkey.WithResidentKey(9)}, assert: refused},
 		{name: "nil name resolver", opts: []passkey.Option{passkey.WithNameResolver(nil)}, assert: refused},

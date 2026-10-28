@@ -88,7 +88,7 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 		require.Equal(t, signing, kid,
 			"the key the rotation is replacing still signs and is still published")
 	case <-time.After(10 * time.Second):
-		t.Fatal("GetSigner blocked while a rotation was inside the store write: " +
+		t.Fatal("Signer blocked while a rotation was inside the store write: " +
 			"the keyring lock is held across store I/O")
 	}
 

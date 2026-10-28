@@ -82,7 +82,7 @@ func WithCancelLink(baseURL string) Option {
 // Nothing purges the default store: every hold adds two tokens, which stay in
 // memory, spent or expired, for the life of the process. A consumer who holds
 // recoveries in a long-running process supplies a store here and sweeps it,
-// for example with onetime.Manager.PurgeExpired from a manager over this
+// for example with onetime.Tokens.PurgeExpired from a manager over this
 // store for each of FinishTokenPurpose and CancelTokenPurpose, since the
 // default store is not reachable from outside the Recoverer.
 func WithHoldTokenStore(s onetime.Store) Option {

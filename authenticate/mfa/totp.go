@@ -65,7 +65,7 @@ type TOTP struct {
 //
 // Defaults: 6 digits (WithDigits, which also accepts 8), a 30-second step
 // (WithPeriod), clock.System() (WithClock), crypto/rand.Reader (WithRandom) and
-// id.NewV7Generator for enrolment generations (WithTOTPIDGenerator), and 5
+// id.NewV7Generator for enrolment generations (WithIDGenerator), and 5
 // verification attempts per enrolment per 15 minutes (WithVerifyAttempts). store
 // has no default — an enrolment store is the one thing this method cannot
 // invent, and NewMemoryEnrolmentStore is the obvious argument for a test or a
@@ -79,7 +79,7 @@ type TOTP struct {
 // failures matches ErrConfig.
 // Each of those is a wiring mistake whose symptom would otherwise appear at the
 // first verification, a long way from its cause.
-func NewTOTP(store EnrolmentStore, issuer string, opts ...TOTPOption) (*TOTP, error) {
+func NewTOTP(store EnrolmentStore, issuer string, opts ...Option) (*TOTP, error) {
 	t := &TOTP{
 		store:  store,
 		issuer: issuer,

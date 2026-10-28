@@ -124,7 +124,7 @@ func newRecoveryDeployment(t *testing.T, setup recoverySetup) *recoveryDeploymen
 	}
 	chainOpts = append(chainOpts,
 		httpsec.EnablePasswordChangeGate(d.sessions,
-			httpsec.WithChangePasswordEndpoint(passwordResolvePath, change)),
+			httpsec.WithPasswordChangeEndpoint(passwordResolvePath, change)),
 		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: d.sessions}),
 		httpsec.EnableRecoveryGateForTest(),
 	)
@@ -383,7 +383,7 @@ func TestRecoveryEnrolmentSaveFails(t *testing.T) {
 
 	h := newEnrolHarness(t)
 	h.sender.EXPECT().Send(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithoutEmailConfirmation()}
+	h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithoutEnrolmentEmailConfirmation()}
 	h.extra = []httpsec.Option{httpsec.EnableRecoveryGateForTest()}
 
 	var failing atomic.Bool

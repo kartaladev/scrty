@@ -383,7 +383,7 @@ func TestCompleteLogin(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				return denyingEngine(t, nil) // the engine substitutes ErrPolicyDenied
+				return denyingEngine(t, nil) // the engine substitutes ErrDenied
 			},
 			wire: func(*testing.T, *loginSpies, *callLog, *string) {},
 			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {

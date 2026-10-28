@@ -45,9 +45,9 @@ func newCiphers(t *testing.T) ciphers {
 	t.Helper()
 
 	return ciphers{
-		retired: mustCipher(t, seal.WithEncryptionKey("k1", keyOne)),
-		current: mustCipher(t, seal.WithEncryptionKey("k2", keyTwo), seal.WithRetiredEncryptionKey("k1", keyOne)),
-		k2Only:  mustCipher(t, seal.WithEncryptionKey("k2", keyTwo)),
+		retired: mustCipher(t, seal.WithKeyringEncryptionKey("k1", keyOne)),
+		current: mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo), seal.WithKeyringRetiredEncryptionKey("k1", keyOne)),
+		k2Only:  mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo)),
 	}
 }
 
@@ -307,7 +307,7 @@ func TestSigningKeyStore_LoadAll(t *testing.T) {
 	t.Parallel()
 
 	cs := newCiphers(t)
-	gone := mustCipher(t, seal.WithEncryptionKey("gone", keyThree))
+	gone := mustCipher(t, seal.WithKeyringEncryptionKey("gone", keyThree))
 
 	// aliasBacking is the slice a mocked inner store keeps: LoadAll must open
 	// into a copy, never scribble the plaintext back into aliasBacking itself.

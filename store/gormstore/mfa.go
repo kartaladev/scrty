@@ -44,7 +44,7 @@ import (
 // Complete, ChargeEmailCode, ChargeVerifyAttempt and RefundVerifyAttempt are
 // each one conditional statement with every condition in its WHERE clause, so
 // of concurrent completions of one generation exactly one succeeds, and of
-// concurrent charges against one code no more than mfa.MaxEmailCodeFailures
+// concurrent charges against one code no more than mfa.MaxEmailCodeAttempts
 // do. Every write that clears a column names it in a map or an explicit
 // assignment, never a struct, whose zero fields gorm would leave out. The nil
 // generation is stored and compared as NULL, so it matches no enrolment, not
@@ -294,7 +294,7 @@ func (s *enrolmentStore) Complete(ctx context.Context, user identity.UserID, gen
 // enrolment on gen at at: one conditional UPDATE … RETURNING the count after
 // the write. It charges only where the enrolment is pending on gen, proven,
 // holds a code not expired at at, and has fewer than
-// mfa.MaxEmailCodeFailures attempts charged; otherwise it reports false.
+// mfa.MaxEmailCodeAttempts attempts charged; otherwise it reports false.
 func (s *enrolmentStore) ChargeEmailCode(
 	ctx context.Context, user identity.UserID, gen id.ID, at time.Time,
 ) (int, bool, error) {

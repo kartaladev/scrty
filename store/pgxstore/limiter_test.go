@@ -388,5 +388,5 @@ func TestLimiter_VerifyErrorsStartWithThePrefix(t *testing.T) {
 
 	err = l.Verify(t.Context())
 	require.Error(t, err)
-	assert.True(t, strings.HasPrefix(err.Error(), "pgx: "), "got %q", err)
+	assert.True(t, strings.HasPrefix(err.Error(), "pgxstore: "), "got %q", err)
 }

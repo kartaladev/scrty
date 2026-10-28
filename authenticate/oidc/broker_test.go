@@ -18,7 +18,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// The broker's interfaces the Manager discovers by assertion.
+// The broker's interfaces the RelyingParty discovers by assertion.
 var (
 	_ oidc.IdentityBroker                         = (*oidc.Broker)(nil)
 	_ interface{ ConfiguredProviders() []string } = (*oidc.Broker)(nil)

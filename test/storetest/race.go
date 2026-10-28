@@ -26,7 +26,7 @@ const (
 
 	// defaultChargeRacers is the default racer count of RunChargeRace and
 	// RunVerifyChargeRace: enough more than the cap they allow
-	// (mfa.MaxEmailCodeFailures, mfa.DefaultVerifyAttemptLimit) that a store
+	// (mfa.MaxEmailCodeAttempts, mfa.DefaultVerifyAttemptLimit) that a store
 	// charging past it under contention wins visibly more often than it may.
 	defaultChargeRacers = 20
 
@@ -51,7 +51,7 @@ type Race[S any] struct {
 	// RunChargeRace and RunVerifyChargeRace. Fewer racers than one more than
 	// the wins the race allows per record are refused, naming that minimum,
 	// as they could never show a store letting too many win: two for the
-	// single-winner races, mfa.MaxEmailCodeFailures+1 for RunChargeRace, and
+	// single-winner races, mfa.MaxEmailCodeAttempts+1 for RunChargeRace, and
 	// mfa.DefaultVerifyAttemptLimit+1 for RunVerifyChargeRace.
 	Racers int
 
@@ -157,7 +157,7 @@ func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // RunChargeRace holds an MFA enrolment store to capping the attempts charged
 // against one emailed code: Racers callers charge the same outstanding code
 // at once for each of Records independent proven enrolments, and exactly
-// mfa.MaxEmailCodeFailures charges of each must succeed, however many race.
+// mfa.MaxEmailCodeAttempts charges of each must succeed, however many race.
 // Seed begins an enrolment, proves its device with an emailed code that is
 // still outstanding when Attempt charges it, and returns a key Attempt can
 // recover the user and the generation from; Attempt reports the bool
@@ -165,7 +165,7 @@ func RunCompleteRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // a race.
 //
 // Racers defaults to 20 here, so a zero Racers needs a pool of 20
-// connections, and must otherwise be at least mfa.MaxEmailCodeFailures+1, so
+// connections, and must otherwise be at least mfa.MaxEmailCodeAttempts+1, so
 // a store with no cap can win more charges than allowed. Its inputs are
 // otherwise checked as RunConsumeRace checks them.
 func RunChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
@@ -197,7 +197,7 @@ func RunVerifyChargeRace[S any](t *testing.T, h DurableHarness[S], r Race[S]) {
 // by the write: Racers callers supersede the same session at once, each
 // having observed no successor and each with a successor of its own, for each
 // of Records independent sessions, and exactly one supersession of each must
-// succeed while every other caller receives session.ErrSessionRenewalConflict.
+// succeed while every other caller receives session.ErrRenewalConflict.
 // Once the race is over, exactly one racer's successor must be stored, and it
 // must be the one the superseded session names.
 //

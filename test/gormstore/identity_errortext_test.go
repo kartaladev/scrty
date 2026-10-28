@@ -88,7 +88,7 @@ func TestIdentityStore_DatabaseErrorText(t *testing.T) {
 			require.Error(t, err)
 			var pgErr *pgconn.PgError
 			assert.False(t, errors.As(err, &pgErr), "the driver's error is reachable")
-			assert.Equal(t, "gorm: "+op+": database failure (SQLSTATE 22P02)", err.Error())
+			assert.Equal(t, "gormstore: "+op+": database failure (SQLSTATE 22P02)", err.Error())
 			for _, text := range storefix.ErrorTexts(err) {
 				assert.NotContains(t, text, driverErrSecret, "the driver's message reached the text")
 			}
@@ -120,7 +120,7 @@ func TestIdentityStore_DatabaseErrorText(t *testing.T) {
 			call: forget,
 			assert: func(t *testing.T, err error) {
 				require.Error(t, err)
-				assert.Equal(t, "gorm: forget password history: database failure", err.Error())
+				assert.Equal(t, "gormstore: forget password history: database failure", err.Error())
 				for _, text := range storefix.ErrorTexts(err) {
 					assert.NotContains(t, text, driverErrSecret)
 				}
@@ -132,7 +132,7 @@ func TestIdentityStore_DatabaseErrorText(t *testing.T) {
 			call: forget,
 			assert: func(t *testing.T, err error) {
 				require.Error(t, err)
-				assert.Equal(t, "gorm: forget password history: database failure", err.Error())
+				assert.Equal(t, "gormstore: forget password history: database failure", err.Error())
 			},
 		},
 		{
@@ -141,7 +141,7 @@ func TestIdentityStore_DatabaseErrorText(t *testing.T) {
 			call: forget,
 			assert: func(t *testing.T, err error) {
 				require.ErrorIs(t, err, context.Canceled)
-				assert.Equal(t, "gorm: forget password history: database failure", err.Error())
+				assert.Equal(t, "gormstore: forget password history: database failure", err.Error())
 			},
 		},
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrConfig is wrapped by every error NewManager returns for a wiring mistake,
+// ErrConfig is wrapped by every error New returns for a wiring mistake,
 // so a consumer can tell a contradictory configuration from a failure at issue
 // or verification time without matching on message text.
 var ErrConfig = errors.New("apikey: invalid configuration")
@@ -45,7 +45,7 @@ const (
 	maxPresentedSize = 512
 )
 
-// Option configures a Manager. Every option names the default it replaces, and
+// Option configures the Keys. Every option names the default it replaces, and
 // every default works with no configuration at all.
 type Option func(*Keys)
 
@@ -83,7 +83,7 @@ func WithPrefix(p string) Option { return func(m *Keys) { m.prefix = p } }
 //
 // A nil function is a configuration error: there is no safe reading of "store
 // the secret under no digest at all". The digest stays the consumer's choice,
-// but NewManager calls it once on each of two different inputs and refuses,
+// but New calls it once on each of two different inputs and refuses,
 // with ErrConfig, one that returns an empty value or the same value for both:
 // such a digest would let any secret verify. The probe refuses only a digest
 // that cannot work; it judges nothing about one that can. A digest that

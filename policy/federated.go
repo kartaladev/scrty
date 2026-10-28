@@ -40,7 +40,7 @@ type FederatedAssurance = assurance.Federated
 // factor.Federated channel and whose evidence asserts something: the
 // requirement policy for a required user, at login and again on every
 // request, and the second-factor challenge policy only under
-// WithFederatedChallengeWhenUnmet(true). With no source configured
+// WithMFAFederatedChallengeWhenUnmet(true). With no source configured
 // (WithFederatedAssuranceSource), the library meets nothing: no federated
 // login is ever treated as having met a second factor at its provider.
 //
@@ -59,7 +59,7 @@ type FederatedAssuranceSource interface {
 }
 
 // FederatedAssuranceSourceOption is returned by WithFederatedAssuranceSource.
-// It is accepted by both NewMFAPolicy and NewMFARequirementPolicy, so a
+// It is accepted by both NewMFA and NewMFARequirement, so a
 // deployment wires its source once and gives the same value to each.
 type FederatedAssuranceSourceOption struct {
 	src FederatedAssuranceSource
@@ -78,8 +78,8 @@ func (o FederatedAssuranceSourceOption) applyMFARequirement(p *mfaRequirementPol
 //
 // The default is no source, under which no federated login meets assurance:
 // a required user's OIDC login is then decided by the requirement policy's
-// federated-assurance mode as an unmet one (see WithFederatedAssurance), and
-// the challenge policy refuses WithFederatedChallengeWhenUnmet(true) at
+// federated-assurance mode as an unmet one (see WithMFARequirementFederatedAssurance), and
+// the challenge policy refuses WithMFAFederatedChallengeWhenUnmet(true) at
 // construction, because it would have nothing to decide with.
 //
 // An absent source, nil or a non-nil interface holding a nil pointer, is a

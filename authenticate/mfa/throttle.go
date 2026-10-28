@@ -68,13 +68,13 @@ type VerifyThrottle struct {
 	clock       clock.Clock
 	logInterval time.Duration
 
-	// limiterSet records that WithVerifyLimiter was given, so a limiter passed
+	// limiterSet records that WithThrottleLimiter was given, so a limiter passed
 	// as nil is told apart from one never mentioned. The first is a wiring
 	// mistake; the second asks for the default.
 	limiterSet bool
 
 	// factory builds the limiter when no limiter was given, and factorySet
-	// records that WithVerifyLimiterFactory was given, for the same reason as
+	// records that WithThrottleLimiterFactory was given, for the same reason as
 	// limiterSet.
 	factory    ratelimit.LimiterFactory
 	factorySet bool
@@ -83,8 +83,8 @@ type VerifyThrottle struct {
 // NewVerifyThrottle builds the throttle.
 //
 // Defaults: an in-memory limiter of 5 failures per 15 minutes
-// (WithVerifyLimiter), a one-minute log-sampling window (WithVerifyLogInterval),
-// slog.Default (WithVerifyLogger) and clock.System() (WithVerifyClock). The log
+// (WithThrottleLimiter), a one-minute log-sampling window (WithThrottleLogInterval),
+// slog.Default (WithThrottleLogger) and clock.System() (WithThrottleClock). The log
 // interval governs MFA verification records alone, so an attacker hammering
 // one user cannot silence any other part of the library.
 //
@@ -123,7 +123,7 @@ func NewVerifyThrottle(opts ...ThrottleOption) (*VerifyThrottle, error) {
 }
 
 // resolveLimiter settles the limiter by precedence: the limiter
-// WithVerifyLimiter gave, then one built by the factory WithVerifyLimiterFactory
+// WithThrottleLimiter gave, then one built by the factory WithThrottleLimiterFactory
 // gave, then the in-memory default logging through the throttle's logger and
 // clock. A limiter or factory replaced with nothing is refused, the factory
 // even beside an explicit limiter that would have won.

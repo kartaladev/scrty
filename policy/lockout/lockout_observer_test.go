@@ -316,7 +316,7 @@ func TestLockoutObserver(t *testing.T) {
 			assert: func(t *testing.T, r []lockout.Report, err error, logs string) {
 				require.NoError(t, err, "the reset succeeded, so clearing succeeded")
 				assert.Empty(t, r)
-				assert.Equal(t, 1, strings.Count(logs, "policy: a lockout report was lost"))
+				assert.Equal(t, 1, strings.Count(logs, "lockout: a lockout report was lost"))
 				assert.NotContains(t, logs, "ada")
 			},
 		},
@@ -351,7 +351,7 @@ func TestLockoutObserver(t *testing.T) {
 			act: record("ada"),
 			assert: func(t *testing.T, _ []lockout.Report, err error, logs string) {
 				require.NoError(t, err)
-				assert.Contains(t, logs, "policy: a lockout report was lost")
+				assert.Contains(t, logs, "lockout: a lockout report was lost")
 			},
 		},
 		{
@@ -369,7 +369,7 @@ func TestLockoutObserver(t *testing.T) {
 			assert: func(t *testing.T, r []lockout.Report, err error, logs string) {
 				require.NoError(t, err, "the failure is recorded, so recording succeeded")
 				assert.Empty(t, r)
-				assert.Equal(t, 1, strings.Count(logs, "policy: a lockout report was lost"))
+				assert.Equal(t, 1, strings.Count(logs, "lockout: a lockout report was lost"))
 				assert.NotContains(t, logs, "ada")
 			},
 		},
@@ -523,7 +523,7 @@ func TestLockoutObserver(t *testing.T) {
 			assert: func(t *testing.T, r []lockout.Report, err error, logs string) {
 				require.NoError(t, err, "the reset succeeded, so clearing succeeded")
 				assert.Empty(t, r)
-				assert.Equal(t, 1, strings.Count(logs, "policy: a lockout report was lost"))
+				assert.Equal(t, 1, strings.Count(logs, "lockout: a lockout report was lost"))
 				assert.NotContains(t, logs, "ada")
 			},
 		},
@@ -623,7 +623,7 @@ func TestLockoutObserverDefaultLoggerIsSlogDefault(t *testing.T) {
 	)
 
 	require.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow))
-	assert.Equal(t, 1, strings.Count(logs.String(), "policy: a lockout report was lost"))
+	assert.Equal(t, 1, strings.Count(logs.String(), "lockout: a lockout report was lost"))
 }
 
 func TestLockoutObserverPanicChangesNothing(t *testing.T) {
@@ -642,7 +642,7 @@ func TestLockoutObserverPanicChangesNothing(t *testing.T) {
 	require.NotPanics(t, func() {
 		assert.NoError(t, p.Attempts().RecordFailure(t.Context(), "ada", lockoutNow))
 	})
-	assert.Equal(t, 1, strings.Count(logs.String(), "policy: the lockout observer panicked"))
+	assert.Equal(t, 1, strings.Count(logs.String(), "lockout: the lockout observer panicked"))
 	assert.NotContains(t, logs.String(), "ada", "the record must not carry the submitted identifier")
 }
 

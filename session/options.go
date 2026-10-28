@@ -13,7 +13,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrConfig is wrapped by every error NewManager and NewEncryptedStore return
+// ErrConfig is wrapped by every error New and NewEncryptedStore return
 // for a wiring mistake, so a consumer can tell a contradictory configuration
 // from a failure at request time without matching on message text.
 var ErrConfig = errors.New("session: invalid configuration")
@@ -38,7 +38,7 @@ const (
 	defaultHousekeepingInterval = time.Minute
 )
 
-// Option configures a Manager. Every option names the default it
+// Option configures the Sessions. Every option names the default it
 // replaces, and every default works with no configuration at all.
 type Option func(*Sessions)
 
@@ -85,7 +85,7 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 // alive by a write that did not happen.
 //
 // d must be at least 0 and less than the idle timeout; anything else is a
-// configuration error from NewManager, because an interval as long as the
+// configuration error from New, because an interval as long as the
 // idle timeout would let a session expire while in constant use.
 //
 // Deployments with busy clients should set one, for example a minute. The
@@ -93,7 +93,7 @@ func WithAbsoluteTimeout(d time.Duration) Option {
 //
 // An httpsec chain refuses, with a configuration error from httpsec.New, a
 // touch interval at least as long as any idle timeout its policy engine
-// enforces (policy.IdleTimeoutPolicy), because the stored last access can be
+// enforces (policy.IdleTimeout), because the stored last access can be
 // up to one interval stale.
 func WithTouchInterval(d time.Duration) Option {
 	return func(m *Sessions) { m.touchInterval = d }
@@ -104,11 +104,11 @@ func WithTouchInterval(d time.Duration) Option {
 // (see WithAbsoluteTimeout), so with no option no session can outlive it.
 //
 // A maximum below the absolute timeout is a configuration error from
-// NewManager: the default lifetime would already exceed it. The same maximum
+// New: the default lifetime would already exceed it. The same maximum
 // bounds a renewal's new lifetime (see WithSuccessorLifetime).
 //
 // A renewal whose family is already past its end under this maximum is
-// refused with ErrSessionExpired, and a carried-over deadline later than the
+// refused with ErrExpired, and a carried-over deadline later than the
 // end is cut to it.
 //
 // Changing the maximum between deploys is safe to lower and has one limit
@@ -169,12 +169,12 @@ func WithFamilyIDGenerator(g id.Generator) Option {
 	}
 }
 
-// WithSessionLogger replaces the logger. The default is slog.Default().
+// WithLogger replaces the logger. The default is slog.Default().
 //
 // A nil logger is ignored rather than refused: unlike a clock, a nil logger
 // has an obvious safe reading — the caller does not want this component's logs
 // — and refusing it would make logging mandatory.
-func WithSessionLogger(l *slog.Logger) Option {
+func WithLogger(l *slog.Logger) Option {
 	return func(m *Sessions) {
 		if l != nil {
 			m.logger = l
@@ -192,7 +192,7 @@ func WithSessionLogger(l *slog.Logger) Option {
 func WithRandom(r io.Reader) Option { return func(m *Sessions) { m.random = r } }
 
 // CreateOption configures one session as it is created, rather than the
-// Manager behind it.
+// Sessions behind it.
 //
 // Everything a create option sets is applied before the single store write
 // that creates the session, so a crash between two writes cannot leave a live
@@ -270,14 +270,14 @@ func WithFederatedAssurance(amr []string, acr string) CreateOption {
 // MemoryStoreOption configures a MemoryStore.
 type MemoryStoreOption func(*MemoryStore)
 
-// WithHousekeepingInterval replaces how often a started store sweeps expired
+// WithMemoryStoreHousekeepingInterval replaces how often a started store sweeps expired
 // sessions. The default is one minute. Each sweep starts one interval after
 // the previous one finished.
 //
 // Zero or less is ignored and the default is kept: a non-positive interval
 // would make housekeeping spin, which is not what a caller asking for it
 // wants.
-func WithHousekeepingInterval(d time.Duration) MemoryStoreOption {
+func WithMemoryStoreHousekeepingInterval(d time.Duration) MemoryStoreOption {
 	return func(s *MemoryStore) {
 		if d > 0 {
 			s.interval = d
@@ -324,11 +324,11 @@ func WithMemoryStoreClock(clk clock.Timed) MemoryStoreOption {
 // The default is the lifetime maximum (see WithMaxAbsoluteLifetime), so with
 // no option no renewal extends a family past where its first session could
 // have ended. A maximum below the lifetime maximum is a configuration error
-// from NewManager. There is no unlimited value: a finite family maximum is
+// from New. There is no unlimited value: a finite family maximum is
 // what makes the limit a limit.
 //
 // A renewal whose family is already past its end under this maximum is
-// refused with ErrSessionExpired, and a carried-over deadline later than the
+// refused with ErrExpired, and a carried-over deadline later than the
 // end is cut to it.
 //
 // Changing the maximum between deploys is safe to lower and has one limit
@@ -353,7 +353,7 @@ func WithMaxFamilyLifetime(limit time.Duration) Option {
 }
 
 // WithReuseObserver sets a function told about each detected reuse (see
-// ErrSessionReused). The default is none: reuse is still refused, the family
+// ErrReused). The default is none: reuse is still refused, the family
 // still revoked, and a warning still logged with a fixed reason and the
 // family identifier.
 //
@@ -365,12 +365,12 @@ func WithMaxFamilyLifetime(limit time.Duration) Option {
 // not called when the revocation itself failed.
 //
 // The revocation joins a transaction the consumer attached to the context. A
-// consumer that does so must commit when errors.Is(err, ErrSessionReused),
+// consumer that does so must commit when errors.Is(err, ErrReused),
 // or the rollback takes the revocation with it, and must write the
 // observer's audit record inside a savepoint, because a failed statement
 // aborts a PostgreSQL transaction and the revocation in it.
 //
-// A nil observer is a configuration error from NewManager.
+// A nil observer is a configuration error from New.
 func WithReuseObserver(fn ReuseObserver) Option {
 	return func(m *Sessions) {
 		m.reuseObserver = fn
@@ -387,12 +387,12 @@ func WithReuseObserver(fn ReuseObserver) Option {
 // be possible.
 //
 // The default is off: a superseded identifier presented after its window is
-// always reuse, and its family is revoked (see ErrSessionReused).
+// always reuse, and its family is revoked (see ErrReused).
 //
 // With it on:
 //
 //   - Load of such an identifier, for an ordinary request, refuses it with
-//     ErrSessionRenewalRequired and revokes nothing, because a client sends
+//     ErrRenewalRequired and revokes nothing, because a client sends
 //     its queued requests before it renews.
 //   - Only a renewal judges it: LoadForRenewal returns it, and RotateWithGrace
 //     recovers it when its successor is still unused, decided atomically by

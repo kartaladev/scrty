@@ -76,10 +76,10 @@ func TestFederatedLoginNeverNamesPasswordChangedAt(t *testing.T) {
 
 				var logs bytes.Buffer
 				b, err := oidc.NewBroker(brokerSeededLinks(t), users,
-					oidc.WithProvisioner(prov),
-					oidc.WithClaimMirror("corp", true),
-					oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-					oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
+					oidc.WithBrokerProvisioner(prov),
+					oidc.WithBrokerClaimMirror("corp", true),
+					oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+					oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
 					oidc.WithBrokerLogger(testTextLogger(&logs)),
 				)
 				require.NoError(t, err)
@@ -99,10 +99,10 @@ func TestFederatedLoginNeverNamesPasswordChangedAt(t *testing.T) {
 
 				var logs bytes.Buffer
 				b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl),
-					oidc.WithProvisioner(prov),
-					oidc.WithJIT("corp"),
-					oidc.WithPasswordClaim("corp", "credentials.password_hash"),
-					oidc.WithPasswordEncoder(fastBcryptEncoder(t)),
+					oidc.WithBrokerProvisioner(prov),
+					oidc.WithBrokerJIT("corp"),
+					oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+					oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
 					oidc.WithBrokerLogger(testTextLogger(&logs)),
 					oidc.WithBrokerClock(clockwork.NewFakeClockAt(provisionClock)),
 				)

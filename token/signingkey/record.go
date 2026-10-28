@@ -36,7 +36,7 @@ type Record struct {
 
 // KeyStore persists signing keys.
 //
-// With no store configured the key manager uses NewInMemoryKeyStore, which does
+// With no store configured the key manager uses NewMemoryKeyStore, which does
 // not survive a restart. A consumer replaces it with any implementation through
 // WithKeyStore, such as a durable one, or one that seals Record.Private.
 //

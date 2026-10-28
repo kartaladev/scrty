@@ -32,7 +32,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "an idle timeout of zero",
 			construct: func() (policy.Policy, error) {
-				return policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(0))
+				return policy.NewIdleTimeout(policy.WithIdleTimeout(0))
 			},
 			names:       "idle timeout must be positive",
 			consequence: "refuse every request",
@@ -40,7 +40,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "a negative idle timeout",
 			construct: func() (policy.Policy, error) {
-				return policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(-time.Minute))
+				return policy.NewIdleTimeout(policy.WithIdleTimeout(-time.Minute))
 			},
 			names:       "idle timeout must be positive",
 			consequence: "refuse every request",
@@ -48,7 +48,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 		{
 			name: "an absolute timeout of zero",
 			construct: func() (policy.Policy, error) {
-				return policy.NewIdleTimeout(policy.WithIdlePolicyAbsoluteTimeout(0))
+				return policy.NewIdleTimeout(policy.WithIdleAbsoluteTimeout(0))
 			},
 			names:       "absolute timeout must be positive",
 			consequence: "already past its final deadline",
@@ -78,7 +78,7 @@ func TestTimeoutPolicyConfigurationErrors(t *testing.T) {
 				return policy.NewPasswordAge(policy.WithUnknownPasswordAge(policy.UnknownAgeMode(7)))
 			},
 			names:       "unknown-password-age mode",
-			consequence: "AllowUnknown nor ChallengeUnknown",
+			consequence: "UnknownAgeAllow nor UnknownAgeChallenge",
 		},
 		{
 			// "Zero maximum": a cap of zero refuses every login, since every

@@ -109,7 +109,7 @@ func TestTOTPBeginEnrolment(t *testing.T) {
 
 			store := mfa.NewMemoryEnrolmentStore()
 
-			opts := []mfa.TOTPOption{}
+			opts := []mfa.Option{}
 			if tc.random != nil {
 				opts = append(opts, mfa.WithRandom(tc.random))
 			}

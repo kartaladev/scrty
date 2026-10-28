@@ -38,7 +38,7 @@ func federated(id, token string) *session.Session {
 func TestSessionCipher(t *testing.T) {
 	t.Parallel()
 
-	c := mustCipher(t, seal.WithEncryptionKey("k2", keyTwo))
+	c := mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo))
 
 	type testCase struct {
 		name   string

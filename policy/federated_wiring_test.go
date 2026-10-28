@@ -51,7 +51,7 @@ func TestEngine_UnwiredFederatedAssurance(t *testing.T) {
 		},
 		{
 			name:     "the requirement policy in refuse mode without a source",
-			policies: requirement(policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)),
+			policies: requirement(policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)),
 			assert:   unwired,
 		},
 		{
@@ -63,7 +63,7 @@ func TestEngine_UnwiredFederatedAssurance(t *testing.T) {
 		},
 		{
 			name:     "the requirement policy in exempt mode needs no source",
-			policies: requirement(policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)),
+			policies: requirement(policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)),
 			assert:   wired,
 		},
 		{

@@ -18,7 +18,7 @@ type FirstOf struct {
 	delegates []Authenticator
 }
 
-// NewFirstOf returns a Manager that offers credentials to delegates in the
+// NewFirstOf returns a FirstOf that offers credentials to delegates in the
 // order given.
 //
 // There is no default list. Which methods a deployment accepts, and in which
@@ -53,7 +53,7 @@ func NewFirstOf(delegates ...Authenticator) (*FirstOf, error) {
 // that is not a refusal to handle the credentials.
 //
 // A delegate reporting ErrUnsupportedCredentials is skipped, and so is one
-// reporting ErrNoEligibleAuthenticator, which is what a nested Manager whose
+// reporting ErrNoEligibleAuthenticator, which is what a nested FirstOf whose
 // delegates all skipped reports: a skip stays a skip however deep it is
 // nested. Any other error
 // ends the walk and is returned unchanged, so an outage inside one provider
@@ -106,12 +106,12 @@ func (m *FirstOf) VerifyDecoy(ctx context.Context, c identity.Credentials) bool 
 var _ DecoyVerifier = (*FirstOf)(nil)
 
 // OffersDecoy reports whether any delegate offers a decoy verification, so a
-// caller can tell whether VerifyDecoy will ever spend any work: a Manager
+// caller can tell whether VerifyDecoy will ever spend any work: a FirstOf
 // always implements DecoyVerifier, and that alone says nothing about its
 // delegates.
 //
 // A delegate offers one when it implements DecoyVerifier and, if it also
-// reports OffersDecoy, as a nested Manager does, that reports true. It is
+// reports OffersDecoy, as a nested FirstOf does, that reports true. It is
 // answered from the delegates' types alone, and calls neither VerifyDecoy nor
 // Authenticate.
 func (m *FirstOf) OffersDecoy() bool {
@@ -119,7 +119,7 @@ func (m *FirstOf) OffersDecoy() bool {
 }
 
 // decoyOfferer is a DecoyVerifier that can report whether it will ever spend
-// a decoy, as a Manager can.
+// a decoy, as a FirstOf can.
 type decoyOfferer interface {
 	OffersDecoy() bool
 }

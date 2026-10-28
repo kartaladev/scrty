@@ -230,7 +230,7 @@ func WithIssuedCodeStore(s onetime.Store) Option {
 //
 // A start past the limit sends nothing, and looks to its caller exactly like
 // any other start. The limit holds under concurrent starts: the count and the
-// issue are one bounded write (onetime.Manager.IssueWithin).
+// issue are one bounded write (onetime.Tokens.IssueWithin).
 func WithIssuedCodeLimit(n int) Option {
 	return func(c *config) { c.issuedLimit = n }
 }
@@ -328,7 +328,7 @@ func WithChecks(checks ...Check) Option {
 // cannot answer refuses the recovery.
 //
 // For this second-factor flow, a shared limiter in
-// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
 // outage of the shared store each replica still bounds guessing on its own, and
 // users are not locked out of sign-in.
 func WithUserLimiter(l ratelimit.Limiter) Option {
@@ -345,7 +345,7 @@ func WithUserLimiter(l ratelimit.Limiter) Option {
 // then the in-memory default.
 //
 // For this second-factor flow, a shared limiter in
-// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
 // outage of the shared store each replica still bounds guessing on its own, and
 // users are not locked out of sign-in.
 //

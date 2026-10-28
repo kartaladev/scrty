@@ -287,7 +287,7 @@ func (m *Passkeys) matchHandle(ctx context.Context, c *Credential, handle []byte
 // runs its two halves, checkAssertion and acceptAssertion, with the state
 // refusal between them.
 //
-// A verifier error that is not a context error, a missing user verification under UVRequired, a
+// A verifier error that is not a context error, a missing user verification under UserVerificationRequired, a
 // backed-up state without backup eligibility and a backup-eligible flag that
 // differs from the stored one are authenticate.ErrAuthenticationFailed. The login check's error is returned
 // unchanged. A verifier error matching context.Canceled or

@@ -43,7 +43,7 @@ func ExampleChain_ExpiryTasks() {
 
 	chain, err := httpsec.New(
 		httpsec.EnablePasswordChangeGate(sessions,
-			httpsec.WithChangePasswordEndpoint("/account/password", func(*httpsec.Exchange) error { return nil }),
+			httpsec.WithPasswordChangeEndpoint("/account/password", func(*httpsec.Exchange) error { return nil }),
 		),
 		httpsec.EnableAccountRecovery(httpsec.RecoveryDeps{
 			Users: exampleUserLoader{details: &identity.Details{

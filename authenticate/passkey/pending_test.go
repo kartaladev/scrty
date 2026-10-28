@@ -434,7 +434,7 @@ func TestPending(t *testing.T) {
 		{
 			name:    "a saved-code store failure is an outage, not a wrong code",
 			codes:   true,
-			codeOpt: []recovery.CodesOption{recovery.WithCodeStore(failingMatch{recovery.NewMemoryCodeStore(), codeStoreErr})},
+			codeOpt: []recovery.CodesOption{recovery.WithCodesStore(failingMatch{recovery.NewMemoryCodeStore(), codeStoreErr})},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				awaitingCodes(t, e, res, err)
 

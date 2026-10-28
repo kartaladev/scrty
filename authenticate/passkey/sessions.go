@@ -10,7 +10,7 @@ import (
 // SessionRevoker ends sessions: what the manager needs to end a user's other
 // sessions after a passkey removal and all of them after a suspected clone.
 //
-// *session.Manager satisfies it. Wire the same manager the chain uses, the one
+// *session.Sessions satisfies it. Wire the same manager the chain uses, the one
 // given to httpsec.PasskeyDeps.Sessions, so that a session ended here is the
 // session the chain no longer loads. With no revoker, the manager is only
 // valid when both revocations are turned off

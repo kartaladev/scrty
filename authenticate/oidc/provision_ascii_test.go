@@ -79,9 +79,9 @@ func TestBroker_RefusesProvisioningForUnicodeFoldedDomain(t *testing.T) {
 			}
 
 			b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users,
-				oidc.WithProvisioner(prov),
-				oidc.WithJIT("corp"),
-				oidc.WithJITEmailDomains("corp", tc.allowed...),
+				oidc.WithBrokerProvisioner(prov),
+				oidc.WithBrokerJIT("corp"),
+				oidc.WithBrokerJITEmailDomains("corp", tc.allowed...),
 			)
 			require.NoError(t, err)
 

@@ -30,7 +30,7 @@ const oidcAnotherSource = "198.51.100.4"
 
 // switchablePolicy denies every post-authentication evaluation until allow is
 // set, standing in for the user who goes and does whatever the policy wanted.
-// It denies with no reason, so the engine answers with policy.ErrPolicyDenied.
+// It denies with no reason, so the engine answers with policy.ErrDenied.
 func switchablePolicy(t *testing.T, allow *atomic.Bool) *policy.Engine {
 	t.Helper()
 
@@ -155,7 +155,7 @@ func TestOIDCRedeem(t *testing.T) {
 		t *testing.T, h *oidcHarness,
 	) []httpsec.OIDCOption {
 		return func(t *testing.T, h *oidcHarness) []httpsec.OIDCOption {
-			return append([]httpsec.OIDCOption{httpsec.WithHandoffRedeemer(r(t, h))}, more...)
+			return append([]httpsec.OIDCOption{httpsec.WithOIDCHandoffRedeemer(r(t, h))}, more...)
 		}
 	}
 
@@ -275,8 +275,8 @@ func TestOIDCRedeem(t *testing.T) {
 			name: "empty attempts count against the source like any wrong code",
 			opts: func(t *testing.T, h *oidcHarness) []httpsec.OIDCOption {
 				return []httpsec.OIDCOption{
-					httpsec.WithHandoffRedeemer(forwardingRedeemer(t, h, 0)),
-					httpsec.WithHandoffRateLimit(3, 5*time.Minute),
+					httpsec.WithOIDCHandoffRedeemer(forwardingRedeemer(t, h, 0)),
+					httpsec.WithOIDCHandoffRateLimit(3, 5*time.Minute),
 				}
 			},
 			act: func(t *testing.T, c *httpsec.Chain, code string, _ *atomic.Bool) served {
@@ -296,8 +296,8 @@ func TestOIDCRedeem(t *testing.T) {
 			name: "a throttled source is refused without redeeming",
 			opts: func(t *testing.T, h *oidcHarness) []httpsec.OIDCOption {
 				return []httpsec.OIDCOption{
-					httpsec.WithHandoffRedeemer(forwardingRedeemer(t, h, 1)),
-					httpsec.WithHandoffRateLimit(1, 5*time.Minute),
+					httpsec.WithOIDCHandoffRedeemer(forwardingRedeemer(t, h, 1)),
+					httpsec.WithOIDCHandoffRateLimit(1, 5*time.Minute),
 				}
 			},
 			act: func(t *testing.T, c *httpsec.Chain, code string, _ *atomic.Bool) served {
@@ -385,7 +385,7 @@ func TestOIDCRedeem(t *testing.T) {
 		},
 		{
 			name:   "a consumer opts out of counting refusals",
-			opts:   withRedeemer(forwarding(11), httpsec.WithHandoffCountRefusals(false)),
+			opts:   withRedeemer(forwarding(11), httpsec.WithOIDCHandoffCountRefusals(false)),
 			engine: switchablePolicy,
 			act:    tenDenialsThenOneMore,
 			assert: func(t *testing.T, h *oidcHarness, _ string, out served) {
@@ -394,7 +394,7 @@ func TestOIDCRedeem(t *testing.T) {
 		},
 		{
 			name: "guessing still counts with the opt-out",
-			opts: withRedeemer(forwarding(10), httpsec.WithHandoffCountRefusals(false)),
+			opts: withRedeemer(forwarding(10), httpsec.WithOIDCHandoffCountRefusals(false)),
 			act: func(t *testing.T, c *httpsec.Chain, code string, _ *atomic.Bool) served {
 				for range 10 {
 					require.ErrorIs(t, redeemFrom(t, c, oidcTestSource, "wrong.code").err, oidc.ErrInvalidHandoff)
@@ -415,7 +415,7 @@ func TestOIDCRedeem(t *testing.T) {
 					Return(oidc.HandoffResult{}, oidc.ErrInvalidHandoff)
 
 				return []httpsec.OIDCOption{
-					httpsec.WithHandoffRedeemer(r), httpsec.WithHandoffCountRefusals(false),
+					httpsec.WithOIDCHandoffRedeemer(r), httpsec.WithOIDCHandoffCountRefusals(false),
 				}
 			},
 			act: func(t *testing.T, c *httpsec.Chain, code string, _ *atomic.Bool) served {

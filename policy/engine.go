@@ -212,7 +212,7 @@ func (e *Engine) RequiredAttemptViews() []RequiredAttemptView {
 // security chain, checks its wiring before it serves: a stored last-access time
 // can be up to one coalescing interval stale, so an idle timeout no longer than
 // that interval would refuse live sessions. The answer is drawn from an
-// optional IdleTimeout() time.Duration method, which IdleTimeoutPolicy has, and
+// optional IdleTimeout() time.Duration method, which IdleTimeout has, and
 // a policy without one is taken to enforce no idle timeout. A policy registered
 // for no phase is never asked anything, so it is never reported.
 //
@@ -257,7 +257,7 @@ func (e *Engine) FlushRefusalLogs() {
 //     otherwise the phase allows.
 //
 // A decision carrying an outcome this package does not define denies, with
-// ErrPolicyDenied as the reason: an answer the engine cannot interpret is not
+// ErrDenied as the reason: an answer the engine cannot interpret is not
 // an answer it may pass over, since passing it over would allow.
 //
 // A phase no policy declared allows. That is the same answer as a phase whose
@@ -273,7 +273,7 @@ func (e *Engine) FlushRefusalLogs() {
 // replaces how a phase-sensitive policy learns the phase through that policy's
 // own option — see WithMFARequirementPhaseSource.
 //
-// A nil input denies, with ErrPolicyDenied as the reason, before any policy is
+// A nil input denies, with ErrDenied as the reason, before any policy is
 // asked: a policy handed nil either dereferences it or has nothing to object
 // to, and neither a panic nor an allow is an answer to a caller's wiring
 // mistake.

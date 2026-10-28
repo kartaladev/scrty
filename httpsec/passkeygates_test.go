@@ -373,7 +373,7 @@ func TestPasskeyEnrolmentSharedSettings(t *testing.T) {
 		{
 			name: "email confirmation off: the passkey is active and the session moves on",
 			setup: func(_ *testing.T, h *passkeyHarness) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEmailConfirmation())
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEnrolmentEmailConfirmation())
 			},
 			act: register,
 			assert: func(t *testing.T, h *passkeyHarness, s *session.Session, out served) {
@@ -388,7 +388,7 @@ func TestPasskeyEnrolmentSharedSettings(t *testing.T) {
 		{
 			name: "the emailed code goes where the path's contact resolver says",
 			setup: func(_ *testing.T, h *passkeyHarness) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithContactResolver(
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentContactResolver(
 					func(context.Context, *identity.Details) (string, error) { return "inbox@example.org", nil }))
 			},
 			act: register,

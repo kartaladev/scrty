@@ -337,7 +337,7 @@ func TestRedemption_DecisionBindsTheCheckedPrincipal(t *testing.T) {
 			})
 
 		h.chainOpts = []httpsec.Option{httpsec.WithPolicyEngine(deniesReturned(t))}
-		c := h.chain(t, httpsec.WithHandoffRedeemer(r))
+		c := h.chain(t, httpsec.WithOIDCHandoffRedeemer(r))
 
 		got := serve(t, c, handoffRequest(t.Context(), oidcTestSource, "any-code"))
 
@@ -451,7 +451,7 @@ func TestRedemption_EnrolmentOutageCountsUnderOptOut(t *testing.T) {
 			httpsec.WithPolicyEngine(engine),
 			httpsec.EnableMFA([]mfa.Method{method}, httpsec.WithMFATokens(h.tokens)),
 		}
-		c := h.chain(t, httpsec.WithHandoffCountRefusals(false))
+		c := h.chain(t, httpsec.WithOIDCHandoffCountRefusals(false))
 
 		code := h.issueHandoff(t, "")
 

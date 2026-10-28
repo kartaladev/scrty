@@ -178,7 +178,7 @@ func TestUnusedSuccessorRecovery_FirstPresentationRacingRecovery(t *testing.T) {
 			// renewal is refused only once S1 is marked, and S1's load
 			// re-reads only when its mark is refused as superseded, which
 			// means the renewal won. S1's load therefore never finds its
-			// family revoked, and ErrSessionNotFound is not an outcome.
+			// family revoked, and ErrNotFound is not an outcome.
 			name:  "both read, then run freely",
 			order: raceFree,
 			assert: func(t *testing.T, s1Err, renewErr error) {

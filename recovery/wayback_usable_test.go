@@ -129,7 +129,7 @@ func TestWayBack_Usable(t *testing.T) {
 
 			c, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
 				Users:       m.users,
-				Codes:       newCodes(t, recovery.WithCodeStore(m.codes)),
+				Codes:       newCodes(t, recovery.WithCodesStore(m.codes)),
 				Kinds:       []recovery.AuthenticatorKind{kind},
 				IssuedCodes: true,
 			})

@@ -10,7 +10,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// HandoffOption customises a HandoffManager at construction.
+// HandoffOption customises a Handoff at construction.
 //
 // Every option replaces a default that already works. An option given nil
 // fails construction with ErrConfig rather than silently keeping the default:

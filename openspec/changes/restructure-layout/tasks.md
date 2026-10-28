@@ -49,12 +49,12 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 - [x] 3.1 Rename every `Manager` type, constructor, option type and dependent signature as D8 says, through gopls across the workspace. This includes `httpsec`'s `Enable…` parameters and `WithSessions`, and `NewFirstOf` for `authenticate` and `authorize`. Verify: `go build ./...` and `go test ./...` pass in every module, and `evidence/check.sh` reports only mapped API differences.
 - [x] 3.2 Rename the outliers in D9, including both the interface method and the implementation of `KeySource.Signer`, and `mfa.MaxEmailCodeAttempts`. Verify: as in 3.1.
 - [x] 3.3 Apply D10's sentinel rule (`session`, `password`, `token`, `policy`) and its `policy` suffix rule (`IdleTimeout`, `ConcurrentSessions`, `PasswordAge`, `NewMFA`, `NewMFARequirement`). Verify: as in 3.1, and every backend alias still satisfies `errors.Is` against its source.
-- [ ] 3.4 Apply D10's option table and the enum-prefix renames, package by package. Verify: as in 3.1, and every renamed option's godoc still names the default it replaces.
-- [ ] 3.5 Change error-message prefixes to the new package names, and the identifiers that messages name to their new names (D11). In the assertions that check them, update only the prefix and those identifiers. Verify:
+- [x] 3.4 Apply D10's option table and the enum-prefix renames, package by package. Verify: as in 3.1, and every renamed option's godoc still names the default it replaces.
+- [x] 3.5 Change error-message prefixes to the new package names, and the identifiers that messages name to their new names (D11). In the assertions that check them, update only the prefix and those identifiers. Verify:
   - `go test ./...` passes in every module;
   - a diff filter over the test files shows every changed assertion string becomes equal to its new form once `evidence/rename-map.tsv` and the D11 prefixes are applied to the old one;
   - a search of production error strings for every left-hand identifier of the map finds none.
-- [ ] 3.6 Sweep godoc, examples, the README and other non-Go docs for the old paths and names that gopls cannot rewrite, leaving out `openspec/` and `.claude/.legacy`. Rewrite each hit to the new name, without recording the old one: godoc describes the code, not its history (design D12). Verify:
+- [x] 3.6 Sweep godoc, examples, the README and other non-Go docs for the old paths and names that gopls cannot rewrite, leaving out `openspec/` and `.claude/.legacy`. Rewrite each hit to the new name, without recording the old one: godoc describes the code, not its history (design D12). Verify:
 - a search for every left-hand entry of `evidence/rename-map.tsv` finds no match outside `openspec/`, `.claude/.legacy` and `evidence/`;
 - a search of the Go files for history wording ("formerly", "renamed", "moved from", "was called") finds nothing that the baseline commit did not already have.
 - [ ] 3.7 Phase-2 gate: `evidence/check.sh`, `make check`, push and CI green, then the phase review against D8–D11. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.

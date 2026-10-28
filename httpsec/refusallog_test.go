@@ -226,7 +226,7 @@ func TestRefusalLogSampling(t *testing.T) {
 			log := slog.New(&h)
 			_, attempt := throttledAPIKeyChain(t, log, append([]httpsec.Option{httpsec.WithClock(fc)}, tc.opts...)...)
 			handoffs := oidcChain(t, log, newTestOIDCManager(t), newTestHandoffManager(t),
-				httpsec.WithHandoffLimiter(exceededLimiter(t)))
+				httpsec.WithOIDCHandoffLimiter(exceededLimiter(t)))
 
 			tc.act(t, attempt, func() { redeemGarbage(t, handoffs, 1) }, fc.Advance)
 			tc.assert(t, throttledRecords(h.records()))

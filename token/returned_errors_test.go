@@ -118,7 +118,7 @@ func TestGeneratorReturnedErrors(t *testing.T) {
 // Verify's own returned error (design decision 8): a key source that cannot
 // supply its verification keys comes back as fixed library text, with the key
 // source's own error still reachable by identity, and still not matching
-// ErrTokenInvalid — an outage in obtaining the keys is not a verdict on the
+// ErrInvalid — an outage in obtaining the keys is not a verdict on the
 // token.
 func TestVerifierReturnedErrors(t *testing.T) {
 	t.Parallel()

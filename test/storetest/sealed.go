@@ -121,9 +121,9 @@ func RunSealedColumns[S any](t *testing.T, h DurableHarness[S], s Sealed[S]) {
 	requireSealed(t, h, s)
 
 	k1, k2 := sealKey(t), sealKey(t)
-	underK1 := sealRing(t, seal.WithEncryptionKey("k1", k1))
-	underK2 := sealRing(t, seal.WithEncryptionKey("k2", k2))
-	rotated := sealRing(t, seal.WithEncryptionKey("k2", k2), seal.WithRetiredEncryptionKey("k1", k1))
+	underK1 := sealRing(t, seal.WithKeyringEncryptionKey("k1", k1))
+	underK2 := sealRing(t, seal.WithKeyringEncryptionKey("k2", k2))
+	rotated := sealRing(t, seal.WithKeyringEncryptionKey("k2", k2), seal.WithKeyringRetiredEncryptionKey("k1", k1))
 
 	// put stores owner's secret sealed under k1, and returns it.
 	put := func(t *testing.T, owner string) []byte {

@@ -46,7 +46,7 @@ type aeadCipher struct {
 // implements Cipher instead; one who keeps the keys elsewhere supplies their
 // own Keyring.
 //
-// It returns an error matching ErrInvalidConfiguration when kr is nil, typed
+// It returns an error matching ErrConfig when kr is nil, typed
 // nil included, so a cipher wired without keys fails at start-up rather than on
 // the first seal or open.
 //
@@ -58,7 +58,7 @@ type aeadCipher struct {
 //
 // kr is asked for a key on every call and is never cached. A key that is not
 // 32 bytes, or an active key id outside [A-Za-z0-9._-]{1,64}, fails the call
-// with ErrInvalidConfiguration; the cipher never falls back to a shorter key or
+// with ErrConfig; the cipher never falls back to a shorter key or
 // to storing plaintext.
 //
 // Open returns ErrDecryptionFailed for every value that does not open — wrong

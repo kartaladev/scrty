@@ -46,7 +46,7 @@ const mfaChallengeTaskPrefix = "mfa-challenges:"
 //
 // State of components the consumer builds and hands to the chain is theirs to
 // sweep with those components' own tasks: session.ExpiryTask,
-// magiclink.ExpiryTask, (*passkey.Manager).ExpiryTasks, oidc.FlowExpiryTask
+// magiclink.ExpiryTask, (*passkey.Passkeys).ExpiryTasks, oidc.FlowExpiryTask
 // and oidc.HandoffExpiryTask. A consumer renames a returned task by setting its
 // Name, or leaves one out.
 func (c *Chain) ExpiryTasks() []expiry.Task {

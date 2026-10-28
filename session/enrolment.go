@@ -86,7 +86,7 @@ func (m *Sessions) confine(s *Session, lifetime time.Duration) {
 // absolute deadline. The marker and the EnrolmentGeneration are then cleared.
 //
 // A session already past either of its lowered deadlines is not revived: the
-// result is ErrSessionExpired and s is left unchanged, so a caller that saves
+// result is ErrExpired and s is left unchanged, so a caller that saves
 // rather than rotates cannot bring it back. A caller treats that error as the
 // session having ended.
 //

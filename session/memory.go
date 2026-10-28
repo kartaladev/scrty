@@ -20,7 +20,7 @@ import (
 // and two callers holding "the same" session hold two records.
 //
 // Start launches housekeeping, which sweeps expired sessions one
-// WithHousekeepingInterval after the previous sweep finished, waiting on the
+// WithMemoryStoreHousekeepingInterval after the previous sweep finished, waiting on the
 // store's clock (WithMemoryStoreClock). The interval defaults to one minute.
 // Stop ends it. Both are idempotent, and housekeeping also ends when the
 // context given to Start does.
@@ -254,7 +254,7 @@ func (s *MemoryStore) deleteLocked(sessionID string) {
 // record also keeps both of its own deadlines, so a stale copy can change
 // neither them nor its retention.
 //
-// A session that is no longer stored is ErrSessionNotFound. That is the whole
+// A session that is no longer stored is ErrNotFound. That is the whole
 // point of the split: a request that loaded a session, raced a logout and then
 // recorded activity would otherwise write the revoked session back, and the
 // revocation would lose.
@@ -286,9 +286,9 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 }
 
 // Load returns the session with this identifier. A live session past either
-// deadline is ErrSessionExpired. A superseded one is returned until its
+// deadline is ErrExpired. A superseded one is returned until its
 // RetainUntil passes, whatever its own deadlines say and with them intact, so
-// the Manager can tell a late presentation (reuse) from an expiry; one with no
+// the Sessions can tell a late presentation (reuse) from an expiry; one with no
 // RetainUntil is judged by its own deadlines.
 func (s *MemoryStore) Load(_ context.Context, id string) (*Session, error) {
 	s.mu.RLock()
@@ -443,7 +443,7 @@ func (s *MemoryStore) Delete(_ context.Context, id string) error {
 // RecordActivity writes lastAccessed and idleExpires to the stored session,
 // and nothing else, idleExpires capped at the stored absolute deadline, when
 // its stored last access is not later than olderThan and it is not superseded. A fresher or superseded session is left unchanged.
-// A session that is not stored is ErrSessionNotFound, and nothing is
+// A session that is not stored is ErrNotFound, and nothing is
 // inserted.
 //
 // It changes the stored record in place under the store's lock, so a change
@@ -472,11 +472,11 @@ func (s *MemoryStore) RecordActivity(_ context.Context, id string, lastAccessed,
 // successor with a window ending at op.Now, and inserts op.Successor, all
 // under the store's lock, provided Old's successor is still
 // op.ObservedSuccessor. A stale observation writes nothing and is
-// ErrSessionRenewalConflict; an Old that is not stored is ErrSessionNotFound;
+// ErrRenewalConflict; an Old that is not stored is ErrNotFound;
 // a nil Successor is an error, and so is an Old with no family (the nil
 // family), which is refused before anything is written. An Old that is
 // superseded already is superseded again only through its observed successor:
-// observing none, as for a fresh head, is ErrSessionRenewalConflict, since the
+// observing none, as for a fresh head, is ErrRenewalConflict, since the
 // session was knocked out of the chain and renewing it would give the family a
 // second live head. An observed successor that is superseded or no
 // longer stored, or presented when op.RequireUnpresentedSuccessor is set,
@@ -602,8 +602,8 @@ func (s *MemoryStore) DeleteFamily(_ context.Context, family id.ID) (int, error)
 // MarkPresented records at as the session's first presentation, only when
 // none is recorded and the session is not superseded, under the store's lock,
 // so a supersession either happens first and refuses the mark, or after it. A
-// session that is not stored is ErrSessionNotFound; a superseded one is
-// ErrSessionSuperseded, whether presented or not, and nothing is written; an
+// session that is not stored is ErrNotFound; a superseded one is
+// ErrSuperseded, whether presented or not, and nothing is written; an
 // unsuperseded one already presented is not an error.
 func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) error {
 	s.mu.Lock()
@@ -627,7 +627,7 @@ func (s *MemoryStore) MarkPresented(_ context.Context, id string, at time.Time) 
 // with this identifier was used, under the store's read lock, writing
 // nothing: true when that successor is stored and was presented or has been
 // superseded, false when it is stored unused, is no longer stored, or the
-// session has none. A session that is not stored is ErrSessionNotFound.
+// session has none. A session that is not stored is ErrNotFound.
 // "Stored" is judged as Load judges it, at the store's clock: a record Load
 // would not return, swept or not, is not stored, for the session and for its
 // successor alike.

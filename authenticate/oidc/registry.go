@@ -44,7 +44,7 @@ var (
 // Provider configuration is trusted operator input. Every URL must be absolute,
 // with a host name and no credentials, and its scheme must be one the
 // manager's outbound client allows: https by default, http only when the
-// consumer's client adds it (NewManager checks this, since the registry cannot
+// consumer's client adds it (NewRelyingParty checks this, since the registry cannot
 // see the client). Beyond that the library does not filter where the URLs
 // point: loopback, link-local and private-network hosts are accepted, because
 // development and internal corporate providers live there. Whoever can write
@@ -129,7 +129,7 @@ type Registry struct {
 // unknown client authentication method.
 //
 // It does not check the URLs' scheme: that follows the outbound client, which
-// NewManager holds and checks against.
+// NewRelyingParty holds and checks against.
 //
 // Nil Scopes resolve to DefaultScopes, and nil SigningAlgs to RS256.
 func NewRegistry(providers ...Provider) (*Registry, error) {

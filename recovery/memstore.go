@@ -14,7 +14,7 @@ import (
 // Its limit is stated: it holds this process's codes only. A restart forgets
 // every set, so every user's saved codes stop working, and behind several
 // replicas each keeps its own sets, so a code generated on one is unknown to
-// the others. Supply a durable, shared store through WithCodeStore for
+// the others. Supply a durable, shared store through WithCodesStore for
 // anything beyond a single process.
 //
 // It keeps its own copies of every hash it is given, so a caller wiping or

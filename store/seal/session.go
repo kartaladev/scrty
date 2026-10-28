@@ -19,7 +19,7 @@ type sessionCipher struct {
 // The sealing rule for sessions, including the additional data each token is
 // bound to, stays in package session; this adapter only drops the key id Open
 // reports. c's errors are returned unchanged, and the session store answers a
-// token that will not open as session.ErrSessionUnreadable.
+// token that will not open as session.ErrUnreadable.
 //
 // A nil c, typed nil included, gives a nil session.Cipher, so
 // session.NewEncryptedStore refuses it with session.ErrConfig instead of the

@@ -91,7 +91,7 @@ func TestTouchIntervalWiring(t *testing.T) {
 			var policies []policy.Policy
 
 			for _, idle := range tc.idle {
-				p, err := policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(idle))
+				p, err := policy.NewIdleTimeout(policy.WithIdleTimeout(idle))
 				require.NoError(t, err)
 
 				policies = append(policies, p)

@@ -129,7 +129,7 @@ func NewLimiter(pool *pgxpool.Pool, namespace string, limit int, window time.Dur
 
 	window = window.Truncate(time.Microsecond)
 	r := limiterRunner{pool: pool}
-	wrapped, err := unavailable.Wrap(pglimiter.NewBackend(r, "pgx", namespace, limit, window, cfg.core),
+	wrapped, err := unavailable.Wrap(pglimiter.NewBackend(r, "pgxstore", namespace, limit, window, cfg.core),
 		namespace, limit, window, cfg.core.Unavailable)
 	if err != nil {
 		return nil, err

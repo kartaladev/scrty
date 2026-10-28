@@ -21,7 +21,7 @@ import (
 // authorizer, a user without it, which is what makes switching roles a real
 // change in what the user may do rather than a label on a session.
 //
-// It declines every other kind of attributes, so it can sit in a Manager beside
+// It declines every other kind of attributes, so it can sit in a FirstOf beside
 // authorizers that judge them.
 //
 //go:generate mockgen -destination=roleloader_mock_test.go -package=authorize_test -typed github.com/kartaladev/scrty/identity RoleLoader

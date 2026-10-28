@@ -175,7 +175,7 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 
 				return append(without(3)(t, h),
 					httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: h.users},
-						httpsec.WithoutEmailConfirmation()))
+						httpsec.WithoutEnrolmentEmailConfirmation()))
 			},
 			assert: refused("EnableMFAEnrolment", "Sender", "WithoutEnrolmentNotification"),
 		},
@@ -186,7 +186,7 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 
 				return append(without(3)(t, h),
 					httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: h.users},
-						httpsec.WithoutEmailConfirmation(), httpsec.WithoutEnrolmentNotification()))
+						httpsec.WithoutEnrolmentEmailConfirmation(), httpsec.WithoutEnrolmentNotification()))
 			},
 			assert: assembles,
 		},
@@ -291,7 +291,7 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 			name: "the emailed-code prefix on another's with email confirmation off",
 			prepare: func(_ *testing.T, h *enrolHarness) {
 				h.enrolOpts = []httpsec.EnrolmentOption{
-					httpsec.WithoutEmailConfirmation(),
+					httpsec.WithoutEnrolmentEmailConfirmation(),
 					httpsec.WithEnrolmentEmailConfirmPrefix(httpsec.DefaultEnrolmentBeginPrefix),
 				}
 			},

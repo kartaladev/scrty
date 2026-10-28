@@ -48,7 +48,7 @@ func TestNewKeyring(t *testing.T) {
 	cases := []testCase{
 		{
 			name:   "no active key",
-			opts:   []seal.KeyringOption{seal.WithRetiredEncryptionKey("k1", keyOne)},
+			opts:   []seal.KeyringOption{seal.WithKeyringRetiredEncryptionKey("k1", keyOne)},
 			assert: assertConfigError,
 		},
 		{
@@ -58,54 +58,54 @@ func TestNewKeyring(t *testing.T) {
 		{
 			name: "two active keys",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("k1", keyOne),
-				seal.WithEncryptionKey("k2", keyTwo),
+				seal.WithKeyringEncryptionKey("k1", keyOne),
+				seal.WithKeyringEncryptionKey("k2", keyTwo),
 			},
 			assert: assertConfigError,
 		},
 		{
 			name:   "a 16-byte active key",
-			opts:   []seal.KeyringOption{seal.WithEncryptionKey("k1", keyOne[:16])},
+			opts:   []seal.KeyringOption{seal.WithKeyringEncryptionKey("k1", keyOne[:16])},
 			assert: assertConfigError,
 		},
 		{
 			name: "a 33-byte retired key",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("k2", keyTwo),
-				seal.WithRetiredEncryptionKey("k1", append(bytes.Clone(keyOne), 'x')),
+				seal.WithKeyringEncryptionKey("k2", keyTwo),
+				seal.WithKeyringRetiredEncryptionKey("k1", append(bytes.Clone(keyOne), 'x')),
 			},
 			assert: assertConfigError,
 		},
 		{
 			name:   "an empty key id",
-			opts:   []seal.KeyringOption{seal.WithEncryptionKey("", keyOne)},
+			opts:   []seal.KeyringOption{seal.WithKeyringEncryptionKey("", keyOne)},
 			assert: assertConfigError,
 		},
 		{
 			name: "a key id used by both the active and a retired key",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("k1", keyOne),
-				seal.WithRetiredEncryptionKey("k1", keyTwo),
+				seal.WithKeyringEncryptionKey("k1", keyOne),
+				seal.WithKeyringRetiredEncryptionKey("k1", keyTwo),
 			},
 			assert: assertConfigError,
 		},
 		{
 			name: "a key id used by two retired keys",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("k3", keyThree),
-				seal.WithRetiredEncryptionKey("k1", keyOne),
-				seal.WithRetiredEncryptionKey("k1", keyTwo),
+				seal.WithKeyringEncryptionKey("k3", keyThree),
+				seal.WithKeyringRetiredEncryptionKey("k1", keyOne),
+				seal.WithKeyringRetiredEncryptionKey("k1", keyTwo),
 			},
 			assert: assertConfigError,
 		},
 		{
 			name:   "a key id with a character outside the allowed set",
-			opts:   []seal.KeyringOption{seal.WithEncryptionKey("bad/id", keyOne)},
+			opts:   []seal.KeyringOption{seal.WithKeyringEncryptionKey("bad/id", keyOne)},
 			assert: assertConfigError,
 		},
 		{
 			name:   "a 65-character key id",
-			opts:   []seal.KeyringOption{seal.WithEncryptionKey(strings.Repeat("a", 65), keyOne)},
+			opts:   []seal.KeyringOption{seal.WithKeyringEncryptionKey(strings.Repeat("a", 65), keyOne)},
 			assert: assertConfigError,
 		},
 		{
@@ -114,15 +114,15 @@ func TestNewKeyring(t *testing.T) {
 			// never replaced.
 			name: "two key ids naming identical key bytes",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("k2", keyOne),
-				seal.WithRetiredEncryptionKey("k1", bytes.Clone(keyOne)),
+				seal.WithKeyringEncryptionKey("k2", keyOne),
+				seal.WithKeyringRetiredEncryptionKey("k1", bytes.Clone(keyOne)),
 			},
 			assert: assertConfigError,
 		},
 		{
 			name: "a nil option",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("k2", keyTwo),
+				seal.WithKeyringEncryptionKey("k2", keyTwo),
 				nil,
 			},
 			assert: assertConfigError,
@@ -130,7 +130,7 @@ func TestNewKeyring(t *testing.T) {
 		{
 			name: "a 64-character id with every allowed character class is accepted",
 			opts: []seal.KeyringOption{
-				seal.WithEncryptionKey("Az09._-"+strings.Repeat("x", 57), keyOne),
+				seal.WithKeyringEncryptionKey("Az09._-"+strings.Repeat("x", 57), keyOne),
 			},
 			assert: func(t *testing.T, kr seal.Keyring, err error) {
 				require.NoError(t, err)
@@ -143,8 +143,8 @@ func TestNewKeyring(t *testing.T) {
 		{
 			name: "an active key and a retired key",
 			opts: []seal.KeyringOption{
-				seal.WithRetiredEncryptionKey("k1", keyOne),
-				seal.WithEncryptionKey("k2", keyTwo),
+				seal.WithKeyringRetiredEncryptionKey("k1", keyOne),
+				seal.WithKeyringEncryptionKey("k2", keyTwo),
 			},
 			assert: func(t *testing.T, kr seal.Keyring, err error) {
 				require.NoError(t, err)
@@ -185,7 +185,7 @@ func TestKeyring_CopiesKeys(t *testing.T) {
 	t.Parallel()
 
 	configured := bytes.Clone(keyTwo)
-	opt := seal.WithEncryptionKey("k2", configured)
+	opt := seal.WithKeyringEncryptionKey("k2", configured)
 	configured[0] ^= 0xff // after the option, before the ring
 
 	kr, err := seal.NewKeyring(opt)

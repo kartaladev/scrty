@@ -34,7 +34,7 @@ const (
 // Links runs the magic-link flow: it issues and sends links, and redeems
 // them.
 //
-// Build one with NewManager. A Links holds no mutable state after
+// Build one with New. A Links value holds no mutable state after
 // construction, and is safe for concurrent use as far as the token store, user
 // loader and sender it was given are.
 type Links struct {

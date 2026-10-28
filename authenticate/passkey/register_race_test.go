@@ -115,7 +115,7 @@ func TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit(t *testing.
 	f := newFixture(t)
 	creds := &countBarrierCredentials{MemoryCredentialStore: f.creds, b: newBarrier(racers)}
 	f.deps.Credentials = creds
-	m := f.manager(t, passkey.WithPasskeyLimit(1))
+	m := f.manager(t, passkey.WithLimit(1))
 	s := fullSession("sess-a", "u-1")
 
 	challenges := make([]string, racers)
@@ -268,7 +268,7 @@ func TestFinishRegistration_RefusedFinishLeavesStoredFinishsCodesWorking(t *test
 	f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
 	creds := newStaggeredCredentials(f.creds)
 	f.deps.Credentials = creds
-	m := f.manager(t, passkey.WithPasskeyLimit(1))
+	m := f.manager(t, passkey.WithLimit(1))
 	s := fullSession("sess-a", "u-1")
 
 	challenges := []string{f.begin(t, m, s), f.begin(t, m, s)}
@@ -413,7 +413,7 @@ func TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey(t *testing
 
 			creds := &lateListCredentials{MemoryCredentialStore: f.creds, firstInserted: make(chan struct{})}
 			f.deps.Credentials = creds
-			e := &env{f: f, m: f.manager(t, passkey.WithPasskeyLimit(1)), s: tc.session}
+			e := &env{f: f, m: f.manager(t, passkey.WithLimit(1)), s: tc.session}
 
 			challenges := []string{f.begin(t, e.m, e.s), f.begin(t, e.m, e.s)}
 			f.clock.Advance(tc.advance)

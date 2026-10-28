@@ -134,13 +134,13 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //     this path's own from the chain's rate-limiter factory under namespace
 //     "mfa-enrol-begin" or "mfa-enrol-confirm", or else in memory;
 //   - a proven device completes only once a 6-digit code emailed to the user
-//     is entered within 10 minutes (WithoutEmailConfirmation);
+//     is entered within 10 minutes (WithoutEnrolmentEmailConfirmation);
 //   - the user is notified when an enrolment completes
 //     (WithoutEnrolmentNotification);
 //   - both messages are plain text from the library's renderer
 //     (WithEnrolmentMessages), sent to the username as the address
-//     (WithContactResolver), and the provisioning URI is labelled with the
-//     username (WithLabelResolver);
+//     (WithEnrolmentContactResolver), and the provisioning URI is labelled with the
+//     username (WithEnrolmentLabelResolver);
 //   - the sender must not wait for delivery
 //     (WithEnrolmentSynchronousDelivery);
 //   - every endpoint refusal is logged by a fixed reason, at most once per
@@ -154,11 +154,11 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //     no dependency error to name.
 //
 // The emailed code's bounds are fixed, not defaults: 6 digits, accepted for 10
-// minutes after the device is proven, and for at most mfa.MaxEmailCodeFailures
+// minutes after the device is proven, and for at most mfa.MaxEmailCodeAttempts
 // (5) attempts. Together they set the chance of guessing a code, which is the
 // guarantee the path makes, and an option could only weaken it, so there is
 // none; the one override is turning the step off with
-// WithoutEmailConfirmation. The expiry the code message names is read from the
+// WithoutEnrolmentEmailConfirmation. The expiry the code message names is read from the
 // chain's clock; the one that decides is the one the method stored. A sender
 // that refuses to queue the code fails the confirm request, and the code is
 // voided (mfa.VoidEmailCode), so that proof can never complete and the user
@@ -189,7 +189,7 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //
 // The MFA requirement policy admits a login to the path when one of its
 // methods can enrol through the path on a channel other than the first
-// factor's (policy.NewMFARequirementPolicy). Its methods must be the ones
+// factor's (policy.NewMFARequirement). Its methods must be the ones
 // EnableMFA was given, through mfa.LookupsFor, and the enrolled set should
 // hold every method the policy counts on for that admission, which New cannot
 // check. If the policy admits a login on a method this path does not enrol,
@@ -288,7 +288,7 @@ func WithEnrolmentConfirmPrefix(prefix string) EnrolmentOption {
 // a method's emailed code is entered at prefix, "/" and its name.
 //
 // Default: DefaultEnrolmentEmailConfirmPrefix. The same rules as
-// WithEnrolmentBeginPrefix apply. With WithoutEmailConfirmation the endpoint
+// WithEnrolmentBeginPrefix apply. With WithoutEnrolmentEmailConfirmation the endpoint
 // does not exist, and a request under prefix is refused like any other route.
 func WithEnrolmentEmailConfirmPrefix(prefix string) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
@@ -344,7 +344,7 @@ func WithEnrolmentMethods(names ...string) EnrolmentOption {
 // # Stated limit
 //
 // An enrolment-only session is a session like any other to a
-// policy.ConcurrentSessionPolicy: it counts against the same cap, so whoever
+// policy.ConcurrentSessions: it counts against the same cap, so whoever
 // holds a password can occupy a required user's cap slots by beginning
 // enrolments that are never confirmed. Each occupied slot lasts at most d, so
 // the exposure is bounded, but not removed, by this option.
@@ -379,7 +379,7 @@ func WithEnrolmentSessionTTL(d time.Duration) EnrolmentOption {
 // user's password can spend that user's begin budget, locking them out of the
 // path for an hour. A limiter that cannot decide refuses the begin.
 //
-// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallbackToLocal
 // mode is the recommended choice: during an outage of the shared store each
 // replica still bounds guessing on its own, and users are not locked out.
 //
@@ -409,7 +409,7 @@ func WithEnrolmentBeginLimiter(l ratelimit.Limiter) EnrolmentOption {
 // when the caller has gone away, and a limiter that cannot decide refuses the
 // confirmation.
 //
-// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallbackToLocal
 // mode is the recommended choice: during an outage of the shared store each
 // replica still bounds guessing on its own, and users are not locked out.
 //
@@ -426,7 +426,7 @@ func WithEnrolmentConfirmLimiter(l ratelimit.Limiter) EnrolmentOption {
 	}
 }
 
-// WithoutEmailConfirmation completes an enrolment as soon as its device is
+// WithoutEnrolmentEmailConfirmation completes an enrolment as soon as its device is
 // proven, replacing the default of requiring a code emailed to the user as
 // well.
 //
@@ -450,7 +450,7 @@ func WithEnrolmentConfirmLimiter(l ratelimit.Limiter) EnrolmentOption {
 // EnablePasskeys), a passkey registered from an enrolment-only session waits
 // for a code emailed to the user by default, and with this option it is
 // active at once.
-func WithoutEmailConfirmation() EnrolmentOption {
+func WithoutEnrolmentEmailConfirmation() EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
 		i.emailConfirmation = false
 
@@ -487,17 +487,17 @@ func WithEnrolmentSynchronousDelivery() EnrolmentOption {
 	}
 }
 
-// WithContactResolver sends the emailed code and the notification to the
+// WithEnrolmentContactResolver sends the emailed code and the notification to the
 // address r returns for the session's user.
 //
 // Default: mfa.UsernameAsAddress, the username unchanged, which is the
 // convention magic links already rely on. A consumer whose usernames are not
 // addresses reads the address from their own records here. The address is
 // never written to a log. A nil resolver is refused.
-func WithContactResolver(r mfa.ContactResolver) EnrolmentOption {
+func WithEnrolmentContactResolver(r mfa.ContactResolver) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
 		if r == nil {
-			return newConfigError("WithContactResolver was given no resolver; omit the " +
+			return newConfigError("WithEnrolmentContactResolver was given no resolver; omit the " +
 				"option to keep the username as the address")
 		}
 
@@ -507,17 +507,17 @@ func WithContactResolver(r mfa.ContactResolver) EnrolmentOption {
 	}
 }
 
-// WithLabelResolver labels the provisioning URI with what r returns for the
+// WithEnrolmentLabelResolver labels the provisioning URI with what r returns for the
 // session's user. The label is never read from the request.
 //
 // Default: mfa.UsernameAsAddress. A username containing ':' is refused by the
 // TOTP method as a label, and the begin then fails storing nothing; a
 // deployment whose usernames may contain one supplies its own resolver. A nil
 // resolver is refused.
-func WithLabelResolver(r mfa.LabelResolver) EnrolmentOption {
+func WithEnrolmentLabelResolver(r mfa.LabelResolver) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
 		if r == nil {
-			return newConfigError("WithLabelResolver was given no resolver; omit the " +
+			return newConfigError("WithEnrolmentLabelResolver was given no resolver; omit the " +
 				"option to keep the username as the label")
 		}
 

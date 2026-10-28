@@ -29,7 +29,7 @@ const (
 // MFAMethod is the passkey as a second factor: an mfa.ChallengeMethod named
 // MethodName on the factor.PublicKey channel, which also implements
 // mfa.EnrolmentRemover for the operator reset. Build it with
-// (*Manager).MFAMethod; the zero value is not usable.
+// (*Passkeys).MFAMethod; the zero value is not usable.
 //
 // A user is enrolled on it while they hold at least one active passkey; a
 // pending or suspended passkey does not count. Its channel is the passkey
@@ -37,7 +37,7 @@ const (
 // of a passkey login.
 //
 // Do not pass it to recovery.MFAEnrolments. The passkey kind, from
-// (*Manager).RecoveryKind, takes part in the recovery reset and the way-back
+// (*Passkeys).RecoveryKind, takes part in the recovery reset and the way-back
 // check one passkey at a time, and counts only active passkeys as a way back
 // in. Passed to both, the user's passkeys would be listed twice, and in the
 // reported-loss mode a report of the MFA method would remove all of them.
@@ -150,7 +150,7 @@ func (pm *MFAMethod) PresentedChallenge(response []byte) (string, error) {
 // as at a passwordless finish — signature, user verification, the stored
 // backup-eligible flag, the consumer's login check, then the counter write
 // under the clone rule — except that the user handle is not required, and,
-// under UVPreferred, user presence without user verification is accepted,
+// under UserVerificationPreferred, user presence without user verification is accepted,
 // since a second factor proves possession. A user handle the response does
 // carry must map to user (WebAuthn L3 section 7.2 step 6); an absent one is
 // accepted.
@@ -169,7 +169,7 @@ func (pm *MFAMethod) PresentedChallenge(response []byte) (string, error) {
 //     not an invalid code, so the slot does not count it as a wrong guess;
 //   - every other refusal — an unreadable response, an unknown, pending or
 //     other user's credential, a signature that does not verify, missing user
-//     verification under UVRequired — is mfa.ErrInvalidCode, so a caller
+//     verification under UserVerificationRequired — is mfa.ErrInvalidCode, so a caller
 //     cannot tell which credentials exist;
 //   - a store failure is returned as an error of its own.
 func (pm *MFAMethod) Verify(ctx context.Context, user identity.UserID, response []byte) error {

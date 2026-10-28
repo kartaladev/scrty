@@ -25,7 +25,7 @@ var ErrAccountLocked = errors.New(accountLockedText)
 
 // accountLockedText is the text of ErrAccountLocked, which every
 // *Error starts with.
-const accountLockedText = "policy: account locked after repeated failures"
+const accountLockedText = "lockout: account locked after repeated failures"
 
 const (
 	// defaultLockoutThreshold is how many failures in the window are free
@@ -439,10 +439,10 @@ func New(opts ...Option) (*Policy, error) {
 			set  bool
 			name string
 		}{
-			{p.setThreshold, "WithLockoutThreshold"},
-			{p.setWindow, "WithLockoutWindow"},
-			{p.setWait, "WithLockoutWait"},
-			{p.setCeiling, "WithLockoutCeiling"},
+			{p.setThreshold, "WithThreshold"},
+			{p.setWindow, "WithWindow"},
+			{p.setWait, "WithWait"},
+			{p.setCeiling, "WithCeiling"},
 		} {
 			if c.set {
 				conflicts = append(conflicts, c.name)
@@ -450,7 +450,7 @@ func New(opts ...Option) (*Policy, error) {
 		}
 		if len(conflicts) > 0 {
 			return nil, fmt.Errorf(
-				"%w: WithSlidingLockout sets its own threshold and window and has no wait or ceiling, so "+
+				"%w: WithSliding sets its own threshold and window and has no wait or ceiling, so "+
 					"combining it with %s would silently change what that option means",
 				policy.ErrConfig, strings.Join(conflicts, ", "))
 		}
@@ -481,8 +481,8 @@ func New(opts ...Option) (*Policy, error) {
 	}
 
 	if p.setCapRetention && !p.setCap {
-		return nil, fmt.Errorf("%w: WithLockoutCapRetention has no cap to retain counts for: "+
-			"pass WithLockoutCap too, or drop it", policy.ErrConfig)
+		return nil, fmt.Errorf("%w: WithCapRetention has no cap to retain counts for: "+
+			"pass WithCap too, or drop it", policy.ErrConfig)
 	}
 	if p.setCap {
 		if err := p.validateCap(); err != nil {
@@ -540,25 +540,25 @@ func (p *Policy) validateEscalation() error {
 // the cap on.
 func (p *Policy) validateCap() error {
 	if p.capLimit <= 0 {
-		return fmt.Errorf("%w: WithLockoutCap must be positive, got %d: "+
+		return fmt.Errorf("%w: WithCap must be positive, got %d: "+
 			"leave the option out for no cap", policy.ErrConfig, p.capLimit)
 	}
 	if p.capLimit <= p.threshold {
-		return fmt.Errorf("%w: WithLockoutCap must be above the threshold, got cap %d and threshold %d: "+
+		return fmt.Errorf("%w: WithCap must be above the threshold, got cap %d and threshold %d: "+
 			"the first lock would already be a hold", policy.ErrConfig, p.capLimit, p.threshold)
 	}
 	if p.capRetention <= 0 {
-		return fmt.Errorf("%w: WithLockoutCapRetention must be positive, got %s", policy.ErrConfig, p.capRetention)
+		return fmt.Errorf("%w: WithCapRetention must be positive, got %s", policy.ErrConfig, p.capRetention)
 	}
 	if p.capRetention < p.window {
-		return fmt.Errorf("%w: WithLockoutCapRetention %s is shorter than the lockout window %s: "+
+		return fmt.Errorf("%w: WithCapRetention %s is shorter than the lockout window %s: "+
 			"a count would expire while the window still counts its failures",
 			policy.ErrConfig, p.capRetention, p.window)
 	}
 	streaks, ok := p.store.(FailureStreakStore)
 	if !ok {
-		return fmt.Errorf("%w: WithLockoutCap needs an attempt store that keeps consecutive failures "+
-			"(policy.FailureStreakStore), and %T does not", policy.ErrConfig, p.store)
+		return fmt.Errorf("%w: WithCap needs an attempt store that keeps consecutive failures "+
+			"(lockout.FailureStreakStore), and %T does not", policy.ErrConfig, p.store)
 	}
 	p.streaks = streaks
 
@@ -623,7 +623,7 @@ func (p *Policy) CapRetention() time.Duration { return p.capRetention }
 // records failures under it locks it like any other account.
 //
 // A store that cannot answer denies, with a reason of fixed text that matches
-// policy.ErrPolicyDenied and wraps the store's error, reachable through errors.Is and
+// policy.ErrDenied and wraps the store's error, reachable through errors.Is and
 // errors.As but not repeated in the text. That holds for every query, so a
 // store that answers the window but not the wait, or the window but not
 // whether the identifier is held, still denies. Failing open
@@ -720,7 +720,7 @@ func storeDenied(err error) policy.Decision {
 	return policy.Decision{
 		Outcome: policy.Deny,
 		Reason: diag.Wrap(err,
-			"policy: denied by policy: the attempt store could not say how often this identifier has failed",
+			"lockout: denied by policy: the attempt store could not say how often this identifier has failed",
 			policy.ErrDenied),
 	}
 }
@@ -750,7 +750,7 @@ func lockedDecision(failures int, window, wait time.Duration) policy.Decision {
 // reported to the observer given by WithObserver.
 func (p *Policy) RecordFailure(ctx context.Context, username string) error {
 	if err := p.attempts.RecordFailure(ctx, username, p.clock.Now()); err != nil {
-		return diag.Wrap(err, "policy: record a failed attempt")
+		return diag.Wrap(err, "lockout: record a failed attempt")
 	}
 
 	return nil
@@ -774,7 +774,7 @@ func (p *Policy) RecordFailure(ctx context.Context, username string) error {
 // a login's is, and one that lifted a hold is reported as ReportReleased.
 func (p *Policy) Reset(ctx context.Context, username string) error {
 	if err := p.attempts.Reset(ctx, username); err != nil {
-		return diag.Wrap(err, "policy: clear failed attempts")
+		return diag.Wrap(err, "lockout: clear failed attempts")
 	}
 
 	return nil
@@ -818,7 +818,7 @@ func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 
 	removed, err := reaper.DeleteAttemptsBefore(ctx, now.Add(-p.window))
 	if err != nil {
-		return 0, purgeFailed(err, "policy: purge stale failed attempts")
+		return 0, purgeFailed(err, "lockout: purge stale failed attempts")
 	}
 
 	if p.streaks == nil {
@@ -827,7 +827,7 @@ func (p *Policy) PurgeExpired(ctx context.Context) (int, error) {
 
 	streaks, err := p.streaks.DeleteStreaksBefore(ctx, now.Add(-p.capRetention))
 	if err != nil {
-		return 0, purgeFailed(err, "policy: purge inactive consecutive failures")
+		return 0, purgeFailed(err, "lockout: purge inactive consecutive failures")
 	}
 
 	return removed + streaks, nil

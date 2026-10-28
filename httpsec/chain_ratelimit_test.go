@@ -299,7 +299,7 @@ func TestChain_RateLimiterFactoryReachesFlows(t *testing.T) {
 				ph.enrolOpts = append(ph.enrolOpts,
 					httpsec.WithEnrolmentBeginLimiter(oneFailurePerMinute(t)),
 					httpsec.WithEnrolmentConfirmLimiter(oneFailurePerMinute(t)))
-				ph.passkeyOpts = append(ph.passkeyOpts, httpsec.WithPasswordlessLogin(
+				ph.passkeyOpts = append(ph.passkeyOpts, httpsec.WithPasskeyPasswordlessLogin(
 					httpsec.PasswordlessTokens(ph.tokens), httpsec.PasswordlessLimiter(oneFailurePerMinute(t))))
 				ph.extra = append(ph.extra, discard, factory,
 					httpsec.EnableAPIKey(newAPIKeyHarness(t).keys, httpsec.WithAPIKeyLimiter(oneFailurePerMinute(t))))

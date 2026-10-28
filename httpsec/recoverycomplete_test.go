@@ -321,7 +321,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			name: "remaining and low count the reissued set by the manager's threshold",
 			arrange: func(t *testing.T, h *recoveryHarness) {
 				var err error
-				h.codes, err = recovery.NewCodes(recovery.WithSetSize(2))
+				h.codes, err = recovery.NewCodes(recovery.WithCodesSetSize(2))
 				require.NoError(t, err)
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
@@ -1021,7 +1021,7 @@ func lockDecoyAuthenticator(t *testing.T, decoys int) authenticate.Authenticator
 
 	provider, err := authenticate.NewUsernamePasswordAuthenticator(NewMockUserLoader(ctrl),
 		authenticate.WithPasswordEncoder(enc),
-		authenticate.WithPasswordAuthenticatorLogger(slog.New(slog.DiscardHandler)))
+		authenticate.WithPasswordLogger(slog.New(slog.DiscardHandler)))
 	require.NoError(t, err)
 
 	m, err := authenticate.NewFirstOf(provider)

@@ -29,7 +29,7 @@ func mfaSamplingPair(
 	challengeLog, requirementLog = &bytes.Buffer{}, &bytes.Buffer{}
 
 	challenge, err := policy.NewMFA([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
-		append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(challengeLog))},
+		append([]policy.MFAOption{policy.WithMFALogger(mfaLogger(challengeLog))},
 			challengeOpts...)...)
 	require.NoError(t, err)
 
@@ -76,7 +76,7 @@ func TestPolicyRefusalLogsAreSampledPerSubsystem(t *testing.T) {
 		// under its own option, so advancing past one must not reset the
 		// other.
 		challenge, requirement, challengeLog, requirementLog := mfaSamplingPair(t,
-			[]policy.MFAOption{policy.WithMFAPolicyLogInterval(time.Minute)},
+			[]policy.MFAOption{policy.WithMFALogInterval(time.Minute)},
 			[]policy.MFARequirementOption{policy.WithMFARequirementLogInterval(time.Hour)})
 
 		mfaRefuseBoth(t, challenge, requirement, 50)
@@ -155,8 +155,8 @@ func TestPolicySamplingClockOverride(t *testing.T) {
 				t.Helper()
 
 				p, err := policy.NewMFA([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
-					policy.WithMFAPolicyLogger(mfaLogger(buf)),
-					policy.WithMFAPolicyClock(clk))
+					policy.WithMFALogger(mfaLogger(buf)),
+					policy.WithMFAClock(clk))
 				require.NoError(t, err)
 
 				return p

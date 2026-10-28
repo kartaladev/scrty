@@ -56,7 +56,7 @@ type passwordlessConfig struct {
 }
 
 // PasswordlessSetting configures passwordless login, inside
-// WithPasswordlessLogin. Each replaces one of the defaults named there.
+// WithPasskeyPasswordlessLogin. Each replaces one of the defaults named there.
 type PasswordlessSetting func(*passwordlessConfig) error
 
 // passwordlessInterceptor answers the passwordless begin and finish
@@ -94,12 +94,12 @@ type passwordlessInterceptor struct {
 	now func() time.Time
 }
 
-// WithPasswordlessLogin serves passwordless passkey login on the chain, at
+// WithPasskeyPasswordlessLogin serves passwordless passkey login on the chain, at
 // OrderPasskeyLogin: after the one-time link slot and before Basic
 // authentication, as a first factor. It is off unless this option is given.
 //
 // The endpoints answer POST only, under the passwordless prefix,
-// DefaultPasswordlessPrefix by default (WithPasswordlessPrefix); any other
+// DefaultPasswordlessPrefix by default (WithPasskeyPasswordlessPrefix); any other
 // method, and every other path, passes through untouched:
 //
 //   - "<prefix>/begin" is guarded by the chain's source throttle under the
@@ -109,19 +109,19 @@ type passwordlessInterceptor struct {
 //     address that cannot be attributed with
 //     authenticate.ErrAuthenticationFailed, before anything is written. It
 //     then draws 32 random bytes, starts the login bound to their base64url
-//     form (passkey.Manager.BeginLogin), sets them in the ceremony cookie,
+//     form (passkey.Passkeys.BeginLogin), sets them in the ceremony cookie,
 //     and answers 200 with {"publicKey":{…request options…}} and
 //     Cache-Control: no-store (PasswordlessBeginResponder). The cookie is
 //     DefaultPasswordlessCookieName (PasswordlessCookieName); HttpOnly,
 //     Secure and SameSite=Strict; scoped to the finish path; and lives as
-//     long as the challenge (passkey.Manager.ChallengeTTL).
+//     long as the challenge (passkey.Passkeys.ChallengeTTL).
 //   - "<prefix>/finish" first clears the ceremony cookie, whatever the
 //     outcome, with Max-Age=0 on the same path. It reads the assertion as a
 //     JSON body of at most passkey.AssertionBodyLimit (16 KiB) and never from
 //     the query: a body that is not JSON, or that the verifier cannot read, is
 //     refused with ErrCredentialsMissing, and one over the limit with
 //     ErrRequestTooLarge. It finishes the login bound to the cookie's value
-//     (passkey.Manager.Authenticate); only the first cookie of that name the
+//     (passkey.Passkeys.Authenticate); only the first cookie of that name the
 //     request carries is read, so a request whose first such cookie does not
 //     bind the challenge is refused even when a later one would. It loads the
 //     credential's user (PasskeyDeps.Users) and refuses an unknown or disabled
@@ -139,16 +139,16 @@ type passwordlessInterceptor struct {
 // codes wired (passkey.Deps.Recovery) and the optional mode
 // (passkey.WithOptionalRecoveryCodes) is not chosen, since a passkey-only
 // user would otherwise have no way back in; no token generator is given and
-// the chain has no form login to take one from; or WithPasswordlessLogin is
+// the chain has no form login to take one from; or WithPasskeyPasswordlessLogin is
 // given twice. The ceremony cookie lives as long as the challenge, so New also
 // refuses a passkey manager whose challenge lifetime
-// (passkey.Manager.ChallengeTTL) is not a whole number of seconds, at least
+// (passkey.Passkeys.ChallengeTTL) is not a whole number of seconds, at least
 // one; that bound has no override. Its paths are checked with the other
 // passkey paths (see EnablePasskeys).
-func WithPasswordlessLogin(settings ...PasswordlessSetting) PasskeyOption {
+func WithPasskeyPasswordlessLogin(settings ...PasswordlessSetting) PasskeyOption {
 	return func(p *passkeyInterceptor) error {
 		if p.passwordless != nil {
-			return newConfigError("WithPasswordlessLogin was given twice; one chain has one " +
+			return newConfigError("WithPasskeyPasswordlessLogin was given twice; one chain has one " +
 				"passwordless login")
 		}
 
@@ -170,16 +170,16 @@ func WithPasswordlessLogin(settings ...PasswordlessSetting) PasskeyOption {
 	}
 }
 
-// WithPasswordlessPrefix answers passwordless login under prefix instead:
+// WithPasskeyPasswordlessPrefix answers passwordless login under prefix instead:
 // POST "<prefix>/begin" and "<prefix>/finish". The ceremony cookie is scoped
 // to the moved finish path.
 //
 // Default: DefaultPasswordlessPrefix. It is validated as
 // WithPasskeyRegistrationPrefix's is, and New refuses it when passwordless
-// login is not enabled (WithPasswordlessLogin), since it would move nothing.
-func WithPasswordlessPrefix(prefix string) PasskeyOption {
+// login is not enabled (WithPasskeyPasswordlessLogin), since it would move nothing.
+func WithPasskeyPasswordlessPrefix(prefix string) PasskeyOption {
 	return func(p *passkeyInterceptor) error {
-		trimmed, err := passkeyPrefix("WithPasswordlessPrefix", prefix)
+		trimmed, err := passkeyPrefix("WithPasskeyPasswordlessPrefix", prefix)
 		if err != nil {
 			return err
 		}

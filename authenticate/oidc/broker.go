@@ -73,7 +73,7 @@ var _ IdentityBroker = (*Broker)(nil)
 // Both are required: a nil link store or user loader, including a nil pointer
 // inside a non-nil interface, fails with ErrConfig and identity.ErrMissingPort
 // naming the port. The library's in-memory link store is NewMemoryLinkStore.
-// With no options the broker provisions no one (see WithJIT), logs to slog.Default(), reads
+// With no options the broker provisions no one (see WithBrokerJIT), logs to slog.Default(), reads
 // time from clock.System() and draws link identifiers from id.NewV7Generator().
 func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption) (*Broker, error) {
 	if nilcheck.IsNil(links) {
@@ -132,17 +132,17 @@ func NewBroker(links LinkStore, users identity.UserLoader, opts ...BrokerOption)
 // gate for a provider that provisioning is not enabled for.
 func (b *Broker) checkProvisioning() error {
 	if len(b.jit) > 0 && b.provisioner == nil {
-		return fmt.Errorf("%w: WithJIT: %w", ErrConfig, identity.MissingPort("user provisioner"))
+		return fmt.Errorf("%w: WithBrokerJIT: %w", ErrConfig, identity.MissingPort("user provisioner"))
 	}
 	for p := range b.jitUnverified {
 		if !b.jit[p] {
-			return fmt.Errorf("%w: WithJITAllowUnverifiedEmail names provider %q, which WithJIT does not enable",
+			return fmt.Errorf("%w: WithBrokerJITAllowUnverifiedEmail names provider %q, which WithBrokerJIT does not enable",
 				ErrConfig, p)
 		}
 	}
 	for p := range b.jitDomains {
 		if !b.jit[p] {
-			return fmt.Errorf("%w: WithJITEmailDomains names provider %q, which WithJIT does not enable",
+			return fmt.Errorf("%w: WithBrokerJITEmailDomains names provider %q, which WithBrokerJIT does not enable",
 				ErrConfig, p)
 		}
 	}
@@ -215,11 +215,11 @@ func (b *Broker) resolveLinked(ctx context.Context, ext ExternalIdentity, l *Lin
 func (b *Broker) Links() LinkStore { return b.links }
 
 // ConfiguredProviders returns every provider any option names, deduplicated,
-// so NewManager can refuse one its registry does not hold. The returned slice
+// so NewRelyingParty can refuse one its registry does not hold. The returned slice
 // is the caller's own.
 func (b *Broker) ConfiguredProviders() []string { return slices.Clone(b.providers) }
 
-// RoleSyncProviders returns the providers WithRoleSync turned on, sorted.
+// RoleSyncProviders returns the providers WithBrokerRoleSync turned on, sorted.
 // The HTTP chain reads it to refuse role sync over a conveyance that would
 // drop the synced roles. The returned slice is the caller's own.
 func (b *Broker) RoleSyncProviders() []string {
@@ -263,7 +263,7 @@ func (b *Broker) reportSuppressed(key string, suppressed int) {
 // flight, and safe to call more than once: a second flush with nothing new
 // pending reports nothing. Call it directly, or let
 // httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
-// was given (oidc.Manager.FlushRefusalLogs), when the manager's broker is
+// was given (oidc.RelyingParty.FlushRefusalLogs), when the manager's broker is
 // this one.
 func (b *Broker) FlushRefusalLogs() error {
 	b.sampler.Flush()

@@ -102,13 +102,13 @@ func (b *Broker) checkMirroring() error {
 			continue
 		}
 		if b.provisioner == nil {
-			return fmt.Errorf("%w: WithClaimMirror for provider %q: %w",
+			return fmt.Errorf("%w: WithBrokerClaimMirror for provider %q: %w",
 				ErrConfig, provider, identity.MissingPort("user provisioner"))
 		}
 		_, name := b.nameClaims[provider]
 		_, hash := b.passwordClaims[provider]
 		if !name && !hash {
-			return fmt.Errorf("%w: WithClaimMirror for provider %q needs a display-name or password-hash claim path",
+			return fmt.Errorf("%w: WithBrokerClaimMirror for provider %q needs a display-name or password-hash claim path",
 				ErrConfig, provider)
 		}
 	}

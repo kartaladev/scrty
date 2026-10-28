@@ -388,7 +388,7 @@ func TestWayBackCheck(t *testing.T) {
 			m := newWayBackMocks(gomock.NewController(t))
 			deps := recovery.WayBackDeps{
 				Users: m.users,
-				Codes: newCodes(t, recovery.WithCodeStore(m.codes)),
+				Codes: newCodes(t, recovery.WithCodesStore(m.codes)),
 				Kinds: []recovery.AuthenticatorKind{m.kind},
 			}
 			tc.deps(&deps, m)

@@ -53,7 +53,7 @@ var (
 // configured alike, which Verify cannot check.
 func (f *LimiterFactory) Verify(ctx context.Context) error { return f.check.verify(ctx) }
 
-// Verify checks the server behind the limiter's client, as Factory.Verify
+// Verify checks the server behind the limiter's client, as LimiterFactory.Verify
 // does.
 func (l *Limiter) Verify(ctx context.Context) error { return l.check.verify(ctx) }
 
@@ -65,7 +65,7 @@ var (
 
 // msgPolicyUnread is the WARN Verify writes when the eviction policy cannot
 // be read. It is fixed, so that an operator's alert can match it.
-const msgPolicyUnread = "scrtyredis: maxmemory-policy could not be read; the limiter needs noeviction, " +
+const msgPolicyUnread = "redisstore: maxmemory-policy could not be read; the limiter needs noeviction, " +
 	"because an evicted key disarms its limit"
 
 // serverCheck is what Verify checks with.
@@ -93,7 +93,7 @@ func newServerCheck(client redis.UniversalClient, cfg config) serverCheck {
 func (c serverCheck) verify(ctx context.Context) error {
 	info, err := c.client.Info(ctx, "server").Result()
 	if err != nil {
-		return diag.Wrap(err, "scrtyredis: verify: the server version could not be read")
+		return diag.Wrap(err, "redisstore: verify: the server version could not be read")
 	}
 	if err := checkVersion(info); err != nil {
 		return err
@@ -111,7 +111,7 @@ func (c serverCheck) verify(ctx context.Context) error {
 				return diag.Wrap(err, "ratelimit: invalid configuration: the server refused to load the limiter's scripts with SCRIPT LOAD",
 					ratelimit.ErrConfig)
 			}
-			return diag.Wrap(err, "scrtyredis: verify: the limiter's scripts could not be loaded")
+			return diag.Wrap(err, "redisstore: verify: the limiter's scripts could not be loaded")
 		}
 	}
 
@@ -151,7 +151,7 @@ func (c serverCheck) probe(ctx context.Context) error {
 func (c serverCheck) checkEvictionPolicy(ctx context.Context) error {
 	got, err := c.client.ConfigGet(ctx, "maxmemory-policy").Result()
 	if err != nil && !isServerError(err) {
-		return diag.Wrap(err, "scrtyredis: verify: maxmemory-policy could not be read")
+		return diag.Wrap(err, "redisstore: verify: maxmemory-policy could not be read")
 	}
 	policy, ok := got["maxmemory-policy"]
 	if err != nil || !ok {
@@ -189,7 +189,7 @@ var noPermCommand = regexp.MustCompile(`'([A-Za-z_]+)' command`)
 func probeError(err error) error {
 	text, ok := aclRefusalText(err)
 	if !ok {
-		return diag.Wrap(err, "scrtyredis: verify: the limiter's scripts could not run on a probe key")
+		return diag.Wrap(err, "redisstore: verify: the limiter's scripts could not run on a probe key")
 	}
 
 	// Redis 7.0 does not name the command a script was refused, so the

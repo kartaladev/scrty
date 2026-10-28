@@ -8,7 +8,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 )
 
-// ErrConfig is wrapped by every error NewManager returns for a wiring mistake.
+// ErrConfig is wrapped by every error New returns for a wiring mistake.
 // A magic-link manager that cannot be built is a fault the consumer sees from
 // the constructor, never a surprise on the first request that needs it.
 var ErrConfig = errors.New("magiclink: invalid configuration")

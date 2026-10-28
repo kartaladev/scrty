@@ -22,16 +22,16 @@ const (
 	defaultIdlePolicyAbsoluteTimeout = 12 * time.Hour
 )
 
-// ErrSessionIdle is the reason an IdleTimeoutPolicy denies with, and what a
+// ErrSessionIdle is the reason an IdleTimeout denies with, and what a
 // caller matches to tell "you have been away too long, log in again" from a
 // refusal that no amount of logging in would fix.
 var ErrSessionIdle = errors.New("policy: session has been idle too long")
 
-// IdleOption configures an IdleTimeoutPolicy. Every option names the default it
+// IdleOption configures an IdleTimeout. Every option names the default it
 // replaces, and every default works with no configuration at all.
 type IdleOption func(*IdleTimeout)
 
-// WithIdlePolicyTimeout replaces how long a session may go unused before this
+// WithIdleTimeout replaces how long a session may go unused before this
 // policy refuses the next request. The default is 30 minutes. Zero or less is
 // a configuration error: it would refuse every request the instant after the
 // one that recorded the access.
@@ -42,19 +42,19 @@ type IdleOption func(*IdleTimeout)
 // is refused. One option must never govern two subsystems — a consumer who
 // wants them to agree passes the same duration to both, and one who wants this
 // policy to refuse earlier than the store expires can have that too.
-func WithIdlePolicyTimeout(d time.Duration) IdleOption {
+func WithIdleTimeout(d time.Duration) IdleOption {
 	return func(p *IdleTimeout) { p.idle = d }
 }
 
-// WithIdlePolicyAbsoluteTimeout replaces the deadline nothing extends, which
+// WithIdleAbsoluteTimeout replaces the deadline nothing extends, which
 // this policy reports through Thresholds. The default is 12 hours. Zero or
 // less is a configuration error, for the same reason a zero idle timeout is.
 //
-// Like WithIdlePolicyTimeout it is named for this policy, and is distinct from
+// Like WithIdleTimeout it is named for this policy, and is distinct from
 // session's WithAbsoluteTimeout, so a deployment can hand the session manager
 // one set of deadlines and this policy another without either option reaching
 // into the other's subsystem.
-func WithIdlePolicyAbsoluteTimeout(d time.Duration) IdleOption {
+func WithIdleAbsoluteTimeout(d time.Duration) IdleOption {
 	return func(p *IdleTimeout) { p.absolute = d }
 }
 
@@ -135,7 +135,7 @@ func (p *IdleTimeout) Phases() []Phase { return []Phase{PerRequest} }
 // establishes one, not by a rule about how long ago it was last used.
 //
 // A session judged with no evaluation time — Input.Now left at the zero time —
-// denies with ErrPolicyDenied. There is no clock to fall back on, and none is
+// denies with ErrDenied. There is no clock to fall back on, and none is
 // offered: the caller supplies the time, a forgotten one is a caller bug, and
 // measured from the zero time every session would look fresh.
 func (p *IdleTimeout) Evaluate(_ context.Context, in *Input) Decision {
@@ -176,5 +176,5 @@ func (p *IdleTimeout) Thresholds(createdAt, now time.Time) (idle, absolute time.
 }
 
 // IdleTimeout reports how long a session may go unused before this policy
-// refuses the next request, which is what WithIdlePolicyTimeout configured.
+// refuses the next request, which is what WithIdleTimeout configured.
 func (p *IdleTimeout) IdleTimeout() time.Duration { return p.idle }

@@ -23,7 +23,7 @@ func (f enrolmentPathOption) applyEnrolmentPath(e *enrolmentPath) { f(e) }
 
 // WithMFAEnrolmentPath turns on the enrolment path: a user who must use a
 // second factor, and has no usable enrolment, is challenged with
-// ChallengeMFAEnrolment instead of being refused with ErrMFAEnrollmentRequired.
+// ChallengeMFAEnrolment instead of being refused with ErrMFAEnrolmentRequired.
 //
 // The default is off, and with it off every decision is the one the policy
 // made before the path existed.
@@ -40,7 +40,7 @@ func (f enrolmentPathOption) applyEnrolmentPath(e *enrolmentPath) { f(e) }
 // # What it admits
 //
 // The path is entered only when every one of these holds; otherwise the policy
-// refuses with ErrMFAEnrollmentRequired, as it would with the path off:
+// refuses with ErrMFAEnrolmentRequired, as it would with the path off:
 //
 //   - the path has not been closed (WithEnrolmentPathUntil);
 //   - the phase is post-authentication or per-request — a stateless request has
@@ -95,12 +95,12 @@ func WithMFAEnrolmentPath(opts ...EnrolmentPathOption) MFARequirementOption {
 // authenticator. A consumer who replaces the list and leaves factor.Recovery
 // off gives a required user left with no usable second factor after a
 // recovery no enrolment route at all — every request of theirs is refused
-// with ErrMFAEnrollmentRequired instead, exactly as it would be with the path
+// with ErrMFAEnrolmentRequired instead, exactly as it would be with the path
 // off. Such a user can then only reach a route the consumer wired to accept a
 // recovery-pending session before it is bound, such as a password change.
 //
 // The list governs only whether a login the policy would otherwise refuse with
-// ErrMFAEnrollmentRequired enters the path. It changes neither whether a user
+// ErrMFAEnrolmentRequired enters the path. It changes neither whether a user
 // is required to use a second factor nor which first factors are exempt
 // (WithMFAExemption): an exempt login is allowed before the path is consulted,
 // whatever the list says.
@@ -136,7 +136,7 @@ func WithEnrolmentFirstFactors(kinds ...factor.Kind) EnrolmentPathOption {
 
 // WithEnrolmentPathUntil closes the enrolment path at an instant. From that
 // instant on, a required user with no usable enrolment is refused with
-// ErrMFAEnrollmentRequired, as with the path off. The default is no instant: the
+// ErrMFAEnrolmentRequired, as with the path off. The default is no instant: the
 // path stays open for as long as it is enabled. The zero time also means no
 // instant.
 //

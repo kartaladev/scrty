@@ -62,7 +62,7 @@ type Attributes any
 //
 // An implementation handed attributes of a kind it does not judge returns an
 // error matching ErrUnsupportedAttributes and does nothing else — no logging
-// decision, no partial check — because a Manager will offer the same attributes
+// decision, no partial check — because a FirstOf will offer the same attributes
 // to the next authorizer and the answer must come from exactly one of them.
 //
 // The subject is read from ctx with identity.PrincipalFromContext rather than

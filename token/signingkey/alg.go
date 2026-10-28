@@ -14,12 +14,12 @@
 //
 // # Wiring
 //
-// NewKeyManager returns a manager that already has a current key and starts no
+// New returns a manager that already has a current key and starts no
 // goroutine. Start launches the rotation, reload and housekeeping loops; Stop
 // ends them and returns only once they have ended, an in-flight store write
 // included.
 //
-//	km, err := signingkey.NewKeyManager(ctx)
+//	km, err := signingkey.New(ctx)
 //	if err != nil {
 //		return err
 //	}
@@ -39,7 +39,7 @@
 // # Publishing
 //
 // Whatever verifies scrty's tokens elsewhere needs the keys they were signed
-// with, so KeyManager.JWKS renders the ones it holds as the RFC 7517 document
+// with, so Keys.JWKS renders the ones it holds as the RFC 7517 document
 // a /.well-known/jwks.json endpoint serves — bytes, so writing that response
 // needs no JOSE library either. A consumer whose endpoint must say something
 // else builds its own document from the keys VerificationKeys reports.

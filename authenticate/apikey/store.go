@@ -10,7 +10,7 @@ import (
 
 // Store persists issued key records.
 //
-// With no store configured a Manager uses NewMemoryStore, which does not
+// With no store configured a Keys value uses NewMemoryStore, which does not
 // survive a restart: every key issued by the previous process stops working. A
 // consumer replaces it with any implementation through WithStore, typically one
 // backed by a table, and nothing else about the manager changes.

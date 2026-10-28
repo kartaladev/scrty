@@ -192,7 +192,7 @@ func TestAttemptStore_Refusals(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context) {
 				_, err := s.FailureCount(ctx, "alice", time.Time{})
 				require.ErrorIs(t, err, context.Canceled)
-				assert.ErrorContains(t, err, "gorm: count login failures")
+				assert.ErrorContains(t, err, "gormstore: count login failures")
 			},
 		},
 	}

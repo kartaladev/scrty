@@ -75,12 +75,12 @@ type Codes struct {
 	setSize      int
 	lowThreshold int
 
-	// limiterSet records that WithCodeLimiter was given, so a limiter passed
+	// limiterSet records that WithCodesLimiter was given, so a limiter passed
 	// as nil is told apart from one never mentioned.
 	limiterSet bool
 
 	// factory builds the limiter when no limiter was given; factorySet
-	// records that WithCodeLimiterFactory was given, for the same reason.
+	// records that WithCodesLimiterFactory was given, for the same reason.
 	factory    ratelimit.LimiterFactory
 	factorySet bool
 }
@@ -129,7 +129,7 @@ func NewCodes(opts ...CodesOption) (*Codes, error) {
 }
 
 // resolveLimiter settles the limiter by precedence: the limiter
-// WithCodeLimiter gave, then one built by the factory WithCodeLimiterFactory
+// WithCodesLimiter gave, then one built by the factory WithCodesLimiterFactory
 // gave, then the in-memory default logging through the manager's logger and
 // clock. A limiter or factory replaced with nothing is refused, the factory
 // even beside an explicit limiter that would have won.

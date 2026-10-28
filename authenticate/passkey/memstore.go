@@ -226,7 +226,7 @@ func (s *MemoryCredentialStore) Suspend(_ context.Context, cid id.ID) (bool, err
 
 // ClearReason clears the single reason r of user's pending credential cid
 // where it is set, activating the credential when no reason remains and
-// dropping its emailed code when r is AwaitingEmailCode. Any other r is
+// dropping its emailed code when r is PendingEmailCode. Any other r is
 // refused.
 func (s *MemoryCredentialStore) ClearReason(
 	_ context.Context, user identity.UserID, cid id.ID, r PendingReason,
@@ -308,7 +308,7 @@ func (s *MemoryCredentialStore) Delete(_ context.Context, user identity.UserID, 
 	return true, nil
 }
 
-// DeleteAwaitingSavedCodes removes user's credentials with AwaitingSavedCodes
+// DeleteAwaitingSavedCodes removes user's credentials with PendingSavedCodes
 // set, and reports how many.
 func (s *MemoryCredentialStore) DeleteAwaitingSavedCodes(_ context.Context, user identity.UserID) (int, error) {
 	return s.deleteWhere(func(c *Credential) bool {

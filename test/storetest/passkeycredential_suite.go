@@ -44,7 +44,7 @@ func passkeyCredential(n int, user identity.UserID, credID string) *passkey.Cred
 var passkeyCodeExpiry = suiteStart.Add(time.Hour)
 
 // passkeyPending returns c pending on reasons, with an emailed code when
-// AwaitingEmailCode is among them.
+// PendingEmailCode is among them.
 func passkeyPending(c *passkey.Credential, reasons passkey.PendingReason) *passkey.Credential {
 	c.State = passkey.StatePending
 	c.Pending = reasons

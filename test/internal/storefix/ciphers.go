@@ -47,19 +47,19 @@ func CipherOf(t *testing.T, opts ...seal.KeyringOption) seal.Cipher {
 // UnderK1 seals under K1 alone.
 func (k Keys) UnderK1(t *testing.T) seal.Cipher {
 	t.Helper()
-	return CipherOf(t, seal.WithEncryptionKey("k1", k.K1))
+	return CipherOf(t, seal.WithKeyringEncryptionKey("k1", k.K1))
 }
 
 // Rotated seals under K2 and still opens what K1 sealed.
 func (k Keys) Rotated(t *testing.T) seal.Cipher {
 	t.Helper()
-	return CipherOf(t, seal.WithEncryptionKey("k2", k.K2), seal.WithRetiredEncryptionKey("k1", k.K1))
+	return CipherOf(t, seal.WithKeyringEncryptionKey("k2", k.K2), seal.WithKeyringRetiredEncryptionKey("k1", k.K1))
 }
 
 // OnlyK2 seals and opens under K2 alone: what K1 sealed does not open.
 func (k Keys) OnlyK2(t *testing.T) seal.Cipher {
 	t.Helper()
-	return CipherOf(t, seal.WithEncryptionKey("k2", k.K2))
+	return CipherOf(t, seal.WithKeyringEncryptionKey("k2", k.K2))
 }
 
 // TestCipher is the cipher a test uses when the keys do not matter: k2

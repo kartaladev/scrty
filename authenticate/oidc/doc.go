@@ -13,8 +13,8 @@
 // # Wiring
 //
 // A Registry names the trusted providers; a Broker resolves and, where
-// enabled, provisions the users they assert; a Manager drives the login
-// against the registry through the broker; a HandoffManager conveys a
+// enabled, provisions the users they assert; a RelyingParty drives the login
+// against the registry through the broker; a Handoff conveys a
 // completed login to httpsec, which answers the four HTTP endpoints:
 //
 //	registry, err := oidc.NewRegistry(oidc.Provider{
@@ -27,9 +27,9 @@
 //
 //	broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
 //
-//	manager, err := oidc.NewManager(registry, broker)
+//	manager, err := oidc.NewRelyingParty(registry, broker)
 //
-//	handoffs, err := oidc.NewHandoffManager(oidc.NewMemoryHandoffStore(), users)
+//	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 //
 //	chainOpt := httpsec.EnableOIDCLogin(manager, handoffs,
 //		httpsec.WithOIDCTokens(tokens),
@@ -38,7 +38,7 @@
 //
 // users is the application's identity.UserLoader (and identity.UserProvisioner,
 // for just-in-time provisioning); tokens and sessions are the same
-// token.Generator and *session.Manager the rest of the chain issues through.
+// token.Generator and *session.Sessions the rest of the chain issues through.
 // Every constructor's godoc names what it defaults to when an option is left
 // out, and every option names the default it replaces.
 //
@@ -59,14 +59,14 @@
 // limiter counts a source's failures per replica rather than across the fleet.
 // A deployment of more than one replica supplies a shared FlowStore
 // (WithFlowStore) and, for the handoff endpoint, a shared rate limiter
-// (httpsec.WithHandoffLimiter); the discovery cache has no shared alternative
+// (httpsec.WithOIDCHandoffLimiter); the discovery cache has no shared alternative
 // yet.
 //
 // The first request after a discovery document or key set's cache entry
 // expires waits for one fetch, bounded by the outbound client's timeout, once
 // per provider per resource per replica; concurrent callers of that fetch are
 // coalesced rather than each sending their own request. A longer
-// WithDiscoveryTTL, or calling Manager.Prefetch at start-up, moves that wait
+// WithDiscoveryTTL, or calling RelyingParty.Prefetch at start-up, moves that wait
 // off the login path.
 //
 // A handoff code travels in a URL, so it is fixed at HandoffTTL (60 seconds)
@@ -91,7 +91,7 @@
 // provider's amr or acr, read from the verified ID token alone and matched
 // exactly against the provider's Assurance (WithProviderAssurance; by default
 // amr "mfa"), or the library's own challenge. Policy matches nothing itself:
-// the Manager is the policy.FederatedAssuranceSource, and the policies are
+// the RelyingParty is the policy.FederatedAssuranceSource, and the policies are
 // given it through policy.WithFederatedAssuranceSource. The asserted values
 // are stored beside the session and matched again on every request, so a
 // tightened configuration reaches existing sessions.
@@ -104,20 +104,20 @@
 // acr_values, which a provider may ignore: it is never evidence.
 //
 // What happens when assurance is not met is the requirement policy's mode
-// (policy.WithFederatedAssurance): challenge (the default), refuse, or exempt.
+// (policy.WithMFARequirementFederatedAssurance): challenge (the default), refuse, or exempt.
 // Exempt is a bypass: a required user is let in on the provider's word alone,
 // whatever it asserted, as is marking factor.OIDC exempt with
 // policy.WithMFAExemption. Per-user rules go through WithAssuranceEvaluator.
 //
-// Role sync (WithRoleSync) re-derives a federated user's roles from a
+// Role sync (WithBrokerRoleSync) re-derives a federated user's roles from a
 // provider claim on every login and never persists them, so a provider
 // misconfiguration that empties or renames the claim removes every synced
 // role from every affected user on their next login, and a provider that lets
 // end users edit the claim hands them any local role the login is not
-// restricted from by WithAllowedRoles.
+// restricted from by WithBrokerAllowedRoles.
 //
-// A password-hash claim mapped with WithPasswordClaim (see also
-// WithClaimMirror) becomes a standby local credential: it authenticates a
+// A password-hash claim mapped with WithBrokerPasswordClaim (see also
+// WithBrokerClaimMirror) becomes a standby local credential: it authenticates a
 // user against the application's own password check independently of the
 // provider, so it is not revoked by disabling or reconfiguring the user
 // there. Mirroring keeps it current only when the provider's claim keeps

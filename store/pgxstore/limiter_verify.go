@@ -22,5 +22,5 @@ type limiterCheck struct {
 }
 
 func (c limiterCheck) verify(ctx context.Context) error {
-	return pglimiter.Verify(ctx, c.runner, "pgx", c.cfg)
+	return pglimiter.Verify(ctx, c.runner, "pgxstore", c.cfg)
 }

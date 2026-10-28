@@ -252,7 +252,7 @@ func TestEnrolmentLogs(t *testing.T) {
 
 			var err error
 			h.totp, err = mfa.NewTOTP(h.store, enrolIssuer,
-				mfa.WithClock(h.clock), mfa.WithTOTPLogger(slog.New(methodLogs)))
+				mfa.WithClock(h.clock), mfa.WithLogger(slog.New(methodLogs)))
 			require.NoError(t, err)
 
 			h.method = h.totp

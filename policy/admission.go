@@ -13,9 +13,9 @@ import (
 // check, asks it rather than repeating the policy's rules, so the two cannot
 // disagree.
 //
-// The requirement policy NewMFARequirementPolicy returns implements it, and
+// The requirement policy NewMFARequirement returns implements it, and
 // answers for itself alone: the challenge policy under
-// WithFederatedChallengeWhenUnmet(true) may still challenge a federated login
+// WithMFAFederatedChallengeWhenUnmet(true) may still challenge a federated login
 // this answer admits.
 type LoginAdmission interface {
 	// AdmitsWithoutLocalSecondFactor reports whether a login of kind for user

@@ -10,7 +10,7 @@ import (
 //
 // A hold has no wait: it lasts until the identifier's failures are cleared,
 // by a password change through the chain or by the policy's Reset.
-var ErrAccountHeld = errors.New("policy: account held until its failures are cleared")
+var ErrAccountHeld = errors.New("lockout: account held until its failures are cleared")
 
 // FailureStreak is an identifier's consecutive failures: how many there have
 // been since it was last cleared, the newest of them, and when it became held.

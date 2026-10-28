@@ -19,7 +19,7 @@ const recoveryKindName = "passkey"
 var errNoRecoveryStore = fmt.Errorf("%w: the passkey recovery kind has no credential store", ErrConfig)
 
 // recoveryKind is the passkey authenticator kind of the account-recovery
-// reset; see (*Manager).RecoveryKind.
+// reset; see (*Passkeys).RecoveryKind.
 type recoveryKind struct{ credentials CredentialStore }
 
 var (
@@ -49,12 +49,12 @@ var (
 func (m *Passkeys) RecoveryKind() recovery.AuthenticatorKind { return NewRecoveryKind(m.credentials) }
 
 // NewRecoveryKind returns the passkey authenticator kind over credentials, the
-// same kind (*Manager).RecoveryKind reports, without needing a Manager.
+// same kind (*Passkeys).RecoveryKind reports, without needing a Passkeys value.
 //
 // It exists to break a construction cycle: Deps.Recovery needs a way-back check
-// whose Kinds need this kind, and the kind would otherwise need a Manager.
+// whose Kinds need this kind, and the kind would otherwise need a Passkeys value.
 // Build the way-back check with NewRecoveryKind(credentials) first, then
-// construct the Manager over the same store. credentials must be the instance
+// construct the Passkeys over the same store. credentials must be the instance
 // passed as Deps.Credentials: when the consumer supplies no store, the manager
 // defaults to a private in-memory one, so create the in-memory store with
 // NewMemoryCredentialStore and pass that one to both.

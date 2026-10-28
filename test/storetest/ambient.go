@@ -57,7 +57,7 @@ type Ambient[S any] struct {
 //
 // It fails at once, naming every missing input, when h or a is missing one.
 //
-// The shared PostgreSQL rate limiter (sqlstore.Limiter and pgx.Limiter) does
+// The shared PostgreSQL rate limiter (sqlstore.Limiter and pgxstore.Limiter) does
 // not run this suite: it ignores the caller's transaction by design, so a
 // failure recorded in a request that rolls back still counts. Its own test
 // pins that opposite guarantee.
@@ -894,7 +894,7 @@ func awaitLockWaiters(t *testing.T, raw *sql.DB, n int, none string) {
 //
 // Both must return without a deadlock: the revocation removes the whole
 // family, and the re-rotation either finds the family gone
-// (session.ErrSessionNotFound) or, had it won the row, supersedes O and has
+// (session.ErrNotFound) or, had it won the row, supersedes O and has
 // its successor removed by the revocation's next pass. A store that locks the
 // row sorting second before the row sorting first holds it while the
 // revocation holds the other, and PostgreSQL aborts one side.
@@ -1083,7 +1083,7 @@ WHERE datname = current_database() AND pid <> pg_backend_pid()
 // From another goroutine, through a store h.NewReplica returns, it records
 // S1's first presentation. Once that mark is waiting on a lock it commits the
 // transaction, and requires the mark to be refused with
-// session.ErrSessionSuperseded, with S1's first presentation still unset.
+// session.ErrSuperseded, with S1's first presentation still unset.
 //
 // A store that judges whether S1 is superseded before it takes the row lock
 // reads the committed, unsuperseded state, waits, and then records a

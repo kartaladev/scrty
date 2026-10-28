@@ -148,7 +148,7 @@ type config struct {
 	// and a chain that resolves no session has nothing to record.
 	sessions *session.Sessions
 
-	// sessionsExplicit records that WithSessionManager set sessions, which no
+	// sessionsExplicit records that WithSessions set sessions, which no
 	// built-in's manager then replaces.
 	sessionsExplicit bool
 
@@ -254,7 +254,7 @@ func (c *config) wire(fn func(*Chain)) {
 // the chain's own activity write-back has one without the consumer declaring it
 // twice.
 //
-// The first one wins, unless WithSessionManager set one, and a nil one is ignored: a deployment has one session
+// The first one wins, unless WithSessions set one, and a nil one is ignored: a deployment has one session
 // store, and the built-in whose dependency is missing is refused by its own
 // check rather than by this one.
 func (c *config) useSessions(m *session.Sessions) {
@@ -286,7 +286,7 @@ func (c *config) useSessions(m *session.Sessions) {
 // A chain with none records no activity and refuses to store an enrolment mark.
 func WithSessions(m *session.Sessions) Option {
 	return func(c *config) error {
-		if err := requireDep("WithSessionManager", "session manager", m); err != nil {
+		if err := requireDep("WithSessions", "session manager", m); err != nil {
 			return err
 		}
 
@@ -359,10 +359,10 @@ func (c *config) checkExplicitSessions() error {
 	}
 
 	if bearer := bearerSessions(c); bearer != nil && bearer != c.sessions {
-		return newConfigError("WithSessionManager was given a manager other than the one " +
+		return newConfigError("WithSessions was given a manager other than the one " +
 			"EnableBearerToken or EnableSessionBearer resolves sessions through, so activity " +
 			"and second-factor rotation would be written where the bearer never reads; give " +
-			"both the same manager, or leave WithSessionManager out")
+			"both the same manager, or leave WithSessions out")
 	}
 
 	return nil
@@ -714,7 +714,7 @@ func WithLogger(l *slog.Logger) Option {
 // storage the replicas share when one limit has to hold across a fleet.
 //
 // Precedence, at every site: a limiter the flow was given (WithAPIKeyLimiter,
-// WithMagicLinkLimiter, WithHandoffLimiter, PasswordlessLimiter,
+// WithMagicLinkLimiter, WithOIDCHandoffLimiter, PasswordlessLimiter,
 // WithRecoveryLimiter, WithRecoveryStartLimiter, WithRecoveryUserLimiter,
 // WithMFAVerifyLimiter, WithEnrolmentBeginLimiter, WithEnrolmentConfirmLimiter)
 // wins, and f is never asked for that flow; then f; then the in-memory default.
@@ -725,10 +725,10 @@ func WithLogger(l *slog.Logger) Option {
 // "recovery-user" for the user-keyed limits of the components the chain builds
 // (the package documentation's "Rate limits" lists each with its default). f
 // does not reach a component the consumer built and handed over, such as the
-// passkey.Manager or the recovery.Codes; those take their own factory option.
+// passkey.Passkeys or the recovery.Codes; those take their own factory option.
 //
 // For the user-keyed second-factor flows, a shared limiter in
-// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during
+// ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during
 // an outage of the shared store each replica still bounds guessing on its own,
 // and users are not locked out of sign-in.
 //
@@ -1006,7 +1006,7 @@ func WithLockDisclosure() Option {
 // to issue a token with, and an attempt store of its own here would be one the
 // lockout policy never reads, which is worse than none.
 type FormLoginDeps struct {
-	// Authenticator judges the submitted credentials. An authenticate.Manager
+	// Authenticator judges the submitted credentials. An authenticate.FirstOf
 	// satisfies it, and so does a consumer's own provider.
 	Authenticator authenticate.Authenticator
 
@@ -1794,7 +1794,7 @@ func WithMFAVerifyPrefix(prefix string) MFAOption {
 // mfa.VerifyThrottleKey reports it, so a consumer sharing one limiter across
 // flows can read or clear that bucket.
 //
-// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallBackToLocal
+// For this second-factor flow, a shared limiter in ratelimit.UnavailableFallbackToLocal
 // mode is the recommended choice: during an outage of the shared store each
 // replica still bounds guessing on its own, and users are not locked out.
 //
@@ -1806,7 +1806,7 @@ func WithMFAVerifyLimiter(l ratelimit.Limiter) MFAOption {
 			return err
 		}
 
-		i.throttleOpts = append(i.throttleOpts, mfa.WithVerifyLimiter(l))
+		i.throttleOpts = append(i.throttleOpts, mfa.WithThrottleLimiter(l))
 
 		return nil
 	}
@@ -1873,7 +1873,7 @@ func WithMFAResponder(fn MFAResponder) MFAOption {
 // to ask for the full stream: it is a choice about volume, not a fault.
 func WithMFALogInterval(d time.Duration) MFAOption {
 	return func(i *mfaInterceptor) error {
-		i.throttleOpts = append(i.throttleOpts, mfa.WithVerifyLogInterval(d))
+		i.throttleOpts = append(i.throttleOpts, mfa.WithThrottleLogInterval(d))
 
 		return nil
 	}
@@ -1995,8 +1995,8 @@ type MagicLinkOption func(*magicLinkInterceptor) error
 // 202 with an empty body (WithMagicLinkRequestPath); a link is redeemed by
 // POST on DefaultMagicLinkConsumePath, which reads "token" from the form and
 // the binding from DefaultBindingCookieName (WithMagicLinkConsumePath,
-// WithBindingCookieName); no redirect target is allowed, so every submitted
-// "next" becomes "/" (WithAllowedRedirects, WithAllowedOrigins); every failed
+// WithMagicLinkBindingCookieName); no redirect target is allowed, so every submitted
+// "next" becomes "/" (WithMagicLinkAllowedRedirects, WithMagicLinkAllowedOrigins); every failed
 // redemption counts against the source (WithMagicLinkCountRefusals), at 10 per
 // 15 minutes through a limiter this flow alone uses (WithMagicLinkLimiter);
 // the built-in redeemer is the manager's own (WithMagicLinkRedeemer) and no
@@ -2088,16 +2088,16 @@ func WithMagicLinkConsumePath(path string) MagicLinkOption {
 	}
 }
 
-// WithBindingCookieName carries the same-device binding in a cookie called
+// WithMagicLinkBindingCookieName carries the same-device binding in a cookie called
 // name.
 //
 // Default: DefaultBindingCookieName. An empty name is refused: a cookie
 // without one is not set at all, and every bound link would then be
 // unredeemable.
-func WithBindingCookieName(name string) MagicLinkOption {
+func WithMagicLinkBindingCookieName(name string) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		if name == "" {
-			return newConfigError("WithBindingCookieName was given no name, so the binding " +
+			return newConfigError("WithMagicLinkBindingCookieName was given no name, so the binding " +
 				"cookie would never be set and no bound link could be redeemed")
 		}
 
@@ -2107,7 +2107,7 @@ func WithBindingCookieName(name string) MagicLinkOption {
 	}
 }
 
-// WithAllowedRedirects allows targets as redirect destinations after a link is
+// WithMagicLinkAllowedRedirects allows targets as redirect destinations after a link is
 // redeemed.
 //
 // Default: none, so every submitted target becomes "/". A target is used only
@@ -2116,12 +2116,12 @@ func WithBindingCookieName(name string) MagicLinkOption {
 // a way of reaching an entry that was never configured.
 //
 // An entry is either a host-relative path, or an absolute http or https URL
-// without userinfo whose origin was declared with WithAllowedOrigins. Anything
+// without userinfo whose origin was declared with WithMagicLinkAllowedOrigins. Anything
 // else fails construction, naming the entry and this option.
 //
 // Calls accumulate, so a consumer whose configuration is split across several
 // places builds one list from all of them.
-func WithAllowedRedirects(targets ...string) MagicLinkOption {
+func WithMagicLinkAllowedRedirects(targets ...string) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		i.allowedRedirects = append(i.allowedRedirects, targets...)
 
@@ -2129,7 +2129,7 @@ func WithAllowedRedirects(targets ...string) MagicLinkOption {
 	}
 }
 
-// WithAllowedOrigins declares the origins an absolute redirect entry may sit
+// WithMagicLinkAllowedOrigins declares the origins an absolute redirect entry may sit
 // on.
 //
 // Default: none, under which only host-relative targets can ever be accepted,
@@ -2141,7 +2141,7 @@ func WithAllowedRedirects(targets ...string) MagicLinkOption {
 // An origin is a scheme, a host and an optional port, and must be https except
 // on a loopback host, where http is accepted so a consumer can develop against
 // one. Anything else fails construction, naming the origin and this option.
-func WithAllowedOrigins(origins ...string) MagicLinkOption {
+func WithMagicLinkAllowedOrigins(origins ...string) MagicLinkOption {
 	return func(i *magicLinkInterceptor) error {
 		i.allowedOrigins = append(i.allowedOrigins, origins...)
 
@@ -2259,7 +2259,7 @@ func WithMagicLinkTokens(g token.Generator) MagicLinkOption {
 // decision the endpoint's check made before the link was spent, with no second
 // evaluation after it, and a success whose check never ran, or that returns a
 // user with a different reference or password-change instant than the check
-// was handed, is refused with policy.ErrPolicyDenied.
+// was handed, is refused with policy.ErrDenied.
 //
 // A nil redeemer is refused: there would be nothing to redeem with.
 func WithMagicLinkRedeemer(r Redeemer) MagicLinkOption {
@@ -2339,7 +2339,7 @@ type PasswordChangeOption func(*passwordChangeGate) error
 //
 // Default: no resolve endpoint, under which a session that owes a change is
 // refused until a new login clears it. Register one with
-// WithChangePasswordEndpoint to let a caller pay the debt without logging in
+// WithPasswordChangeEndpoint to let a caller pay the debt without logging in
 // again. A request carrying no session passes the gate untouched.
 //
 // A successful resolve also clears the caller's lockout failures (see
@@ -2381,7 +2381,7 @@ func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChange
 	}
 }
 
-// WithChangePasswordEndpoint answers POST requests on path with fn.
+// WithPasswordChangeEndpoint answers POST requests on path with fn.
 //
 // Default: no endpoint at all, under which only a new login clears the
 // challenge. Requests to path pass the gate, so the one endpoint a caller who
@@ -2391,14 +2391,14 @@ func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChange
 // An empty path, or no function, is refused: either would be an endpoint that
 // cannot answer, while the consumer believed their callers had a way out of
 // the gate.
-func WithChangePasswordEndpoint(path string, fn ChangePasswordFunc) PasswordChangeOption {
+func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChangeOption {
 	return func(g *passwordChangeGate) error {
 		switch {
 		case path == "":
-			return newConfigError("WithChangePasswordEndpoint was given no path, so a caller " +
+			return newConfigError("WithPasswordChangeEndpoint was given no path, so a caller " +
 				"owing a password change would have no way to resolve it")
 		case fn == nil:
-			return newConfigError("WithChangePasswordEndpoint was given no function to change "+
+			return newConfigError("WithPasswordChangeEndpoint was given no function to change "+
 				"the password with for %q", path)
 		}
 

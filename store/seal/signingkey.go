@@ -64,7 +64,7 @@ type signingKeyStore struct {
 // fails rewrites nothing. WithResealOnRead(false) turns re-sealing off.
 //
 // A nil inner store or a nil cipher, typed nil included, or a nil option is a
-// configuration error matching ErrInvalidConfiguration, and so is a nil r
+// configuration error matching ErrConfig, and so is a nil r
 // unless re-sealing on read is turned off: re-sealing is the default, and a
 // store with nowhere to re-seal to would quietly keep retired keys in use. With
 // re-sealing off, r is not used and may be nil. WithClock is refused: the

@@ -343,7 +343,7 @@ func TestOIDCBackchannel(t *testing.T) {
 				h.password(t, "password")
 				h.federated(t, "federated", testOIDCProvider, h.issuer(), "abc")
 
-				return []httpsec.OIDCOption{httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll)}
+				return []httpsec.OIDCOption{httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll)}
 			},
 			act: subjectOnly,
 			assert: func(t *testing.T, h *backchannelHarness, s served) {
@@ -431,7 +431,7 @@ func TestOIDCBackchannel(t *testing.T) {
 
 				return []httpsec.OIDCOption{
 					httpsec.WithOIDCSessions(m),
-					httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll),
+					httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll),
 				}
 			},
 			act: subjectOnly,

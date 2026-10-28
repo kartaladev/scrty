@@ -133,7 +133,7 @@ func ExampleNew() {
 
 // ExampleNew_durableStores replaces the in-memory stores with the SQL ones. A
 // deployment with more than one replica needs them: the credential store seals
-// the emailed code at rest with a seal.Cipher. The pgx and gorm modules carry
+// the emailed code at rest with a seal.Cipher. The pgxstore and gormstore modules carry
 // the same constructors for their handles. It is compiled, not run, as it
 // needs a database.
 func ExampleNew_durableStores() {
@@ -403,7 +403,7 @@ func Example_chain() {
 		),
 		httpsec.EnablePasskeys(
 			httpsec.PasskeyDeps{Passkeys: passkeys, Sessions: sessions, Users: users},
-			httpsec.WithPasswordlessLogin(httpsec.PasswordlessTokens(exampleTokens{})),
+			httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(exampleTokens{})),
 		),
 	)
 	if err != nil {

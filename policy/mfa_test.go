@@ -159,7 +159,7 @@ func mfaPolicyOver(t *testing.T, methods []policy.MFAMethodLookup, opts ...polic
 	t.Helper()
 
 	p, err := policy.NewMFA(methods,
-		append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(&bytes.Buffer{}))}, opts...)...)
+		append([]policy.MFAOption{policy.WithMFALogger(mfaLogger(&bytes.Buffer{}))}, opts...)...)
 	require.NoError(t, err, "the policy under test could not be built")
 
 	return p
@@ -307,7 +307,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		{
 			name:    "a nil clock is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithMFAPolicyClock(nil)},
+			opts:    []policy.MFAOption{policy.WithMFAClock(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -320,7 +320,7 @@ func TestNewMFAPolicy(t *testing.T) {
 			// receiver.
 			name:    "a typed-nil clock is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithMFAPolicyClock((*clockwork.FakeClock)(nil))},
+			opts:    []policy.MFAOption{policy.WithMFAClock((*clockwork.FakeClock)(nil))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -335,9 +335,9 @@ func TestNewMFAPolicy(t *testing.T) {
 			name:    "a consumer's own read-only clock is accepted and used to sample records",
 			methods: mfaMethods(mfaMethod(t, factor.Email, true, nil)),
 			opts: []policy.MFAOption{
-				policy.WithMFAPolicyClock(fixedClock{at: consumerClockAt}),
-				policy.WithMFAPolicyLogger(mfaLogger(consumerClockLogBuf)),
-				policy.WithMFAPolicyLogInterval(time.Millisecond),
+				policy.WithMFAClock(fixedClock{at: consumerClockAt}),
+				policy.WithMFALogger(mfaLogger(consumerClockLogBuf)),
+				policy.WithMFALogInterval(time.Millisecond),
 			},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				t.Helper()
@@ -357,7 +357,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		{
 			name:    "a mode naming neither constant is refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithSameChannelEnrolment(policy.SameChannelMode(7))},
+			opts:    []policy.MFAOption{policy.WithMFASameChannelEnrolment(policy.SameChannelMode(7))},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				refused(t, p, err)
 			},
@@ -376,7 +376,7 @@ func TestNewMFAPolicy(t *testing.T) {
 		{
 			name:    "a nil logger is ignored rather than refused",
 			methods: mfaMethods(idleMFAMethod(t, "totp")),
-			opts:    []policy.MFAOption{policy.WithMFAPolicyLogger(nil)},
+			opts:    []policy.MFAOption{policy.WithMFALogger(nil)},
 			assert: func(t *testing.T, p policy.Policy, err error) {
 				require.NoError(t, err, "a nil logger made configuring logging mandatory")
 				assert.NotNil(t, p)
@@ -563,7 +563,7 @@ func TestMFAPolicyEvaluate(t *testing.T) {
 				mfaMethod(t, factor.Email, true, nil)),
 			in: mfaInput(factor.MagicLink),
 			opts: []policy.MFAOption{
-				policy.WithSameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
+				policy.WithMFASameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
 			},
 			assert: allows,
 		},

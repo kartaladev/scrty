@@ -63,7 +63,7 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 				f.EXPECT().NewLimiter("recovery-codes", 5, 15*time.Minute).
 					Return(refusingLimiter(ctrl, key), nil).Times(1)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiterFactory(f)}
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(f)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
 				require.NoError(t, err)
@@ -82,8 +82,8 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 				f := NewMockLimiterFactory(ctrl)
 
 				return []recovery.CodesOption{
-					recovery.WithCodeLimiter(refusingLimiter(ctrl, key)),
-					recovery.WithCodeLimiterFactory(f),
+					recovery.WithCodesLimiter(refusingLimiter(ctrl, key)),
+					recovery.WithCodesLimiterFactory(f),
 				}
 			},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
@@ -96,7 +96,7 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 		{
 			name: "nil factory refused",
 			opts: func(*testing.T) []recovery.CodesOption {
-				return []recovery.CodesOption{recovery.WithCodeLimiterFactory(nil)}
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(nil)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
 				require.ErrorIs(t, err, recovery.ErrConfig)
@@ -106,7 +106,7 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 		{
 			name: "typed-nil factory refused",
 			opts: func(*testing.T) []recovery.CodesOption {
-				return []recovery.CodesOption{recovery.WithCodeLimiterFactory((*MockLimiterFactory)(nil))}
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory((*MockLimiterFactory)(nil))}
 			},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
 				require.ErrorIs(t, err, recovery.ErrConfig)
@@ -119,8 +119,8 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 			name: "typed-nil factory refused beside an explicit limiter",
 			opts: func(t *testing.T) []recovery.CodesOption {
 				return []recovery.CodesOption{
-					recovery.WithCodeLimiter(NewMockLimiter(gomock.NewController(t))),
-					recovery.WithCodeLimiterFactory((*MockLimiterFactory)(nil)),
+					recovery.WithCodesLimiter(NewMockLimiter(gomock.NewController(t))),
+					recovery.WithCodesLimiterFactory((*MockLimiterFactory)(nil)),
 				}
 			},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
@@ -134,7 +134,7 @@ func TestNewCodes_LimiterFactory(t *testing.T) {
 				f := NewMockLimiterFactory(gomock.NewController(t))
 				f.EXPECT().NewLimiter("recovery-codes", 5, 15*time.Minute).Return(nil, errFactory)
 
-				return []recovery.CodesOption{recovery.WithCodeLimiterFactory(f)}
+				return []recovery.CodesOption{recovery.WithCodesLimiterFactory(f)}
 			},
 			assert: func(t *testing.T, c *recovery.Codes, err error) {
 				require.ErrorIs(t, err, recovery.ErrConfig)

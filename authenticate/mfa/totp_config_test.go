@@ -87,7 +87,7 @@ func TestMFAConstructors_ErrorsAreConfigErrors(t *testing.T) {
 		require.ErrorIs(t, err, mfa.ErrConfig)
 	}
 
-	totp := func(store mfa.EnrolmentStore, issuer string, opts ...mfa.TOTPOption) func() error {
+	totp := func(store mfa.EnrolmentStore, issuer string, opts ...mfa.Option) func() error {
 		return func() error {
 			_, err := mfa.NewTOTP(store, issuer, opts...)
 			return err
@@ -103,16 +103,16 @@ func TestMFAConstructors_ErrorsAreConfigErrors(t *testing.T) {
 		{name: "totp: 7 digits", build: totp(store, "Example", mfa.WithDigits(7)), assert: configError},
 		{name: "totp: zero period", build: totp(store, "Example", mfa.WithPeriod(0)), assert: configError},
 		{name: "totp: negative period", build: totp(store, "Example", mfa.WithPeriod(-time.Second)), assert: configError},
-		{name: "totp: nil logger", build: totp(store, "Example", mfa.WithTOTPLogger(nil)), assert: configError},
+		{name: "totp: nil logger", build: totp(store, "Example", mfa.WithLogger(nil)), assert: configError},
 		{
 			name:   "totp: nil identifier generator",
-			build:  totp(store, "Example", mfa.WithTOTPIDGenerator((id.Generator)(nil))),
+			build:  totp(store, "Example", mfa.WithIDGenerator((id.Generator)(nil))),
 			assert: configError,
 		},
 		{
 			name: "throttle: nil logger",
 			build: func() error {
-				_, err := mfa.NewVerifyThrottle(mfa.WithVerifyLogger(nil))
+				_, err := mfa.NewVerifyThrottle(mfa.WithThrottleLogger(nil))
 				return err
 			},
 			assert: configError,
@@ -120,7 +120,7 @@ func TestMFAConstructors_ErrorsAreConfigErrors(t *testing.T) {
 		{
 			name: "throttle: nil clock",
 			build: func() error {
-				_, err := mfa.NewVerifyThrottle(mfa.WithVerifyClock(nil))
+				_, err := mfa.NewVerifyThrottle(mfa.WithThrottleClock(nil))
 				return err
 			},
 			assert: configError,

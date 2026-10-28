@@ -14,7 +14,7 @@ import (
 // TestMFAPolicy_Federated pins the second-factor challenge policy's decision
 // for a login on the federated channel: allowed by default without asking
 // anything, and judged on its provider assurance only when the consumer opts
-// in with WithFederatedChallengeWhenUnmet.
+// in with WithMFAFederatedChallengeWhenUnmet.
 func TestMFAPolicy_Federated(t *testing.T) {
 	t.Parallel()
 
@@ -48,7 +48,7 @@ func TestMFAPolicy_Federated(t *testing.T) {
 	notMet := func(t *testing.T) policy.FederatedAssuranceSource { return assuranceSource(t, true, false, nil) }
 	unasked := func(t *testing.T) policy.FederatedAssuranceSource { return assuranceSource(t, false, false, nil) }
 
-	challengeUnmet := []policy.MFAOption{policy.WithFederatedChallengeWhenUnmet(true)}
+	challengeUnmet := []policy.MFAOption{policy.WithMFAFederatedChallengeWhenUnmet(true)}
 	oidcLogin := func() *policy.Input { return federatedInput(factor.OIDC, federatedEvidence("pwd")) }
 
 	allowed := func(t *testing.T, d policy.Decision, err error, _ *policy.Input) {
@@ -91,7 +91,7 @@ func TestMFAPolicy_Federated(t *testing.T) {
 		{
 			name:    "turned off explicitly, without a source: accepted, and allowed",
 			methods: idleTOTP,
-			opts:    []policy.MFAOption{policy.WithFederatedChallengeWhenUnmet(false)},
+			opts:    []policy.MFAOption{policy.WithMFAFederatedChallengeWhenUnmet(false)},
 			in:      oidcLogin, assert: allowedWithoutProof,
 		},
 		{
@@ -174,7 +174,7 @@ func TestMFAPolicy_Federated(t *testing.T) {
 			name:    "opted in, a consumer rule exempting oidc allows before the source is asked",
 			methods: idleTOTP, source: unasked,
 			opts: []policy.MFAOption{
-				policy.WithFederatedChallengeWhenUnmet(true),
+				policy.WithMFAFederatedChallengeWhenUnmet(true),
 				policy.WithMFAExemption(func(k factor.Kind) bool { return k == factor.OIDC || k.MFAExempt() }),
 			},
 			in: oidcLogin, assert: allowedWithoutProof,
@@ -185,7 +185,7 @@ func TestMFAPolicy_Federated(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := []policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(&bytes.Buffer{}))}
+			opts := []policy.MFAOption{policy.WithMFALogger(mfaLogger(&bytes.Buffer{}))}
 			if tc.source != nil {
 				opts = append(opts, policy.WithFederatedAssuranceSource(tc.source(t)))
 			}
@@ -212,7 +212,7 @@ func TestMFAPolicy_Federated(t *testing.T) {
 func TestWithFederatedChallengeWhenUnmet_ChallengePolicyOnly(t *testing.T) {
 	t.Parallel()
 
-	_, governsRequirement := any(policy.WithFederatedChallengeWhenUnmet(true)).(policy.MFARequirementOption)
+	_, governsRequirement := any(policy.WithMFAFederatedChallengeWhenUnmet(true)).(policy.MFARequirementOption)
 
 	assert.False(t, governsRequirement, "the challenge policy's option also configures the requirement policy")
 }
@@ -255,7 +255,7 @@ func TestMFAPolicies_FederatedEvidenceIsNotTheProof(t *testing.T) {
 				return mfaPolicyFor(t,
 					idleMFAMethod(t, mfaMethodName(factor.AuthenticatorApp)),
 					policy.WithFederatedAssuranceSource(assuranceSource(t, true, true, nil)),
-					policy.WithFederatedChallengeWhenUnmet(true))
+					policy.WithMFAFederatedChallengeWhenUnmet(true))
 			},
 			assert: allowedWithoutProof,
 		},

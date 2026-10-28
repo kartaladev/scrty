@@ -148,7 +148,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "the store refuses above its maximum and evicts nothing",
-			opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(2)},
+			opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreMaxFlows(2)},
 			first: func(t *testing.T, s *oidc.MemoryFlowStore, _ *clockwork.FakeClock, _ string) error {
 				second, err := s.Begin(t.Context(), flowStoreFlow("a", "second", 10*time.Minute))
 				require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "expired flows do not count toward the maximum",
-			opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(2)},
+			opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreMaxFlows(2)},
 			first: func(t *testing.T, s *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				_, err := s.Begin(t.Context(), flowStoreFlow("a", "short", time.Minute))
 				require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestMemoryFlowStore(t *testing.T) {
 		},
 		{
 			name: "a full store refuses again until a flow expires",
-			opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(2)},
+			opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreMaxFlows(2)},
 			first: func(t *testing.T, s *oidc.MemoryFlowStore, c *clockwork.FakeClock, _ string) error {
 				_, err := s.Begin(t.Context(), flowStoreFlow("a", "short", 5*time.Minute))
 				require.NoError(t, err)
@@ -286,10 +286,10 @@ func TestMemoryFlowStoreOptions(t *testing.T) {
 				require.NoError(t, err, "the first flow must survive a colliding handle")
 			},
 		},
-		{name: "a zero maximum is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(0)},
-			assert: refused("WithMaxFlows")},
-		{name: "a negative maximum is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMaxFlows(-1)},
-			assert: refused("WithMaxFlows")},
+		{name: "a zero maximum is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreMaxFlows(0)},
+			assert: refused("WithMemoryFlowStoreMaxFlows")},
+		{name: "a negative maximum is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreMaxFlows(-1)},
+			assert: refused("WithMemoryFlowStoreMaxFlows")},
 		{name: "a nil clock is refused", opts: []oidc.MemoryFlowStoreOption{oidc.WithMemoryFlowStoreClock(nil)},
 			assert: refused("WithMemoryFlowStoreClock")},
 		{name: "a typed-nil clock is refused like an untyped one",

@@ -74,7 +74,7 @@ func TestMagicLinkRedirects(t *testing.T) {
 			submitted: "/dashboard/",
 			assert:    resolvesTo("/"),
 		},
-		{name: "an empty entry", allowed: []string{""}, assert: configErrorNaming("WithAllowedRedirects")},
+		{name: "an empty entry", allowed: []string{""}, assert: configErrorNaming("WithMagicLinkAllowedRedirects")},
 		{
 			name:    "an undeclared absolute entry",
 			allowed: []string{"https://partner.example.com/landing"},
@@ -126,8 +126,8 @@ func TestMagicLinkRedirects(t *testing.T) {
 
 			h := newMagicLinkHarness(t)
 			h.linkOpts = []httpsec.MagicLinkOption{
-				httpsec.WithAllowedRedirects(tc.allowed...),
-				httpsec.WithAllowedOrigins(tc.origins...),
+				httpsec.WithMagicLinkAllowedRedirects(tc.allowed...),
+				httpsec.WithMagicLinkAllowedOrigins(tc.origins...),
 			}
 
 			c, err := h.build()

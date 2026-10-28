@@ -25,7 +25,7 @@ const refusalLogInterval = time.Minute
 // discovery, authorization, the callback and token verification. It resolves
 // verified identities through an IdentityBroker and creates no session itself.
 //
-// Build one with NewManager. A RelyingParty is safe for concurrent use.
+// Build one with NewRelyingParty. A RelyingParty is safe for concurrent use.
 type RelyingParty struct {
 	registry *Registry
 	out      *outbound.Client

@@ -32,12 +32,12 @@ func jsonRoundTrip(t *testing.T, v map[string]any) map[string]any {
 }
 
 // TestConsumerBroker verifies the "Consumer broker" scenario of the
-// identity-linking spec: a consumer IdentityBroker, given to NewManager in
+// identity-linking spec: a consumer IdentityBroker, given to NewRelyingParty in
 // place of the library's own *oidc.Broker, replaces linking, provisioning
 // and mirroring entirely. It receives every claim of the verified ID token
 // unchanged — including a nested claim and one the library does not
 // recognise — and its returned principal, provider and session become the
-// callback's result. The consumer broker is NewManager's broker argument
+// callback's result. The consumer broker is NewRelyingParty's broker argument
 // directly, so the library's own broker collaborators — a link store and a
 // user provisioner — are never constructed and never sit in the call path.
 func TestConsumerBroker(t *testing.T) {

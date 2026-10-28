@@ -475,7 +475,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"session.ErrRenewalRequired": "leaves the chain only joined with ErrAuthenticationRequired, " +
 			"which answers it 401",
 		"session.ErrSuccessorAdvanced": "returned only by Store.Supersede and never leaves the session manager, " +
-			"which turns it into ErrSessionReused",
+			"which turns it into ErrReused",
 		"session.ErrSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
 			"which re-loads the session and returns its verdict instead",
 		"session.ErrUnreadable":         "converted to ErrAuthenticationRequired before it leaves the chain",
@@ -484,7 +484,7 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"ratelimit.ErrConfig":           "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
-		"lockout.ErrAttemptStoreFull": "returned by a full in-memory attempt store; the lockout policy denies with ErrPolicyDenied",
+		"lockout.ErrAttemptStoreFull": "returned by a full in-memory attempt store; the lockout policy denies with ErrDenied",
 		"ratelimit.ErrLimiterFull": "returned by a full in-memory limiter, never by a flow: every built-in caller " +
 			"wraps or replaces it with a throttle or refusal sentinel before it leaves",
 		"ratelimit.ErrSourceUnattributable":     "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",

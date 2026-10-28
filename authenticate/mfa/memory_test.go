@@ -307,7 +307,7 @@ func TestPutPendingStartsGeneration(t *testing.T) {
 	g1 := id.MustParse("01920000-0000-7000-8000-000000000001")
 	g2 := id.MustParse("01920000-0000-7000-8000-000000000002")
 
-	newTOTP := func(t *testing.T, s mfa.EnrolmentStore, opts ...mfa.TOTPOption) *mfa.TOTP {
+	newTOTP := func(t *testing.T, s mfa.EnrolmentStore, opts ...mfa.Option) *mfa.TOTP {
 		t.Helper()
 
 		m, err := mfa.NewTOTP(s, "Example", opts...)
@@ -402,7 +402,7 @@ func TestPutPendingStartsGeneration(t *testing.T) {
 			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (any, error) {
 				ids := NewMockGenerator(gomock.NewController(t))
 				ids.EXPECT().NewID().Return(g2, nil).Times(1)
-				m := newTOTP(t, s, mfa.WithTOTPIDGenerator(ids))
+				m := newTOTP(t, s, mfa.WithIDGenerator(ids))
 
 				_, gen, err := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice@example.com")
 				require.NoError(t, err)
@@ -421,7 +421,7 @@ func TestPutPendingStartsGeneration(t *testing.T) {
 			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (any, error) {
 				ids := NewMockGenerator(gomock.NewController(t))
 				ids.EXPECT().NewID().Return(id.Nil, errors.New("no identifiers today"))
-				m := newTOTP(t, s, mfa.WithTOTPIDGenerator(ids))
+				m := newTOTP(t, s, mfa.WithIDGenerator(ids))
 
 				_, _, beginErr := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice@example.com")
 
@@ -440,7 +440,7 @@ func TestPutPendingStartsGeneration(t *testing.T) {
 			run: func(t *testing.T, s *mfa.MemoryEnrolmentStore) (any, error) {
 				ids := NewMockGenerator(gomock.NewController(t))
 				ids.EXPECT().NewID().Return(id.Nil, nil)
-				m := newTOTP(t, s, mfa.WithTOTPIDGenerator(ids))
+				m := newTOTP(t, s, mfa.WithIDGenerator(ids))
 
 				_, gen, beginErr := m.BeginEnrolmentGeneration(t.Context(), "u-1", "alice@example.com")
 				assert.Equal(t, id.Nil, gen)
@@ -1121,7 +1121,7 @@ func TestChargeEmailCode(t *testing.T) {
 }
 
 // TestChargeEmailCodeRace releases 20 charges on one code at once: exactly
-// MaxEmailCodeFailures of them are charged, so no more than that many
+// MaxEmailCodeAttempts of them are charged, so no more than that many
 // presented codes could ever be compared.
 func TestChargeEmailCodeRace(t *testing.T) {
 	t.Parallel()

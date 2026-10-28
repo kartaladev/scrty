@@ -19,7 +19,7 @@ import (
 // password in and no rules about what a new one must look like. With none
 // supplied there is no resolve endpoint at all, and a session that owes a
 // change is refused until a new login clears it — see
-// WithChangePasswordEndpoint. It is called
+// WithPasswordChangeEndpoint. It is called
 // with the exchange, and it owns the response: the library writes nothing on
 // this path, so whatever a consumer's clients expect to read is what they
 // read. An error it returns is the request's refusal, unchanged.

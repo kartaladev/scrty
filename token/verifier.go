@@ -19,7 +19,7 @@ import (
 // Verifier checks a token and returns its claims.
 type Verifier interface {
 	// Verify reports the claims of a token that passed every check. Every
-	// rejection is an error matching ErrTokenInvalid that wraps the cause; a
+	// rejection is an error matching ErrInvalid that wraps the cause; a
 	// failure to obtain the key set, and a context cancelled before the check
 	// finished, do not match it. A key-source failure comes back behind fixed
 	// library text rather than as itself, with the key source's own error
@@ -39,7 +39,7 @@ type verifier struct{ cfg *config }
 
 // NewVerifier returns a Verifier.
 //
-// VerifyWithKeySource is required. Defaults: no issuer enforced; no audience
+// WithVerifyKeySource is required. Defaults: no issuer enforced; no audience
 // enforced; the system clock; an 8192-byte maximum token size. Each is a
 // VerifyOption naming its own default.
 //
@@ -90,7 +90,7 @@ func (c *config) verify(ctx context.Context, raw string) (*Claims, error) {
 	keys, err := c.keys.VerificationKeys()
 	if err != nil {
 		// Not a rejection of the token: the keys could not be obtained. This
-		// deliberately does not match ErrTokenInvalid, so a key-service
+		// deliberately does not match ErrInvalid, so a key-service
 		// outage is never reported as a failed authentication. The key
 		// source's own error is returned behind fixed library text; it stays
 		// reachable through errors.Is and errors.As, but its text never is.

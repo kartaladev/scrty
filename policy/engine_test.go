@@ -696,7 +696,7 @@ func TestEngineIdleTimeouts(t *testing.T) {
 	idlePolicy := func(t *testing.T, d time.Duration) *policy.IdleTimeout {
 		t.Helper()
 
-		p, err := policy.NewIdleTimeout(policy.WithIdlePolicyTimeout(d))
+		p, err := policy.NewIdleTimeout(policy.WithIdleTimeout(d))
 		require.NoError(t, err)
 
 		return p

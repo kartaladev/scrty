@@ -41,7 +41,7 @@ import (
 // Complete, ChargeEmailCode, ChargeVerifyAttempt and RefundVerifyAttempt are
 // each one conditional statement with every condition in its WHERE clause, so
 // of concurrent completions of one generation exactly one succeeds, and of
-// concurrent charges against one code no more than mfa.MaxEmailCodeFailures
+// concurrent charges against one code no more than mfa.MaxEmailCodeAttempts
 // do. The nil generation is bound as NULL, stored and compared, so it matches
 // no enrolment, not even one stored without a generation. The emailed code is
 // sealed with c too, bound to the user reference and the generation, in its

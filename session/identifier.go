@@ -9,13 +9,13 @@ import "encoding/base64"
 var identifierEncoding = base64.RawURLEncoding.Strict()
 
 // ValidIdentifier reports whether v has the exact shape of an identifier the
-// Manager issues: identifierBytes of entropy, encoded URL-safe without
+// Sessions issues: identifierBytes of entropy, encoded URL-safe without
 // padding, which is 43 characters of the alphabet A–Z, a–z, 0–9, "-" and "_".
 //
 // It says nothing about whether such a session exists. It is for a caller that
 // receives a presented identifier from outside, such as an HTTP bearer, and
 // wants to refuse a value that cannot be one before it costs a store lookup.
-// An identifier minted by a consumer's own store is not one the Manager
+// An identifier minted by a consumer's own store is not one the Sessions
 // issues, and is reported invalid.
 func ValidIdentifier(v string) bool {
 	if len(v) != identifierEncoding.EncodedLen(identifierBytes) {

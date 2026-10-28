@@ -109,7 +109,7 @@ func unreachableDB(t *testing.T) *gormdb.DB {
 // refusedConfig asserts a constructor refused its configuration with exactly
 // text, and returned no store.
 func refusedConfig[S any](text string) func(t *testing.T, s S, err error) {
-	return storefix.RefusedConfig[S](gormstore.ErrConfig, "gorm", text)
+	return storefix.RefusedConfig[S](gormstore.ErrConfig, "gormstore", text)
 }
 
 // storeFactory builds a store of type S over db with opts, failing t when the

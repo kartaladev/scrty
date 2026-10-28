@@ -98,7 +98,7 @@ func (k Kind) Channel() Channel {
 // OIDC is not exempt by its kind. A login on the Federated channel meets a
 // second-factor requirement only as the federated-assurance rules of the
 // security-policy capability decide: by the assurance its provider verifiably
-// asserted, or by a mode the consumer chooses (see policy.WithFederatedAssurance).
+// asserted, or by a mode the consumer chooses (see policy.WithMFARequirementFederatedAssurance).
 //
 // The exemption is data, not a decision. Whether an exempt login is accepted
 // for a user who requires a second factor belongs to the security-policy

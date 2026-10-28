@@ -214,7 +214,7 @@ func jsonPost(ctx context.Context, path, body string) *http.Request {
 }
 
 // passkeyHarness is the enrolment harness with passkeys added: a real
-// passkey.Manager over the in-memory stores and the stub verifier, sending
+// passkey.Passkeys over the in-memory stores and the stub verifier, sending
 // its notices and emailed codes to a capturing sender, enabled on the chain.
 type passkeyHarness struct {
 	*enrolHarness
@@ -330,7 +330,7 @@ func (h *passkeyHarness) withEnrolledMethod(t *testing.T) {
 // mode.
 func (h *passkeyHarness) withPasswordless() {
 	h.pkOpts = append(h.pkOpts, passkey.WithOptionalRecoveryCodes())
-	h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasswordlessLogin(httpsec.PasswordlessTokens(h.tokens)))
+	h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(h.tokens)))
 }
 
 // register begins and finishes a registration through chain, returning the

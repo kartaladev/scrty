@@ -22,7 +22,7 @@ type Flow struct {
 
 // FlowStore holds login flows between Authorize and Callback.
 //
-// When a consumer supplies none, the Manager uses an in-memory store, which
+// When a consumer supplies none, the RelyingParty uses an in-memory store, which
 // holds flows for one process only.
 type FlowStore interface {
 	// Begin stores f and returns the opaque handle that later names it.
@@ -58,7 +58,7 @@ type ExternalIdentity struct {
 // IdentityBroker resolves a verified external identity to one of the
 // application's own users.
 //
-// It is required: NewManager refuses a nil broker. The library's own broker
+// It is required: NewRelyingParty refuses a nil broker. The library's own broker
 // resolves through a LinkStore; a consumer may supply any other.
 //
 // A broker that also has a method Links() LinkStore exposes the store it
@@ -119,7 +119,7 @@ type LinkStore interface {
 type HandoffRecord struct {
 	// ID identifies this record, never TokenID or the secret it hashes. It
 	// is minted by the caller, not the store: the library's own
-	// HandoffManager mints one (WithHandoffIDGenerator names its source,
+	// Handoff mints one (WithHandoffIDGenerator names its source,
 	// default id.NewV7Generator) before every Insert. It must be unique and
 	// non-zero; a store may refuse a zero ID rather than mint one of its
 	// own, since a store cannot tell a zero value that was never meant as
@@ -143,7 +143,7 @@ type HandoffRecord struct {
 
 // HandoffStore holds issued handoff codes until they are redeemed or expire.
 //
-// NewHandoffManager requires one and refuses a nil store as a missing port. The
+// NewHandoff requires one and refuses a nil store as a missing port. The
 // library's own implementation is NewMemoryHandoffStore, which holds codes for
 // one process only.
 type HandoffStore interface {

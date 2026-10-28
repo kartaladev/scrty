@@ -146,7 +146,7 @@ func TestMagicLinkResponderSeesResolvedTarget(t *testing.T) {
 
 	var seen httpsec.MagicLinkResult
 
-	// No WithAllowedRedirects, so every submitted target resolves to "/".
+	// No WithMagicLinkAllowedRedirects, so every submitted target resolves to "/".
 	h := newMagicLinkHarness(t)
 	h.linkOpts = []httpsec.MagicLinkOption{httpsec.WithMagicLinkResponder(
 		func(_ *httpsec.Exchange, r httpsec.MagicLinkResult) error {

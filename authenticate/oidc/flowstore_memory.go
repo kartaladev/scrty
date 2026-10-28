@@ -15,7 +15,7 @@ import (
 )
 
 // DefaultMaxFlows is how many unexpired flows a MemoryFlowStore holds before
-// it refuses new ones, when WithMaxFlows is not given.
+// it refuses new ones, when WithMemoryFlowStoreMaxFlows is not given.
 const DefaultMaxFlows = 100_000
 
 // ErrFlowStoreFull is returned by MemoryFlowStore.Begin when the store already
@@ -23,7 +23,7 @@ const DefaultMaxFlows = 100_000
 var ErrFlowStoreFull = errors.New("oidc: flow store full")
 
 // MemoryFlowStore keeps login flows in process memory. It is the FlowStore a
-// Manager uses when WithFlowStore is not given, and it is safe for concurrent
+// RelyingParty uses when WithFlowStore is not given, and it is safe for concurrent
 // use.
 //
 // Complete decides existence, the provider and state bindings, single
@@ -61,12 +61,12 @@ var errFlowHandleTaken = errors.New("oidc: a login flow with this handle is alre
 // MemoryFlowStoreOption customises a MemoryFlowStore at construction.
 type MemoryFlowStoreOption func(*MemoryFlowStore) error
 
-// WithMaxFlows sets how many unexpired flows the store holds before Begin
+// WithMemoryFlowStoreMaxFlows sets how many unexpired flows the store holds before Begin
 // refuses with ErrFlowStoreFull. The default is DefaultMaxFlows (100,000).
-func WithMaxFlows(n int) MemoryFlowStoreOption {
+func WithMemoryFlowStoreMaxFlows(n int) MemoryFlowStoreOption {
 	return func(s *MemoryFlowStore) error {
 		if n <= 0 {
-			return fmt.Errorf("%w: WithMaxFlows must be positive, got %d", ErrConfig, n)
+			return fmt.Errorf("%w: WithMemoryFlowStoreMaxFlows must be positive, got %d", ErrConfig, n)
 		}
 		s.max = n
 		return nil
@@ -103,7 +103,7 @@ func WithMemoryFlowStoreRandom(r io.Reader) MemoryFlowStoreOption {
 //
 // With no options it holds at most DefaultMaxFlows unexpired flows, judges
 // expiry by clock.System() and draws handles of 32 bytes from crypto/rand.Reader.
-// NewManager builds one with its own clock and random source when no
+// NewRelyingParty builds one with its own clock and random source when no
 // WithFlowStore is given.
 //
 // An option given a meaningless value (a maximum of zero or less, a nil clock

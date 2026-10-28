@@ -76,7 +76,7 @@ var ErrInvalid = errors.New("token: invalid")
 // subject at all.
 //
 // Like every failure on the issue path it deliberately does not match
-// ErrTokenInvalid: there is no presented token to pass a verdict on.
+// ErrInvalid: there is no presented token to pass a verdict on.
 var ErrNoSubject = errors.New("token: principal has no username to name as subject")
 
 // ErrNoTokenID reports that Generate was handed an empty token identifier.
@@ -85,13 +85,13 @@ var ErrNoSubject = errors.New("token: principal has no username to name as subje
 // identifier at all.
 //
 // Like every failure on the issue path it deliberately does not match
-// ErrTokenInvalid.
+// ErrInvalid.
 var ErrNoTokenID = errors.New("token: no token identifier to carry as jti")
 
 // ErrNoVerificationKeys reports that the key source supplied nothing to verify
 // against: no keys at all, or an empty list of them. The verifier has then
 // reached no verdict on the token, so this deliberately does not match
-// ErrTokenInvalid — a consumer who maps every refusal to "credential refused"
+// ErrInvalid — a consumer who maps every refusal to "credential refused"
 // must not show a key-service outage as a failed login.
 var ErrNoVerificationKeys = errors.New("token: key source supplied no verification keys")
 

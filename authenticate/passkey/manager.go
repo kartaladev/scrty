@@ -41,7 +41,7 @@ type RecoveryDeps struct {
 	WayBack *recovery.WayBackCheck
 }
 
-// Deps are the ports a Manager works over.
+// Deps are the ports the Passkeys works over.
 type Deps struct {
 	// Verifier parses and verifies WebAuthn responses. Required: the core
 	// package has no WebAuthn dependency and so no default.
@@ -72,7 +72,7 @@ type Deps struct {
 	// none, a registration never waits for saved codes.
 	Recovery *RecoveryDeps
 	// Sessions ends sessions when a passkey is removed or suspended as a
-	// suspected clone. *session.Manager satisfies it; wire the same manager
+	// suspected clone. *session.Sessions satisfies it; wire the same manager
 	// the chain uses, the one given to httpsec.PasskeyDeps.Sessions. Required
 	// unless both WithoutSessionRevocationOnRemoval and
 	// WithoutSessionRevocationOnClone are given.
@@ -151,7 +151,7 @@ const (
 	defaultLogInterval    = time.Minute
 )
 
-// New returns a Manager over deps, with the defaults every Option names.
+// New returns a Passkeys value over deps, with the defaults every Option names.
 //
 // Every wiring mistake is an error wrapping ErrConfig, before any ceremony
 // runs: a nil verifier, user loader or sender (typed nil included); a relying
@@ -260,7 +260,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 
 // resolveConfirmLimiter builds the emailed-code confirm limiter from the
 // factory WithConfirmLimiterFactory gave, or else the in-memory default logging
-// through the Manager's logger and clock. A factory replaced with nothing is
+// through the Passkeys logger and clock. A factory replaced with nothing is
 // refused.
 func (m *Passkeys) resolveConfirmLimiter() error {
 	factory := m.confirmFactory

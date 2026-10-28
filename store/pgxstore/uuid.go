@@ -17,7 +17,7 @@ func uuidArg(v id.ID) any { return v.String() }
 // zero identifier must never stand in for a missing one.
 func scanID(u pgtype.UUID) (id.ID, error) {
 	if !u.Valid {
-		return id.Nil, errors.New("pgx: a uuid column held NULL")
+		return id.Nil, errors.New("pgxstore: a uuid column held NULL")
 	}
 
 	return id.ID(u.Bytes), nil

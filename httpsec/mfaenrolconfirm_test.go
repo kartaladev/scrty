@@ -245,7 +245,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 		{
 			name: "a consumer contact resolver",
 			prepare: func(_ *testing.T, h *enrolHarness, o *outbox) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithContactResolver(
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithEnrolmentContactResolver(
 					func(_ context.Context, d *identity.Details) (string, error) {
 						if d.ID != testMFAUser {
 							return "", errors.New("mfaenrolconfirm_test: resolved for the wrong user")
@@ -553,7 +553,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 		{
 			name: "email confirmation off",
 			prepare: func(_ *testing.T, h *enrolHarness, o *outbox) {
-				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEmailConfirmation())
+				h.enrolOpts = append(h.enrolOpts, httpsec.WithoutEnrolmentEmailConfirmation())
 				o.accepting(h, nil)
 			},
 			code: valid,
@@ -586,7 +586,7 @@ func TestEnrolmentConfirm(t *testing.T) {
 				t.Helper()
 
 				h.enrolOpts = append(h.enrolOpts,
-					httpsec.WithoutEmailConfirmation(), httpsec.WithoutEnrolmentNotification())
+					httpsec.WithoutEnrolmentEmailConfirmation(), httpsec.WithoutEnrolmentNotification())
 				h.sender.EXPECT().Send(gomock.Any(), gomock.Any()).Times(0)
 			},
 			code: valid,

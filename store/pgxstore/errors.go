@@ -8,11 +8,11 @@ import "errors"
 // a consumer tell a configuration error from a database failure without
 // matching on message text. Its text, and the text wrapped around it, names
 // the problem and never a configured value.
-var ErrConfig = errors.New("pgx: invalid configuration")
+var ErrConfig = errors.New("pgxstore: invalid configuration")
 
 // ErrNilTransaction is wrapped by the error an operation returns when the
 // configured TxResolver reports a transaction but returns a nil handle,
 // including an interface holding a nil pointer. The operation runs no
 // statement. It marks a defect in the consumer's resolver, not a database
 // failure, and its text carries no values.
-var ErrNilTransaction = errors.New("pgx: the transaction resolver reported a transaction with a nil handle")
+var ErrNilTransaction = errors.New("pgxstore: the transaction resolver reported a transaction with a nil handle")

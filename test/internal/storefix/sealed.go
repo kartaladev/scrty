@@ -191,7 +191,7 @@ func RunEnrolmentBindings(t *testing.T, raw *sql.DB, codes storetest.Sealed[mfa.
 	key := make([]byte, seal.KeySize)
 	_, err := rand.Read(key)
 	require.NoError(t, err)
-	kr, err := seal.NewKeyring(seal.WithEncryptionKey("k1", key))
+	kr, err := seal.NewKeyring(seal.WithKeyringEncryptionKey("k1", key))
 	require.NoError(t, err)
 
 	// refused requires owner's enrolment to fail to open for its binding.

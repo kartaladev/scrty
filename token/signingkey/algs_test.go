@@ -42,7 +42,7 @@ func realRecordFor(t *testing.T, alg signingkey.Alg, createdAt time.Time) signin
 //
 // Publishing them is useful: it is what lets this replica verify the other's
 // tokens. Signing with them is not: SupportedAlgs would deny the algorithm
-// while GetSigner handed out a working key for it, and a foreign key made
+// while Signer handed out a working key for it, and a foreign key made
 // current would be exempt from housekeeping for as long as the process lived.
 func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	clk := newClock()
@@ -74,7 +74,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 	require.Equal(t, []signingkey.Alg{signingkey.RS256}, km.SupportedAlgs())
 
 	kid, signer, ok := km.Signer(signingkey.ES256)
-	assert.False(t, ok, "GetSigner answers only for the configured algorithms")
+	assert.False(t, ok, "Signer answers only for the configured algorithms")
 	assert.Empty(t, kid)
 	assert.Nil(t, signer)
 

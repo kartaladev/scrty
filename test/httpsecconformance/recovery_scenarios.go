@@ -169,7 +169,7 @@ func newRecoveryFixture(t *testing.T) (*RecoveryFixture, *session.Sessions) {
 	codeStore, err := pgxstore.NewRecoveryCodeStore(pool)
 	require.NoError(t, err)
 
-	codes, err := recovery.NewCodes(recovery.WithCodeStore(codeStore), recovery.WithCodesClock(clk))
+	codes, err := recovery.NewCodes(recovery.WithCodesStore(codeStore), recovery.WithCodesClock(clk))
 	require.NoError(t, err)
 
 	records, err := pgxstore.NewRecoveryRecordStore(pool)
@@ -336,7 +336,7 @@ func recoverySavedAndIssuedCodesReachRecoveryPending() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 				Routes:  plainRoute(),
@@ -464,7 +464,7 @@ func recoveryPasswordRouteReachesFullSession() Scenario {
 						Verifier: fixtureTokens{}, Sessions: sessions, Users: fixtureUsers{},
 					}),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -538,7 +538,7 @@ func recoveryAtTheCeilingSignsInAfterTheResolve() Scenario {
 						Attempts:      attempts,
 					}),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -615,7 +615,7 @@ func recoveryHeldRecoveryCancelledByLogin() Scenario {
 						httpsec.WithRecoveryCore(coreOpts...),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -740,7 +740,7 @@ func recoveryCompleteEndpointIssuesACredential() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -811,7 +811,7 @@ func recoveryStartEndpointIssuesACode() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -878,7 +878,7 @@ func recoveryCompleteRefusesAWrongSavedCode() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -969,7 +969,7 @@ func recoveryFinishEndpointCompletesAHeldRecovery() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -1058,7 +1058,7 @@ func recoveryCancelEndpointCancelsAHeldRecovery() Scenario {
 						httpsec.WithRecoveryTokens(fixtureTokens{}),
 					),
 					httpsec.EnablePasswordChangeGate(sessions,
-						httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+						httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 				},
 				Effects: effects,
 			}
@@ -1099,7 +1099,7 @@ func recoveryCodesOptions(sessions *session.Sessions, deps recovery.Deps, coreOp
 			httpsec.WithRecoveryTokens(fixtureTokens{}),
 		),
 		httpsec.EnablePasswordChangeGate(sessions,
-			httpsec.WithChangePasswordEndpoint(recoveryResolvePath, noopChangePassword)),
+			httpsec.WithPasswordChangeEndpoint(recoveryResolvePath, noopChangePassword)),
 	}
 }
 

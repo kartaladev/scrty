@@ -46,7 +46,7 @@ const (
 	// FederatedAssuranceChallenge challenges an unmet login for the library's
 	// own second factor, and sends a user with no usable enrolment down the
 	// enrolment path when it admits the login, or refuses them with
-	// ErrMFAEnrollmentRequired. It is the default.
+	// ErrMFAEnrolmentRequired. It is the default.
 	FederatedAssuranceChallenge FederatedAssuranceMode = iota
 
 	// FederatedAssuranceRefuse denies an unmet login with
@@ -61,7 +61,7 @@ const (
 	// in on that password. Choose it only when every provider is trusted to
 	// enforce the second factor itself. A consumer exemption rule that marks
 	// factor.OIDC exempt (WithMFAExemption) is equivalent. The second-factor
-	// challenge policy, under WithFederatedChallengeWhenUnmet(true), may still
+	// challenge policy, under WithMFAFederatedChallengeWhenUnmet(true), may still
 	// challenge such a login.
 	FederatedAssuranceExempt
 )
@@ -80,7 +80,7 @@ func (m FederatedAssuranceMode) String() string {
 	}
 }
 
-// WithFederatedAssurance replaces what the policy does with a required user's
+// WithMFARequirementFederatedAssurance replaces what the policy does with a required user's
 // federated login whose provider assurance is not met. The default is
 // FederatedAssuranceChallenge, which challenges it for the library's own
 // second factor; FederatedAssuranceRefuse denies it with
@@ -95,9 +95,9 @@ func (m FederatedAssuranceMode) String() string {
 // Whether assurance is met is decided only by the source given to
 // WithFederatedAssuranceSource; with none, it is never met. Met assurance
 // allows in every mode. The mode governs this policy alone: the second-factor
-// challenge policy has its own WithFederatedChallengeWhenUnmet. A value that
+// challenge policy has its own WithMFAFederatedChallengeWhenUnmet. A value that
 // names no mode is a configuration error at construction.
-func WithFederatedAssurance(mode FederatedAssuranceMode) MFARequirementOption {
+func WithMFARequirementFederatedAssurance(mode FederatedAssuranceMode) MFARequirementOption {
 	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.federatedMode = mode })
 }
 
@@ -115,7 +115,7 @@ var ErrMFARequirementLookupMissing = errors.New(
 var ErrMFARequirementUnsatisfiable = errors.New(
 	"policy: the mfa requirement policy requires a second factor of everyone and has no method to satisfy it")
 
-// MFARequirementOption configures the policy NewMFARequirementPolicy returns.
+// MFARequirementOption configures the policy NewMFARequirement returns.
 // Every default that constructor applies has an option that replaces it.
 //
 // It is an interface rather than a function type so that WithMFAExemption,
@@ -180,7 +180,7 @@ func WithMFARequirementLogger(l *slog.Logger) MFARequirementOption {
 //
 // An interval of zero or less writes every record. It governs this policy
 // alone: the second-factor challenge policy keeps its own window under
-// WithMFAPolicyLogInterval, so an outage of the requirement lookup cannot
+// WithMFALogInterval, so an outage of the requirement lookup cannot
 // silence the same-channel warnings.
 func WithMFARequirementLogInterval(d time.Duration) MFARequirementOption {
 	return mfaRequirementOption(func(p *mfaRequirementPolicy) { p.logInterval = d })
@@ -240,11 +240,11 @@ type mfaRequirementPolicy struct {
 //
 // methods is the set of second-factor methods the deployment offers. It must be
 // the same set as the chain's httpsec.EnableMFA was given, and as
-// NewMFAPolicy was built with — mfa.LookupsFor builds this list from those
+// NewMFA was built with — mfa.LookupsFor builds this list from those
 // methods. It may be empty, which means no method is configured: a required
 // user is then refused with ErrMFARequired.
 //
-// # Register it beside NewMFAPolicy
+// # Register it beside NewMFA
 //
 // In the post-authentication phase this policy allows a required user with a
 // usable enrolment, because the login challenge is the challenge policy's job.
@@ -300,7 +300,7 @@ type mfaRequirementPolicy struct {
 //     method, or only on methods on the first factor's own channel: with the
 //     enrolment path on (WithMFAEnrolmentPath) and admitting this login,
 //     challenge ChallengeMFAEnrolment; otherwise deny
-//     ErrMFAEnrollmentRequired. A failed enrolment lookup on any method denies
+//     ErrMFAEnrolmentRequired. A failed enrolment lookup on any method denies
 //     either way, even when another method is usable, with fixed text
 //     wrapping its error;
 //  11. the per-request phase: challenge for MFA;
@@ -315,8 +315,8 @@ type mfaRequirementPolicy struct {
 // required user it meets the requirement only when the provider's verified
 // assurance does (step 6), or under FederatedAssuranceExempt, or when a
 // consumer exemption rule marks factor.OIDC exempt, which is the same total
-// exemption. Otherwise WithFederatedAssurance decides: challenged (the
-// default) or refused. WithFederatedChallengeWhenUnmet, the second-factor
+// exemption. Otherwise WithMFARequirementFederatedAssurance decides: challenged (the
+// default) or refused. WithMFAFederatedChallengeWhenUnmet, the second-factor
 // challenge policy's option, has no say here.
 //
 // In the post-authentication phase Input.MFASatisfied is not honoured. It is a
@@ -344,7 +344,7 @@ type mfaRequirementPolicy struct {
 // Defaults: the per-user lookup (WithMFARequiredForAll replaces it),
 // factor.Kind.MFAExempt (WithMFAExemption), no federated assurance source
 // (WithFederatedAssuranceSource), FederatedAssuranceChallenge
-// (WithFederatedAssurance), the phase from the context
+// (WithMFARequirementFederatedAssurance), the phase from the context
 // (WithMFARequirementPhaseSource), slog.Default (WithMFARequirementLogger),
 // clock.System() (WithMFARequirementClock), DefaultLogInterval for its sampled
 // records (WithMFARequirementLogInterval) and no enrolment path
@@ -447,7 +447,7 @@ func (p *mfaRequirementPolicy) Challenges() []ChallengeKind {
 	return []ChallengeKind{ChallengeMFA, ChallengeMFAEnrolment}
 }
 
-// Evaluate answers for one request, in the order NewMFARequirementPolicy
+// Evaluate answers for one request, in the order NewMFARequirement
 // documents. It reads the Input and never writes to it.
 func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision {
 	// A login carrying the library's proof that its second factor was met at
@@ -586,7 +586,7 @@ func (p *mfaRequirementPolicy) Evaluate(ctx context.Context, in *Input) Decision
 	case PerRequest:
 		return Decision{Outcome: Challenge, Challenge: ChallengeMFA}
 
-	// 12. At login the challenge belongs to the policy NewMFAPolicy returns,
+	// 12. At login the challenge belongs to the policy NewMFA returns,
 	// which is why the two are registered together. A federated login is the
 	// exception: that policy lets it through by default, so a required user's
 	// unmet federated login is challenged here.

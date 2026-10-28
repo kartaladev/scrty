@@ -230,7 +230,7 @@ func (h *recoveryHarness) options(t *testing.T) []httpsec.Option {
 
 	if !h.noBinding {
 		opts = append(opts, httpsec.EnablePasswordChangeGate(h.sessions,
-			httpsec.WithChangePasswordEndpoint(passwordResolvePath, func(*httpsec.Exchange) error { return nil })))
+			httpsec.WithPasswordChangeEndpoint(passwordResolvePath, func(*httpsec.Exchange) error { return nil })))
 	}
 
 	opts = append(opts,

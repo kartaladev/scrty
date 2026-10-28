@@ -32,7 +32,7 @@ func TestNew_ConfirmLimiterFactory(t *testing.T) {
 	}
 
 	// confirm presents a code for user with no per-call limiter, so the
-	// Manager's own limiter answers.
+	// Passkeys own limiter answers.
 	confirm := func(t *testing.T, m *passkey.Passkeys) error {
 		t.Helper()
 

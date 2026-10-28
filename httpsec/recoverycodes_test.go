@@ -278,7 +278,7 @@ func TestRecoveryCodes(t *testing.T) {
 		{
 			name: "a consumer window of 2h regenerates at 10:30",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
-				h.recOpts = append(h.recOpts, httpsec.WithRegenerationFreshness(2*time.Hour))
+				h.recOpts = append(h.recOpts, httpsec.WithRecoveryRegenerationFreshness(2*time.Hour))
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
 				s := h.fullSession(t) // 09:00
@@ -293,7 +293,7 @@ func TestRecoveryCodes(t *testing.T) {
 		{
 			name: "a consumer window of 2h still refuses at 11:01",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
-				h.recOpts = append(h.recOpts, httpsec.WithRegenerationFreshness(2*time.Hour))
+				h.recOpts = append(h.recOpts, httpsec.WithRecoveryRegenerationFreshness(2*time.Hour))
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
 				s := h.fullSession(t)
@@ -570,13 +570,13 @@ func TestRecoveryCodes_Options(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "a zero window", opt: httpsec.WithRegenerationFreshness(0), assert: refused},
-		{name: "a negative window", opt: httpsec.WithRegenerationFreshness(-time.Minute), assert: refused},
+		{name: "a zero window", opt: httpsec.WithRecoveryRegenerationFreshness(0), assert: refused},
+		{name: "a negative window", opt: httpsec.WithRecoveryRegenerationFreshness(-time.Minute), assert: refused},
 		{name: "a nil codes responder", opt: httpsec.WithRecoveryCodesResponder(nil), assert: refused},
 		{name: "a nil count responder", opt: httpsec.WithRecoveryCountResponder(nil), assert: refused},
 		{
 			name:   "a positive window",
-			opt:    httpsec.WithRegenerationFreshness(time.Minute),
+			opt:    httpsec.WithRecoveryRegenerationFreshness(time.Minute),
 			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},
 	}

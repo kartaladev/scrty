@@ -371,7 +371,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 		{
 			// Review Focus 3: a store answering with the sentinel its contract
 			// names gets that same value back.
-			name: "login completion: a store's bare ErrSessionNotFound is returned as itself",
+			name: "login completion: a store's bare ErrNotFound is returned as itself",
 			act: func(t *testing.T) *errorSink {
 				h := newAuthHarness(t)
 				formLogin(h)
@@ -414,7 +414,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 			// The scenario spec's own pin ("Dependency text stays out of the
 			// refusal"): pre-authentication is denied because the lockout
 			// policy's attempt store could not say how often carol has
-			// failed. This matches policy.ErrPolicyDenied on purpose, so it
+			// failed. This matches policy.ErrDenied on purpose, so it
 			// gets its own assert rather than the shared fixedText, which
 			// asserts the opposite of every sentinel in sentinelsNotMatched.
 			name: "login: denied because the lockout policy's attempt store could not be consulted",
@@ -624,7 +624,7 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 
 				return backchannelRefusal(t, newOIDCHarness(t), oidcTestSubject, "",
 					httpsec.WithOIDCSessions(sessions),
-					httpsec.WithBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll))
+					httpsec.WithOIDCBackchannelLogoutScope(httpsec.BackchannelLogoutScopeAll))
 			},
 			assert: fixedText(http.StatusInternalServerError),
 		},

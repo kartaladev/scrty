@@ -72,7 +72,7 @@ func (m *Passkeys) List(ctx context.Context, user identity.UserID) ([]Summary, e
 }
 
 // Rename names user's passkey cid, in any state, under the registration's
-// name rules (NormaliseName): the name is trimmed, and one that is empty,
+// name rules (NormalizeName): the name is trimmed, and one that is empty,
 // longer than 64 characters or holds a control or format character is
 // replaced by the default name for the date the passkey was registered, never
 // truncated or refused.

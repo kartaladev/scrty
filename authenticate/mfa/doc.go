@@ -45,7 +45,7 @@
 // MFA verification for the rest of the window — five failures wide and fifteen
 // minutes long by default. It is accepted because the alternative counts an
 // address the attacker changes at will, which stops nobody. Both halves are
-// replaceable: WithVerifyLimiter takes a limiter of the consumer's own, with
+// replaceable: WithThrottleLimiter takes a limiter of the consumer's own, with
 // its own count and window, and VerifyThrottleKey names the bucket so an
 // administrative unlock can clear it.
 //
@@ -61,7 +61,7 @@
 // it by a conditional write on DeviceProofStore, so a proof made against one
 // provisioned secret can never confirm another. An emailed code is charged an
 // attempt before it is compared, so however many requests race, no more than
-// MaxEmailCodeFailures presented codes are ever compared against one. TOTP
+// MaxEmailCodeAttempts presented codes are ever compared against one. TOTP
 // implements Enroller; MemoryEnrolmentStore implements DeviceProofStore.
 // ContactResolver and LabelResolver default to UsernameAsAddress.
 //
@@ -72,7 +72,7 @@
 // # Defaults and ports
 //
 // Every default has an option that replaces it, and every option names the
-// default it replaces. TOTPOption covers the built-in method: six digits, a
+// default it replaces. Option covers the built-in method: six digits, a
 // thirty-second step, clock.System() and crypto/rand. ThrottleOption covers the
 // throttle: the in-memory limiter above, a one-minute log-sampling window and
 // slog.Default.

@@ -612,7 +612,7 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 			name: "the password-change resolve path is a registration path",
 			setup: func(_ *testing.T, h *passkeyHarness) {
 				h.extra = append(h.extra, httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithChangePasswordEndpoint(passkeyBeginPath, func(*httpsec.Exchange) error { return nil })))
+					httpsec.WithPasswordChangeEndpoint(passkeyBeginPath, func(*httpsec.Exchange) error { return nil })))
 			},
 			assert: refused,
 		},
@@ -620,7 +620,7 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 			name: "the password-change resolve path is a credentials path",
 			setup: func(_ *testing.T, h *passkeyHarness) {
 				h.extra = append(h.extra, httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithChangePasswordEndpoint(passkeyListPath+"/remove", func(*httpsec.Exchange) error { return nil })))
+					httpsec.WithPasswordChangeEndpoint(passkeyListPath+"/remove", func(*httpsec.Exchange) error { return nil })))
 			},
 			assert: refused,
 		},
@@ -628,7 +628,7 @@ func TestPasskeyRegistrationConstruction(t *testing.T) {
 			name: "a password-change resolve path elsewhere assembles",
 			setup: func(_ *testing.T, h *passkeyHarness) {
 				h.extra = append(h.extra, httpsec.EnablePasswordChangeGate(h.sessions,
-					httpsec.WithChangePasswordEndpoint("/account/password", func(*httpsec.Exchange) error { return nil })))
+					httpsec.WithPasswordChangeEndpoint("/account/password", func(*httpsec.Exchange) error { return nil })))
 			},
 			assert: func(t *testing.T, err error) { require.NoError(t, err) },
 		},

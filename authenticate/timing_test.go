@@ -67,7 +67,7 @@ func runUnusableHashCases(t *testing.T, cases []unusableHashCase) {
 			}, nil)
 
 			buf := &bytes.Buffer{}
-			auth, err := authenticate.NewUsernamePasswordAuthenticator(users, authenticate.WithPasswordEncoder(enc), authenticate.WithPasswordAuthenticatorLogger(debugLogger(buf)))
+			auth, err := authenticate.NewUsernamePasswordAuthenticator(users, authenticate.WithPasswordEncoder(enc), authenticate.WithPasswordLogger(debugLogger(buf)))
 			require.NoError(t, err)
 
 			presented := tc.presented

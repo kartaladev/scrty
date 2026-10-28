@@ -13,14 +13,14 @@
 //
 // NewAEADCipher is the default Cipher: AES-256-GCM with a random nonce for
 // every seal, over a Keyring. NewKeyring is the default Keyring: exactly one
-// active key, named with WithEncryptionKey, which seals and opens, and any
-// number of retired keys, named with WithRetiredEncryptionKey, which only
+// active key, named with WithKeyringEncryptionKey, which seals and opens, and any
+// number of retired keys, named with WithKeyringRetiredEncryptionKey, which only
 // open. There is no default key and no unsealed mode: a keyring without an
 // active key is a configuration error.
 //
 //	kr, err := seal.NewKeyring(
-//		seal.WithEncryptionKey("2026-09", activeKey),
-//		seal.WithRetiredEncryptionKey("2026-03", previousKey),
+//		seal.WithKeyringEncryptionKey("2026-09", activeKey),
+//		seal.WithKeyringRetiredEncryptionKey("2026-03", previousKey),
 //	)
 //	if err != nil {
 //		return err

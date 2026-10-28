@@ -82,7 +82,7 @@ func TestIdleTimeoutPolicyEvaluate(t *testing.T) {
 		{
 			// "Consumer idle timeout": 10 minutes, evaluated at 09:11.
 			name:    "a consumer's shorter idle timeout denies where the default would allow",
-			opts:    []policy.IdleOption{policy.WithIdlePolicyTimeout(10 * time.Minute)},
+			opts:    []policy.IdleOption{policy.WithIdleTimeout(10 * time.Minute)},
 			session: &session.Session{LastAccessedAt: idleLastAccess},
 			now:     idleLastAccess.Add(11 * time.Minute),
 			assert:  deniesAsIdle,
@@ -138,8 +138,8 @@ func TestIdleTimeoutPolicyThresholds(t *testing.T) {
 		{
 			name: "a consumer's timeouts replace both deadlines",
 			opts: []policy.IdleOption{
-				policy.WithIdlePolicyTimeout(10 * time.Minute),
-				policy.WithIdlePolicyAbsoluteTimeout(2 * time.Hour),
+				policy.WithIdleTimeout(10 * time.Minute),
+				policy.WithIdleAbsoluteTimeout(2 * time.Hour),
 			},
 			createdAt: idleLastAccess,
 			now:       idleLastAccess,
@@ -204,8 +204,8 @@ func TestIdleTimeoutPolicyIdleTimeout(t *testing.T) {
 			assert: func(t *testing.T, got time.Duration) { assert.Equal(t, 30*time.Minute, got) },
 		},
 		{
-			name:   "reports what WithIdlePolicyTimeout configured",
-			opts:   []policy.IdleOption{policy.WithIdlePolicyTimeout(5 * time.Minute)},
+			name:   "reports what WithIdleTimeout configured",
+			opts:   []policy.IdleOption{policy.WithIdleTimeout(5 * time.Minute)},
 			assert: func(t *testing.T, got time.Duration) { assert.Equal(t, 5*time.Minute, got) },
 		},
 	}

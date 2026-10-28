@@ -12,7 +12,7 @@ import (
 //   - "passkey-login-challenges": passwordless login challenges, which
 //     BeginLogin issues to anyone, signed in or not.
 //
-// The challenges live in Deps.Challenges under one-time managers the Manager
+// The challenges live in Deps.Challenges under one-time managers the Passkeys
 // builds itself, so no task built outside it can reach them; with a durable
 // store they would otherwise grow without bound. Each task purges through its
 // own manager, which removes only challenges that are expired and older than

@@ -10,7 +10,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
-// ManagerWiring is what NewManager resolved, for tests that must see a
+// ManagerWiring is what NewRelyingParty resolved, for tests that must see a
 // default or a consumer replacement before any request exercises it.
 type ManagerWiring struct {
 	Out     *outbound.Client

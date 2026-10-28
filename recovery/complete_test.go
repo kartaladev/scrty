@@ -386,7 +386,7 @@ func TestRecoverer_Complete(t *testing.T) {
 		{
 			name: "a reissued set is counted with the manager's low threshold",
 			deps: func(e *completeEnv, d *recovery.Deps) {
-				codes, err := recovery.NewCodes(recovery.WithSetSize(2))
+				codes, err := recovery.NewCodes(recovery.WithCodesSetSize(2))
 				if err != nil {
 					panic(err)
 				}

@@ -60,7 +60,7 @@ func TestSameChannelEnrolmentModes(t *testing.T) {
 		{
 			name: "a consumer may complete such logins on the first factor, and is still warned",
 			opts: []policy.MFAOption{
-				policy.WithSameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
+				policy.WithMFASameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor),
 			},
 			assert: func(t *testing.T, d policy.Decision, in *policy.Input, buf *bytes.Buffer) {
 				require.Equal(t, policy.Allow, d.Outcome)
@@ -87,7 +87,7 @@ func TestSameChannelEnrolmentModes(t *testing.T) {
 
 			buf := &bytes.Buffer{}
 			p, err := policy.NewMFA([]policy.MFAMethodLookup{mfaMethod(t, factor.Email, true, nil)},
-				append([]policy.MFAOption{policy.WithMFAPolicyLogger(mfaLogger(buf))}, tc.opts...)...)
+				append([]policy.MFAOption{policy.WithMFALogger(mfaLogger(buf))}, tc.opts...)...)
 			require.NoError(t, err)
 
 			in := mfaInput(factor.MagicLink)
@@ -110,7 +110,7 @@ func TestSameChannelOverrideDoesNotReachARequiredUser(t *testing.T) {
 	in := mfaInput(factor.MagicLink)
 
 	completed := mfaPolicyFor(t, method,
-		policy.WithSameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor)).
+		policy.WithMFASameChannelEnrolment(policy.SameChannelCompleteOnFirstFactor)).
 		Evaluate(t.Context(), in)
 	require.Equal(t, policy.Allow, completed.Outcome,
 		"the override under test did not take effect, so the case proves nothing")

@@ -198,7 +198,7 @@ func (pf *PasskeyFixture) options(
 			httpsec.WithMFAChallengeStore(pf.Base.OneTime)),
 		httpsec.EnablePasskeys(
 			httpsec.PasskeyDeps{Passkeys: pf.Manager, Sessions: sessions, Users: fixtureUsers{}},
-			httpsec.WithPasswordlessLogin()),
+			httpsec.WithPasskeyPasswordlessLogin()),
 	)
 }
 

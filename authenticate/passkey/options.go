@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-// Option configures a Manager. Every option names the default it replaces.
+// Option configures the Passkeys. Every option names the default it replaces.
 // A nil option is ignored.
 type Option func(*Passkeys)
 
@@ -45,14 +45,14 @@ type RegistrationFacts struct {
 // "passkey-email-confirm" with this flow's own limit and window: 5 failures per
 // 15 minutes.
 //
-// Default: ratelimit.MemoryLimiterFactory, logging through the Manager's logger
+// Default: ratelimit.MemoryLimiterFactory, logging through the Passkeys logger
 // and clock, so the limit holds in this process alone. Precedence: a limiter
 // given for one confirmation (RegistrationContext.ConfirmLimiter) wins for that
 // call; then the limiter f built; then the in-memory default. Because the
 // explicit limiter is given per call, f is asked once, when New runs.
 //
 // For this second-factor flow, a shared limiter in
-// ratelimit.UnavailableFallBackToLocal mode is the recommended choice: during an
+// ratelimit.UnavailableFallbackToLocal mode is the recommended choice: during an
 // outage of the shared store each replica still bounds guessing on its own, and
 // users are not locked out of sign-in.
 //
@@ -81,12 +81,12 @@ func WithRegistrationChallengeLimit(n int) Option {
 	return func(m *Passkeys) { m.issueLimit = n }
 }
 
-// WithPasskeyLimit replaces how many passkeys one user may hold, counting
+// WithLimit replaces how many passkeys one user may hold, counting
 // every state. The default is 25; a registration beyond it is refused with
 // ErrLimitReached. The limit is decided by the credential store's bounded
 // insert (CredentialStore.InsertWithin), so finishes racing for one user never
 // leave it holding more. Zero or less is a configuration error.
-func WithPasskeyLimit(n int) Option {
+func WithLimit(n int) Option {
 	return func(m *Passkeys) { m.passkeyLimit = n }
 }
 
@@ -101,8 +101,8 @@ func WithManagementFreshness(d time.Duration) Option {
 }
 
 // WithUserVerification replaces the user-verification requirement of every
-// ceremony. The default is UVRequired, which refuses a response without the
-// user-verified flag. UVPreferred admits security keys without a PIN: an
+// ceremony. The default is UserVerificationRequired, which refuses a response without the
+// user-verified flag. UserVerificationPreferred admits security keys without a PIN: an
 // assertion without user verification then proves possession only, so a
 // passwordless login made with one is single-factor and records no second
 // factor. Any other value is a configuration error.

@@ -127,9 +127,9 @@ func (c *config) wireMFA() error {
 		// throttle builds its own in-memory default on the chain's logger and
 		// clock. The clock also times the sampling of the throttle's refusal
 		// records; a limiter the consumer gave keeps its own.
-		opts := []mfa.ThrottleOption{mfa.WithVerifyLogger(c.logger), mfa.WithVerifyClock(c.clock)}
+		opts := []mfa.ThrottleOption{mfa.WithThrottleLogger(c.logger), mfa.WithThrottleClock(c.clock)}
 		if c.limiterFactory != nil {
-			opts = append(opts, mfa.WithVerifyLimiterFactory(c.limiterFactory))
+			opts = append(opts, mfa.WithThrottleLimiterFactory(c.limiterFactory))
 		}
 
 		opts = append(opts, i.throttleOpts...)

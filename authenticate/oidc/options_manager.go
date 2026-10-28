@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
-// Option customises a Manager at construction.
+// Option customises a RelyingParty at construction.
 //
 // Every option replaces a default that already works. An option given nil
 // fails construction with ErrConfig rather than silently keeping the default:
@@ -78,7 +78,7 @@ func WithClock(clk clock.Clock) Option {
 // lands on another instance fails. A consumer who needs another maximum
 // builds their own store, for example:
 //
-//	s, err := oidc.NewMemoryFlowStore(oidc.WithMaxFlows(n))
+//	s, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreMaxFlows(n))
 //
 // and passes it here. A store the consumer builds this way does not share
 // the manager's WithClock or WithRandom: it draws its own defaults (clock.System()
@@ -279,7 +279,7 @@ func WithPostLogoutRedirect(u string) Option {
 // criteria combine.
 //
 // It replaces the default Assurance{AcceptedAMR: []string{"mfa"}}: amr "mfa"
-// accepted, no acr accepted, none requested, MatchAny. Nothing of the default
+// accepted, no acr accepted, none requested, AssuranceMatchAny. Nothing of the default
 // survives a replacement, so a configuration with empty accepted sets never
 // meets assurance, which is valid and means "always use the local second
 // factor". The configuration is copied; changing the caller's slices later
@@ -289,7 +289,7 @@ func WithPostLogoutRedirect(u string) Option {
 // Construction fails with ErrConfig when the provider is not registered, when
 // any set contains the empty string, when a RequestACR value contains
 // whitespace (acr_values is space-separated, so it would be sent as two
-// values), or when Match is not MatchAny or MatchAll.
+// values), or when Match is not AssuranceMatchAny or AssuranceMatchAll.
 func WithProviderAssurance(provider string, a Assurance) Option {
 	return func(m *RelyingParty) error {
 		if err := a.validate(provider); err != nil {

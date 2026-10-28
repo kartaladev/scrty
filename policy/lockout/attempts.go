@@ -19,7 +19,7 @@ import (
 // It is reported rather than treated as a sweep that removed nothing, because
 // in a metric the two are indistinguishable and only one of them means the
 // store is growing without bound.
-var ErrReapUnsupported = errors.New("policy: attempt store cannot purge attempts")
+var ErrReapUnsupported = errors.New("lockout: attempt store cannot purge attempts")
 
 // ErrRetainSinceRequired is returned by an AttemptReaper asked to purge with
 // the zero time as its cutoff, and nothing is deleted.
@@ -28,7 +28,7 @@ var ErrReapUnsupported = errors.New("policy: attempt store cannot purge attempts
 // literally it means "retain nothing recorded since the beginning of time",
 // which would delete every failure an account is currently locked by, and so
 // would turn a routine sweep into a way to unlock accounts.
-var ErrRetainSinceRequired = errors.New("policy: a retain-since cutoff is required")
+var ErrRetainSinceRequired = errors.New("lockout: a retain-since cutoff is required")
 
 // ErrAttemptStoreFull is returned by MemoryAttemptStore when it already holds
 // as many identifiers as its capacity allows, a sweep has released none, and
@@ -38,7 +38,7 @@ var ErrRetainSinceRequired = errors.New("policy: a retain-since cutoff is requir
 // The lockout policy treats it as it treats any store error: the login is
 // denied. A full store that let a new identifier through would let it guess
 // without being counted, which is the one thing a lockout store must never do.
-var ErrAttemptStoreFull = errors.New("policy: the attempt store is full")
+var ErrAttemptStoreFull = errors.New("lockout: the attempt store is full")
 
 // AttemptReaper is the optional half of policy.AttemptStore: a store that can delete
 // the failures it no longer needs to hold.
@@ -279,7 +279,7 @@ func NewMemoryAttemptStore(opts ...MemoryAttemptOption) *MemoryAttemptStore {
 		}
 	}
 	if s.capacity <= 0 {
-		panic(fmt.Sprintf("policy: WithAttemptStoreCapacity must be positive, got %d: "+
+		panic(fmt.Sprintf("lockout: WithAttemptStoreCapacity must be positive, got %d: "+
 			"a store that holds nothing refuses every login", s.capacity))
 	}
 

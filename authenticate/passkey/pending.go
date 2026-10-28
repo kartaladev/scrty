@@ -65,20 +65,20 @@ const unsettledDeleteTimeout = 5 * time.Second
 // before the passkey is stored, what has no effect a refused finish could
 // leave behind, in this order:
 //
-//  1. AwaitingEmailCode when s is enrolment-only and rc's email confirmation
+//  1. PendingEmailCode when s is enrolment-only and rc's email confirmation
 //     is on.
-//  2. AwaitingSavedCodes when saved codes are wired, the optional mode is off
+//  2. PendingSavedCodes when saved codes are wired, the optional mode is off
 //     and the user has no other way back in (see hasWayBack). A failed check
 //     refuses. In the optional mode the answer is reported instead.
 //  3. The user's abandoned registrations are deleted (see deleteAbandoned):
-//     with AwaitingSavedCodes, their pending passkeys awaiting saved codes;
-//     with AwaitingEmailCode, those awaiting an emailed code, since
+//     with PendingSavedCodes, their pending passkeys awaiting saved codes;
+//     with PendingEmailCode, those awaiting an emailed code, since
 //     registering again is the only way to replace a lost or expired code. A
 //     passkey is abandoned only when it was created before issued, the
 //     instant this finish's registration challenge was issued. These run
 //     before the insert so the passkeys they replace no longer count against
 //     the limit.
-//  4. With AwaitingEmailCode, the code is drawn, and stored with the passkey.
+//  4. With PendingEmailCode, the code is drawn, and stored with the passkey.
 //
 // Generating saved codes and sending the emailed code wait for settlePending,
 // after the insert: a finish the limit refuses must neither replace the set
@@ -126,9 +126,9 @@ func (m *Passkeys) planPending(
 // settlePending does, once c is stored, what its pending reasons need that a
 // refused finish must not do, in this order:
 //
-//  1. With AwaitingSavedCodes, a new set of saved codes is generated,
+//  1. With PendingSavedCodes, a new set of saved codes is generated,
 //     replacing the user's set, and kept in p for the response.
-//  2. With AwaitingEmailCode, the drawn code is queued. A sender that refuses
+//  2. With PendingEmailCode, the drawn code is queued. A sender that refuses
 //     to queue it fails the finish.
 //
 // A failure is returned for the caller to remove c, so no passkey is left

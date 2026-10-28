@@ -146,7 +146,7 @@ func (f *LimiterFactory) NewLimiter(namespace string, limit int, window time.Dur
 // returns the keys the committed batches removed, a lower bound, with an
 // error that repeats none of the server's text.
 func (f *LimiterFactory) Prune(ctx context.Context) (int, error) {
-	return pglimiter.Prune(ctx, f.check.runner, "pgx", f.check.cfg)
+	return pglimiter.Prune(ctx, f.check.runner, "pgxstore", f.check.cfg)
 }
 
 // Verify checks, before traffic, that the database behind the factory's

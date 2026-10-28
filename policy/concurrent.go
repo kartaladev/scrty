@@ -12,7 +12,7 @@ import (
 
 //go:generate mockgen -source=concurrent.go -package=policy_test -destination=concurrent_mock_test.go -typed
 
-// ErrTooManySessions is the reason a ConcurrentSessionPolicy denies with: the
+// ErrTooManySessions is the reason a ConcurrentSessions denies with: the
 // user is at the cap, or nothing could say whether they are.
 //
 // The two are deliberately one error to the caller. Telling them apart would

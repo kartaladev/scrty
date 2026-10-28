@@ -284,7 +284,7 @@ func guardRedemption(out *policyOutcome, p identity.Principal, passwordChangedAt
 // assurance on the session, where every later request matches it again, so a
 // redeemer that reported assurance its check never saw would have the session
 // carry evidence no policy decided on at login. That is refused with
-// policy.ErrPolicyDenied, as a redeemer returning another user is. The
+// policy.ErrDenied, as a redeemer returning another user is. The
 // built-in redeemer returns exactly what it handed its checks.
 func guardFederatedAssurance(out *policyOutcome, provider, issuer string, amr []string, acr string) error {
 	ev := out.federated

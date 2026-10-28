@@ -184,7 +184,7 @@ func (v *Verifier) ParseRegistration(body []byte) (passkey.ParsedRegistration, e
 
 // VerifyRegistration verifies a registration ParseRegistration read against
 // the relying party, its origins, exp's challenge and exp's user-verification
-// requirement, which is required unless exp says passkey.UVPreferred. User
+// requirement, which is required unless exp says passkey.UserVerificationPreferred. User
 // presence is always required. The attestation is then judged by the
 // configured attestation mode.
 func (v *Verifier) VerifyRegistration(
@@ -257,7 +257,7 @@ func (v *Verifier) ParseAssertion(body []byte) (passkey.ParsedAssertion, error) 
 // VerifyAssertion verifies an assertion ParseAssertion read against the stored
 // credential c, which must be the credential the assertion names, the relying
 // party, its origins, exp's challenge and exp's user-verification requirement,
-// which is required unless exp says passkey.UVPreferred. User presence is
+// which is required unless exp says passkey.UserVerificationPreferred. User presence is
 // always required. The signature counter is reported, not judged: the core
 // decides what a counter that did not advance means.
 func (v *Verifier) VerifyAssertion(

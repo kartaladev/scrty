@@ -51,27 +51,27 @@ type keyringConfig struct {
 // KeyringOption configures NewKeyring.
 type KeyringOption func(*keyringConfig)
 
-// WithEncryptionKey names the active key: the one new values are sealed under,
+// WithKeyringEncryptionKey names the active key: the one new values are sealed under,
 // which also opens them. A keyring has exactly one. There is no default active
 // key: a keyring without one is a configuration error, because a key the
 // library chose would be a key the consumer cannot recover.
 //
 // key is copied, so changing the caller's slice afterwards does not change the
 // ring.
-func WithEncryptionKey(id string, key []byte) KeyringOption {
+func WithKeyringEncryptionKey(id string, key []byte) KeyringOption {
 	k := namedKey{id: id, key: bytes.Clone(key)}
 
 	return func(c *keyringConfig) { c.active = append(c.active, k) }
 }
 
-// WithRetiredEncryptionKey adds a retired key, which only opens: values sealed
+// WithKeyringRetiredEncryptionKey adds a retired key, which only opens: values sealed
 // under it before a rotation still read, and nothing new is sealed under it.
 // A keyring has zero retired keys unless this option adds them, and may have
 // any number.
 //
 // key is copied, so changing the caller's slice afterwards does not change the
 // ring.
-func WithRetiredEncryptionKey(id string, key []byte) KeyringOption {
+func WithKeyringRetiredEncryptionKey(id string, key []byte) KeyringOption {
 	k := namedKey{id: id, key: bytes.Clone(key)}
 
 	return func(c *keyringConfig) { c.retired = append(c.retired, k) }
@@ -85,9 +85,9 @@ type keyring struct {
 }
 
 // NewKeyring builds the default in-memory keyring from one
-// WithEncryptionKey and any number of WithRetiredEncryptionKey options.
+// WithKeyringEncryptionKey and any number of WithKeyringRetiredEncryptionKey options.
 //
-// It returns an error matching ErrInvalidConfiguration when there is no active
+// It returns an error matching ErrConfig when there is no active
 // key or more than one, when a key is not exactly 32 bytes, when a key id is
 // empty, used twice, longer than 64 characters or contains anything but ASCII
 // letters, digits, '.', '_' and '-', when two ids name identical key bytes, or

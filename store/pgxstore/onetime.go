@@ -65,7 +65,7 @@ func (s *OneTimeStore) Insert(ctx context.Context, tok onetime.Token) error {
 		return err
 	}
 	if n == 0 {
-		return errors.New("pgx: insert one-time token: the identifier is already in use")
+		return errors.New("pgxstore: insert one-time token: the identifier is already in use")
 	}
 
 	return nil

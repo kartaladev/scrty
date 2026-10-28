@@ -15,7 +15,7 @@ import (
 // operation's name: a statement's failure, or a refusal internal/storekit
 // judged. It never maps err to a sentinel refusal or to absence.
 func failed(op string, err error) error {
-	return fmt.Errorf("gorm: %s: %w", op, err)
+	return fmt.Errorf("gormstore: %s: %w", op, err)
 }
 
 // deleteWhere runs one DELETE of the rows of model T matching query and args,

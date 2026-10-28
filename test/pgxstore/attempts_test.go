@@ -193,7 +193,7 @@ func TestAttemptStore_Refusals(t *testing.T) {
 			assert: func(t *testing.T, ctx context.Context) {
 				_, err := s.FailureCount(ctx, "alice", time.Time{})
 				require.ErrorIs(t, err, context.Canceled)
-				assert.ErrorContains(t, err, "pgx: count login failures")
+				assert.ErrorContains(t, err, "pgxstore: count login failures")
 			},
 		},
 	}

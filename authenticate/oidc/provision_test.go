@@ -135,7 +135,7 @@ func TestBrokerProvisioning(t *testing.T) {
 		require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
 		assert.Nil(t, p)
 	}
-	jitCorp := []oidc.BrokerOption{oidc.WithJIT("corp")}
+	jitCorp := []oidc.BrokerOption{oidc.WithBrokerJIT("corp")}
 
 	type testCase struct {
 		name   string
@@ -234,7 +234,7 @@ func TestBrokerProvisioning(t *testing.T) {
 				e.EmailVerified = false
 				return e
 			}(),
-			opts: []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithJITAllowUnverifiedEmail("corp")},
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITAllowUnverifiedEmail("corp")},
 			expect: func(h provisionHarness) {
 				h.prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", gomock.Any()).
 					Return(created("u-9", "bob@corp.example"), nil)
@@ -252,8 +252,8 @@ func TestBrokerProvisioning(t *testing.T) {
 				return e
 			}(),
 			opts: []oidc.BrokerOption{
-				oidc.WithJIT("corp"), oidc.WithJITAllowUnverifiedEmail("corp"),
-				oidc.WithJITEmailDomains("corp", "example.com"),
+				oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITAllowUnverifiedEmail("corp"),
+				oidc.WithBrokerJITEmailDomains("corp", "example.com"),
 			},
 			expect: func(provisionHarness) {},
 			assert: func(t *testing.T, _ provisionHarness, _ oidc.ExternalIdentity, p *identity.Principal, err error) {
@@ -263,7 +263,7 @@ func TestBrokerProvisioning(t *testing.T) {
 		{
 			name:   "a subdomain does not match its parent",
 			ext:    provisionIdentity("corp", "bob@mail.example.com"),
-			opts:   []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithJITEmailDomains("corp", "example.com")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITEmailDomains("corp", "example.com")},
 			expect: func(provisionHarness) {},
 			assert: func(t *testing.T, _ provisionHarness, _ oidc.ExternalIdentity, p *identity.Principal, err error) {
 				refusedProvisioning(t, p, err)
@@ -272,7 +272,7 @@ func TestBrokerProvisioning(t *testing.T) {
 		{
 			name: "the domain matches case-insensitively and the email is passed as presented",
 			ext:  provisionIdentity("corp", "Bob@EXAMPLE.com"),
-			opts: []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithJITEmailDomains("corp", "example.com")},
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITEmailDomains("corp", "example.com")},
 			expect: func(h provisionHarness) {
 				h.prov.EXPECT().Provision(gomock.Any(), "Bob@EXAMPLE.com", provisionedWith(
 					identity.WithUserName("Bob@EXAMPLE.com"),
@@ -288,7 +288,7 @@ func TestBrokerProvisioning(t *testing.T) {
 		{
 			name:   "an allowlist configured empty admits no one",
 			ext:    provisionIdentity("corp", "bob@corp.example"),
-			opts:   []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithJITEmailDomains("corp")},
+			opts:   []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITEmailDomains("corp")},
 			expect: func(provisionHarness) {},
 			assert: func(t *testing.T, _ provisionHarness, _ oidc.ExternalIdentity, p *identity.Principal, err error) {
 				refusedProvisioning(t, p, err)
@@ -344,7 +344,7 @@ func TestBrokerProvisioning(t *testing.T) {
 				e.Claims = map[string]any{"name": "Bob B."}
 				return e
 			}(),
-			opts: []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithNameClaim("corp", "name")},
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerNameClaim("corp", "name")},
 			expect: func(h provisionHarness) {
 				h.prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", provisionedWith(
 					identity.WithUserName("Bob B."),
@@ -363,7 +363,7 @@ func TestBrokerProvisioning(t *testing.T) {
 				e.Claims = map[string]any{"profile": map[string]any{"display": "Robert"}}
 				return e
 			}(),
-			opts: []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithNameClaim("corp", "profile.display")},
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerNameClaim("corp", "profile.display")},
 			expect: func(h provisionHarness) {
 				h.prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", provisionedWith(
 					identity.WithUserName("Robert"),
@@ -382,7 +382,7 @@ func TestBrokerProvisioning(t *testing.T) {
 				e.Claims = map[string]any{"name": 42}
 				return e
 			}(),
-			opts: []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithNameClaim("corp", "name")},
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerNameClaim("corp", "name")},
 			expect: func(h provisionHarness) {
 				h.prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", provisionedWith(
 					identity.WithUserName("bob@corp.example"),
@@ -397,7 +397,7 @@ func TestBrokerProvisioning(t *testing.T) {
 		{
 			name: "the default role is the provisioned user's role",
 			ext:  provisionIdentity("corp", "bob@corp.example"),
-			opts: []oidc.BrokerOption{oidc.WithJIT("corp"), oidc.WithDefaultRole("member")},
+			opts: []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerDefaultRole("member")},
 			expect: func(h provisionHarness) {
 				h.prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", provisionedWith(
 					identity.WithUserName("bob@corp.example"),
@@ -545,7 +545,7 @@ func TestBrokerProvisioning(t *testing.T) {
 
 			log := testTextLogger(h.logs)
 			opts := append([]oidc.BrokerOption{
-				oidc.WithProvisioner(h.prov),
+				oidc.WithBrokerProvisioner(h.prov),
 				oidc.WithBrokerLogger(log),
 				oidc.WithBrokerClock(clockwork.NewFakeClockAt(provisionClock)),
 			}, tc.opts...)
@@ -589,7 +589,9 @@ func TestBrokerProvisioningOptions(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "provisioning without a provisioner is a missing port",
-			opts: func(identity.UserProvisioner) []oidc.BrokerOption { return []oidc.BrokerOption{oidc.WithJIT("corp")} },
+			opts: func(identity.UserProvisioner) []oidc.BrokerOption {
+				return []oidc.BrokerOption{oidc.WithBrokerJIT("corp")}
+			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				refused("user provisioner")(t, b, err)
 				require.ErrorIs(t, err, identity.ErrMissingPort)
@@ -599,63 +601,63 @@ func TestBrokerProvisioningOptions(t *testing.T) {
 			name: "a nil provisioner is refused",
 			opts: func(identity.UserProvisioner) []oidc.BrokerOption {
 				var p *MockUserProvisioner
-				return []oidc.BrokerOption{oidc.WithProvisioner(p)}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p)}
 			},
-			assert: refused("WithProvisioner"),
+			assert: refused("WithBrokerProvisioner"),
 		},
 		{
 			name: "an empty provider name is refused",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithJIT("")}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerJIT("")}
 			},
-			assert: refused("WithJIT"),
+			assert: refused("WithBrokerJIT"),
 		},
 		{
 			name: "an empty allowlist entry is refused",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithJIT("corp"), oidc.WithJITEmailDomains("corp", "")}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITEmailDomains("corp", "")}
 			},
-			assert: refused("WithJITEmailDomains"),
+			assert: refused("WithBrokerJITEmailDomains"),
 		},
 		{
 			name: "allowing unverified email for a provider without provisioning is refused",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithJIT("corp"), oidc.WithJITAllowUnverifiedEmail("social")}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITAllowUnverifiedEmail("social")}
 			},
 			assert: refused("social"),
 		},
 		{
 			name: "an allowlist for a provider without provisioning is refused",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithJITEmailDomains("social", "example.com")}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerJITEmailDomains("social", "example.com")}
 			},
 			assert: refused("social"),
 		},
 		{
 			name: "an empty provider for the name claim is refused",
 			opts: func(_ identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithNameClaim("", "name")}
+				return []oidc.BrokerOption{oidc.WithBrokerNameClaim("", "name")}
 			},
-			assert: refused("WithNameClaim"),
+			assert: refused("WithBrokerNameClaim"),
 		},
 		{
 			name: "an empty name claim path is refused",
 			opts: func(_ identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithNameClaim("corp", "")}
+				return []oidc.BrokerOption{oidc.WithBrokerNameClaim("corp", "")}
 			},
-			assert: refused("WithNameClaim"),
+			assert: refused("WithBrokerNameClaim"),
 		},
 		{
 			name: "an empty default role is refused",
 			opts: func(_ identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithDefaultRole("")}
+				return []oidc.BrokerOption{oidc.WithBrokerDefaultRole("")}
 			},
-			assert: refused("WithDefaultRole"),
+			assert: refused("WithBrokerDefaultRole"),
 		},
 		{
 			name: "an unregistered provider is listed for the manager to refuse",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
-				return []oidc.BrokerOption{oidc.WithProvisioner(p), oidc.WithJIT("corpp")}
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerJIT("corpp")}
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {
 				require.NoError(t, err)
@@ -666,8 +668,8 @@ func TestBrokerProvisioningOptions(t *testing.T) {
 			name: "configured providers are deduplicated in the order first named",
 			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
 				return []oidc.BrokerOption{
-					oidc.WithProvisioner(p), oidc.WithJIT("corp"), oidc.WithJITEmailDomains("corp", "corp.example"),
-					oidc.WithNameClaim("social", "name"), oidc.WithJITAllowUnverifiedEmail("corp"),
+					oidc.WithBrokerProvisioner(p), oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITEmailDomains("corp", "corp.example"),
+					oidc.WithBrokerNameClaim("social", "name"), oidc.WithBrokerJITAllowUnverifiedEmail("corp"),
 				}
 			},
 			assert: func(t *testing.T, b *oidc.Broker, err error) {

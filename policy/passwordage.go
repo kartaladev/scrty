@@ -13,7 +13,7 @@ import (
 // served by a longer one than by users appending a digit every quarter.
 const defaultMaxPasswordAge = 90 * 24 * time.Hour
 
-// UnknownAgeMode is what a PasswordAgePolicy does about a login whose
+// UnknownAgeMode is what a PasswordAge does about a login whose
 // password change time it does not know.
 //
 // It is its own type rather than a ChallengeKind so that the two cannot be
@@ -36,7 +36,7 @@ const (
 	UnknownAgeChallenge
 )
 
-// PasswordAgeOption configures a PasswordAgePolicy. Every option names the
+// PasswordAgeOption configures a PasswordAge. Every option names the
 // default it replaces, and every default works with no configuration at all.
 type PasswordAgeOption func(*PasswordAge)
 
@@ -51,9 +51,9 @@ func WithMaxPasswordAge(d time.Duration) PasswordAgeOption {
 }
 
 // WithUnknownPasswordAge replaces what the policy does about a login whose
-// password change time is unknown. The default is AllowUnknown.
+// password change time is unknown. The default is UnknownAgeAllow.
 //
-// Passing ChallengeUnknown is how a deployment that treats a missing record as
+// Passing UnknownAgeChallenge is how a deployment that treats a missing record as
 // an overdue password gets that, without giving up the policy's behaviour for
 // every user whose change time is recorded.
 func WithUnknownPasswordAge(mode UnknownAgeMode) PasswordAgeOption {
@@ -75,7 +75,7 @@ func WithUnknownPasswordAge(mode UnknownAgeMode) PasswordAgeOption {
 //
 // The policy reads Input.PasswordChangedAt and nothing else, and so it
 // enforces nothing for a user whose change time is never written. By default
-// an unknown change time allows, and WithUnknownPasswordAge(ChallengeUnknown)
+// an unknown change time allows, and WithUnknownPasswordAge(UnknownAgeChallenge)
 // turns it into a challenge instead.
 //
 // Nothing in this package writes that value. Whoever stores the password owns
@@ -137,8 +137,8 @@ func NewPasswordAge(opts ...PasswordAgeOption) (*PasswordAge, error) {
 	}
 	if p.unknown != UnknownAgeAllow && p.unknown != UnknownAgeChallenge {
 		return nil, fmt.Errorf(
-			"%w: unknown-password-age mode %d names neither AllowUnknown nor "+
-				"ChallengeUnknown, and what it would do about an unrecorded "+
+			"%w: unknown-password-age mode %d names neither UnknownAgeAllow nor "+
+				"UnknownAgeChallenge, and what it would do about an unrecorded "+
 				"change time is nobody's decision",
 			ErrConfig, int(p.unknown))
 	}
@@ -157,10 +157,10 @@ func (p *PasswordAge) Phases() []Phase { return []Phase{PostAuthentication} }
 // the maximum, and allows otherwise.
 //
 // An unknown change time — the zero time — is answered by the configured
-// UnknownPasswordAge, which allows unless the consumer chose otherwise.
+// UnknownAgeMode, which allows unless the consumer chose otherwise.
 //
 // A known change time judged with no evaluation time — Input.Now left at the
-// zero time — denies with ErrPolicyDenied. There is no clock to fall back on,
+// zero time — denies with ErrDenied. There is no clock to fall back on,
 // and none is offered: the caller supplies the time, a forgotten one is a
 // caller bug, and measured from the zero time every password would look new.
 func (p *PasswordAge) Evaluate(_ context.Context, in *Input) Decision {

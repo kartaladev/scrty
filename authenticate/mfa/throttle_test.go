@@ -121,7 +121,7 @@ func TestVerifyThrottle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			th, err := mfa.NewVerifyThrottle(mfa.WithVerifyLimiter(tc.limiter(t)))
+			th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(tc.limiter(t)))
 			require.NoError(t, err)
 
 			tc.assert(t, th)
@@ -171,17 +171,17 @@ func TestNewVerifyThrottleConfig(t *testing.T) {
 		},
 		{
 			name:   "a nil limiter",
-			opts:   []mfa.ThrottleOption{mfa.WithVerifyLimiter(nil)},
+			opts:   []mfa.ThrottleOption{mfa.WithThrottleLimiter(nil)},
 			assert: configError,
 		},
 		{
 			name:   "a typed-nil limiter",
-			opts:   []mfa.ThrottleOption{mfa.WithVerifyLimiter((*ratelimit.MemoryLimiter)(nil))},
+			opts:   []mfa.ThrottleOption{mfa.WithThrottleLimiter((*ratelimit.MemoryLimiter)(nil))},
 			assert: configError,
 		},
 		{
 			name:   "a nil logger",
-			opts:   []mfa.ThrottleOption{mfa.WithVerifyLogger(nil)},
+			opts:   []mfa.ThrottleOption{mfa.WithThrottleLogger(nil)},
 			assert: configError,
 		},
 	}
@@ -205,7 +205,7 @@ func TestVerifyThrottleConsumerLimiter(t *testing.T) {
 	shared.EXPECT().Exceeded(gomock.Any(), gomock.Eq("mfa-verify|u-1")).Return(false, nil).Times(1)
 	shared.EXPECT().RecordFailure(gomock.Any(), gomock.Eq("mfa-verify|u-1")).Return(nil).Times(1)
 
-	th, err := mfa.NewVerifyThrottle(mfa.WithVerifyLimiter(shared))
+	th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(shared))
 	require.NoError(t, err)
 
 	require.NoError(t, th.Check(t.Context(), "u-1"))
@@ -230,9 +230,9 @@ func TestVerifyThrottleLogSampling(t *testing.T) {
 	require.NoError(t, err)
 
 	th, err := mfa.NewVerifyThrottle(
-		mfa.WithVerifyLimiter(l),
-		mfa.WithVerifyLogger(logger),
-		mfa.WithVerifyLogInterval(time.Minute),
+		mfa.WithThrottleLimiter(l),
+		mfa.WithThrottleLogger(logger),
+		mfa.WithThrottleLogInterval(time.Minute),
 	)
 	require.NoError(t, err)
 
@@ -261,7 +261,7 @@ func TestMFALogsCarryNoSecrets(t *testing.T) {
 
 	m, err := mfa.NewTOTP(store, "Example",
 		mfa.WithClock(clockwork.NewFakeClockAt(base)),
-		mfa.WithTOTPLogger(logger),
+		mfa.WithLogger(logger),
 	)
 	require.NoError(t, err)
 
@@ -350,8 +350,8 @@ func TestVerifyThrottleFailureRecords(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			th, err := mfa.NewVerifyThrottle(
-				mfa.WithVerifyLimiter(tc.limiter(t, ctrl)),
-				mfa.WithVerifyLogger(logger),
+				mfa.WithThrottleLimiter(tc.limiter(t, ctrl)),
+				mfa.WithThrottleLogger(logger),
 			)
 			require.NoError(t, err)
 
@@ -399,7 +399,7 @@ func TestVerifyThrottleChargesAHangUp(t *testing.T) {
 			return nil
 		})
 
-	throttle, err := mfa.NewVerifyThrottle(mfa.WithVerifyLimiter(limiter))
+	throttle, err := mfa.NewVerifyThrottle(mfa.WithThrottleLimiter(limiter))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -418,7 +418,7 @@ func TestVerifyThrottle_DefaultLimiterWarnsThroughConfiguredLogger(t *testing.T)
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
-	th, err := mfa.NewVerifyThrottle(mfa.WithVerifyLogger(logger))
+	th, err := mfa.NewVerifyThrottle(mfa.WithThrottleLogger(logger))
 	require.NoError(t, err)
 
 	require.NoError(t, th.Check(t.Context(), "user-1")) // first use writes the per-replica warning
@@ -465,7 +465,7 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 				f := NewMockLimiterFactory(ctrl)
 				f.EXPECT().NewLimiter("mfa-verify", 5, 15*time.Minute).Return(built, nil).Times(1)
 
-				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory(f)}
+				return []mfa.ThrottleOption{mfa.WithThrottleLimiterFactory(f)}
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
 				require.NoError(t, err)
@@ -483,7 +483,7 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 				// No expectation: gomock fails the case if the factory is asked.
 				f := NewMockLimiterFactory(ctrl)
 
-				return []mfa.ThrottleOption{mfa.WithVerifyLimiter(explicit), mfa.WithVerifyLimiterFactory(f)}
+				return []mfa.ThrottleOption{mfa.WithThrottleLimiter(explicit), mfa.WithThrottleLimiterFactory(f)}
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
 				require.NoError(t, err)
@@ -493,7 +493,7 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 		{
 			name: "nil factory refused",
 			opts: func(*testing.T) []mfa.ThrottleOption {
-				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory(nil)}
+				return []mfa.ThrottleOption{mfa.WithThrottleLimiterFactory(nil)}
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
 				require.ErrorIs(t, err, mfa.ErrConfig)
@@ -503,7 +503,7 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 		{
 			name: "typed-nil factory refused",
 			opts: func(*testing.T) []mfa.ThrottleOption {
-				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory((*MockLimiterFactory)(nil))}
+				return []mfa.ThrottleOption{mfa.WithThrottleLimiterFactory((*MockLimiterFactory)(nil))}
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
 				require.ErrorIs(t, err, mfa.ErrConfig)
@@ -516,8 +516,8 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 			name: "typed-nil factory refused beside an explicit limiter",
 			opts: func(t *testing.T) []mfa.ThrottleOption {
 				return []mfa.ThrottleOption{
-					mfa.WithVerifyLimiter(NewMockLimiter(gomock.NewController(t))),
-					mfa.WithVerifyLimiterFactory((*MockLimiterFactory)(nil)),
+					mfa.WithThrottleLimiter(NewMockLimiter(gomock.NewController(t))),
+					mfa.WithThrottleLimiterFactory((*MockLimiterFactory)(nil)),
 				}
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
@@ -531,7 +531,7 @@ func TestNewVerifyThrottle_LimiterFactory(t *testing.T) {
 				f := NewMockLimiterFactory(gomock.NewController(t))
 				f.EXPECT().NewLimiter("mfa-verify", 5, 15*time.Minute).Return(nil, errFactory)
 
-				return []mfa.ThrottleOption{mfa.WithVerifyLimiterFactory(f)}
+				return []mfa.ThrottleOption{mfa.WithThrottleLimiterFactory(f)}
 			},
 			assert: func(t *testing.T, th *mfa.VerifyThrottle, err error) {
 				require.ErrorIs(t, err, mfa.ErrConfig)
@@ -570,14 +570,14 @@ func TestWithVerifyClock(t *testing.T) {
 		{
 			name: "nil clock",
 			opts: func(*clockwork.FakeClock) []mfa.ThrottleOption {
-				return []mfa.ThrottleOption{mfa.WithVerifyClock(nil)}
+				return []mfa.ThrottleOption{mfa.WithThrottleClock(nil)}
 			},
 			assert: refused,
 		},
 		{
 			name: "typed nil clock",
 			opts: func(*clockwork.FakeClock) []mfa.ThrottleOption {
-				return []mfa.ThrottleOption{mfa.WithVerifyClock((*clockwork.FakeClock)(nil))}
+				return []mfa.ThrottleOption{mfa.WithThrottleClock((*clockwork.FakeClock)(nil))}
 			},
 			assert: refused,
 		},
@@ -592,14 +592,14 @@ func TestWithVerifyClock(t *testing.T) {
 					panic(err)
 				}
 
-				return []mfa.ThrottleOption{mfa.WithVerifyLimiter(l), mfa.WithVerifyClock(nil)}
+				return []mfa.ThrottleOption{mfa.WithThrottleLimiter(l), mfa.WithThrottleClock(nil)}
 			},
 			assert: refused,
 		},
 		{
 			name: "a throttle window follows the given clock",
 			opts: func(fc *clockwork.FakeClock) []mfa.ThrottleOption {
-				return []mfa.ThrottleOption{mfa.WithVerifyClock(fc)}
+				return []mfa.ThrottleOption{mfa.WithThrottleClock(fc)}
 			},
 			assert: func(t *testing.T, fc *clockwork.FakeClock, th *mfa.VerifyThrottle, err error) {
 				require.NoError(t, err)
@@ -625,7 +625,7 @@ func TestWithVerifyClock(t *testing.T) {
 			t.Parallel()
 
 			fc := clockwork.NewFakeClock()
-			opts := append(tc.opts(fc), mfa.WithVerifyLogger(slog.New(slog.DiscardHandler)))
+			opts := append(tc.opts(fc), mfa.WithThrottleLogger(slog.New(slog.DiscardHandler)))
 			th, err := mfa.NewVerifyThrottle(opts...)
 			tc.assert(t, fc, th, err)
 		})

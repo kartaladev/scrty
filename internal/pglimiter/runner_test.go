@@ -171,7 +171,7 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			name:   "probe runs with the application clock and the operation timeout's lock timeout",
-			prefix: "pgx",
+			prefix: "pgxstore",
 			cfg: func(c pglimiter.Config) pglimiter.Config {
 				c = withClock(c)
 				c.Unavailable.Timeout = 1500 * time.Millisecond
@@ -184,7 +184,7 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			name:   "refused facts stop before the probe",
-			prefix: "pgx",
+			prefix: "pgxstore",
 			script: func(ctrl *gomock.Controller, r *MockRunner) {
 				r.EXPECT().QueryRow(gomock.Any(), pgschema.LimiterServerFacts).
 					Return(factsRow(ctrl, pglimiter.Facts{InRecovery: true, Version: 180006, Encoding: "UTF8", Persistence: "p"})).
@@ -205,7 +205,7 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			name:   "role refused the record is a configuration error naming record",
-			prefix: "pgx",
+			prefix: "pgxstore",
 			script: func(ctrl *gomock.Controller, r *MockRunner) {
 				expectProbe(ctrl, r, gomock.Nil(), "250ms", "record", errDenied)
 			},
@@ -213,7 +213,7 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			name:   "role refused the check names check",
-			prefix: "pgx",
+			prefix: "pgxstore",
 			script: func(ctrl *gomock.Controller, r *MockRunner) {
 				expectProbe(ctrl, r, gomock.Nil(), "250ms", "check", errDenied)
 			},
@@ -237,11 +237,11 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			name:   "any other check error has fixed text",
-			prefix: "pgx",
+			prefix: "pgxstore",
 			script: func(ctrl *gomock.Controller, r *MockRunner) {
 				expectProbe(ctrl, r, gomock.Nil(), "250ms", "check", errTerminated)
 			},
-			assert: notConfig("pgx: verify: the limiter's check statement could not run on a probe key", errTerminated),
+			assert: notConfig("pgxstore: verify: the limiter's check statement could not run on a probe key", errTerminated),
 		},
 		{
 			name:   "any other delete error has fixed text",
@@ -256,7 +256,7 @@ func TestVerify(t *testing.T) {
 		},
 		{
 			name:   "ended context is not a configuration error",
-			prefix: "pgx",
+			prefix: "pgxstore",
 			ctx: func(ctx context.Context) context.Context {
 				cctx, cancel := context.WithCancel(ctx)
 				cancel()
@@ -268,7 +268,7 @@ func TestVerify(t *testing.T) {
 						return rowScanning(ctrl, ctx.Err())
 					})
 			},
-			assert: notConfig("pgx: verify: the server's state could not be read", context.Canceled),
+			assert: notConfig("pgxstore: verify: the server's state could not be read", context.Canceled),
 		},
 	}
 
@@ -332,10 +332,10 @@ func TestBackend_Exceeded(t *testing.T) {
 	}
 
 	cases := []testCase{
-		{name: "below the limit", prefix: "pgx", key: "k", script: expectCount(2, nil), assert: exceeded(false)},
-		{name: "at the limit", prefix: "pgx", key: "k", script: expectCount(3, nil), assert: exceeded(true)},
-		{name: "above the limit", prefix: "pgx", key: "k", script: expectCount(5, nil), assert: exceeded(true)},
-		{name: "a long key is checked in its stored form", prefix: "pgx", key: longKey,
+		{name: "below the limit", prefix: "pgxstore", key: "k", script: expectCount(2, nil), assert: exceeded(false)},
+		{name: "at the limit", prefix: "pgxstore", key: "k", script: expectCount(3, nil), assert: exceeded(true)},
+		{name: "above the limit", prefix: "pgxstore", key: "k", script: expectCount(5, nil), assert: exceeded(true)},
+		{name: "a long key is checked in its stored form", prefix: "pgxstore", key: longKey,
 			script: expectCount(0, nil), assert: exceeded(false)},
 		{
 			name: "a check error answers exceeded, wrapped with the prefix", prefix: "sqlstore", key: "k",
@@ -347,7 +347,7 @@ func TestBackend_Exceeded(t *testing.T) {
 			},
 		},
 		{
-			name: "an ended context answers exceeded", prefix: "pgx", key: "k",
+			name: "an ended context answers exceeded", prefix: "pgxstore", key: "k",
 			ctx: func(ctx context.Context) context.Context {
 				cctx, cancel := context.WithCancel(ctx)
 				cancel()
@@ -362,7 +362,7 @@ func TestBackend_Exceeded(t *testing.T) {
 			assert: func(t *testing.T, got bool, err error) {
 				assert.True(t, got)
 				require.ErrorIs(t, err, context.Canceled)
-				assert.EqualError(t, err, "pgx: rate-limit check: context canceled")
+				assert.EqualError(t, err, "pgxstore: rate-limit check: context canceled")
 			},
 		},
 	}
@@ -402,7 +402,7 @@ func TestBackend_RecordFailure(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "records with the limit, window, application clock and lock timeout", prefix: "pgx",
+			name: "records with the limit, window, application clock and lock timeout", prefix: "pgxstore",
 			cfg: func(c pglimiter.Config) pglimiter.Config {
 				c = withClock(c)
 				c.Unavailable.Timeout = 400 * time.Millisecond

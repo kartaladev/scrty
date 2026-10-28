@@ -94,7 +94,7 @@ func TestHasWayBack_IssuedCodePairing(t *testing.T) {
 
 			c, err := recovery.NewWayBackCheck(recovery.WayBackDeps{
 				Users:       users,
-				Codes:       newCodes(t, recovery.WithCodeStore(codes)),
+				Codes:       newCodes(t, recovery.WithCodesStore(codes)),
 				Kinds:       []recovery.AuthenticatorKind{kind},
 				IssuedCodes: true,
 			})

@@ -76,16 +76,16 @@ type CredentialStore interface {
 	// whether this call did. Suspension is terminal.
 	Suspend(ctx context.Context, cid id.ID) (bool, error)
 	// ClearReason clears the pending reason r of user's credential cid, only
-	// where r is exactly one reason, AwaitingSavedCodes or AwaitingEmailCode,
+	// where r is exactly one reason, PendingSavedCodes or PendingEmailCode,
 	// and the credential is pending with it set; any other r, such as zero, a
 	// combination or an unknown bit, is refused and changes nothing. Clearing the last reason
-	// makes it active in the same write, and clearing AwaitingEmailCode drops
+	// makes it active in the same write, and clearing PendingEmailCode drops
 	// its emailed code. It returns the state that results and true, or the
 	// zero State and false when refused.
 	ClearReason(ctx context.Context, user identity.UserID, cid id.ID, r PendingReason) (State, bool, error)
 	// ChargeEmailAttempt charges one attempt against the emailed code of
 	// user's credential cid, only where the credential is pending with
-	// AwaitingEmailCode set, the code is outstanding, at is before its expiry
+	// PendingEmailCode set, the code is outstanding, at is before its expiry
 	// and fewer than MaxEmailCodeAttempts are charged. It returns the stored
 	// code, with the attempt counted, for the caller to compare, and true; or
 	// nil and false when refused.
@@ -97,7 +97,7 @@ type CredentialStore interface {
 	// removed it.
 	Delete(ctx context.Context, user identity.UserID, cid id.ID) (bool, error)
 	// DeleteAwaitingSavedCodes removes every credential of user whose
-	// AwaitingSavedCodes reason is set, and reports how many it removed.
+	// PendingSavedCodes reason is set, and reports how many it removed.
 	DeleteAwaitingSavedCodes(ctx context.Context, user identity.UserID) (int, error)
 	// DeleteUser removes every credential of user, and reports how many it
 	// removed.

@@ -51,7 +51,7 @@ var _ ratelimit.LimiterFactory = (*LimiterFactory)(nil)
 // builds, and discards, to check client and options once.
 const factoryProbeNamespace = "factory"
 
-// NewLimiterFactory returns a Factory whose limiters count in the server
+// NewLimiterFactory returns a LimiterFactory whose limiters count in the server
 // behind client, each configured by opts.
 //
 // It checks client and opts as NewLimiter would, so a wiring mistake fails

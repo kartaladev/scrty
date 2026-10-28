@@ -418,7 +418,7 @@ func TestBearerPerRequestPhase(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				// The engine substitutes ErrPolicyDenied for a nil reason.
+				// The engine substitutes ErrDenied for a nil reason.
 				return denyingIn(t, policy.PerRequest, nil)
 			},
 			assert: func(t *testing.T, _ *session.Session, s served) {

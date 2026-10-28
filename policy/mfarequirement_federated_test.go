@@ -102,21 +102,21 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 		{
 			name:     "refuse mode denies an unmet login with the assurance-not-met reason",
 			required: requiredUser, methods: idleTOTP, source: notMet,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			phase: policy.PostAuthentication, in: oidcLogin,
 			assert: denied(policy.ErrFederatedAssuranceNotMet),
 		},
 		{
 			name:     "refuse mode allows a met login",
 			required: requiredUser, methods: idleTOTP, source: met,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			phase: policy.PostAuthentication, in: oidcLogin, assert: allowed,
 		},
 		{
 			// The proof is decided before the refusal, as the order states.
 			name:     "refuse mode honours the library's proof before refusing",
 			required: requiredUser, methods: idleTOTP, source: notMet,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			phase: policy.PostAuthentication,
 			in: func() *policy.Input {
 				in := oidcLogin()
@@ -137,20 +137,20 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 				return m
 			},
 			methods: idleTOTP, source: unasked,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
 			phase: policy.PostAuthentication, in: oidcLogin, assert: allowed,
 		},
 		{
 			name:     "exempt mode allows a federated session per request",
 			required: func(t *testing.T) identity.MFARequirementLookup { return mfaRequirementLookup(t, false, true, nil) },
 			methods:  idleTOTP, source: unasked,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
 			phase: policy.PerRequest, in: oidcLogin, assert: allowed,
 		},
 		{
 			name:    "exempt mode does not exempt a login off the federated channel",
 			methods: unenrolledTOTP,
-			opts:    []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceExempt)},
+			opts:    []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceExempt)},
 			phase:   policy.PostAuthentication,
 			in:      func() *policy.Input { return mfaInput(factor.Password) },
 			assert:  denied(policy.ErrMFAEnrolmentRequired),
@@ -182,7 +182,7 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 			source: func(t *testing.T) policy.FederatedAssuranceSource {
 				return assuranceSource(t, true, true, errAssuranceSource)
 			},
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			phase: policy.PostAuthentication, in: oidcLogin,
 			assert: func(t *testing.T, d policy.Decision, err error) {
 				require.NoError(t, err)
@@ -194,14 +194,14 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 		{
 			name:     "refuse mode in a stateless phase is refused before the source is asked",
 			required: requiredUser, methods: idleTOTP, source: unasked,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			phase: policy.StatelessAuthentication, in: oidcLogin,
 			assert: denied(policy.ErrMFARequired),
 		},
 		{
 			name:     "refuse mode in an undeclared phase is refused before the source is asked",
 			required: requiredUser, methods: enrolledTOTP, source: unasked,
-			opts:  []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:  []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			phase: policy.PreAuthentication, in: oidcLogin,
 			assert: denied(policy.ErrMFARequired),
 		},
@@ -273,7 +273,7 @@ func TestMFARequirementPolicy_Federated(t *testing.T) {
 		{
 			name:    "an unknown mode is a configuration error",
 			methods: idleTOTP,
-			opts:    []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceMode(9))},
+			opts:    []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceMode(9))},
 			phase:   policy.PostAuthentication, in: oidcLogin,
 			assert: func(t *testing.T, _ policy.Decision, err error) {
 				assert.ErrorIs(t, err, policy.ErrConfig)
@@ -450,13 +450,13 @@ func TestMFARequirementPolicy_FederatedPerRequest(t *testing.T) {
 		{
 			name:     "a locally satisfied session is allowed in refuse mode too",
 			required: requiredUser, methods: idleTOTP, source: unasked,
-			opts: []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts: []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			in:   satisfiedSession, assert: allowed,
 		},
 		{
 			name:     "provider tightened in refuse mode: the session is denied with assurance-not-met",
 			required: requiredUser, methods: idleTOTP, source: rematched(false, nil),
-			opts:   []policy.MFARequirementOption{policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse)},
+			opts:   []policy.MFARequirementOption{policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse)},
 			in:     session,
 			assert: deniedWith(policy.ErrFederatedAssuranceNotMet),
 		},
@@ -554,7 +554,7 @@ func TestMFARequirementPolicy_FederatedRefusalRecord(t *testing.T) {
 		mfaRequirementLookup(t, true, true, nil),
 		mfaMethod(t, factor.AuthenticatorApp, true, nil),
 		policy.WithFederatedAssuranceSource(assuranceSource(t, true, false, nil)),
-		policy.WithFederatedAssurance(policy.FederatedAssuranceRefuse),
+		policy.WithMFARequirementFederatedAssurance(policy.FederatedAssuranceRefuse),
 		policy.WithMFARequirementLogger(mfaLogger(buf)))
 
 	in := federatedInput(factor.OIDC,

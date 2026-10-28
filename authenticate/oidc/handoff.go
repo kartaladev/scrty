@@ -57,7 +57,7 @@ const handoffLogInterval = time.Minute
 // padding. The store holds the token id and SHA-256 of the secret, never the
 // secret itself.
 //
-// Build one with NewHandoffManager. A Handoff is safe for concurrent use
+// Build one with NewHandoff. A Handoff is safe for concurrent use
 // as far as the store and user loader it was given are.
 type Handoff struct {
 	store   HandoffStore
@@ -423,7 +423,7 @@ func (h *Handoff) record(ctx context.Context, level slog.Level, key string, attr
 // flight, and safe to call more than once: a second flush with nothing new
 // pending reports nothing. Call it directly, or let
 // httpsec.Chain.FlushRefusalLogs reach it through the OIDC login manager it
-// was given (oidc.Manager.FlushRefusalLogs).
+// was given (oidc.RelyingParty.FlushRefusalLogs).
 func (h *Handoff) FlushRefusalLogs() error {
 	h.sampler.Flush()
 

@@ -131,7 +131,7 @@ func (b *Broker) principalFor(ctx context.Context, ext ExternalIdentity, det *id
 func (b *Broker) checkRoles() error {
 	for provider, on := range b.roleSync {
 		if on && b.roleClaims[provider] == "" {
-			return fmt.Errorf("%w: WithRoleSync for provider %q needs a non-empty role claim path from WithRoleClaim",
+			return fmt.Errorf("%w: WithBrokerRoleSync for provider %q needs a non-empty role claim path from WithBrokerRoleClaim",
 				ErrConfig, provider)
 		}
 	}

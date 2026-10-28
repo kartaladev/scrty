@@ -88,7 +88,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
 				assert.ErrorContains(t, err, "closed pool")
-				assert.ErrorContains(t, err, "pgx: consume one-time token")
+				assert.ErrorContains(t, err, "pgxstore: consume one-time token")
 			},
 		},
 		{
@@ -100,7 +100,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				err := s.Consume(ctx, storefix.RaceToken(1).ID, time.Now())
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
-				assert.ErrorContains(t, err, "pgx: consume one-time token")
+				assert.ErrorContains(t, err, "pgxstore: consume one-time token")
 			},
 		},
 		{
@@ -131,7 +131,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				err := s.Consume(ctx, storefix.RaceToken(4).ID, time.Now())
 				require.ErrorIs(t, err, pgxstore.ErrNilTransaction)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
-				assert.ErrorContains(t, err, "pgx: consume one-time token")
+				assert.ErrorContains(t, err, "pgxstore: consume one-time token")
 			},
 		},
 		{

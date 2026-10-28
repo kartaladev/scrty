@@ -28,15 +28,15 @@ import (
 // it is written and opened when it is read, through session.NewEncryptedStore
 // and seal.SessionCipher; there is no unsealed variant, and a nil c, typed
 // nil included, is a configuration error. A token that will not open makes
-// the load fail with session.ErrSessionUnreadable, never
-// session.ErrSessionNotFound. A load never rewrites the record, so a token
+// the load fail with session.ErrUnreadable, never
+// session.ErrNotFound. A load never rewrites the record, so a token
 // sealed under a retired key is re-sealed only by the session's next save.
 //
 // The session identifier, a bearer credential, is never stored: a session is
 // kept and found under the SHA-256 digest of its identifier, behind a
 // primary key minted from the store's id generator. Create is an insert that
 // refuses an identifier already stored, and Save an update that reports
-// session.ErrSessionNotFound when the session is gone, so a save racing a
+// session.ErrNotFound when the session is gone, so a save racing a
 // logout never brings the session back.
 //
 // The enrolment-origin marker and the enrolment generation are kept in
@@ -127,10 +127,10 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 	const op = "create session"
 
 	if sess.FamilyID.IsZero() {
-		return errors.New("pgx: create session: a session with no family cannot be stored")
+		return errors.New("pgxstore: create session: a session with no family cannot be stored")
 	}
 	if sess.FamilyCreatedAt.IsZero() {
-		return errors.New("pgx: create session: a session with no family start time cannot be stored")
+		return errors.New("pgxstore: create session: a session with no family start time cannot be stored")
 	}
 
 	args, err := s.insertArgs(op, sess)
@@ -142,7 +142,7 @@ func (s *sessionStore) Create(ctx context.Context, sess *session.Session) error 
 		return err
 	}
 	if n == 0 {
-		return errors.New("pgx: create session: the identifier is already in use")
+		return errors.New("pgxstore: create session: the identifier is already in use")
 	}
 
 	return nil
@@ -196,7 +196,7 @@ func (s *sessionStore) Save(ctx context.Context, sess *session.Session) error {
 // store's clock: a superseded session with a retention deadline is returned
 // until that deadline, whatever its own deadlines say and with them intact,
 // and any other session until either of its own deadlines. A stored session
-// past them is session.ErrSessionExpired.
+// past them is session.ErrExpired.
 func (s *sessionStore) Load(ctx context.Context, sessionID string) (*session.Session, error) {
 	const op = "load session"
 
@@ -449,7 +449,7 @@ func (s *sessionStore) deleteUntilNone(ctx context.Context, op, statement string
 // session last accessed not later than olderThan and not superseded: one conditional
 // UPDATE of those two columns. A session that is fresher or superseded is left
 // unchanged and is not an error; one that is not stored is
-// session.ErrSessionNotFound.
+// session.ErrNotFound.
 func (s *sessionStore) RecordActivity(
 	ctx context.Context, sessionID string, lastAccessed, idleExpires, olderThan time.Time,
 ) error {
@@ -484,8 +484,8 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 // one is attached, under a savepoint of its own, otherwise one it begins and
 // commits. The conditional UPDATE of Old decides the outcome: when it changes
 // no row, nothing is written, and the store reports
-// session.ErrSessionRenewalConflict when Old is stored and
-// session.ErrSessionNotFound when it is not. A successor whose identifier is
+// session.ErrRenewalConflict when Old is stored and
+// session.ErrNotFound when it is not. A successor whose identifier is
 // already stored is an error, and nothing is written. A nil Successor, a
 // Successor with no family (the nil family), and an op.RetainUntil before
 // op.AcceptUntil are errors too, refused before any statement runs.
@@ -510,7 +510,7 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 // session carries it; the family read in the conditional update decides it,
 // so nothing is written. A session superseded already is superseded again
 // only through its observed successor: with none observed it is
-// session.ErrSessionRenewalConflict, as it was knocked out of its chain and
+// session.ErrRenewalConflict, as it was knocked out of its chain and
 // renewing it would give the family a second live head.
 //
 // Locking: the transaction first locks the rows it updates, Old and the
@@ -523,7 +523,7 @@ func (s *sessionStore) stored(ctx context.Context, op string, digest []byte) (bo
 // commits first and refuses the supersession, or waits for it.
 //
 // Isolation: at the default READ COMMITTED, a supersession that loses a race
-// to another one is session.ErrSessionRenewalConflict, and one whose
+// to another one is session.ErrRenewalConflict, and one whose
 // successor moved on while it waited is session.ErrSuccessorAdvanced. Inside
 // a caller's transaction at REPEATABLE READ or SERIALIZABLE, a lost race may
 // instead surface as the driver's serialization failure (SQLSTATE 40001),
@@ -667,7 +667,7 @@ func (u *supersession) Failed(err error) error { return failed(u.op, err) }
 // statement leaves it aborted, with no savepoint to return to.
 func (s *sessionStore) DeleteFamily(ctx context.Context, family id.ID) (int, error) {
 	if family.IsZero() {
-		return 0, errors.New("pgx: delete session family: the nil family names no family")
+		return 0, errors.New("pgxstore: delete session family: the nil family names no family")
 	}
 
 	return s.deleteUntilNone(ctx, "delete session family", pgschema.SessionDeleteFamily, uuidArg(family))
@@ -678,8 +678,8 @@ func (s *sessionStore) DeleteFamily(ctx context.Context, family id.ID) (int, err
 // of that column, so a supersession racing it either commits first and
 // refuses it, or waits on the row and sees it. Only when it changes no row
 // does one read tell why: a session that is not stored is
-// session.ErrSessionNotFound, a superseded one is
-// session.ErrSessionSuperseded, with nothing written, and one already
+// session.ErrNotFound, a superseded one is
+// session.ErrSuperseded, with nothing written, and one already
 // presented is not an error.
 func (s *sessionStore) MarkPresented(ctx context.Context, sessionID string, at time.Time) error {
 	const op = "mark session presented"
@@ -705,7 +705,7 @@ var _ session.Store = (*sessionStore)(nil)
 // with this identifier was used, in one read that writes nothing: true when
 // that successor is stored and was presented or has been superseded, false
 // when it is stored unused, is no longer stored, or the session has none. A
-// session that is not stored is session.ErrSessionNotFound. "Stored" is
+// session that is not stored is session.ErrNotFound. "Stored" is
 // judged as Load judges it, with the store's clock, for the session and its
 // successor alike, so a row past its deadlines that the sweep has not yet
 // removed is not stored. It reads through the caller's transaction when one

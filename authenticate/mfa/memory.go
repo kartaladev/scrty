@@ -269,10 +269,10 @@ func (s *MemoryEnrolmentStore) Complete(
 // ChargeEmailCode charges one attempt against the emailed code of the user's
 // enrolment on gen, if and only if it is pending on gen with its device
 // proven, its code is outstanding and unexpired at at, and fewer than
-// MaxEmailCodeFailures attempts have been charged.
+// MaxEmailCodeAttempts attempts have been charged.
 //
 // The conditions are evaluated and the count written under one lock, so of any
-// number of concurrent charges on one code, exactly MaxEmailCodeFailures are
+// number of concurrent charges on one code, exactly MaxEmailCodeAttempts are
 // charged and every other reports false.
 func (s *MemoryEnrolmentStore) ChargeEmailCode(
 	_ context.Context, user identity.UserID, gen id.ID, at time.Time,

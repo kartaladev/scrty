@@ -5,7 +5,7 @@ import (
 	"log/slog"
 )
 
-// Option customises a Manager at construction.
+// Option customises the Links at construction.
 //
 // Every option replaces a default that already works, so a consumer who passes
 // none gets a manager that behaves safely. A nil option is ignored.

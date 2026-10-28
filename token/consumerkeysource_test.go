@@ -24,7 +24,7 @@ const (
 )
 
 // externalKeySource is the shape a consumer's own key source takes: one key,
-// no KeyManager anywhere, and deliberately no LifetimeReporter, so a source
+// no Keys anywhere, and deliberately no LifetimeReporter, so a source
 // that cannot report its lifetimes gets no lifetime cap.
 //
 // It is hand-written rather than generated because the tests need it to sign

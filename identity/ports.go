@@ -8,7 +8,7 @@ import (
 // Field names a user field an option can set.
 //
 // A provisioner writes exactly the fields whose option was applied, which
-// NewUser.IsSet reports, so a field the caller never named is left as the store
+// UserChange.IsSet reports, so a field the caller never named is left as the store
 // holds it rather than being overwritten with a zero value.
 type Field uint8
 
@@ -130,7 +130,7 @@ func WithUserPasswordChange(hash []byte, at time.Time) UserOption {
 	}
 }
 
-// ApplyUserOptions collects opts into a NewUser.
+// ApplyUserOptions collects opts into a UserChange.
 //
 // Implementations of UserProvisioner call it to learn which fields the caller
 // named. A nil option is skipped, so a caller building an option slice
@@ -150,7 +150,7 @@ func ApplyUserOptions(opts ...UserOption) *UserChange {
 // UserLoader loads users from the consumer's own store.
 //
 // This package ships no implementation. The library's opt-in identity stores
-// (in sqlstore, pgx and gorm) implement it, but a component that needs a
+// (in sqlstore, pgxstore and gormstore) implement it, but a component that needs a
 // UserLoader and is given none fails at construction rather than falling back
 // to an empty store or to one of those.
 type UserLoader interface {
@@ -176,7 +176,7 @@ type UserLoader interface {
 // RoleLoader resolves a role name to the privileges it grants.
 //
 // This package ships no implementation. The library's opt-in identity stores
-// (in sqlstore, pgx and gorm) implement it, and are used only when a consumer
+// (in sqlstore, pgxstore and gormstore) implement it, and are used only when a consumer
 // supplies one.
 type RoleLoader interface {
 	// LoadPrivileges returns the resource privileges effective for role. A role

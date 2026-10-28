@@ -56,7 +56,7 @@ func ExampleNewLimiterFactory() {
 	// Every flow the chain guards builds its limiter from the factory, under
 	// its own namespace, limit and window.
 	chainOpt := httpsec.WithRateLimiterFactory(factory)
-	_, _ = chainOpt, secondFactor // httpsec.New(chainOpt, ...), mfa.WithVerifyLimiterFactory(secondFactor), ...
+	_, _ = chainOpt, secondFactor // httpsec.New(chainOpt, ...), mfa.WithThrottleLimiterFactory(secondFactor), ...
 
 	// Each factory builds its own namespaces, never one the other builds too.
 	_, _ = factory.NewLimiter("api-key", 20, time.Minute)

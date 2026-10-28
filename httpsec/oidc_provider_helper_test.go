@@ -254,7 +254,7 @@ func (h *oidcHarness) conveyedChain(
 
 	return h.build(t, nil, append([]httpsec.OIDCOption{
 		httpsec.WithOIDCSessions(h.sessions),
-		httpsec.WithCallbackSuccess(fn),
+		httpsec.WithOIDCCallbackSuccess(fn),
 	}, opts...)...)
 }
 

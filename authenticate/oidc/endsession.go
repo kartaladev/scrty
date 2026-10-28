@@ -70,7 +70,7 @@ func (m *RelyingParty) EndSessionURL(ctx context.Context, provider, idTokenHint,
 
 // EndSessionBuilder returns the manager's end-session step over a session:
 // its EndSessionURL reads the session's ExternalProvider and ExternalIDToken
-// and returns Manager.EndSessionURL for them. A nil session, or one that
+// and returns RelyingParty.EndSessionURL for them. A nil session, or one that
 // records no provider (a password login, say), yields "" and no error.
 //
 // The returned value satisfies the http-security chain's end-session
@@ -81,7 +81,7 @@ func (m *RelyingParty) EndSessionBuilder() interface {
 	return sessionEndSession{m: m}
 }
 
-// sessionEndSession adapts Manager.EndSessionURL to a session.
+// sessionEndSession adapts RelyingParty.EndSessionURL to a session.
 type sessionEndSession struct{ m *RelyingParty }
 
 func (b sessionEndSession) EndSessionURL(ctx context.Context, s *session.Session, state string) (string, error) {

@@ -433,7 +433,7 @@ func TestEnrolmentPathEndToEnd(t *testing.T) {
 		t.Parallel()
 
 		d := newE2EDeployment(t)
-		d.enrolOpts = append(d.enrolOpts, httpsec.WithoutEmailConfirmation())
+		d.enrolOpts = append(d.enrolOpts, httpsec.WithoutEnrolmentEmailConfirmation())
 		d.build(t)
 
 		pending := enrolmentChallenged(t, d.login(t))

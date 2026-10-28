@@ -116,7 +116,7 @@ func unreachablePool(t *testing.T) *pgxpool.Pool {
 // refusedConfig asserts a constructor refused its configuration with exactly
 // text, and returned no store.
 func refusedConfig[S any](text string) func(t *testing.T, s S, err error) {
-	return storefix.RefusedConfig[S](pgxstore.ErrConfig, "pgx", text)
+	return storefix.RefusedConfig[S](pgxstore.ErrConfig, "pgxstore", text)
 }
 
 // beginTx begins a transaction of pool for a table case, and rolls it back at

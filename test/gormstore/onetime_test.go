@@ -90,7 +90,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				// A closed *sql.DB under gorm reports database/sql's own
 				// unexported error.
 				assert.ErrorContains(t, err, "sql: database is closed")
-				assert.ErrorContains(t, err, "gorm: consume one-time token")
+				assert.ErrorContains(t, err, "gormstore: consume one-time token")
 			},
 		},
 		{
@@ -102,7 +102,7 @@ func TestOneTimeStore_Failures(t *testing.T) {
 				err := s.Consume(ctx, storefix.RaceToken(1).ID, time.Now())
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, onetime.ErrTokenNotFound)
-				assert.ErrorContains(t, err, "gorm: consume one-time token")
+				assert.ErrorContains(t, err, "gormstore: consume one-time token")
 			},
 		},
 		{

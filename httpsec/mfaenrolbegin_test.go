@@ -145,7 +145,7 @@ func TestEnrolmentBegin(t *testing.T) {
 			name:  "a consumer label resolver",
 			first: factor.Password,
 			prepare: func(_ *testing.T, h *enrolHarness) {
-				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithLabelResolver(
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentLabelResolver(
 					func(_ context.Context, d *identity.Details) (string, error) {
 						if d.ID != testMFAUser {
 							return "", errors.New("mfaenrolbegin_test: resolved for the wrong user")

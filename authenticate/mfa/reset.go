@@ -16,7 +16,7 @@ import (
 	"github.com/kartaladev/scrty/pkg/clock"
 )
 
-// SessionRevoker ends every session of a user. *session.Manager and every
+// SessionRevoker ends every session of a user. *session.Sessions and every
 // session.Store satisfy it through their DeleteByUser.
 type SessionRevoker interface {
 	// DeleteByUser removes every session of user.
@@ -43,7 +43,7 @@ type ResetDeps struct {
 	Enrolments []EnrolmentRemover
 
 	// Sessions ends the user's sessions. Required unless
-	// WithoutSessionRevocation.
+	// WithoutResetSessionRevocation.
 	Sessions SessionRevoker
 
 	// Users loads the user's details for the contact address. Required unless
@@ -86,13 +86,13 @@ func newResetConfig(opts []ResetOption) resetConfig {
 // ResetOption configures ResetEnrolment. A nil option is ignored.
 type ResetOption func(*resetConfig)
 
-// WithoutSessionRevocation keeps the user's sessions, replacing the default of
+// WithoutResetSessionRevocation keeps the user's sessions, replacing the default of
 // deleting every one of them.
 //
 // What it gives up: a session that satisfied MFA with the lost or compromised
 // authenticator stays usable until it expires. It is for a consumer who
 // revokes sessions elsewhere, as part of the same administrative action.
-func WithoutSessionRevocation() ResetOption {
+func WithoutResetSessionRevocation() ResetOption {
 	return func(c *resetConfig) { c.revokeSessions = false }
 }
 
@@ -162,7 +162,7 @@ func defaultResetMessage(at time.Time) (subject, body string) {
 //  1. removes the user's enrolment on every remover in ResetDeps.Enrolments,
 //     in order;
 //  2. deletes every session of the user, so a session that satisfied MFA with
-//     the lost authenticator ends (default; WithoutSessionRevocation keeps
+//     the lost authenticator ends (default; WithoutResetSessionRevocation keeps
 //     them);
 //  3. notifies the user at the address the contact resolver gives, by default
 //     the username (default; WithoutResetNotification turns it off).
@@ -238,7 +238,7 @@ func (d ResetDeps) check(c resetConfig) error {
 	}
 
 	if c.revokeSessions && nilcheck.IsNil(d.Sessions) {
-		return fmt.Errorf("%w: reset requires a session revoker, or WithoutSessionRevocation", ErrConfig)
+		return fmt.Errorf("%w: reset requires a session revoker, or WithoutResetSessionRevocation", ErrConfig)
 	}
 
 	if c.messageUnset {
