@@ -148,6 +148,7 @@ These rules apply to every package in the core module and the nested modules, ex
    - A test of several features working together goes into the package's `integration_test.go`.
    - Helpers shared by several test files go into `helpers_test.go`.
    - Generated mocks, `example_*_test.go`, `export_test.go` and `main_test.go` keep their own files.
+   - In-package tests that must read unexported state go into `<file>_internal_test.go`, beside the external `<file>_test.go`. Go does not let one file hold both packages. Where an `export_test.go` accessor serves just as well, the test moves to the external file instead. Files whose tests differ only by build tag (`_race`, `_norace`) also stay apart.
 5. **Shared code is filed by what it is,** not under the first feature that used it.
 
 The `httpsec` production map follows. In this map, "§X" means the `Enable…` function, option type and options of feature X, taken out of today's `options.go`.
@@ -212,6 +213,7 @@ When the test files of one unit merge, the test functions that call the same SUT
 Five constraints keep the conversion from weakening any test:
 - **A case's name keeps its old function's suffix.** `TestMFAVerify_Attempts` becomes `TestMFAVerify/attempts`. Its assertions move into the case's closure unchanged.
 - **A function with a structurally different setup stays standalone,** as `table-test` allows, with its one-line comment explaining why.
+- **A function that is already a table** may fold into its sibling table, its subtests becoming cases under their own names, since nesting them under the old suffix would add a level that means nothing. Or it stays as it is, with a comment, where folding would make its subtest names collide or need a nested group.
 - **Parallelism is preserved, not added.** A case runs `t.Parallel()` only if its original did. Adding concurrency to a test that never ran concurrently is a change in what the test exercises.
 - **New cases are limited.** The only new case allowed is the cancelled-context case that `table-test` requires of a context-sensitive table.
 - **A new case that fails stops that table's conversion.** The case is not committed, and the defect is reported as `REPRODUCED`, as `defect-claims.md` requires. Fixing it is a behaviour change, which belongs in its own change, decided by the user.
