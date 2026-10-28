@@ -34,7 +34,7 @@ import (
 const brokenVar = "PGXSTORE_BROKEN"
 
 // brokenVariants are the defects the pgx runs must catch. None of them is
-// exported from the pgx module: each is built here, over the exported store
+// exported from the pgxstore module: each is built here, over the exported store
 // or through the pool.
 var brokenVariants = []storefix.BrokenVariant{
 	{

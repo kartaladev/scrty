@@ -33,7 +33,7 @@ import (
 const brokenVar = "GORMSTORE_BROKEN"
 
 // brokenVariants are the defects the gorm runs must catch. None of them is
-// exported from the gorm module: each is built here, over the exported store
+// exported from the gormstore module: each is built here, over the exported store
 // or through the test's own *gorm.DB.
 var brokenVariants = []storefix.BrokenVariant{
 	{

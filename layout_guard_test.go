@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
 	"io/fs"
 	"os"
@@ -524,18 +525,63 @@ func workspaceViolations(t *testing.T, root string) []violation {
 	return vs
 }
 
+// discoverModules returns the directory of every module found by walking root
+// for go.mod files, relative to root and in lexical order. It skips testdata and
+// dot-directories below root, and does not depend on any go.work file.
+func discoverModules(t *testing.T, root string) []string {
+	t.Helper()
+	var dirs []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if path != root && (d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == "go.mod" {
+			rel, relErr := filepath.Rel(root, filepath.Dir(path))
+			if relErr != nil {
+				return relErr
+			}
+			dirs = append(dirs, rel)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	return dirs
+}
+
+// integrationEntry describes one integration module: the directory it is
+// published under, the package it declares, and a name for its test case.
+type integrationEntry struct {
+	dir, pkg, name string
+}
+
+// integrationTable is the single table of integrations. Every workspace
+// module other than the core, test and tools modules must appear here.
+var integrationTable = []integrationEntry{
+	{"authenticate/passkey/webauthn", "webauthn", "the WebAuthn adapter extends passkey"},
+	{"store/pgxstore", "pgxstore", "the pgx backend extends store"},
+	{"store/gormstore", "gormstore", "the GORM backend extends store"},
+	{"ratelimit/redisstore", "redisstore", "the Redis limiter store extends ratelimit"},
+	{"expiry/sweep", "sweep", "the sweeper extends expiry"},
+	{"httpsec/ginsec", "ginsec", "the Gin adapter extends httpsec"},
+	{"httpsec/fibersec", "fibersec", "the Fiber adapter extends httpsec"},
+}
+
 // integrationDirs lists, by directory relative to the repository root, every
 // workspace module other than the core, test and tools modules. Each one is an
 // integration published under the concept it extends.
-var integrationDirs = []string{
-	"authenticate/passkey/webauthn",
-	"store/pgxstore",
-	"store/gormstore",
-	"ratelimit/redisstore",
-	"expiry/sweep",
-	"httpsec/ginsec",
-	"httpsec/fibersec",
-}
+var integrationDirs = func() []string {
+	dirs := make([]string, 0, len(integrationTable))
+	for _, m := range integrationTable {
+		dirs = append(dirs, m.dir)
+	}
+	return dirs
+}()
 
 // modulePath returns the path the module line of dir's go.mod declares, or the
 // empty string when dir holds no go.mod.
@@ -590,13 +636,13 @@ func packageClause(t *testing.T, dir string) string {
 	return ""
 }
 
-// unlistedModules returns the modules the go.work file at root uses, by
+// unlistedModules returns the modules found under root, by
 // directory relative to root, that are neither the core module, the test or
 // tools module, nor one of listed.
 func unlistedModules(t *testing.T, root string, listed []string) []string {
 	t.Helper()
 	var unlisted []string
-	for _, dir := range workspaceModules(t, root) {
+	for _, dir := range discoverModules(t, root) {
 		dir = filepath.ToSlash(dir)
 		if dir == "." || dir == "test" || dir == "tools" || slices.Contains(listed, dir) {
 			continue
@@ -604,4 +650,17 @@ func unlistedModules(t *testing.T, root string, listed []string) []string {
 		unlisted = append(unlisted, dir)
 	}
 	return unlisted
+}
+
+// belowGoMinimum returns the modules under root, by directory relative to
+// root, whose go directive is not the supported minimum.
+func belowGoMinimum(t *testing.T, root string) []string {
+	t.Helper()
+	var below []string
+	for _, dir := range discoverModules(t, root) {
+		if version.Lang("go"+goDirective(t, filepath.Join(root, dir))) != "go1.27" {
+			below = append(below, filepath.ToSlash(dir))
+		}
+	}
+	return below
 }

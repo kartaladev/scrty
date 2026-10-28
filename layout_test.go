@@ -1,7 +1,6 @@
 package scrty_test
 
 import (
-	"go/version"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -344,7 +343,7 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 
 	cases := []testCase{
 		{
-			name: "no workspace module outside redis and test requires the client",
+			name: "no workspace module outside redisstore and test requires the client",
 			check: func(t *testing.T) []violation {
 				var vs []violation
 				for _, dir := range workspaceModules(t, ".") {
@@ -364,7 +363,7 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 			assert: hasViolation("httpsec/ginsec/go.mod", "github.com/redis/go-redis/v9"),
 		},
 		{
-			name: "the redis and test modules may require the client",
+			name: "the redisstore and test modules may require the client",
 			check: func(*testing.T) []violation {
 				reqs := []requirement{{Path: "github.com/redis/go-redis/v9"}}
 				return append(redisClientViolations("ratelimit/redisstore", reqs), redisClientViolations("test", reqs)...)
@@ -404,14 +403,9 @@ func TestIntegrationModulesUnderTheirConcept(t *testing.T) {
 		assert func(t *testing.T, inWorkspace bool, path, name string)
 	}
 
-	cases := []testCase{
-		{name: "the WebAuthn adapter extends passkey", dir: "authenticate/passkey/webauthn", assert: underConcept("authenticate/passkey/webauthn", "webauthn")},
-		{name: "the pgx backend extends store", dir: "store/pgxstore", assert: underConcept("store/pgxstore", "pgxstore")},
-		{name: "the GORM backend extends store", dir: "store/gormstore", assert: underConcept("store/gormstore", "gormstore")},
-		{name: "the Redis limiter store extends ratelimit", dir: "ratelimit/redisstore", assert: underConcept("ratelimit/redisstore", "redisstore")},
-		{name: "the sweeper extends expiry", dir: "expiry/sweep", assert: underConcept("expiry/sweep", "sweep")},
-		{name: "the Gin adapter extends httpsec", dir: "httpsec/ginsec", assert: underConcept("httpsec/ginsec", "ginsec")},
-		{name: "the Fiber adapter extends httpsec", dir: "httpsec/fibersec", assert: underConcept("httpsec/fibersec", "fibersec")},
+	cases := make([]testCase, 0, len(integrationTable))
+	for _, m := range integrationTable {
+		cases = append(cases, testCase{name: m.name, dir: m.dir, assert: underConcept(m.dir, m.pkg)})
 	}
 
 	modules := workspaceModules(t, ".")
@@ -449,6 +443,13 @@ func TestNoUnlistedIntegrationModule(t *testing.T) {
 				assert.Equal(t, []string{"pgx"}, unlisted)
 			},
 		},
+		{
+			name: "control: a module no go.work lists is named by its directory",
+			root: "testdata/layout/wsstray",
+			assert: func(t *testing.T, unlisted []string) {
+				assert.Equal(t, []string{"pgx"}, unlisted)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -460,13 +461,68 @@ func TestNoUnlistedIntegrationModule(t *testing.T) {
 	}
 }
 
-// TestBackendDoesNotShadowDriver builds a consumer that imports each storage
-// backend beside the driver it wraps, with no import alias. It compiles only
-// while no backend's package name equals its driver's.
+func TestGoWorkListsEveryModule(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		root   string
+		assert func(t *testing.T, found, listed []string)
+	}
+
+	cases := []testCase{
+		{
+			name: "go.work uses every module in the tree except tools",
+			root: ".",
+			assert: func(t *testing.T, found, listed []string) {
+				assert.ElementsMatch(t, listed, slices.DeleteFunc(found, func(dir string) bool { return dir == "tools" }))
+			},
+		},
+		{
+			name: "control: a module in the tree but not in go.work is detected",
+			root: "testdata/layout/wsstray",
+			assert: func(t *testing.T, found, listed []string) {
+				assert.Equal(t, []string{"."}, listed)
+				assert.ElementsMatch(t, []string{".", "pgx"}, found)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, discoverModules(t, tc.root), workspaceModules(t, tc.root))
+		})
+	}
+}
+
+// TestBackendDoesNotShadowDriver builds, per backend, a consumer that imports
+// the backend beside the driver it wraps, with no import alias. It compiles only
+// while the backend's package name differs from its driver's. The build is
+// read-only, so a fixture whose go.mod or go.sum has drifted fails instead of
+// being rewritten.
 func TestBackendDoesNotShadowDriver(t *testing.T) {
 	t.Parallel()
 
-	goCmd(t, "testdata/layout/noalias", []string{"GOFLAGS=-mod=mod"}, "build", "./...")
+	type testCase struct {
+		name    string
+		fixture string
+	}
+
+	cases := []testCase{
+		{name: "pgxstore beside github.com/jackc/pgx/v5", fixture: "testdata/layout/noaliaspgx"},
+		{name: "gormstore beside gorm.io/gorm", fixture: "testdata/layout/noaliasgorm"},
+		{name: "redisstore beside github.com/redis/go-redis/v9", fixture: "testdata/layout/noaliasredis"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			goCmd(t, tc.fixture, []string{"GOFLAGS=-mod=readonly"}, "build", "./...")
+		})
+	}
 }
 
 func TestModulesDeclareGoMinimum(t *testing.T) {
@@ -474,26 +530,32 @@ func TestModulesDeclareGoMinimum(t *testing.T) {
 
 	type testCase struct {
 		name   string
-		dir    string
-		assert func(t *testing.T, lang string)
+		root   string
+		assert func(t *testing.T, below []string)
 	}
 
-	var cases []testCase
-	for _, dir := range append(workspaceModules(t, "."), "tools") {
-		cases = append(cases, testCase{
-			name: filepath.ToSlash(dir),
-			dir:  dir,
-			assert: func(t *testing.T, lang string) {
-				assert.Equal(t, "go1.27", lang)
+	cases := []testCase{
+		{
+			name: "every module declares the minimum",
+			root: ".",
+			assert: func(t *testing.T, below []string) {
+				assert.Empty(t, below)
 			},
-		})
+		},
+		{
+			name: "control: a module no go.work lists is named when it declares less",
+			root: "testdata/layout/wsstray",
+			assert: func(t *testing.T, below []string) {
+				assert.Equal(t, []string{"pgx"}, below)
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, version.Lang("go"+goDirective(t, tc.dir)))
+			tc.assert(t, belowGoMinimum(t, tc.root))
 		})
 	}
 }

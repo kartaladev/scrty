@@ -1,6 +1,6 @@
-// Package noalias imports each storage backend beside the driver it wraps,
+// Package noaliaspgx imports the pgx storage backend beside the driver it wraps,
 // without an import alias.
-package noalias
+package noaliaspgx
 
 import (
 	"context"

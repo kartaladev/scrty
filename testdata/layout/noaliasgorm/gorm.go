@@ -1,4 +1,4 @@
-package noalias
+package noaliasgorm
 
 import (
 	"context"

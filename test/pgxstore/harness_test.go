@@ -1,4 +1,4 @@
-// Package pgxstore_test runs the native pgx stores of the scrty pgx module
+// Package pgxstore_test runs the native pgx stores of the pgxstore module
 // against PostgreSQL: the portable conformance suites, the durable suites, and
 // the cases only a real database can show.
 //

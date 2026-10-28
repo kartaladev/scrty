@@ -18,7 +18,7 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 
 ## 2. Phase 1: module and directory moves (D1–D4)
 
-- [ ] 2.1 Red: add the root layout tests for "Integration modules are published under the concept they extend". They cover:
+- [x] 2.1 Red: add the root layout tests for "Integration modules are published under the concept they extend". They cover:
   - the seven module paths;
   - package names equal to the last path element;
   - exhaustiveness: every workspace module other than `test` and `tools` is one of the seven, and an unlisted module fails by its directory. A control case checks this against a fixture workspace that has an extra module;
@@ -27,7 +27,7 @@ Test-first applies to every task that adds or changes behaviour that a test can 
   Add `TestModulesDeclareGoMinimum` for "Supported Go releases": every module in the workspace, and `tools`, declares language version 1.27 in its `go` directive. It compares `go/version.Lang` values, because `tools/go.mod` writes it as `go 1.27.0`. It pins what the code already does, so its red step is an inverted expectation.
 
   Add a case to `TestCoreDependencies` for a major-version path of a listed module that is not covered yet: `github.com/jackc/pgx/v5`. Point the existing WebAuthn layout tests at `authenticate/passkey/webauthn`. Verify: `go test -run 'TestIntegrationModule|TestWebAuthn|TestSoftwareAuthenticator' -count=1 .` fails because the modules are still at their old paths, and the exhaustiveness case names the old directories. The failure output is recorded. The new `TestCoreDependencies` case pins behaviour the guard already has, so its red step is an inverted expectation that fails and is then reverted.
-- [ ] 2.2 Move the nested modules:
+- [x] 2.2 Move the nested modules:
   - `pgx` → `store/pgxstore`;
   - `gorm` → `store/gormstore`;
   - `redis` → `ratelimit/redisstore` (package `redisstore`);
@@ -35,7 +35,7 @@ Test-first applies to every task that adds or changes behaviour that a test can 
   - `ginsec` and `fibersec` → under `httpsec/`.
 
   Move each with `git mv`, and update its `module` line, the `replace` directives, `go.work`, every requirement on it, and every import of it. Verify: the 2.1 cases for these modules pass, and `go build ./...` and `go vet ./...` pass in every module.
-- [ ] 2.3 Move `factor`, `password`, `apikey`, `magiclink`, `oidc`, `mfa` and `passkey` (with the `passkey/webauthn` module) under `authenticate/`, through gopls package moves. Verify: every 2.1 case passes, and `go test ./...` passes in the core module and in `authenticate/passkey/webauthn`.
+- [x] 2.3 Move `factor`, `password`, `apikey`, `magiclink`, `oidc`, `mfa` and `passkey` (with the `passkey/webauthn` module) under `authenticate/`, through gopls package moves. Verify: every 2.1 case passes, and `go test ./...` passes in the core module and in `authenticate/passkey/webauthn`.
 - [ ] 2.4 Move `signingkey` and `onetime` under `token/`. Turn `storeerr` into the package `store`. Move `sqlstore`, `migrate` (with its two sets) and `seal` under `store/`. Verify: `go test ./...` passes in the core module, and the backends' `ErrIsolationTooStrong` aliases still satisfy `errors.Is` against `store.ErrIsolationTooStrong`.
 - [ ] 2.5 Split `policy/lockout` as D3 says, with D3's names. `attempt_views.go` and the `AttemptStore` port stay in `policy`. `(*AccountLockoutPolicy).RequiredAttemptView`, all of `expiry.go` and `expiry_test.go` move to `lockout`. `export_test.go` splits into a `lockout/export_test.go`. Verify:
   - `go list -deps ./policy` does not contain `policy/lockout`;
