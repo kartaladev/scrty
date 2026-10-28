@@ -30,7 +30,7 @@ import (
 // nothing once it has changed. Failures recorded under another spelling of
 // the username stay until they leave the lockout window. A consumer who
 // changes passwords outside the chain clears them with
-// policy.AccountLockoutPolicy.Reset.
+// lockout.Policy.Reset.
 type ChangePasswordFunc func(ex *Exchange) error
 
 // passwordChangeGate holds every session that owes a password change, and lets

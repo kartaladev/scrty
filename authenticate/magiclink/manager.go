@@ -19,7 +19,7 @@ import (
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/internal/origin"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 const (

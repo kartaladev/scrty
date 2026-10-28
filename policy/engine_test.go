@@ -13,6 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -567,10 +568,10 @@ func (s viewRequirerStub) RequiredAttemptView() (policy.AttemptStore, bool) {
 func TestRequiredAttemptViews(t *testing.T) {
 	t.Parallel()
 
-	newLockout := func(t *testing.T, opts ...policy.LockoutOption) *policy.AccountLockoutPolicy {
+	newLockout := func(t *testing.T, opts ...lockout.Option) *lockout.Policy {
 		t.Helper()
 
-		p, err := policy.NewAccountLockoutPolicy(opts...)
+		p, err := lockout.New(opts...)
 		require.NoError(t, err)
 
 		return p
@@ -605,7 +606,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 		{
 			name: "a capped lockout policy requires its view",
 			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
-				p := newLockout(t, policy.WithLockoutCap(20))
+				p := newLockout(t, lockout.WithCap(20))
 
 				return []policy.Policy{p}, []policy.RequiredAttemptView{{Policy: p.Name(), View: p.Attempts()}}
 			},
@@ -630,10 +631,10 @@ func TestRequiredAttemptViews(t *testing.T) {
 			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				own := viewRequirerStub{
 					stubPolicy: stubPolicy{name: "own", phases: pre},
-					view:       policy.NewMemoryAttemptStore(),
+					view:       lockout.NewMemoryAttemptStore(),
 					required:   true,
 				}
-				p := newLockout(t, policy.WithLockoutCap(20))
+				p := newLockout(t, lockout.WithCap(20))
 
 				return []policy.Policy{own, newLockout(t), p}, []policy.RequiredAttemptView{
 					{Policy: "own", View: own.view},
@@ -647,7 +648,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				return []policy.Policy{viewRequirerStub{
 					stubPolicy: stubPolicy{phases: pre},
-					view:       policy.NewMemoryAttemptStore(),
+					view:       lockout.NewMemoryAttemptStore(),
 				}}, nil
 			},
 			assert: none,
@@ -656,7 +657,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 			name: "a requirer asked in no phase is never reported",
 			build: func(*testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
 				return []policy.Policy{viewRequirerStub{
-					view:     policy.NewMemoryAttemptStore(),
+					view:     lockout.NewMemoryAttemptStore(),
 					required: true,
 				}}, nil
 			},

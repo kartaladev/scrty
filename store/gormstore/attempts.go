@@ -11,13 +11,14 @@ import (
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // AttemptStore keeps failed login attempts in the login_attempts table the
 // migrate package creates, one row per failure, so every replica counts the
 // same failures. It also keeps each identifier's consecutive-failure streak in
 // the login_failure_streaks table, one row per identifier. It implements
-// policy.AttemptStore, policy.AttemptReaper and policy.FailureStreakStore, and
+// policy.AttemptStore, lockout.AttemptReaper and lockout.FailureStreakStore, and
 // is safe for concurrent use.
 //
 // The submitted identifier is stored and matched byte for byte, never folded
@@ -114,10 +115,10 @@ func (s *AttemptStore) FailureCount(ctx context.Context, username string, since 
 
 // DeleteAttemptsBefore removes every failure recorded strictly before
 // retainSince. A zero retainSince is refused with
-// policy.ErrRetainSinceRequired, and nothing is deleted.
+// lockout.ErrRetainSinceRequired, and nothing is deleted.
 func (s *AttemptStore) DeleteAttemptsBefore(ctx context.Context, retainSince time.Time) (int, error) {
 	if retainSince.IsZero() {
-		return 0, policy.ErrRetainSinceRequired
+		return 0, lockout.ErrRetainSinceRequired
 	}
 
 	return deleteWhere[loginAttemptRow](ctx, s.c, "purge login failures",
@@ -125,9 +126,9 @@ func (s *AttemptStore) DeleteAttemptsBefore(ctx context.Context, retainSince tim
 }
 
 var (
-	_ policy.AttemptStore       = (*AttemptStore)(nil)
-	_ policy.AttemptReaper      = (*AttemptStore)(nil)
-	_ policy.FailureStreakStore = (*AttemptStore)(nil)
+	_ policy.AttemptStore        = (*AttemptStore)(nil)
+	_ lockout.AttemptReaper      = (*AttemptStore)(nil)
+	_ lockout.FailureStreakStore = (*AttemptStore)(nil)
 )
 
 // AddStreakFailure adds one failure at at to username's streak, in one
@@ -147,35 +148,35 @@ var (
 // isolation, writes nothing and leaves the transaction usable.
 func (s *AttemptStore) AddStreakFailure(
 	ctx context.Context, username string, at, since time.Time, limit int,
-) (policy.FailureStreak, bool, error) {
+) (lockout.FailureStreak, bool, error) {
 	const op = "add to login failure streak"
 
 	if err := storekit.CheckStorable(storekit.Text("username", username)); err != nil {
-		return policy.FailureStreak{}, false, failed(op, err)
+		return lockout.FailureStreak{}, false, failed(op, err)
 	}
 
 	q, ambient, err := s.c.conn(ctx)
 	if err != nil {
-		return policy.FailureStreak{}, false, failed(op, err)
+		return lockout.FailureStreak{}, false, failed(op, err)
 	}
 	if ambient {
 		if err := requireReadCommitted(ctx, q); err != nil {
-			return policy.FailureStreak{}, false, failed(op, err)
+			return lockout.FailureStreak{}, false, failed(op, err)
 		}
 	}
 
 	for range pgschema.StreakAddMaxRuns {
 		if err := ctx.Err(); err != nil {
-			return policy.FailureStreak{}, false, failed(op, err)
+			return lockout.FailureStreak{}, false, failed(op, err)
 		}
 
 		rowID, err := s.c.ids.NewID()
 		if err != nil {
-			return policy.FailureStreak{}, false, failed(op, err)
+			return lockout.FailureStreak{}, false, failed(op, err)
 		}
 
 		var (
-			got     policy.FailureStreak
+			got     lockout.FailureStreak
 			heldAt  *time.Time
 			setHold bool
 		)
@@ -193,7 +194,7 @@ func (s *AttemptStore) AddStreakFailure(
 			continue
 		}
 		if err != nil {
-			return policy.FailureStreak{}, false, failed(op, err)
+			return lockout.FailureStreak{}, false, failed(op, err)
 		}
 		got.Newest = got.Newest.UTC()
 		got.HeldAt = fromNull(heldAt)
@@ -201,35 +202,35 @@ func (s *AttemptStore) AddStreakFailure(
 		return got, setHold, nil
 	}
 
-	return policy.FailureStreak{}, false, failed(op, errStreakContended)
+	return lockout.FailureStreak{}, false, failed(op, errStreakContended)
 }
 
 // FailureStreak reads username's streak as of since. A streak not held whose
 // newest failure is at or before since, no streak, and an identifier the
 // table cannot hold all read as the zero FailureStreak.
-func (s *AttemptStore) FailureStreak(ctx context.Context, username string, since time.Time) (policy.FailureStreak, error) {
+func (s *AttemptStore) FailureStreak(ctx context.Context, username string, since time.Time) (lockout.FailureStreak, error) {
 	const op = "read login failure streak"
 
 	if !storekit.Storable(username) {
-		return policy.FailureStreak{}, nil
+		return lockout.FailureStreak{}, nil
 	}
 
 	q, _, err := s.c.conn(ctx)
 	if err != nil {
-		return policy.FailureStreak{}, failed(op, err)
+		return lockout.FailureStreak{}, failed(op, err)
 	}
 
 	var (
-		got    policy.FailureStreak
+		got    lockout.FailureStreak
 		heldAt *time.Time
 	)
 	err = q.Raw(pgschema.StreakRead, username, storekit.Time(since)).
 		Row().Scan(&got.Failures, &got.Newest, &heldAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return policy.FailureStreak{}, nil
+		return lockout.FailureStreak{}, nil
 	}
 	if err != nil {
-		return policy.FailureStreak{}, failed(op, err)
+		return lockout.FailureStreak{}, failed(op, err)
 	}
 	got.Newest = got.Newest.UTC()
 	got.HeldAt = fromNull(heldAt)
@@ -239,13 +240,13 @@ func (s *AttemptStore) FailureStreak(ctx context.Context, username string, since
 
 // DeleteStreaksBefore removes every streak not held whose newest failure is
 // strictly before retainSince; a held streak is never removed. A zero
-// retainSince is refused with policy.ErrRetainSinceRequired, and nothing is
+// retainSince is refused with lockout.ErrRetainSinceRequired, and nothing is
 // deleted.
 func (s *AttemptStore) DeleteStreaksBefore(ctx context.Context, retainSince time.Time) (int, error) {
 	const op = "purge login failure streaks"
 
 	if retainSince.IsZero() {
-		return 0, policy.ErrRetainSinceRequired
+		return 0, lockout.ErrRetainSinceRequired
 	}
 
 	q, _, err := s.c.conn(ctx)

@@ -23,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 )
@@ -199,7 +200,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *recoveryHarness, out served) {
 				require.ErrorIs(t, out.err, recovery.ErrRefused, "as an unknown user or a wrong code is")
-				require.ErrorIs(t, out.err, policy.ErrAccountLocked,
+				require.ErrorIs(t, out.err, lockout.ErrAccountLocked,
 					"the consumer's own handler can still tell it is a lock")
 				assert.Equal(t, recovery.ErrRefused.Error(), out.err.Error())
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
@@ -218,7 +219,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 					httpsec.RecoveryPasswordParam, e2ePassword))
 			},
 			assert: func(t *testing.T, _ *recoveryHarness, out served) {
-				require.ErrorIs(t, out.err, policy.ErrAccountLocked)
+				require.ErrorIs(t, out.err, lockout.ErrAccountLocked)
 				assert.NotErrorIs(t, out.err, recovery.ErrRefused)
 				assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
 				assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(out.err))
@@ -998,11 +999,11 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 func lockRecovery(t *testing.T, h *recoveryHarness) {
 	t.Helper()
 
-	lockout, err := policy.NewAccountLockoutPolicy(
-		policy.WithAttemptStore(h.attempts), policy.WithSlidingLockout(1, time.Hour))
+	lockoutPolicy, err := lockout.New(
+		lockout.WithAttemptStore(h.attempts), lockout.WithSliding(1, time.Hour))
 	require.NoError(t, err)
 
-	h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(engineOf(t, lockout)))
+	h.chainOpts = append(h.chainOpts, httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)))
 	require.NoError(t, h.attempts.RecordFailure(t.Context(), e2eAddress, time.Now()))
 }
 

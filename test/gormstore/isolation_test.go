@@ -10,16 +10,16 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store"
 	"github.com/kartaladev/scrty/store/gormstore"
-	"github.com/kartaladev/scrty/storeerr"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // setRepeatableReadDefault makes REPEATABLE READ the default isolation of
@@ -50,7 +50,7 @@ func isolationFixture(t *testing.T) storetest.IsolationFixture {
 	require.NoError(t, err)
 
 	return storetest.IsolationFixture{
-		Streaks: func(t *testing.T) policy.FailureStreakStore {
+		Streaks: func(t *testing.T) lockout.FailureStreakStore {
 			s, err := gormstore.NewAttemptStore(db)
 			require.NoError(t, err)
 			return s
@@ -128,7 +128,7 @@ func TestInsertWithin_RefusesCallerRepeatableReadTx(t *testing.T) {
 	stored, err := s.InsertWithin(tx.Ctx, tok, tok.IssuedAt.Add(-time.Hour), 5)
 
 	require.ErrorIs(t, err, gormstore.ErrIsolationTooStrong)
-	require.ErrorIs(t, err, storeerr.ErrIsolationTooStrong)
+	require.ErrorIs(t, err, store.ErrIsolationTooStrong)
 	assert.Contains(t, err.Error(), "repeatable read")
 	assert.False(t, stored)
 	require.NoError(t, tx.Probe(), "the caller's transaction is not usable after the refusal")

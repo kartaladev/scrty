@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -54,8 +54,8 @@ func TestUnknownUsernameLock(t *testing.T) {
 
 		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(known.err))
 		assert.Equal(t, httpsec.StatusForError(known.err), httpsec.StatusForError(unknown.err))
-		require.ErrorIs(t, known.err, policy.ErrAccountLocked)
-		require.ErrorIs(t, unknown.err, policy.ErrAccountLocked)
+		require.ErrorIs(t, known.err, lockout.ErrAccountLocked)
+		require.ErrorIs(t, unknown.err, lockout.ErrAccountLocked)
 		require.ErrorIs(t, known.err, authenticate.ErrAuthenticationFailed)
 		require.ErrorIs(t, unknown.err, authenticate.ErrAuthenticationFailed)
 		assert.Equal(t, known.err.Error(), unknown.err.Error())
@@ -69,7 +69,7 @@ func TestUnknownUsernameLock(t *testing.T) {
 		assert.Zero(t, spent["nobody"], "nobody: a disclosed lock spends no decoy")
 
 		for _, out := range []served{known, unknown} {
-			require.ErrorIs(t, out.err, policy.ErrAccountLocked)
+			require.ErrorIs(t, out.err, lockout.ErrAccountLocked)
 			assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
 			assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(out.err))
 		}
@@ -92,8 +92,8 @@ func TestUnknownUsernameLock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			attempts := policy.NewMemoryAttemptStore()
-			lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(attempts))
+			attempts := lockout.NewMemoryAttemptStore()
+			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
 
 			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
@@ -116,7 +116,7 @@ func TestUnknownUsernameLock(t *testing.T) {
 				}).AnyTimes()
 
 			chain, err := httpsec.New(append([]httpsec.Option{
-				httpsec.WithPolicyEngine(engineOf(t, lockout)),
+				httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 					Authenticator: authn, Sessions: sessions, Tokens: NewMockGenerator(gomock.NewController(t)), Attempts: attempts,
 				}),
@@ -130,7 +130,7 @@ func TestUnknownUsernameLock(t *testing.T) {
 				for range 5 {
 					out := serve(t, chain, tc.send(t.Context(), user))
 					require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-					require.NotErrorIs(t, out.err, policy.ErrAccountLocked, "five failures are still free")
+					require.NotErrorIs(t, out.err, lockout.ErrAccountLocked, "five failures are still free")
 				}
 
 				require.Zero(t, spent[user], "the five free failures spend no decoy")
@@ -161,7 +161,7 @@ func TestUnknownUsernameLockRealAuthenticator(t *testing.T) {
 		t.Helper()
 
 		for _, out := range []served{known, unknown} {
-			require.ErrorIs(t, out.err, policy.ErrAccountLocked)
+			require.ErrorIs(t, out.err, lockout.ErrAccountLocked)
 			require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
 		}
 
@@ -205,15 +205,15 @@ func TestUnknownUsernameLockRealAuthenticator(t *testing.T) {
 			authn, err := authenticate.NewUsernamePasswordAuthenticator(loader, authenticate.WithPasswordEncoder(enc))
 			require.NoError(t, err)
 
-			attempts := policy.NewMemoryAttemptStore()
-			lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(attempts))
+			attempts := lockout.NewMemoryAttemptStore()
+			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
 
 			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
 			chain, err := httpsec.New(
-				httpsec.WithPolicyEngine(engineOf(t, lockout)),
+				httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 					Authenticator: authn, Sessions: sessions, Tokens: NewMockGenerator(ctrl), Attempts: attempts,
 				}),
@@ -227,7 +227,7 @@ func TestUnknownUsernameLockRealAuthenticator(t *testing.T) {
 				for range 5 {
 					out := serve(t, chain, tc.send(t.Context(), user))
 					require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-					require.NotErrorIs(t, out.err, policy.ErrAccountLocked, "five failures are still free")
+					require.NotErrorIs(t, out.err, lockout.ErrAccountLocked, "five failures are still free")
 				}
 
 				sixth[user] = serve(t, chain, tc.send(t.Context(), user))

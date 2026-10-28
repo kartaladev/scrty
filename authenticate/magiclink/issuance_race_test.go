@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/authenticate/magiclink"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // countHoldingStore is a memory token store whose recent-issue count, once

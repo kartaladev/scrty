@@ -11,10 +11,10 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
-//go:generate mockgen -destination=keysource_mock_test.go -package=token_test -typed github.com/kartaladev/scrty/signingkey KeySource
+//go:generate mockgen -destination=keysource_mock_test.go -package=token_test -typed github.com/kartaladev/scrty/token/signingkey KeySource
 
 // Verifier checks a token and returns its claims.
 type Verifier interface {

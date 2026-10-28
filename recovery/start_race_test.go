@@ -12,8 +12,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // countHoldingTokenStore is a memory token store whose recent-issue count,

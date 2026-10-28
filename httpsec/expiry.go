@@ -2,7 +2,7 @@ package httpsec
 
 import (
 	"github.com/kartaladev/scrty/expiry"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // mfaChallengeTaskPrefix starts the name of each challenge method's expiry

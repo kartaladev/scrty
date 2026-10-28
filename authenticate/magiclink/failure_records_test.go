@@ -13,7 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // errStoreFailure is the dependency error every row proves against: a store's own

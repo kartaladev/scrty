@@ -13,8 +13,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // errKeySourceFixture is the fixture every leak row in this change is proven

@@ -1,6 +1,6 @@
 package recovery
 
-//go:generate mockgen -destination=tokenstore_mock_test.go -package=recovery_test -typed -mock_names=Store=MockTokenStore github.com/kartaladev/scrty/onetime Store
+//go:generate mockgen -destination=tokenstore_mock_test.go -package=recovery_test -typed -mock_names=Store=MockTokenStore github.com/kartaladev/scrty/token/onetime Store
 //go:generate mockgen -destination=challenge_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/authenticate/mfa ChallengeMethod
 
 import (
@@ -16,7 +16,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // userThrottleFlow prefixes every per-user recovery bucket key.

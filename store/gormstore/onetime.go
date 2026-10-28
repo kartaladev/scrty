@@ -10,8 +10,8 @@ import (
 
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // OneTimeStore keeps one-time tokens in the one_time_tokens table the migrate

@@ -2,7 +2,7 @@ package magiclink
 
 import (
 	"github.com/kartaladev/scrty/expiry"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // ExpiryTask returns the task that deletes m's expired magic-link tokens by

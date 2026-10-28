@@ -173,6 +173,10 @@ def check_tests(m, ev, fresh):
     mapped = set()
     for e in base:
         key = map_test(m, e["package"], e["test"])
+        # A test of a split package may have moved with its code into the split's target.
+        for target in [s_new for s_old, s_new in m.splits if m.path(s_old) == key[0]]:
+            if key not in now and (target, key[1]) in now:
+                key = (target, key[1])
         mapped.add(key)
         got = now.get(key)
         if got is None:
@@ -191,6 +195,17 @@ def check_tests(m, ev, fresh):
         key = map_test(m, pkg, name)
         if key not in now_list:
             problems.append(f"missing from the test module: {pkg} {name} (expected {key[0]} {key[1]})")
+    # Examples without an output comment never run, so go test does not list them: read them from source.
+    if os.path.exists(os.path.join(fresh, "examples.tsv")):
+        now_ex = {map_test(m, *l.rstrip("\n").split("\t")) for l in open(os.path.join(fresh, "examples.tsv"))}
+        for line in open(os.path.join(ev, "baseline", "examples.tsv")):
+            pkg, name = line.rstrip("\n").split("\t")
+            key = map_test(m, pkg, name)
+            alts = [key] + [(s_new, key[1]) for s_old, s_new in m.splits if m.path(s_old) == key[0]]
+            if not any(k in now_ex for k in alts):
+                problems.append(f"missing example: {pkg} {name} (expected {key[0]} {key[1]})")
+    else:
+        problems.append("fresh inventory has no examples.tsv")
     return problems, added
 
 

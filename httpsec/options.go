@@ -957,15 +957,15 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 // itself, instead of as a wrong password.
 //
 // Default: undisclosed. When the pre-authentication phase refuses with
-// policy.ErrAccountLocked, form login, Basic and account recovery's password
+// lockout.ErrAccountLocked, form login, Basic and account recovery's password
 // proof first spend a decoy password verification, through the
 // authenticator's authenticate.DecoyVerifier when it implements one, and then
 // refuse with errors.Join(authenticate.ErrAuthenticationFailed, reason).
 // StatusForError answers that 401, and Basic sets its WWW-Authenticate
 // challenge, so neither the status, the headers nor the time taken tells a
 // client that the account exists and is locked. The lock is not lost:
-// errors.Is(err, policy.ErrAccountLocked) still holds, and errors.As still
-// reaches the *policy.LockoutError and its wait, so a consumer's own error
+// errors.Is(err, lockout.ErrAccountLocked) still holds, and errors.As still
+// reaches the *lockout.Error and its wait, so a consumer's own error
 // handler can render a lock however it chooses — at which point the
 // disclosure is the consumer's. Account recovery turns the joined refusal
 // into its own recovery.ErrRefused, keeping it beneath, so a locked account's
@@ -976,8 +976,8 @@ func WithRefusalLogReporter(fn func(key string, suppressed int)) Option {
 // StatusForError answers 429 Too Many Requests, and no decoy runs. A 429 is not
 // a 401, so a disclosed Basic lock carries no WWW-Authenticate header. The
 // library writes no Retry-After; a consumer who wants one reads the wait from
-// the *policy.LockoutError. A consumer who needs the 423 Locked status instead
-// maps policy.ErrAccountLocked to it in their own error handler
+// the *lockout.Error. A consumer who needs the 423 Locked status instead
+// maps lockout.ErrAccountLocked to it in their own error handler
 // (WithErrorHandler on net/http, or the framework's own error handling on gin
 // and fiber).
 //
@@ -1031,7 +1031,7 @@ type FormLoginDeps struct {
 	// recorded through it is reported. A failure recorded in one store and
 	// counted in another locks nothing.
 	//
-	// When the policy has a consecutive-failure cap (policy.WithLockoutCap),
+	// When the policy has a consecutive-failure cap (lockout.WithCap),
 	// its view is required: only the view advances the consecutive count, so
 	// any other store here, the policy's own bare store included, fails New
 	// with a configuration error naming this field. That check covers only
@@ -1292,7 +1292,7 @@ type BasicAuthDeps struct {
 	// guessed at over the login form. A successful authentication clears the
 	// username's failures through it, as form login does.
 	//
-	// When the policy has a consecutive-failure cap (policy.WithLockoutCap),
+	// When the policy has a consecutive-failure cap (lockout.WithCap),
 	// its view is required: only the view advances the consecutive count, so
 	// any other store here, the policy's own bare store included, fails New
 	// with a configuration error naming this field. That check covers only
@@ -1335,7 +1335,7 @@ type BasicAuthOption func(*basicAuth) error
 //  4. Authenticate. A failure is recorded against the account and the source.
 //     A success clears the username's failures through BasicAuthDeps.Attempts,
 //     as form login does, including its count towards a cap set with
-//     policy.WithLockoutCap; a store that fails to clear is logged and the
+//     lockout.WithCap; a store that fails to clear is logged and the
 //     request still succeeds. It costs one reset of the attempt store per
 //     successful request; for a policy with a cap that reset clears both the
 //     failure log and the consecutive count.

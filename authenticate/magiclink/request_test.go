@@ -11,7 +11,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // sendCounter is what every sender in these tests offers: how many messages it

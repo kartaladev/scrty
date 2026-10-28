@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -418,7 +419,7 @@ func TestFormLoginSequence(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				return denyingIn(t, policy.PreAuthentication, policy.ErrAccountLocked)
+				return denyingIn(t, policy.PreAuthentication, lockout.ErrAccountLocked)
 			},
 			// No expectation on the authenticator at all: any call to it fails
 			// the test, which is what "the password is never checked" means.
@@ -426,7 +427,7 @@ func TestFormLoginSequence(t *testing.T) {
 			assert: func(t *testing.T, _ *authHarness, s served) {
 				// By default a lock is concealed as a wrong password, and stays
 				// identifiable as a lock to the consumer's own handler.
-				require.ErrorIs(t, s.err, policy.ErrAccountLocked)
+				require.ErrorIs(t, s.err, lockout.ErrAccountLocked)
 				require.ErrorIs(t, s.err, authenticate.ErrAuthenticationFailed)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(s.err))
 				assert.False(t, s.handlerRan)

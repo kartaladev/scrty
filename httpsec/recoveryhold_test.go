@@ -20,10 +20,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // recoveryHoldDelay is the fixed delay the hold cases configure.

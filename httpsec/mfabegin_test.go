@@ -24,9 +24,9 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // testMFABeginPath is where the scripted passkey begins under the default

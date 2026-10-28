@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -332,7 +333,7 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	}
 
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if !errors.Is(err, policy.ErrAccountLocked) {
+		if !errors.Is(err, lockout.ErrAccountLocked) {
 			return err
 		}
 
@@ -408,7 +409,7 @@ func (l *formLogin) authenticatePassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	if err := l.preAuthenticate(ctx, username, now); err != nil {
-		if errors.Is(err, policy.ErrAccountLocked) {
+		if errors.Is(err, lockout.ErrAccountLocked) {
 			return nil, refuseLocked(ctx, l.authn, l.discloseLocks,
 				identity.NewUsernamePassword(username, password), err)
 		}

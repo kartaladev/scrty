@@ -6,7 +6,7 @@ import (
 	"net/url"
 )
 
-//go:generate mockgen -destination=onetimestore_mock_test.go -package=httpsec_test -typed -mock_names=Store=MockOnetimeStore github.com/kartaladev/scrty/onetime Store
+//go:generate mockgen -destination=onetimestore_mock_test.go -package=httpsec_test -typed -mock_names=Store=MockOnetimeStore github.com/kartaladev/scrty/token/onetime Store
 
 // start answers a POST to the start path.
 //

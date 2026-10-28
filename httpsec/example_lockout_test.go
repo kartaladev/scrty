@@ -5,14 +5,14 @@ import (
 	"log/slog"
 
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // Form login and Basic record through the lockout policy's view, so its
 // observer hears about every failure that locks an identifier.
 func ExampleFormLoginDeps_lockoutReports() {
-	lockout, err := policy.NewAccountLockoutPolicy(
-		policy.WithLockoutObserver(func(ctx context.Context, r policy.LockoutReport) {
+	lockoutPolicy, err := lockout.New(
+		lockout.WithObserver(func(ctx context.Context, r lockout.Report) {
 			slog.InfoContext(ctx, "lockout", "kind", r.Kind.String(), "failures", r.Failures)
 		}),
 	)
@@ -20,7 +20,7 @@ func ExampleFormLoginDeps_lockoutReports() {
 		panic(err)
 	}
 
-	deps := httpsec.FormLoginDeps{Attempts: lockout.Attempts()}
-	basic := httpsec.BasicAuthDeps{Attempts: lockout.Attempts()}
+	deps := httpsec.FormLoginDeps{Attempts: lockoutPolicy.Attempts()}
+	basic := httpsec.BasicAuthDeps{Attempts: lockoutPolicy.Attempts()}
 	_, _ = deps, basic
 }

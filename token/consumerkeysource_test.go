@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // consumerKeySourceFile is this file, and josePath is the import prefix every

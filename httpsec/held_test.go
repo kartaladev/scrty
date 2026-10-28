@@ -13,7 +13,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -53,8 +53,8 @@ func TestHeld(t *testing.T) {
 				assert.False(t, got.handlerRan)
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(got.err))
 				require.ErrorIs(t, got.err, authenticate.ErrAuthenticationFailed)
-				require.ErrorIs(t, got.err, policy.ErrAccountLocked)
-				require.ErrorIs(t, got.err, policy.ErrAccountHeld)
+				require.ErrorIs(t, got.err, lockout.ErrAccountLocked)
+				require.ErrorIs(t, got.err, lockout.ErrAccountHeld)
 				assert.Equal(t, 1, spent["ada"], "one decoy verification is spent")
 			},
 		},
@@ -69,7 +69,7 @@ func TestHeld(t *testing.T) {
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(got.err))
 				assert.Equal(t, `Basic realm="Restricted"`, got.rec.Header().Get("WWW-Authenticate"))
 				require.ErrorIs(t, got.err, authenticate.ErrAuthenticationFailed)
-				require.ErrorIs(t, got.err, policy.ErrAccountHeld)
+				require.ErrorIs(t, got.err, lockout.ErrAccountHeld)
 				assert.Equal(t, 1, spent["ada"], "one decoy verification is spent")
 			},
 		},
@@ -83,8 +83,8 @@ func TestHeld(t *testing.T) {
 
 				assert.False(t, got.handlerRan)
 				assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(got.err))
-				require.ErrorIs(t, got.err, policy.ErrAccountLocked)
-				require.ErrorIs(t, got.err, policy.ErrAccountHeld)
+				require.ErrorIs(t, got.err, lockout.ErrAccountLocked)
+				require.ErrorIs(t, got.err, lockout.ErrAccountHeld)
 				assert.NotErrorIs(t, got.err, authenticate.ErrAuthenticationFailed)
 				assert.Empty(t, got.rec.Header().Get("WWW-Authenticate"))
 				assert.Zero(t, spent["ada"], "a disclosed lock spends no decoy")
@@ -100,7 +100,7 @@ func TestHeld(t *testing.T) {
 				for _, got := range []served{known, unknown} {
 					assert.False(t, got.handlerRan)
 					require.ErrorIs(t, got.err, authenticate.ErrAuthenticationFailed)
-					require.ErrorIs(t, got.err, policy.ErrAccountHeld)
+					require.ErrorIs(t, got.err, lockout.ErrAccountHeld)
 				}
 
 				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(known.err))
@@ -116,8 +116,8 @@ func TestHeld(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			lockout, err := policy.NewAccountLockoutPolicy(
-				policy.WithAttemptStore(policy.NewMemoryAttemptStore()), policy.WithLockoutCap(heldCap))
+			lockoutPolicy, err := lockout.New(
+				lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithCap(heldCap))
 			require.NoError(t, err)
 
 			// Each identifier is held before any request: heldCap failures
@@ -125,7 +125,7 @@ func TestHeld(t *testing.T) {
 			at := time.Now().Add(-time.Hour)
 			for _, user := range tc.users {
 				for i := range heldCap {
-					require.NoError(t, lockout.Attempts().RecordFailure(t.Context(), user,
+					require.NoError(t, lockoutPolicy.Attempts().RecordFailure(t.Context(), user,
 						at.Add(time.Duration(i)*time.Second)))
 				}
 			}
@@ -148,12 +148,12 @@ func TestHeld(t *testing.T) {
 				}).AnyTimes()
 
 			chain, err := httpsec.New(append([]httpsec.Option{
-				httpsec.WithPolicyEngine(engineOf(t, lockout)),
+				httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)),
 				httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 					Authenticator: authn, Sessions: sessions,
-					Tokens: NewMockGenerator(gomock.NewController(t)), Attempts: lockout.Attempts(),
+					Tokens: NewMockGenerator(gomock.NewController(t)), Attempts: lockoutPolicy.Attempts(),
 				}),
-				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: lockout.Attempts()}),
+				httpsec.EnableBasicAuth(httpsec.BasicAuthDeps{Authenticator: authn, Attempts: lockoutPolicy.Attempts()}),
 			}, tc.opts...)...)
 			require.NoError(t, err)
 

@@ -13,6 +13,7 @@ through `rename-map.tsv`.
 | `check.sh [tests\|api\|decls\|coverage\|all]... [-- FRESH_DIR]` | Captures (or reuses) a fresh inventory and runs `check.py` |
 | `check.py` | The comparison. It first checks the map itself: every left-hand side must be declared in the baseline |
 | `rename-map.tsv` | `kind<TAB>old<TAB>new`. Kinds: `path` (D1), `pkgname`, `split` (D3: `policy` → `policy/lockout`), `ident` (D3, D8–D10), `test` (D7 case names, added per lane), `errprefix` (D11, informational), `merged` (D5 copies and their `storekit` successor) |
+| `examples.py [ROOT]` | The `Example` function inventory, read from source: `go test` lists only the examples that have an output comment, and the rest are compiled but never run |
 | `empty.export` | `apidiff` export data of an empty package, used to list a package's exported names |
 
 ## apidiff (task 1.2)
@@ -47,6 +48,7 @@ them touches `openspec/` only), with `APIDIFF=<scratch>/bin/apidiff ./capture.sh
 | `testlist-test-module.txt` | 426 top-level tests in the test module (`go test -list`; their results come from CI) |
 | `coverage.tsv` | 44 packages with statements |
 | `api/`, `api-list/` | 37 public packages (`internal/` excluded) |
+| `examples.tsv` | 34 `Example` functions. Added after phase 1 started, so it was taken from the baseline commit `257a4ea` with `git archive` and `examples.py`, not by `capture.sh` |
 | `decls.tsv` | 5,553 declarations in 52 packages: 1,705 func, 1,707 method, 795 type, 324 var, 1,019 const, 3 embed |
 
 `make check` on the same tree: fmt, vet, lint, the race tests of the core and the eight nested

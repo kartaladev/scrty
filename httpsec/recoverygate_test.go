@@ -15,6 +15,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -332,12 +333,12 @@ func TestRecoveryGatePerRequestPhase(t *testing.T) {
 		{
 			name: "a per-request deny still refuses",
 			engine: func(t *testing.T) *policy.Engine {
-				return denyingIn(t, policy.PerRequest, policy.ErrAccountLocked)
+				return denyingIn(t, policy.PerRequest, lockout.ErrAccountLocked)
 			},
 			assert: func(t *testing.T, out served, stored *session.Session, _ policy.ChallengeKind) {
 				t.Helper()
 
-				require.ErrorIs(t, out.err, policy.ErrAccountLocked)
+				require.ErrorIs(t, out.err, lockout.ErrAccountLocked)
 				assert.False(t, out.handlerRan)
 				assert.Equal(t, session.MFARecoveryPending, stored.MFA)
 			},

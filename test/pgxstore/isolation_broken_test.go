@@ -16,7 +16,7 @@ import (
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test"
@@ -38,7 +38,7 @@ var isolationBrokenVariants = []storefix.BrokenVariant{
 		Name: "streak-inherits-default",
 		Run: func(t *testing.T) {
 			f, pool := isolationFixture(t)
-			f.Streaks = func(t *testing.T) policy.FailureStreakStore {
+			f.Streaks = func(t *testing.T) lockout.FailureStreakStore {
 				s, err := pgxstore.NewAttemptStore(pool)
 				require.NoError(t, err)
 				return inheritingStreaks{AttemptStore: s, pool: pool}
@@ -73,15 +73,15 @@ type inheritingStreaks struct {
 
 func (s inheritingStreaks) AddStreakFailure(
 	ctx context.Context, username string, at, since time.Time, limit int,
-) (policy.FailureStreak, bool, error) {
+) (lockout.FailureStreak, bool, error) {
 	q := handle(ctx, s.pool)
 	for range pgschema.StreakAddMaxRuns {
 		rowID, err := id.NewV7Generator().NewID()
 		if err != nil {
-			return policy.FailureStreak{}, false, err
+			return lockout.FailureStreak{}, false, err
 		}
 		var (
-			got     policy.FailureStreak
+			got     lockout.FailureStreak
 			heldAt  pgtype.Timestamptz
 			setHold bool
 		)
@@ -92,7 +92,7 @@ func (s inheritingStreaks) AddStreakFailure(
 		}
 		return got, setHold, err
 	}
-	return policy.FailureStreak{}, false, errors.New("streak contended")
+	return lockout.FailureStreak{}, false, errors.New("streak contended")
 }
 
 // inheritingCodes replaces saved-code sets as the store did before it pinned

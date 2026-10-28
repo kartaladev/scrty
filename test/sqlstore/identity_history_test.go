@@ -15,7 +15,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	"github.com/kartaladev/scrty/test/internal/storefix"

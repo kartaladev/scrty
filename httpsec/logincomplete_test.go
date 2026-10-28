@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -368,11 +369,11 @@ func TestCompleteLogin(t *testing.T) {
 			engine: func(t *testing.T) *policy.Engine {
 				t.Helper()
 
-				return denyingEngine(t, policy.ErrAccountLocked)
+				return denyingEngine(t, lockout.ErrAccountLocked)
 			},
 			wire: func(*testing.T, *loginSpies, *callLog, *string) {},
 			assert: func(t *testing.T, _ *loginSpies, _ *httpsec.Exchange, tok string, err error, calls []string, _ string) {
-				require.ErrorIs(t, err, policy.ErrAccountLocked)
+				require.ErrorIs(t, err, lockout.ErrAccountLocked)
 				assert.Empty(t, tok)
 				assert.Empty(t, calls, "no session is created for a login policy refused")
 			},

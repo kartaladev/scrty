@@ -23,6 +23,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
@@ -183,7 +184,7 @@ var sentinelsNotMatched = []error{
 	authorize.ErrAccessDenied,
 	authenticate.ErrAuthenticationFailed,
 	policy.ErrSessionIdle,
-	policy.ErrAccountLocked,
+	lockout.ErrAccountLocked,
 	policy.ErrTooManySessions,
 	policy.ErrPolicyDenied,
 	policy.ErrMFARequired,
@@ -422,12 +423,12 @@ func TestReturnedErrorsCarryFixedText(t *testing.T) {
 				h.attempts.EXPECT().FailureCount(gomock.Any(), "carol", gomock.Any()).
 					Return(0, errFixtureFailure)
 
-				lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(h.attempts))
+				lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(h.attempts))
 				require.NoError(t, err)
 
 				return refusedBy(t, loginRequest(t),
 					httpsec.WithLogger(h.logger()), httpsec.EnableFormLogin(h.formLoginDeps()),
-					httpsec.WithPolicyEngine(engineOf(t, lockout)))
+					httpsec.WithPolicyEngine(engineOf(t, lockoutPolicy)))
 			},
 			assert: func(t *testing.T, s *errorSink) {
 				t.Helper()

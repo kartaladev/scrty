@@ -29,7 +29,7 @@
 
   The test module stays `github.com/kartaladev/scrty/test`.
 - **Package name equals the last element of the path,** for every moved package and module (`redisstore`, not `scrtyredis`).
-- **Error strings** keep the form `"<package>: …"`, using the new package name (D11).
+- **Error strings** keep the form `"<package>: …"`, using the new package name, and an identifier a message names uses its new name (D11).
 - **Renames go through `gopls rename` or a gopls package move,** never through text replacement of Go identifiers. File moves use `git mv`.
 - **Never run** `git checkout --`, `git restore`, `git reset --hard`, `git stash` or `git clean`. An agent that needs to undo an edit does it by editing the file back.
 - **`.claude/.legacy` is never read, cited or copied.** Exclude it from every search.
@@ -77,6 +77,7 @@ The five P3 lanes run in parallel, each owning only the packages its task names.
 
 **Files:**
 - Create: `openspec/changes/restructure-layout/evidence/README.md`
+- Create: `evidence/examples.py`, and `evidence/baseline/examples.tsv` (`import-path<TAB>Example name`, read from source, because `go test` lists only the examples that have an output comment)
 - Create: `evidence/baseline/tests.jsonl` (one `{module, package, test, result}` per test or subtest), `evidence/baseline/testlist-test-module.txt`, `evidence/baseline/coverage.txt` (`package<TAB>percent`), `evidence/baseline/api/<import-path>.export`, `evidence/baseline/decls.tsv` (`import-path<TAB>kind<TAB>name`, where kind is `func`, `method`, `type`, `var`, `const` or `embed`, and a method's name is `Recv.Method`)
 - Create: `evidence/rename-map.tsv` (columns `kind  old  new`). The kind is one of `path`, `ident`, `test`, `errprefix`, or `merged`: a D5 copy, whose `new` is its `storekit` successor.
 - Create: `evidence/decls.sh`, which writes the declaration inventory for every non-generated production `.go` file (`gopls symbols` for the top-level declarations and methods, plus the `//go:embed` lines). It skips `*_test.go` and files that carry a `Code generated … DO NOT EDIT.` header.
@@ -169,13 +170,13 @@ The five P3 lanes run in parallel, each owning only the packages its task names.
 
 **Files:**
 - Create: `policy/lockout/` holding:
-  - `lockout.go`, `lockout_error.go`, `lockout_observer.go`, `attempts.go`, `streak.go` and `expiry.go`, with their tests (`lockout*_test.go`, `attempts*_test.go`, `streak_test.go`, `expiry_test.go`) and mocks;
+  - `lockout.go`, `lockout_error.go`, `lockout_observer.go`, `attempts.go`, `streak.go` and `expiry.go`, with their tests (`lockout*_test.go`, `attempts*_test.go`, `streak_test.go`, `expiry_test.go`, and `returned_errors_test.go`, whose one test exercises the lockout policy's own methods) and mocks;
   - a `doc.go` for package `lockout`;
   - `export_test.go`, taking the `AccountLockoutPolicy` and `MemoryAttemptStore` accessors out of `policy/export_test.go`;
   - `example_test.go`, taking the lockout `Example` functions out of `policy/example_test.go`.
 - Keep in `policy`: `attempt_views.go` (`AttemptViewRequirer`, `RequiredAttemptView`), the `AttemptStore` interface (moved out of `attempts.go` into `attempt_views.go`, its godoc unchanged), and `engine.go`
 - Move: the method `(*AccountLockoutPolicy).RequiredAttemptView` from `policy/attempt_views.go` into `policy/lockout/lockout.go`
-- Modify: every caller (`httpsec`, `recovery`, the backends, and the test module), and the `policy_test` files that use lockout as a collaborator (`engine_test.go`, `example_test.go`, `returned_errors_test.go`, `store_failure_test.go`), which import `lockout`
+- Modify: every caller (`httpsec`, `recovery`, the backends, and the test module), and the `policy_test` files that use lockout as a collaborator (`engine_test.go`, `example_test.go`, `store_failure_test.go`), which import `lockout`
 
 **Interfaces:**
 - Produces: D3's table. For example:
@@ -233,11 +234,12 @@ The five P3 lanes run in parallel, each owning only the packages its task names.
 - [ ] **Step 1:** Apply D10's option table and the enum-prefix renames, package by package, with gopls. After each package, check the godoc of each renamed option: it must still name the default it replaces.
 - [ ] **Step 2:** Verify as in Task 8, Step 3.
 
-### Task 11: Error prefixes (task 3.5, P2b)
+### Task 11: Error messages (task 3.5, P2b)
 
 - [ ] **Step 1:** Rewrite the `"pgx: "`, `"gorm: "`, `"scrtyredis: "`, `"storeerr: "` and lockout `"policy: "` prefixes in production strings to `"pgxstore: "`, `"gormstore: "`, `"redisstore: "`, `"store: "` and `"lockout: "`.
-- [ ] **Step 2:** Run `go test -count=1 ./...` in every module, and update only the prefix in each failing assertion.
-- [ ] **Step 3:** `git diff -U0 -- '*_test.go' | grep '^[-+]' | grep -v '^[-+][-+]'`. Expected: every changed string pair differs only in its `"<package>: "` prefix. Commit: `refactor!: name error prefixes after their new packages`.
+- [ ] **Step 2:** In production error strings, rewrite every identifier the map renames (kinds `ident` and `path`) to its new name: for example lockout's `"WithLockoutCap must be positive"` → `"WithCap must be positive"`, and `(policy.FailureStreakStore)` → `(lockout.FailureStreakStore)`. Expected: `rg` over production `.go` string literals for each left-hand identifier of `rename-map.tsv` finds none.
+- [ ] **Step 3:** Run `go test -count=1 ./...` in every module, and in each failing assertion update only the prefix and the renamed identifiers.
+- [ ] **Step 4:** Diff filter over `git diff -U0 -- '*_test.go'`: for every changed string pair, apply the D11 prefixes and the map's identifier renames to the old string. Expected: it equals the new string. Commit: `refactor!: name error messages after the new packages and identifiers`.
 
 ### Task 12: Prose sweep and phase-2 gate (tasks 3.6–3.7)
 

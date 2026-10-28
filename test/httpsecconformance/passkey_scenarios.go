@@ -20,6 +20,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/pgxstore"
@@ -212,7 +213,7 @@ func passkeyRoutes() []Route {
 func passkeyEffects(pf *PasskeyFixture, sessions *session.Manager) *Effects {
 	return &Effects{
 		Sessions: sessions,
-		Attempts: policy.NewMemoryAttemptStore(),
+		Attempts: lockout.NewMemoryAttemptStore(),
 		Recovery: pf.Base,
 		Passkey:  pf,
 	}

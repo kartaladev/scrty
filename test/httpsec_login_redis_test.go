@@ -12,7 +12,7 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/ratelimit/redisstore"
 	"github.com/kartaladev/scrty/session"
@@ -111,7 +111,7 @@ func TestLoginOwnLimiterUnderRedisFactory(t *testing.T) {
 			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))
 			require.NoError(t, err)
 
-			attempts := policy.NewMemoryAttemptStore()
+			attempts := lockout.NewMemoryAttemptStore()
 
 			var (
 				loginOpts []httpsec.LoginOption

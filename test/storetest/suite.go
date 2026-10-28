@@ -132,7 +132,7 @@ func newSuiteConfig(opts []SuiteOption) suiteConfig {
 
 // RequireReaper makes a suite's reaper cases fail, naming the missing
 // interface, for a store that does not implement the reaper of its contract
-// (onetime.Reaper, policy.AttemptReaper).
+// (onetime.Reaper, lockout.AttemptReaper).
 //
 // By default the reaper is not required: the contract leaves it optional, so
 // a store without one has those cases logged as not run, and passes. A store

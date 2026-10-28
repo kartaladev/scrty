@@ -10,7 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/expiry"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // noPurgeStore hides the reaper of the memory store, so the store it wraps

@@ -15,7 +15,7 @@ import (
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // NewEnrolmentStore returns a durable MFA enrolment store on db, keeping

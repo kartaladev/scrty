@@ -17,18 +17,19 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
-	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // expiryStores is every store an expiry sweep touches or must leave alone, as
@@ -227,10 +228,10 @@ func TestExpiryTasks(t *testing.T) {
 
 			mgr, err := onetime.NewManager(tokenPurpose, onetime.WithStore(st.oneTime), onetime.WithClock(clk))
 			require.NoError(t, err)
-			lockout, err := policy.NewAccountLockoutPolicy(
-				policy.WithAttemptStore(st.attempts),
-				policy.WithLockoutClock(clk),
-				policy.WithSlidingLockout(5, lockoutWindow),
+			lockoutPolicy, err := lockout.New(
+				lockout.WithAttemptStore(st.attempts),
+				lockout.WithClock(clk),
+				lockout.WithSliding(5, lockoutWindow),
 			)
 			require.NoError(t, err)
 
@@ -245,7 +246,7 @@ func TestExpiryTasks(t *testing.T) {
 			_, _, err = mgr.Issue(ctx, tokenSubject)
 			require.NoError(t, err)
 			for range 3 {
-				require.NoError(t, lockout.RecordFailure(ctx, failedAccount))
+				require.NoError(t, lockoutPolicy.RecordFailure(ctx, failedAccount))
 			}
 			clk.Advance(90 * time.Minute)
 			_, _, err = mgr.Issue(ctx, tokenSubject)
@@ -254,7 +255,7 @@ func TestExpiryTasks(t *testing.T) {
 			_, _, err = mgr.Issue(ctx, tokenSubject)
 			require.NoError(t, err)
 			for range 2 {
-				require.NoError(t, lockout.RecordFailure(ctx, failedAccount))
+				require.NoError(t, lockoutPolicy.RecordFailure(ctx, failedAccount))
 			}
 			clk.Advance(5 * time.Minute)
 			now := clk.Now()
@@ -286,7 +287,7 @@ func TestExpiryTasks(t *testing.T) {
 			runner, err := expiry.NewRunner([]expiry.Task{
 				session.ExpiryTask(st.sessions),
 				onetime.ExpiryTask(mgr),
-				policy.LockoutExpiryTask(lockout),
+				lockout.ExpiryTask(lockoutPolicy),
 			})
 			require.NoError(t, err)
 
@@ -315,8 +316,8 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 	type env struct {
 		db      *sql.DB
-		lockout *policy.AccountLockoutPolicy
-		streaks policy.FailureStreakStore
+		lockout *lockout.Policy
+		streaks lockout.FailureStreakStore
 		clk     *clockwork.FakeClock
 	}
 
@@ -342,7 +343,7 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 				d := e.lockout.Evaluate(t.Context(), &policy.Input{Username: holdName, Now: e.clk.Now()})
 				assert.Equal(t, policy.Deny, d.Outcome)
-				assert.ErrorIs(t, d.Reason, policy.ErrAccountHeld)
+				assert.ErrorIs(t, d.Reason, lockout.ErrAccountHeld)
 				assert.Equal(t, 1, countRows(t, e.db, "login_failure_streaks", "held_at IS NOT NULL"))
 			},
 		},
@@ -387,27 +388,27 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 
 			store, err := sqlstore.NewAttemptStore(conn.DB)
 			require.NoError(t, err)
-			lockout, err := policy.NewAccountLockoutPolicy(
-				policy.WithAttemptStore(store),
-				policy.WithLockoutClock(clk),
-				policy.WithLockoutCap(capLimit),
+			lockoutPolicy, err := lockout.New(
+				lockout.WithAttemptStore(store),
+				lockout.WithClock(clk),
+				lockout.WithCap(capLimit),
 			)
 			require.NoError(t, err)
 
 			for range tc.failures {
-				require.NoError(t, lockout.Attempts().RecordFailure(ctx, holdName, clk.Now()))
+				require.NoError(t, lockoutPolicy.Attempts().RecordFailure(ctx, holdName, clk.Now()))
 			}
 			clk.Advance(tc.newestAge)
 			require.Equal(t, now, clk.Now())
 
-			runner, err := expiry.NewRunner([]expiry.Task{policy.LockoutExpiryTask(lockout)})
+			runner, err := expiry.NewRunner([]expiry.Task{lockout.ExpiryTask(lockoutPolicy)})
 			require.NoError(t, err)
 			report, err := runner.RunOnce(ctx)
 			require.NoError(t, err)
 			require.Len(t, report.Results, 1)
 			require.NoError(t, report.Results[0].Err)
 
-			tc.assert(t, env{db: conn.DB, lockout: lockout, streaks: store, clk: clk})
+			tc.assert(t, env{db: conn.DB, lockout: lockoutPolicy, streaks: store, clk: clk})
 		})
 	}
 }

@@ -19,12 +19,12 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
-	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/store/sqlstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 

@@ -15,8 +15,8 @@ import (
 	"github.com/kartaladev/scrty/internal/ascii"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The one-time purposes of a held recovery's two tokens. Each token's subject

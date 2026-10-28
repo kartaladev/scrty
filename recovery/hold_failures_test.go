@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // fixedIDs is a consumer's identifier generator that always answers rid.

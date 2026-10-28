@@ -10,6 +10,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/session"
@@ -128,7 +129,7 @@ func ExampleEnableMFAEnrolment() {
 			Authenticator: authn,
 			Sessions:      sessions,
 			Tokens:        exampleTokens{},
-			Attempts:      policy.NewMemoryAttemptStore(),
+			Attempts:      lockout.NewMemoryAttemptStore(),
 		}),
 		httpsec.EnableMFA([]mfa.Method{totp}, httpsec.WithMFATokens(exampleTokens{})),
 		httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: users, Sender: exampleSender{}}),

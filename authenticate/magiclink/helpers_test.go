@@ -13,8 +13,8 @@ import (
 	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // errStoreDown is the outage the stores below simulate.

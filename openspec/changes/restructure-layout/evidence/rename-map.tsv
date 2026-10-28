@@ -249,3 +249,8 @@ merged	github.com/kartaladev/scrty/internal/pglimiter.sqlStater	github.com/karta
 # Test and subtest names that changed, as go test -json reports them.
 test	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/the_redis_and_test_modules_may_require_the_client	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/the_redisstore_and_test_modules_may_require_the_client
 test	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/no_workspace_module_outside_redis_and_test_requires_the_client	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/no_workspace_module_outside_redisstore_and_test_requires_the_client
+test	github.com/kartaladev/scrty/policy#ExampleWithLockoutWait_fixedDuration	github.com/kartaladev/scrty/policy/lockout#ExampleWithWait_fixedDuration
+test	github.com/kartaladev/scrty/policy#ExampleWithLockoutObserver	github.com/kartaladev/scrty/policy/lockout#ExampleWithObserver
+test	github.com/kartaladev/scrty/policy#ExampleWithLockoutCap	github.com/kartaladev/scrty/policy/lockout#ExampleWithCap
+test	github.com/kartaladev/scrty/httpsec#TestStatusForErrorCoversEverySentinel/policy.ErrAccountLocked	github.com/kartaladev/scrty/httpsec#TestStatusForErrorCoversEverySentinel/lockout.ErrAccountLocked
+test	github.com/kartaladev/scrty/httpsec#TestStatusForErrorCoversEverySentinel/policy.ErrAccountHeld	github.com/kartaladev/scrty/httpsec#TestStatusForErrorCoversEverySentinel/lockout.ErrAccountHeld

@@ -99,7 +99,7 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 **Tests:**
 - `export_test.go` splits: the `AccountLockoutPolicy` and `MemoryAttemptStore` accessors move to `lockout/export_test.go`.
 - The tests of the moved files move with them.
-- `policy_test` files that only use lockout as a collaborator (`engine_test.go`, `example_test.go`, `returned_errors_test.go`, `store_failure_test.go`) stay, and import `lockout`. An `Example` function for a lockout name moves to `lockout`'s `example_test.go`, so that it stays attached to its identifier.
+- `policy_test` files that only use lockout as a collaborator (`engine_test.go`, `example_test.go`, `store_failure_test.go`) stay, and import `lockout`. `returned_errors_test.go` moves to `lockout`: its one test exercises the lockout policy's own methods, so it is a test of the moved files. An `Example` function for a lockout name moves to `lockout`'s `example_test.go`, so that it stays attached to its identifier.
 
 **Alternative considered:** move `AttemptStore` to `lockout` and have `AttemptViewRequirer` return `any`. That avoids the cycle, but it weakens a typed contract, which is an API-shape change and out of scope.
 
@@ -343,17 +343,21 @@ The option renames:
 
 **Typed enum constants carry their type's name, or its distinctive part, as a prefix** (D9 lists the renames).
 
-### D11. Error-message prefixes follow the package name
+### D11. Error messages follow the new names
 
 An error string keeps the `"<package>: "` form under the new package name:
 - `"pgx: …"` → `"pgxstore: …"`, `"gorm: …"` → `"gormstore: …"`, `"scrtyredis: …"` → `"redisstore: …"`, `"storeerr: …"` → `"store: …"`;
 - the lockout messages → `"lockout: …"`.
 
+An identifier that an error string names follows its rename too: lockout's `"WithLockoutCap must be positive"` becomes `"WithCap must be positive"`, and `(policy.FailureStreakStore)` becomes `(lockout.FailureStreakStore)`. A message names only things a consumer can find.
+
 Sentinel identity does not change, so `errors.Is` behaves as before.
 
-This is the one place where a test assertion may change: only the prefix of an asserted string. D13 checks this.
+This is the one place where a test assertion may change: only the package prefix of an asserted string, and the renamed identifiers inside it. D13 checks this: every changed pair of asserted strings becomes equal once the rename map is applied to the old one.
 
-**Alternative considered:** keep the old prefixes. Packages would then report errors under names that no longer exist.
+**Alternatives considered:**
+- **Keep the old prefixes.** Packages would then report errors under names that no longer exist.
+- **Change only the prefix,** and leave the identifiers inside messages as they were. That is the narrowest assertion change, but consumers would read errors that name options which no longer exist. Declined on 2026-10-28.
 
 ### D12. How the work is carried out
 

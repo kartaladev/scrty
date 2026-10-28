@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 )
 
@@ -38,20 +39,20 @@ func holdScenarios() []Scenario {
 // heldLockout is a lockout policy with a cap of holdCap, over the in-memory
 // store, with Username already held: holdCap failures recorded through the
 // policy's view, as the chain's logins record them.
-func heldLockout(t *testing.T) *policy.AccountLockoutPolicy {
+func heldLockout(t *testing.T) *lockout.Policy {
 	t.Helper()
 
-	lockout, err := policy.NewAccountLockoutPolicy(
-		policy.WithAttemptStore(policy.NewMemoryAttemptStore()), policy.WithLockoutCap(holdCap))
+	lockoutPolicy, err := lockout.New(
+		lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithCap(holdCap))
 	require.NoError(t, err)
 
 	first := time.Now().Add(-time.Hour)
 	for i := range holdCap {
-		require.NoError(t, lockout.Attempts().RecordFailure(t.Context(), Username,
+		require.NoError(t, lockoutPolicy.Attempts().RecordFailure(t.Context(), Username,
 			first.Add(time.Duration(i)*time.Second)))
 	}
 
-	return lockout
+	return lockoutPolicy
 }
 
 // changingAccount is Username's account with a password the resolve endpoint
@@ -110,8 +111,8 @@ func heldAccountRecoversAndSignsInWithItsNewPassword() Scenario {
 			fx, sessions := newRecoveryFixture(t)
 			ctx := t.Context()
 
-			lockout := heldLockout(t)
-			engine, err := policy.NewEngine(lockout)
+			lockoutPolicy := heldLockout(t)
+			engine, err := policy.NewEngine(lockoutPolicy)
 			require.NoError(t, err)
 
 			deps := recovery.Deps{
@@ -127,7 +128,7 @@ func heldAccountRecoversAndSignsInWithItsNewPassword() Scenario {
 
 			standalone.Start(ctx, Username)
 
-			effects := &Effects{Sessions: sessions, Recovery: fx, Attempts: lockout.Attempts()}
+			effects := &Effects{Sessions: sessions, Recovery: fx, Attempts: lockoutPolicy.Attempts()}
 			effects.recoverySavedCode = saved[0]
 			effects.recoveryIssuedCode = fx.lastMessage(t)
 
@@ -143,7 +144,7 @@ func heldAccountRecoversAndSignsInWithItsNewPassword() Scenario {
 						Authenticator: account,
 						Sessions:      sessions,
 						Tokens:        fixtureTokens{},
-						Attempts:      lockout.Attempts(),
+						Attempts:      lockoutPolicy.Attempts(),
 					}),
 					httpsec.EnableAccountRecovery(httpsec.RecoveryDeps(deps),
 						httpsec.WithRecoveryCore(coreOpts...),
@@ -159,7 +160,7 @@ func heldAccountRecoversAndSignsInWithItsNewPassword() Scenario {
 			// The account is held before the recovery, so the last login is let
 			// in because the password change lifted the hold and nothing else.
 			held := send(formBody("username=" + Username + "&password=" + Password))
-			require.ErrorIs(t, held.Refusal, policy.ErrAccountHeld, "the account starts held")
+			require.ErrorIs(t, held.Refusal, lockout.ErrAccountHeld, "the account starts held")
 			require.Zero(t, spec.Effects.AuthenticatorCalls(), "a held account's password is not checked")
 
 			complete := send(RequestSpec{
@@ -213,8 +214,8 @@ func heldAccountPasswordProofIsRefused() Scenario {
 
 			fx, sessions := newRecoveryFixture(t)
 
-			lockout := heldLockout(t)
-			engine, err := policy.NewEngine(lockout)
+			lockoutPolicy := heldLockout(t)
+			engine, err := policy.NewEngine(lockoutPolicy)
 			require.NoError(t, err)
 
 			deps := recovery.Deps{
@@ -225,7 +226,7 @@ func heldAccountPasswordProofIsRefused() Scenario {
 			saved, err := fx.Codes.Generate(t.Context(), UserID)
 			require.NoError(t, err)
 
-			effects := &Effects{Sessions: sessions, Recovery: fx, Attempts: lockout.Attempts()}
+			effects := &Effects{Sessions: sessions, Recovery: fx, Attempts: lockoutPolicy.Attempts()}
 			effects.recoverySavedCode = saved[0]
 
 			return ChainSpec{
@@ -235,7 +236,7 @@ func heldAccountPasswordProofIsRefused() Scenario {
 						Authenticator: &fixtureAuthenticator{calls: &effects.authCalls},
 						Sessions:      sessions,
 						Tokens:        fixtureTokens{},
-						Attempts:      lockout.Attempts(),
+						Attempts:      lockoutPolicy.Attempts(),
 					}),
 					httpsec.EnableAccountRecovery(httpsec.RecoveryDeps(deps),
 						httpsec.WithRecoveryCore(coreOpts...),
@@ -261,8 +262,8 @@ func heldAccountPasswordProofIsRefused() Scenario {
 			}
 		},
 		Assert: func(t *testing.T, res Result) {
-			require.ErrorIs(t, res.Refusal, policy.ErrAccountLocked)
-			require.ErrorIs(t, res.Refusal, policy.ErrAccountHeld)
+			require.ErrorIs(t, res.Refusal, lockout.ErrAccountLocked)
+			require.ErrorIs(t, res.Refusal, lockout.ErrAccountHeld)
 			require.ErrorIs(t, res.Refusal, recovery.ErrRefused, "concealed as any refused recovery is")
 			assert.Equal(t, http.StatusUnauthorized, res.Status)
 			assert.Zero(t, res.Effects.AuthenticatorCalls(), "the password was not checked")

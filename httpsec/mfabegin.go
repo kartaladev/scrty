@@ -16,7 +16,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // DefaultMFABeginPrefix is the prefix the begin endpoint answers POST requests

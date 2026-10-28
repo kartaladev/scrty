@@ -13,6 +13,7 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // errLeakyStore is a store failure whose text quotes values the policy never
@@ -65,7 +66,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 				store := NewMockAttemptStore(gomock.NewController(t))
 				store.EXPECT().FailureCount(gomock.Any(), gomock.Any(), gomock.Any()).Return(0, errLeakyStore)
 
-				p, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store))
+				p, err := lockout.New(lockout.WithAttemptStore(store))
 				require.NoError(t, err)
 
 				return p
@@ -87,7 +88,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 						Return(0, errLeakyStore),
 				)
 
-				p, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store))
+				p, err := lockout.New(lockout.WithAttemptStore(store))
 				require.NoError(t, err)
 
 				return p
@@ -95,7 +96,7 @@ func TestPolicyStoreFailureReasons(t *testing.T) {
 			input: &policy.Input{Username: "alice", Now: mfaNow},
 			assert: func(t *testing.T, d policy.Decision, _ *bytes.Buffer) {
 				assertFixedReason(t, d, policy.ErrPolicyDenied)
-				assert.NotErrorIs(t, d.Reason, policy.ErrAccountLocked,
+				assert.NotErrorIs(t, d.Reason, lockout.ErrAccountLocked,
 					"an outage was reported to the caller as a locked account")
 			},
 		},

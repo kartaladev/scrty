@@ -11,9 +11,9 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/sqlstore"
 	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/sqlstore"
 )
 
 // passkeyCredentialStore builds the passkey credential store of the named

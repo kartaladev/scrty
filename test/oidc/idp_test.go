@@ -17,10 +17,10 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
 	identitytest "github.com/kartaladev/scrty/test/identity"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // testProviderName is the provider name every case in this file registers

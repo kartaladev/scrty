@@ -29,12 +29,13 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/storeerr"
+	"github.com/kartaladev/scrty/store"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 func TestStatusForError(t *testing.T) {
@@ -104,11 +105,11 @@ func TestStatusForError(t *testing.T) {
 			err:  fmt.Errorf("%w: %w", password.ErrHistoryUnavailable, errors.New("db down")),
 			want: 500,
 		},
-		{name: "account locked", err: policy.ErrAccountLocked, want: 429},
-		{name: "account held", err: policy.ErrAccountHeld, want: 429},
+		{name: "account locked", err: lockout.ErrAccountLocked, want: 429},
+		{name: "account held", err: lockout.ErrAccountHeld, want: 429},
 		{
 			name: "concealed account lock answers as the authentication failure",
-			err:  errors.Join(authenticate.ErrAuthenticationFailed, policy.ErrAccountLocked),
+			err:  errors.Join(authenticate.ErrAuthenticationFailed, lockout.ErrAccountLocked),
 			want: 401,
 		},
 		{name: "too many sessions", err: policy.ErrTooManySessions, want: 429},
@@ -305,7 +306,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"magiclink.ErrConfig":      magiclink.ErrConfig,
 		"magiclink.ErrInvalidLink": magiclink.ErrInvalidLink,
 	},
-	"github.com/kartaladev/scrty/onetime": {
+	"github.com/kartaladev/scrty/token/onetime": {
 		"onetime.ErrConfig":              onetime.ErrConfig,
 		"onetime.ErrInvalidToken":        onetime.ErrInvalidToken,
 		"onetime.ErrIssueLimitReached":   onetime.ErrIssueLimitReached,
@@ -380,9 +381,6 @@ var sentinelRegistry = map[string]map[string]error{
 		"password.ErrWeakParameters":      password.ErrWeakParameters,
 	},
 	"github.com/kartaladev/scrty/policy": {
-		"policy.ErrAccountLocked":               policy.ErrAccountLocked,
-		"policy.ErrAccountHeld":                 policy.ErrAccountHeld,
-		"policy.ErrAttemptStoreFull":            policy.ErrAttemptStoreFull,
 		"policy.ErrConfig":                      policy.ErrConfig,
 		"policy.ErrFederatedAssuranceNotMet":    policy.ErrFederatedAssuranceNotMet,
 		"policy.ErrMFAEnrollmentRequired":       policy.ErrMFAEnrollmentRequired,
@@ -390,11 +388,16 @@ var sentinelRegistry = map[string]map[string]error{
 		"policy.ErrMFARequirementLookupMissing": policy.ErrMFARequirementLookupMissing,
 		"policy.ErrMFARequirementUnsatisfiable": policy.ErrMFARequirementUnsatisfiable,
 		"policy.ErrPolicyDenied":                policy.ErrPolicyDenied,
-		"policy.ErrReapUnsupported":             policy.ErrReapUnsupported,
-		"policy.ErrRetainSinceRequired":         policy.ErrRetainSinceRequired,
 		"policy.ErrSecondFactorSameChannel":     policy.ErrSecondFactorSameChannel,
 		"policy.ErrSessionIdle":                 policy.ErrSessionIdle,
 		"policy.ErrTooManySessions":             policy.ErrTooManySessions,
+	},
+	"github.com/kartaladev/scrty/policy/lockout": {
+		"lockout.ErrAccountLocked":       lockout.ErrAccountLocked,
+		"lockout.ErrAccountHeld":         lockout.ErrAccountHeld,
+		"lockout.ErrAttemptStoreFull":    lockout.ErrAttemptStoreFull,
+		"lockout.ErrReapUnsupported":     lockout.ErrReapUnsupported,
+		"lockout.ErrRetainSinceRequired": lockout.ErrRetainSinceRequired,
 	},
 	"github.com/kartaladev/scrty/ratelimit": {
 		"ratelimit.ErrBackendUnavailable":   ratelimit.ErrBackendUnavailable,
@@ -440,8 +443,8 @@ var sentinelRegistry = map[string]map[string]error{
 		"session.ErrSuccessorAdvanced":      session.ErrSuccessorAdvanced,
 		"session.ErrDeleteDidNotSettle":     session.ErrDeleteDidNotSettle,
 	},
-	"github.com/kartaladev/scrty/storeerr": {
-		"storeerr.ErrIsolationTooStrong": storeerr.ErrIsolationTooStrong,
+	"github.com/kartaladev/scrty/store": {
+		"store.ErrIsolationTooStrong": store.ErrIsolationTooStrong,
 	},
 }
 
@@ -475,13 +478,13 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 			"which turns it into ErrSessionReused",
 		"session.ErrSessionSuperseded": "returned only by Store.MarkPresented and never leaves the session manager, " +
 			"which re-loads the session and returns its verdict instead",
-		"session.ErrSessionUnreadable":   "converted to ErrAuthenticationRequired before it leaves the chain",
-		"session.ErrDeleteDidNotSettle":  "a store contract failure, answered 500 by default",
-		"storeerr.ErrIsolationTooStrong": "a store contract failure, answered 500 by default",
-		"ratelimit.ErrConfig":            "a wiring fault, refused at construction",
+		"session.ErrSessionUnreadable":  "converted to ErrAuthenticationRequired before it leaves the chain",
+		"session.ErrDeleteDidNotSettle": "a store contract failure, answered 500 by default",
+		"store.ErrIsolationTooStrong":   "a store contract failure, answered 500 by default",
+		"ratelimit.ErrConfig":           "a wiring fault, refused at construction",
 		"ratelimit.ErrBackendUnavailable": "returned by a limiter, never by a flow: every built-in caller wraps " +
 			"or replaces it with a throttle sentinel before it leaves",
-		"policy.ErrAttemptStoreFull": "returned by a full in-memory attempt store; the lockout policy denies with ErrPolicyDenied",
+		"lockout.ErrAttemptStoreFull": "returned by a full in-memory attempt store; the lockout policy denies with ErrPolicyDenied",
 		"ratelimit.ErrLimiterFull": "returned by a full in-memory limiter, never by a flow: every built-in caller " +
 			"wraps or replaces it with a throttle or refusal sentinel before it leaves",
 		"ratelimit.ErrSourceUnattributable":     "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
@@ -489,8 +492,8 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"ratelimit.ErrSourceNotAnIP":            "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
 		"ratelimit.ErrSourceUnspecified":        "converted to authenticate.ErrAuthenticationFailed before it leaves the chain",
 		"policy.ErrConfig":                      "a wiring fault, refused at construction",
-		"policy.ErrReapUnsupported":             "a maintenance-path fault, not a request refusal",
-		"policy.ErrRetainSinceRequired":         "a maintenance-path fault, not a request refusal",
+		"lockout.ErrReapUnsupported":            "a maintenance-path fault, not a request refusal",
+		"lockout.ErrRetainSinceRequired":        "a maintenance-path fault, not a request refusal",
 		"policy.ErrMFARequirementLookupMissing": "a wiring fault, refused at construction",
 		"mfa.ErrConfig":                         "a wiring fault, refused at construction",
 		"oidc.ErrConfig":                        "a wiring fault, refused at construction",
@@ -532,14 +535,15 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 		"github.com/kartaladev/scrty/authenticate/magiclink",
 		"github.com/kartaladev/scrty/authenticate/mfa",
 		"github.com/kartaladev/scrty/authenticate/oidc",
-		"github.com/kartaladev/scrty/onetime",
+		"github.com/kartaladev/scrty/token/onetime",
 		"github.com/kartaladev/scrty/authenticate/passkey",
 		"github.com/kartaladev/scrty/authenticate/password",
 		"github.com/kartaladev/scrty/policy",
+		"github.com/kartaladev/scrty/policy/lockout",
 		"github.com/kartaladev/scrty/ratelimit",
 		"github.com/kartaladev/scrty/recovery",
 		"github.com/kartaladev/scrty/session",
-		"github.com/kartaladev/scrty/storeerr",
+		"github.com/kartaladev/scrty/store",
 	} {
 		for name, err := range exportedSentinels(t, pkg) {
 			if _, ok := unmapped[name]; ok {

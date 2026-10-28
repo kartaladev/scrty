@@ -20,9 +20,9 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The addresses these tests submit. One has an account and one has none, and

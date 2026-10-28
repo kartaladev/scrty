@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 )
 
 // attemptDefect is one deliberate flaw an attemptStore can carry.
@@ -52,8 +53,8 @@ type attemptStore struct {
 }
 
 var (
-	_ policy.AttemptStore  = (*attemptStore)(nil)
-	_ policy.AttemptReaper = (*attemptStore)(nil)
+	_ policy.AttemptStore   = (*attemptStore)(nil)
+	_ lockout.AttemptReaper = (*attemptStore)(nil)
 )
 
 func newAttemptStore(defect attemptDefect) *attemptStore {
@@ -101,7 +102,7 @@ func (s *attemptStore) FailureCount(_ context.Context, username string, since ti
 
 func (s *attemptStore) DeleteAttemptsBefore(_ context.Context, retainSince time.Time) (int, error) {
 	if retainSince.IsZero() {
-		return 0, policy.ErrRetainSinceRequired
+		return 0, lockout.ErrRetainSinceRequired
 	}
 
 	s.mu.Lock()

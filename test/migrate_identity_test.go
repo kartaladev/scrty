@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
-	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/store/migrate"
 )
 
 // identityTables lists the seven tables the identity set creates.

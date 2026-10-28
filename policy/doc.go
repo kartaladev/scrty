@@ -17,31 +17,14 @@
 // closing that in the engine closes it for every policy at once, rather than
 // asking each one to remember.
 //
-// The policies that ship here lock an account after repeated login failures,
-// end idle sessions, challenge a password that is overdue for a change, cap how
-// many sessions one user may hold at once, and challenge or refuse a login
-// whose second factor is enrolled or required. Each names its own options, so a
-// threshold, a window or a log interval governs one policy and never two. The
-// store the lockout policy counts failures in is a port, with an in-memory
-// implementation as its default.
-//
-// The lockout policy makes an identifier wait, longer each time, by default.
-// Equal first and longest waits (WithLockoutWait) make a lock of fixed
-// duration instead. Unlike the CIS benchmark's lockout, the count is not
-// cleared when that lock ends, so each further failure locks again. The
-// ceiling still applies: a guesser who keeps to one failure per duration
-// reaches it within about a day, and is then refused until failures age out of
-// the window.
-//
-// A consumer who wants NIST SP 800-63B-4 §3.2.2's limit on consecutive
-// failures adds a cap with WithLockoutCap(NISTLockoutCap); there is none by
-// default. Under a cap, the identifier that reaches it is held: refused before
-// its password is checked, whatever its waits, until its failures are cleared
-// by a password change through the chain or by the policy's Reset, the unlock
-// for an administrator. A hold never expires, and anyone who knows a username
-// can cause one, which is why the cap is opt-in; WithLockoutCap documents the
-// mitigations. A count below the cap expires after 30 days of inactivity
-// (WithLockoutCapRetention).
+// The policies that ship here end idle sessions, challenge a password that is
+// overdue for a change, cap how many sessions one user may hold at once, and
+// challenge or refuse a login whose second factor is enrolled or required. Each
+// names its own options, so a threshold, a window or a log interval governs one
+// policy and never two. The policy that locks an account after repeated login
+// failures is in package lockout. The store it counts failures in,
+// AttemptStore, is a port declared here, because the engine's attempt-view
+// check returns it.
 //
 // # A store that fails
 //

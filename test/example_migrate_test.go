@@ -10,7 +10,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
 
-	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/store/migrate"
 )
 
 // ExampleSet applies an embedded migration set with goose, shown here with

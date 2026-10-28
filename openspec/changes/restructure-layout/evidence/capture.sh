@@ -8,6 +8,7 @@
 #   coverage.tsv             "<package>\t<covered statements>\t<total statements>"
 #   api/<pkg>.export         apidiff export data for every public package (internal/ excluded)
 #   api-list/<pkg>.txt       the top-level exported names of each package, one per line
+#   examples.tsv             "<package>\t<Example func>" for every Example function, run or not (examples.py)
 #   decls.tsv                "<package>\t<kind>\t<name>" for every top-level declaration (decls.py)
 #
 # <pkg> encodes the import path: github.com/kartaladev/scrty -> scrty, "/" -> "__".
@@ -76,5 +77,6 @@ with open(os.path.join(out, "coverage.tsv"), "w") as w:
         w.write(f"{pkg}\t{cov[pkg][0]}\t{cov[pkg][1]}\n")
 EOF
 python3 "$here/decls.py" "$root" >"$out/decls.tsv"
+python3 "$here/examples.py" "$root" >"$out/examples.tsv"
 rm -rf "$out/raw"
 echo "tests: $(wc -l <"$out/tests.jsonl")  test-module tests: $(wc -l <"$out/testlist-test-module.txt")  packages with coverage: $(wc -l <"$out/coverage.tsv")  api packages: $(ls "$out/api" | wc -l)  declarations: $(wc -l <"$out/decls.tsv")"

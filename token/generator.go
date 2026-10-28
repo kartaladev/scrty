@@ -9,7 +9,7 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // Generator issues tokens and verifies them with its own key source, issuer and

@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The operations a faults set can make fail. Each names the store and the

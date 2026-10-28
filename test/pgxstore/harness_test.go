@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"

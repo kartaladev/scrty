@@ -14,10 +14,10 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 const anaPassword = "correct horse"
@@ -332,7 +332,7 @@ func TestRecoverer_Verify(t *testing.T) {
 			name: "an unknown user with a password is refused before the password check",
 			setup: func(e *recoverEnv) {
 				e.users.EXPECT().LoadByUsername(gomock.Any(), "bob@example.com").Return(nil, identity.ErrUserNotFound)
-				e.passwordErr = policy.ErrAccountLocked
+				e.passwordErr = lockout.ErrAccountLocked
 			},
 			req: func(e *recoverEnv) recovery.Request {
 				return recovery.Request{Username: "bob@example.com", Saved: e.saved[0], Password: []byte("x")}
@@ -383,11 +383,11 @@ func TestRecoverer_Verify(t *testing.T) {
 		},
 		{
 			name:  "a locked account: the lockout error comes back unchanged and nothing is spent",
-			setup: func(e *recoverEnv) { e.passwordErr = policy.ErrAccountLocked },
+			setup: func(e *recoverEnv) { e.passwordErr = lockout.ErrAccountLocked },
 			req:   savedAndPassword(anaPassword),
 			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
-				require.ErrorIs(t, err, policy.ErrAccountLocked)
-				assert.Equal(t, policy.ErrAccountLocked.Error(), err.Error())
+				require.ErrorIs(t, err, lockout.ErrAccountLocked)
+				assert.Equal(t, lockout.ErrAccountLocked.Error(), err.Error())
 				assert.True(t, recovery.RefusedAfterValidCode(err))
 				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]))
 				assert.Equal(t, int32(1), e.failures.Load())
@@ -397,12 +397,12 @@ func TestRecoverer_Verify(t *testing.T) {
 			name: "a lock concealed as a failed authentication is refused behind fixed text and stays identifiable",
 			setup: func(e *recoverEnv) {
 				e.passwordErr = fmt.Errorf("check for ana@example.com: %w",
-					errors.Join(authenticate.ErrAuthenticationFailed, policy.ErrAccountLocked))
+					errors.Join(authenticate.ErrAuthenticationFailed, lockout.ErrAccountLocked))
 			},
 			req: savedAndPassword(anaPassword),
 			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
 				refused(t, err)
-				require.ErrorIs(t, err, policy.ErrAccountLocked, "the consumer's handler can still tell it is a lock")
+				require.ErrorIs(t, err, lockout.ErrAccountLocked, "the consumer's handler can still tell it is a lock")
 				assert.Equal(t, recovery.ErrRefused.Error(), err.Error(), "the check's own text stays beneath")
 				assert.True(t, recovery.RefusedAfterValidCode(err))
 				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]))

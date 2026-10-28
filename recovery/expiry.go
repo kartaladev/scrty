@@ -2,7 +2,7 @@ package recovery
 
 import (
 	"github.com/kartaladev/scrty/expiry"
-	"github.com/kartaladev/scrty/onetime"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // ExpiryTasks returns the tasks that delete the recoverer's expired one-time

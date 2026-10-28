@@ -13,8 +13,8 @@ import (
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // Storable reports whether PostgreSQL text can hold every one of values: none

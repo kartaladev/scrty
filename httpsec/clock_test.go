@@ -28,12 +28,12 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // expiryStore is a challenge store that keeps the last token it was asked

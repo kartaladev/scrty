@@ -17,6 +17,7 @@ import (
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
@@ -151,7 +152,7 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 		Now:      now,
 	})
 	if err := refusePreAuthentication(pre, b.enforced); err != nil {
-		if !errors.Is(err, policy.ErrAccountLocked) {
+		if !errors.Is(err, lockout.ErrAccountLocked) {
 			return nil, err
 		}
 

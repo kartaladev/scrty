@@ -13,8 +13,8 @@ import (
 
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/recovery"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // startRun is what one Start case observed: every message sent, and every

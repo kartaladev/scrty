@@ -20,6 +20,12 @@ import (
 	"github.com/kartaladev/scrty/policy"
 )
 
+// fixedClock is a consumer's own read-only clock: the "Read-only source for a
+// read-only component" scenario (time-source spec). It carries only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
 // mfaUser is the user every MFA case is about. The policies match it
 // byte-for-byte and never parse it, so one opaque value is enough.
 const mfaUser = identity.UserID("u-1")

@@ -16,15 +16,16 @@ import (
 	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/migrate"
 	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // recoveryResolvePath is the consumer's password-change resolve endpoint the
@@ -511,15 +512,15 @@ func recoveryAtTheCeilingSignsInAfterTheResolve() Scenario {
 
 			// One hundred failures in the window: the default ceiling, which
 			// locks until failures leave the window rather than for a wait.
-			attempts := policy.NewMemoryAttemptStore()
+			attempts := lockout.NewMemoryAttemptStore()
 			now := time.Now()
 			for i := range 100 {
 				require.NoError(t, attempts.RecordFailure(ctx, Username, now.Add(-time.Duration(i)*time.Second)))
 			}
 
-			lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(attempts))
+			lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(attempts))
 			require.NoError(t, err)
-			engine, err := policy.NewEngine(lockout)
+			engine, err := policy.NewEngine(lockoutPolicy)
 			require.NoError(t, err)
 
 			effects := &Effects{Sessions: sessions, Recovery: fx, SessionID: s.ID, Attempts: attempts}
@@ -547,7 +548,7 @@ func recoveryAtTheCeilingSignsInAfterTheResolve() Scenario {
 
 			// The account is at the ceiling before the resolve, so the login
 			// below is let in because of the clearing and nothing else.
-			require.ErrorIs(t, send(login).Refusal, policy.ErrAccountLocked,
+			require.ErrorIs(t, send(login).Refusal, lockout.ErrAccountLocked,
 				"the account starts at the lockout ceiling")
 
 			resolve := authenticatedRequest(http.MethodPost, recoveryResolvePath)(spec)
@@ -608,7 +609,7 @@ func recoveryHeldRecoveryCancelledByLogin() Scenario {
 						Authenticator: &fixtureAuthenticator{calls: &effects.authCalls},
 						Sessions:      sessions,
 						Tokens:        fixtureTokens{},
-						Attempts:      policy.NewMemoryAttemptStore(),
+						Attempts:      lockout.NewMemoryAttemptStore(),
 					}),
 					httpsec.EnableAccountRecovery(httpsec.RecoveryDeps(deps),
 						httpsec.WithRecoveryCore(coreOpts...),

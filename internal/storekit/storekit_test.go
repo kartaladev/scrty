@@ -12,8 +12,8 @@ import (
 
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 func TestStorable(t *testing.T) {

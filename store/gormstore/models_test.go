@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm/schema"
 
-	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/store/migrate"
 )
 
 // migratedColumns reads the migration set and returns, for every table it

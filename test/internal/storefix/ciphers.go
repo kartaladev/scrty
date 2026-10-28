@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // SealKey returns a fresh random key of the size the default cipher takes.

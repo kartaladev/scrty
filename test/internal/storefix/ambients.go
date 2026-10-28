@@ -11,13 +11,14 @@ import (
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // AmbientSID is the identifier of the session record i of the ambient suite.
@@ -71,7 +72,7 @@ func OneTimeAmbient[S onetime.Store]() storetest.Ambient[S] {
 // write, so the refusal is the reaper's refusal of a zero cutoff.
 func AttemptAmbient[S interface {
 	policy.AttemptStore
-	policy.AttemptReaper
+	lockout.AttemptReaper
 }]() storetest.Ambient[S] {
 	user := func(i int) string { return fmt.Sprintf("ambient-user-%d", i) }
 
@@ -88,7 +89,7 @@ func AttemptAmbient[S interface {
 			_, err := s.DeleteAttemptsBefore(ctx, time.Time{})
 			return err
 		},
-		Refusal: policy.ErrRetainSinceRequired,
+		Refusal: lockout.ErrRetainSinceRequired,
 	}
 }
 
@@ -96,7 +97,7 @@ func AttemptAmbient[S interface {
 // login-attempt store: record i is a streak of its own user. The contract
 // refuses nothing by an add of a storable identifier, so the refusal is the
 // purge's refusal of a zero cutoff.
-func FailureStreakAmbient[S policy.FailureStreakStore]() storetest.Ambient[S] {
+func FailureStreakAmbient[S lockout.FailureStreakStore]() storetest.Ambient[S] {
 	user := func(i int) string { return fmt.Sprintf("ambient-streak-%d", i) }
 
 	return storetest.Ambient[S]{
@@ -113,7 +114,7 @@ func FailureStreakAmbient[S policy.FailureStreakStore]() storetest.Ambient[S] {
 			_, err := s.DeleteStreaksBefore(ctx, time.Time{})
 			return err
 		},
-		Refusal: policy.ErrRetainSinceRequired,
+		Refusal: lockout.ErrRetainSinceRequired,
 	}
 }
 

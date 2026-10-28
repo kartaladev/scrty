@@ -11,7 +11,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // ErrConfig is wrapped by every error NewGenerator and NewVerifier return for a

@@ -10,11 +10,11 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // MFAResult is what a successful second factor produced, handed to whatever

@@ -24,10 +24,11 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // The person the end-to-end runs sign in as.
@@ -178,7 +179,7 @@ func (d *e2eDeployment) build(t *testing.T) *e2eDeployment {
 			Authenticator: authn,
 			Sessions:      d.sessions,
 			Tokens:        d.tokens,
-			Attempts:      policy.NewMemoryAttemptStore(),
+			Attempts:      lockout.NewMemoryAttemptStore(),
 		}),
 		httpsec.EnableMagicLink(d.links,
 			httpsec.WithMagicLinkSessions(d.sessions), httpsec.WithMagicLinkTokens(d.tokens)),

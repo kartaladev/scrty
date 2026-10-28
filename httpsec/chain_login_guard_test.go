@@ -21,6 +21,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 )
@@ -43,7 +44,7 @@ const passwordLoginNamespace = "password-login"
 // neither.
 type loginGuardHarness struct {
 	authn    *MockAuthenticator
-	attempts *policy.MemoryAttemptStore
+	attempts *lockout.MemoryAttemptStore
 	sessions *session.Manager
 	tokens   *MockGenerator
 	logs     *capturingHandler
@@ -64,7 +65,7 @@ func newLoginGuardHarness(t *testing.T) *loginGuardHarness {
 	ctrl := gomock.NewController(t)
 	h := &loginGuardHarness{
 		authn:    NewMockAuthenticator(ctrl),
-		attempts: policy.NewMemoryAttemptStore(),
+		attempts: lockout.NewMemoryAttemptStore(),
 		tokens:   NewMockGenerator(ctrl),
 		logs:     &capturingHandler{},
 		reported: map[string]int{},
@@ -315,17 +316,17 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 		{
 			name: "locked-account refusals count against the source",
 			arrange: func(t *testing.T, h *loginGuardHarness) {
-				lockout, err := policy.NewAccountLockoutPolicy(
-					policy.WithAttemptStore(h.attempts), policy.WithSlidingLockout(1, time.Hour))
+				lockoutPolicy, err := lockout.New(
+					lockout.WithAttemptStore(h.attempts), lockout.WithSliding(1, time.Hour))
 				require.NoError(t, err)
 
-				h.lockout = lockout
+				h.lockout = lockoutPolicy
 				require.NoError(t, h.attempts.RecordFailure(t.Context(), "ada", time.Now()))
 			},
 			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
 				for i := range 50 {
 					out := formLoginFrom(t, c, loginGuardSource, "ada", loginGuardRightPassword)
-					require.ErrorIs(t, out.err, policy.ErrAccountLocked, "locked refusal %d", i+1)
+					require.ErrorIs(t, out.err, lockout.ErrAccountLocked, "locked refusal %d", i+1)
 					require.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "locked refusal %d", i+1)
 				}
 
@@ -340,17 +341,17 @@ func TestChain_PasswordLoginGuard(t *testing.T) {
 		{
 			name: "Basic locked refusals count against the source",
 			arrange: func(t *testing.T, h *loginGuardHarness) {
-				lockout, err := policy.NewAccountLockoutPolicy(
-					policy.WithAttemptStore(h.attempts), policy.WithSlidingLockout(1, time.Hour))
+				lockoutPolicy, err := lockout.New(
+					lockout.WithAttemptStore(h.attempts), lockout.WithSliding(1, time.Hour))
 				require.NoError(t, err)
 
-				h.lockout = lockout
+				h.lockout = lockoutPolicy
 				require.NoError(t, h.attempts.RecordFailure(t.Context(), "ada", time.Now()))
 			},
 			act: func(t *testing.T, h *loginGuardHarness, c *httpsec.Chain) (counts, served) {
 				for i := range 50 {
 					out := basicFrom(t, c, loginGuardSource, "ada", loginGuardRightPassword)
-					require.ErrorIs(t, out.err, policy.ErrAccountLocked, "locked Basic refusal %d", i+1)
+					require.ErrorIs(t, out.err, lockout.ErrAccountLocked, "locked Basic refusal %d", i+1)
 					require.NotErrorIs(t, out.err, ratelimit.ErrThrottled, "locked Basic refusal %d", i+1)
 				}
 
@@ -1159,7 +1160,7 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 	sessions, err := session.NewManager(session.WithStore(NewMockStore(ctrl)))
 	require.NoError(t, err)
 
-	attempts := policy.NewMemoryAttemptStore()
+	attempts := lockout.NewMemoryAttemptStore()
 
 	base := []httpsec.Option{
 		httpsec.WithLogger(slog.New(h.logs)),
@@ -1179,14 +1180,14 @@ func (h *lockResponseHarness) chain(t *testing.T, engine *policy.Engine, opts ..
 func lockingAda(t *testing.T) *policy.Engine {
 	t.Helper()
 
-	attempts := policy.NewMemoryAttemptStore()
+	attempts := lockout.NewMemoryAttemptStore()
 	require.NoError(t, attempts.RecordFailure(t.Context(), "ada", time.Now()))
 
-	lockout, err := policy.NewAccountLockoutPolicy(
-		policy.WithAttemptStore(attempts), policy.WithSlidingLockout(1, time.Hour))
+	lockoutPolicy, err := lockout.New(
+		lockout.WithAttemptStore(attempts), lockout.WithSliding(1, time.Hour))
 	require.NoError(t, err)
 
-	return engineOf(t, lockout)
+	return engineOf(t, lockoutPolicy)
 }
 
 // TestChain_LockResponse pins how form login and Basic answer a locked
@@ -1209,7 +1210,7 @@ func TestChain_LockResponse(t *testing.T) {
 		t.Helper()
 
 		require.ErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
-		require.ErrorIs(t, out.err, policy.ErrAccountLocked,
+		require.ErrorIs(t, out.err, lockout.ErrAccountLocked,
 			"the consumer's own handler can still tell it is a lock")
 		assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err), "as for a wrong password")
 		assert.False(t, out.handlerRan)
@@ -1218,12 +1219,12 @@ func TestChain_LockResponse(t *testing.T) {
 	disclosed := func(t *testing.T, out served) {
 		t.Helper()
 
-		require.ErrorIs(t, out.err, policy.ErrAccountLocked)
+		require.ErrorIs(t, out.err, lockout.ErrAccountLocked)
 		assert.NotErrorIs(t, out.err, authenticate.ErrAuthenticationFailed)
 		assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(out.err))
 
-		var lockout *policy.LockoutError
-		assert.ErrorAs(t, out.err, &lockout, "the policy's own refusal, wait and all")
+		var lockoutPolicy *lockout.Error
+		assert.ErrorAs(t, out.err, &lockoutPolicy, "the policy's own refusal, wait and all")
 	}
 
 	cases := []testCase{

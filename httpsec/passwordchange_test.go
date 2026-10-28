@@ -19,6 +19,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -993,15 +994,15 @@ func TestChangePasswordEndpointLetsTheNewPasswordIn(t *testing.T) {
 	t.Parallel()
 
 	h := newAuthHarness(t)
-	store := policy.NewMemoryAttemptStore()
+	store := lockout.NewMemoryAttemptStore()
 	now := time.Now()
 	for i := range 7 {
 		require.NoError(t, store.RecordFailure(t.Context(), testSubject, now.Add(-time.Duration(i)*time.Second)))
 	}
 
-	lockout, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store))
+	lockoutPolicy, err := lockout.New(lockout.WithAttemptStore(store))
 	require.NoError(t, err)
-	engine, err := policy.NewEngine(lockout)
+	engine, err := policy.NewEngine(lockoutPolicy)
 	require.NoError(t, err)
 
 	h.expectVerified()

@@ -14,7 +14,7 @@ import (
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // PasskeyCredentialStore keeps passkey credentials in the passkey_credentials

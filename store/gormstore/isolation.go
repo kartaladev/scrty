@@ -8,13 +8,13 @@ import (
 	gormdb "gorm.io/gorm"
 
 	"github.com/kartaladev/scrty/internal/pgschema"
-	"github.com/kartaladev/scrty/storeerr"
+	"github.com/kartaladev/scrty/store"
 )
 
 // ErrIsolationTooStrong is wrapped by the error an operation returns when it
 // is run inside a caller's transaction whose isolation is stronger than READ
 // COMMITTED, and its guarantee depends on READ COMMITTED. It is
-// storeerr.ErrIsolationTooStrong under this package's name, so errors.Is
+// store.ErrIsolationTooStrong under this package's name, so errors.Is
 // matches either, and the error names the isolation it found. The operation
 // writes nothing, and the caller's transaction stays usable. The operations
 // that refuse are RecoveryCodeStore.ReplaceSet, AttemptStore.AddStreakFailure,
@@ -23,7 +23,7 @@ import (
 // is no option to relax it: a store cannot change a transaction's isolation
 // once it has begun, so a consumer whose own work needs a stronger isolation
 // runs these operations outside that transaction.
-var ErrIsolationTooStrong = storeerr.ErrIsolationTooStrong
+var ErrIsolationTooStrong = store.ErrIsolationTooStrong
 
 // beginReadCommitted begins a transaction of the store's own on db, a session
 // on the store's *gorm.DB carrying the call's context, at READ COMMITTED,

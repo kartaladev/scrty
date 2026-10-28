@@ -20,7 +20,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/notify"
-	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -60,7 +60,7 @@ type recoveryHarness struct {
 	clock    *clockwork.FakeClock
 	sender   *capturingSender
 	tokens   *MockGenerator
-	attempts *policy.MemoryAttemptStore
+	attempts *lockout.MemoryAttemptStore
 
 	// users is what the chain and the core load users through, and
 	// authn what form login judges passwords with. Both are real-backed by
@@ -144,7 +144,7 @@ func newRecoveryHarness(t *testing.T) *recoveryHarness {
 		clock:    clk,
 		sender:   &capturingSender{},
 		tokens:   NewMockGenerator(ctrl),
-		attempts: policy.NewMemoryAttemptStore(),
+		attempts: lockout.NewMemoryAttemptStore(),
 		users:    NewMockUserLoader(ctrl),
 		proofs: []recovery.ProofKind{
 			recovery.ProofSaved, recovery.ProofIssued, recovery.ProofPassword, recovery.ProofMFA,

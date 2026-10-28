@@ -16,13 +16,14 @@ import (
 
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/mfa"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
-	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/onetime"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // brokenVar names the environment variable that selects the one broken
@@ -206,11 +207,11 @@ var portableVariants = []brokenVariant{
 		run: func(t *testing.T) {
 			storetest.RunAttemptStoreSuite(t, func(t *testing.T) policy.AttemptStore {
 				t.Helper()
-				return withoutAttemptReaper{policy.NewMemoryAttemptStore()}
+				return withoutAttemptReaper{lockout.NewMemoryAttemptStore()}
 			}, storetest.RequireReaper())
 		},
 		failsCase: "a purge with a zero cutoff is refused and deletes nothing",
-		failsWith: "store does not implement policy.AttemptReaper, which RequireReaper demands",
+		failsWith: "store does not implement lockout.AttemptReaper, which RequireReaper demands",
 	},
 	{
 		name: "signingkey-loadall-unordered",

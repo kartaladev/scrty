@@ -8,8 +8,8 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/seal"
-	"github.com/kartaladev/scrty/signingkey"
+	"github.com/kartaladev/scrty/store/seal"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // NewSigningKeyStore returns a durable signing-key store on db, keeping keys

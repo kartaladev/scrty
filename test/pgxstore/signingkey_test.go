@@ -10,11 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/pkg/clock"
-	"github.com/kartaladev/scrty/seal"
-	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/store/pgxstore"
+	"github.com/kartaladev/scrty/store/seal"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 	"github.com/kartaladev/scrty/test/storetest"
+	"github.com/kartaladev/scrty/token/signingkey"
 )
 
 // newSigningKeyStore builds the signing-key store over pool, failing t on a

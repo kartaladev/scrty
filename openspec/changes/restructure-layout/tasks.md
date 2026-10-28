@@ -36,8 +36,8 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 
   Move each with `git mv`, and update its `module` line, the `replace` directives, `go.work`, every requirement on it, and every import of it. Verify: the 2.1 cases for these modules pass, and `go build ./...` and `go vet ./...` pass in every module.
 - [x] 2.3 Move `factor`, `password`, `apikey`, `magiclink`, `oidc`, `mfa` and `passkey` (with the `passkey/webauthn` module) under `authenticate/`, through gopls package moves. Verify: every 2.1 case passes, and `go test ./...` passes in the core module and in `authenticate/passkey/webauthn`.
-- [ ] 2.4 Move `signingkey` and `onetime` under `token/`. Turn `storeerr` into the package `store`. Move `sqlstore`, `migrate` (with its two sets) and `seal` under `store/`. Verify: `go test ./...` passes in the core module, and the backends' `ErrIsolationTooStrong` aliases still satisfy `errors.Is` against `store.ErrIsolationTooStrong`.
-- [ ] 2.5 Split `policy/lockout` as D3 says, with D3's names. `attempt_views.go` and the `AttemptStore` port stay in `policy`. `(*AccountLockoutPolicy).RequiredAttemptView`, all of `expiry.go` and `expiry_test.go` move to `lockout`. `export_test.go` splits into a `lockout/export_test.go`. Verify:
+- [x] 2.4 Move `signingkey` and `onetime` under `token/`. Turn `storeerr` into the package `store`. Move `sqlstore`, `migrate` (with its two sets) and `seal` under `store/`. Verify: `go test ./...` passes in the core module, and the backends' `ErrIsolationTooStrong` aliases still satisfy `errors.Is` against `store.ErrIsolationTooStrong`.
+- [x] 2.5 Split `policy/lockout` as D3 says, with D3's names. `attempt_views.go` and the `AttemptStore` port stay in `policy`. `(*AccountLockoutPolicy).RequiredAttemptView`, all of `expiry.go` and `expiry_test.go` move to `lockout`. `export_test.go` splits into a `lockout/export_test.go`. Verify:
   - `go list -deps ./policy` does not contain `policy/lockout`;
   - `go doc ./policy AttemptStore` still resolves, and `lockout.Policy` still satisfies `policy.AttemptViewRequirer` (a compile-time assertion in `lockout`'s tests);
   - the lockout tests pass under `lockout`, and `policy`'s tests pass;
@@ -50,9 +50,10 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 - [ ] 3.2 Rename the outliers in D9, including both the interface method and the implementation of `KeySource.Signer`, and `mfa.MaxEmailCodeAttempts`. Verify: as in 3.1.
 - [ ] 3.3 Apply D10's sentinel rule (`session`, `password`, `token`, `policy`) and its `policy` suffix rule (`IdleTimeout`, `ConcurrentSessions`, `PasswordAge`, `NewMFA`, `NewMFARequirement`). Verify: as in 3.1, and every backend alias still satisfies `errors.Is` against its source.
 - [ ] 3.4 Apply D10's option table and the enum-prefix renames, package by package. Verify: as in 3.1, and every renamed option's godoc still names the default it replaces.
-- [ ] 3.5 Change error-message prefixes to the new package names (D11), and update only the prefix in the assertions that check them. Verify:
+- [ ] 3.5 Change error-message prefixes to the new package names, and the identifiers that messages name to their new names (D11). In the assertions that check them, update only the prefix and those identifiers. Verify:
   - `go test ./...` passes in every module;
-  - a diff filter over the test files shows every changed assertion string differs only in its `"<package>: "` prefix.
+  - a diff filter over the test files shows every changed assertion string becomes equal to its new form once `evidence/rename-map.tsv` and the D11 prefixes are applied to the old one;
+  - a search of production error strings for every left-hand identifier of the map finds none.
 - [ ] 3.6 Sweep godoc, examples, the README and other non-Go docs for the old paths and names that gopls cannot rewrite, leaving out `openspec/` and `.claude/.legacy`. Rewrite each hit to the new name, without recording the old one: godoc describes the code, not its history (design D12). Verify:
 - a search for every left-hand entry of `evidence/rename-map.tsv` finds no match outside `openspec/`, `.claude/.legacy` and `evidence/`;
 - a search of the Go files for history wording ("formerly", "renamed", "moved from", "was called") finds nothing that the baseline commit did not already have.

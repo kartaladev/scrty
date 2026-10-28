@@ -10,6 +10,7 @@ import (
 
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/session"
 )
 
@@ -22,7 +23,7 @@ func TestLockoutCapWiring(t *testing.T) {
 	// wiring is the policies the engine holds and the store each login is
 	// given; a nil store leaves that login out.
 	type wiring struct {
-		lockouts    []*policy.AccountLockoutPolicy
+		lockouts    []*lockout.Policy
 		form, basic policy.AttemptStore
 	}
 
@@ -32,10 +33,10 @@ func TestLockoutCapWiring(t *testing.T) {
 		assert func(t *testing.T, err error)
 	}
 
-	capped := func(t *testing.T, store policy.AttemptStore) *policy.AccountLockoutPolicy {
+	capped := func(t *testing.T, store policy.AttemptStore) *lockout.Policy {
 		t.Helper()
 
-		p, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store), policy.WithLockoutCap(20))
+		p, err := lockout.New(lockout.WithAttemptStore(store), lockout.WithCap(20))
 		require.NoError(t, err)
 
 		return p
@@ -61,7 +62,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		assert.Contains(t, err.Error(), "only one store")
 	}
 
-	lockouts := func(ps ...*policy.AccountLockoutPolicy) []*policy.AccountLockoutPolicy { return ps }
+	lockouts := func(ps ...*lockout.Policy) []*lockout.Policy { return ps }
 
 	builds := func(t *testing.T, err error) {
 		t.Helper()
@@ -73,7 +74,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Raw store with a cap: form login is refused",
 			wire: func(t *testing.T) wiring {
-				store := policy.NewMemoryAttemptStore()
+				store := lockout.NewMemoryAttemptStore()
 
 				return wiring{lockouts: lockouts(capped(t, store)), form: store}
 			},
@@ -82,7 +83,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Raw store with a cap: Basic is refused",
 			wire: func(t *testing.T) wiring {
-				store := policy.NewMemoryAttemptStore()
+				store := lockout.NewMemoryAttemptStore()
 				p := capped(t, store)
 
 				return wiring{lockouts: lockouts(p), form: p.Attempts(), basic: store}
@@ -92,7 +93,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "View with a cap: both logins given the view build",
 			wire: func(t *testing.T) wiring {
-				p := capped(t, policy.NewMemoryAttemptStore())
+				p := capped(t, lockout.NewMemoryAttemptStore())
 
 				return wiring{lockouts: lockouts(p), form: p.Attempts(), basic: p.Attempts()}
 			},
@@ -101,8 +102,8 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Raw store without a cap: Basic given the store builds",
 			wire: func(t *testing.T) wiring {
-				store := policy.NewMemoryAttemptStore()
-				p, err := policy.NewAccountLockoutPolicy(policy.WithAttemptStore(store))
+				store := lockout.NewMemoryAttemptStore()
+				p, err := lockout.New(lockout.WithAttemptStore(store))
 				require.NoError(t, err)
 
 				return wiring{lockouts: lockouts(p), basic: store}
@@ -112,14 +113,14 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "a cap with no password login builds",
 			wire: func(t *testing.T) wiring {
-				return wiring{lockouts: lockouts(capped(t, policy.NewMemoryAttemptStore()))}
+				return wiring{lockouts: lockouts(capped(t, lockout.NewMemoryAttemptStore()))}
 			},
 			assert: builds,
 		},
 		{
 			name: "Two capped policies: Basic given the first's view is refused",
 			wire: func(t *testing.T) wiring {
-				first, second := capped(t, policy.NewMemoryAttemptStore()), capped(t, policy.NewMemoryAttemptStore())
+				first, second := capped(t, lockout.NewMemoryAttemptStore()), capped(t, lockout.NewMemoryAttemptStore())
 
 				return wiring{lockouts: lockouts(first, second), basic: first.Attempts()}
 			},
@@ -128,7 +129,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Two capped policies: Basic given the second's view is refused",
 			wire: func(t *testing.T) wiring {
-				first, second := capped(t, policy.NewMemoryAttemptStore()), capped(t, policy.NewMemoryAttemptStore())
+				first, second := capped(t, lockout.NewMemoryAttemptStore()), capped(t, lockout.NewMemoryAttemptStore())
 
 				return wiring{lockouts: lockouts(first, second), basic: second.Attempts()}
 			},
@@ -137,7 +138,7 @@ func TestLockoutCapWiring(t *testing.T) {
 		{
 			name: "Two capped policies, no password login: builds",
 			wire: func(t *testing.T) wiring {
-				first, second := capped(t, policy.NewMemoryAttemptStore()), capped(t, policy.NewMemoryAttemptStore())
+				first, second := capped(t, lockout.NewMemoryAttemptStore()), capped(t, lockout.NewMemoryAttemptStore())
 
 				return wiring{lockouts: lockouts(first, second)}
 			},
@@ -178,7 +179,7 @@ func TestLockoutCapWiring(t *testing.T) {
 
 // lockoutPolicies widens lockout policies to the policy.Policy values an
 // engine takes.
-func lockoutPolicies(ps []*policy.AccountLockoutPolicy) []policy.Policy {
+func lockoutPolicies(ps []*lockout.Policy) []policy.Policy {
 	out := make([]policy.Policy, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, p)

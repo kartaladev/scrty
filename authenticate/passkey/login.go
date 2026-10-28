@@ -13,9 +13,9 @@ import (
 	"github.com/kartaladev/scrty/internal/assurance"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // LoginFacts is what a consumer's login check is given about a verified

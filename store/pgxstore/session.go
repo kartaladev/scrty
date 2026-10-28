@@ -17,8 +17,8 @@ import (
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/id"
-	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/seal"
 )
 
 // NewSessionStore returns a durable session store on pool, keeping sessions in

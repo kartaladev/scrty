@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm/schema"
 
-	"github.com/kartaladev/scrty/migrate"
+	"github.com/kartaladev/scrty/store/migrate"
 )
 
 // TestIdentityModels pins each identity model to the table the identity

@@ -43,6 +43,7 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
@@ -244,7 +245,7 @@ func newEffects(t *testing.T) *Effects {
 	return &Effects{
 		Sessions: manager,
 		Store:    store,
-		Attempts: policy.NewMemoryAttemptStore(),
+		Attempts: lockout.NewMemoryAttemptStore(),
 	}
 }
 
@@ -645,7 +646,7 @@ func lockedAccountIsRefused() Scenario {
 			// lock to the consumer's own handler.
 			assert.Equal(t, http.StatusUnauthorized, res.Status)
 			assert.Empty(t, res.Body)
-			require.ErrorIs(t, res.Refusal, policy.ErrAccountLocked)
+			require.ErrorIs(t, res.Refusal, lockout.ErrAccountLocked)
 			require.ErrorIs(t, res.Refusal, authenticate.ErrAuthenticationFailed)
 
 			assert.Equal(t, 0, res.Effects.AuthenticatorCalls(),
@@ -1178,7 +1179,7 @@ func (lockedPolicy) Name() string { return "httpsecconformance/locked" }
 func (lockedPolicy) Phases() []policy.Phase { return []policy.Phase{policy.PreAuthentication} }
 
 func (lockedPolicy) Evaluate(context.Context, *policy.Input) policy.Decision {
-	return policy.Decision{Outcome: policy.Deny, Reason: policy.ErrAccountLocked}
+	return policy.Decision{Outcome: policy.Deny, Reason: lockout.ErrAccountLocked}
 }
 
 // challengingPolicy asks a successful login for a second factor.
@@ -1250,6 +1251,6 @@ func MisconfiguredFormLogin() httpsec.Option {
 	return httpsec.EnableFormLogin(httpsec.FormLoginDeps{
 		Authenticator: &fixtureAuthenticator{calls: new(atomic.Int64)},
 		Tokens:        fixtureTokens{},
-		Attempts:      policy.NewMemoryAttemptStore(),
+		Attempts:      lockout.NewMemoryAttemptStore(),
 	})
 }

@@ -12,11 +12,12 @@ import (
 	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
-	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // statusRow is one refusal and the status it answers with. The table is
@@ -77,9 +78,9 @@ var statusTable = []statusRow{
 	// consumer chose to disclose: by default form login and Basic join the lock
 	// to authenticate.ErrAuthenticationFailed, which the row above answers 401
 	// first, so a lock reads as a wrong password.
-	{policy.ErrAccountLocked, http.StatusTooManyRequests},
+	{lockout.ErrAccountLocked, http.StatusTooManyRequests},
 	// A held identifier is also a locked one; it answers the same way.
-	{policy.ErrAccountHeld, http.StatusTooManyRequests},
+	{lockout.ErrAccountHeld, http.StatusTooManyRequests},
 	{policy.ErrTooManySessions, http.StatusTooManyRequests},
 
 	// A held recovery presented before its hold ends: well formed and
