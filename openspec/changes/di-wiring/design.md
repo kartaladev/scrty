@@ -6,7 +6,7 @@ See proposal.md for why this change exists. This change was split out of `operat
   - `project-foundation`: the module layout and its dependency guard, `pkg/id` and `pkg/logsample`;
   - `identity-and-tokens`: the identity ports (with no in-memory default), the password encoder, the token issuer and verifier, and the signing-key manager with `Start`/`Stop` and an in-memory key store default;
   - `authn-authz-core`: the session manager and store, the policies with the lockout attempt store, the rate limiter and source guard, and the one-time token manager. Each component owns a refusal-log sampler and exposes `FlushRefusalLogs()` so that a consumer can report exact counts at shutdown;
-  - `durable-persistence`: the `sqlstore`, `pgx` and `gorm` adapters, the `seal.Sealer` port and the embedded migration sets;
+  - `durable-persistence`: the `sqlstore`, `pgxstore` and `gormstore` adapters, the `seal.Sealer` port and the embedded migration sets;
   - `default-identity-store`: a PostgreSQL implementation of the identity ports with its own migration set;
   - `http-security`, `auth-methods` and `oidc-brokering`: the HTTP chain, the optional authentication methods, and OIDC brokering with its flow and handoff stores.
 - **From `operation-hardening` (a prerequisite):** the core `expiry` runner and task constructors, and the `sweep` module. The container composes them; it does not define them.
@@ -74,7 +74,7 @@ func Start(ctx context.Context, i do.Injector) error // builds every component, 
 
 **Durable backend.** A backend is either:
 - a `*sql.DB` registered in the container, which gets the core `sqlstore` adapters and the core default identity store; or
-- a `scrtydo.SecurityStateStores` value the consumer registers, built with the `pgx` or `gorm` adapter constructors.
+- a `scrtydo.SecurityStateStores` value the consumer registers, built with the `pgxstore` or `gormstore` adapter constructors.
 
 Either way, every security-state store is taken from the backend.
 
@@ -157,7 +157,7 @@ When `Start` runs, the container's expiry runner holds one task for each wired c
 
 **Default:** every flow builds its in-memory limiter, and decision 4's INFO is written. Registering a `*sql.DB` or `SecurityStateStores` does **not** switch rate limiting to a shared backend, because that would change the default for a consumer who asked only for durable stores.
 
-**Override:** a `ratelimit.LimiterFactory` the consumer registers, for example from the `redis` module. The container passes it to every flow that accepts a factory. The `do` module never imports the `redis` module, for the same reason it does not probe pgx or gorm handles.
+**Override:** a `ratelimit.LimiterFactory` the consumer registers, for example from the `redisstore` module. The container passes it to every flow that accepts a factory. The `do` module never imports the `redis` module, for the same reason it does not probe pgx or gorm handles.
 
 - **At `Start`:** the wiring calls `Verify(ctx)` on a registered factory that implements it, and a failure fails `Start`. With a shared factory registered, decision 4's rate-limiter INFO is not written.
 - **Error at `Start`:** `WithSingleProcess()` together with a registered shared factory, naming both. The two statements contradict each other.

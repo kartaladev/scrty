@@ -10,8 +10,14 @@ context: |
     The floor is 1.27 because jwx v4 handles JSON through encoding/json/v2, which reaches the
     standard library in 1.27; on 1.26 it builds only under GOEXPERIMENT=jsonv2, which every
     consumer would inherit.
-  - Integrations are nested modules: ginsec (gin), fibersec (fiber v3), gorm, pgx,
-    sweep (scheduler), do (optional samber/do wiring).
+  - Integrations are nested modules under the concept they extend, each package named after
+    the last element of its path: httpsec/ginsec (gin), httpsec/fibersec (fiber v3),
+    store/pgxstore (pgx), store/gormstore (gorm), ratelimit/redisstore (Redis),
+    expiry/sweep (scheduler), authenticate/passkey/webauthn (WebAuthn), and do (optional
+    samber/do wiring, designed). A storage backend is <driver>store, never the driver's name.
+  - Core packages group by concept: login methods under authenticate/, token primitives under
+    token/, persistence under store/ (sqlstore, migrate, seal), account lockout in
+    policy/lockout.
   - Shared test helpers, conformance suites and the tests that use them live in
     github.com/kartaladev/scrty/test. No other scrty module imports it, not even from _test.go
     files (a test-only import still leaks the helpers' drivers into consumers' module graphs).

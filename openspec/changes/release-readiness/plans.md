@@ -26,7 +26,7 @@ Plan task N.M is `tasks.md` task N.M.
 
 - **The release.**
   - First release `v0.1.0`, in lockstep.
-  - Tags: `v0.1.0`, `fibersec/v0.1.0`, `ginsec/v0.1.0`, `gorm/v0.1.0`, `passkey/webauthn/v0.1.0`, `pgx/v0.1.0`, `redis/v0.1.0`, `sweep/v0.1.0` and `test/v0.1.0`.
+  - Tags: `v0.1.0`, `httpsec/fibersec/v0.1.0`, `httpsec/ginsec/v0.1.0`, `store/gormstore/v0.1.0`, `authenticate/passkey/webauthn/v0.1.0`, `store/pgxstore/v0.1.0`, `ratelimit/redisstore/v0.1.0`, `expiry/sweep/v0.1.0` and `test/v0.1.0`.
   - `tools` is never tagged and never listed.
 - **Requirements.** Every nested `go.mod` keeps its `replace` lines. Requirements on scrty modules name the release version, and a `replace` points only inside the repository.
 - **Go floor:** `go 1.27` in every workspace module.
@@ -54,11 +54,11 @@ Plan task N.M is `tasks.md` task N.M.
    - Test: in task 3.1, a loop over those inputs, asserting the exit status of each.
 3. **A `replace` that points outside the repository,** such as an absolute path or a path climbing above the root.
    - Expected: the requirement test fails, naming the module, as the module-layout requirement says.
-   - Test: in task 2.1, fixture cases for `=> /tmp/x` and `=> ../../outside`.
+   - Test: in task 2.1, fixture cases for `=> /tmp/x` and `=> ../../../outside` (from a module two levels down).
 4. **The probe environment silently bypassing the public checksum database,** through `GOFLAGS=-mod=mod`, `GONOSUMDB`, `GONOSUMCHECK`, `GOPRIVATE`, `GOINSECURE` or `GONOPROXY` set on the runner.
    - Expected: the probe unsets them, so the proxy and `sum.golang.org` both vouch for the version.
    - Test: in task 4.1, run the probe with `GONOSUMDB=github.com/kartaladev/*` exported, and assert the script prints the effective `go env` with those unset.
-5. **An indirect requirement on a scrty module,** for example `test` requiring `redis // indirect`.
+5. **An indirect requirement on a scrty module,** for example `test` requiring `ratelimit/redisstore // indirect`.
    - Expected: it is held to the same version rule as a direct one.
    - Test: in task 2.1, a fixture case with an indirect `v0.0.0` requirement that must be reported.
 
@@ -95,7 +95,7 @@ cd tools && GOWORK=off go get -tool golang.org/x/exp/cmd/gorelease@latest && GOW
 - [ ] **Step 2: run it in place.**
 
 ```sh
-cd pgx && GOWORK=off ../.bin/gorelease -base=none -version=v0.1.0; echo "exit=$?"
+cd store/pgxstore && GOWORK=off ../../.bin/gorelease -base=none -version=v0.1.0; echo "exit=$?"
 ```
 
   Record the full output and the exit status.
@@ -113,20 +113,20 @@ cd pgx && GOWORK=off ../.bin/gorelease -base=none -version=v0.1.0; echo "exit=$?
 - Modify: `layout_guard_test.go`, which gains `scrtyRequirement`, `readScrtyRequirements`, `readReplaces`, `releaseRequirementViolations` and `releaseListViolations`
 - Modify: `layout_test.go`, which gains `TestNestedModulesRequireReleasedVersions`, `TestReleaseModuleListsAgree` and `TestModulesDeclareGoFloor`
 - Create: `release-modules.txt`
-- Modify: `fibersec/go.mod`, `ginsec/go.mod`, `gorm/go.mod`, `passkey/webauthn/go.mod`, `pgx/go.mod`, `redis/go.mod`, `sweep/go.mod`, `test/go.mod`, and their `go.sum` files
+- Modify: `httpsec/fibersec/go.mod`, `httpsec/ginsec/go.mod`, `store/gormstore/go.mod`, `authenticate/passkey/webauthn/go.mod`, `store/pgxstore/go.mod`, `ratelimit/redisstore/go.mod`, `expiry/sweep/go.mod`, `test/go.mod`, and their `go.sum` files
 
 **Interfaces:**
 - Produces:
   - `release-modules.txt`, which R3 and R4 consume. One line per nested module: `<dir> <import path of one package in it>`.
 
 ```
-fibersec github.com/kartaladev/scrty/fibersec
-ginsec github.com/kartaladev/scrty/ginsec
-gorm github.com/kartaladev/scrty/gorm
-passkey/webauthn github.com/kartaladev/scrty/passkey/webauthn
-pgx github.com/kartaladev/scrty/pgx
-redis github.com/kartaladev/scrty/redis
-sweep github.com/kartaladev/scrty/sweep
+httpsec/fibersec github.com/kartaladev/scrty/httpsec/fibersec
+httpsec/ginsec github.com/kartaladev/scrty/httpsec/ginsec
+store/gormstore github.com/kartaladev/scrty/store/gormstore
+authenticate/passkey/webauthn github.com/kartaladev/scrty/authenticate/passkey/webauthn
+store/pgxstore github.com/kartaladev/scrty/store/pgxstore
+ratelimit/redisstore github.com/kartaladev/scrty/ratelimit/redisstore
+expiry/sweep github.com/kartaladev/scrty/expiry/sweep
 test github.com/kartaladev/scrty/test/storetest
 ```
 
@@ -137,7 +137,7 @@ test github.com/kartaladev/scrty/test/storetest
 
 ```go
 type scrtyRequirement struct {
-	Module   string // the requiring module's directory, e.g. "pgx"
+	Module   string // the requiring module's directory, e.g. "store/pgxstore"
 	Path     string // e.g. "github.com/kartaladev/scrty"
 	Version  string
 	Indirect bool
@@ -155,13 +155,13 @@ func releaseRequirementViolations(reqs []scrtyRequirement, replaces map[string][
   - an indirect `v0.0.0` (Review Focus 5): reported;
   - `v0.1.0` with want empty: clean;
   - `v0.1.0` with want `v0.2.0`: reported, naming module and path;
-  - replace `=> ../`: clean;
+  - replace `=> ../../` from a module two levels below the root, as `store/pgxstore` is: clean;
   - replace `=> /tmp/x` (Review Focus 3): reported;
-  - replace `=> ../../outside`, resolved against the module's directory, escaping the repository root: reported.
+  - replace `=> ../../../outside` from that same module, resolved against the module's directory, escaping the repository root: reported.
 
   The real-tree test reads every directory from `workspaceModules(t)` except `.`, parses `go mod edit -json` output through `goCmd`, and asserts no violations with `os.Getenv("SCRTY_RELEASE_VERSION")` as want. Run `go test -count=1 -run 'TestNestedModulesRequireReleasedVersions' .`. Expected: the table passes and the real-tree subtest FAILs, naming all eight modules.
 - [ ] **Step 2 (2.2 red):** run with `SCRTY_RELEASE_VERSION=v0.1.0`. Expected: FAIL, naming the same modules.
-- [ ] **Step 3 (2.3): bump.** For each nested module, `(cd <dir> && go mod edit -require=github.com/kartaladev/scrty@v0.1.0)`. In `test/`, also bump each sibling: `-require=github.com/kartaladev/scrty/<dir>@v0.1.0` for `fibersec`, `ginsec`, `gorm`, `passkey/webauthn`, `pgx` and `redis`. Then run `go mod tidy` in each with `GOWORK=off`. Expected: tidy succeeds through the local `replace`. Run, expecting PASS, PASS, FAIL and PASS respectively:
+- [ ] **Step 3 (2.3): bump.** For each nested module, `(cd <dir> && go mod edit -require=github.com/kartaladev/scrty@v0.1.0)`. In `test/`, also bump each sibling: `-require=github.com/kartaladev/scrty/<dir>@v0.1.0` for `httpsec/fibersec`, `httpsec/ginsec`, `store/gormstore`, `authenticate/passkey/webauthn`, `store/pgxstore` and `ratelimit/redisstore`. Then run `go mod tidy` in each with `GOWORK=off`. Expected: tidy succeeds through the local `replace`. Run, expecting PASS, PASS, FAIL and PASS respectively:
   - step 1's command;
   - the same with `SCRTY_RELEASE_VERSION=v0.1.0`;
   - the same with `SCRTY_RELEASE_VERSION=v0.2.0`;
@@ -173,7 +173,7 @@ func releaseRequirementViolations(reqs []scrtyRequirement, replaces map[string][
   - `tools` listed: reported;
   - `.` listed: reported.
   The real-tree test reads `release-modules.txt`, and fails if the file is missing. It also checks, with `go list` in the workspace, that each import path builds. Run it and expect FAIL with the file missing. Add the file with one entry wrong, run it and expect FAIL. Correct the entry, run it and expect PASS.
-- [ ] **Step 5 (2.5):** `TestModulesDeclareGoFloor` reads the `go` directive of every workspace module, and passes only for `1.27` or `1.27.<n>`. Run it and expect PASS. Then change `sweep/go.mod` to `go 1.26`, run it and expect a FAIL naming `sweep`. Edit it back and run it again, expecting PASS.
+- [ ] **Step 5 (2.5):** `TestModulesDeclareGoFloor` reads the `go` directive of every workspace module, and passes only for `1.27` or `1.27.<n>`. Run it and expect PASS. Then change `expiry/sweep/go.mod` to `go 1.26`, run it and expect a FAIL naming `expiry/sweep`. Edit it back and run it again, expecting PASS.
 - [ ] **Step 6: commit** `build: nested modules require v0.1.0 and the release list`.
 
 ---
@@ -291,7 +291,7 @@ echo "probe: $version resolves for every published module"
   - `PROBE_RETRIES=1 scripts/release-probe.sh v0.0.1` exits nonzero with `probe: github.com/kartaladev/scrty@v0.0.1 did not resolve`;
   - `GONOSUMDB='github.com/kartaladev/*' PROBE_RETRIES=1 scripts/release-probe.sh v0.0.1` prints an empty `GONOSUMDB` in its `go env` lines (Review Focus 4).
 - [ ] **Step 2 (4.2): the workflow** `.github/workflows/release-probe.yml`.
-  - Trigger: `on: push: tags: ['v[0-9]*']`. Nested tags such as `pgx/v0.1.0` begin with their directory, so they do not match.
+  - Trigger: `on: push: tags: ['v[0-9]*']`. Nested tags such as `store/pgxstore/v0.1.0` begin with their directory, so they do not match.
   - `permissions: contents: read`, `actions/checkout@v5`, `actions/setup-go@v6` with `1.27.x`, then `run: scripts/release-probe.sh "$GITHUB_REF_NAME"`.
   - Verify with `actionlint`, which should print nothing.
 - [ ] **Step 3: commit** `ci: probe a released version from outside the repository`.
@@ -326,7 +326,7 @@ echo "probe: $version resolves for every published module"
   - Add a "Never move a tag" section with the recovery: a new patch version, and `retract vX.Y.Z` in each affected `go.mod`.
   - Verify that each read-only command runs (`make release-check`, `make release-tags`, the `gh api` read). Don't run the tag, push or release commands.
 - [ ] **Step 4 (5.5): `README.md`.**
-  - An Install section with `go get github.com/kartaladev/scrty@v0.1.0` and `go get github.com/kartaladev/scrty/pgx@v0.1.0`.
+  - An Install section with `go get github.com/kartaladev/scrty@v0.1.0` and `go get github.com/kartaladev/scrty/store/pgxstore@v0.1.0`.
   - Links to `CHANGELOG.md` and `SECURITY.md`.
   - Keep the existing Supported Go versions section, and add that security fixes go to the latest minor release, per `SECURITY.md`.
   - Verify the relative links name existing files.

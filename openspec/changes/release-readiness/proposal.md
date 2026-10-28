@@ -1,7 +1,7 @@
 ## Why
 
 No application outside this repository can depend on scrty's integration modules today.
-- **Nested modules don't resolve.** Each nested `go.mod` requires the root at `v0.0.0` through `replace => ../`. A dependent's build ignores `replace`, and no `v0.0.0` exists, so `GOWORK=off go get github.com/kartaladev/scrty/pgx@main` fails with "unknown revision v0.0.0".
+- **Nested modules don't resolve.** Each nested `go.mod` requires the root at `v0.0.0` through a relative `replace` to the repository root. A dependent's build ignores `replace`, and no `v0.0.0` exists, so `GOWORK=off go get github.com/kartaladev/scrty/store/pgxstore@main` fails with "unknown revision v0.0.0".
 - **The root resolves only as a pseudo-version,** because nothing is tagged.
 - **No reporting channel or record.** There is no way to report a vulnerability privately, and no record of what changed between versions.
 
@@ -11,7 +11,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
 
 - **Lockstep versioning.**
   - Every published module carries the same version at every release.
-  - The root is tagged `vX.Y.Z`. Each nested module is tagged with its directory as prefix: `fibersec/vX.Y.Z`, `ginsec/`, `gorm/`, `passkey/webauthn/`, `pgx/`, `redis/`, `sweep/`, `test/`.
+  - The root is tagged `vX.Y.Z`. Each nested module is tagged with its directory as prefix: `httpsec/fibersec/vX.Y.Z`, `httpsec/ginsec/`, `store/gormstore/`, `authenticate/passkey/webauthn/`, `store/pgxstore/`, `ratelimit/redisstore/`, `expiry/sweep/`, `test/`.
   - `tools/` is internal build tooling and is never tagged.
   - The first release is `v0.1.0`.
 - **Nested modules require real versions.**
@@ -53,7 +53,7 @@ The first consumer's adoption is blocked on this, whatever else is built.
 ## Impact
 
 - **Changed files:**
-  - every nested `go.mod` and `go.sum` (`fibersec`, `ginsec`, `gorm`, `passkey/webauthn`, `pgx`, `redis`, `sweep`, `test`);
+  - every nested `go.mod` and `go.sum` (`httpsec/fibersec`, `httpsec/ginsec`, `store/gormstore`, `authenticate/passkey/webauthn`, `store/pgxstore`, `ratelimit/redisstore`, `expiry/sweep`, `test`);
   - the `Makefile`, which gains release-gate targets;
   - `.github/workflows/`, which gains a release-gate workflow and a post-tag probe;
   - new `CHANGELOG.md`, `SECURITY.md` and `RELEASING.md`;

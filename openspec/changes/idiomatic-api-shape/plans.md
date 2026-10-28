@@ -127,7 +127,7 @@
 - Produces: `lockout.NewMemoryAttemptStore(opts ...MemoryAttemptOption) (*MemoryAttemptStore, error)`
 
 - [ ] **Step 1: Failing test.** `TestMemoryAttemptStore_Capacity`, with cases:
-  - `"capacity of zero"`, asserting `require.NotPanics`, `ErrorIs(err, lockout.ErrConfig)` and a nil store;
+  - `"capacity of zero"`, asserting `require.NotPanics`, `ErrorIs(err, policy.ErrConfig)` and a nil store;
   - `"negative capacity"`, asserting the same;
   - `"consumer capacity"`, holding 1,000,000 identifiers.
 

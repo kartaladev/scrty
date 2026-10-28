@@ -86,7 +86,7 @@ Each task below is one parallel lane that owns only the packages it names. Each 
 ## 6. The repository's own references
 
 - [ ] 6.1 Update the `openspec/config.yaml` context: the integration module list, the adapter names and the module paths. Verify: `openspec validate --all --strict` passes, and the context names no old path.
-- [ ] 6.2 Update the path and identifier references in the artifacts of the active changes: `trusted-proxy-client-ip`, `release-readiness` (including its tag prefixes and its `module-layout` scenarios), `di-wiring`, `bff-resource-server`, and `minimize-test-containers` once it is on `main`. Check `idiomatic-api-shape` and `key-port-context`, which already use this change's names, against the names that actually landed, and correct any that differ. Regenerate `plans.md` for any change whose `tasks.md` content changes, as `tasks-plans.md` requires. Verify: a search of `openspec/changes/` for every left-hand entry of `evidence/rename-map.tsv` finds matches only in this change's own artifacts.
+- [x] 6.2 Update the path and identifier references in the artifacts of the active changes: `trusted-proxy-client-ip`, `release-readiness` (including its tag prefixes and its `module-layout` scenarios), `di-wiring`, `bff-resource-server`, and `minimize-test-containers` once it is on `main`. Check `idiomatic-api-shape` and `key-port-context`, which already use this change's names, against the names that actually landed, and correct any that differ. Regenerate `plans.md` for any change whose `tasks.md` content changes, as `tasks-plans.md` requires. Verify: a search of `openspec/changes/` for every left-hand entry of `evidence/rename-map.tsv` finds matches only in this change's own artifacts.
 
 ## 7. Final integration
 

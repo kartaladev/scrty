@@ -3,10 +3,10 @@
 See `proposal.md` for the motivation. This section covers only the state of the tree the design builds on.
 
 - **Modules.**
-  - `go.work` lists the root and eight nested modules: `fibersec`, `ginsec`, `gorm`, `passkey/webauthn`, `pgx`, `redis`, `sweep` and `test`.
+  - `go.work` lists the root and eight nested modules: `httpsec/fibersec`, `httpsec/ginsec`, `store/gormstore`, `authenticate/passkey/webauthn`, `store/pgxstore`, `ratelimit/redisstore`, `expiry/sweep` and `test`.
   - `tools/` is outside the workspace, and holds the build tools as `tool` directives.
 - **Requirements.**
-  - Seven nested modules require the root at `v0.0.0` with `replace => ../`. `passkey/webauthn` requires it at the zero pseudo-version `v0.0.0-00010101000000-000000000000`.
+  - Seven nested modules require the root at `v0.0.0` with a relative `replace` to the repository root (`../../`, or `../../../` for `authenticate/passkey/webauthn`). `authenticate/passkey/webauthn` requires it at the zero pseudo-version `v0.0.0-00010101000000-000000000000`.
   - `test` requires every sibling it imports at `v0.0.0` or the zero pseudo-version, each with its own `replace`.
 - **Gates.**
   - `make check` runs fmt-check, vet, lint, test, vuln and generate-check over `MODULES := $(shell go list -m -f '{{.Dir}}')`, which only lists every module in workspace mode.
@@ -49,8 +49,8 @@ None of the decisions below is library behaviour a consumer configures. They gov
 
 ### 2. Nested modules require real versions and keep their local `replace`
 
-- **The requirements.** Every nested `go.mod` requires the root and each sibling scrty module it imports at the release version. For `v0.1.0`, that is `github.com/kartaladev/scrty v0.1.0` and, in `test`, `github.com/kartaladev/scrty/pgx v0.1.0` and so on.
-- **What stays.** The `replace => ../` directives stay, and so does `go.work`.
+- **The requirements.** Every nested `go.mod` requires the root and each sibling scrty module it imports at the release version. For `v0.1.0`, that is `github.com/kartaladev/scrty v0.1.0` and, in `test`, `github.com/kartaladev/scrty/store/pgxstore v0.1.0` and so on.
+- **What stays.** The relative `replace` directives stay, and so does `go.work`.
 - **Why this is safe:**
   - A dependent's build ignores both.
   - A developer inside the repository keeps building against the working tree.
