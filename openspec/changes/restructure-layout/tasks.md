@@ -81,7 +81,7 @@ Each task below is one parallel lane that owns only the packages it names. Each 
   - no merged declaration's godoc promised something to "this package alone";
   - `go test ./...` passes in the core module and both backend modules;
   - the store-conformance suites under `test/` pass in CI.
-- [ ] 5.2 Phase-4 gate: `evidence/check.sh`, `make check`, push and CI green, then the phase review against D5. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.
+- [x] 5.2 Phase-4 gate: `evidence/check.sh`, `make check`, push and CI green, then the phase review against D5. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.
 
 ## 6. The repository's own references
 
@@ -90,7 +90,7 @@ Each task below is one parallel lane that owns only the packages it names. Each 
 
 ## 7. Final integration
 
-- [ ] 7.1 Run the whole-branch review against the `module-layout` delta and every decision D1–D13. Verify: a clean review, with every finding resolved.
+- [x] 7.1 Run the whole-branch review against the `module-layout` delta and every decision D1–D13. Verify: a clean review, with every finding resolved.
 - [ ] 7.2 Run `evidence/check.sh` for the whole branch against the group-1 baseline, run `openspec validate restructure-layout --strict`, and confirm CI is green on the final head, including the Docker suites. Verify: no unmapped difference, a valid change, and a green CI run.
 
 ## Workflow follow-up

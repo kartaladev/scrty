@@ -57,7 +57,7 @@ var ErrAccountHeld = errors.New("lockout: account held until its failures are cl
 // implements it.
 //
 //go:generate mockgen -source=attempts.go -package=lockout_test -destination=attempts_mock_test.go -typed
-//go:generate mockgen -source=../attempt_views.go -package=lockout_test -destination=attemptstore_mock_test.go -typed -exclude_interfaces=AttemptViewRequirer
+//go:generate mockgen -source=../attempt_views.go -package=lockout_test -destination=attempt_views_mock_test.go -typed -exclude_interfaces=AttemptViewRequirer
 type AttemptReaper interface {
 	// DeleteAttemptsBefore removes the failures recorded strictly before
 	// retainSince, whatever identifier they belong to, and reports how many

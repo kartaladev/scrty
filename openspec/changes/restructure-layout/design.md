@@ -157,6 +157,8 @@ These rules apply to every package in the core module and the nested modules, ex
    - In-package tests that must read unexported state go into `<file>_internal_test.go`, beside the external `<file>_test.go`. Go does not let one file hold both packages. Where an `export_test.go` accessor serves just as well, the test moves to the external file instead. Files whose tests differ only by build tag (`_race`, `_norace`) also stay apart.
 5. **Shared code is filed by what it is,** not under the first feature that used it.
 
+**Kept apart on purpose:** each backend's `identity_errors.go` fell under the ~100-line threshold once D5 moved its shared helpers out. It stays apart, because folding it into `identity.go` would take that file past rule 2's ~800 lines.
+
 The `httpsec` production map follows. In this map, "§X" means the `Enable…` function, option type and options of feature X, taken out of today's `options.go`.
 
 | Target | From |
@@ -396,8 +398,9 @@ These checks run before phase 1 starts, and again after each phase:
    - nothing else is reported.
 3. **Declaration inventory.** Every top-level declaration in every non-generated production file, exported or not, is listed with its package and kind. This covers functions, methods, types, variables, constants and `//go:embed` patterns. After each phase, every baseline declaration maps through the rename map to a declaration that exists. The only allowed absences are the D5 copies, each mapped to its `storekit` successor. This catches code dropped during a file merge that the build, the API diff and the tests would all miss.
 4. **Coverage.** No package's statement coverage drops. The conversion in D7 must exercise the same code as before.
-5. **Assertion review.** Outside D7, a test diff touches only import paths, identifiers, file placement and D11 prefixes. A reviewer compares every D7 case's assertions with its original function's.
-6. **Gates.** `make check` (gofmt, vet, lint, race tests, `go generate` drift and the layout checks) passes locally where it can, and in CI with the Docker suites.
+5. **Test names.** Test function names that name a renamed type (`TestManager…`, `TestNewJwtAuthenticator`, `TestNormaliseName`) keep their old wording. gopls does not rename them, and renaming them would only churn the test inventory this decision compares. The D7 conversions rename only the functions they fold, through `test` rows of the map.
+6. **Assertion review.** Outside D7, a test diff touches only import paths, identifiers, file placement and D11 prefixes. A reviewer compares every D7 case's assertions with its original function's.
+7. **Gates.** `make check` (gofmt, vet, lint, race tests, `go generate` drift and the layout checks) passes locally where it can, and in CI with the Docker suites.
 
 ## Risks / Trade-offs
 
