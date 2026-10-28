@@ -1,26 +1,60 @@
 package oidc_test
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/jonboulle/clockwork"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/authenticate/password"
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/outbound"
 )
+
+// testTextLogger returns a text-handler logger writing to w at debug level,
+// with the timestamp attribute stripped from every record.
+//
+// slog.NewTextHandler's default timestamp renders as decimal digits (e.g.
+// "2026-09-25T18:52:31.842+07:00"), which can coincidentally contain a
+// substring a test asserts is absent from the log (a claim value, a role
+// name, ...). Dropping the timestamp removes that collision without
+// weakening what the test actually checks.
+func testTextLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if len(groups) == 0 && a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}))
+}
 
 // testProvider is an httptest TLS server acting as an OpenID provider: a
 // discovery document, a key set and a token endpoint, with call counters and a
@@ -500,4 +534,305 @@ func TestTestProviderSign(t *testing.T) {
 			require.NoError(t, err)
 		}
 	})
+}
+
+// stubBroker resolves every identity to one fixed principal. Where a test must
+// verify calls, it uses the generated MockIdentityBroker instead.
+type stubBroker struct{}
+
+func (stubBroker) Broker(context.Context, oidc.ExternalIdentity) (*identity.Principal, error) {
+	return &identity.Principal{ID: "user-1"}, nil
+}
+
+// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil an
+// unchecked constructor error hands over.
+type nilClock struct{}
+
+func (*nilClock) Now() time.Time { return time.Time{} }
+
+// fixedClock is a consumer's own clock with only Now.
+type fixedClock struct{ at time.Time }
+
+func (c fixedClock) Now() time.Time { return c.at }
+
+// errFlowRandom is what errReader fails with.
+var errFlowRandom = errors.New("random source failed")
+
+// errReader is a random source that always fails.
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errFlowRandom }
+
+// errRedactionFixture is the dependency error every diagnostic-redaction
+// reproduction in this change quotes: a username and a user reference the
+// library never saw, which no record may carry.
+var errRedactionFixture = errors.New("store: Key (username)=(alice@example.com) for user u-123")
+
+// expiryT0 is when every flow and handoff in the expiry tests was issued.
+var expiryT0 = time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+
+var errExpiryStore = errors.New("store unavailable")
+
+// flushSummaries returns, in the order written, the suppressed count of every
+// record in logs whose message is msg. It is how these tests read what a
+// flush reported without depending on the sampling key's own text.
+func flushSummaries(t *testing.T, logs, msg string) []int {
+	t.Helper()
+
+	var counts []int
+	for _, line := range strings.Split(logs, "\n") {
+		if line == "" || !strings.Contains(line, `msg="`+msg+`"`) {
+			continue
+		}
+
+		idx := strings.Index(line, "suppressed=")
+		require.GreaterOrEqual(t, idx, 0, "a summary record carried no suppressed attribute: %s", line)
+
+		rest := line[idx+len("suppressed="):]
+		if end := strings.IndexByte(rest, ' '); end >= 0 {
+			rest = rest[:end]
+		}
+		n, err := strconv.Atoi(rest)
+		require.NoError(t, err)
+		counts = append(counts, n)
+	}
+	return counts
+}
+
+// flushFixedClock is a clock that never advances, so every refusal a test
+// drives falls in the sampler's very first window.
+func flushFixedClock() *clockwork.FakeClock {
+	return clockwork.NewFakeClockAt(time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC))
+}
+
+// callbackEnv is one login in progress: a provider, a manager whose default
+// store holds a flow begun by Authorize, and a token endpoint that answers
+// that flow's code with a valid ID token.
+type callbackEnv struct {
+	m      *oidc.RelyingParty
+	p      *testProvider
+	broker *MockIdentityBroker
+	auth   oidc.Authorization
+	flow   oidc.Flow
+	idTok  string
+	logs   *bytes.Buffer
+	now    time.Time
+}
+
+// genuine is the callback the provider's real redirect produces.
+func (e *callbackEnv) genuine(t *testing.T) (oidc.CallbackResult, error) {
+	t.Helper()
+	return e.m.Callback(t.Context(), "corp", "the-code", e.flow.State, e.auth.Handle)
+}
+
+// expectBroker makes the broker resolve exactly one identity to alice.
+func (e *callbackEnv) expectBroker(times int) {
+	e.broker.EXPECT().Broker(gomock.Any(), gomock.Any()).Return(alice(), nil).Times(times)
+}
+
+// newCallbackEnv builds a manager for providers corp and partner at a fixed
+// clock. With the default store it begins one flow at corp, and makes corp's
+// token endpoint answer that flow's code with a valid ID token.
+func newCallbackEnv(t *testing.T, now time.Time, flows func(t *testing.T) oidc.FlowStore) *callbackEnv {
+	t.Helper()
+
+	p := newTestProvider(t)
+	reg, err := oidc.NewRegistry(p.Provider("corp"), p.Provider("partner"))
+	require.NoError(t, err)
+
+	e := &callbackEnv{p: p, broker: NewMockIdentityBroker(gomock.NewController(t)), logs: &bytes.Buffer{}, now: now}
+	opts := []oidc.Option{
+		oidc.WithOutboundClient(p.Outbound(t)),
+		oidc.WithClock(clockwork.NewFakeClockAt(now)),
+		oidc.WithLogger(testTextLogger(e.logs)),
+	}
+	if flows != nil {
+		opts = append(opts, oidc.WithFlowStore(flows(t)))
+	}
+	e.m, err = oidc.NewRelyingParty(reg, e.broker, opts...)
+	require.NoError(t, err)
+	if flows != nil {
+		return e
+	}
+
+	e.auth, err = e.m.Authorize(t.Context(), "corp", "/after")
+	require.NoError(t, err)
+	e.flow = authorizeFlow(t, e.m, e.auth.Handle)
+	e.reissue(t, nil)
+
+	return e
+}
+
+// reissue makes corp's token endpoint answer the flow's code with a valid ID
+// token carrying extra claims beside the usual ones.
+func (e *callbackEnv) reissue(t *testing.T, extra map[string]any) {
+	t.Helper()
+
+	claims := map[string]any{
+		"iss": e.p.Issuer(), "aud": "client-corp", "sub": "subject-1",
+		"exp": e.now.Add(5 * time.Minute).Unix(), "iat": e.now.Unix(),
+		"nonce": e.flow.Nonce, "sid": "provider-session",
+		"email": "alice@corp.example", "email_verified": true,
+	}
+	maps.Copy(claims, extra)
+	idTok := e.p.Sign(t, claims)
+	e.idTok = idTok
+	verifier := e.flow.Verifier
+	e.p.SetTokenResponse(func(r *http.Request) (int, string) {
+		if r.ParseForm() != nil || r.PostForm.Get("code") != "the-code" || r.PostForm.Get("code_verifier") != verifier {
+			return http.StatusBadRequest, `{"error":"invalid_grant"}`
+		}
+		return http.StatusOK, `{"access_token":"at","id_token":"` + idTok + `"}`
+	})
+}
+
+// brokerCorpIdentity is the verified identity linked to u-1 in every
+// linked-resolution row.
+func brokerCorpIdentity() oidc.ExternalIdentity {
+	return oidc.ExternalIdentity{
+		Provider: "corp", Issuer: brokerCorpIssuer, Subject: "s-1",
+		Email: "alice@corp.example", EmailVerified: true,
+	}
+}
+
+// brokerSeededLinks returns a memory link store holding (corp, corp issuer,
+// s-1) → u-1 / alice.
+func brokerSeededLinks(t *testing.T) *oidc.MemoryLinkStore {
+	t.Helper()
+
+	s := oidc.NewMemoryLinkStore()
+	require.NoError(t, s.Insert(t.Context(), oidc.Link{
+		Provider: "corp", Issuer: brokerCorpIssuer, Subject: "s-1",
+		UserID: "u-1", Username: "alice", Email: "alice@corp.example",
+	}))
+	return s
+}
+
+// errDBDown is a loader outage.
+var errDBDown = errors.New("db down")
+
+// provisionClock is the broker's clock in every provisioning row.
+var provisionClock = time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
+
+// allProvisionFields is every field a Provision or Update option can name.
+// The matcher loops over it rather than restating the list. A field listed
+// here without a case in provisionFieldValue panics; a new identity.Field
+// constant that is never added here is not compared at all, because the
+// identity package exports no list of every field to check this one against.
+var allProvisionFields = []identity.Field{
+	identity.FieldName,
+	identity.FieldEmail,
+	identity.FieldRoles,
+	identity.FieldOrganization,
+	identity.FieldPassword,
+	identity.FieldPasswordChangedAt,
+}
+
+// provisionFieldValue returns u's value for f, in the shape the matcher
+// compares. Roles is clipped to a fresh backing array so two equal-content
+// slices with different capacities still compare equal.
+func provisionFieldValue(u *identity.UserChange, f identity.Field) any {
+	switch f {
+	case identity.FieldName:
+		return u.Name
+	case identity.FieldEmail:
+		return u.Email
+	case identity.FieldRoles:
+		return slices.Clip(append([]string{}, u.Roles...))
+	case identity.FieldOrganization:
+		return u.Organization
+	case identity.FieldPassword:
+		return u.Password
+	case identity.FieldPasswordChangedAt:
+		return u.PasswordChangedAt
+	default:
+		panic(fmt.Sprintf("provisionFieldValue: unhandled field %d", f))
+	}
+}
+
+// brokerUserOptionsMatcher matches the variadic options of a Provision call
+// by what they name: it applies both sides with identity.ApplyUserOptions and
+// compares every field's IsSet flag and, where set, its value.
+type brokerUserOptionsMatcher struct{ want *identity.UserChange }
+
+// provisionedWith matches Provision options naming exactly opts.
+func provisionedWith(opts ...identity.UserOption) gomock.Matcher {
+	return brokerUserOptionsMatcher{want: identity.ApplyUserOptions(opts...)}
+}
+
+func (m brokerUserOptionsMatcher) Matches(x any) bool {
+	opts, ok := x.([]identity.UserOption)
+	if !ok {
+		return false
+	}
+	got := identity.ApplyUserOptions(opts...)
+	for _, f := range allProvisionFields {
+		if got.IsSet(f) != m.want.IsSet(f) {
+			return false
+		}
+		if m.want.IsSet(f) && !reflect.DeepEqual(provisionFieldValue(got, f), provisionFieldValue(m.want, f)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (m brokerUserOptionsMatcher) String() string {
+	return fmt.Sprintf("names name=%q email=%q roles=%q (and only the fields set on %+v)",
+		m.want.Name, m.want.Email, m.want.Roles, *m.want)
+}
+
+// provisionIdentity is an unlinked, verified identity from provider.
+func provisionIdentity(provider, email string) oidc.ExternalIdentity {
+	return oidc.ExternalIdentity{
+		Provider: provider, Issuer: "https://" + provider + ".example", Subject: "s-new",
+		Email: email, EmailVerified: true, Claims: map[string]any{},
+	}
+}
+
+// bcryptShapedHash returns a well-formed bcrypt hash string at cost, whose
+// 53-character salt-and-digest is fill repeated. bcrypt.Cost reads only the
+// prefix, so the digest need not verify anything.
+func bcryptShapedHash(cost string, fill byte) string {
+	return "$2a$" + cost + "$" + strings.Repeat(string(fill), 53)
+}
+
+// Hashes the password-claim rows present. They are distinct so a row can tell
+// which one reached a call or a log.
+var (
+	hashCost12 = bcryptShapedHash("12", 'a')
+	hashCost04 = bcryptShapedHash("04", 'b')
+	hashCost31 = bcryptShapedHash("31", 'c')
+	hashCost13 = bcryptShapedHash("13", 'd')
+)
+
+// fastBcryptEncoder returns a real bcrypt encoder at the password package's
+// floor, cost 10, which keeps the construction probe cheap.
+func fastBcryptEncoder(t *testing.T) password.Encoder {
+	t.Helper()
+	enc, err := password.NewBcryptEncoder(password.WithBcryptCost(10))
+	require.NoError(t, err)
+	return enc
+}
+
+// passwordClaimIdentity is an unlinked, verified corp identity carrying hash
+// at credentials.password_hash, or no such claim when hash is nil.
+func passwordClaimIdentity(subject string, hash any) oidc.ExternalIdentity {
+	ext := provisionIdentity("corp", "bob@corp.example")
+	ext.Subject = subject
+	if hash != nil {
+		ext.Claims = map[string]any{"credentials": map[string]any{"password_hash": hash}}
+	}
+	return ext
+}
+
+// linesContaining returns the lines of logs that contain s.
+func linesContaining(logs, s string) []string {
+	var out []string
+	for line := range strings.SplitSeq(logs, "\n") {
+		if strings.Contains(line, s) {
+			out = append(out, line)
+		}
+	}
+	return out
 }

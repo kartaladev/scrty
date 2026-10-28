@@ -2,12 +2,10 @@ package oidc_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
-	"fmt"
-	"reflect"
-	"slices"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
@@ -18,85 +16,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 )
-
-// provisionClock is the broker's clock in every provisioning row.
-var provisionClock = time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
-
-// allProvisionFields is every field a Provision or Update option can name.
-// The matcher loops over it rather than restating the list. A field listed
-// here without a case in provisionFieldValue panics; a new identity.Field
-// constant that is never added here is not compared at all, because the
-// identity package exports no list of every field to check this one against.
-var allProvisionFields = []identity.Field{
-	identity.FieldName,
-	identity.FieldEmail,
-	identity.FieldRoles,
-	identity.FieldOrganization,
-	identity.FieldPassword,
-	identity.FieldPasswordChangedAt,
-}
-
-// provisionFieldValue returns u's value for f, in the shape the matcher
-// compares. Roles is clipped to a fresh backing array so two equal-content
-// slices with different capacities still compare equal.
-func provisionFieldValue(u *identity.UserChange, f identity.Field) any {
-	switch f {
-	case identity.FieldName:
-		return u.Name
-	case identity.FieldEmail:
-		return u.Email
-	case identity.FieldRoles:
-		return slices.Clip(append([]string{}, u.Roles...))
-	case identity.FieldOrganization:
-		return u.Organization
-	case identity.FieldPassword:
-		return u.Password
-	case identity.FieldPasswordChangedAt:
-		return u.PasswordChangedAt
-	default:
-		panic(fmt.Sprintf("provisionFieldValue: unhandled field %d", f))
-	}
-}
-
-// brokerUserOptionsMatcher matches the variadic options of a Provision call
-// by what they name: it applies both sides with identity.ApplyUserOptions and
-// compares every field's IsSet flag and, where set, its value.
-type brokerUserOptionsMatcher struct{ want *identity.UserChange }
-
-// provisionedWith matches Provision options naming exactly opts.
-func provisionedWith(opts ...identity.UserOption) gomock.Matcher {
-	return brokerUserOptionsMatcher{want: identity.ApplyUserOptions(opts...)}
-}
-
-func (m brokerUserOptionsMatcher) Matches(x any) bool {
-	opts, ok := x.([]identity.UserOption)
-	if !ok {
-		return false
-	}
-	got := identity.ApplyUserOptions(opts...)
-	for _, f := range allProvisionFields {
-		if got.IsSet(f) != m.want.IsSet(f) {
-			return false
-		}
-		if m.want.IsSet(f) && !reflect.DeepEqual(provisionFieldValue(got, f), provisionFieldValue(m.want, f)) {
-			return false
-		}
-	}
-	return true
-}
-
-func (m brokerUserOptionsMatcher) String() string {
-	return fmt.Sprintf("names name=%q email=%q roles=%q (and only the fields set on %+v)",
-		m.want.Name, m.want.Email, m.want.Roles, *m.want)
-}
-
-// provisionIdentity is an unlinked, verified identity from provider.
-func provisionIdentity(provider, email string) oidc.ExternalIdentity {
-	return oidc.ExternalIdentity{
-		Provider: provider, Issuer: "https://" + provider + ".example", Subject: "s-new",
-		Email: email, EmailVerified: true, Claims: map[string]any{},
-	}
-}
 
 // provisionHarness is what one provisioning row runs against.
 type provisionHarness struct {
@@ -136,6 +55,18 @@ func TestBrokerProvisioning(t *testing.T) {
 		assert.Nil(t, p)
 	}
 	jitCorp := []oidc.BrokerOption{oidc.WithBrokerJIT("corp")}
+	// jitCorpDomains enables provisioning for corp, limited to the allowed
+	// email domains.
+	jitCorpDomains := func(allowed ...string) []oidc.BrokerOption {
+		return []oidc.BrokerOption{oidc.WithBrokerJIT("corp"), oidc.WithBrokerJITEmailDomains("corp", allowed...)}
+	}
+	refusedFolded := func(t *testing.T, _ provisionHarness, _ oidc.ExternalIdentity, p *identity.Principal, err error) {
+		t.Helper()
+
+		require.ErrorIs(t, err, oidc.ErrProvisioningRefused)
+		require.ErrorIs(t, err, authenticate.ErrAuthenticationFailed)
+		assert.Nil(t, p)
+	}
 
 	type testCase struct {
 		name   string
@@ -525,6 +456,47 @@ func TestBrokerProvisioning(t *testing.T) {
 				h.assertNoLink(t, ext)
 			},
 		},
+		{
+			name:   "the Kelvin sign in the email domain is not a k in the allowlist",
+			ext:    provisionIdentity("corp", "bob@K.example"),
+			opts:   jitCorpDomains("k.example"),
+			expect: func(provisionHarness) {},
+			assert: refusedFolded,
+		},
+		{
+			name:   "the Kelvin sign in the allowlist is not a k in the email domain",
+			ext:    provisionIdentity("corp", "bob@k.example"),
+			opts:   jitCorpDomains("K.example"),
+			expect: func(provisionHarness) {},
+			assert: refusedFolded,
+		},
+		{
+			name:   "the long s in the email domain is not an s in the allowlist",
+			ext:    provisionIdentity("corp", "bob@ſ.example"),
+			opts:   jitCorpDomains("s.example"),
+			expect: func(provisionHarness) {},
+			assert: refusedFolded,
+		},
+		{
+			name:   "a no-break space around the allowlist entry is not trimmed",
+			ext:    provisionIdentity("corp", "bob@corp.example"),
+			opts:   jitCorpDomains("corp.example "),
+			expect: func(provisionHarness) {},
+			assert: refusedFolded,
+		},
+		{
+			name: "ASCII letter case is still ignored",
+			ext:  provisionIdentity("corp", "Bob@CORP.example"),
+			opts: jitCorpDomains("Corp.Example"),
+			expect: func(h provisionHarness) {
+				h.prov.EXPECT().Provision(gomock.Any(), "Bob@CORP.example", gomock.Any()).
+					Return(&identity.Details{ID: "u-9", Username: "Bob@CORP.example", Active: true}, nil)
+			},
+			assert: func(t *testing.T, _ provisionHarness, _ oidc.ExternalIdentity, p *identity.Principal, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, identity.UserID("u-9"), p.ID)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -680,6 +652,52 @@ func TestBrokerProvisioningOptions(t *testing.T) {
 				assert.Equal(t, []string{"corp", "social"}, b.ConfiguredProviders(), "the slice is the caller's own")
 			},
 		},
+		{
+			name: "mirroring without a provisioner is a missing port",
+			opts: func(identity.UserProvisioner) []oidc.BrokerOption {
+				return []oidc.BrokerOption{oidc.WithBrokerNameClaim("corp", "name"), oidc.WithBrokerClaimMirror("corp", true)}
+			},
+			assert: func(t *testing.T, b *oidc.Broker, err error) {
+				refused("user provisioner", "WithBrokerClaimMirror")(t, b, err)
+				require.ErrorIs(t, err, identity.ErrMissingPort)
+			},
+		},
+		{
+			name: "mirroring without a claim path is refused naming the provider",
+			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerClaimMirror("corp", true)}
+			},
+			assert: refused(`"corp"`),
+		},
+		{
+			name: "mirroring with only a name claim is accepted",
+			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
+				return []oidc.BrokerOption{
+					oidc.WithBrokerProvisioner(p), oidc.WithBrokerNameClaim("corp", "name"), oidc.WithBrokerClaimMirror("corp", true),
+				}
+			},
+			assert: func(t *testing.T, b *oidc.Broker, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"corp"}, b.ConfiguredProviders())
+			},
+		},
+		{
+			name: "mirroring turned off needs neither a provisioner nor a path",
+			opts: func(identity.UserProvisioner) []oidc.BrokerOption {
+				return []oidc.BrokerOption{oidc.WithBrokerClaimMirror("corp", false)}
+			},
+			assert: func(t *testing.T, b *oidc.Broker, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, []string{"corp"}, b.ConfiguredProviders())
+			},
+		},
+		{
+			name: "an empty provider is refused",
+			opts: func(p identity.UserProvisioner) []oidc.BrokerOption {
+				return []oidc.BrokerOption{oidc.WithBrokerProvisioner(p), oidc.WithBrokerClaimMirror("", true)}
+			},
+			assert: refused("WithBrokerClaimMirror"),
+		},
 	}
 
 	for _, tc := range cases {
@@ -689,6 +707,355 @@ func TestBrokerProvisioningOptions(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl), tc.opts(NewMockUserProvisioner(ctrl))...)
 			tc.assert(t, b, err)
+		})
+	}
+}
+
+// mirrorStored is the stored record of u-1, the user brokerSeededLinks links
+// (corp, s-1) to: display name Alice, hash hashCost12, primary role editor.
+func mirrorStored() *identity.Details {
+	return &identity.Details{
+		ID: "u-1", Username: "alice", Name: "Alice", Password: []byte(hashCost12), Active: true,
+		Roles: []*identity.AssignedRole{{Name: "editor", Primary: true}},
+	}
+}
+
+// mirrorIdentity is the linked corp identity presenting name and hash.
+func mirrorIdentity(name, hash string) oidc.ExternalIdentity {
+	ext := brokerCorpIdentity()
+	ext.Claims = map[string]any{
+		"name":        name,
+		"credentials": map[string]any{"password_hash": hash},
+	}
+	return ext
+}
+
+// errMirrorUpdate is an update error quoting the username and a hash, as a
+// driver's error can.
+var errMirrorUpdate = errors.New("update of alice failed near " + hashCost13)
+
+// Standalone from TestBrokerProvisioning: every row resolves a seeded link with mirroring wired.
+func TestBrokerClaimMirroring(t *testing.T) {
+	t.Parallel()
+
+	mirrorCorp := oidc.WithBrokerClaimMirror("corp", true)
+
+	type testCase struct {
+		name   string
+		opts   []oidc.BrokerOption
+		ext    oidc.ExternalIdentity
+		expect func(prov *MockUserProvisioner)
+		assert func(t *testing.T, p *identity.Principal, err error, logs string)
+	}
+
+	cases := []testCase{
+		{
+			name: "a changed hash is refreshed naming only the password",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext:  mirrorIdentity("Alice", hashCost13),
+			expect: func(prov *MockUserProvisioner) {
+				prov.EXPECT().Update(gomock.Any(), "alice", provisionedWith(identity.WithUserPassword([]byte(hashCost13)))).
+					DoAndReturn(func(_ context.Context, _ string, opts ...identity.UserOption) (*identity.Details, error) {
+						u := identity.ApplyUserOptions(opts...)
+						// The same fact the matcher states, spelled as the spec's IsSet reading.
+						if !u.IsSet(identity.FieldPassword) || u.IsSet(identity.FieldName) {
+							return nil, errors.New("the update named the wrong fields")
+						}
+						d := mirrorStored()
+						d.Password = []byte(hashCost13)
+						return d, nil
+					})
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, logs string) {
+				require.NoError(t, err)
+				assert.Equal(t, identity.UserID("u-1"), p.ID)
+				assert.NotContains(t, logs, "level=ERROR")
+				assert.NotContains(t, logs, hashCost13)
+			},
+		},
+		{
+			name: "a changed display name is refreshed naming only the name",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext:  mirrorIdentity("Alice B.", hashCost12),
+			expect: func(prov *MockUserProvisioner) {
+				prov.EXPECT().Update(gomock.Any(), "alice", provisionedWith(identity.WithUserName("Alice B."))).
+					Return(&identity.Details{ID: "u-1", Username: "alice", Name: "Alice B.", Active: true}, nil)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, "Alice B.", p.Name)
+			},
+		},
+		{
+			name:   "unchanged claims write nothing",
+			opts:   []oidc.BrokerOption{mirrorCorp},
+			ext:    mirrorIdentity("Alice", hashCost12),
+			expect: func(*MockUserProvisioner) {},
+			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, "Alice", p.Name)
+			},
+		},
+		{
+			name: "nothing resolving writes nothing",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext: func() oidc.ExternalIdentity {
+				e := brokerCorpIdentity()
+				e.Claims = map[string]any{}
+				return e
+			}(),
+			expect: func(*MockUserProvisioner) {},
+			assert: func(t *testing.T, _ *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:   "an ignored hash is not mirrored",
+			opts:   []oidc.BrokerOption{mirrorCorp},
+			ext:    mirrorIdentity("Alice", "hunter2"),
+			expect: func(*MockUserProvisioner) {},
+			assert: func(t *testing.T, _ *identity.Principal, err error, logs string) {
+				require.NoError(t, err)
+				assert.NotContains(t, logs, "hunter2")
+			},
+		},
+		{
+			name: "an update failure does not fail the login and is logged scrubbed",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext:  mirrorIdentity("Alice B.", hashCost13),
+			expect: func(prov *MockUserProvisioner) {
+				prov.EXPECT().Update(gomock.Any(), "alice", gomock.Any()).Return(nil, errMirrorUpdate)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, logs string) {
+				require.NoError(t, err)
+				assert.Equal(t, "Alice", p.Name, "the login proceeds with the stored name")
+				require.Len(t, p.Roles, 1, "the login proceeds with the values loaded before the update")
+				assert.Equal(t, "editor", p.Roles[0].Name)
+				require.NotNil(t, p.ActiveRole)
+				assert.Equal(t, "editor", p.ActiveRole.Name)
+				errorLines := linesContaining(logs, "level=ERROR")
+				require.Len(t, errorLines, 1)
+				assert.Contains(t, errorLines[0], "provider=corp")
+				assert.Contains(t, errorLines[0], "update of")
+				assert.NotContains(t, logs, hashCost13)
+				assert.NotContains(t, logs, "alice")
+			},
+		},
+		{
+			name: "an update returning no user does not fail the login",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext:  mirrorIdentity("Alice B.", hashCost12),
+			expect: func(prov *MockUserProvisioner) {
+				prov.EXPECT().Update(gomock.Any(), "alice", gomock.Any()).Return(nil, nil)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, logs string) {
+				require.NoError(t, err)
+				assert.Equal(t, "Alice", p.Name)
+				assert.Len(t, linesContaining(logs, "level=ERROR"), 1)
+			},
+		},
+		{
+			name: "a partial update result does not strip roles",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext:  mirrorIdentity("Alice B.", hashCost12),
+			expect: func(prov *MockUserProvisioner) {
+				prov.EXPECT().Update(gomock.Any(), "alice", gomock.Any()).
+					Return(&identity.Details{ID: "u-1", Username: "alice", Name: "Alice B."}, nil)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, "Alice B.", p.Name)
+				require.Len(t, p.Roles, 1)
+				assert.Equal(t, "editor", p.Roles[0].Name)
+				require.NotNil(t, p.ActiveRole)
+				assert.Equal(t, "editor", p.ActiveRole.Name)
+			},
+		},
+		{
+			name: "only mirrored fields are copied back, whatever the update returned",
+			opts: []oidc.BrokerOption{mirrorCorp},
+			ext:  mirrorIdentity("Alice B.", hashCost12),
+			expect: func(prov *MockUserProvisioner) {
+				prov.EXPECT().Update(gomock.Any(), "alice", gomock.Any()).Return(&identity.Details{
+					ID: "u-2", Username: "mallory", Name: "Someone Else", Active: true,
+					Roles: []*identity.AssignedRole{{Name: "admin", Primary: true, SuperRole: true}},
+				}, nil)
+			},
+			assert: func(t *testing.T, p *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+				assert.Equal(t, identity.UserID("u-1"), p.ID)
+				assert.Equal(t, "alice", p.Username)
+				assert.Equal(t, "Alice B.", p.Name, "the mirrored value, not the returned one")
+				require.Len(t, p.Roles, 1)
+				assert.Equal(t, "editor", p.Roles[0].Name)
+			},
+		},
+		{
+			name:   "mirroring is off by default",
+			ext:    mirrorIdentity("Alice", hashCost13),
+			expect: func(*MockUserProvisioner) {},
+			assert: func(t *testing.T, _ *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:   "mirroring turned off explicitly writes nothing",
+			opts:   []oidc.BrokerOption{oidc.WithBrokerClaimMirror("corp", false)},
+			ext:    mirrorIdentity("Alice B.", hashCost13),
+			expect: func(*MockUserProvisioner) {},
+			assert: func(t *testing.T, _ *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:   "mirroring for another provider does not mirror corp",
+			opts:   []oidc.BrokerOption{oidc.WithBrokerClaimMirror("social", true), oidc.WithBrokerNameClaim("social", "name")},
+			ext:    mirrorIdentity("Alice B.", hashCost13),
+			expect: func(*MockUserProvisioner) {},
+			assert: func(t *testing.T, _ *identity.Principal, err error, _ string) {
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			users := NewMockUserLoader(ctrl)
+			users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(mirrorStored(), nil)
+			prov := NewMockUserProvisioner(ctrl)
+			tc.expect(prov)
+
+			var logs bytes.Buffer
+			opts := append([]oidc.BrokerOption{
+				oidc.WithBrokerProvisioner(prov),
+				oidc.WithBrokerNameClaim("corp", "name"),
+				oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+				oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
+				oidc.WithBrokerLogger(testTextLogger(&logs)),
+			}, tc.opts...)
+			b, err := oidc.NewBroker(brokerSeededLinks(t), users, opts...)
+			require.NoError(t, err)
+
+			p, err := b.Broker(t.Context(), tc.ext)
+			tc.assert(t, p, err, logs.String())
+		})
+	}
+}
+
+// recordedUsers collects what each provisioner call named, so a row can read
+// the options the broker passed rather than trusting a matcher to see them.
+type recordedUsers struct {
+	mu    sync.Mutex
+	users []*identity.UserChange
+}
+
+func (r *recordedUsers) record(opts []identity.UserOption) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.users = append(r.users, identity.ApplyUserOptions(opts...))
+}
+
+func (r *recordedUsers) all() []*identity.UserChange {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]*identity.UserChange(nil), r.users...)
+}
+
+// TestFederatedLoginNeverNamesPasswordChangedAt pins that both federated-login
+// paths that write a mapped password — mirroring onto a linked user, and
+// just-in-time provisioning — name the password alone. A password mirrored on
+// every login must never move the password-changed time, or a user whose
+// identity provider re-sends the same hash would stay fresh forever.
+// Standalone from TestBrokerProvisioning: each row builds its own broker and records every provisioner call.
+func TestFederatedLoginNeverNamesPasswordChangedAt(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// broker builds the broker under test, wiring prov and recording every
+		// provisioner call it expects into rec.
+		broker func(t *testing.T, ctrl *gomock.Controller, prov *MockUserProvisioner, rec *recordedUsers) *oidc.Broker
+		ext    oidc.ExternalIdentity
+		assert func(t *testing.T, err error, got []*identity.UserChange)
+	}
+
+	namesPasswordAlone := func(t *testing.T, err error, got []*identity.UserChange) {
+		t.Helper()
+		require.NoError(t, err)
+		require.Len(t, got, 1, "exactly one provisioner call writes the mapped password")
+		assert.True(t, got[0].IsSet(identity.FieldPassword), "the mapped password is written")
+		assert.False(t, got[0].IsSet(identity.FieldPasswordChangedAt),
+			"a federated login must never name the password-changed time")
+	}
+
+	cases := []testCase{
+		{
+			name: "mirroring a changed hash onto a linked user",
+			broker: func(t *testing.T, ctrl *gomock.Controller, prov *MockUserProvisioner, rec *recordedUsers) *oidc.Broker {
+				users := NewMockUserLoader(ctrl)
+				users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(mirrorStored(), nil)
+				prov.EXPECT().Update(gomock.Any(), "alice", gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, opts ...identity.UserOption) (*identity.Details, error) {
+						rec.record(opts)
+						d := mirrorStored()
+						d.Password = []byte(hashCost13)
+						return d, nil
+					})
+
+				var logs bytes.Buffer
+				b, err := oidc.NewBroker(brokerSeededLinks(t), users,
+					oidc.WithBrokerProvisioner(prov),
+					oidc.WithBrokerClaimMirror("corp", true),
+					oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+					oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
+					oidc.WithBrokerLogger(testTextLogger(&logs)),
+				)
+				require.NoError(t, err)
+				return b
+			},
+			ext:    mirrorIdentity("Alice", hashCost13),
+			assert: namesPasswordAlone,
+		},
+		{
+			name: "just-in-time provisioning with a mapped hash",
+			broker: func(t *testing.T, ctrl *gomock.Controller, prov *MockUserProvisioner, rec *recordedUsers) *oidc.Broker {
+				prov.EXPECT().Provision(gomock.Any(), "bob@corp.example", gomock.Any()).
+					DoAndReturn(func(_ context.Context, username string, opts ...identity.UserOption) (*identity.Details, error) {
+						rec.record(opts)
+						return &identity.Details{ID: "u-9", Username: username, Active: true}, nil
+					})
+
+				var logs bytes.Buffer
+				b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(ctrl),
+					oidc.WithBrokerProvisioner(prov),
+					oidc.WithBrokerJIT("corp"),
+					oidc.WithBrokerPasswordClaim("corp", "credentials.password_hash"),
+					oidc.WithBrokerPasswordEncoder(fastBcryptEncoder(t)),
+					oidc.WithBrokerLogger(testTextLogger(&logs)),
+					oidc.WithBrokerClock(clockwork.NewFakeClockAt(provisionClock)),
+				)
+				require.NoError(t, err)
+				return b
+			},
+			ext:    passwordClaimIdentity("s-1", hashCost12),
+			assert: namesPasswordAlone,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			prov := NewMockUserProvisioner(ctrl)
+			rec := &recordedUsers{}
+			b := tc.broker(t, ctrl, prov, rec)
+
+			_, err := b.Broker(t.Context(), tc.ext)
+			tc.assert(t, err, rec.all())
 		})
 	}
 }

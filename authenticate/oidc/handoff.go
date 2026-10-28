@@ -12,8 +12,10 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
@@ -441,4 +443,209 @@ func (h *Handoff) FlushRefusalLogs() error {
 // store reported. HandoffExpiryTask wraps it as a task.
 func (h *Handoff) PurgeExpired(ctx context.Context) (int, error) {
 	return h.store.DeleteExpired(ctx, h.clock.Now())
+}
+
+// HandoffOption customises a Handoff at construction.
+//
+// Every option replaces a default that already works. An option given nil
+// fails construction with ErrConfig rather than silently keeping the default:
+// a consumer who passed one meant to replace it. A nil option is ignored.
+//
+// There is deliberately no option for the code's lifetime; see HandoffTTL.
+type HandoffOption func(*Handoff) error
+
+// WithHandoffRandom replaces the source the token id and the secret of every
+// code are drawn from. The default is crypto/rand.Reader. A nil reader,
+// including a nil pointer inside a non-nil interface, is refused.
+//
+// It exists so a test can fix or fail the source; production code has no
+// reason to replace it, and a source that is not cryptographically secure
+// makes every code guessable.
+func WithHandoffRandom(r io.Reader) HandoffOption {
+	return func(h *Handoff) error {
+		if nilcheck.IsNil(r) {
+			return fmt.Errorf("%w: WithHandoffRandom was given nil", ErrConfig)
+		}
+		h.random = r
+		return nil
+	}
+}
+
+// WithHandoffClock replaces the clock issuance stamps and redemption judges
+// expiry and consumption by. The default is clock.System(). A nil clock, typed
+// nil included, is a configuration error.
+func WithHandoffClock(clk clock.Clock) HandoffOption {
+	return func(h *Handoff) error {
+		if nilcheck.IsNil(clk) {
+			return fmt.Errorf("%w: WithHandoffClock was given nil", ErrConfig)
+		}
+		h.clock = clk
+		return nil
+	}
+}
+
+// WithHandoffIDGenerator replaces the generator of each handoff record's ID.
+// The default is id.NewV7Generator(). A nil generator, including a nil pointer
+// inside a non-nil interface, is refused.
+//
+// The record ID names the record for the store; it is not part of the code,
+// which carries its own random token id.
+func WithHandoffIDGenerator(g id.Generator) HandoffOption {
+	return func(h *Handoff) error {
+		if nilcheck.IsNil(g) {
+			return fmt.Errorf("%w: WithHandoffIDGenerator was given nil", ErrConfig)
+		}
+		h.ids = g
+		return nil
+	}
+}
+
+// WithHandoffLogger replaces the logger every refused and failed redemption
+// is reported to. The default is slog.Default(). A nil logger is refused.
+//
+// Redemption returns one error whatever went wrong, so this log is the only
+// place the cause appears: a miss, an inactive user or a reference mismatch at
+// DEBUG, a store or loader failure at ERROR. No record carries the code, its
+// secret, the ID token or a claim value.
+func WithHandoffLogger(l *slog.Logger) HandoffOption {
+	return func(h *Handoff) error {
+		if l == nil {
+			return fmt.Errorf("%w: WithHandoffLogger was given nil", ErrConfig)
+		}
+		h.log = l
+		return nil
+	}
+}
+
+// errHandoffTokenIDTaken is returned by MemoryHandoffStore.Insert for a token
+// id it already holds.
+var errHandoffTokenIDTaken = errors.New("oidc: a handoff record with this token id is already stored")
+
+// MemoryHandoffStore keeps handoff codes in process memory. It is the store a
+// consumer passes to NewHandoff when it has no shared one, and it is
+// safe for concurrent use.
+//
+// It is not durable and not shared: a code issued by one process cannot be
+// redeemed by another, and a restart forgets every code. A deployment of
+// several instances, where the callback and the redemption may land on
+// different ones, supplies a shared HandoffStore instead.
+//
+// Nothing purges it on a timer. Expired records stay until DeleteExpired is
+// called; an expired record that is still held is never honoured, because
+// Handoff judges expiry at every redemption.
+type MemoryHandoffStore struct {
+	mu      sync.Mutex
+	records map[string]HandoffRecord
+}
+
+// NewMemoryHandoffStore returns an empty in-memory handoff store.
+//
+// DeleteExpired judges expiry against the cutoff it is given, never against a
+// clock of its own, matching HandoffStore's contract, so the store has no
+// clock to configure.
+func NewMemoryHandoffStore() *MemoryHandoffStore {
+	return &MemoryHandoffStore{records: make(map[string]HandoffRecord)}
+}
+
+// copyHandoffRecord returns a record that shares no memory with rec, so
+// neither a caller wiping the buffer it inserted nor one writing to what it
+// read back can change what the store holds.
+func copyHandoffRecord(rec HandoffRecord) HandoffRecord {
+	rec.SecretHash = slices.Clone(rec.SecretHash)
+	rec.AMR = slices.Clone(rec.AMR)
+	if rec.ConsumedAt != nil {
+		at := *rec.ConsumedAt
+		rec.ConsumedAt = &at
+	}
+
+	return rec
+}
+
+// Insert stores rec. A token id the store already holds is refused rather than
+// overwritten: replacing a record would invalidate a code already in a
+// holder's hands.
+func (s *MemoryHandoffStore) Insert(_ context.Context, rec HandoffRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, taken := s.records[rec.TokenID]; taken {
+		return errHandoffTokenIDTaken
+	}
+	s.records[rec.TokenID] = copyHandoffRecord(rec)
+
+	return nil
+}
+
+// FindByTokenID returns a copy of the record, or ErrHandoffNotFound.
+func (s *MemoryHandoffStore) FindByTokenID(_ context.Context, tokenID string) (*HandoffRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[tokenID]
+	if !found {
+		return nil, ErrHandoffNotFound
+	}
+	out := copyHandoffRecord(rec)
+
+	return &out, nil
+}
+
+// Consume marks the record consumed at the given time, and succeeds only while
+// it is unconsumed.
+//
+// The test and the write happen under one lock, so of several callers racing
+// on one code exactly one succeeds. A missing record and a consumed one are the
+// same ErrHandoffNotFound.
+func (s *MemoryHandoffStore) Consume(_ context.Context, tokenID string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, found := s.records[tokenID]
+	if !found || rec.ConsumedAt != nil {
+		return ErrHandoffNotFound
+	}
+	rec.ConsumedAt = &at
+	s.records[tokenID] = rec
+
+	return nil
+}
+
+// DeleteExpired removes the records whose expiry is before the cutoff, and
+// returns how many it removed. It judges expiry against the given cutoff
+// alone, never the store's own clock, matching HandoffStore's contract.
+//
+// A zero cutoff is refused with ErrRetainSinceRequired and nothing is removed:
+// the zero time is what a caller who forgot to compute a cutoff passes.
+func (s *MemoryHandoffStore) DeleteExpired(_ context.Context, before time.Time) (int, error) {
+	if before.IsZero() {
+		return 0, ErrRetainSinceRequired
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var removed int
+	for key, rec := range s.records {
+		if !rec.ExpiresAt.Before(before) {
+			continue
+		}
+		delete(s.records, key)
+		removed++
+	}
+
+	return removed, nil
+}
+
+var _ HandoffStore = (*MemoryHandoffStore)(nil)
+
+// HandoffExpiryTask returns the task that deletes h's expired handoff records,
+// spent or not, through h.PurgeExpired.
+//
+// The task is named "oidc-handoffs"; a consumer renames
+// it by setting Name on the returned value. It sets no Interval, because only
+// the deployment knows its cadence, and it accepts no cutoff: the manager uses
+// its own clock's now. It never deletes a code that has not expired, and it
+// never touches OIDC links, sessions or identity records.
+func HandoffExpiryTask(h *Handoff) expiry.Task {
+	return expiry.Task{Name: "oidc-handoffs", Run: h.PurgeExpired}
 }

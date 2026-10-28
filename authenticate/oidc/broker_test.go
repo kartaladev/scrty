@@ -5,6 +5,7 @@ package oidc_test
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,28 +31,6 @@ const (
 	brokerCorpIssuer   = "https://corp.example"
 	brokerSocialIssuer = "https://social.example"
 )
-
-// brokerCorpIdentity is the verified identity linked to u-1 in every
-// linked-resolution row.
-func brokerCorpIdentity() oidc.ExternalIdentity {
-	return oidc.ExternalIdentity{
-		Provider: "corp", Issuer: brokerCorpIssuer, Subject: "s-1",
-		Email: "alice@corp.example", EmailVerified: true,
-	}
-}
-
-// brokerSeededLinks returns a memory link store holding (corp, corp issuer,
-// s-1) → u-1 / alice.
-func brokerSeededLinks(t *testing.T) *oidc.MemoryLinkStore {
-	t.Helper()
-
-	s := oidc.NewMemoryLinkStore()
-	require.NoError(t, s.Insert(t.Context(), oidc.Link{
-		Provider: "corp", Issuer: brokerCorpIssuer, Subject: "s-1",
-		UserID: "u-1", Username: "alice", Email: "alice@corp.example",
-	}))
-	return s
-}
 
 func TestBrokerLinkedResolution(t *testing.T) {
 	t.Parallel()
@@ -235,12 +214,8 @@ func TestBrokerLinkedResolution(t *testing.T) {
 	}
 }
 
-var (
-	// errDBDown is a loader outage.
-	errDBDown = errors.New("db down")
-	// errIdentifyingLoad is a loader error whose text names the identity.
-	errIdentifyingLoad = errors.New("row locked: (s-1, alice@corp.example, alice)")
-)
+// errIdentifyingLoad is a loader error whose text names the identity.
+var errIdentifyingLoad = errors.New("row locked: (s-1, alice@corp.example, alice)")
 
 func TestNewBroker(t *testing.T) {
 	t.Parallel()
@@ -368,3 +343,110 @@ func TestNewBroker(t *testing.T) {
 
 // brokerLinksMarker is a link store whose identity a test compares.
 var brokerLinksMarker = oidc.NewMemoryLinkStore()
+
+// TestBrokerFlushRefusalLogs pins spec oidc-login "OIDC components flush
+// their refusal logs" for the identity broker: FlushRefusalLogs reports what
+// its sampler is holding back, reports nothing when there is nothing
+// pending, and leaves the broker usable afterward.
+func TestBrokerFlushRefusalLogs(t *testing.T) {
+	t.Parallel()
+
+	// buildBroker returns a broker with no links seeded and no provisioning
+	// enabled, so every Broker call for corpIdentity refuses with the same
+	// reason, and the identity itself, under one sampling key. The clock
+	// never advances, so repeated refusals land in the same window.
+	buildBroker := func(t *testing.T) (b *oidc.Broker, ext oidc.ExternalIdentity, logs *bytes.Buffer) {
+		t.Helper()
+
+		logs = &bytes.Buffer{}
+		b, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(gomock.NewController(t)),
+			oidc.WithBrokerClock(flushFixedClock()), oidc.WithBrokerLogger(testTextLogger(logs)))
+		require.NoError(t, err)
+
+		return b, brokerCorpIdentity(), logs
+	}
+
+	refuse := func(t *testing.T, b *oidc.Broker, ext oidc.ExternalIdentity) {
+		t.Helper()
+
+		_, err := b.Broker(t.Context(), ext)
+		require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
+	}
+
+	refuseThrice := func(t *testing.T, b *oidc.Broker, ext oidc.ExternalIdentity) {
+		t.Helper()
+		for range 3 {
+			refuse(t, b, ext)
+		}
+	}
+
+	type testCase struct {
+		name string
+		act  func(t *testing.T, b *oidc.Broker, ext oidc.ExternalIdentity)
+
+		// afterFlush runs after FlushRefusalLogs, only for the row proving the
+		// broker still works afterward; nil for every other row.
+		afterFlush func(t *testing.T, b *oidc.Broker, ext oidc.ExternalIdentity)
+
+		assert func(t *testing.T, err error, logs string)
+	}
+
+	cases := []testCase{
+		{
+			name: "records suppressed within a window are reported by the flush with their count",
+			act:  refuseThrice,
+			assert: func(t *testing.T, err error, logs string) {
+				require.NoError(t, err)
+
+				sums := flushSummaries(t, logs, "oidc broker refusals suppressed")
+				require.Len(t, sums, 1, "three refusals of one reason must flush to exactly one summary record")
+				assert.Equal(t, 2, sums[0], "the first refusal was already written; the flush owes the other two")
+			},
+		},
+		{
+			name: "a flush with nothing pending reports nothing",
+			act:  func(*testing.T, *oidc.Broker, oidc.ExternalIdentity) {},
+			assert: func(t *testing.T, err error, logs string) {
+				require.NoError(t, err)
+				assert.Empty(t, flushSummaries(t, logs, "oidc broker refusals suppressed"))
+			},
+		},
+		{
+			name: "the component still works after a flush",
+			act:  refuseThrice,
+			afterFlush: func(t *testing.T, b *oidc.Broker, ext oidc.ExternalIdentity) {
+				t.Helper()
+
+				// The flush forgot the key, so a refusal for the same reason
+				// afterward is written again, not held back.
+				refuse(t, b, ext)
+			},
+			assert: func(t *testing.T, err error, logs string) {
+				require.NoError(t, err)
+
+				sums := flushSummaries(t, logs, "oidc broker refusals suppressed")
+				require.Len(t, sums, 1)
+				assert.Equal(t, 2, sums[0])
+
+				assert.Equal(t, 2, strings.Count(logs, `msg="oidc: no link for the external identity"`),
+					"the refusal after the flush must be written again, not suppressed")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b, ext, logs := buildBroker(t)
+			tc.act(t, b, ext)
+			err := b.FlushRefusalLogs()
+
+			if tc.afterFlush != nil {
+				tc.afterFlush(t, b, ext)
+			}
+
+			tc.assert(t, err, logs.String())
+		})
+	}
+}

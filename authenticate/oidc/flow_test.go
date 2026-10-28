@@ -1,6 +1,7 @@
 package oidc_test
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"testing"
@@ -9,8 +10,10 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/expiry"
 )
 
 // flowStoreStart is the clock every flow store case begins at.
@@ -310,14 +313,6 @@ func TestMemoryFlowStoreOptions(t *testing.T) {
 	}
 }
 
-// errFlowRandom is what errReader fails with.
-var errFlowRandom = errors.New("random source failed")
-
-// errReader is a random source that always fails.
-type errReader struct{}
-
-func (errReader) Read([]byte) (int, error) { return 0, errFlowRandom }
-
 // zeroReader is a random source that yields only zero bytes, so every handle
 // it draws is the same.
 type zeroReader struct{}
@@ -367,4 +362,99 @@ func TestMemoryFlowStoreRacingComplete(t *testing.T) {
 	}
 	assert.Equal(t, 1, won, "exactly one racing completion may succeed")
 	assert.Equal(t, flowStoreRacers-1, lost)
+}
+
+// flowExpiryManager returns a login manager over flows, reading time from clk.
+func flowExpiryManager(t *testing.T, flows oidc.FlowStore, clk clockwork.Clock) *oidc.RelyingParty {
+	t.Helper()
+
+	reg, err := oidc.NewRegistry(newTestProvider(t).Provider("corp"))
+	require.NoError(t, err)
+	m, err := oidc.NewRelyingParty(reg, stubBroker{}, oidc.WithClock(clk), oidc.WithFlowStore(flows))
+	require.NoError(t, err)
+
+	return m
+}
+
+func TestFlowExpiryTask(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name string
+		// task builds the task under test, seeding whatever it sweeps, and
+		// returns a check of what is left after the run.
+		task   func(t *testing.T, ctx context.Context) (expiry.Task, func(t *testing.T))
+		assert func(t *testing.T, task expiry.Task, removed int, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "flows: the expired flow goes and the live one stays",
+			task: func(t *testing.T, ctx context.Context) (expiry.Task, func(t *testing.T)) {
+				clk := clockwork.NewFakeClockAt(expiryT0)
+				flows, err := oidc.NewMemoryFlowStore(oidc.WithMemoryFlowStoreClock(clk))
+				require.NoError(t, err)
+				_, err = flows.Begin(ctx, oidc.Flow{Provider: "corp", State: "s-old", ExpiresAt: expiryT0.Add(time.Minute)})
+				require.NoError(t, err)
+				live, err := flows.Begin(ctx, oidc.Flow{Provider: "corp", State: "s-live", ExpiresAt: expiryT0.Add(time.Hour)})
+				require.NoError(t, err)
+				m := flowExpiryManager(t, flows, clk)
+				clk.Advance(10 * time.Minute)
+
+				return oidc.FlowExpiryTask(m), func(t *testing.T) {
+					_, err := flows.Complete(ctx, live, "corp", "s-live")
+					assert.NoError(t, err, "the live flow must survive the sweep")
+				}
+			},
+			assert: func(t *testing.T, task expiry.Task, removed int, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 1, removed)
+				assert.Equal(t, "oidc-flows", task.Name)
+				assert.Zero(t, task.Interval)
+			},
+		},
+		{
+			name: "flows: the cutoff is the manager's own now",
+			task: func(t *testing.T, _ context.Context) (expiry.Task, func(t *testing.T)) {
+				clk := clockwork.NewFakeClockAt(expiryT0)
+				flows := NewMockFlowStore(gomock.NewController(t))
+				flows.EXPECT().DeleteExpired(gomock.Any(), expiryT0.Add(time.Hour)).Return(4, nil)
+				m := flowExpiryManager(t, flows, clk)
+				clk.Advance(time.Hour)
+
+				return oidc.FlowExpiryTask(m), func(*testing.T) {}
+			},
+			assert: func(t *testing.T, _ expiry.Task, removed int, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 4, removed)
+			},
+		},
+		{
+			name: "flows: a store error is returned with the count",
+			task: func(t *testing.T, _ context.Context) (expiry.Task, func(t *testing.T)) {
+				flows := NewMockFlowStore(gomock.NewController(t))
+				flows.EXPECT().DeleteExpired(gomock.Any(), gomock.Any()).Return(2, errExpiryStore)
+
+				return oidc.FlowExpiryTask(flowExpiryManager(t, flows, clockwork.NewFakeClockAt(expiryT0))), func(*testing.T) {}
+			},
+			assert: func(t *testing.T, _ expiry.Task, removed int, err error) {
+				require.ErrorIs(t, err, errExpiryStore)
+				assert.Equal(t, 2, removed)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			task, after := tc.task(t, ctx)
+			require.NotNil(t, task.Run, "the task must have a Run")
+
+			removed, err := task.Run(ctx)
+			tc.assert(t, task, removed, err)
+			after(t)
+		})
+	}
 }

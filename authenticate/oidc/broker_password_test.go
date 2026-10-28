@@ -3,7 +3,6 @@ package oidc_test
 import (
 	"bytes"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/jonboulle/clockwork"
@@ -16,42 +15,6 @@ import (
 	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
 )
-
-// bcryptShapedHash returns a well-formed bcrypt hash string at cost, whose
-// 53-character salt-and-digest is fill repeated. bcrypt.Cost reads only the
-// prefix, so the digest need not verify anything.
-func bcryptShapedHash(cost string, fill byte) string {
-	return "$2a$" + cost + "$" + strings.Repeat(string(fill), 53)
-}
-
-// Hashes the password-claim rows present. They are distinct so a row can tell
-// which one reached a call or a log.
-var (
-	hashCost12 = bcryptShapedHash("12", 'a')
-	hashCost04 = bcryptShapedHash("04", 'b')
-	hashCost31 = bcryptShapedHash("31", 'c')
-	hashCost13 = bcryptShapedHash("13", 'd')
-)
-
-// fastBcryptEncoder returns a real bcrypt encoder at the password package's
-// floor, cost 10, which keeps the construction probe cheap.
-func fastBcryptEncoder(t *testing.T) password.Encoder {
-	t.Helper()
-	enc, err := password.NewBcryptEncoder(password.WithBcryptCost(10))
-	require.NoError(t, err)
-	return enc
-}
-
-// passwordClaimIdentity is an unlinked, verified corp identity carrying hash
-// at credentials.password_hash, or no such claim when hash is nil.
-func passwordClaimIdentity(subject string, hash any) oidc.ExternalIdentity {
-	ext := provisionIdentity("corp", "bob@corp.example")
-	ext.Subject = subject
-	if hash != nil {
-		ext.Claims = map[string]any{"credentials": map[string]any{"password_hash": hash}}
-	}
-	return ext
-}
 
 // provisionedWithHash matches the Provision options of an email-named corp
 // user, with hash as its password when hash is not empty.
@@ -271,17 +234,6 @@ func TestBrokerPasswordClaim(t *testing.T) {
 // errHashInProvision is a provisioner error whose text quotes a mapped hash,
 // as a driver's scan error can.
 var errHashInProvision = errors.New("scan failed on password " + hashCost12)
-
-// linesContaining returns the lines of logs that contain s.
-func linesContaining(logs, s string) []string {
-	var out []string
-	for line := range strings.SplitSeq(logs, "\n") {
-		if strings.Contains(line, s) {
-			out = append(out, line)
-		}
-	}
-	return out
-}
 
 func TestBrokerPasswordClaimOptions(t *testing.T) {
 	t.Parallel()

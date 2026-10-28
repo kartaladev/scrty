@@ -2,9 +2,10 @@ package oidc_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
+	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,14 +19,6 @@ import (
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/pkg/clock"
 )
-
-// stubBroker resolves every identity to one fixed principal. Where a test must
-// verify calls, it uses the generated MockIdentityBroker instead.
-type stubBroker struct{}
-
-func (stubBroker) Broker(context.Context, oidc.ExternalIdentity) (*identity.Principal, error) {
-	return &identity.Principal{ID: "user-1"}, nil
-}
 
 // scopedStubBroker is a broker whose options name providers, as the library's
 // own broker does when provisioning or role derivation is configured.
@@ -53,6 +46,8 @@ func TestNewManagerOptions(t *testing.T) {
 	p := newTestProvider(t)
 	second := p.Provider("partner")
 	reg, err := oidc.NewRegistry(p.Provider("corp"), second)
+	require.NoError(t, err)
+	cacheReg, err := oidc.NewRegistry(p.Provider("corp"))
 	require.NoError(t, err)
 
 	links := NewMockLinkStore(gomock.NewController(t))
@@ -110,6 +105,11 @@ func TestNewManagerOptions(t *testing.T) {
 			}
 		}
 	}
+
+	// cacheRefused and cacheAccepted judge the discovery and key-set cache
+	// options, given alone against a corp-only registry.
+	cacheRefused := func(t *testing.T, _ *oidc.RelyingParty, err error) { require.ErrorIs(t, err, oidc.ErrConfig) }
+	cacheAccepted := func(t *testing.T, _ *oidc.RelyingParty, err error) { require.NoError(t, err) }
 
 	cases := []testCase{
 		{name: "defaults construct with no options", registry: reg, broker: stubBroker{},
@@ -342,6 +342,19 @@ func TestNewManagerOptions(t *testing.T) {
 				require.NoError(t, err)
 				assert.NotNil(t, m)
 			}},
+		{name: "a zero TTL is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryTTL(0)}, assert: cacheRefused},
+		{name: "a negative TTL is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryTTL(-time.Minute)}, assert: cacheRefused},
+		{name: "a positive TTL is accepted", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryTTL(time.Hour)}, assert: cacheAccepted},
+		{name: "a zero backoff base is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryFailureBackoff(0, time.Second)}, assert: cacheRefused},
+		{name: "a negative backoff base is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryFailureBackoff(-time.Second, time.Second)}, assert: cacheRefused},
+		{name: "a backoff cap below the base is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryFailureBackoff(2*time.Second, time.Second)}, assert: cacheRefused},
+		{name: "a zero cooldown is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithJWKSRefetchCooldown(0)}, assert: cacheRefused},
+		{name: "a negative cooldown is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithJWKSRefetchCooldown(-time.Second)}, assert: cacheRefused},
+		{name: "a positive cooldown is accepted", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithJWKSRefetchCooldown(time.Minute)}, assert: cacheAccepted},
+		{name: "a negative stale window is refused", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryStaleWhileError(-time.Second)}, assert: cacheRefused},
+		{name: "a zero stale window is accepted", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryStaleWhileError(0)}, assert: cacheAccepted},
+		{name: "a positive stale window is accepted", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryStaleWhileError(time.Minute)}, assert: cacheAccepted},
+		{name: "a backoff cap equal to the base is accepted", registry: cacheReg, broker: stubBroker{}, opts: []oidc.Option{oidc.WithDiscoveryFailureBackoff(time.Second, time.Second)}, assert: cacheAccepted},
 	}
 
 	for _, tc := range cases {
@@ -369,13 +382,177 @@ func TestManagerProvidersIsTheCallersCopy(t *testing.T) {
 	assert.Equal(t, []string{"corp"}, m.Providers())
 }
 
-// nilClock is a consumer's clock type; (*nilClock)(nil) is the typed nil an
-// unchecked constructor error hands over.
-type nilClock struct{}
+// flushProvider is a minimal, statically valid provider: nothing in these
+// tests ever reaches discovery or the network.
+func flushProvider() oidc.Provider {
+	return oidc.Provider{
+		Name: "corp", Issuer: "https://idp.example",
+		ClientID: "client-corp", ClientSecret: "secret-corp",
+		RedirectURL: "https://app.example/callback",
+	}
+}
 
-func (*nilClock) Now() time.Time { return time.Time{} }
+// TestManagerFlushRefusalLogs pins spec oidc-login scenario "Manager flushes
+// its broker": flushing the manager reports its own pending count and, when
+// its broker can flush, the broker's; a broker that cannot flush is skipped
+// without error.
+func TestManagerFlushRefusalLogs(t *testing.T) {
+	t.Parallel()
 
-// fixedClock is a consumer's own clock with only Now.
-type fixedClock struct{ at time.Time }
+	// flowFault is a flow-store failure the manager's own sampler records
+	// (logCallbackFailure), unlike ErrInvalidState, which is never logged.
+	flowFault := errors.New("oidc_test: flow store fault fixture")
 
-func (c fixedClock) Now() time.Time { return c.at }
+	type testCase struct {
+		name  string
+		build func(t *testing.T) (m *oidc.RelyingParty, logs *bytes.Buffer)
+
+		// afterFlush runs after FlushRefusalLogs, only for the row proving the
+		// manager still works afterward; nil for every other row.
+		afterFlush func(t *testing.T, m *oidc.RelyingParty)
+
+		assert func(t *testing.T, err error, logs string)
+	}
+
+	cases := []testCase{
+		{
+			name: "the manager's own pending count is reported",
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
+				t.Helper()
+
+				logs := &bytes.Buffer{}
+				reg, err := oidc.NewRegistry(flushProvider())
+				require.NoError(t, err)
+
+				flows := NewMockFlowStore(gomock.NewController(t))
+				flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(oidc.Flow{}, flowFault).Times(3)
+
+				m, err := oidc.NewRelyingParty(reg, NewMockIdentityBroker(gomock.NewController(t)),
+					oidc.WithFlowStore(flows), oidc.WithClock(flushFixedClock()), oidc.WithLogger(testTextLogger(logs)))
+				require.NoError(t, err)
+
+				for range 3 {
+					_, err := m.Callback(t.Context(), "corp", "the-code", "the-state", "the-handle")
+					require.Error(t, err)
+				}
+
+				return m, logs
+			},
+			assert: func(t *testing.T, err error, logs string) {
+				require.NoError(t, err)
+
+				sums := flushSummaries(t, logs, "oidc refusals suppressed")
+				require.Len(t, sums, 1, "three refusals of one reason must flush to exactly one summary record")
+				assert.Equal(t, 2, sums[0], "the first refusal was already written; the flush owes the other two")
+			},
+		},
+		{
+			name: "a broker's pending count is reached through the manager",
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
+				t.Helper()
+
+				brokerLogs := &bytes.Buffer{}
+				broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), NewMockUserLoader(gomock.NewController(t)),
+					oidc.WithBrokerClock(flushFixedClock()), oidc.WithBrokerLogger(testTextLogger(brokerLogs)))
+				require.NoError(t, err)
+
+				ext := brokerCorpIdentity()
+				for range 3 {
+					_, err := broker.Broker(t.Context(), ext)
+					require.ErrorIs(t, err, oidc.ErrNoLinkedAccount)
+				}
+
+				reg, err := oidc.NewRegistry(flushProvider())
+				require.NoError(t, err)
+				m, err := oidc.NewRelyingParty(reg, broker)
+				require.NoError(t, err)
+
+				return m, brokerLogs
+			},
+			assert: func(t *testing.T, err error, logs string) {
+				require.NoError(t, err)
+
+				sums := flushSummaries(t, logs, "oidc broker refusals suppressed")
+				require.Len(t, sums, 1, "the manager must reach its broker's flush")
+				assert.Equal(t, 2, sums[0])
+			},
+		},
+		{
+			name: "a consumer broker without a flush is skipped without error",
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
+				t.Helper()
+
+				reg, err := oidc.NewRegistry(flushProvider())
+				require.NoError(t, err)
+
+				m, err := oidc.NewRelyingParty(reg, NewMockIdentityBroker(gomock.NewController(t)))
+				require.NoError(t, err)
+
+				return m, &bytes.Buffer{}
+			},
+			assert: func(t *testing.T, err error, _ string) {
+				require.NoError(t, err, "a broker with no flush of its own must not turn the manager's flush into an error")
+			},
+		},
+		{
+			name: "the manager still works after a flush",
+			build: func(t *testing.T) (*oidc.RelyingParty, *bytes.Buffer) {
+				t.Helper()
+
+				logs := &bytes.Buffer{}
+				reg, err := oidc.NewRegistry(flushProvider())
+				require.NoError(t, err)
+
+				flows := NewMockFlowStore(gomock.NewController(t))
+				flows.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(oidc.Flow{}, flowFault).Times(4)
+
+				m, err := oidc.NewRelyingParty(reg, NewMockIdentityBroker(gomock.NewController(t)),
+					oidc.WithFlowStore(flows), oidc.WithClock(flushFixedClock()), oidc.WithLogger(testTextLogger(logs)))
+				require.NoError(t, err)
+
+				for range 3 {
+					_, err := m.Callback(t.Context(), "corp", "the-code", "the-state", "the-handle")
+					require.Error(t, err)
+				}
+
+				return m, logs
+			},
+			afterFlush: func(t *testing.T, m *oidc.RelyingParty) {
+				t.Helper()
+
+				// One more callback failure of the same reason, after the
+				// flush, must be written again rather than counted as still
+				// suppressed.
+				_, err := m.Callback(t.Context(), "corp", "the-code", "the-state", "the-handle")
+				require.Error(t, err)
+			},
+			assert: func(t *testing.T, err error, logs string) {
+				require.NoError(t, err)
+
+				sums := flushSummaries(t, logs, "oidc refusals suppressed")
+				require.Len(t, sums, 1)
+				assert.Equal(t, 2, sums[0])
+
+				assert.Equal(t, 2, strings.Count(logs, `msg="oidc callback failed"`),
+					"the refusal after the flush must be written again, not suppressed")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m, logs := tc.build(t)
+			err := m.FlushRefusalLogs()
+
+			if tc.afterFlush != nil {
+				tc.afterFlush(t, m)
+			}
+
+			tc.assert(t, err, logs.String())
+		})
+	}
+}
