@@ -1,0 +1,15 @@
+Client
+DefaultMaxRedirects
+DefaultMaxResponseBytes
+DefaultTimeout
+ErrConfig
+ErrRefused
+New
+Option
+Response
+WithAllowedOrigins
+WithAllowedSchemes
+WithHTTPClient
+WithMaxRedirects
+WithMaxResponseBytes
+WithTimeout

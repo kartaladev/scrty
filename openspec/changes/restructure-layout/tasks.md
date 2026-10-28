@@ -4,9 +4,9 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 
 ## 1. Baseline and evidence
 
-- [ ] 1.1 Start a fresh working branch from an up-to-date `main`, which already has `fix/stabilize-intermittent-tests` merged and archived. Confirm that no other change is being implemented on another branch. Verify: `openspec list` no longer shows `stabilize-intermittent-tests`, and `make check` passes locally (everything but the Docker suites).
-- [ ] 1.2 Confirm the `apidiff` invocation: install it in a scratch location, and run it once on an unchanged package against itself. Verify: the command and its empty report are recorded in `evidence/README.md`. This settles the invocation that `design.md` (D13) left to implementation.
-- [ ] 1.3 Capture the D13 baseline into `evidence/baseline/`:
+- [x] 1.1 Start a fresh working branch from an up-to-date `main`, which already has `fix/stabilize-intermittent-tests` merged and archived. Confirm that no other change is being implemented on another branch. Verify: `openspec list` no longer shows `stabilize-intermittent-tests`, and `make check` passes locally (everything but the Docker suites).
+- [x] 1.2 Confirm the `apidiff` invocation: install it in a scratch location, and run it once on an unchanged package against itself. Verify: the command and its empty report are recorded in `evidence/README.md`. This settles the invocation that `design.md` (D13) left to implementation.
+- [x] 1.3 Capture the D13 baseline into `evidence/baseline/`:
   - the test and subtest inventory, with results, from `go test -json` over the core and nested modules;
   - `go test -list` output for the test module;
   - per-package coverage;
@@ -14,7 +14,7 @@ Test-first applies to every task that adds or changes behaviour that a test can 
   - the declaration inventory of D13: every top-level declaration, exported or not, in every non-generated production file, with its package and kind, and every `//go:embed` pattern.
 
   Verify: each file exists, and its counts are recorded in `evidence/README.md`.
-- [ ] 1.4 Write `evidence/rename-map.tsv`, mapping every old import path and exported identifier to its new one, from `design.md` D1, D3 and D8–D10. Write `evidence/check.sh`, which compares a fresh inventory with the baseline through the map, for tests, API, declarations and coverage. The only absences it allows are the D5 copies, each mapped to its `storekit` successor. Verify: `check.sh` against the unchanged tree reports no difference, and it reports a declaration deleted from a scratch copy of one file, which is then restored by editing.
+- [x] 1.4 Write `evidence/rename-map.tsv`, mapping every old import path and exported identifier to its new one, from `design.md` D1, D3 and D8–D10. Write `evidence/check.sh`, which compares a fresh inventory with the baseline through the map, for tests, API, declarations and coverage. The only absences it allows are the D5 copies, each mapped to its `storekit` successor. Verify: `check.sh` against the unchanged tree reports no difference, and it reports a declaration deleted from a scratch copy of one file, which is then restored by editing.
 
 ## 2. Phase 1: module and directory moves (D1–D4)
 
