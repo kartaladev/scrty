@@ -91,7 +91,7 @@ Each task below is one parallel lane that owns only the packages it names. Each 
 ## 7. Final integration
 
 - [x] 7.1 Run the whole-branch review against the `module-layout` delta and every decision D1–D13. Verify: a clean review, with every finding resolved.
-- [ ] 7.2 Run `evidence/check.sh` for the whole branch against the group-1 baseline, run `openspec validate restructure-layout --strict`, and confirm CI is green on the final head, including the Docker suites. Verify: no unmapped difference, a valid change, and a green CI run.
+- [x] 7.2 Run `evidence/check.sh` for the whole branch against the group-1 baseline, run `openspec validate restructure-layout --strict`, and confirm CI is green on the final head, including the Docker suites. Verify: no unmapped difference, a valid change, and a green CI run.
 
 ## Workflow follow-up
 
