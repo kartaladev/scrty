@@ -27,50 +27,10 @@ import (
 // maxPasswordAge is the age the stand-in password-age gate challenges beyond.
 const maxPasswordAge = 90 * 24 * time.Hour
 
-func testPrincipal() *identity.Principal {
-	return &identity.Principal{ID: "u-1", Username: "ada", Name: "Ada Lovelace"}
-}
-
-// policyAnswering is a policy that gives one fixed answer in the
-// post-authentication phase, which is how a test says what the phase decided
-// without writing a rule of its own.
-func policyAnswering(t *testing.T, d policy.Decision) policy.Policy {
-	t.Helper()
-
-	p := NewMockPolicy(gomock.NewController(t))
-	p.EXPECT().Name().Return("test: fixed answer").AnyTimes()
-	p.EXPECT().Phases().Return([]policy.Phase{policy.PostAuthentication}).AnyTimes()
-	p.EXPECT().Evaluate(gomock.Any(), gomock.Any()).Return(d).AnyTimes()
-
-	return p
-}
-
-func engineOf(t *testing.T, policies ...policy.Policy) *policy.Engine {
-	t.Helper()
-
-	e, err := policy.NewEngine(policies...)
-	require.NoError(t, err)
-
-	return e
-}
-
 func allowingEngine(t *testing.T) *policy.Engine {
 	t.Helper()
 
 	return engineOf(t, policyAnswering(t, policy.Decision{Outcome: policy.Allow}))
-}
-
-func denyingEngine(t *testing.T, reason error) *policy.Engine {
-	t.Helper()
-
-	return engineOf(t, policyAnswering(t, policy.Decision{Outcome: policy.Deny, Reason: reason}))
-}
-
-func challengingEngine(t *testing.T, kind policy.ChallengeKind) *policy.Engine {
-	t.Helper()
-
-	return engineOf(t, policyAnswering(t,
-		policy.Decision{Outcome: policy.Challenge, Challenge: kind}))
 }
 
 // passwordAgeGate stands in for the rule a deployment writes against a stale
@@ -195,28 +155,6 @@ func TestPostAuthenticationInput(t *testing.T) {
 			tc.assert(t, in, d)
 		})
 	}
-}
-
-// callLog records the order the login tail's dependencies were called in. The
-// order is the whole point of the seam, so the tests pin it rather than the
-// outcome alone.
-type callLog struct {
-	mu    sync.Mutex
-	calls []string
-}
-
-func (l *callLog) add(name string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	l.calls = append(l.calls, name)
-}
-
-func (l *callLog) all() []string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	return append([]string(nil), l.calls...)
 }
 
 // loginSpies is the store and the token generator the login tail is wired to,
@@ -827,6 +765,163 @@ func TestCompleteLoginMFAMethods(t *testing.T) {
 			require.NoError(t, err)
 
 			tc.assert(t, serve(t, chain, formRequest(t.Context(), "/login", "username=ada&password=s3cret")))
+		})
+	}
+}
+
+// TestCompleteLogin_Proof pins that the login tail records a second factor met
+// at the first factor: a login carrying the library's holding proof creates
+// its session satisfied, in the creating write, and still owes any other
+// challenge the phase raises; a login carrying none behaves as it always did.
+//
+// Not rows of TestCompleteLogin: each case builds a real MFA policy over method lookups.
+func TestCompleteLogin_Proof(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+
+	type written struct {
+		created *session.Session
+		saved   *session.Session
+	}
+
+	type testCase struct {
+		name string
+		// proof is whether the input carries a holding proof.
+		proof bool
+		// passwordAge adds the password-age policy and a stale password.
+		passwordAge bool
+		// totpEnrolled enrols the user on TOTP besides their passkey.
+		totpEnrolled bool
+		assert       func(t *testing.T, tok string, err error, w written)
+	}
+
+	cases := []testCase{
+		{
+			name:  "satisfied at creation",
+			proof: true,
+			assert: func(t *testing.T, tok string, err error, w written) {
+				require.NoError(t, err, "the second factor was met at the first, so no challenge is owed")
+				assert.Equal(t, "issued-token", tok)
+
+				require.NotNil(t, w.created)
+				assert.Equal(t, session.MFASatisfied, w.created.MFA,
+					"satisfied in the creating write, never briefly unsatisfied")
+				assert.True(t, w.created.MFAAtFirstFactor)
+				assert.True(t, w.created.MFASatisfiedAt.Equal(w.created.CreatedAt))
+				assert.Equal(t, factor.Passkey, w.created.FirstFactor)
+				assert.Nil(t, w.saved, "nothing is saved after the creating write")
+			},
+		},
+		{
+			name:        "password-change still challenges",
+			proof:       true,
+			passwordAge: true,
+			assert: func(t *testing.T, tok string, err error, w written) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, err, &ch)
+				assert.Equal(t, policy.ChallengePasswordChange, ch.Kind)
+				assert.Equal(t, "issued-token", tok)
+
+				require.NotNil(t, w.created)
+				assert.Equal(t, session.MFASatisfied, w.created.MFA)
+
+				require.NotNil(t, w.saved, "the challenge is marked and saved")
+				assert.Equal(t, session.MFASatisfied, w.saved.MFA)
+				assert.True(t, w.saved.MFAAtFirstFactor)
+				assert.True(t, w.saved.PasswordChangePending)
+			},
+		},
+		{
+			name:         "zero proof unchanged",
+			totpEnrolled: true,
+			assert: func(t *testing.T, tok string, err error, w written) {
+				var ch *httpsec.ChallengeError
+				require.ErrorAs(t, err, &ch)
+				assert.Equal(t, policy.ChallengeMFA, ch.Kind)
+				assert.Equal(t, "issued-token", tok)
+
+				require.NotNil(t, w.created)
+				assert.Equal(t, session.MFANone, w.created.MFA)
+				assert.False(t, w.created.MFAAtFirstFactor)
+
+				require.NotNil(t, w.saved)
+				assert.Equal(t, session.MFAPending, w.saved.MFA)
+				assert.False(t, w.saved.MFAAtFirstFactor)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			passkey := NewMockMFAMethodLookup(ctrl)
+			passkey.EXPECT().Name().Return("passkey").AnyTimes()
+			passkey.EXPECT().Channel().Return(factor.PublicKey).AnyTimes()
+			passkey.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+
+			totp := NewMockMFAMethodLookup(ctrl)
+			totp.EXPECT().Name().Return("totp").AnyTimes()
+			totp.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+			totp.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(tc.totpEnrolled, nil).AnyTimes()
+
+			lookups := []policy.MFAMethodLookup{passkey, totp}
+
+			requirement, err := policy.NewMFARequirement(nil, lookups, policy.WithMFARequiredForAll())
+			require.NoError(t, err)
+
+			challenge, err := policy.NewMFA(lookups)
+			require.NoError(t, err)
+
+			policies := []policy.Policy{requirement, challenge}
+			passwordChangedAt := start.Add(-time.Hour)
+
+			if tc.passwordAge {
+				age, err := policy.NewPasswordAge(policy.WithMaxPasswordAge(maxPasswordAge))
+				require.NoError(t, err)
+
+				policies = append(policies, age)
+				passwordChangedAt = start.Add(-2 * maxPasswordAge)
+			}
+
+			store := NewMockStore(ctrl)
+			tokens := NewMockGenerator(ctrl)
+
+			sessions, err := session.New(session.WithStore(store),
+				session.WithClock(clockwork.NewFakeClockAt(start)))
+			require.NoError(t, err)
+
+			var w written
+
+			store.EXPECT().Create(gomock.Any(), gomock.Any()).Times(1).
+				DoAndReturn(func(_ context.Context, s *session.Session) error {
+					c := *s
+					w.created = &c
+
+					return nil
+				})
+			store.EXPECT().Save(gomock.Any(), gomock.Any()).AnyTimes().
+				DoAndReturn(func(_ context.Context, s *session.Session) error {
+					c := *s
+					w.saved = &c
+
+					return nil
+				})
+			tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).Return("issued-token", nil)
+
+			in := httpsec.PostAuthenticationInputForTest(
+				testPrincipal(), factor.Passkey, "ada", passwordChangedAt, start)
+			if tc.proof {
+				in.SecondFactorAtLogin = httpsec.MintProofForTest(factor.Passkey, start)
+			}
+
+			tok, err := httpsec.CompleteLoginForTest(newExchange(t),
+				httpsec.LoginTailDepsForTest(engineOf(t, policies...), sessions, tokens), in)
+
+			tc.assert(t, tok, err, w)
 		})
 	}
 }

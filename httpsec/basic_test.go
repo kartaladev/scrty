@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,22 +19,6 @@ import (
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 )
-
-// basicRequest builds a request carrying the credential as a client would, and
-// rawBasicRequest one carrying whatever a test wants after the prefix.
-func basicRequest(ctx context.Context, username, password string) *http.Request {
-	return rawBasicRequest(ctx, "Basic "+
-		base64.StdEncoding.EncodeToString([]byte(username+":"+password)))
-}
-
-func rawBasicRequest(ctx context.Context, header string) *http.Request {
-	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/orders", nil)
-	if header != "" {
-		req.Header.Set("Authorization", header)
-	}
-
-	return req
-}
 
 // TestBasicAuth pins that Basic authentication judges a credential on every
 // request and leaves nothing behind: no session, no token, nothing to come

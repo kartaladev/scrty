@@ -8,11 +8,9 @@ package httpsec_test
 // their own beside the main table.
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -29,224 +27,16 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
+	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
-
-// lockedBuffer is a log sink several requests may write to at once.
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	return b.buf.String()
-}
-
-// renewalSetup is what a renewal case varies about its fixture.
-type renewalSetup struct {
-	// recovery turns the manager's unused-successor recovery on.
-	recovery bool
-
-	// defaultSessions leaves SessionRenewalDeps.Sessions nil, so the endpoint
-	// takes the bearer's manager.
-	defaultSessions bool
-
-	// withoutRenewal leaves the renewal endpoint off the chain.
-	withoutRenewal bool
-
-	// record installs a responder that records every result and writes the
-	// credential as the body, with 201.
-	record bool
-
-	opts []httpsec.SessionRenewalOption
-
-	// interceptors are consumer interceptors registered on the chain.
-	interceptors []httpsec.Option
-
-	// users replaces the default user loader, which answers u-1 active.
-	users identity.UserLoader
-}
-
-// renewalFixture is a session-reference chain with the renewal endpoint, over
-// a manager on the memory store and a fake clock, and a session O created in
-// it.
-type renewalFixture struct {
-	clk      *clockwork.FakeClock
-	logs     *lockedBuffer
-	sessions *session.Sessions
-	chain    *httpsec.Chain
-
-	// old is O's identifier, which is its credential in this mode.
-	old string
-
-	mu      sync.Mutex
-	results []httpsec.RenewalResult
-}
-
-func newRenewalFixture(t *testing.T, setup renewalSetup) *renewalFixture {
-	t.Helper()
-
-	f := &renewalFixture{
-		clk:  clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)),
-		logs: &lockedBuffer{},
-	}
-	logger := slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	// Long idle and absolute timeouts, so a session renewed the next day is
-	// still stored and only its renewal window has ended.
-	managerOpts := []session.Option{
-		session.WithClock(f.clk),
-		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
-		session.WithLogger(logger),
-		session.WithIdleTimeout(7 * 24 * time.Hour),
-		session.WithAbsoluteTimeout(30 * 24 * time.Hour),
-	}
-	if setup.recovery {
-		managerOpts = append(managerOpts, session.WithUnusedSuccessorRecovery())
-	}
-
-	var err error
-
-	f.sessions, err = session.New(managerOpts...)
-	require.NoError(t, err)
-
-	s, err := f.sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
-	require.NoError(t, err)
-
-	f.old = s.ID
-
-	users := setup.users
-	if users == nil {
-		defaults := NewMockUserLoader(gomock.NewController(t))
-		defaults.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
-		users = defaults
-	}
-
-	opts := setup.opts
-	if setup.record {
-		opts = append(opts, httpsec.WithRenewalResponder(f.recordingResponder))
-	}
-
-	chainOpts := []httpsec.Option{
-		httpsec.WithClock(f.clk),
-		httpsec.WithLogger(logger),
-		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
-	}
-	if !setup.withoutRenewal {
-		deps := httpsec.SessionRenewalDeps{Sessions: f.sessions, Users: users}
-		if setup.defaultSessions {
-			deps.Sessions = nil
-		}
-
-		chainOpts = append(chainOpts, httpsec.EnableSessionRenewal(deps, opts...))
-	}
-
-	chainOpts = append(chainOpts, setup.interceptors...)
-
-	f.chain, err = httpsec.New(chainOpts...)
-	require.NoError(t, err)
-
-	return f
-}
-
-// supersede renews O directly through the manager, as a renewal whose
-// response was lost would have, and returns the successor's identifier.
-func (f *renewalFixture) supersede(t *testing.T) string {
-	t.Helper()
-
-	s, err := f.sessions.LoadForRenewal(t.Context(), f.old)
-	require.NoError(t, err)
-
-	next, _, err := f.sessions.RotateWithGrace(t.Context(), s, 30*time.Second)
-	require.NoError(t, err)
-
-	return next.ID
-}
-
-// unpresented asserts that O is still superseded by successor, which was never
-// presented: nothing recovered or revoked the family.
-func (f *renewalFixture) unpresented(t *testing.T, successor string) {
-	t.Helper()
-
-	old, err := f.sessions.LoadForRenewal(t.Context(), f.old)
-	require.NoError(t, err)
-	assert.False(t, old.SupersededAt.IsZero())
-
-	_, err = f.sessions.Load(t.Context(), successor)
-	require.NoError(t, err, "the successor is still stored")
-}
 
 // lateDenyEngine denies every request at the per-request phase.
 func lateDenyEngine(t *testing.T) *policy.Engine {
 	t.Helper()
 
 	return engineOf(t, denyPolicy{phase: policy.PerRequest})
-}
-
-// recordingResponder records r and writes its credential as a plain body.
-func (f *renewalFixture) recordingResponder(ex *httpsec.Exchange, r httpsec.RenewalResult) error {
-	f.mu.Lock()
-	f.results = append(f.results, r)
-	f.mu.Unlock()
-
-	ex.Writer.WriteHeader(http.StatusCreated)
-	_, err := ex.Writer.Write([]byte(r.Credential))
-
-	return err
-}
-
-func (f *renewalFixture) recorded() []httpsec.RenewalResult {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return append([]httpsec.RenewalResult(nil), f.results...)
-}
-
-// request runs method path through the chain, bearing credential when it is
-// not empty.
-func (f *renewalFixture) request(t *testing.T, method, path, credential string) served {
-	t.Helper()
-
-	req := httptest.NewRequestWithContext(t.Context(), method, path, nil)
-	if credential != "" {
-		req.Header.Set("Authorization", "Bearer "+credential)
-	}
-
-	return serve(t, f.chain, req)
-}
-
-// renew posts credential to path and returns the credential the default
-// responder answered with.
-func (f *renewalFixture) renew(t *testing.T, path, credential string) string {
-	t.Helper()
-
-	out := f.request(t, http.MethodPost, path, credential)
-	require.NoError(t, out.err)
-	require.Equal(t, http.StatusOK, out.rec.Code)
-
-	var body loginBody
-	require.NoError(t, json.Unmarshal(out.rec.Body.Bytes(), &body))
-	require.NotEmpty(t, body.AccessToken)
-
-	return body.AccessToken
-}
-
-// use is an ordinary request bearing credential.
-func (f *renewalFixture) use(t *testing.T, credential string) served {
-	t.Helper()
-
-	return f.request(t, http.MethodGet, "/api/resource", credential)
 }
 
 func authenticatedRequest(t *testing.T, s served) {
@@ -1137,6 +927,34 @@ func TestEnableSessionRenewal_Construction(t *testing.T) {
 			},
 			assert: configError,
 		},
+		{
+			// A nil limiter is a wiring mistake caught when the chain is built.
+			name: "throttle nil limiter is refused: nil",
+			options: func(h *authHarness) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+					httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users},
+						httpsec.WithRenewalLimiter(nil)),
+				}
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
+		{
+			// A nil limiter is a wiring mistake caught when the chain is built.
+			name: "throttle nil limiter is refused: typed nil",
+			options: func(h *authHarness) []httpsec.Option {
+				return []httpsec.Option{
+					httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+					httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users},
+						httpsec.WithRenewalLimiter((*ratelimit.MemoryLimiter)(nil))),
+				}
+			},
+			assert: func(t *testing.T, err error) {
+				require.ErrorIs(t, err, httpsec.ErrConfig)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1189,4 +1007,715 @@ func TestSessionRenewal_UserReloadPrecedesRotation(t *testing.T) {
 	stored, err := sessions.Load(t.Context(), s.ID)
 	require.NoError(t, err)
 	assert.True(t, stored.SupersededAt.IsZero(), "a removed user's session was not rotated")
+}
+
+// TestRenewal_RefusesDisabledUser pins that the renewal endpoint renews only
+// its own, active user's session, both on a session the chain resolved,
+// inside the grace window, and on a late renewal after it, which the endpoint
+// judges without the resolution core: the refusal creates no successor and
+// recovers nothing, and a re-enabled user renews again.
+//
+// Not rows of TestSessionRenewal: each case switches the user between requests.
+func TestRenewal_RefusesDisabledUser(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name     string
+		recovery bool
+		assert   func(t *testing.T, f *renewalFixture, user *switchableUser)
+	}
+
+	// renewedWhileActive renews O once while its user is active, and returns
+	// the successor's identifier.
+	renewedWhileActive := func(t *testing.T, f *renewalFixture) string {
+		t.Helper()
+
+		first := f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
+		require.NoError(t, first.err)
+		require.Len(t, f.recorded(), 1)
+
+		return f.recorded()[0].Session.ID
+	}
+
+	cases := []testCase{
+		{
+			name: "a disabled user's renewal is refused, and no successor is created",
+			assert: func(t *testing.T, f *renewalFixture, user *switchableUser) {
+				user.set(userActive(false))
+
+				refusedUnauthenticated(t, f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old))
+				assert.Empty(t, f.recorded(), "nothing was renewed")
+
+				old, err := f.sessions.Load(t.Context(), f.old)
+				require.NoError(t, err, "the refused session is still stored")
+				assert.True(t, old.SupersededAt.IsZero(), "the refused session was not rotated")
+			},
+		},
+		{
+			name: "inside the grace window: a disabled user's predecessor is not re-rotated",
+			assert: func(t *testing.T, f *renewalFixture, user *switchableUser) {
+				renewedWhileActive(t, f)
+
+				user.set(userActive(false))
+
+				refusedUnauthenticated(t, f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old))
+				assert.Len(t, f.recorded(), 1, "no second successor was created")
+			},
+		},
+		{
+			name:     "after the grace window: a disabled user's late renewal is refused, and nothing is recovered",
+			recovery: true,
+			assert: func(t *testing.T, f *renewalFixture, user *switchableUser) {
+				successor := renewedWhileActive(t, f)
+
+				user.set(userActive(false))
+				f.clk.Advance(24 * time.Hour)
+
+				refusedUnauthenticated(t, f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old))
+				assert.Len(t, f.recorded(), 1, "no successor was recovered")
+				f.unpresented(t, successor)
+			},
+		},
+		{
+			name:     "after the grace window: a late renewal whose reloaded user is another user is refused",
+			recovery: true,
+			assert: func(t *testing.T, f *renewalFixture, user *switchableUser) {
+				successor := renewedWhileActive(t, f)
+
+				user.set(otherUser())
+				f.clk.Advance(24 * time.Hour)
+
+				refusedUnauthenticated(t, f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old))
+				assert.Len(t, f.recorded(), 1, "no successor was recovered")
+				f.unpresented(t, successor)
+			},
+		},
+		{
+			name: "a loader answering with no user and no error is refused, and no successor is created",
+			assert: func(t *testing.T, f *renewalFixture, user *switchableUser) {
+				user.set(nil)
+
+				refusedUnauthenticated(t, f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old))
+				assert.Empty(t, f.recorded(), "nothing was renewed")
+			},
+		},
+		{
+			name:     "after the grace window: a re-enabled user's late renewal recovers",
+			recovery: true,
+			assert: func(t *testing.T, f *renewalFixture, user *switchableUser) {
+				renewedWhileActive(t, f)
+
+				user.set(userActive(false))
+				f.clk.Advance(24 * time.Hour)
+				refusedUnauthenticated(t, f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old))
+
+				user.set(userActive(true))
+
+				out := f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
+				require.NoError(t, out.err)
+				require.Len(t, f.recorded(), 2)
+				assert.Equal(t, session.RenewalRecovery, f.recorded()[1].Kind)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			user := &switchableUser{}
+			user.set(userActive(true))
+
+			f := newRenewalFixture(t, renewalSetup{recovery: tc.recovery, record: true, users: user.loader(t)})
+			tc.assert(t, f, user)
+		})
+	}
+}
+
+// renewAfter renews credential and advances the fake clock by step first, and
+// returns the successor's credential.
+func (f *renewalFixture) renewAfter(t *testing.T, step time.Duration, credential string) string {
+	t.Helper()
+
+	f.clk.Advance(step)
+
+	return f.renew(t, httpsec.DefaultSessionRenewalPath, credential)
+}
+
+// atLimit renews credential ten times, 30 seconds apart, and returns the
+// credential the last renewal handed back.
+func (f *renewalFixture) atLimit(t *testing.T, credential string) string {
+	t.Helper()
+
+	for range 10 {
+		credential = f.renewAfter(t, 30*time.Second, credential)
+	}
+
+	return credential
+}
+
+// TestSessionRenewalThrottle pins the per-family renewal limit: its default,
+// that families are independent, that the window slides, what counts toward
+// it, and that an outage of the limiter refuses the renewal.
+func TestSessionRenewalThrottle(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		setup  func(t *testing.T) renewalSetup
+		assert func(t *testing.T, f *renewalFixture)
+	}
+
+	cases := []testCase{
+		{
+			name: "an eleventh renewal of a family is refused",
+			assert: func(t *testing.T, f *renewalFixture) {
+				t.Helper()
+
+				last := f.atLimit(t, f.old)
+				f.clk.Advance(30 * time.Second)
+
+				out := f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, last)
+
+				require.ErrorIs(t, out.err, httpsec.ErrRenewalThrottled)
+				assert.Equal(t, http.StatusTooManyRequests, httpsec.StatusForError(out.err))
+
+				s, err := f.sessions.LoadForRenewal(t.Context(), last)
+				require.NoError(t, err)
+				assert.True(t, s.SupersededAt.IsZero(), "the presented session was not superseded")
+			},
+		},
+		{
+			name: "another family is unaffected",
+			assert: func(t *testing.T, f *renewalFixture) {
+				t.Helper()
+
+				other, err := f.sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+				require.NoError(t, err)
+
+				f.atLimit(t, f.old)
+
+				f.renewAfter(t, 30*time.Second, other.ID)
+			},
+		},
+		{
+			name: "the window slides",
+			assert: func(t *testing.T, f *renewalFixture) {
+				t.Helper()
+
+				last := f.atLimit(t, f.old)
+
+				f.renewAfter(t, 10*time.Minute+time.Second, last)
+			},
+		},
+		{
+			name: "retries count but fit",
+			assert: func(t *testing.T, f *renewalFixture) {
+				t.Helper()
+
+				f.renewAfter(t, time.Second, f.old)
+
+				// Two re-rotations of the same renewed credential, inside its window.
+				f.renewAfter(t, time.Second, f.old)
+				last := f.renewAfter(t, time.Second, f.old)
+
+				for range 7 {
+					last = f.renewAfter(t, 30*time.Second, last)
+				}
+
+				// Ten renewals were charged, the two re-rotations included, so the
+				// eleventh is refused.
+				f.clk.Advance(30 * time.Second)
+
+				out := f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, last)
+				require.ErrorIs(t, out.err, httpsec.ErrRenewalThrottled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			setup := renewalSetup{}
+			if tc.setup != nil {
+				setup = tc.setup(t)
+			}
+
+			tc.assert(t, newRenewalFixture(t, setup))
+		})
+	}
+}
+
+// TestSessionRenewalThrottle_ConsumerLimiter pins that a limiter the consumer
+// supplies replaces the default, and is asked and charged by family.
+func TestSessionRenewalThrottle_ConsumerLimiter(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name  string
+		setup func(t *testing.T) renewalSetup
+		// drive runs the renewal under test, and defaults to one renewal of the
+		// fixture's session.
+		drive   func(t *testing.T, f *renewalFixture) served
+		exceed  func() (bool, error)
+		assert  func(t *testing.T, f *renewalFixture, out served, keys []string)
+		asked   int
+		charged int
+	}
+
+	cases := []testCase{
+		{
+			name:    "it is asked and charged under the family's key",
+			exceed:  func() (bool, error) { return false, nil },
+			asked:   1,
+			charged: 1,
+			assert: func(t *testing.T, f *renewalFixture, out served, keys []string) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+
+				s, err := f.sessions.LoadForRenewal(t.Context(), f.old)
+				require.NoError(t, err)
+				assert.Equal(t, []string{"family:" + s.FamilyID.String(), "family:" + s.FamilyID.String()}, keys)
+			},
+		},
+		{
+			name:   "an outage refuses the renewal and rotates nothing",
+			exceed: func() (bool, error) { return true, errors.New("store down") },
+			asked:  1,
+			assert: func(t *testing.T, f *renewalFixture, out served, _ []string) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrRenewalThrottled)
+				assert.NotContains(t, out.err.Error(), "store down")
+
+				s, err := f.sessions.LoadForRenewal(t.Context(), f.old)
+				require.NoError(t, err)
+				assert.True(t, s.SupersededAt.IsZero(), "nothing was rotated")
+			},
+		},
+		{
+			name:   "an exceeded key refuses without charging",
+			exceed: func() (bool, error) { return true, nil },
+			asked:  1,
+			assert: func(t *testing.T, _ *renewalFixture, out served, _ []string) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, httpsec.ErrRenewalThrottled)
+			},
+		},
+		{
+			name:    "a recovery pass-through renewal is charged under the family's key",
+			setup:   func(*testing.T) renewalSetup { return renewalSetup{recovery: true} },
+			exceed:  func() (bool, error) { return false, nil },
+			asked:   1,
+			charged: 1,
+			drive: func(t *testing.T, f *renewalFixture) served {
+				t.Helper()
+
+				f.supersede(t)
+				f.clk.Advance(24 * time.Hour)
+
+				return f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
+			},
+			assert: func(t *testing.T, f *renewalFixture, out served, keys []string) {
+				t.Helper()
+
+				require.NoError(t, out.err)
+
+				s, err := f.sessions.LoadForRenewal(t.Context(), f.old)
+				require.NoError(t, err)
+				assert.Equal(t, []string{"family:" + s.FamilyID.String(), "family:" + s.FamilyID.String()}, keys)
+			},
+		},
+		{
+			name: "a late renewal the per-request policy denies is neither asked nor charged",
+			setup: func(t *testing.T) renewalSetup {
+				t.Helper()
+
+				return renewalSetup{
+					recovery:     true,
+					interceptors: []httpsec.Option{httpsec.WithPolicyEngine(lateDenyEngine(t))},
+				}
+			},
+			drive: func(t *testing.T, f *renewalFixture) served {
+				t.Helper()
+
+				f.supersede(t)
+				f.clk.Advance(24 * time.Hour)
+
+				return f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
+			},
+			assert: func(t *testing.T, _ *renewalFixture, out served, keys []string) {
+				t.Helper()
+
+				require.ErrorIs(t, out.err, policy.ErrDenied)
+				assert.Empty(t, keys)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var keys []string
+
+			limiter := NewMockLimiter(gomock.NewController(t))
+			limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, key string) (bool, error) {
+					keys = append(keys, key)
+
+					return tc.exceed()
+				}).Times(tc.asked)
+			limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, key string) error {
+					keys = append(keys, key)
+
+					return nil
+				}).Times(tc.charged)
+
+			setup := renewalSetup{}
+			if tc.setup != nil {
+				setup = tc.setup(t)
+			}
+
+			setup.opts = append(setup.opts, httpsec.WithRenewalLimiter(limiter))
+			f := newRenewalFixture(t, setup)
+
+			drive := func(t *testing.T, f *renewalFixture) served {
+				t.Helper()
+
+				return f.request(t, http.MethodPost, httpsec.DefaultSessionRenewalPath, f.old)
+			}
+			if tc.drive != nil {
+				drive = tc.drive
+			}
+
+			out := drive(t, f)
+
+			tc.assert(t, f, out, keys)
+		})
+	}
+}
+
+// TestSessionRenewalThrottle_FactoryErrorNamesTheEndpoint pins that a renewal
+// limiter the factory cannot build is reported against EnableSessionRenewal,
+// in its own namespace with its own defaults, and names no other endpoint.
+//
+// Not a row of TestEnableSessionRenewal_Construction: it needs a mocked limiter factory.
+func TestSessionRenewalThrottle_FactoryErrorNamesTheEndpoint(t *testing.T) {
+	t.Parallel()
+
+	memory := ratelimit.MemoryLimiterFactory()
+	factory := NewMockLimiterFactory(gomock.NewController(t))
+
+	factory.EXPECT().NewLimiter("session-renewal", 10, 10*time.Minute).
+		Return(nil, errors.New("backend down"))
+	factory.EXPECT().NewLimiter(gomock.Not("session-renewal"), gomock.Any(), gomock.Any()).
+		AnyTimes().DoAndReturn(memory.NewLimiter)
+
+	h := newAuthHarness(t)
+
+	_, err := httpsec.New(
+		httpsec.WithRateLimiterFactory(factory),
+		httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: h.sessions, Users: h.users}),
+	)
+
+	require.ErrorIs(t, err, httpsec.ErrConfig)
+	assert.Contains(t, err.Error(), "EnableSessionRenewal")
+	assert.NotContains(t, err.Error(), "EnableMFAEnrolment")
+}
+
+// TestSessionRenewalThrottle_RemovedUserIsNotCharged pins that a renewal
+// refused because its user is gone neither asks nor charges the limiter.
+func TestSessionRenewalThrottle_RemovedUserIsNotCharged(t *testing.T) {
+	t.Parallel()
+
+	clk := clockwork.NewFakeClockAt(time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+	sessions, err := session.New(
+		session.WithClock(clk),
+		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(clk))),
+	)
+	require.NoError(t, err)
+
+	s, err := sessions.Create(t.Context(), "u-1", session.WithFirstFactor(factor.Password))
+	require.NoError(t, err)
+
+	ctrl := gomock.NewController(t)
+	users := NewMockUserLoader(ctrl)
+	gomock.InOrder(
+		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil),
+		users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(nil, errors.New("removed")),
+	)
+
+	limiter := NewMockLimiter(ctrl)
+	limiter.EXPECT().Exceeded(gomock.Any(), gomock.Any()).Times(0)
+	limiter.EXPECT().RecordFailure(gomock.Any(), gomock.Any()).Times(0)
+
+	chain, err := httpsec.New(
+		httpsec.WithClock(clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Sessions: sessions, Users: users},
+			httpsec.WithRenewalLimiter(limiter)),
+	)
+	require.NoError(t, err)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+	req.Header.Set("Authorization", "Bearer "+s.ID)
+
+	out := serve(t, chain, req)
+
+	require.ErrorIs(t, out.err, httpsec.ErrAuthenticationRequired)
+}
+
+// The renewal lifetime tests run on a real manager over the memory store and a
+// fake clock, because what they pin is the absolute deadline the successor is
+// stored with, and the maxima the manager holds it to.
+
+func TestSessionRenewal_Lifetime(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC)
+
+	// thirtyDays asks for 30 days on every renewal.
+	thirtyDays := func(*httpsec.Exchange, *session.Session) time.Duration { return 30 * day }
+
+	type testCase struct {
+		name string
+		// manager is the lifetime options the manager is built with.
+		manager []session.Option
+		// created is the absolute lifetime the first session is created with;
+		// zero keeps the manager's absolute timeout.
+		created time.Duration
+		opts    []httpsec.SessionRenewalOption
+		// advances are the days the clock moves before each renewal; every one
+		// but the last renewal is expected to succeed.
+		advances []time.Duration
+		assert   func(t *testing.T, f *lifetimeFixture, out served)
+	}
+
+	family90 := []session.Option{
+		session.WithMaxAbsoluteLifetime(30 * day),
+		session.WithMaxFamilyLifetime(90 * day),
+	}
+
+	cases := []testCase{
+		{
+			// Signed in at 09:00 with a 12 hour lifetime, renewed at 15:00: the
+			// successor keeps the 21:00 deadline, not 15:00 plus twelve hours.
+			name:     "no function carries the deadline over",
+			advances: []time.Duration{6 * time.Hour},
+			assert: func(t *testing.T, f *lifetimeFixture, out served) {
+				require.NoError(t, out.err)
+				require.Len(t, f.results, 1)
+				assert.Equal(t, time.Date(2026, 10, 21, 15, 0, 0, 0, time.UTC), f.clk.Now(),
+					"the renewal happened at 15:00")
+				assert.Equal(t, time.Date(2026, 10, 21, 21, 0, 0, 0, time.UTC),
+					f.results[0].Session.AbsoluteExpiresAt)
+			},
+		},
+		{
+			name:     "a lifetime inside the maxima is now plus the lifetime",
+			manager:  family90,
+			created:  30 * day,
+			opts:     []httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(thirtyDays)},
+			advances: []time.Duration{10 * day},
+			assert: func(t *testing.T, f *lifetimeFixture, out served) {
+				require.NoError(t, out.err)
+				require.Len(t, f.results, 1)
+				assert.Equal(t, start.Add(10*day).Add(30*day), f.results[0].Session.AbsoluteExpiresAt)
+			},
+		},
+		{
+			name:     "a lifetime past the family maximum is cut to the family's end",
+			manager:  family90,
+			created:  30 * day,
+			opts:     []httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(thirtyDays)},
+			advances: []time.Duration{20 * day, 20 * day, 20 * day, 20 * day},
+			assert: func(t *testing.T, f *lifetimeFixture, out served) {
+				require.NoError(t, out.err)
+				require.Len(t, f.results, 4)
+				assert.Equal(t, start.Add(90*day), f.results[3].Session.AbsoluteExpiresAt)
+			},
+		},
+		{
+			name:    "a lifetime above the lifetime maximum is a configuration error and stores nothing",
+			manager: []session.Option{session.WithMaxAbsoluteLifetime(30 * day)},
+			opts: []httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(
+				func(*httpsec.Exchange, *session.Session) time.Duration { return 45 * day })},
+			advances: []time.Duration{time.Hour},
+			assert: func(t *testing.T, f *lifetimeFixture, out served) {
+				require.ErrorIs(t, out.err, session.ErrConfig)
+				assert.Equal(t, http.StatusInternalServerError, httpsec.StatusForError(out.err))
+				assert.Empty(t, f.results)
+
+				old, err := f.sessions.LoadForRenewal(t.Context(), f.first)
+				require.NoError(t, err)
+				assert.True(t, old.SupersededAt.IsZero(), "nothing was rotated")
+			},
+		},
+		{
+			name: "a function returning a negative lifetime carries the deadline over",
+			opts: []httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(
+				func(*httpsec.Exchange, *session.Session) time.Duration { return -time.Hour })},
+			advances: []time.Duration{time.Hour},
+			assert: func(t *testing.T, f *lifetimeFixture, out served) {
+				require.NoError(t, out.err)
+				require.Len(t, f.results, 1)
+				assert.Equal(t, start.Add(12*time.Hour), f.results[0].Session.AbsoluteExpiresAt)
+			},
+		},
+		{
+			name: "a function returning zero carries the deadline over",
+			opts: []httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(
+				func(*httpsec.Exchange, *session.Session) time.Duration { return 0 })},
+			advances: []time.Duration{time.Hour},
+			assert: func(t *testing.T, f *lifetimeFixture, out served) {
+				require.NoError(t, out.err)
+				require.Len(t, f.results, 1)
+				assert.Equal(t, start.Add(12*time.Hour), f.results[0].Session.AbsoluteExpiresAt)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			f := newLifetimeFixture(t, start, tc.manager, tc.created, tc.opts)
+
+			var out served
+
+			for _, d := range tc.advances {
+				f.clk.Advance(d)
+				out = f.renew(t)
+			}
+
+			tc.assert(t, f, out)
+		})
+	}
+}
+
+func TestSessionRenewal_LifetimeFunctionSeesTheRenewedSession(t *testing.T) {
+	t.Parallel()
+
+	var (
+		gotEx *httpsec.Exchange
+		gotID string
+	)
+
+	f := newLifetimeFixture(t, time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC), nil, 0,
+		[]httpsec.SessionRenewalOption{httpsec.WithRenewalLifetime(
+			func(ex *httpsec.Exchange, s *session.Session) time.Duration {
+				gotEx, gotID = ex, s.ID
+
+				return time.Hour
+			})})
+
+	f.clk.Advance(time.Minute)
+	out := f.renew(t)
+
+	require.NoError(t, out.err)
+	assert.NotNil(t, gotEx)
+	assert.Equal(t, f.first, gotID)
+}
+
+// Not a row of TestEnableSessionRenewal_Construction: it builds on its own manager and checks the chain.
+func TestWithRenewalLifetime_NilFunctionIsRefused(t *testing.T) {
+	t.Parallel()
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	users := NewMockUserLoader(gomock.NewController(t))
+
+	chain, err := httpsec.New(
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: sessions, Users: users}),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: users},
+			httpsec.WithRenewalLifetime(nil)),
+	)
+
+	require.ErrorIs(t, err, httpsec.ErrConfig)
+	assert.Contains(t, err.Error(), "WithRenewalLifetime")
+	assert.Nil(t, chain)
+}
+
+// lifetimeFixture is a session-reference chain with the renewal endpoint over
+// a manager on a fake clock, and the first session in it.
+type lifetimeFixture struct {
+	clk      *clockwork.FakeClock
+	sessions *session.Sessions
+	chain    *httpsec.Chain
+
+	// first is the identifier of the first session, and current of the latest.
+	first, current string
+
+	results []httpsec.RenewalResult
+}
+
+func newLifetimeFixture(
+	t *testing.T,
+	start time.Time,
+	managerOpts []session.Option,
+	created time.Duration,
+	opts []httpsec.SessionRenewalOption,
+) *lifetimeFixture {
+	t.Helper()
+
+	f := &lifetimeFixture{clk: clockwork.NewFakeClockAt(start)}
+
+	var err error
+
+	f.sessions, err = session.New(append([]session.Option{
+		session.WithClock(f.clk),
+		session.WithStore(session.NewMemoryStore(session.WithMemoryStoreClock(f.clk))),
+		session.WithIdleTimeout(100 * day),
+		session.WithAbsoluteTimeout(12 * time.Hour),
+	}, managerOpts...)...)
+	require.NoError(t, err)
+
+	var createOpts []session.CreateOption
+	if created > 0 {
+		createOpts = append(createOpts, session.WithAbsoluteLifetime(created))
+	}
+
+	s, err := f.sessions.Create(t.Context(), "u-1",
+		append(createOpts, session.WithFirstFactor(factor.Password))...)
+	require.NoError(t, err)
+
+	f.first, f.current = s.ID, s.ID
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUserID(gomock.Any(), identity.UserID("u-1")).Return(storedUser(), nil).AnyTimes()
+
+	record := httpsec.WithRenewalResponder(func(ex *httpsec.Exchange, r httpsec.RenewalResult) error {
+		f.results = append(f.results, r)
+		f.current = r.Credential
+
+		ex.Writer.WriteHeader(http.StatusOK)
+
+		return nil
+	})
+
+	f.chain, err = httpsec.New(
+		httpsec.WithClock(f.clk),
+		httpsec.EnableSessionBearer(httpsec.SessionBearerDeps{Sessions: f.sessions, Users: users}),
+		httpsec.EnableSessionRenewal(httpsec.SessionRenewalDeps{Users: users}, append(opts, record)...),
+	)
+	require.NoError(t, err)
+
+	return f
+}
+
+// renew posts the latest credential to the renewal endpoint.
+func (f *lifetimeFixture) renew(t *testing.T) served {
+	t.Helper()
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, httpsec.DefaultSessionRenewalPath, nil)
+	req.Header.Set("Authorization", "Bearer "+f.current)
+
+	return serve(t, f.chain, req)
 }

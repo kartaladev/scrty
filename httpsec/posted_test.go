@@ -13,13 +13,6 @@ import (
 	"github.com/kartaladev/scrty/httpsec"
 )
 
-// jsonDocument is a valid JSON document of exactly size bytes.
-func jsonDocument(size int) string {
-	const open, closing = `{"assertion":"`, `"}`
-
-	return open + strings.Repeat("a", size-len(open)-len(closing)) + closing
-}
-
 // TestReadResponse pins the two library readers a method's response is read
 // with: each reads the body only, requires the content type its format
 // declares and bounds the body at the method's limit. What it cannot read is
