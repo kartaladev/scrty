@@ -303,3 +303,82 @@ func adoptResolution(dst, src *session.Session) {
 	dst.EnrolmentOriginDeadline = src.EnrolmentOriginDeadline
 	dst.EnrolmentGeneration = src.EnrolmentGeneration
 }
+
+// PasswordChangeOption configures the password-change gate. Each replaces one
+// of the defaults named on EnablePasswordChangeGate.
+type PasswordChangeOption func(*passwordChangeGate) error
+
+// EnablePasswordChangeGate holds every session that owes a password change at
+// the password-change slot.
+//
+// Default: no resolve endpoint, under which a session that owes a change is
+// refused until a new login clears it. Register one with
+// WithPasswordChangeEndpoint to let a caller pay the debt without logging in
+// again. A request carrying no session passes the gate untouched.
+//
+// A successful resolve also clears the caller's lockout failures (see
+// ChangePasswordFunc); there is no option to keep them, since they were
+// guesses at a password that no longer exists.
+//
+// A POST to the chain's logout path always passes, so a caller owing a change
+// can end the session; the path is the one EnableLogout configured, read when
+// the chain is built, and nothing extra passes on a chain without logout.
+// There is no option to refuse it: refusing logout protects nothing.
+//
+// The session manager is required and is the one the marker is cleared in: a
+// gate that could not record the change would refuse the next request just the
+// same, and the caller would have changed their password for nothing.
+func EnablePasswordChangeGate(sessions *session.Sessions, opts ...PasswordChangeOption) Option {
+	const option = "EnablePasswordChangeGate"
+
+	return func(c *config) error {
+		g := &passwordChangeGate{sessions: sessions}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(g); err != nil {
+				return err
+			}
+		}
+
+		c.enable(option, func() error {
+			return requireDep(option, "session manager", sessions)
+		})
+
+		c.useSessions(sessions)
+		c.register(g, OrderPasswordChange)
+		c.enableGate(policy.ChallengePasswordChange)
+
+		return nil
+	}
+}
+
+// WithPasswordChangeEndpoint answers POST requests on path with fn.
+//
+// Default: no endpoint at all, under which only a new login clears the
+// challenge. Requests to path pass the gate, so the one endpoint a caller who
+// owes a password change can reach is the one that resolves it; every other
+// method on that path is gated like anything else.
+//
+// An empty path, or no function, is refused: either would be an endpoint that
+// cannot answer, while the consumer believed their callers had a way out of
+// the gate.
+func WithPasswordChangeEndpoint(path string, fn ChangePasswordFunc) PasswordChangeOption {
+	return func(g *passwordChangeGate) error {
+		switch {
+		case path == "":
+			return newConfigError("WithPasswordChangeEndpoint was given no path, so a caller " +
+				"owing a password change would have no way to resolve it")
+		case fn == nil:
+			return newConfigError("WithPasswordChangeEndpoint was given no function to change "+
+				"the password with for %q", path)
+		}
+
+		g.path = path
+		g.change = fn
+
+		return nil
+	}
+}

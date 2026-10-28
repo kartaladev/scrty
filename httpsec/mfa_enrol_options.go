@@ -11,6 +11,11 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
+// defaultEnrolmentLifetime is how long a session marked for an enrolment
+// challenge lives when nothing configured otherwise: long enough to scan a
+// code and read an email, short enough that a first factor alone buys little.
+const defaultEnrolmentLifetime = 15 * time.Minute
+
 // The prefixes the enrolment endpoints answer POST requests under when the
 // consumer names none. Each endpoint serves one method per path: the prefix,
 // "/" and the method's name, so TOTP begins at "/mfa/enrol/begin/totp" by

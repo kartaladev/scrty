@@ -610,3 +610,153 @@ type recoveryHoldDocument struct {
 	CompletionToken string    `json:"completion_token"`
 	CompletableAt   time.Time `json:"completable_at"`
 }
+
+//go:generate mockgen -destination=onetimestore_mock_test.go -package=httpsec_test -typed -mock_names=Store=MockOnetimeStore github.com/kartaladev/scrty/token/onetime Store
+
+// start answers a POST to the start path.
+//
+// It answers identically whatever happened, and never passes the request on:
+// 202 with an empty body and no cookie, for a code sent, an unknown or
+// disabled username, a lookup that failed, a reached issuance limit, a token
+// store or sender that failed, a body that could not be read, and a source
+// that is throttled or cannot be attributed. The core logs each cause
+// server-side; nothing here tells them apart.
+//
+// Every start is counted against its source, whatever it did, because what
+// the guard bounds is how often one source asks for mail to be sent. A source
+// over its allowance, or one that cannot be attributed, starts nothing.
+func (i *recoveryInterceptor) start(ex *Exchange) error {
+	ctx := ex.Context()
+
+	src, err := sourceThrottled(ctx, i.startGuard, ex.Request.ClientIP(), recoveryStartFlow,
+		i.sampler, i.log, i.now())
+	if err == nil {
+		recordSourceFailure(ctx, i.startGuard, src)
+
+		// An empty username names no account, so there is nothing to start:
+		// a body that could not be read is not a question about one.
+		if username := readRecoveryStart(ex.Request); username != "" {
+			i.recoverer.Start(ctx, username)
+		}
+	}
+
+	ex.Writer.WriteHeader(http.StatusAccepted)
+
+	return nil
+}
+
+// readRecoveryStart reads the submitted username from a URL-encoded form or a
+// JSON body, and only from the body.
+//
+// Every failure degrades to an empty username rather than an error: a
+// different answer for a malformed request is still a different answer, and a
+// scanner would use it. That includes a body over the bound and a username
+// given more than once.
+func readRecoveryStart(r Request) string {
+	body, err := r.Body(recoveryBodyLimit)
+	if err != nil || len(body) == 0 {
+		return ""
+	}
+
+	declared := r.Header("Content-Type")
+
+	if declaresForm(declared) {
+		values, err := url.ParseQuery(string(body))
+		if err != nil || len(values[RecoveryUsernameParam]) != 1 {
+			return ""
+		}
+
+		return values.Get(RecoveryUsernameParam)
+	}
+
+	if !declaresJSON(declared) {
+		return ""
+	}
+
+	var fields map[string]any
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return ""
+	}
+
+	username, _ := fields[RecoveryUsernameParam].(string)
+
+	return username
+}
+
+//go:generate mockgen -destination=recordstore_mock_test.go -package=httpsec_test -typed -mock_names=RecordStore=MockRecordStore github.com/kartaladev/scrty/recovery RecordStore
+
+// finish answers a POST to the finish path of a held recovery.
+//
+// The body is read exactly as the complete endpoint reads its own: a
+// URL-encoded form of at most 16 KiB, never the query, with the completion
+// token given once. A request that cannot be read so, or carries no token, is
+// recovery.ErrMalformed. Then the core finishes the recovery, and its error is
+// returned unchanged: recovery.ErrNotYetCompletable before the hold is over,
+// recovery.ErrRefused for a token that is unknown, spent, of another purpose
+// or past its window, or whose recovery was cancelled.
+//
+// A finish that succeeds is answered exactly as a completion is: the access
+// token for the recovery-pending session, through the recovery responder,
+// with Cache-Control: no-store.
+//
+// No source guard stands in front of it. The completion token is a 256-bit
+// one-time secret handed only to the client that presented both proofs, so
+// there is nothing a source could guess, and the endpoint checks no proof a
+// throttle would protect. A per-source allowance would add only a way for
+// someone behind the same address to spend it and lock the user out of their
+// own finish.
+func (i *recoveryInterceptor) finish(ex *Exchange) error {
+	token, err := readHoldToken(ex.Request, RecoveryCompletionTokenParam)
+	if err != nil {
+		return err
+	}
+
+	if token == "" {
+		return recovery.ErrMalformed
+	}
+
+	res, err := i.recoverer.Finish(ex.Context(), token)
+	if err != nil {
+		return err
+	}
+
+	return i.answer(ex, res)
+}
+
+// cancel answers a POST to the cancel path of a held recovery.
+//
+// It answers 204 with an empty body whatever happened: a recovery cancelled,
+// a token that is garbage, spent, of another purpose (a completion token
+// included) or missing, a body that cannot be read, and a store that failed.
+// The core logs each cause server-side and returns nothing, so nothing here
+// could tell them apart even by accident, and the endpoint reveals nothing
+// about which tokens or recoveries exist. For the same reason it has no source
+// guard: a refusal would be an answer of its own.
+func (i *recoveryInterceptor) cancel(ex *Exchange) error {
+	if token, err := readHoldToken(ex.Request, RecoveryCancelTokenParam); err == nil && token != "" {
+		i.recoverer.Cancel(ex.Context(), token)
+	}
+
+	ex.Writer.WriteHeader(http.StatusNoContent)
+
+	return nil
+}
+
+// readHoldToken reads the single field name out of a finish or cancel body, by
+// the same rules the complete endpoint reads its own: a URL-encoded form under
+// recoveryBodyLimit, never the query. A body over the bound is
+// ErrRequestTooLarge; one that is not such a form, does not parse, or carries
+// the field more than once is recovery.ErrMalformed. An empty body, or one
+// without the field, reads as an empty token.
+func readHoldToken(r Request, name string) (string, error) {
+	values, err := readRecoveryForm(r)
+	if err != nil {
+		return "", err
+	}
+
+	if len(values[name]) > 1 {
+		return "", recovery.ErrMalformed
+	}
+
+	return values.Get(name), nil
+}

@@ -2,6 +2,8 @@ package httpsec
 
 import (
 	"context"
+	"mime"
+	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
@@ -421,4 +423,15 @@ func completeLogin(ex *Exchange, deps loginTailDeps, in *policy.Input, opts ...s
 	}
 
 	return tok, nil
+}
+
+// declaresJSON reports whether a content type names JSON, ignoring parameters
+// such as a charset and accepting the +json structured suffix.
+func declaresJSON(contentType string) bool {
+	media, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+
+	return media == "application/json" || strings.HasSuffix(media, "+json")
 }

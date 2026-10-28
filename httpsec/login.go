@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
@@ -560,17 +558,6 @@ func (l *formLogin) bindJSON(r Request, body []byte) (map[string]any, error) {
 	}
 
 	return fields, nil
-}
-
-// declaresJSON reports whether a content type names JSON, ignoring parameters
-// such as a charset and accepting the +json structured suffix.
-func declaresJSON(contentType string) bool {
-	media, _, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		return false
-	}
-
-	return media == "application/json" || strings.HasSuffix(media, "+json")
 }
 
 // recordFailure counts one failed attempt, logging a store that could not.

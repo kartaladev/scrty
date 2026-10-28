@@ -160,3 +160,108 @@ func (i *apiKeyInterceptor) Intercept(ex *Exchange, next Next) error {
 func refusedAPIKey() error {
 	return errors.Join(authenticate.ErrAuthenticationFailed, apikey.ErrVerificationFailed)
 }
+
+// APIKeyOption configures API key authentication. Each replaces one of the
+// defaults named on EnableAPIKey.
+type APIKeyOption func(*apiKeyInterceptor) error
+
+// EnableAPIKey authenticates machine callers by key at the API key slot.
+//
+// Defaults: a key is read from the Authorization header after the literal
+// DefaultAPIKeyScheme prefix (WithAPIKeyScheme), and a source that presents
+// wrong keys is cut off after 20 failures a minute by a limiter this flow alone
+// uses (WithAPIKeyLimiter).
+//
+// A request that does not carry the scheme passes through untouched and
+// consults nothing: ordinary unauthenticated traffic is not a failed attempt,
+// and counting it would fill the buckets that exist to catch guessing.
+//
+// The caller a key resolves is published with no session. A machine has nobody
+// to prompt and nothing to keep between requests, so a policy that challenges
+// in the stateless phase refuses outright rather than raising a prompt nothing
+// can answer.
+func EnableAPIKey(m *apikey.Keys, opts ...APIKeyOption) Option {
+	const option = "EnableAPIKey"
+
+	return func(c *config) error {
+		if m == nil {
+			return newConfigError("%s needs an API key manager", option)
+		}
+
+		i := &apiKeyInterceptor{keys: m, now: c.now, scheme: DefaultAPIKeyScheme}
+
+		for _, opt := range opts {
+			if opt == nil {
+				continue
+			}
+			if err := opt(i); err != nil {
+				return err
+			}
+		}
+
+		c.register(i, OrderAPIKey)
+		c.wire(i.wire)
+
+		return nil
+	}
+}
+
+// WithAPIKeyScheme matches presented keys under scheme instead.
+//
+// Default: DefaultAPIKeyScheme. The scheme is matched exactly, case and
+// trailing space included, so include the separating space: "Service " matches
+// "Service sk_...", while "Service" would also claim "Servicex".
+//
+// An empty scheme is refused: it would claim every Authorization header on the
+// chain, including the ones another interceptor answers.
+func WithAPIKeyScheme(scheme string) APIKeyOption {
+	return func(i *apiKeyInterceptor) error {
+		if scheme == "" {
+			return newConfigError("WithAPIKeyScheme was given no scheme, which would claim " +
+				"every Authorization header, including another interceptor's")
+		}
+
+		i.scheme = scheme
+
+		return nil
+	}
+}
+
+// WithAPIKeyLimiter counts failed key verifications through l.
+//
+// Default: the chain's rate-limiter factory (WithRateLimiterFactory) under
+// namespace "api-key", or else an in-memory limiter of 20 failures per source
+// per minute, used by this flow alone. A deployment running more than one
+// replica supplies a factory or a limiter its replicas share, or the limit is
+// per process and a scanner simply spreads its guesses.
+//
+// One limiter may be handed to several flows. That shares the store and the
+// limit it was built with, not the allowance: every key carries the flow it
+// belongs to, so a source that exhausts its key guesses still has its whole
+// allowance at every other endpoint.
+// A limiter handed to several flows shares its key cap among them, so a flood
+// on one refuses new sources on all.
+//
+// The flow's IPv6 aggregate (WithIPv6Aggregate) is sized from l: the
+// aggregate's multiplier, 4 by default, times the limit l reports, over the
+// window l reports, read through ratelimit.PolicyReporter, which the in-memory
+// limiter and the shared limiters scrty ships implement. A limiter that does
+// not implement it gets no default aggregate for this flow, and one warning
+// when the chain is built; under an explicit WithIPv6Aggregate it is a
+// configuration error.
+//
+// It counts wrong keys and nothing else: a policy refusal of a valid key is not
+// a failed guess, and a request carrying no key at all never reaches it.
+//
+// A nil limiter, including an interface holding a nil pointer, is refused.
+func WithAPIKeyLimiter(l ratelimit.Limiter) APIKeyOption {
+	return func(i *apiKeyInterceptor) error {
+		if err := requireDep("WithAPIKeyLimiter", "limiter", l); err != nil {
+			return err
+		}
+
+		i.limiter = l
+
+		return nil
+	}
+}
