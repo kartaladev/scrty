@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -27,14 +26,6 @@ import (
 //go:generate mockgen -destination=userloader_mock_test.go -package=ginsec_test -typed github.com/kartaladev/scrty/identity UserLoader
 //go:generate mockgen -destination=authorizer_mock_test.go -package=ginsec_test -typed github.com/kartaladev/scrty/authorize Authorizer
 //go:generate mockgen -destination=keysetprovider_mock_test.go -package=ginsec_test -typed github.com/kartaladev/scrty/httpsec KeySetProvider
-
-// TestMain puts gin in test mode, so a test's output is the test's and not
-// gin's start-up banner.
-func TestMain(m *testing.M) {
-	gin.SetMode(gin.TestMode)
-
-	os.Exit(m.Run())
-}
 
 // presentedToken is the credential the bearer fixture's verifier accepts. It is
 // not a real token: the verifier is a double, and what it returns is the only

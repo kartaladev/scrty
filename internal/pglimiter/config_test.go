@@ -459,8 +459,9 @@ func TestRegistryClaim(t *testing.T) {
 	}
 }
 
-// TestRegistryClaim_ConcurrentPolicies stands apart from TestRegistryClaim: it races two
-// claims from two goroutines, where the table makes its claims one after another.
+// TestRegistryClaim_ConcurrentPolicies stands apart from TestRegistryClaim: it
+// races two claims from two goroutines, where the table makes its claims one
+// after another.
 //
 // It pins that a claim's build runs under the registry's lock: while the first
 // claim of a namespace is still building, a claim of the same namespace with

@@ -277,3 +277,88 @@ func TestGinGuards(t *testing.T) {
 		})
 	}
 }
+
+// ownedByAnyone is a checker that is never reached: the wiring cases fail first.
+func ownedByAnyone(context.Context, *identity.Principal, string) (bool, error) { return true, nil }
+
+// TestGin_OwnershipGuardFailsAtWiring pins that a guard built without what
+// it cannot work without panics when it is wired, naming the missing
+// dependency, instead of refusing every request once traffic arrives.
+func TestGin_OwnershipGuardFailsAtWiring(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		assert func(t *testing.T)
+	}
+
+	cases := []testCase{
+		{
+			name: "with nil checker",
+			assert: func(t *testing.T) {
+				assert.PanicsWithValue(t, "ginsec: ResourceOwnerships needs a non-nil checker", func() {
+					ginsec.ResourceOwnerships[string](ginsec.NewGuards(nil), "orders", "order", nil)
+				})
+			},
+		},
+		{
+			name: "with nil extractor",
+			assert: func(t *testing.T) {
+				owned := ginsec.ResourceOwnerships[string](ginsec.NewGuards(nil), "orders", "order", ownedByAnyone)
+
+				assert.PanicsWithValue(t, "ginsec: ForResource needs a non-nil extractor", func() {
+					owned.ForResource(nil)
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t)
+		})
+	}
+}
+
+// TestGin_GuardsBuildersWithNilGuardsFailAtWiring stands apart from
+// TestGin_OwnershipGuardFailsAtWiring: its cases are named after the builder
+// called on nil Guards, and folding them would need a nested group.
+func TestGin_GuardsBuildersWithNilGuardsFailAtWiring(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		build  func()
+		panics string
+	}
+
+	cases := []testCase{
+		{
+			name:   "RequireAuthenticated",
+			build:  func() { (*ginsec.Guards)(nil).RequireAuthenticated() },
+			panics: "ginsec: RequireAuthenticated needs non-nil Guards",
+		},
+		{
+			name:   "ResourcePrivileges",
+			build:  func() { (*ginsec.Guards)(nil).ResourcePrivileges("orders", "order") },
+			panics: "ginsec: ResourcePrivileges needs non-nil Guards",
+		},
+		{
+			name: "ResourceOwnerships",
+			build: func() {
+				ginsec.ResourceOwnerships[string](nil, "orders", "order", ownedByAnyone)
+			},
+			panics: "ginsec: ResourceOwnerships needs non-nil Guards",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.PanicsWithValue(t, tc.panics, tc.build)
+		})
+	}
+}

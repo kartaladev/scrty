@@ -160,6 +160,9 @@ func TestSessionReferenceBearer(t *testing.T) {
 // TestActivityRecordedAfterTheHandler pins that a session's activity is
 // written once the handler has returned, and also when an interceptor inside
 // the bearer refused the request.
+//
+// It stands apart from TestSessionReferenceBearer: each case moves the clock
+// between opening the session and serving it.
 func TestActivityRecordedAfterTheHandler(t *testing.T) {
 	t.Parallel()
 
