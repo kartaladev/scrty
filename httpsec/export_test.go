@@ -119,10 +119,9 @@ func EnableRecoveryGateForTest() Option {
 // was met at its first.
 var MintProofForTest = assurance.New
 
-// This file exposes the seams other capabilities build their redemption flows
-// on, so the package's own black-box tests can pin them before an interceptor
-// exists to exercise them. It is a test file, so nothing here reaches a
-// production build.
+// The accessors below expose the seams other capabilities build their
+// redemption flows on, so the package's own black-box tests can pin them before
+// an interceptor exists to exercise them.
 
 // ClassifyAddressForTest exposes the unexported address rule, so a test can pin
 // which addresses may key a bucket and which are refused outright.

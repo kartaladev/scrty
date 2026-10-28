@@ -654,6 +654,30 @@ func TestSessionBearerConstruction(t *testing.T) {
 				assert.Contains(t, err.Error(), "WithSessionBearerLimiter")
 			},
 		},
+		{
+			// The chain's factory builds the flow's limiter under its own
+			// namespace and default allowance.
+			name: "shared factory",
+			build: func(t *testing.T, h *authHarness) error {
+				memory := ratelimit.MemoryLimiterFactory()
+				factory := NewMockLimiterFactory(gomock.NewController(t))
+
+				factory.EXPECT().NewLimiter("session-reference", 100, time.Minute).
+					DoAndReturn(memory.NewLimiter)
+				factory.EXPECT().NewLimiter(gomock.Not("session-reference"), gomock.Any(), gomock.Any()).
+					AnyTimes().DoAndReturn(memory.NewLimiter)
+
+				_, err := httpsec.New(
+					httpsec.WithRateLimiterFactory(factory),
+					httpsec.EnableSessionBearer(h.sessionBearerDeps()),
+				)
+
+				return err
+			},
+			assert: func(t *testing.T, err error) {
+				require.NoError(t, err)
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -1137,30 +1161,6 @@ func TestSessionBearerConsumerLimiter(t *testing.T) {
 	for _, key := range failures {
 		assert.True(t, strings.Contains(key, sessionReferenceSource), "keyed by the source: %q", key)
 	}
-}
-
-// TestSessionBearerSharedFactory pins that the chain's factory builds the
-// flow's limiter under its own namespace and default allowance.
-//
-// Not a row of TestSessionBearerConstruction: it needs a mocked limiter factory.
-func TestSessionBearerSharedFactory(t *testing.T) {
-	t.Parallel()
-
-	memory := ratelimit.MemoryLimiterFactory()
-	factory := NewMockLimiterFactory(gomock.NewController(t))
-
-	factory.EXPECT().NewLimiter("session-reference", 100, time.Minute).
-		DoAndReturn(memory.NewLimiter)
-	factory.EXPECT().NewLimiter(gomock.Not("session-reference"), gomock.Any(), gomock.Any()).
-		AnyTimes().DoAndReturn(memory.NewLimiter)
-
-	h := newAuthHarness(t)
-
-	_, err := httpsec.New(
-		httpsec.WithRateLimiterFactory(factory),
-		httpsec.EnableSessionBearer(h.sessionBearerDeps()),
-	)
-	require.NoError(t, err)
 }
 
 // errStoreDown is the store fault the late-renewal cases inject.

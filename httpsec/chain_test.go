@@ -29,6 +29,18 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
+// The summary records each component besides the chain (summaryChain) writes
+// when a flush reports what it held back. A row reads its own component's
+// summaries by these, so a row passes only when the flush reached that
+// component, not merely some sampler.
+const (
+	summaryThrottle  = "mfa: verification refusals suppressed"
+	summaryAuthn     = "authentication refusals suppressed"
+	summaryOIDC      = "oidc refusals suppressed"
+	summaryHandoff   = "oidc handoff refusals suppressed"
+	summaryMFAPolicy = "policy: second-factor records suppressed"
+)
+
 // errDeepRefusal is what a recording interceptor refuses with, so a test can
 // assert the very error it registered is the one the chain's caller receives.
 var errDeepRefusal = errors.New("chain_test: refused deep in the chain")

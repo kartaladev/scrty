@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jonboulle/clockwork"
+	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -27,17 +30,21 @@ import (
 	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/expiry"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/policy/lockout"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
+	"github.com/kartaladev/scrty/token/onetime"
 )
 
 // stubRequest and stubWriter stand in for a framework's request and response
@@ -1616,23 +1623,1150 @@ func suppressedCount(t *testing.T, r slog.Record) int64 {
 //nolint:gosec // G101: a fixture naming no issued key, not a credential
 const unknownAPIKey = "sk_0199a0e1-0000-7000-8000-000000000000.Z3Vlc3M"
 
-// The summary records each component writes when a flush reports what it held
-// back. A row reads its own component's summaries by these, so a row passes
-// only when the flush reached that component, not merely some sampler.
+// summaryChain is the summary record the chain writes when a flush reports
+// what it held back.
+const summaryChain = "httpsec: refusal logs suppressed"
+
+// testDeviceChannel is the channel the scripted challenge method reports. It
+// is a test-only value, the channel of no first-factor kind, so a challenge
+// method is never refused as same-channel unless a case asks for it.
+const testDeviceChannel factor.Channel = "authenticator-device"
+
+// challengeStub is a scripted mfa.ChallengeMethod, named "passkey" unless a
+// case names it otherwise.
+//
+// It is hand-written rather than generated because its behaviour, not only
+// its calls, is what the cases rely on: BeginChallenge builds the document a
+// client would answer from the challenge it is given, and PresentedChallenge
+// reads that challenge back out of the client's answer, so a round trip through
+// the chain behaves as a real challenge protocol does. What it answers at
+// Enrolled and Verify is scripted, and every Verify is counted, because "the
+// method was never asked" is the guarantee most of the cases pin.
+//
+// It is safe for concurrent use, as the port requires.
+type challengeStub struct {
+	// name is what Name reports: "passkey" when empty.
+	name string
+
+	// channel is what Channel reports: testDeviceChannel unless a case needs
+	// the method on a first factor's channel.
+	channel factor.Channel
+
+	// enrolled and enrolledErr are what Enrolled answers.
+	enrolled    bool
+	enrolledErr error
+
+	// verifyErr is what Verify answers, for every call, and beginErr what
+	// BeginChallenge answers.
+	verifyErr error
+	beginErr  error
+
+	// verifyCalls counts Verify calls.
+	verifyCalls atomic.Int32
+
+	// onVerify, when set, runs at the start of every Verify with the response
+	// being verified, so a case can observe what the chain had done by then.
+	onVerify func(ctx context.Context, response []byte)
+
+	mu sync.Mutex
+	// issued are the challenges BeginChallenge was handed, in order.
+	issued []string
+}
+
+var _ mfa.ChallengeMethod = (*challengeStub)(nil)
+
+// newChallengeStub is a passkey the user is enrolled on and that accepts
+// every response it is asked to verify.
+func newChallengeStub() *challengeStub {
+	return &challengeStub{channel: testDeviceChannel, enrolled: true}
+}
+
+func (c *challengeStub) Name() string {
+	if c.name == "" {
+		return "passkey"
+	}
+
+	return c.name
+}
+
+func (c *challengeStub) Channel() factor.Channel { return c.channel }
+
+func (c *challengeStub) Enrolled(context.Context, identity.UserID) (bool, error) {
+	return c.enrolled, c.enrolledErr
+}
+
+func (*challengeStub) Response() mfa.ResponseFormat { return mfa.JSONBody(16 << 10) }
+
+func (c *challengeStub) Verify(ctx context.Context, _ identity.UserID, response []byte) error {
+	c.verifyCalls.Add(1)
+
+	if c.onVerify != nil {
+		c.onVerify(ctx, response)
+	}
+
+	return c.verifyErr
+}
+
+// stubChallengeDocument is the document BeginChallenge sends and a client
+// answers with: the challenge, carried back as it was received.
+type stubChallengeDocument struct {
+	Challenge string `json:"challenge"`
+}
+
+func (c *challengeStub) BeginChallenge(
+	_ context.Context,
+	_ identity.UserID,
+	challenge string,
+) (json.RawMessage, error) {
+	if c.beginErr != nil {
+		return nil, c.beginErr
+	}
+
+	c.mu.Lock()
+	c.issued = append(c.issued, challenge)
+	c.mu.Unlock()
+
+	return json.Marshal(stubChallengeDocument{Challenge: challenge})
+}
+
+// errStubUnreadableAnswer is what PresentedChallenge refuses an answer whose
+// challenge member is not a string with.
+var errStubUnreadableAnswer = errors.New("mfachallenge_stub_test: the answer's challenge is unreadable")
+
+// PresentedChallenge reads the challenge member of a JSON answer. An answer
+// without one presents the empty challenge, and one whose member is not a
+// string cannot be read at all.
+func (*challengeStub) PresentedChallenge(response []byte) (string, error) {
+	var doc stubChallengeDocument
+	if err := json.Unmarshal(response, &doc); err != nil {
+		return "", errors.Join(errStubUnreadableAnswer, err)
+	}
+
+	return doc.Challenge, nil
+}
+
+// lastIssued is the challenge the most recent begin was handed, and empty when
+// no begin reached the method.
+func (c *challengeStub) lastIssued() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.issued) == 0 {
+		return ""
+	}
+
+	return c.issued[len(c.issued)-1]
+}
+
+// answer is a response to challenge, as a client of this method would post it.
+func answer(challenge string) string {
+	b, err := json.Marshal(stubChallengeDocument{Challenge: challenge})
+	if err != nil {
+		panic(err) // a string always marshals
+	}
+
+	return string(b)
+}
+
+// issuedAll is every challenge a begin handed the method, in order.
+func (c *challengeStub) issuedAll() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]string(nil), c.issued...)
+}
+
+// enrolUsername is the enrolling user's username, which is an address, so the
+// default label and contact resolvers read it unchanged.
+const enrolUsername = "ana@example.com"
+
+// enrolIssuer is the issuer the TOTP method is built with.
+const enrolIssuer = "Example"
+
+// The enrolment endpoints' paths for the harness's TOTP method, named "totp",
+// under the default prefixes.
 const (
-	summaryChain     = "httpsec: refusal logs suppressed"
-	summaryThrottle  = "mfa: verification refusals suppressed"
-	summaryAuthn     = "authentication refusals suppressed"
-	summaryOIDC      = "oidc refusals suppressed"
-	summaryHandoff   = "oidc handoff refusals suppressed"
-	summaryMFAPolicy = "policy: second-factor records suppressed"
+	enrolBeginPath   = httpsec.DefaultEnrolmentBeginPrefix + "/totp"
+	enrolConfirmPath = httpsec.DefaultEnrolmentConfirmPrefix + "/totp"
+	enrolEmailPath   = httpsec.DefaultEnrolmentEmailConfirmPrefix + "/totp"
 )
 
-//go:generate mockgen -source=helpers_test.go -package=httpsec_test -destination=decoyauthenticator_mock_test.go -typed -mock_names=DecoyAuthenticator=MockDecoyAuthenticator
+// queuedSender is a sender double that declares itself non-blocking, as
+// notify.QueuedSender does, so the enrolment path accepts it without the
+// synchronous-delivery option. What it is asked to send is the mock's to pin.
+type queuedSender struct{ *MockSender }
 
-// DecoyAuthenticator is an authenticator that can also spend decoy password
-// verifications, as the chain's lock refusal looks for.
-type DecoyAuthenticator interface {
-	authenticate.Authenticator
-	authenticate.DecoyVerifier
+func (queuedSender) NonBlocking() bool { return true }
+
+var _ notify.NonBlocking = queuedSender{}
+
+// enrolHarness is what an enrolment chain is wired to: a real session manager,
+// a real TOTP method over the in-memory store — so a begin really provisions a
+// secret and a code computed from it really proves the device — and doubles for
+// the user loader and the sender, whose calls are part of what is pinned.
+type enrolHarness struct {
+	t *testing.T
+
+	sessions *session.Sessions
+	store    *mfa.MemoryEnrolmentStore
+	totp     *mfa.TOTP
+
+	// clock is the TOTP method's clock. Tests move it between requests, never
+	// during one.
+	clock *clockwork.FakeClock
+
+	users  *MockUserLoader
+	sender *MockSender
+	tokens *MockGenerator
+
+	// username is what the user loader reports for the enrolling user.
+	username string
+
+	// method is what EnableMFA is given, the TOTP method unless a case
+	// replaces it, and extraMethods are further methods given after it, in
+	// order.
+	method       mfa.Method
+	extraMethods []mfa.Method
+
+	enrolOpts  []httpsec.EnrolmentOption
+	logoutOpts []httpsec.LogoutOption
+
+	// mfaOpts is further options for EnableMFA, after the harness's tokens.
+	mfaOpts []httpsec.MFAOption
+
+	// extra is further chain options, applied after the harness's own.
+	extra []httpsec.Option
+
+	// pinned, when set, is carried as it stands in memory on every request
+	// instead of being loaded from the store: a test uses it to hand the chain
+	// a session the store would no longer load, or to read what a request
+	// left on the very object it was given.
+	pinned *session.Session
+
+	// withoutGate builds the chain with the enrolment challenge counted as
+	// enforced but no enrolment path registered, which is how a test shows a
+	// refusal is the gate's and nothing else's.
+	withoutGate bool
+}
+
+func newEnrolHarness(t *testing.T) *enrolHarness {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	h := &enrolHarness{
+		t:        t,
+		sessions: sessions,
+		store:    mfa.NewMemoryEnrolmentStore(),
+		clock:    clockwork.NewFakeClockAt(time.Now().Truncate(time.Second)),
+		users:    NewMockUserLoader(ctrl),
+		sender:   NewMockSender(ctrl),
+		tokens:   NewMockGenerator(ctrl),
+		username: enrolUsername,
+	}
+
+	h.totp, err = mfa.NewTOTP(h.store, enrolIssuer, mfa.WithClock(h.clock))
+	require.NoError(t, err)
+
+	h.method = h.totp
+
+	h.users.EXPECT().LoadByUserID(gomock.Any(), testMFAUser).AnyTimes().
+		DoAndReturn(func(context.Context, identity.UserID) (*identity.Details, error) {
+			return &identity.Details{ID: testMFAUser, Name: "Ana", Username: h.username, Active: true}, nil
+		})
+
+	return h
+}
+
+// enrolmentEngine is an engine holding the MFA requirement policy with the
+// enrolment path on, which is what declares the enrolment challenge the path
+// must be paired with.
+func enrolmentEngine(t *testing.T) *policy.Engine {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+
+	lookup := NewMockMFAMethodLookup(ctrl)
+	lookup.EXPECT().Name().Return("totp").AnyTimes()
+	lookup.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(false, nil).AnyTimes()
+	lookup.EXPECT().Channel().Return(factor.AuthenticatorApp).AnyTimes()
+
+	p, err := policy.NewMFARequirement(everyoneRequired{}, []policy.MFAMethodLookup{enrollableLookup{lookup}}, policy.WithMFAEnrolmentPath())
+	require.NoError(t, err)
+
+	return engineOf(t, p)
+}
+
+// deps is what EnableMFAEnrolment is handed: the user loader and a
+// non-blocking sender.
+func (h *enrolHarness) deps() httpsec.EnrolmentDeps {
+	return httpsec.EnrolmentDeps{Users: h.users, Sender: queuedSender{h.sender}}
+}
+
+// options is every option the harness's chain is built from.
+func (h *enrolHarness) options(t *testing.T, s *session.Session) []httpsec.Option {
+	t.Helper()
+
+	enrolment := httpsec.EnableMFAEnrolment(h.deps(), h.enrolOpts...)
+	if h.withoutGate {
+		enrolment = httpsec.EnableGateForTest(policy.ChallengeMFAEnrolment)
+	}
+
+	return append([]httpsec.Option{
+		httpsec.WithPolicyEngine(enrolmentEngine(t)),
+		h.carries(s),
+		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extraMethods...), append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
+		enrolment,
+		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
+	}, h.extra...)
+}
+
+// chain assembles the chain under test, with s carried as a first factor
+// would have carried it.
+func (h *enrolHarness) chain(t *testing.T, s *session.Session) *httpsec.Chain {
+	t.Helper()
+
+	c, err := httpsec.New(h.options(t, s)...)
+	require.NoError(t, err)
+
+	return c
+}
+
+// carries stands in for the bearer interceptor: at its slot, it loads s afresh
+// from the store on every request, as the bearer loads the session a token
+// names, so a request sees what the one before it saved. A session that no
+// longer loads is not carried.
+func (h *enrolHarness) carries(s *session.Session) httpsec.Option {
+	carrier := httpsec.InterceptorFunc(func(ex *httpsec.Exchange, next httpsec.Next) error {
+		if s == nil {
+			return next(ex)
+		}
+
+		loaded := h.pinned
+		if loaded == nil {
+			var err error
+
+			loaded, err = h.sessions.Load(ex.Context(), s.ID)
+			if err != nil {
+				return next(ex)
+			}
+		}
+
+		ex.Authentication = &authenticate.Authentication{Principal: testPrincipal(), Time: time.Now()}
+		ex.Session = loaded
+		ex.SetContext(httpsec.WithSession(httpsec.WithCaller(ex.Context(), ex.Authentication), loaded))
+
+		return next(ex)
+	})
+
+	return httpsec.RegisterInterceptor(carrier, httpsec.OrderBearerToken)
+}
+
+// enrolmentOnly is a live session for the enrolling user, established by
+// first and marked enrolment-only as the login tail would have marked it.
+func (h *enrolHarness) enrolmentOnly(t *testing.T, first factor.Kind) *session.Session {
+	t.Helper()
+
+	s, err := h.sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(first))
+	require.NoError(t, err)
+
+	h.sessions.MarkEnrolmentPending(s, 15*time.Minute)
+	require.NoError(t, h.sessions.Save(t.Context(), s))
+
+	return s
+}
+
+// sessionIn is a live session for the enrolling user, established by first,
+// in state: enrolment-only as the login tail marks it, or any other state as
+// set directly.
+func (h *enrolHarness) sessionIn(t *testing.T, first factor.Kind, state session.MFAState) *session.Session {
+	t.Helper()
+
+	if state == session.MFAEnrolmentPending {
+		return h.enrolmentOnly(t, first)
+	}
+
+	s, err := h.sessions.Create(t.Context(), testMFAUser, session.WithFirstFactor(first))
+	require.NoError(t, err)
+
+	s.MFA = state
+	require.NoError(t, h.sessions.Save(t.Context(), s))
+
+	return s
+}
+
+// stored reloads a session by handle.
+func (h *enrolHarness) stored(t *testing.T, handle string) *session.Session {
+	t.Helper()
+
+	s, err := h.sessions.Load(t.Context(), handle)
+	require.NoError(t, err)
+
+	return s
+}
+
+// enrolment reads the enrolling user's enrolment as the store holds it.
+func (h *enrolHarness) enrolment(t *testing.T) (mfa.Enrolment, bool) {
+	t.Helper()
+
+	e, ok, err := h.store.Get(t.Context(), testMFAUser)
+	require.NoError(t, err)
+
+	return e, ok
+}
+
+// codeFor is the code an authenticator holding secret shows at the harness's
+// clock.
+func (h *enrolHarness) codeFor(t *testing.T, secret string) string {
+	t.Helper()
+
+	code, err := totp.GenerateCode(secret, h.clock.Now())
+	require.NoError(t, err)
+
+	return code
+}
+
+// post is a form POST to path, carried under ctx.
+func post(ctx context.Context, path, body string) *http.Request {
+	return formRequest(ctx, path, body)
+}
+
+// serveIn runs req through chain on an exchange seeded from ctx, which a case
+// uses to hand the chain a context that is already cancelled.
+func serveIn(ctx context.Context, t *testing.T, chain *httpsec.Chain, req *http.Request) served {
+	t.Helper()
+
+	out := served{rec: httptest.NewRecorder()}
+	run := chain.Assemble(func(ex *httpsec.Exchange) error {
+		out.handlerRan = true
+		out.handled = ex
+
+		return nil
+	})
+
+	ex := httpsec.NewExchange(ctx, httpsec.NewHTTPRequest(req), httpsec.NewHTTPResponseWriter(out.rec))
+	out.err = run(ex)
+
+	return out
+}
+
+// The registration endpoints' paths under the default prefix.
+const (
+	passkeyBeginPath        = httpsec.DefaultPasskeyRegistrationPrefix + "/begin"
+	passkeyFinishPath       = httpsec.DefaultPasskeyRegistrationPrefix + "/finish"
+	passkeyConfirmPath      = httpsec.DefaultPasskeyRegistrationPrefix + "/confirm"
+	passkeyConfirmEmailPath = httpsec.DefaultPasskeyRegistrationPrefix + "/confirm-email"
+)
+
+// passkeyRP is the relying party the stub verifier reports.
+var passkeyRP = passkey.RelyingParty{ID: "example.com", Name: "Example", Origins: []string{"https://example.com"}}
+
+// passkeyVerifierStub drives a generated passkey.Verifier mock with a few
+// rules, so the chain's passkey endpoints can be exercised without the
+// WebAuthn adapter, which the core module must not depend on.
+//
+// A registration response is {"challenge","id","name"} and an assertion
+// {"challenge","id","handle"}, the challenge base64url-encoded as clientDataJSON
+// carries it. Every registration verifies as a user-verified, backup-eligible
+// passkey, and every assertion whose challenge is the expected one verifies,
+// user-verified, with a zero counter.
+type passkeyVerifierStub struct {
+	mock *MockPasskeyVerifier
+
+	mu         sync.Mutex
+	creations  []string // challenges rendered into creation options
+	requests   []string // challenges rendered into request options
+	allowed    [][]passkey.Descriptor
+	parseCalls int
+
+	// notUserVerified makes every assertion verify with user presence only,
+	// refuseAssertions makes every assertion fail to verify, as a bad
+	// signature does, and signCount is the counter every verified assertion
+	// reports.
+	notUserVerified  atomic.Bool
+	refuseAssertions atomic.Bool
+	signCount        atomic.Uint32
+}
+
+func newPasskeyVerifierStub(t *testing.T) *passkeyVerifierStub {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	v := &passkeyVerifierStub{mock: NewMockPasskeyVerifier(ctrl)}
+
+	v.mock.EXPECT().RelyingParty().Return(passkeyRP).AnyTimes()
+	v.mock.EXPECT().CreationOptions(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, in passkey.CreationInput) (json.RawMessage, error) {
+			v.mu.Lock()
+			defer v.mu.Unlock()
+
+			v.creations = append(v.creations, in.Challenge)
+
+			return json.Marshal(map[string]string{"challenge": encodeChallenge(in.Challenge)})
+		})
+	v.mock.EXPECT().RequestOptions(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, in passkey.RequestInput) (json.RawMessage, error) {
+			v.mu.Lock()
+			defer v.mu.Unlock()
+
+			v.requests = append(v.requests, in.Challenge)
+			v.allowed = append(v.allowed, in.Allow)
+
+			return json.Marshal(map[string]any{"challenge": encodeChallenge(in.Challenge), "allow": len(in.Allow)})
+		})
+	v.mock.EXPECT().ParseRegistration(gomock.Any()).AnyTimes().
+		DoAndReturn(func(body []byte) (passkey.ParsedRegistration, error) {
+			v.mu.Lock()
+			v.parseCalls++
+			v.mu.Unlock()
+
+			var r struct{ Challenge, ID, Name string }
+			if err := json.Unmarshal(body, &r); err != nil || r.ID == "" {
+				return nil, errors.New("stub: unreadable registration")
+			}
+
+			p := NewMockParsedRegistration(ctrl)
+			p.EXPECT().Challenge().Return(r.Challenge).AnyTimes()
+			p.EXPECT().CredentialID().Return([]byte(r.ID)).AnyTimes()
+			p.EXPECT().Name().Return(r.Name).AnyTimes()
+
+			return p, nil
+		})
+	v.mock.EXPECT().VerifyRegistration(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, p passkey.ParsedRegistration, exp passkey.RegistrationExpectation) (*passkey.CredentialInput, error) {
+			if p.Challenge() != encodeChallenge(exp.Challenge) {
+				return nil, errors.New("stub: challenge mismatch")
+			}
+
+			return &passkey.CredentialInput{
+				CredentialID:   p.CredentialID(),
+				PublicKey:      append([]byte("cose-"), p.CredentialID()...),
+				UserVerified:   true,
+				BackupEligible: true,
+				BackupState:    true,
+				Transports:     []string{"internal"},
+			}, nil
+		})
+	v.mock.EXPECT().ParseAssertion(gomock.Any()).AnyTimes().
+		DoAndReturn(func(body []byte) (passkey.ParsedAssertion, error) {
+			var a struct {
+				Challenge, ID string
+				Handle        []byte
+			}
+			if err := json.Unmarshal(body, &a); err != nil || a.ID == "" {
+				return nil, errors.New("stub: unreadable assertion")
+			}
+
+			p := NewMockParsedAssertion(ctrl)
+			p.EXPECT().Challenge().Return(a.Challenge).AnyTimes()
+			p.EXPECT().CredentialID().Return([]byte(a.ID)).AnyTimes()
+			p.EXPECT().UserHandle().Return(a.Handle).AnyTimes()
+
+			return p, nil
+		})
+	v.mock.EXPECT().VerifyAssertion(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, p passkey.ParsedAssertion, c *passkey.Credential, exp passkey.AssertionExpectation) (*passkey.AssertionResult, error) {
+			if v.refuseAssertions.Load() || p.Challenge() != encodeChallenge(exp.Challenge) ||
+				!bytes.Equal(p.CredentialID(), c.CredentialID) {
+				return nil, errors.New("stub: assertion does not verify")
+			}
+
+			return &passkey.AssertionResult{
+				SignCount:    v.signCount.Load(),
+				UserVerified: !v.notUserVerified.Load(), BackupEligible: c.BackupEligible, BackupState: c.BackupState,
+			}, nil
+		})
+
+	return v
+}
+
+// encodeChallenge is a token string as clientDataJSON carries it.
+func encodeChallenge(token string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(token))
+}
+
+// lastCreation is the challenge the latest registration begin rendered.
+func (v *passkeyVerifierStub) lastCreation(t *testing.T) string {
+	t.Helper()
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	require.NotEmpty(t, v.creations, "no registration was begun")
+
+	return v.creations[len(v.creations)-1]
+}
+
+// lastRequest is the challenge the latest assertion begin rendered.
+func (v *passkeyVerifierStub) lastRequest(t *testing.T) string {
+	t.Helper()
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	require.NotEmpty(t, v.requests, "no assertion was begun")
+
+	return v.requests[len(v.requests)-1]
+}
+
+// registrationBody is a registration response answering challenge with
+// credential credID.
+func registrationBody(challenge, credID string) string {
+	b, _ := json.Marshal(map[string]string{"challenge": encodeChallenge(challenge), "id": credID, "name": "Laptop"})
+
+	return string(b)
+}
+
+// handleAssertionBody is an assertion answering challenge from credential
+// credID, carrying the user handle handle, as a passwordless login's does.
+func handleAssertionBody(challenge, credID string, handle []byte) string {
+	b, _ := json.Marshal(map[string]any{"challenge": encodeChallenge(challenge), "id": credID, "handle": handle})
+
+	return string(b)
+}
+
+// assertionBody is an assertion answering challenge from credential credID.
+func assertionBody(challenge, credID string) string {
+	b, _ := json.Marshal(map[string]string{"challenge": encodeChallenge(challenge), "id": credID})
+
+	return string(b)
+}
+
+// jsonPost is a JSON POST of body to path.
+func jsonPost(ctx context.Context, path, body string) *http.Request {
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	return req
+}
+
+// passkeyHarness is the enrolment harness with passkeys added: a real
+// passkey.Passkeys over the in-memory stores and the stub verifier, sending
+// its notices and emailed codes to a capturing sender, enabled on the chain.
+type passkeyHarness struct {
+	*enrolHarness
+
+	verifier *passkeyVerifierStub
+	creds    *passkey.MemoryCredentialStore
+	notices  *capturingSender
+	recovery *passkey.RecoveryDeps
+
+	// pkOpts are further manager options, and passkeyOpts further
+	// EnablePasskeys options.
+	pkOpts      []passkey.Option
+	passkeyOpts []httpsec.PasskeyOption
+
+	// passkeyMethod puts the passkey MFA method on EnableMFA after TOTP, so
+	// the enrolment path counts it among its enrolling methods.
+	passkeyMethod bool
+
+	// withoutEnrolment builds the chain with no enrolment path, and
+	// withRecoveryGate with the recovery gate.
+	withoutEnrolment bool
+	withRecoveryGate bool
+
+	manager *passkey.Passkeys
+}
+
+func newPasskeyHarness(t *testing.T) *passkeyHarness {
+	t.Helper()
+
+	return &passkeyHarness{
+		enrolHarness: newEnrolHarness(t),
+		verifier:     newPasskeyVerifierStub(t),
+		creds:        passkey.NewMemoryCredentialStore(),
+		notices:      &capturingSender{},
+	}
+}
+
+// build builds the passkey manager and the chain carrying s.
+func (h *passkeyHarness) build(t *testing.T, s *session.Session) *httpsec.Chain {
+	t.Helper()
+
+	c, err := httpsec.New(h.chainOptions(t, s)...)
+	require.NoError(t, err)
+
+	return c
+}
+
+// chainOptions are the options build assembles the chain from.
+func (h *passkeyHarness) chainOptions(t *testing.T, s *session.Session) []httpsec.Option {
+	t.Helper()
+
+	m, err := passkey.New(passkey.Deps{
+		Verifier:    h.verifier.mock,
+		Credentials: h.creds,
+		Users:       h.users,
+		Sender:      h.notices,
+		Sessions:    h.sessions,
+		Recovery:    h.recovery,
+	}, append([]passkey.Option{passkey.WithRepudiationContact("help@example.com")}, h.pkOpts...)...)
+	require.NoError(t, err)
+
+	h.manager = m
+
+	if h.passkeyMethod {
+		h.extraMethods = append(h.extraMethods, m.MFAMethod())
+	}
+
+	h.extra = append(h.extra, httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: m, Sessions: h.sessions, Users: h.users}, h.passkeyOpts...))
+	if h.withRecoveryGate {
+		h.extra = append(h.extra, httpsec.EnableRecoveryGateForTest())
+	}
+
+	opts := h.options(t, s)
+	if h.withoutEnrolment {
+		opts = withoutEnrolmentPath(t, h, s)
+	}
+
+	return opts
+}
+
+// withoutEnrolmentPath is the harness's options with no enrolment path and no
+// policy engine.
+func withoutEnrolmentPath(t *testing.T, h *passkeyHarness, s *session.Session) []httpsec.Option {
+	t.Helper()
+
+	return append([]httpsec.Option{
+		h.carries(s),
+		httpsec.EnableMFA(append([]mfa.Method{h.method}, h.extraMethods...),
+			append([]httpsec.MFAOption{httpsec.WithMFATokens(h.tokens)}, h.mfaOpts...)...),
+		httpsec.EnableLogout(httpsec.LogoutDeps{Sessions: h.sessions}, h.logoutOpts...),
+	}, h.extra...)
+}
+
+// withEnrolledMethod builds the chain with no enrolment path and puts on the
+// MFA slot a second method the user is enrolled on, listed nowhere else: the
+// manager's Deps carry no MFA methods, so only the chain can tell it the
+// session owes a second factor.
+func (h *passkeyHarness) withEnrolledMethod(t *testing.T) {
+	t.Helper()
+
+	enrolled := NewMockMethod(gomock.NewController(t))
+	enrolled.EXPECT().Name().Return("emailcode").AnyTimes()
+	enrolled.EXPECT().Channel().Return(factor.Email).AnyTimes()
+	enrolled.EXPECT().Enrolled(gomock.Any(), gomock.Any()).Return(true, nil).AnyTimes()
+	enrolled.EXPECT().Response().Return(mfa.FormField("code", 64)).AnyTimes()
+
+	h.withoutEnrolment = true
+	h.extraMethods = append(h.extraMethods, enrolled)
+}
+
+// withPasswordless serves passwordless login on the chain, minting its tokens
+// with the harness's generator, over a manager in the optional recovery-codes
+// mode.
+func (h *passkeyHarness) withPasswordless() {
+	h.pkOpts = append(h.pkOpts, passkey.WithOptionalRecoveryCodes())
+	h.passkeyOpts = append(h.passkeyOpts, httpsec.WithPasskeyPasswordlessLogin(httpsec.PasswordlessTokens(h.tokens)))
+}
+
+// register begins and finishes a registration through chain, returning the
+// finish's outcome.
+func (h *passkeyHarness) register(t *testing.T, chain *httpsec.Chain, credID string) served {
+	t.Helper()
+
+	begun := serve(t, chain, post(t.Context(), passkeyBeginPath, ""))
+	require.NoError(t, begun.err)
+
+	return serve(t, chain, jsonPost(t.Context(), passkeyFinishPath, registrationBody(h.verifier.lastCreation(t), credID)))
+}
+
+// credential is the user's one stored passkey.
+func (h *passkeyHarness) credential(t *testing.T) *passkey.Credential {
+	t.Helper()
+
+	list, err := h.creds.List(t.Context(), testMFAUser)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	return list[0]
+}
+
+// The addresses these tests submit. One has an account and one has none, and
+// the whole point of the request endpoint is that a client cannot tell which
+// is which.
+const (
+	magicLinkKnown   = "ada@example.com"
+	magicLinkUnknown = "nobody@example.com"
+)
+
+// magicLinkUserID is the reference a link records, and the one redemption
+// loads by.
+const magicLinkUserID identity.UserID = "u-1"
+
+// magicLinkTTL is how long a link lives in these tests, and therefore what the
+// binding cookie's lifetime must be.
+const magicLinkTTL = 15 * time.Minute
+
+// magicLinkSource is the client address most of these requests come from. It
+// is a documentation-range address, so nothing here can reach a real host.
+const magicLinkSource = "203.0.113.7"
+
+func magicLinkUser() *identity.Details {
+	return &identity.Details{
+		ID:       magicLinkUserID,
+		Name:     "Ada Lovelace",
+		Username: magicLinkKnown,
+		Active:   true,
+	}
+}
+
+// capturingSender is the notify.Sender the magic-link manager sends through.
+// It reports itself non-blocking, which is what the manager requires, and it
+// keeps every message so a test can read the link a user would have received.
+type capturingSender struct {
+	mu   sync.Mutex
+	sent []notify.Message
+}
+
+func (s *capturingSender) Send(_ context.Context, m notify.Message) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sent = append(s.sent, m)
+
+	return nil
+}
+
+// NonBlocking reports that Send does not wait for delivery, which is the
+// promise the magic-link manager refuses to be built without.
+func (s *capturingSender) NonBlocking() bool { return true }
+
+func (s *capturingSender) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return len(s.sent)
+}
+
+// lastLink is the URL of the most recent message, which is what a recipient
+// would click.
+func (s *capturingSender) lastLink(t *testing.T) string {
+	t.Helper()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	require.NotEmpty(t, s.sent, "no message was sent")
+
+	found := linkPattern.FindString(s.sent[len(s.sent)-1].TextBody)
+	require.NotEmpty(t, found, "the message carries no link")
+
+	return found
+}
+
+var linkPattern = regexp.MustCompile(`https?://\S+`)
+
+// lastToken is the token the most recent link carries.
+func (s *capturingSender) lastToken(t *testing.T) string {
+	t.Helper()
+
+	u, err := url.Parse(s.lastLink(t))
+	require.NoError(t, err)
+
+	tok := u.Query().Get("token")
+	require.NotEmpty(t, tok, "the link carries no token")
+
+	return tok
+}
+
+// lastNext is the redirect target the most recent link carries, which is what
+// the flow settled on after the allowlist had its say.
+func (s *capturingSender) lastNext(t *testing.T) string {
+	t.Helper()
+
+	u, err := url.Parse(s.lastLink(t))
+	require.NoError(t, err)
+
+	return u.Query().Get("next")
+}
+
+// magicLinkHarness is what a magic-link chain is wired to: a real one-time
+// token manager and a real magic-link manager, so a link that is issued can
+// actually be redeemed, with doubles only where a test has to say what the
+// store answered.
+type magicLinkHarness struct {
+	sessions *session.Sessions
+	users    *MockUserLoader
+	tokens   *MockGenerator
+	sender   *capturingSender
+	manager  *magiclink.Links
+
+	// issued counts the access tokens the login tail asked for, which is how a
+	// test pins that a refused redemption issues none, and sessionID is the
+	// handle the last of them was issued for.
+	issued    atomic.Int64
+	sessionID atomic.Value
+
+	// linkOpts and engine are what a case wants configured differently.
+	linkOpts []httpsec.MagicLinkOption
+	engine   *policy.Engine
+
+	// chainOpts are further chain options a case needs, such as something to
+	// enforce the challenge its policy raises.
+	chainOpts []httpsec.Option
+}
+
+func newMagicLinkHarness(t *testing.T, managerOpts ...magiclink.Option) *magicLinkHarness {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+
+	sessions, err := session.New()
+	require.NoError(t, err)
+
+	h := &magicLinkHarness{
+		sessions: sessions,
+		users:    NewMockUserLoader(ctrl),
+		tokens:   NewMockGenerator(ctrl),
+		sender:   &capturingSender{},
+	}
+
+	h.users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, username string) (*identity.Details, error) {
+			if username == magicLinkKnown {
+				return magicLinkUser(), nil
+			}
+
+			return nil, identity.ErrUserNotFound
+		})
+
+	h.users.EXPECT().LoadByUserID(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, id identity.UserID) (*identity.Details, error) {
+			if id == magicLinkUserID {
+				return magicLinkUser(), nil
+			}
+
+			return nil, identity.ErrUserNotFound
+		})
+
+	h.tokens.EXPECT().Generate(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, id string, _ *identity.Principal) (string, error) {
+			h.issued.Add(1)
+			h.sessionID.Store(id)
+
+			return "issued-token", nil
+		})
+
+	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
+	require.NoError(t, err)
+
+	h.manager, err = magiclink.New(
+		onetimes, h.users, h.sender, "https://app.example.com", managerOpts...)
+	require.NoError(t, err)
+
+	return h
+}
+
+// options are the magic-link options every chain in these tests is built with:
+// the collaborators the endpoints need, plus whatever the case configured.
+func (h *magicLinkHarness) options() []httpsec.MagicLinkOption {
+	var opts []httpsec.MagicLinkOption
+
+	// Left out entirely when the harness has none, so a case can pin what
+	// happens to a chain that was never given one.
+	if h.sessions != nil {
+		opts = append(opts, httpsec.WithMagicLinkSessions(h.sessions))
+	}
+
+	if h.tokens != nil {
+		opts = append(opts, httpsec.WithMagicLinkTokens(h.tokens))
+	}
+
+	return append(opts, h.linkOpts...)
+}
+
+// chain assembles the chain under test.
+func (h *magicLinkHarness) chain(t *testing.T) *httpsec.Chain {
+	t.Helper()
+
+	c, err := h.build()
+	require.NoError(t, err)
+
+	return c
+}
+
+// build is chain without the assertion, for the cases that are about the
+// construction error itself.
+func (h *magicLinkHarness) build() (*httpsec.Chain, error) {
+	opts := []httpsec.Option{httpsec.EnableMagicLink(h.manager, h.options()...)}
+	if h.engine != nil {
+		opts = append(opts, httpsec.WithPolicyEngine(h.engine))
+	}
+
+	return httpsec.New(append(opts, h.chainOpts...)...)
+}
+
+// activeSessions counts the sessions the flow established for the user a link
+// authenticates.
+func (h *magicLinkHarness) activeSessions(t *testing.T) int {
+	t.Helper()
+
+	n, err := h.sessions.CountActiveByUser(t.Context(), magicLinkUserID)
+	require.NoError(t, err)
+
+	return n
+}
+
+// requestLink drives one link request through the chain and returns what the
+// response said.
+func (h *magicLinkHarness) requestLink(t *testing.T, c *httpsec.Chain, address string) served {
+	t.Helper()
+
+	return serve(t, c, formRequest(t.Context(), DefaultMagicLinkRequestPathForTest,
+		url.Values{"email": {address}}.Encode()))
+}
+
+// The paths these tests use. They are the library's documented defaults, named
+// here so a test reads like the client it stands in for.
+const (
+	DefaultMagicLinkRequestPathForTest = httpsec.DefaultMagicLinkRequestPath
+	DefaultMagicLinkConsumePathForTest = httpsec.DefaultMagicLinkConsumePath
+)
+
+// postBody posts an arbitrary body to path, which is how the malformed-body
+// cases reach the endpoint.
+func postBody(ctx context.Context, path, contentType string, body io.Reader) *http.Request {
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, path, body)
+	req.Header.Set("Content-Type", contentType)
+	req.RemoteAddr = magicLinkSource + ":51000"
+
+	return req
+}
+
+// postValues posts a URL-encoded form from a named source address.
+func postValues(ctx context.Context, path, source string, values url.Values) *http.Request {
+	req := postBody(ctx, path, "application/x-www-form-urlencoded",
+		strings.NewReader(values.Encode()))
+	req.RemoteAddr = source + ":51000"
+
+	return req
+}
+
+// getFrom is a GET from a named source address, which is what a mail scanner's
+// prefetch looks like.
+func getFrom(ctx context.Context, path, source string) *http.Request {
+	req := httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil)
+	req.RemoteAddr = source + ":51000"
+
+	return req
+}
+
+// cookieNamed returns the cookie the response set under name, or nil.
+func cookieNamed(rec *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, c := range rec.Result().Cookies() { //nolint:bodyclose // the recorder's result has no body to close
+		if c.Name == name {
+			return c
+		}
+	}
+
+	return nil
+}
+
+// link asks for a link as a browser would, and returns the token the message
+// carried and the binding value that browser now holds.
+func (h *magicLinkHarness) link(t *testing.T, c *httpsec.Chain) (token, nonce string) {
+	t.Helper()
+
+	out := h.requestLink(t, c, magicLinkKnown)
+	require.NoError(t, out.err)
+
+	if cookie := cookieNamed(out.rec, httpsec.DefaultBindingCookieName); cookie != nil {
+		nonce = cookie.Value
+	}
+
+	return h.sender.lastToken(t), nonce
+}
+
+// redeem posts a token back as the confirmation page would, from the usual
+// source, carrying the binding cookie when there is one.
+func (h *magicLinkHarness) redeem(t *testing.T, c *httpsec.Chain, token, nonce string) served {
+	t.Helper()
+
+	return h.redeemFrom(t, c, magicLinkSource, token, nonce)
+}
+
+// redeemFrom is redeem from a named client address, which is what the
+// rate-limit accounting is keyed on.
+func (h *magicLinkHarness) redeemFrom(
+	t *testing.T,
+	c *httpsec.Chain,
+	source, token, nonce string,
+) served {
+	t.Helper()
+
+	req := postValues(t.Context(), httpsec.DefaultMagicLinkConsumePath, source,
+		url.Values{"token": {token}})
+	if nonce != "" {
+		req.AddCookie(bindingCookie(nonce))
+	}
+
+	return serve(t, c, req)
+}
+
+// consumeWithNext posts a token back along with the redirect target the
+// confirmation page carried.
+func consumeWithNext(t *testing.T, token, nonce, next string) *http.Request {
+	t.Helper()
+
+	req := postValues(t.Context(), httpsec.DefaultMagicLinkConsumePath, magicLinkSource,
+		url.Values{"token": {token}, "next": {next}})
+	if nonce != "" {
+		req.AddCookie(bindingCookie(nonce))
+	}
+
+	return req
+}
+
+// openedSession is the session the login tail created, read back from the
+// store by the identifier the access token was issued for. That identifier is
+// the session handle, which is how a later bearer request finds it.
+func (h *magicLinkHarness) openedSession(t *testing.T) *session.Session {
+	t.Helper()
+
+	id, _ := h.sessionID.Load().(string)
+	require.NotEmpty(t, id, "no access token was issued, so no session was opened")
+
+	s, err := h.sessions.Load(t.Context(), id)
+	require.NoError(t, err)
+
+	return s
+}
+
+// urlValues builds a form body from alternating names and values, so a case
+// reads as the submission it stands for.
+func urlValues(pairs ...string) url.Values {
+	values := url.Values{}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		values.Set(pairs[i], pairs[i+1])
+	}
+
+	return values
+}
+
+// bindingCookie is the cookie a browser sends back. The attributes a response
+// sets are the library's business and are asserted where they are set; a
+// request carries only a name and a value.
+func bindingCookie(nonce string) *http.Cookie {
+	//nolint:gosec // G124: this is a request cookie, which carries no attributes at all
+	return &http.Cookie{Name: httpsec.DefaultBindingCookieName, Value: nonce}
+}
+
+// redeemerFunc adapts a function to httpsec.Redeemer, so a test can stand in a
+// redemption that behaves as badly as it likes.
+type redeemerFunc func(
+	ctx context.Context,
+	token, nonce string,
+	checks ...magiclink.Check,
+) (magiclink.Redemption, error)
+
+func (f redeemerFunc) Redeem(
+	ctx context.Context,
+	token, nonce string,
+	checks ...magiclink.Check,
+) (magiclink.Redemption, error) {
+	return f(ctx, token, nonce, checks...)
 }
