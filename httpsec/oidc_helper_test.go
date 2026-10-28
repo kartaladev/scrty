@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 )
 
 // testOIDCProvider is the one provider the chain tests' managers register. Its

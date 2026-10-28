@@ -8,8 +8,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/onetime"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
@@ -36,8 +36,8 @@ type MFAResult struct {
 // returns leaves the chain as the request's refusal.
 type MFAResponder func(ex *Exchange, result MFAResult) error
 
-//go:generate mockgen -destination=mfamethod_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa Method
-//go:generate mockgen -destination=enrolmentstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa EnrolmentStore
+//go:generate mockgen -destination=mfamethod_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/mfa Method
+//go:generate mockgen -destination=enrolmentstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/mfa EnrolmentStore
 
 // DefaultMFAVerifyPrefix is the prefix the second-factor endpoint answers POST
 // requests under when the consumer names none: each configured method is

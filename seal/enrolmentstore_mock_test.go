@@ -14,8 +14,8 @@ import (
 	reflect "reflect"
 	time "time"
 
+	mfa "github.com/kartaladev/scrty/authenticate/mfa"
 	identity "github.com/kartaladev/scrty/identity"
-	mfa "github.com/kartaladev/scrty/mfa"
 	id "github.com/kartaladev/scrty/pkg/id"
 	gomock "go.uber.org/mock/gomock"
 )

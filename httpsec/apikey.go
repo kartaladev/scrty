@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"

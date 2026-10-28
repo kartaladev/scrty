@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/session"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )

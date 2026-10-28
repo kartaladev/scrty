@@ -13,7 +13,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 )
 
 // Proof records that a login's second factor was met at its first factor, by

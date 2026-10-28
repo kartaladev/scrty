@@ -6,9 +6,9 @@ import (
 	"errors"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/oidc"
 )
 
 // FlowStore keeps OIDC login flows, between Authorize and Callback, in the

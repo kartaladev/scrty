@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/session"
 )
 

@@ -38,9 +38,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/migrate"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/pgxstore"
 )
 
 const (

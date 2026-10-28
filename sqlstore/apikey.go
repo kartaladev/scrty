@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/authenticate/apikey"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"

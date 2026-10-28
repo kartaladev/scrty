@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/origin"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"

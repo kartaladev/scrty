@@ -14,8 +14,8 @@ import (
 	gormdb "gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
+	"github.com/kartaladev/scrty/store/gormstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 

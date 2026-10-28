@@ -16,9 +16,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/factor"
-	"github.com/kartaladev/scrty/ginsec"
+	"github.com/kartaladev/scrty/authenticate/factor"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/ginsec"
 	"github.com/kartaladev/scrty/session"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 	identitytest "github.com/kartaladev/scrty/test/identity"

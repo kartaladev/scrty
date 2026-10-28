@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-//go:generate mockgen -destination=flowstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/oidc FlowStore
+//go:generate mockgen -destination=flowstore_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc FlowStore
 
 // authorize answers a GET on the authorize prefix followed by a provider's
 // name: it starts a flow with that provider and redirects the browser to it.

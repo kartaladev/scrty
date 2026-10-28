@@ -19,12 +19,12 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
-	"github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 
@@ -1296,7 +1296,7 @@ func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(pool.Close)
 
-				s, err := pgx.NewSessionStore(pool, c)
+				s, err := pgxstore.NewSessionStore(pool, c)
 				require.NoError(t, err)
 				return s
 			},
@@ -1310,7 +1310,7 @@ func TestSecurityStateMigrations_ExistingSessionsReadBack(t *testing.T) {
 				require.NoError(t, err)
 				t.Cleanup(func() { _ = sqlDB.Close() })
 
-				s, err := gorm.NewSessionStore(db, c)
+				s, err := gormstore.NewSessionStore(db, c)
 				require.NoError(t, err)
 				return s
 			},

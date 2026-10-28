@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
 )
 
 // EnrolmentPathOption configures the enrolment path WithMFAEnrolmentPath turns

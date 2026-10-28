@@ -1,7 +1,7 @@
 package recovery
 
 //go:generate mockgen -destination=tokenstore_mock_test.go -package=recovery_test -typed -mock_names=Store=MockTokenStore github.com/kartaladev/scrty/onetime Store
-//go:generate mockgen -destination=challenge_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/mfa ChallengeMethod
+//go:generate mockgen -destination=challenge_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/authenticate/mfa ChallengeMethod
 
 import (
 	"context"
@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/kartaladev/scrty/authenticate"
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/onetime"
 )
 

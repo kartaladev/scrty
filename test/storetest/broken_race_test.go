@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/test/internal/storefix"

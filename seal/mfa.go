@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/pkg/id"
 )
 

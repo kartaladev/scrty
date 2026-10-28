@@ -7,16 +7,16 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
 )
 
 //go:generate mockgen -destination=userloader_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/identity UserLoader
-//go:generate mockgen -destination=encoder_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/password Encoder
+//go:generate mockgen -destination=encoder_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/authenticate/password Encoder
 //go:generate mockgen -destination=idgenerator_mock_test.go -package=authenticate_test -typed github.com/kartaladev/scrty/pkg/id Generator
 
 // referencePassword is the input the reference hash is produced from.

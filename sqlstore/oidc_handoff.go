@@ -6,10 +6,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/oidc"
 )
 
 // HandoffStore keeps issued OIDC handoff codes in the oidc_handoffs table the

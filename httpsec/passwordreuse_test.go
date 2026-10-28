@@ -11,8 +11,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/password"
 )
 
 // This file backs TestChangePasswordEndpointReuseGuard (passwordchange_test.go)

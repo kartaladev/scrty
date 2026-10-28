@@ -1,15 +1,15 @@
 package recovery
 
-//go:generate mockgen -destination=mfamethod_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/mfa Method,EnrolmentRemover
+//go:generate mockgen -destination=mfamethod_mock_test.go -package=recovery_test -typed github.com/kartaladev/scrty/authenticate/mfa Method,EnrolmentRemover
 
 import (
 	"context"
 	"fmt"
 	"slices"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/mfa"
 )
 
 // MFAKind is the Kind of the authenticators MFAEnrolments lists: one reference

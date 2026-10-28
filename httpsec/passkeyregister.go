@@ -6,8 +6,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/session"
 )
 

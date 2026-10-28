@@ -6,9 +6,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/policy"
 )
 

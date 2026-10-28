@@ -13,16 +13,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/authenticate/passkey/webauthn"
+	"github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/passkey"
-	"github.com/kartaladev/scrty/passkey/webauthn"
-	"github.com/kartaladev/scrty/passkey/webauthn/webauthntest"
-	pgxstore "github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/recovery"
 	"github.com/kartaladev/scrty/session"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
 

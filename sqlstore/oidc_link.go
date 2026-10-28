@@ -6,10 +6,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/pgschema"
 	"github.com/kartaladev/scrty/internal/storekit"
-	"github.com/kartaladev/scrty/oidc"
 )
 
 // LinkStore keeps the links between external identities and users in the

@@ -8,12 +8,12 @@ require (
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/jonboulle/clockwork v0.5.0
 	github.com/kartaladev/scrty v0.0.0
-	github.com/kartaladev/scrty/fibersec v0.0.0-00010101000000-000000000000
-	github.com/kartaladev/scrty/ginsec v0.0.0-00010101000000-000000000000
-	github.com/kartaladev/scrty/gorm v0.0.0
-	github.com/kartaladev/scrty/passkey/webauthn v0.0.0
-	github.com/kartaladev/scrty/pgx v0.0.0
-	github.com/kartaladev/scrty/redis v0.0.0
+	github.com/kartaladev/scrty/authenticate/passkey/webauthn v0.0.0
+	github.com/kartaladev/scrty/httpsec/fibersec v0.0.0-00010101000000-000000000000
+	github.com/kartaladev/scrty/httpsec/ginsec v0.0.0-00010101000000-000000000000
+	github.com/kartaladev/scrty/ratelimit/redisstore v0.0.0
+	github.com/kartaladev/scrty/store/gormstore v0.0.0
+	github.com/kartaladev/scrty/store/pgxstore v0.0.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/pquerna/otp v1.5.0
 	github.com/pressly/goose/v3 v3.28.0
@@ -146,21 +146,21 @@ replace github.com/kartaladev/scrty => ../
 // can run one scenario table through all three frameworks. Neither adapter
 // module may require this one, because a test-only import still puts these
 // helpers' dependencies into a consumer's module graph.
-replace github.com/kartaladev/scrty/ginsec => ../ginsec
+replace github.com/kartaladev/scrty/httpsec/ginsec => ../httpsec/ginsec
 
-replace github.com/kartaladev/scrty/fibersec => ../fibersec
+replace github.com/kartaladev/scrty/httpsec/fibersec => ../httpsec/fibersec
 
-replace github.com/kartaladev/scrty/pgx => ../pgx
+replace github.com/kartaladev/scrty/store/pgxstore => ../store/pgxstore
 
-replace github.com/kartaladev/scrty/gorm => ../gorm
+replace github.com/kartaladev/scrty/store/gormstore => ../store/gormstore
 
 // The passkey adapter is not tagged either. It is a module of its own so the
 // core carries no WebAuthn dependency, and this module imports it for the same
 // reason it imports the framework adapters: the conformance suite runs real
 // ceremonies through it. It must not require this module.
-replace github.com/kartaladev/scrty/passkey/webauthn => ../passkey/webauthn
+replace github.com/kartaladev/scrty/authenticate/passkey/webauthn => ../authenticate/passkey/webauthn
 
 // The Redis module is not tagged either. This module imports it to run the
 // rate-limit conformance suite and the server tests against real Redis and
 // Valkey servers. It must not require this module.
-replace github.com/kartaladev/scrty/redis => ../redis
+replace github.com/kartaladev/scrty/ratelimit/redisstore => ../ratelimit/redisstore

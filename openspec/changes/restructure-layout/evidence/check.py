@@ -95,6 +95,8 @@ def load_list(d, pkg):
 
 
 def normalise_type(m, s, pkg, names):
+    # "...T" (variadic) would otherwise read as part of a package path.
+    s = s.replace("...", "\u2026 ")
     s = IDENT.sub(lambda mo: pkg + "." + mo.group(0) if mo.group(0) in names else mo.group(0), s)
     return QUALIFIED.sub(lambda mo: m.ident(mo.group(1) + "." + mo.group(2))
                          if mo.group(1).startswith(ROOT) else mo.group(0), s)

@@ -20,8 +20,8 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/outbound"
 )
 

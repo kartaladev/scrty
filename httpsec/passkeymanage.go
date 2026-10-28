@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"

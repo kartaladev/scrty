@@ -8,8 +8,8 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/internal/diag"
-	"github.com/kartaladev/scrty/oidc"
 )
 
 // maxLoggedProviderError bounds each piece of a provider's error text written

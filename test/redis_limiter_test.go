@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/ratelimit"
-	scrtyredis "github.com/kartaladev/scrty/redis"
+	"github.com/kartaladev/scrty/ratelimit/redisstore"
 )
 
 // recordScriptGTOnly is the record script with its lifetime step written as
@@ -79,20 +79,20 @@ func scriptRecorder(script *redis.Script) redisRecorder {
 	var n atomic.Int64
 	return func(t *testing.T, client *redis.Client, namespace string, limit int, window time.Duration) func(string) {
 		return func(key string) {
-			err := script.Run(t.Context(), client, []string{scrtyredis.DefaultKeyPrefix + namespace + ":" + key},
+			err := script.Run(t.Context(), client, []string{redisstore.DefaultKeyPrefix + namespace + ":" + key},
 				"", strconv.FormatInt(window.Microseconds(), 10), strconv.Itoa(limit), fmt.Sprintf("%016x", n.Add(1))).Err()
 			require.NoError(t, err)
 		}
 	}
 }
 
-func newTestRedisLimiter(t *testing.T, client *redis.Client, namespace string, limit int, window time.Duration, opts ...scrtyredis.Option) *scrtyredis.Limiter {
+func newTestRedisLimiter(t *testing.T, client *redis.Client, namespace string, limit int, window time.Duration, opts ...redisstore.Option) *redisstore.Limiter {
 	t.Helper()
-	opts = append([]scrtyredis.Option{
-		scrtyredis.WithOperationTimeout(redisTestTimeout),
-		scrtyredis.WithLogger(slog.New(slog.DiscardHandler)),
+	opts = append([]redisstore.Option{
+		redisstore.WithOperationTimeout(redisTestTimeout),
+		redisstore.WithLogger(slog.New(slog.DiscardHandler)),
 	}, opts...)
-	l, err := scrtyredis.NewLimiter(client, namespace, limit, window, opts...)
+	l, err := redisstore.NewLimiter(client, namespace, limit, window, opts...)
 	require.NoError(t, err)
 	return l
 }
@@ -100,7 +100,7 @@ func newTestRedisLimiter(t *testing.T, client *redis.Client, namespace string, l
 // storedKey is where the limiter keeps key in namespace under the default
 // prefix; keys in these tests are short, so they are stored as given.
 func storedKey(namespace, key string) string {
-	return scrtyredis.DefaultKeyPrefix + namespace + ":" + key
+	return redisstore.DefaultKeyPrefix + namespace + ":" + key
 }
 
 // exceededScriptRefreshing is the check script with a lifetime refresh added,
@@ -279,9 +279,9 @@ func TestRedisLimiter_TTL(t *testing.T) {
 	skewedLongRecord := func(t *testing.T, client *redis.Client, limit int) (exceeded bool, ttl time.Duration) {
 		t.Helper()
 		const skewNS = "skew"
-		short := newTestRedisLimiter(t, client, skewNS, limit, time.Second, scrtyredis.WithLimiterClock(fastClock{}))
-		long := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, scrtyredis.WithLimiterClock(fastClock{skew: -50 * time.Millisecond}))
-		reader := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, scrtyredis.WithLimiterClock(fastClock{}))
+		short := newTestRedisLimiter(t, client, skewNS, limit, time.Second, redisstore.WithLimiterClock(fastClock{}))
+		long := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, redisstore.WithLimiterClock(fastClock{skew: -50 * time.Millisecond}))
+		reader := newTestRedisLimiter(t, client, skewNS, limit, 3*time.Second, redisstore.WithLimiterClock(fastClock{}))
 
 		require.NoError(t, short.RecordFailure(t.Context(), "k"))
 		time.Sleep(10 * time.Millisecond)
@@ -445,11 +445,11 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 	type testCase struct {
 		name string
 		// writerOpts configure the instance that records first.
-		writerOpts []scrtyredis.Option
-		assert     func(t *testing.T, writer, reader *scrtyredis.Limiter)
+		writerOpts []redisstore.Option
+		assert     func(t *testing.T, writer, reader *redisstore.Limiter)
 	}
 
-	exceeded := func(t *testing.T, l *scrtyredis.Limiter) bool {
+	exceeded := func(t *testing.T, l *redisstore.Limiter) bool {
 		t.Helper()
 		got, err := l.Exceeded(t.Context(), "k")
 		require.NoError(t, err)
@@ -461,7 +461,7 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 	// 1.8s, when the writer's failure is one window old by the server's
 	// clock and the reader's is not. Limit 2, so the answer is whether the
 	// writer's failure still counts.
-	skewScenario := func(t *testing.T, writer, reader *scrtyredis.Limiter) bool {
+	skewScenario := func(t *testing.T, writer, reader *redisstore.Limiter) bool {
 		t.Helper()
 		require.NoError(t, writer.RecordFailure(t.Context(), "k"))
 		time.Sleep(time.Second)
@@ -474,7 +474,7 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "two instances count one failure, and both see it leave the window",
-			assert: func(t *testing.T, writer, reader *scrtyredis.Limiter) {
+			assert: func(t *testing.T, writer, reader *redisstore.Limiter) {
 				require.NoError(t, writer.RecordFailure(t.Context(), "k"))
 				require.NoError(t, writer.RecordFailure(t.Context(), "k"))
 				assert.True(t, exceeded(t, writer), "the recording instance does not count its failures")
@@ -488,7 +488,7 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 			name: "skewed replica: a failure no longer counts one window later",
 			// No WithLimiterClock: whatever the writer's host clock reads,
 			// the stamp is the server's.
-			assert: func(t *testing.T, writer, reader *scrtyredis.Limiter) {
+			assert: func(t *testing.T, writer, reader *redisstore.Limiter) {
 				assert.False(t, skewScenario(t, writer, reader), "the writer's failure still counts one window later")
 			},
 		},
@@ -497,8 +497,8 @@ func TestRedisLimiter_ServerClock(t *testing.T) {
 			// fast, so its failure still counts one window later. This is
 			// the hazard the server-clock default removes.
 			name:       "control: a writer stamping by a fast host clock is still counted one window later",
-			writerOpts: []scrtyredis.Option{scrtyredis.WithLimiterClock(fastClock{skew: 30 * time.Second})},
-			assert: func(t *testing.T, writer, reader *scrtyredis.Limiter) {
+			writerOpts: []redisstore.Option{redisstore.WithLimiterClock(fastClock{skew: 30 * time.Second})},
+			assert: func(t *testing.T, writer, reader *redisstore.Limiter) {
 				assert.True(t, skewScenario(t, writer, reader), "the fast stamp aged by the server's clock; the control no longer shows the hazard")
 			},
 		},
@@ -580,9 +580,9 @@ func TestRedisLimiter_Factory(t *testing.T) {
 				t.Parallel()
 
 				client := RunTestRedis(t, WithTestRedisImage(image)).Client
-				f, err := scrtyredis.NewLimiterFactory(client,
-					scrtyredis.WithOperationTimeout(redisTestTimeout),
-					scrtyredis.WithLogger(slog.New(slog.DiscardHandler)))
+				f, err := redisstore.NewLimiterFactory(client,
+					redisstore.WithOperationTimeout(redisTestTimeout),
+					redisstore.WithLogger(slog.New(slog.DiscardHandler)))
 				require.NoError(t, err)
 				first, err := f.NewLimiter("api-key", limit, window)
 				require.NoError(t, err)

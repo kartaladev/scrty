@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/password"
-	pgxstore "github.com/kartaladev/scrty/pgx"
+	"github.com/kartaladev/scrty/store/pgxstore"
 )
 
 // TestIdentityReuse_GuardOverStore runs the reuse guard end to end over the

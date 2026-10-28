@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/ratelimit"
-	scrtyredis "github.com/kartaladev/scrty/redis"
+	"github.com/kartaladev/scrty/ratelimit/redisstore"
 )
 
 // redisBelowFloorImage is a Redis older than the shared limiter's floor,
@@ -106,7 +106,7 @@ func TestRedisVerify(t *testing.T) {
 		name  string
 		image string // empty means the default image
 		args  []string
-		opts  []scrtyredis.Option
+		opts  []redisstore.Option
 		// acl, when set, are the ACL rules of a user Verify runs as, in
 		// place of the default user.
 		acl []string
@@ -121,7 +121,7 @@ func TestRedisVerify(t *testing.T) {
 	// extra besides.
 	aclUser := func(extra ...string) []string {
 		return append([]string{
-			"on", ">" + aclPassword, "~" + scrtyredis.DefaultKeyPrefix + "*",
+			"on", ">" + aclPassword, "~" + redisstore.DefaultKeyPrefix + "*",
 			"+eval", "+evalsha", "+eval_ro", "+evalsha_ro", "+script|load", "+info", "+config|get",
 		}, extra...)
 	}
@@ -178,7 +178,7 @@ func TestRedisVerify(t *testing.T) {
 		{
 			name: "eviction check disabled: unreadable policy passes without a warning",
 			args: []string{"--rename-command", "CONFIG", ""},
-			opts: []scrtyredis.Option{scrtyredis.WithEvictionPolicyCheck(false)},
+			opts: []redisstore.Option{redisstore.WithEvictionPolicyCheck(false)},
 			assert: func(t *testing.T, _ *redis.Client, err error, logs *logRecorder) {
 				require.NoError(t, err)
 				noWarning(t, logs)
@@ -187,7 +187,7 @@ func TestRedisVerify(t *testing.T) {
 		{
 			name: "eviction check disabled: an evicting policy is not read",
 			args: []string{"--maxmemory-policy", "allkeys-lru"},
-			opts: []scrtyredis.Option{scrtyredis.WithEvictionPolicyCheck(false)},
+			opts: []redisstore.Option{redisstore.WithEvictionPolicyCheck(false)},
 			assert: func(t *testing.T, _ *redis.Client, err error, logs *logRecorder) {
 				require.NoError(t, err)
 				noWarning(t, logs)
@@ -217,7 +217,7 @@ func TestRedisVerify(t *testing.T) {
 				require.NoError(t, err)
 				noWarning(t, logs)
 
-				l, err := scrtyredis.NewLimiter(client, "api-key", 1, time.Minute, scrtyredis.WithLogger(slog.New(logs)))
+				l, err := redisstore.NewLimiter(client, "api-key", 1, time.Minute, redisstore.WithLogger(slog.New(logs)))
 				require.NoError(t, err)
 				require.NoError(t, l.RecordFailure(t.Context(), "k"))
 				exceeded, err := l.Exceeded(t.Context(), "k")
@@ -241,20 +241,20 @@ func TestRedisVerify(t *testing.T) {
 
 	subjects := []struct {
 		name  string
-		build func(t *testing.T, client *redis.Client, opts []scrtyredis.Option) ratelimit.Verifier
+		build func(t *testing.T, client *redis.Client, opts []redisstore.Option) ratelimit.Verifier
 	}{
 		{
 			name: "factory",
-			build: func(t *testing.T, client *redis.Client, opts []scrtyredis.Option) ratelimit.Verifier {
-				f, err := scrtyredis.NewLimiterFactory(client, opts...)
+			build: func(t *testing.T, client *redis.Client, opts []redisstore.Option) ratelimit.Verifier {
+				f, err := redisstore.NewLimiterFactory(client, opts...)
 				require.NoError(t, err)
 				return f
 			},
 		},
 		{
 			name: "limiter",
-			build: func(t *testing.T, client *redis.Client, opts []scrtyredis.Option) ratelimit.Verifier {
-				l, err := scrtyredis.NewLimiter(client, "api-key", 5, time.Minute, opts...)
+			build: func(t *testing.T, client *redis.Client, opts []redisstore.Option) ratelimit.Verifier {
+				l, err := redisstore.NewLimiter(client, "api-key", 5, time.Minute, opts...)
 				require.NoError(t, err)
 				return l
 			},
@@ -280,9 +280,9 @@ func TestRedisVerify(t *testing.T) {
 			for _, s := range subjects {
 				t.Run(s.name, func(t *testing.T) {
 					logs := &logRecorder{}
-					opts := append([]scrtyredis.Option{
-						scrtyredis.WithOperationTimeout(redisTestTimeout),
-						scrtyredis.WithLogger(slog.New(logs)),
+					opts := append([]redisstore.Option{
+						redisstore.WithOperationTimeout(redisTestTimeout),
+						redisstore.WithLogger(slog.New(logs)),
 					}, tc.opts...)
 					v := s.build(t, client, opts)
 					tc.assert(t, client, v.Verify(t.Context()), logs)

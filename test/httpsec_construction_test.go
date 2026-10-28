@@ -6,9 +6,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kartaladev/scrty/fibersec"
-	"github.com/kartaladev/scrty/ginsec"
 	"github.com/kartaladev/scrty/httpsec"
+	"github.com/kartaladev/scrty/httpsec/fibersec"
+	"github.com/kartaladev/scrty/httpsec/ginsec"
 	httpsecconformance "github.com/kartaladev/scrty/test/httpsecconformance"
 )
 

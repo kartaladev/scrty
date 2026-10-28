@@ -6,7 +6,7 @@ import (
 )
 
 //go:generate mockgen -destination=federatedassurancesource_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/policy FederatedAssuranceSource
-//go:generate mockgen -destination=assuranceevaluator_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/oidc AssuranceEvaluator
+//go:generate mockgen -destination=assuranceevaluator_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/oidc AssuranceEvaluator
 
 // mintFederated is the evidence of the assurance provider asserted for a
 // login: the only place in this package that mints it.

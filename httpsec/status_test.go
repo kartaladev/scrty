@@ -20,16 +20,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/kartaladev/scrty/apikey"
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/magiclink"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
+	"github.com/kartaladev/scrty/authenticate/passkey"
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
-	"github.com/kartaladev/scrty/magiclink"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/passkey"
-	"github.com/kartaladev/scrty/password"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
 	"github.com/kartaladev/scrty/recovery"
@@ -295,13 +295,13 @@ func TestPolicyDenyReason(t *testing.T) {
 // reflection cannot enumerate package-level variables; declaredErrVars keeps it
 // honest by failing when a package exports one that is not listed here.
 var sentinelRegistry = map[string]map[string]error{
-	"github.com/kartaladev/scrty/apikey": {
+	"github.com/kartaladev/scrty/authenticate/apikey": {
 		"apikey.ErrConfig":             apikey.ErrConfig,
 		"apikey.ErrKeyNotFound":        apikey.ErrKeyNotFound,
 		"apikey.ErrRotationRefused":    apikey.ErrRotationRefused,
 		"apikey.ErrVerificationFailed": apikey.ErrVerificationFailed,
 	},
-	"github.com/kartaladev/scrty/magiclink": {
+	"github.com/kartaladev/scrty/authenticate/magiclink": {
 		"magiclink.ErrConfig":      magiclink.ErrConfig,
 		"magiclink.ErrInvalidLink": magiclink.ErrInvalidLink,
 	},
@@ -327,7 +327,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"authorize.ErrInvalidAttributes":      authorize.ErrInvalidAttributes,
 		"authorize.ErrUnsupportedAttributes":  authorize.ErrUnsupportedAttributes,
 	},
-	"github.com/kartaladev/scrty/mfa": {
+	"github.com/kartaladev/scrty/authenticate/mfa": {
 		"mfa.ErrAlreadyEnrolled":         mfa.ErrAlreadyEnrolled,
 		"mfa.ErrAuthenticatorRefused":    mfa.ErrAuthenticatorRefused,
 		"mfa.ErrConfig":                  mfa.ErrConfig,
@@ -338,7 +338,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"mfa.ErrVerifyAttemptsExhausted": mfa.ErrVerifyAttemptsExhausted,
 		"mfa.ErrVerifyThrottled":         mfa.ErrVerifyThrottled,
 	},
-	"github.com/kartaladev/scrty/oidc": {
+	"github.com/kartaladev/scrty/authenticate/oidc": {
 		"oidc.ErrConfig":              oidc.ErrConfig,
 		"oidc.ErrDiscoveryFailed":     oidc.ErrDiscoveryFailed,
 		"oidc.ErrExchangeFailed":      oidc.ErrExchangeFailed,
@@ -356,7 +356,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"oidc.ErrRetainSinceRequired": oidc.ErrRetainSinceRequired,
 		"oidc.ErrUnknownProvider":     oidc.ErrUnknownProvider,
 	},
-	"github.com/kartaladev/scrty/passkey": {
+	"github.com/kartaladev/scrty/authenticate/passkey": {
 		"passkey.ErrAttestationRefused":       passkey.ErrAttestationRefused,
 		"passkey.ErrCloneSuspected":           passkey.ErrCloneSuspected,
 		"passkey.ErrConfig":                   passkey.ErrConfig,
@@ -369,7 +369,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"passkey.ErrRegistrationThrottled":    passkey.ErrRegistrationThrottled,
 		"passkey.ErrSuspended":                passkey.ErrSuspended,
 	},
-	"github.com/kartaladev/scrty/password": {
+	"github.com/kartaladev/scrty/authenticate/password": {
 		"password.ErrConfig":              password.ErrConfig,
 		"password.ErrHistoryUnavailable":  password.ErrHistoryUnavailable,
 		"password.ErrInvalidParameters":   password.ErrInvalidParameters,
@@ -525,16 +525,16 @@ func TestStatusForErrorCoversEverySentinel(t *testing.T) {
 	}
 
 	for _, pkg := range []string{
-		"github.com/kartaladev/scrty/apikey",
+		"github.com/kartaladev/scrty/authenticate/apikey",
 		"github.com/kartaladev/scrty/authenticate",
 		"github.com/kartaladev/scrty/authorize",
 		"github.com/kartaladev/scrty/httpsec",
-		"github.com/kartaladev/scrty/magiclink",
-		"github.com/kartaladev/scrty/mfa",
-		"github.com/kartaladev/scrty/oidc",
+		"github.com/kartaladev/scrty/authenticate/magiclink",
+		"github.com/kartaladev/scrty/authenticate/mfa",
+		"github.com/kartaladev/scrty/authenticate/oidc",
 		"github.com/kartaladev/scrty/onetime",
-		"github.com/kartaladev/scrty/passkey",
-		"github.com/kartaladev/scrty/password",
+		"github.com/kartaladev/scrty/authenticate/passkey",
+		"github.com/kartaladev/scrty/authenticate/password",
 		"github.com/kartaladev/scrty/policy",
 		"github.com/kartaladev/scrty/ratelimit",
 		"github.com/kartaladev/scrty/recovery",

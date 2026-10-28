@@ -1,6 +1,7 @@
 package scrty_test
 
 import (
+	"go/version"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -242,6 +243,11 @@ func TestCoreDependencies(t *testing.T) {
 			assert: hasViolation("go.mod", "github.com/go-co-op/gocron/v2"),
 		},
 		{
+			name:   "a major-version path of a listed driver is refused",
+			reqs:   []requirement{{Path: "github.com/jackc/pgx/v5"}},
+			assert: hasViolation("go.mod", "github.com/jackc/pgx/v5"),
+		},
+		{
 			name: "an indirect requirement is left to the import walk",
 			reqs: []requirement{{Path: "github.com/go-webauthn/webauthn", Indirect: true}},
 			assert: func(t *testing.T, vs []violation) {
@@ -275,7 +281,7 @@ func TestWebAuthnTypesStayInsideTheAdapter(t *testing.T) {
 	cases := []testCase{
 		{
 			name:      "the adapter module exposes no WebAuthn library type",
-			dir:       "passkey/webauthn",
+			dir:       "authenticate/passkey/webauthn",
 			forbidden: "github.com/go-webauthn/",
 			assert: func(t *testing.T, vs []violation) {
 				assert.Empty(t, vs)
@@ -315,9 +321,9 @@ func TestWebAuthnTypesStayInsideTheAdapter(t *testing.T) {
 func TestSoftwareAuthenticatorStaysOutOfProduction(t *testing.T) {
 	t.Parallel()
 
-	const helper = "github.com/kartaladev/scrty/passkey/webauthn/webauthntest"
+	const helper = "github.com/kartaladev/scrty/authenticate/passkey/webauthn/webauthntest"
 
-	for _, dir := range []string{".", "passkey/webauthn"} {
+	for _, dir := range []string{".", "authenticate/passkey/webauthn"} {
 		for _, p := range listDeps(t, dir) {
 			if p.ImportPath == helper {
 				continue
@@ -353,15 +359,15 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 		{
 			name: "control: an adapter module requiring the client indirectly is caught",
 			check: func(*testing.T) []violation {
-				return redisClientViolations("ginsec", []requirement{{Path: "github.com/redis/go-redis/v9", Indirect: true}})
+				return redisClientViolations("httpsec/ginsec", []requirement{{Path: "github.com/redis/go-redis/v9", Indirect: true}})
 			},
-			assert: hasViolation("ginsec/go.mod", "github.com/redis/go-redis/v9"),
+			assert: hasViolation("httpsec/ginsec/go.mod", "github.com/redis/go-redis/v9"),
 		},
 		{
 			name: "the redis and test modules may require the client",
 			check: func(*testing.T) []violation {
 				reqs := []requirement{{Path: "github.com/redis/go-redis/v9"}}
-				return append(redisClientViolations("redis", reqs), redisClientViolations("test", reqs)...)
+				return append(redisClientViolations("ratelimit/redisstore", reqs), redisClientViolations("test", reqs)...)
 			},
 			assert: func(t *testing.T, vs []violation) {
 				assert.Empty(t, vs)
@@ -374,6 +380,120 @@ func TestRedisClientStaysInItsModules(t *testing.T) {
 			t.Parallel()
 
 			tc.assert(t, tc.check(t))
+		})
+	}
+}
+
+// underConcept asserts that the module at dir is used by the workspace, is
+// published at the path its directory names, and declares package pkg.
+func underConcept(dir, pkg string) func(t *testing.T, inWorkspace bool, path, name string) {
+	return func(t *testing.T, inWorkspace bool, path, name string) {
+		t.Helper()
+		assert.True(t, inWorkspace, "go.work does not use %s", dir)
+		assert.Equal(t, "github.com/kartaladev/scrty/"+dir, path, "module path of %s", dir)
+		assert.Equal(t, pkg, name, "package clause of %s", dir)
+	}
+}
+
+func TestIntegrationModulesUnderTheirConcept(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		dir    string
+		assert func(t *testing.T, inWorkspace bool, path, name string)
+	}
+
+	cases := []testCase{
+		{name: "the WebAuthn adapter extends passkey", dir: "authenticate/passkey/webauthn", assert: underConcept("authenticate/passkey/webauthn", "webauthn")},
+		{name: "the pgx backend extends store", dir: "store/pgxstore", assert: underConcept("store/pgxstore", "pgxstore")},
+		{name: "the GORM backend extends store", dir: "store/gormstore", assert: underConcept("store/gormstore", "gormstore")},
+		{name: "the Redis limiter store extends ratelimit", dir: "ratelimit/redisstore", assert: underConcept("ratelimit/redisstore", "redisstore")},
+		{name: "the sweeper extends expiry", dir: "expiry/sweep", assert: underConcept("expiry/sweep", "sweep")},
+		{name: "the Gin adapter extends httpsec", dir: "httpsec/ginsec", assert: underConcept("httpsec/ginsec", "ginsec")},
+		{name: "the Fiber adapter extends httpsec", dir: "httpsec/fibersec", assert: underConcept("httpsec/fibersec", "fibersec")},
+	}
+
+	modules := workspaceModules(t, ".")
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, slices.Contains(modules, filepath.FromSlash(tc.dir)), modulePath(t, tc.dir), packageClause(t, tc.dir))
+		})
+	}
+}
+
+func TestNoUnlistedIntegrationModule(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		root   string
+		assert func(t *testing.T, unlisted []string)
+	}
+
+	cases := []testCase{
+		{
+			name: "every workspace module is a listed integration, the core, test or tools",
+			root: ".",
+			assert: func(t *testing.T, unlisted []string) {
+				assert.Empty(t, unlisted)
+			},
+		},
+		{
+			name: "control: a module outside the list is named by its directory",
+			root: "testdata/layout/wsunlisted",
+			assert: func(t *testing.T, unlisted []string) {
+				assert.Equal(t, []string{"pgx"}, unlisted)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, unlistedModules(t, tc.root, integrationDirs))
+		})
+	}
+}
+
+// TestBackendDoesNotShadowDriver builds a consumer that imports each storage
+// backend beside the driver it wraps, with no import alias. It compiles only
+// while no backend's package name equals its driver's.
+func TestBackendDoesNotShadowDriver(t *testing.T) {
+	t.Parallel()
+
+	goCmd(t, "testdata/layout/noalias", []string{"GOFLAGS=-mod=mod"}, "build", "./...")
+}
+
+func TestModulesDeclareGoMinimum(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		dir    string
+		assert func(t *testing.T, lang string)
+	}
+
+	var cases []testCase
+	for _, dir := range append(workspaceModules(t, "."), "tools") {
+		cases = append(cases, testCase{
+			name: filepath.ToSlash(dir),
+			dir:  dir,
+			assert: func(t *testing.T, lang string) {
+				assert.Equal(t, "go1.27", lang)
+			},
+		})
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, version.Lang("go"+goDirective(t, tc.dir)))
 		})
 	}
 }

@@ -3,7 +3,7 @@ package httpsec
 import (
 	"encoding/json"
 
-	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 )
 
 // PasskeyBeginResponder writes a ceremony begin's answer: options are the

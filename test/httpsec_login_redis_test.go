@@ -14,7 +14,7 @@ import (
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"
-	scrtyredis "github.com/kartaladev/scrty/redis"
+	"github.com/kartaladev/scrty/ratelimit/redisstore"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/token"
 )
@@ -105,7 +105,7 @@ func TestLoginOwnLimiterUnderRedisFactory(t *testing.T) {
 			client := goredis.NewClient(&goredis.Options{Addr: "127.0.0.1:0", ContextTimeoutEnabled: true})
 			t.Cleanup(func() { _ = client.Close() })
 
-			factory, err := scrtyredis.NewLimiterFactory(client)
+			factory, err := redisstore.NewLimiterFactory(client)
 			require.NoError(t, err)
 
 			sessions, err := session.NewManager(session.WithStore(session.NewMemoryStore()))

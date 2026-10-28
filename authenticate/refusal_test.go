@@ -9,8 +9,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/kartaladev/scrty/authenticate"
+	"github.com/kartaladev/scrty/authenticate/password"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/password"
 )
 
 // presentedPassword is what every refusal case below presents. No stored user

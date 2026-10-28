@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kartaladev/scrty/ratelimit"
-	scrtyredis "github.com/kartaladev/scrty/redis"
+	"github.com/kartaladev/scrty/ratelimit/redisstore"
 )
 
 // Settings of the fault tests. The operation timeout is long, so that a call
@@ -147,9 +147,9 @@ func TestRedisLimiter_Fault(t *testing.T) {
 		// build returns a limiter over conn's client for namespace
 		// "api-key", with the fault settings, a logger writing to logs and
 		// opts.
-		build func(opts ...scrtyredis.Option) *scrtyredis.Limiter
+		build func(opts ...redisstore.Option) *redisstore.Limiter
 		// buildOn is build over client in place of conn's.
-		buildOn func(client redis.UniversalClient, opts ...scrtyredis.Option) *scrtyredis.Limiter
+		buildOn func(client redis.UniversalClient, opts ...redisstore.Option) *redisstore.Limiter
 	}
 
 	type testCase struct {
@@ -163,7 +163,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 	// it waits out the probe interval, so that every check after the first
 	// reaches the server, whose reads still succeed and count nothing. It
 	// returns which attempts the guard admitted.
-	outOfMemory := func(t *testing.T, e env, opts ...scrtyredis.Option) []bool {
+	outOfMemory := func(t *testing.T, e env, opts ...redisstore.Option) []bool {
 		t.Helper()
 
 		fillMemory(t, e.conn.Client)
@@ -182,7 +182,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 	// cutOff hangs the server under l, then checks once: it returns how long
 	// the check took, its answer and its error. warm is a limiter over the
 	// same client as l, built without the hung-check budget.
-	cutOff := func(t *testing.T, e env, warm, l *scrtyredis.Limiter) (time.Duration, bool, error) {
+	cutOff := func(t *testing.T, e env, warm, l *redisstore.Limiter) (time.Duration, bool, error) {
 		t.Helper()
 
 		// A pooled connection, so the check below waits on a read rather
@@ -211,7 +211,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 			name: "a hung server is cut off at the operation timeout, and the breaker opens",
 			args: debugArgs,
 			assert: func(t *testing.T, e env) {
-				l := e.build(scrtyredis.WithOperationTimeout(hungTimeout))
+				l := e.build(redisstore.WithOperationTimeout(hungTimeout))
 				elapsed, exceeded, err := cutOff(t, e, e.build(), l)
 				assert.Less(t, elapsed, hungTimeout+hungMargin, "the check waited past the operation timeout")
 				assert.True(t, exceeded)
@@ -261,7 +261,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 				t.Cleanup(func() { _ = client.Close() })
 
 				hidden := uninspectedClient{client}
-				elapsed, _, _ := cutOff(t, e, e.buildOn(hidden), e.buildOn(hidden, scrtyredis.WithOperationTimeout(hungTimeout)))
+				elapsed, _, _ := cutOff(t, e, e.buildOn(hidden), e.buildOn(hidden, redisstore.WithOperationTimeout(hungTimeout)))
 				assert.Greater(t, elapsed, time.Second, "the check was cut off although the client ignores context deadlines")
 			},
 		},
@@ -296,7 +296,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 			name: "control: allow mode drops failed records, so the source is never refused",
 			args: []string{"--maxmemory", "2mb", "--maxmemory-policy", "noeviction"},
 			assert: func(t *testing.T, e env) {
-				admitted := outOfMemory(t, e, scrtyredis.WithOnUnavailable(ratelimit.UnavailableAllow))
+				admitted := outOfMemory(t, e, redisstore.WithOnUnavailable(ratelimit.UnavailableAllow))
 				assert.NotContains(t, admitted, false, "the source was refused although its failures were dropped")
 			},
 		},
@@ -326,7 +326,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 		{
 			name: "fall back while stopped, and recover",
 			assert: func(t *testing.T, e env) {
-				l := e.build(scrtyredis.WithOnUnavailable(ratelimit.UnavailableFallBackToLocal))
+				l := e.build(redisstore.WithOnUnavailable(ratelimit.UnavailableFallBackToLocal))
 				e.conn.Stop(t)
 
 				for range faultLimit {
@@ -364,7 +364,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 		{
 			name: "allow while stopped: not exceeded, one error record",
 			assert: func(t *testing.T, e env) {
-				l := e.build(scrtyredis.WithOnUnavailable(ratelimit.UnavailableAllow))
+				l := e.build(redisstore.WithOnUnavailable(ratelimit.UnavailableAllow))
 				e.conn.Stop(t)
 
 				for range 5 {
@@ -393,13 +393,13 @@ func TestRedisLimiter_Fault(t *testing.T) {
 			conn.Client.AddHook(commands)
 			logs := &logRecorder{}
 
-			buildOn := func(client redis.UniversalClient, opts ...scrtyredis.Option) *scrtyredis.Limiter {
-				opts = append([]scrtyredis.Option{
-					scrtyredis.WithOperationTimeout(faultTimeout),
-					scrtyredis.WithUnavailableProbeInterval(faultProbeInterval),
-					scrtyredis.WithLogger(slog.New(logs)),
+			buildOn := func(client redis.UniversalClient, opts ...redisstore.Option) *redisstore.Limiter {
+				opts = append([]redisstore.Option{
+					redisstore.WithOperationTimeout(faultTimeout),
+					redisstore.WithUnavailableProbeInterval(faultProbeInterval),
+					redisstore.WithLogger(slog.New(logs)),
 				}, opts...)
-				l, err := scrtyredis.NewLimiter(client, "api-key", faultLimit, faultWindow, opts...)
+				l, err := redisstore.NewLimiter(client, "api-key", faultLimit, faultWindow, opts...)
 				require.NoError(t, err)
 				return l
 			}
@@ -408,7 +408,7 @@ func TestRedisLimiter_Fault(t *testing.T) {
 				conn:     conn,
 				commands: commands,
 				logs:     logs,
-				build: func(opts ...scrtyredis.Option) *scrtyredis.Limiter {
+				build: func(opts ...redisstore.Option) *redisstore.Limiter {
 					return buildOn(conn.Client, opts...)
 				},
 				buildOn: buildOn,

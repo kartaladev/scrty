@@ -3,7 +3,7 @@ package oidctest_test
 import (
 	"testing"
 
-	"github.com/kartaladev/scrty/oidc"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/pkg/clock"
 	oidctest "github.com/kartaladev/scrty/test/oidc"
 )

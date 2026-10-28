@@ -248,7 +248,7 @@ no assurance, so a required user is challenged or refused on every request.
   influence over local roles and a standby credential; see their godoc before enabling them.
 
 The full list, with the reasoning behind each one, is in the `oidc` package's "Limits" godoc
-(`go doc github.com/kartaladev/scrty/oidc`).
+(`go doc github.com/kartaladev/scrty/authenticate/oidc`).
 
 ## Letting required users enrol
 
@@ -481,7 +481,7 @@ implementation — for both `recovery.WithIssuedCodeStore` and `recovery.WithHol
 `passkey` adds WebAuthn passkeys: registration and management, passwordless login, the passkey as a
 second factor, and clone handling. The core package has no WebAuthn dependency; the verifier
 behind the `passkey.Verifier` port lives in the nested module
-`github.com/kartaladev/scrty/passkey/webauthn`, which you add to your own `go.mod` and pass in.
+`github.com/kartaladev/scrty/authenticate/passkey/webauthn`, which you add to your own `go.mod` and pass in.
 Each snippet below is mirrored by an `Example` function in `passkey` or `passkey/webauthn` that
 compiles and runs in this repository's tests.
 
@@ -509,7 +509,7 @@ account recovery (above) are the way back when both are gone.
 ### Wiring the adapter and the manager
 
 ```go
-verifier, err := webauthn.New(rp) // github.com/kartaladev/scrty/passkey/webauthn
+verifier, err := webauthn.New(rp) // github.com/kartaladev/scrty/authenticate/passkey/webauthn
 
 manager, err := passkey.New(passkey.Deps{
 	Verifier: verifier,

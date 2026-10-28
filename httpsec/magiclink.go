@@ -8,9 +8,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/kartaladev/scrty/factor"
+	"github.com/kartaladev/scrty/authenticate/factor"
+	"github.com/kartaladev/scrty/authenticate/magiclink"
 	"github.com/kartaladev/scrty/internal/origin"
-	"github.com/kartaladev/scrty/magiclink"
 	"github.com/kartaladev/scrty/pkg/logsample"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/ratelimit"

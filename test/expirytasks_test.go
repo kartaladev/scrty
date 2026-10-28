@@ -12,21 +12,21 @@ import (
 	"gorm.io/driver/postgres"
 	gormdb "gorm.io/gorm"
 
-	"github.com/kartaladev/scrty/apikey"
+	"github.com/kartaladev/scrty/authenticate/apikey"
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/expiry"
-	gormstore "github.com/kartaladev/scrty/gorm"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/migrate"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/onetime"
-	"github.com/kartaladev/scrty/pgx"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/seal"
 	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/signingkey"
 	"github.com/kartaladev/scrty/sqlstore"
+	"github.com/kartaladev/scrty/store/gormstore"
+	"github.com/kartaladev/scrty/store/pgxstore"
 	"github.com/kartaladev/scrty/test"
 	"github.com/kartaladev/scrty/test/internal/storefix"
 )
@@ -95,14 +95,14 @@ var expiryAdapters = []struct {
 			t.Cleanup(pool.Close)
 
 			return expiryStores{
-				sessions: mustStore(pgx.NewSessionStore(pool, c, pgx.WithClock(clk))),
-				oneTime:  mustStore(pgx.NewOneTimeStore(pool, pgx.WithClock(clk))),
-				attempts: mustStore(pgx.NewAttemptStore(pool)),
-				apiKeys:  mustStore(pgx.NewAPIKeyStore(pool)),
-				links:    mustStore(pgx.NewLinkStore(pool)),
+				sessions: mustStore(pgxstore.NewSessionStore(pool, c, pgxstore.WithClock(clk))),
+				oneTime:  mustStore(pgxstore.NewOneTimeStore(pool, pgxstore.WithClock(clk))),
+				attempts: mustStore(pgxstore.NewAttemptStore(pool)),
+				apiKeys:  mustStore(pgxstore.NewAPIKeyStore(pool)),
+				links:    mustStore(pgxstore.NewLinkStore(pool)),
 				enrolments: mustStore(
-					pgx.NewEnrolmentStore(pool, c, pgx.WithClock(clk))),
-				signing: mustStore(pgx.NewSigningKeyStore(pool, c)),
+					pgxstore.NewEnrolmentStore(pool, c, pgxstore.WithClock(clk))),
+				signing: mustStore(pgxstore.NewSigningKeyStore(pool, c)),
 			}
 		},
 	},

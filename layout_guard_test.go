@@ -3,6 +3,7 @@ package scrty_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/importer"
@@ -455,7 +456,7 @@ const redisClient = "github.com/redis/go-redis"
 // redisClientOwners lists the workspace modules, by directory relative to the
 // repository root, that may require redisClient: the Redis module itself, and
 // the test module that runs it against real servers.
-var redisClientOwners = []string{"redis", "test"}
+var redisClientOwners = []string{"ratelimit/redisstore", "test"}
 
 // redisClientViolations reports a requirement on redisClient in the go.mod of
 // the workspace module at dir, unless dir is one of redisClientOwners.
@@ -521,4 +522,86 @@ func workspaceViolations(t *testing.T, root string) []violation {
 		}
 	}
 	return vs
+}
+
+// integrationDirs lists, by directory relative to the repository root, every
+// workspace module other than the core, test and tools modules. Each one is an
+// integration published under the concept it extends.
+var integrationDirs = []string{
+	"authenticate/passkey/webauthn",
+	"store/pgxstore",
+	"store/gormstore",
+	"ratelimit/redisstore",
+	"expiry/sweep",
+	"httpsec/ginsec",
+	"httpsec/fibersec",
+}
+
+// modulePath returns the path the module line of dir's go.mod declares, or the
+// empty string when dir holds no go.mod.
+func modulePath(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod")) //nolint:gosec // G304: test-constructed path
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	require.NoError(t, err)
+	for _, raw := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(raw), "module "); ok {
+			return strings.Trim(strings.TrimSpace(rest), `"`)
+		}
+	}
+	return ""
+}
+
+// goDirective returns the version the go directive of dir's go.mod declares,
+// as written there.
+func goDirective(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "go.mod")) //nolint:gosec // G304: test-constructed path
+	require.NoError(t, err)
+	for _, raw := range strings.Split(string(data), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(raw), "go "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	require.Failf(t, "no go directive", "%s/go.mod declares no go version", dir)
+	return ""
+}
+
+// packageClause returns the package name of the first non-test Go file in dir,
+// or the empty string when dir holds none.
+func packageClause(t *testing.T, dir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ""
+	}
+	require.NoError(t, err)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, parseErr := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.PackageClauseOnly)
+		require.NoError(t, parseErr)
+		return f.Name.Name
+	}
+	return ""
+}
+
+// unlistedModules returns the modules the go.work file at root uses, by
+// directory relative to root, that are neither the core module, the test or
+// tools module, nor one of listed.
+func unlistedModules(t *testing.T, root string, listed []string) []string {
+	t.Helper()
+	var unlisted []string
+	for _, dir := range workspaceModules(t, root) {
+		dir = filepath.ToSlash(dir)
+		if dir == "." || dir == "test" || dir == "tools" || slices.Contains(listed, dir) {
+			continue
+		}
+		unlisted = append(unlisted, dir)
+	}
+	return unlisted
 }

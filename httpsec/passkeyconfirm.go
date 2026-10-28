@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kartaladev/scrty/passkey"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/session"
 )
 

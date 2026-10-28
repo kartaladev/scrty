@@ -20,9 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/kartaladev/scrty/authenticate/oidc"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/oidc"
 	"github.com/kartaladev/scrty/outbound"
 	"github.com/kartaladev/scrty/session"
 )

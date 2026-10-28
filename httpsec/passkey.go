@@ -1,14 +1,14 @@
 package httpsec
 
-//go:generate mockgen -destination=passkeyverifier_mock_test.go -package=httpsec_test -typed -mock_names=Verifier=MockPasskeyVerifier,ParsedRegistration=MockParsedRegistration,ParsedAssertion=MockParsedAssertion github.com/kartaladev/scrty/passkey Verifier,ParsedRegistration,ParsedAssertion
+//go:generate mockgen -destination=passkeyverifier_mock_test.go -package=httpsec_test -typed -mock_names=Verifier=MockPasskeyVerifier,ParsedRegistration=MockParsedRegistration,ParsedAssertion=MockParsedAssertion github.com/kartaladev/scrty/authenticate/passkey Verifier,ParsedRegistration,ParsedAssertion
 
 import (
 	"net/http"
 	"strings"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
+	"github.com/kartaladev/scrty/authenticate/passkey"
 	"github.com/kartaladev/scrty/identity"
-	"github.com/kartaladev/scrty/mfa"
-	"github.com/kartaladev/scrty/passkey"
 	"github.com/kartaladev/scrty/policy"
 	"github.com/kartaladev/scrty/session"
 )

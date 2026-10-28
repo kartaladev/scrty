@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kartaladev/scrty/authenticate/mfa"
 	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/nilcheck"
-	"github.com/kartaladev/scrty/mfa"
 	"github.com/kartaladev/scrty/notify"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/pkg/logsample"
@@ -23,7 +23,7 @@ import (
 	"github.com/kartaladev/scrty/session"
 )
 
-//go:generate mockgen -destination=enroller_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/mfa Enroller
+//go:generate mockgen -destination=enroller_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/authenticate/mfa Enroller
 //go:generate mockgen -destination=sender_mock_test.go -package=httpsec_test -typed github.com/kartaladev/scrty/notify Sender
 
 // enrolmentInterceptor is the enrolment path: the gate that confines an

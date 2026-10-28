@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/kartaladev/scrty/mfa"
+	"github.com/kartaladev/scrty/authenticate/mfa"
 )
 
 // readResponse reads a method's verification response the way its format
