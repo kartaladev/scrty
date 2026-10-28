@@ -589,15 +589,6 @@ func (m *Passkeys) refused(ctx context.Context, reason string, cid id.ID, attrs 
 	return authenticate.ErrAuthenticationFailed
 }
 
-// WithLogInterval replaces the window of the manager's log sampler: refused
-// assertions, suspected clones and notices that could not be queued are each
-// written at most once per key per window, keyed by reason, and the counts
-// held back are reported. The default is one minute. An interval of zero or
-// less writes every record. It governs the passkey manager's records only.
-func WithLogInterval(d time.Duration) Option {
-	return func(m *Passkeys) { m.logInterval = d }
-}
-
 // FlushRefusalLogs reports every count of records the manager's sampler has
 // held back but not yet reported, then forgets every key, so counts held for
 // a window that will never close are not lost — for example at shutdown. It

@@ -526,6 +526,7 @@ func TestRecoverer_CompleteFailures(t *testing.T) {
 
 // TestRecoverer_IDGenerator pins that a consumer's generator names a record
 // that completes at once, as well as a held one.
+//
 // It stands apart from TestRecoverer_Complete because the assertion needs the
 // generator's ID and the run is not held to assertCleanLogs.
 func TestRecoverer_IDGenerator(t *testing.T) {

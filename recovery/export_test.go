@@ -51,8 +51,8 @@ func (v *Verified) Reported() []AuthenticatorRef { return v.reported }
 // Hold reports how long the risk hook asked the recovery to be held.
 func (v *Verified) Hold() time.Duration { return v.hold }
 
-// The reset planner is exposed here. The Recoverer's options are its public
-// face; until they exist, the tests reach the planner here.
+// The reset planner is exposed so the tests can pin it apart from the
+// Recoverer.
 
 // ResetMode names the planner's three modes for the tests.
 type ResetMode = resetMode
@@ -83,6 +83,9 @@ func (p Planner) Plan(ctx context.Context, user identity.UserID, reported, prove
 func (p Planner) Execute(ctx context.Context, user identity.UserID, plan []AuthenticatorRef) error {
 	return p.p.execute(ctx, user, plan)
 }
+
+// The saved-code generator, parser and check are exposed so the tests can pin
+// them apart from the flow that spends a code.
 
 // CodeBytes is the entropy a saved code carries, pinned by the tests.
 const CodeBytes = codeBytes

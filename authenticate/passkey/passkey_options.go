@@ -205,3 +205,12 @@ func WithLogger(l *slog.Logger) Option {
 		}
 	}
 }
+
+// WithLogInterval replaces the window of the manager's log sampler: refused
+// assertions, suspected clones and notices that could not be queued are each
+// written at most once per key per window, keyed by reason, and the counts
+// held back are reported. The default is one minute. An interval of zero or
+// less writes every record. It governs the passkey manager's records only.
+func WithLogInterval(d time.Duration) Option {
+	return func(m *Passkeys) { m.logInterval = d }
+}

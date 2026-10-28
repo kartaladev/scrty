@@ -892,10 +892,11 @@ func TestFinishRegistrationRacingFinishesVerifyOnce(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
-// The race tests below race registration steps for one user against a per-user
-// limit. They share no setup beyond the fixture: each stages its racers with
-// its own store double, holding a count until every racer has read it or a
-// read until another racer has stored.
+// The tests that race registration steps for one user against a per-user
+// limit share no setup beyond the fixture: each stages its racers with its own
+// store double, holding a count until every racer has read it or a read until
+// another racer has stored. The barrier below and the doubles after it serve
+// those tests.
 
 // barrier releases its callers once racers of them have arrived, or after a
 // few seconds. Until it is armed, it lets every caller through.

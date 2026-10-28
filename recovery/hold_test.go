@@ -952,6 +952,7 @@ func TestRecoverer_HoldOverrides(t *testing.T) {
 // Exactly one of the sixteen may take effect: a finish that returns a result,
 // or a cancel, seen through the Cancelled notice only the effective cancel
 // sends. Run it with -race -count=3.
+//
 // It stands apart from TestRecoverer_Hold because it runs sixteen goroutines
 // against one held recovery.
 func TestRecoverer_FinishCancelRace(t *testing.T) {
