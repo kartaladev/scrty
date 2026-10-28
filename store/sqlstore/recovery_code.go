@@ -231,7 +231,7 @@ func (s *RecoveryCodeStore) underSavepoint(ctx context.Context, q DBTX, op strin
 	open := true
 	defer func() {
 		if open {
-			bestEffort(func() { _ = rollback() })
+			storekit.BestEffort(func() { _ = rollback() })
 		}
 	}()
 

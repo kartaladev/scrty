@@ -86,8 +86,8 @@ func underSavepoint[Q any](ctx context.Context, t Transactor[Q], q Q, fn func(q 
 	open := true
 	defer func() {
 		if open {
-			bestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
-			bestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
+			BestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
+			BestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
 		}
 	}()
 
@@ -110,14 +110,6 @@ func underSavepoint[Q any](ctx context.Context, t Transactor[Q], q Q, fn func(q 
 	open = false
 
 	return relErr
-}
-
-// bestEffort runs f, recovering any panic it raises. It is only for cleanup
-// that runs while another panic is already unwinding, where f's own panic
-// would otherwise replace that one.
-func bestEffort(f func()) {
-	defer func() { _ = recover() }()
-	f()
 }
 
 // SessionTx is one store's driver side of Supersede, for one call: its

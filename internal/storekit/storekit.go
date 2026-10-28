@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kartaladev/scrty/identity"
 	"github.com/kartaladev/scrty/internal/nilcheck"
 	"github.com/kartaladev/scrty/pkg/id"
 	"github.com/kartaladev/scrty/session"
@@ -218,3 +219,94 @@ func SessionDigest(sessionID string) []byte {
 // an identifier already stored fails. It carries no adapter prefix; the
 // adapter wraps it with its own and the operation's name.
 var ErrIdentifierInUse = errors.New("the identifier is already in use")
+
+// ErrPasskeyHandleHeld is the refusal of an offered handle another user
+// holds. With 64 random bytes it does not happen by chance; it names no part
+// of the handle. It carries no adapter prefix; the adapter wraps it with its
+// own and the operation's name.
+var ErrPasskeyHandleHeld = errors.New("the offered user handle is held by another user")
+
+// ErrStreakContended is AddStreakFailure's error when every run of the upsert
+// lost a race to create the streak. It names no identifier, and carries no
+// adapter prefix; the adapter wraps it with its own and the operation's name.
+var ErrStreakContended = errors.New("the streak was created and deleted concurrently on every run")
+
+// ParseUserID is ref as the identifier it names, or false when ref is not the
+// canonical lowercase UUID string the identity stores hand out. pkg/id
+// accepts either letter case; a reference is opaque and matched byte for
+// byte, so another spelling of the same UUID names no user.
+func ParseUserID(ref identity.UserID) (id.ID, bool) {
+	uid, err := id.Parse(string(ref))
+	if err != nil || uid.String() != string(ref) {
+		return id.Nil, false
+	}
+
+	return uid, true
+}
+
+// CheckUser refuses text PostgreSQL cannot store, naming the field and never
+// its value.
+func CheckUser(username string, u *identity.UserChange) error {
+	fields := []Field{Text("username", username), Text("name", u.Name)}
+	for _, r := range u.Roles {
+		fields = append(fields, Text("role", r))
+	}
+
+	return CheckStorable(fields...)
+}
+
+// SurvivingRoles applies the update's role rules: empty names are skipped and
+// a repeated name collapses to its first occurrence. No survivor means the
+// grants are left as stored.
+func SurvivingRoles(names []string) []string {
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, n := range names {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		out = append(out, n)
+	}
+
+	return out
+}
+
+// BestEffort runs f, recovering any panic it raises. It is only for cleanup
+// that runs while another panic is already unwinding, where f's own panic
+// would otherwise replace that one.
+func BestEffort(f func()) {
+	defer func() { _ = recover() }()
+	f()
+}
+
+// SQLStater is the method PostgreSQL drivers' errors report their SQLSTATE
+// through: pgconn.PgError and lib/pq's Error both provide it.
+type SQLStater interface{ SQLState() string }
+
+// DetachedError is a database failure cut from the driver's error: fixed
+// text and the sentinels it matched, nothing else. DetachedText makes one.
+type DetachedError struct {
+	text string
+	kept []error
+}
+
+func (e *DetachedError) Error() string   { return e.text }
+func (e *DetachedError) Unwrap() []error { return e.kept }
+
+// DetachedText is err with the driver's error value left out of its chain and
+// text in place of err's own text. It stays matchable against each sentinel
+// of kept that err matched, whatever text says, and against nothing else.
+// kept is the adapter's own list of sentinels that carry no value: the
+// context errors and its driver's closed-transaction and closed-connection
+// errors.
+func DetachedText(err error, text string, kept []error) error {
+	var matched []error
+	for _, s := range kept {
+		if errors.Is(err, s) {
+			matched = append(matched, s)
+		}
+	}
+
+	return &DetachedError{text: text, kept: matched}
+}

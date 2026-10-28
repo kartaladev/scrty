@@ -12,6 +12,7 @@ import (
 
 	"github.com/kartaladev/scrty/internal/diag"
 	"github.com/kartaladev/scrty/internal/pgschema"
+	"github.com/kartaladev/scrty/internal/storekit"
 	"github.com/kartaladev/scrty/pkg/clock"
 	"github.com/kartaladev/scrty/ratelimit"
 )
@@ -48,10 +49,6 @@ type Runner interface {
 	// any, is reported by the row's Scan.
 	QueryRow(ctx context.Context, sql string, args ...any) Row
 }
-
-// sqlStater is a driver error that reports its SQLSTATE, as *pgconn.PgError
-// does, under either adapter.
-type sqlStater interface{ SQLState() string }
 
 // sqlStateInsufficientPrivilege is the SQLSTATE of a statement the role may
 // not run (insufficient_privilege).
@@ -163,7 +160,7 @@ func probe(ctx context.Context, r Runner, prefix string, now any, lockTimeout st
 // anything else, a server that cannot be reached included, is not. Neither
 // repeats the server's text.
 func probeError(err error, prefix, step string) error {
-	var st sqlStater
+	var st storekit.SQLStater
 	if errors.As(err, &st) && st.SQLState() == sqlStateInsufficientPrivilege {
 		return diag.Wrap(err, fmt.Sprintf("ratelimit: invalid configuration: the role may not run the limiter's %s statement on %s; "+
 			"grant it SELECT, INSERT, UPDATE and DELETE on the table", step, pgschema.LimiterTable), ratelimit.ErrConfig)

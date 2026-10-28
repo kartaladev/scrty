@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"regexp"
+
+	"github.com/kartaladev/scrty/internal/storekit"
 )
 
 // dbFailed wraps err, a failure of a database call the identity store made,
@@ -45,26 +47,12 @@ func scanFailed(op string, err error) error {
 
 	text := "scan error on column index " + m[1] + ", name " + m[2]
 
-	return failed(op, detachedText(err, text))
+	return failed(op, storekit.DetachedText(err, text, detachedKept))
 }
 
 // detachedKept is the sentinels a detached error stays matchable against when
 // the driver's error matched them. None carries a value.
 var detachedKept = []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, sql.ErrConnDone}
-
-// detachedError is a database failure cut from the driver's error: fixed
-// text and the sentinels of detachedKept it matched, nothing else.
-type detachedError struct {
-	text string
-	kept []error
-}
-
-func (e *detachedError) Error() string   { return e.text }
-func (e *detachedError) Unwrap() []error { return e.kept }
-
-// sqlStater is the method PostgreSQL drivers' errors report their SQLSTATE
-// through: pgconn.PgError and lib/pq's Error both provide it.
-type sqlStater interface{ SQLState() string }
 
 // detached is err with the driver's error value left out of its chain and
 // its text replaced with the library's own: "database failure", followed by
@@ -77,14 +65,14 @@ type sqlStater interface{ SQLState() string }
 func detached(err error) error {
 	text := "database failure"
 
-	var st sqlStater
+	var st storekit.SQLStater
 	if errors.As(err, &st) {
 		if code := st.SQLState(); validSQLState(code) {
 			text += " (SQLSTATE " + code + ")"
 		}
 	}
 
-	return detachedText(err, text)
+	return storekit.DetachedText(err, text, detachedKept)
 }
 
 // validSQLState reports whether code has the shape of a SQLSTATE, five digits
@@ -101,18 +89,4 @@ func validSQLState(code string) bool {
 	}
 
 	return true
-}
-
-// detachedText is err with the driver's error value left out of its chain,
-// like detached, but with text in place of err's own text. It still matches
-// the context and database/sql sentinels err matched, whatever text says.
-func detachedText(err error, text string) error {
-	var kept []error
-	for _, s := range detachedKept {
-		if errors.Is(err, s) {
-			kept = append(kept, s)
-		}
-	}
-
-	return &detachedError{text: text, kept: kept}
 }

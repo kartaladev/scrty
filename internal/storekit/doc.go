@@ -16,6 +16,12 @@
 // per-call value: begin, commit, rollback, the savepoint statements,
 // statement running and scanning, and the wrapping of its errors.
 //
+// It also holds the helpers the three identity stores share: the parsing of a
+// user reference (ParseUserID), the checks and role rules of a user write
+// (CheckUser, SurvivingRoles), and the error a database failure is cut down to
+// before the identity store returns it (DetachedText), which keeps only the
+// sentinels each adapter names and never the driver's text.
+//
 // The pgx and gorm adapters are separate modules, so this package is a
 // cross-module contract, like internal/pgschema: a change here must keep all
 // three adapters' tests green.

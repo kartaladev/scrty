@@ -159,7 +159,7 @@ func (s *IdentityStore) LoadByUsername(ctx context.Context, username string) (*i
 func (s *IdentityStore) LoadByUserID(ctx context.Context, ref identity.UserID) (*identity.Details, error) {
 	const op = "load user by reference"
 
-	uid, ok := parseUserID(ref)
+	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
 		return nil, failed(op, identity.ErrUserNotFound)
 	}
@@ -227,7 +227,7 @@ func (s *IdentityStore) LoadPrivileges(ctx context.Context, role string) ([]*ide
 func (s *IdentityStore) Required(ctx context.Context, ref identity.UserID) (bool, error) {
 	const op = "look up MFA requirement"
 
-	uid, ok := parseUserID(ref)
+	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
 		return false, failed(op, identity.ErrUserNotFound)
 	}
@@ -261,7 +261,7 @@ func (s *IdentityStore) Provision(
 	}
 
 	u := identity.ApplyUserOptions(opts...)
-	if err := checkUser(username, u); err != nil {
+	if err := storekit.CheckUser(username, u); err != nil {
 		return nil, failed(op, err)
 	}
 	org, err := orgReference(u)
@@ -340,7 +340,7 @@ func (s *IdentityStore) Update(
 	}
 
 	u := identity.ApplyUserOptions(opts...)
-	if err := checkUser(username, u); err != nil {
+	if err := storekit.CheckUser(username, u); err != nil {
 		return nil, failed(op, err)
 	}
 	org, err := orgReference(u)
@@ -350,7 +350,7 @@ func (s *IdentityStore) Update(
 
 	var roles []string
 	if u.IsSet(identity.FieldRoles) {
-		roles = survivingRoles(u.Roles)
+		roles = storekit.SurvivingRoles(u.Roles)
 	}
 
 	var out *identity.Details
@@ -640,30 +640,6 @@ func (s *IdentityStore) organization(ctx context.Context, q DBTX, op string, org
 	return &org, nil
 }
 
-// parseUserID is ref as the identifier it names, or false when ref is not the
-// canonical lowercase UUID string this store hands out. pkg/id accepts either
-// letter case; a reference is opaque and matched byte for byte, so another
-// spelling of the same UUID names no user.
-func parseUserID(ref identity.UserID) (id.ID, bool) {
-	uid, err := id.Parse(string(ref))
-	if err != nil || uid.String() != string(ref) {
-		return id.Nil, false
-	}
-
-	return uid, true
-}
-
-// checkUser refuses text PostgreSQL cannot store, naming the field and never
-// its value.
-func checkUser(username string, u *identity.UserChange) error {
-	fields := []storekit.Field{storekit.Text("username", username), storekit.Text("name", u.Name)}
-	for _, r := range u.Roles {
-		fields = append(fields, storekit.Text("role", r))
-	}
-
-	return storekit.CheckStorable(fields...)
-}
-
 // orgReference is the organization reference to store when the caller named
 // one: nil (NULL) for none or one with no identifier, otherwise the parsed
 // UUID. A reference that is not a UUID in canonical lowercase text, an
@@ -681,23 +657,6 @@ func orgReference(u *identity.UserChange) (any, error) {
 	}
 
 	return org, nil
-}
-
-// survivingRoles applies the update's role rules: empty names are skipped and
-// a repeated name collapses to its first occurrence. No survivor means the
-// grants are left as stored.
-func survivingRoles(names []string) []string {
-	out := make([]string, 0, len(names))
-	seen := make(map[string]bool, len(names))
-	for _, n := range names {
-		if n == "" || seen[n] {
-			continue
-		}
-		seen[n] = true
-		out = append(out, n)
-	}
-
-	return out
 }
 
 // nullTimeArg is a scanned nullable time as a statement argument.
@@ -759,8 +718,8 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q DBTX, op string, f
 		// behind. A panic is already unwinding, so each cleanup statement
 		// recovers its own: a handle that panics here too must not replace
 		// the panic the caller will recover.
-		bestEffort(func() { _, _ = q.ExecContext(closeCtx, "ROLLBACK TO SAVEPOINT "+name) })
-		bestEffort(func() { _, _ = q.ExecContext(closeCtx, "RELEASE SAVEPOINT "+name) })
+		storekit.BestEffort(func() { _, _ = q.ExecContext(closeCtx, "ROLLBACK TO SAVEPOINT "+name) })
+		storekit.BestEffort(func() { _, _ = q.ExecContext(closeCtx, "RELEASE SAVEPOINT "+name) })
 	}()
 
 	err := fn(q)
@@ -786,14 +745,6 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q DBTX, op string, f
 	open = false
 
 	return nil
-}
-
-// bestEffort runs f, recovering any panic it raises. It is only for cleanup
-// that runs while another panic is already unwinding, where f's own panic
-// would otherwise replace that one.
-func bestEffort(f func()) {
-	defer func() { _ = recover() }()
-	f()
 }
 
 // column is one users column an update writes, and the value it binds.

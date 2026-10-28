@@ -252,8 +252,8 @@ func (s *RecoveryCodeStore) underSavepoint(ctx context.Context, q *gorm.DB, op s
 	open := true
 	defer func() {
 		if open {
-			bestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
-			bestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
+			storekit.BestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
+			storekit.BestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
 		}
 	}()
 

@@ -28,7 +28,7 @@ var (
 func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID, n int) ([][]byte, error) {
 	const op = "read password history"
 
-	uid, ok := parseUserID(ref)
+	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
 		return nil, failed(op, errUserReference)
 	}
@@ -81,7 +81,7 @@ func (s *IdentityStore) RecentPasswords(ctx context.Context, ref identity.UserID
 func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID, hash []byte, keep int) error {
 	const op = "retire password"
 
-	uid, ok := parseUserID(ref)
+	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
 		return failed(op, errUserReference)
 	}
@@ -135,7 +135,7 @@ func (s *IdentityStore) RetirePassword(ctx context.Context, ref identity.UserID,
 func (s *IdentityStore) ForgetPasswords(ctx context.Context, ref identity.UserID) error {
 	const op = "forget password history"
 
-	uid, ok := parseUserID(ref)
+	uid, ok := storekit.ParseUserID(ref)
 	if !ok {
 		return failed(op, errUserReference)
 	}

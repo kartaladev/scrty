@@ -177,7 +177,7 @@ func (s *AttemptStore) AddStreakFailure(
 		return got, setHold, nil
 	}
 
-	return lockout.FailureStreak{}, false, failed(op, errStreakContended)
+	return lockout.FailureStreak{}, false, failed(op, storekit.ErrStreakContended)
 }
 
 // FailureStreak reads username's streak as of since. A streak not held whose
@@ -223,7 +223,3 @@ func (s *AttemptStore) DeleteStreaksBefore(ctx context.Context, retainSince time
 
 	return int(n), err
 }
-
-// errStreakContended is AddStreakFailure's error when every run of the upsert
-// lost a race to create the streak. It names no identifier.
-var errStreakContended = errors.New("the streak was created and deleted concurrently on every run")

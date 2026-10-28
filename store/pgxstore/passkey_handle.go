@@ -15,11 +15,6 @@ import (
 	"github.com/kartaladev/scrty/internal/storekit"
 )
 
-// errPasskeyHandleHeld is the refusal of an offered handle another user
-// holds. With 64 random bytes it does not happen by chance; it names no part
-// of the handle.
-var errPasskeyHandleHeld = errors.New("the offered user handle is held by another user")
-
 // PasskeyHandleStore keeps each user's one WebAuthn user handle in the
 // passkey_user_handles table the migrate package creates. It implements
 // passkey.HandleStore, and is safe for concurrent use.
@@ -85,7 +80,7 @@ func (s *PasskeyHandleStore) Assign(ctx context.Context, user identity.UserID, o
 	var held []byte
 	err = s.c.queryRow(ctx, op, pgschema.PasskeyHandleOfUser, []any{string(user)}, &held)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, failed(op, errPasskeyHandleHeld)
+		return nil, failed(op, storekit.ErrPasskeyHandleHeld)
 	}
 	if err != nil {
 		return nil, err

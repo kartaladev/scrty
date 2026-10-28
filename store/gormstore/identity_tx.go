@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"gorm.io/gorm"
+
+	"github.com/kartaladev/scrty/internal/storekit"
 )
 
 // atomically runs fn as one unit on the handle ctx resolves to: under a
@@ -91,8 +93,8 @@ func (s *IdentityStore) underSavepoint(ctx context.Context, q *gorm.DB, op strin
 		// behind. A panic is already unwinding, so each cleanup statement
 		// recovers its own: a handle that panics here too must not replace
 		// the panic the caller will recover.
-		bestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
-		bestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
+		storekit.BestEffort(func() { _ = exec("ROLLBACK TO SAVEPOINT ") })
+		storekit.BestEffort(func() { _ = exec("RELEASE SAVEPOINT ") })
 	}()
 
 	err := fn(q)
@@ -130,12 +132,4 @@ func savepointSession(ctx context.Context, q *gorm.DB) *gorm.DB {
 	}
 
 	return h
-}
-
-// bestEffort runs f, recovering any panic it raises. It is only for cleanup
-// that runs while another panic is already unwinding, where f's own panic
-// would otherwise replace that one.
-func bestEffort(f func()) {
-	defer func() { _ = recover() }()
-	f()
 }

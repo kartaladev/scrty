@@ -134,6 +134,12 @@ Only helpers with identical bodies move. Near-duplicates that differ by driver A
 
 `errPasskeyHandleHeld` and `errStreakContended` carry no package prefix and are unexported, so sharing them changes no text a consumer sees.
 
+**As landed (2026-10-29):**
+- `BestEffort`, `ParseUserID`, `CheckUser`, `SurvivingRoles`, `ErrPasskeyHandleHeld`, `ErrStreakContended`, `SQLStater` and `DetachedError` move into `internal/storekit` with their bodies unchanged.
+- `DetachedText` takes the backend's list of sentinels to keep as a parameter. The bodies were identical, but each read its own package's list, and the pgx list differs (`pgx.ErrTxClosed`, `pgx.ErrTxCommitRollback` against `sql.ErrTxDone`, `sql.ErrConnDone`). The lists stay in each backend.
+- `dbFailed` stays in each backend. It is `failed(op, detached(err))`, and both of those carry the backend's own prefix and sentinel list, so a shared version would leave each backend a one-line wrapper identical to the function it replaced.
+- `optionKind` stays in each backend with its constants. It is the vocabulary of each backend's own option plumbing, and moving the type alone would leave `storekit` a bare integer whose values live elsewhere.
+
 **Alternative considered:** a driver-neutral executor port that would remove more of the duplication. It is a redesign, not a move, so it is out of scope.
 
 ### D6. Files consolidate into feature families

@@ -76,7 +76,7 @@ Each task below is one parallel lane that owns only the packages it names. Each 
 
 ## 5. Phase 4: shared backend helpers (D5)
 
-- [ ] 5.1 Move the helpers that are identical across `sqlstore`, `pgxstore` and `gormstore` (and their `storekit` and `pglimiter` copies) into `internal/storekit`, and remove the copies. `txKey` stays in each backend (D5). Verify:
+- [x] 5.1 Move the helpers that are identical across `sqlstore`, `pgxstore` and `gormstore` (and their `storekit` and `pglimiter` copies) into `internal/storekit`, and remove the copies. `txKey` stays in each backend (D5). Verify:
   - each listed helper is declared once, and `txKey` is still declared in each of the three backends;
   - no merged declaration's godoc promised something to "this package alone";
   - `go test ./...` passes in the core module and both backend modules;
@@ -85,7 +85,7 @@ Each task below is one parallel lane that owns only the packages it names. Each 
 
 ## 6. The repository's own references
 
-- [ ] 6.1 Update the `openspec/config.yaml` context: the integration module list, the adapter names and the module paths. Verify: `openspec validate --all --strict` passes, and the context names no old path.
+- [x] 6.1 Update the `openspec/config.yaml` context: the integration module list, the adapter names and the module paths. Verify: `openspec validate --all --strict` reports no failure that `main` does not already have (on 2026-10-29, the same 34 items fail on `main`: long requirements in archived specs, and three changes with no deltas), `restructure-layout` and `release-readiness` validate, and the context names no old path.
 - [x] 6.2 Update the path and identifier references in the artifacts of the active changes: `trusted-proxy-client-ip`, `release-readiness` (including its tag prefixes and its `module-layout` scenarios), `di-wiring`, `bff-resource-server`, and `minimize-test-containers` once it is on `main`. Check `idiomatic-api-shape` and `key-port-context`, which already use this change's names, against the names that actually landed, and correct any that differ. Regenerate `plans.md` for any change whose `tasks.md` content changes, as `tasks-plans.md` requires. Verify: a search of `openspec/changes/` for every left-hand entry of `evidence/rename-map.tsv` finds matches only in this change's own artifacts.
 
 ## 7. Final integration

@@ -6,6 +6,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kartaladev/scrty/internal/storekit"
 )
 
 // dbFailed wraps err, a failure of a database call the identity store made,
@@ -34,7 +36,7 @@ func scanFailed(op string, err error) error {
 	text := "scan error on column index " + strconv.Itoa(argErr.ColumnIndex) +
 		", name " + strconv.Quote(argErr.FieldName)
 
-	return failed(op, detachedText(err, text))
+	return failed(op, storekit.DetachedText(err, text, detachedKept))
 }
 
 // detachedKept is the sentinels a detached error stays matchable against
@@ -46,20 +48,6 @@ var detachedKept = []error{
 	pgx.ErrTxCommitRollback,
 }
 
-// detachedError is a database failure cut from the driver's error: fixed
-// text and the sentinels of detachedKept it matched, nothing else.
-type detachedError struct {
-	text string
-	kept []error
-}
-
-func (e *detachedError) Error() string   { return e.text }
-func (e *detachedError) Unwrap() []error { return e.kept }
-
-// sqlStater is a driver error that reports its SQLSTATE, as *pgconn.PgError
-// does.
-type sqlStater interface{ SQLState() string }
-
 // detached is err with the driver's error value left out of its chain and
 // its text replaced by the library's own: "database failure", and the
 // SQLSTATE when err reports one through a SQLState method. It stays
@@ -69,14 +57,14 @@ type sqlStater interface{ SQLState() string }
 // reaches it.
 func detached(err error) error {
 	text := "database failure"
-	var st sqlStater
+	var st storekit.SQLStater
 	if errors.As(err, &st) {
 		if code := st.SQLState(); isSQLState(code) {
 			text += " (SQLSTATE " + code + ")"
 		}
 	}
 
-	return detachedText(err, text)
+	return storekit.DetachedText(err, text, detachedKept)
 }
 
 // isSQLState reports whether code has the shape of a SQLSTATE: five digits or
@@ -92,18 +80,4 @@ func isSQLState(code string) bool {
 	}
 
 	return true
-}
-
-// detachedText is err with the driver's error value left out of its chain,
-// like detached, but with text in place of detached's own. It still matches
-// the context and pgx sentinels err matched, whatever text says.
-func detachedText(err error, text string) error {
-	var kept []error
-	for _, s := range detachedKept {
-		if errors.Is(err, s) {
-			kept = append(kept, s)
-		}
-	}
-
-	return &detachedError{text: text, kept: kept}
 }
