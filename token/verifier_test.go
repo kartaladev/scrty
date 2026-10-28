@@ -317,7 +317,7 @@ func TestVerifyKeySelection(t *testing.T) {
 	}
 }
 
-// Standalone: a table of its own: each row signs its own claims and verifies on its own clock.
+// Standalone, a table of its own: each row signs its own claims and verifies on its own clock.
 func TestVerifyTimeChecks(t *testing.T) {
 	t.Parallel()
 
@@ -423,7 +423,7 @@ func TestVerifyTimeChecks(t *testing.T) {
 // Issuer and audience share the whole call shape, so they share one table:
 // kept apart, each gained rows the other lacked and neither absence was
 // visible.
-// Standalone: a table of its own: each row adds a claim and its own verifier options on a fixed clock.
+// Standalone, a table of its own: each row adds a claim and its own verifier options on a fixed clock.
 func TestVerifyClaimEnforcement(t *testing.T) {
 	t.Parallel()
 
@@ -560,7 +560,7 @@ func TestVerifyClaimEnforcement(t *testing.T) {
 // TestVerifyErrorClassification separates a refused token from a failure to
 // perform the check at all. Conflating them makes an outage look like an
 // authentication failure, so the second and third rows assert the negative.
-// Standalone: a table of its own: each row builds its own key source, on a fixed clock.
+// Standalone, a table of its own: each row builds its own key source, on a fixed clock.
 func TestVerifyErrorClassification(t *testing.T) {
 	t.Parallel()
 
@@ -736,7 +736,7 @@ func TestVerifyErrorClassification(t *testing.T) {
 // Every row is the issued token as far as the JOSE stack is concerned — the
 // shared body proves that first — so a row rejected below is rejected for its
 // encoding alone and the rejections are not vacuous.
-// Standalone: a table of its own: each row re-encodes an issued token and proves a naive verifier accepts it first.
+// Standalone, a table of its own: each row re-encodes an issued token and proves a naive verifier accepts it first.
 func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
 	t.Parallel()
 
@@ -860,7 +860,7 @@ func TestVerifyRejectsNonCanonicalEncoding(t *testing.T) {
 // The oversized token is genuine: the row that raises the ceiling verifies
 // that exact string, so the default's refusal is about its size and nothing
 // else.
-// Standalone: a table of its own: every row verifies one shared oversized token, with its own key source and options.
+// Standalone, a table of its own: every row verifies one shared oversized token, with its own key source and options.
 func TestVerifyBoundsTheInputItAccepts(t *testing.T) {
 	t.Parallel()
 
@@ -988,7 +988,7 @@ func (s nilKeyVerificationSource) VerificationKeys() ([]signingkey.PublicKey, er
 	return []signingkey.PublicKey{{Kid: "k-1", Alg: s.alg, Key: s.key}}, nil
 }
 
-// Standalone: a table of its own: it verifies a generated token against a consumer key source publishing a nil key.
+// Standalone, a table of its own: it verifies a generated token against a consumer key source publishing a nil key.
 func TestVerify_NilPublicKeyIsAnUnusableKeySet(t *testing.T) {
 	t.Parallel()
 

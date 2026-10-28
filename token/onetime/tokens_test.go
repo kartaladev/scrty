@@ -5,6 +5,7 @@
 // runner does not build, or read the package's own source.
 //
 //go:generate mockgen -source=../../pkg/id/generator.go -package=onetime_test -destination=idgenerator_mock_test.go -typed
+
 package onetime_test
 
 import (
