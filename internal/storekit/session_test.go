@@ -3,6 +3,7 @@ package storekit_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -307,6 +308,79 @@ func TestDecodeSessionData(t *testing.T) {
 
 			got, err := storekit.DecodeSessionData([]byte(tc.raw))
 			tc.assert(t, got, err)
+		})
+	}
+}
+
+func TestUntilSettled(t *testing.T) {
+	t.Parallel()
+
+	errPass := errors.New("pass failed")
+	wrap := func(op string, err error) error { return fmt.Errorf("store: %s: %w", op, err) }
+
+	type testCase struct {
+		name string
+		// removed is what the i-th pass removes, or its error.
+		removed func(i int) (int, error)
+		assert  func(t *testing.T, passes, total int, err error)
+	}
+
+	cases := []testCase{
+		{
+			name: "stops at the first pass that removes nothing, summing the passes before it",
+			removed: func(i int) (int, error) {
+				if i < 3 {
+					return 2, nil
+				}
+				return 0, nil
+			},
+			assert: func(t *testing.T, passes, total int, err error) {
+				require.NoError(t, err)
+				assert.Equal(t, 4, passes)
+				assert.Equal(t, 6, total)
+			},
+		},
+		{
+			name:    "gives up after MaxDeletePasses passes that each removed something",
+			removed: func(int) (int, error) { return 1, nil },
+			assert: func(t *testing.T, passes, total int, err error) {
+				require.ErrorIs(t, err, session.ErrDeleteDidNotSettle)
+				assert.EqualError(t, err, "store: delete: "+session.ErrDeleteDidNotSettle.Error(),
+					"the refusal is wrapped by the adapter, with the operation")
+				assert.Equal(t, 64, storekit.MaxDeletePasses)
+				assert.Equal(t, storekit.MaxDeletePasses, passes)
+				assert.Equal(t, storekit.MaxDeletePasses, total, "what the passes removed is reported")
+			},
+		},
+		{
+			name: "a failing pass ends the delete with what the earlier passes removed",
+			removed: func(i int) (int, error) {
+				if i == 2 {
+					return 0, errPass
+				}
+				return 5, nil
+			},
+			assert: func(t *testing.T, passes, total int, err error) {
+				require.ErrorIs(t, err, errPass)
+				assert.EqualError(t, err, errPass.Error(), "a pass's error is returned as it is")
+				assert.NotErrorIs(t, err, session.ErrDeleteDidNotSettle)
+				assert.Equal(t, 3, passes)
+				assert.Equal(t, 10, total)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			passes := 0
+			total, err := storekit.UntilSettled("delete", func() (int, error) {
+				i := passes
+				passes++
+				return tc.removed(i)
+			}, wrap)
+			tc.assert(t, passes, total, err)
 		})
 	}
 }

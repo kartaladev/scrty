@@ -248,8 +248,8 @@ func (stubConnector) Connect(context.Context) (driver.Conn, error) { return stub
 
 func (stubConnector) Driver() driver.Driver { return stubDriver{} }
 
-// It stands apart from the tables above: the limiter runs over a stub driver
-// rather than a database handle.
+// TestLimiter_RecordSucceedsWhenDriverReportsNoRowCount stands apart from the tables
+// above: it needs a handle whose driver answers, not an inert one.
 func TestLimiter_RecordSucceedsWhenDriverReportsNoRowCount(t *testing.T) {
 	t.Parallel()
 
@@ -262,8 +262,8 @@ func TestLimiter_RecordSucceedsWhenDriverReportsNoRowCount(t *testing.T) {
 // TestLimiter_VerifyErrorsStartWithThePrefix pins the adapter's prefix on the
 // shared core's errors.
 //
-// It stands apart from the tables above: the limiter runs over a stub driver
-// rather than a database handle.
+// It stands apart from the tables above: it needs a handle whose driver answers,
+// not an inert one.
 func TestLimiter_VerifyErrorsStartWithThePrefix(t *testing.T) {
 	t.Parallel()
 

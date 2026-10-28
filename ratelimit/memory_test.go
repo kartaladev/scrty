@@ -687,6 +687,7 @@ func TestMemoryLimiterFactory(t *testing.T) {
 
 	type testCase struct {
 		name   string
+		opts   []ratelimit.MemoryOption // nil builds the factory with a discarding logger
 		limit  int
 		window time.Duration
 		assert func(t *testing.T, f ratelimit.LimiterFactory, l ratelimit.Limiter, err error)
@@ -740,48 +741,36 @@ func TestMemoryLimiterFactory(t *testing.T) {
 				require.ErrorIs(t, err, ratelimit.ErrConfig)
 			},
 		},
+		{
+			// The factory's options apply to every limiter it builds.
+			name:  "a nil logger option is refused when a limiter is built",
+			opts:  []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterLogger(nil)},
+			limit: 1, window: time.Minute,
+			assert: func(t *testing.T, _ ratelimit.LimiterFactory, _ ratelimit.Limiter, err error) {
+				require.ErrorIs(t, err, ratelimit.ErrConfig)
+			},
+		},
+		{
+			name:  "valid options build",
+			opts:  []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler))},
+			limit: 1, window: time.Minute,
+			assert: func(t *testing.T, _ ratelimit.LimiterFactory, _ ratelimit.Limiter, err error) {
+				require.NoError(t, err)
+			},
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			f := ratelimit.MemoryLimiterFactory(
-				ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler)))
+			opts := tc.opts
+			if opts == nil {
+				opts = []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler))}
+			}
+			f := ratelimit.MemoryLimiterFactory(opts...)
 			l, err := f.NewLimiter("ns", tc.limit, tc.window)
 			tc.assert(t, f, l, err)
-		})
-	}
-}
-
-func TestMemoryLimiterFactory_OptionsApplyToEveryLimiter(t *testing.T) {
-	t.Parallel()
-
-	type testCase struct {
-		name   string
-		opts   []ratelimit.MemoryOption
-		assert func(t *testing.T, err error)
-	}
-
-	cases := []testCase{
-		{
-			name:   "a nil logger option is refused when a limiter is built",
-			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterLogger(nil)},
-			assert: func(t *testing.T, err error) { require.ErrorIs(t, err, ratelimit.ErrConfig) },
-		},
-		{
-			name:   "valid options build",
-			opts:   []ratelimit.MemoryOption{ratelimit.WithMemoryLimiterLogger(slog.New(slog.DiscardHandler))},
-			assert: func(t *testing.T, err error) { require.NoError(t, err) },
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, err := ratelimit.MemoryLimiterFactory(tc.opts...).NewLimiter("ns", 1, time.Minute)
-			tc.assert(t, err)
 		})
 	}
 }

@@ -170,3 +170,90 @@ func probeError(err error, prefix, step string) error {
 	}
 	return diag.Wrap(err, fmt.Sprintf("%s: verify: the limiter's %s statement could not run on a probe key", prefix, step))
 }
+
+// Facts is what Verify reads about the server, in one query
+// (pgschema.LimiterServerFacts).
+type Facts struct {
+	// InRecovery is whether the server is a standby.
+	InRecovery bool
+	// Version is the server's server_version_num.
+	Version int
+	// Encoding is the database's server_encoding.
+	Encoding string
+	// Persistence is the relpersistence of the bucket table that resolves
+	// through the connection's search_path: "p" permanent, "u" unlogged, "t"
+	// temporary, or "" when no such table resolves.
+	Persistence string
+}
+
+// Check refuses the facts of a server the limiter cannot hold its limits on,
+// in this order: a standby, a server older than PostgreSQL 15, a database whose
+// encoding is not UTF8, a bucket table that does not resolve through
+// search_path, a temporary one and an unlogged one. Every
+// refusal wraps ratelimit.ErrConfig.
+func (f Facts) Check() error {
+	switch {
+	case f.InRecovery:
+		return fmt.Errorf("%w: the server is a standby (in recovery); the limiter must run on the primary, "+
+			"because a standby lags, so it undercounts, and refuses writes", ratelimit.ErrConfig)
+	case f.Version < pgschema.LimiterMinServerVersion:
+		return fmt.Errorf("%w: the server's server_version_num is %d, older than PostgreSQL 15 (%d), the oldest the limiter supports",
+			ratelimit.ErrConfig, f.Version, pgschema.LimiterMinServerVersion)
+	case f.Encoding != "UTF8":
+		return fmt.Errorf("%w: the database's server encoding is %s; the limiter needs UTF8, "+
+			"the encoding every key and namespace is stored in", ratelimit.ErrConfig, f.Encoding)
+	case f.Persistence == "":
+		return fmt.Errorf("%w: the table %s does not resolve through the connection's search_path; "+
+			"apply the security-state migration set (migrate.SecurityState) to this database",
+			ratelimit.ErrConfig, pgschema.LimiterTable)
+	case f.Persistence == "t":
+		return fmt.Errorf("%w: the table %s resolves to a temporary table, which shadows the migration's "+
+			"and lasts only for its session; drop it", ratelimit.ErrConfig, pgschema.LimiterTable)
+	case f.Persistence == "u":
+		return fmt.Errorf("%w: the table %s is unlogged, so a crash or a failover would reset every limit to zero; "+
+			"make it logged again with ALTER TABLE %s SET LOGGED",
+			ratelimit.ErrConfig, pgschema.LimiterTable, pgschema.LimiterTable)
+	}
+	return nil
+}
+
+// DefaultPruneBatchSize is how many keys one prune batch deletes at most when
+// no option sets it.
+const DefaultPruneBatchSize = 1000
+
+// Prune deletes idle keys in batches of cfg.PruneBatchSize, each its own
+// statement and so its own transaction, and returns how many keys the batches
+// that committed removed. The time is read once, before the first batch: the
+// configured clock, or the database's. It stops on a short batch, on an ended
+// ctx, or on the first failed batch; the count it returns with an error is a
+// lower bound, every key of it removed. Its errors start with prefix, and none
+// repeats the server's text.
+func Prune(ctx context.Context, r Runner, prefix string, cfg Config) (int, error) {
+	now := Now(cfg.Clock)
+	if now == nil {
+		var t time.Time
+		if err := r.QueryRow(ctx, pgschema.LimiterClock).Scan(&t); err != nil {
+			return 0, diag.Wrap(err, prefix+": rate-limit prune: the database clock could not be read")
+		}
+		now = t
+	}
+
+	total := 0
+	for {
+		res, err := r.Exec(ctx, pgschema.LimiterPrune, now, cfg.PruneBatchSize)
+		if err != nil {
+			return total, diag.Wrap(err, prefix+": rate-limit prune: a batch could not be deleted")
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, diag.Wrap(err, prefix+": rate-limit prune: a batch's row count could not be read")
+		}
+		total += int(n)
+		if n < int64(cfg.PruneBatchSize) {
+			return total, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return total, fmt.Errorf("%s: rate-limit prune: stopped after %d keys: %w", prefix, total, err)
+		}
+	}
+}

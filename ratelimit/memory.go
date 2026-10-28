@@ -489,3 +489,5 @@ func (l *MemoryLimiter) Policy() (limit int, window time.Duration) {
 }
 
 var _ PolicyReporter = (*MemoryLimiter)(nil)
+
+var _ Pruner = (*MemoryLimiter)(nil)

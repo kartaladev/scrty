@@ -106,8 +106,6 @@ type Pruner interface {
 	Prune(ctx context.Context) (removed int, err error)
 }
 
-var _ Pruner = (*MemoryLimiter)(nil)
-
 // ExpiryTask returns the expiry task for p, to run in an expiry.Runner beside
 // the tasks of the stores that hold expired state. The built-in pruners are the
 // in-memory limiter and the PostgreSQL limiter factories of the sqlstore and

@@ -213,3 +213,8 @@ func SessionDigest(sessionID string) []byte {
 
 	return sum[:]
 }
+
+// ErrIdentifierInUse is why a bounded insert (OneTimeStore.InsertWithin) of
+// an identifier already stored fails. It carries no adapter prefix; the
+// adapter wraps it with its own and the operation's name.
+var ErrIdentifierInUse = errors.New("the identifier is already in use")
