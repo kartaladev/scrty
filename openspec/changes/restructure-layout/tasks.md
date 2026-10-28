@@ -63,16 +63,16 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 
 Each task below is one parallel lane that owns only the packages it names. Each table conversion is verified at its own red step: one case's expectation is temporarily inverted, the table is seen to fail on that case, and the inversion is reverted. A new cancelled-context case that fails stops that table, and is reported as `REPRODUCED` instead of committed (D7).
 
-- [ ] 4.1 `httpsec` production files, by D6's map. Verify: the production file list equals the map's 45 targets, `go build ./...` passes in every module, and `go test ./httpsec/...` passes.
-- [ ] 4.2 `httpsec` tests: one test file per production file, plus `integration_test.go` and `helpers_test.go`, with the D7 table conversion. Verify:
+- [x] 4.1 `httpsec` production files, by D6's map. Verify: the production file list equals the map's 45 targets, `go build ./...` passes in every module, and `go test ./httpsec/...` passes.
+- [x] 4.2 `httpsec` tests: one test file per production file, plus `integration_test.go` and `helpers_test.go`, with the D7 table conversion. Verify:
   - every conversion's inverted-case failure was seen;
   - `evidence/check.sh` maps every baseline `httpsec` test to a passing test;
   - `httpsec` coverage is not lower.
-- [ ] 4.3 `oidc` production files by D6's map, and its tests by D6 rule 4 and D7. Verify: its production files equal the map's 17 targets, the inverted-case failures were seen, `check.sh` maps every test, and coverage is not lower.
-- [ ] 4.4 `policy`, `policy/lockout`, `recovery` and `authenticate/passkey`, by the D6 rules. Report each package's file map. Verify: the maps follow the five rules, the inverted-case failures were seen, `check.sh` maps every test, and coverage is not lower.
-- [ ] 4.5 `session`, `authenticate/mfa`, `authenticate`, `authorize`, `identity`, `authenticate/password`, `authenticate/apikey`, `authenticate/magiclink`, `token`, `token/signingkey` and `token/onetime`, by the D6 rules. Verify: as in 4.4.
-- [ ] 4.6 `ratelimit`, `expiry`, `notify`, `outbound`, `store`, `store/sqlstore`, `store/seal`, `store/migrate`, `pkg/*`, `internal/*` and the nested modules (`pgxstore`, `gormstore`, `redisstore`, `sweep`, `ginsec`, `fibersec`, `webauthn`), by the D6 rules. Verify: as in 4.4, and `go generate ./...` changes no committed mock.
-- [ ] 4.7 Phase-3 gate: `evidence/check.sh`, `make check`, push and CI green, then one review per lane against D6 and D7. The review compares every converted case's assertions with its original function's. Verify: no unmapped difference, a green CI run on the pushed head, and clean reviews.
+- [x] 4.3 `oidc` production files by D6's map, and its tests by D6 rule 4 and D7. Verify: its production files equal the map's 17 targets, the inverted-case failures were seen, `check.sh` maps every test, and coverage is not lower.
+- [x] 4.4 `policy`, `policy/lockout`, `recovery` and `authenticate/passkey`, by the D6 rules. Report each package's file map. Verify: the maps follow the five rules, the inverted-case failures were seen, `check.sh` maps every test, and coverage is not lower.
+- [x] 4.5 `session`, `authenticate/mfa`, `authenticate`, `authorize`, `identity`, `authenticate/password`, `authenticate/apikey`, `authenticate/magiclink`, `token`, `token/signingkey` and `token/onetime`, by the D6 rules. Verify: as in 4.4.
+- [x] 4.6 `ratelimit`, `expiry`, `notify`, `outbound`, `store`, `store/sqlstore`, `store/seal`, `store/migrate`, `pkg/*`, `internal/*` and the nested modules (`pgxstore`, `gormstore`, `redisstore`, `sweep`, `ginsec`, `fibersec`, `webauthn`), by the D6 rules. Verify: as in 4.4, and `go generate ./...` changes no committed mock.
+- [x] 4.7 Phase-3 gate: `evidence/check.sh`, `make check`, push and CI green, then one review per lane against D6 and D7. The review compares every converted case's assertions with its original function's. Verify: no unmapped difference, a green CI run on the pushed head, and clean reviews.
 
 ## 5. Phase 4: shared backend helpers (D5)
 
