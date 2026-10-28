@@ -1,3 +1,6 @@
+// Each table here has a call shape of its own — a mode's declarations, its
+// String, a task over a fake pruner, and tasks run through an expiry.Runner — so
+// they stay separate tables.
 package ratelimit_test
 
 import (
@@ -6,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -14,90 +16,39 @@ import (
 	"github.com/kartaladev/scrty/ratelimit"
 )
 
-func newExpiryLimiter(t *testing.T) (*ratelimit.MemoryLimiter, *clockwork.FakeClock) {
-	t.Helper()
-
-	clk := clockwork.NewFakeClock()
-	l, err := ratelimit.NewMemoryLimiter(testLimit, testWindow,
-		ratelimit.WithMemoryLimiterClock(clk),
-		ratelimit.WithMemoryLimiterLogger(discardLogger()))
-	require.NoError(t, err)
-
-	return l, clk
-}
-
-func recordFor(t *testing.T, l *ratelimit.MemoryLimiter, keys ...string) {
-	t.Helper()
-
-	for _, key := range keys {
-		require.NoError(t, l.RecordFailure(t.Context(), key))
-	}
-}
-
-// TestMemoryLimiter_Prune pins the count Prune returns and that it removes only
-// keys the window no longer counts.
-func TestMemoryLimiter_Prune(t *testing.T) {
+// TestUnavailableMode_Declarations pins the two facts the public declarations
+// carry on their own: the zero mode is the fail-closed one, so a consumer who
+// configures nothing refuses during an outage, and the unavailable sentinel is
+// its own error rather than an alias of a refusal or a wiring mistake.
+func TestUnavailableMode_Declarations(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
 		name   string
-		setup  func(t *testing.T, l *ratelimit.MemoryLimiter, clk *clockwork.FakeClock)
-		assert func(t *testing.T, l *ratelimit.MemoryLimiter, removed int)
+		assert func(t *testing.T)
 	}
 
 	cases := []testCase{
 		{
-			name: "quiet limiter with three expired keys removes three",
-			setup: func(t *testing.T, l *ratelimit.MemoryLimiter, clk *clockwork.FakeClock) {
-				recordFor(t, l, "a", "b", "c")
-				clk.Advance(testWindow + time.Second)
-			},
-			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, removed int) {
-				assert.Equal(t, 3, removed)
-				for _, key := range []string{"a", "b", "c"} {
-					assert.Zero(t, l.StampsFor(key))
-				}
+			name: "the zero mode refuses",
+			assert: func(t *testing.T) {
+				var zero ratelimit.UnavailableMode
+				assert.Equal(t, ratelimit.UnavailableRefuse, zero)
 			},
 		},
 		{
-			name: "key with a stamp inside the window survives with its count",
-			setup: func(t *testing.T, l *ratelimit.MemoryLimiter, clk *clockwork.FakeClock) {
-				recordFor(t, l, "old", "live")
-				clk.Advance(testWindow / 2)
-				recordFor(t, l, "live")
-				clk.Advance(testWindow/2 + time.Second) // old expired, live's newest stamp has not
-			},
-			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, removed int) {
-				assert.Equal(t, 1, removed)
-				assert.Equal(t, 2, l.StampsFor("live"))
-				exceeded, err := l.Exceeded(t.Context(), "live")
-				require.NoError(t, err)
-				assert.False(t, exceeded)
-				assert.Zero(t, l.StampsFor("old"))
+			name: "the three modes are distinct",
+			assert: func(t *testing.T) {
+				assert.NotEqual(t, ratelimit.UnavailableRefuse, ratelimit.UnavailableFallbackToLocal)
+				assert.NotEqual(t, ratelimit.UnavailableRefuse, ratelimit.UnavailableAllow)
+				assert.NotEqual(t, ratelimit.UnavailableFallbackToLocal, ratelimit.UnavailableAllow)
 			},
 		},
 		{
-			name: "nothing expired removes nothing",
-			setup: func(t *testing.T, l *ratelimit.MemoryLimiter, _ *clockwork.FakeClock) {
-				recordFor(t, l, "a", "b")
-			},
-			assert: func(t *testing.T, l *ratelimit.MemoryLimiter, removed int) {
-				assert.Zero(t, removed)
-				assert.Equal(t, 1, l.StampsFor("a"))
-				assert.Equal(t, 1, l.StampsFor("b"))
-			},
-		},
-		{
-			name: "a second prune removes nothing",
-			setup: func(t *testing.T, l *ratelimit.MemoryLimiter, clk *clockwork.FakeClock) {
-				recordFor(t, l, "a", "b")
-				clk.Advance(testWindow + time.Second)
-				n, err := l.Prune(t.Context())
-				require.NoError(t, err)
-				require.Equal(t, 2, n)
-			},
-			assert: func(t *testing.T, _ *ratelimit.MemoryLimiter, removed int) {
-				assert.Zero(t, removed)
+			name: "backend unavailable is its own sentinel",
+			assert: func(t *testing.T) {
+				assert.False(t, errors.Is(ratelimit.ErrBackendUnavailable, ratelimit.ErrConfig))
+				assert.False(t, errors.Is(ratelimit.ErrBackendUnavailable, ratelimit.ErrThrottled))
 			},
 		},
 	}
@@ -105,12 +56,38 @@ func TestMemoryLimiter_Prune(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			tc.assert(t)
+		})
+	}
+}
 
-			l, clk := newExpiryLimiter(t)
-			tc.setup(t, l, clk)
-			removed, err := l.Prune(t.Context())
-			require.NoError(t, err)
-			tc.assert(t, l, removed)
+// TestUnavailableMode_String pins the names a log record or error message
+// prints for each mode, and the stable form of a value that names none.
+func TestUnavailableMode_String(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name   string
+		mode   ratelimit.UnavailableMode
+		assert func(t *testing.T, got string)
+	}
+
+	is := func(want string) func(t *testing.T, got string) {
+		return func(t *testing.T, got string) { assert.Equal(t, want, got) }
+	}
+
+	cases := []testCase{
+		{name: "refuse", mode: ratelimit.UnavailableRefuse, assert: is("refuse")},
+		{name: "fall back to local", mode: ratelimit.UnavailableFallbackToLocal, assert: is("fall-back")},
+		{name: "allow", mode: ratelimit.UnavailableAllow, assert: is("allow")},
+		{name: "an unknown value prints its number", mode: ratelimit.UnavailableMode(7), assert: is("UnavailableMode(7)")},
+		{name: "a negative value prints its number", mode: ratelimit.UnavailableMode(-1), assert: is("UnavailableMode(-1)")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.assert(t, tc.mode.String())
 		})
 	}
 }

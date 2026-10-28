@@ -2,15 +2,19 @@ package seal_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	pkgid "github.com/kartaladev/scrty/pkg/id"
+	"github.com/kartaladev/scrty/session"
 	"github.com/kartaladev/scrty/store/seal"
 )
 
@@ -20,19 +24,6 @@ var (
 	boundAAD = []byte("scrty/test:field:row-1")
 	otherAAD = []byte("scrty/test:field:row-2")
 )
-
-// mustCipher builds the default cipher over a keyring of opts.
-func mustCipher(t *testing.T, opts ...seal.KeyringOption) seal.Cipher {
-	t.Helper()
-
-	kr, err := seal.NewKeyring(opts...)
-	require.NoError(t, err)
-
-	c, err := seal.NewAEADCipher(kr)
-	require.NoError(t, err)
-
-	return c
-}
 
 // mustSeal seals plaintext under c, failing the test on error.
 func mustSeal(t *testing.T, c seal.Cipher, plaintext string, aad []byte) []byte {
@@ -306,6 +297,8 @@ func TestAEADCipher(t *testing.T) {
 	}
 }
 
+// It stands apart from the TestAEADCipher table: it seals twice with one cipher
+// and compares the two results.
 func TestAEADCipher_Randomised(t *testing.T) {
 	t.Parallel()
 
@@ -547,4 +540,230 @@ func FuzzAEADCipherOpen(f *testing.F) {
 			t.Fatalf("unexpected error kind: %v", err)
 		}
 	})
+}
+
+// TestAADGolden pins the additional data each sealed column is bound to. The
+// strings are part of the stored format: changing one makes every stored value
+// unopenable, indistinguishable from tampering, so a change here must be a
+// deliberate migration, never an edit.
+func TestAADGolden(t *testing.T) {
+	t.Parallel()
+
+	gen := pkgid.MustParse("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b")
+
+	type testCase struct {
+		name   string
+		got    func() []byte
+		assert func(t *testing.T, got []byte)
+	}
+
+	cases := []testCase{
+		{
+			name: "signing-key private material is bound to its key id",
+			got:  func() []byte { return seal.SigningKeyAAD("k-1") },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, []byte("scrty/signingkey:private:k-1"), got)
+			},
+		},
+		{
+			// The generation's canonical text comes first, at a fixed length,
+			// then the user reference byte for byte: never trimmed or folded.
+			name: "an MFA secret is bound to its generation and user reference",
+			got:  func() []byte { return seal.MFASecretAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, []byte("scrty/mfa:secret:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:Alice "), got)
+			},
+		},
+		{
+			name: "an MFA secret is not bound like the same user's secret of another generation",
+			got:  func() []byte { return seal.MFASecretAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.NotEqual(t, seal.MFASecretAAD(pkgid.MustParse("0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c"), "Alice "), got)
+			},
+		},
+		{
+			// The generation's canonical text comes first, at a fixed length,
+			// then the user reference byte for byte.
+			name: "an emailed MFA code is bound to its generation and user reference",
+			got:  func() []byte { return seal.MFAEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, []byte("scrty/mfa:email-code:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:Alice "), got)
+			},
+		},
+		{
+			name: "an emailed MFA code is not bound like the same user's secret",
+			got:  func() []byte { return seal.MFAEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.NotEqual(t, seal.MFASecretAAD(gen, "Alice "), got)
+			},
+		},
+		{
+			// The credential's canonical text comes first, at a fixed length,
+			// then the user reference byte for byte.
+			name: "an emailed passkey code is bound to its credential and user reference",
+			got:  func() []byte { return seal.PasskeyEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, []byte("scrty/passkey:email-code:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b:Alice "), got)
+			},
+		},
+		{
+			name: "an emailed passkey code is not bound like an emailed MFA code",
+			got:  func() []byte { return seal.PasskeyEmailCodeAAD(gen, "Alice ") },
+			assert: func(t *testing.T, got []byte) {
+				assert.NotEqual(t, seal.MFAEmailCodeAAD(gen, "Alice "), got)
+			},
+		},
+		{
+			name: "the signing-key prefix",
+			got:  func() []byte { return []byte(seal.AADSigningKeyPrefix) },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, "scrty/signingkey:private:", string(got))
+			},
+		},
+		{
+			name: "the MFA secret prefix",
+			got:  func() []byte { return []byte(seal.AADMFASecretPrefix) },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, "scrty/mfa:secret:", string(got))
+			},
+		},
+		{
+			name: "the emailed passkey code prefix",
+			got:  func() []byte { return []byte(seal.AADPasskeyEmailCodePrefix) },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, "scrty/passkey:email-code:", string(got))
+			},
+		},
+		{
+			name: "the emailed MFA code prefix",
+			got:  func() []byte { return []byte(seal.AADMFAEmailCodePrefix) },
+			assert: func(t *testing.T, got []byte) {
+				assert.Equal(t, "scrty/mfa:email-code:", string(got))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			tc.assert(t, tc.got())
+		})
+	}
+}
+
+const idToken = "eyJhbGciOiJSUzI1NiJ9.ID-TOKEN-SENTINEL.signature" //nolint:gosec // G101: a fixture, not a credential
+
+// federated returns a live session carrying a provider ID token.
+func federated(id, token string) *session.Session {
+	now := time.Now().UTC()
+
+	return &session.Session{
+		ID:                id,
+		UserID:            "alice",
+		CreatedAt:         now,
+		LastAccessedAt:    now,
+		IdleExpiresAt:     now.Add(30 * time.Minute),
+		AbsoluteExpiresAt: now.Add(12 * time.Hour),
+		// Every stored session belongs to a family; the stores refuse one with none.
+		FamilyID:         pkgid.MustParse("01926a4e-0000-7000-8000-0000000000f1"),
+		FamilyCreatedAt:  now,
+		ExternalProvider: "okta",
+		ExternalIssuer:   "https://issuer.example",
+		ExternalIDToken:  token,
+	}
+}
+
+func TestSessionCipher(t *testing.T) {
+	t.Parallel()
+
+	c := mustCipher(t, seal.WithKeyringEncryptionKey("k2", keyTwo))
+
+	type testCase struct {
+		name   string
+		cipher seal.Cipher
+		assert func(t *testing.T, sealing session.Store, inner *session.MemoryStore, err error)
+	}
+
+	cases := []testCase{
+		{
+			name:   "a sealed ID token round-trips",
+			cipher: c,
+			assert: func(t *testing.T, sealing session.Store, _ *session.MemoryStore, err error) {
+				require.NoError(t, err)
+				require.NoError(t, sealing.Create(t.Context(), federated("sess-a", idToken)))
+
+				got, err := sealing.Load(t.Context(), "sess-a")
+				require.NoError(t, err)
+				assert.Equal(t, idToken, got.ExternalIDToken)
+			},
+		},
+		{
+			name:   "the inner store holds a sealed value, not the token",
+			cipher: c,
+			assert: func(t *testing.T, sealing session.Store, inner *session.MemoryStore, err error) {
+				require.NoError(t, err)
+				require.NoError(t, sealing.Create(t.Context(), federated("sess-a", idToken)))
+
+				raw, err := inner.Load(t.Context(), "sess-a")
+				require.NoError(t, err)
+				assert.NotEqual(t, idToken, raw.ExternalIDToken)
+				assert.NotContains(t, raw.ExternalIDToken, "ID-TOKEN-SENTINEL")
+
+				envelope, err := base64.RawURLEncoding.DecodeString(raw.ExternalIDToken)
+				require.NoError(t, err)
+				assert.NotContains(t, string(envelope), "ID-TOKEN-SENTINEL")
+			},
+		},
+		{
+			name:   "an ID token moved to another session is unreadable",
+			cipher: c,
+			assert: func(t *testing.T, sealing session.Store, inner *session.MemoryStore, err error) {
+				require.NoError(t, err)
+				require.NoError(t, sealing.Create(t.Context(), federated("sess-victim", idToken)))
+				require.NoError(t, sealing.Create(t.Context(), federated("sess-attacker", "attacker-token")))
+
+				victim, err := inner.Load(t.Context(), "sess-victim")
+				require.NoError(t, err)
+				attacker, err := inner.Load(t.Context(), "sess-attacker")
+				require.NoError(t, err)
+
+				// Written straight into the inner store, as someone with write
+				// access to the table but no key would.
+				attacker.ExternalIDToken = victim.ExternalIDToken
+				require.NoError(t, inner.Save(t.Context(), attacker))
+
+				got, err := sealing.Load(t.Context(), "sess-attacker")
+				require.ErrorIs(t, err, session.ErrUnreadable)
+				assert.NotErrorIs(t, err, session.ErrNotFound)
+				assert.Nil(t, got)
+				assert.NotContains(t, err.Error(), idToken)
+			},
+		},
+		{
+			name: "a nil cipher leaves the sealing store unbuilt",
+			assert: func(t *testing.T, sealing session.Store, _ *session.MemoryStore, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, sealing)
+			},
+		},
+		{
+			name:   "a typed-nil cipher leaves the sealing store unbuilt",
+			cipher: (*MockCipher)(nil),
+			assert: func(t *testing.T, sealing session.Store, _ *session.MemoryStore, err error) {
+				require.ErrorIs(t, err, session.ErrConfig)
+				assert.Nil(t, sealing)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := session.NewMemoryStore()
+			sealing, err := session.NewEncryptedStore(inner, seal.SessionCipher(tc.cipher))
+			tc.assert(t, sealing, inner, err)
+		})
+	}
 }

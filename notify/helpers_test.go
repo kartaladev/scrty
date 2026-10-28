@@ -451,3 +451,19 @@ func TestScriptedServerDelivers(t *testing.T) {
 	assert.Contains(t, srv.Data(), "here is your link")
 	assert.Contains(t, srv.Lines(), "QUIT")
 }
+
+// senderFunc adapts a function to the Sender port, for the cases whose whole
+// subject is what the wrapped sender does.
+type senderFunc func(ctx context.Context, msg notify.Message) error
+
+func (f senderFunc) Send(ctx context.Context, msg notify.Message) error { return f(ctx, msg) }
+
+// testMessage is the message every SMTP test sends unless it cares about the
+// content.
+func testMessage() notify.Message {
+	return notify.Message{
+		To:       "ada@example.com",
+		Subject:  "Sign in",
+		TextBody: "here is your link",
+	}
+}

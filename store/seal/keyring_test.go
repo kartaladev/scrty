@@ -12,14 +12,6 @@ import (
 	"github.com/kartaladev/scrty/store/seal"
 )
 
-// Recognisable key material, so a key leaking into an error's text is obvious
-// in both its raw and its hex form.
-var (
-	keyOne   = []byte("key-one-0123456789abcdefghijklmn")
-	keyTwo   = []byte("key-two-0123456789abcdefghijklmn")
-	keyThree = []byte("key-three-23456789abcdefghijklmn")
-)
-
 // assertConfigError checks that err is a configuration error whose text
 // carries none of the keys in any form.
 func assertConfigError(t *testing.T, kr seal.Keyring, err error) {
@@ -181,6 +173,9 @@ func TestNewKeyring(t *testing.T) {
 // TestKeyring_CopiesKeys pins that the ring owns its key bytes: neither the
 // slice a caller configured with nor a slice the ring handed out can change
 // what it seals with.
+//
+// It stands apart from the TestNewKeyring table: it mutates the configured and
+// the returned slices between calls.
 func TestKeyring_CopiesKeys(t *testing.T) {
 	t.Parallel()
 

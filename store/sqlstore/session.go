@@ -76,6 +76,13 @@ func NewSessionStore(db *sql.DB, c seal.Cipher, opts ...Option) (session.Store, 
 	return s, nil
 }
 
+// ErrDeleteDidNotSettle is wrapped by the error a user-wide session delete
+// (DeleteByUser, DeleteByUserExcept, DeleteByExternalSession and
+// DeleteByUserAndExternalIssuer) returns when each of its 64 bounded passes
+// removed sessions. It is session.ErrDeleteDidNotSettle under this package's
+// name, so errors.Is matches either.
+var ErrDeleteDidNotSettle = session.ErrDeleteDidNotSettle
+
 // sessionStore is the unsealed store NewSessionStore wraps. It stores
 // ExternalIDToken as given, which is why it is not exported.
 type sessionStore struct {
@@ -418,6 +425,15 @@ func (s *sessionStore) deleteUntilNone(ctx context.Context, op, statement string
 		}
 		total += int(n)
 	}
+}
+
+// deleteUntilSettled runs statement, a user-wide delete of sessions, through
+// storekit.UntilSettled.
+func (s *sessionStore) deleteUntilSettled(ctx context.Context, op, statement string, args ...any) (int, error) {
+	return storekit.UntilSettled(op, func() (int, error) {
+		n, err := s.c.exec(ctx, op, statement, args...)
+		return int(n), err
+	}, failed)
 }
 
 // RecordActivity writes lastAccessed and idleExpires, and nothing else, to a

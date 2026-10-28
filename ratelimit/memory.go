@@ -195,6 +195,85 @@ func NewMemoryLimiter(limit int, window time.Duration, opts ...MemoryOption) (*M
 	return l, nil
 }
 
+// MemoryOption configures a MemoryLimiter. Every default NewMemoryLimiter
+// applies has an option here that replaces it.
+type MemoryOption func(*MemoryLimiter)
+
+// WithMemoryLimiterClock sets the time source failures are stamped from and the
+// window is measured against. Default: clock.System().
+//
+// A nil clock, typed nil included, fails construction with ErrConfig: a
+// limiter with no clock could not stamp a failure at all.
+func WithMemoryLimiterClock(clk clock.Clock) MemoryOption {
+	return func(l *MemoryLimiter) { l.clock = clk }
+}
+
+// WithMemoryLimiterLogger sets where the limiter writes its per-replica warning.
+// Default: slog.Default.
+//
+// The warning is written once, on first use. Sending it to a logger the consumer
+// controls is what lets it be routed or silenced; it is not suppressible by
+// option, because a limit that is silently multiplied by the replica count is
+// exactly the misunderstanding worth one record.
+func WithMemoryLimiterLogger(logger *slog.Logger) MemoryOption {
+	return func(l *MemoryLimiter) { l.logger = logger }
+}
+
+// DefaultMemoryLimiterMaxKeys is how many keys a MemoryLimiter holds at most
+// when WithMemoryLimiterMaxKeys is not given: about 37 MiB at the measured cost
+// of at most 157 bytes a key. 250,000 distinct sources failing inside one window
+// is far beyond what one replica sees in normal traffic; a deployment that
+// large belongs on a shared Limiter.
+const DefaultMemoryLimiterMaxKeys = 250_000
+
+// WithMemoryLimiterMaxKeys sets how many keys the limiter holds at most.
+// Default: DefaultMemoryLimiterMaxKeys (250,000), about 37 MiB at the measured
+// cost of at most 157 bytes a key.
+//
+// At the maximum, a key the limiter does not already hold is refused: Exceeded
+// reports it as exceeded with an error wrapping ErrLimiterFull, and
+// RecordFailure stores nothing and returns that error. Keys already held are
+// checked and recorded as before, and nothing is evicted to make room, because
+// evicting a key would reset a live count. A key frees its place only when a
+// sweep or Prune removes it, and the limiter writes a warning through its
+// logger while it is full.
+//
+// A value of zero or less fails construction with ErrConfig. There is no
+// unbounded mode, because unbounded memory is what the cap exists to prevent; a
+// consumer who accepts that cost passes math.MaxInt. MemoryLimiterFactory
+// applies the option to every limiter it builds, so one option sets the cap
+// for every flow the factory serves.
+func WithMemoryLimiterMaxKeys(n int) MemoryOption {
+	return func(l *MemoryLimiter) { l.maxKeys = n }
+}
+
+// MemoryLimiterFactory returns a factory of in-memory limiters. It is the
+// default every built-in flow uses when the consumer supplies neither a limiter
+// nor a factory.
+//
+// Every call builds a new MemoryLimiter with separate buckets; the namespace is
+// not needed to keep them apart and is ignored. opts apply to every limiter
+// built, so WithMemoryLimiterMaxKeys caps each of them separately: every limiter
+// holds at most DefaultMemoryLimiterMaxKeys keys of its own unless that option
+// says otherwise. A non-positive limit or window, or an option NewMemoryLimiter refuses,
+// is an error wrapping ErrConfig.
+func MemoryLimiterFactory(opts ...MemoryOption) LimiterFactory {
+	return memoryFactory{opts: slices.Clone(opts)}
+}
+
+type memoryFactory struct{ opts []MemoryOption }
+
+// NewLimiter builds a MemoryLimiter, returning a nil Limiter, never a typed
+// nil, when construction fails.
+func (f memoryFactory) NewLimiter(_ string, limit int, window time.Duration) (Limiter, error) {
+	l, err := NewMemoryLimiter(limit, window, f.opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	return l, nil
+}
+
 // Exceeded reports whether key has accumulated the limit's number of failures
 // inside the window. It records nothing, so a caller may ask as often as it
 // likes without spending the source's allowance.
