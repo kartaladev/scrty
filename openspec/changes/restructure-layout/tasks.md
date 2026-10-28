@@ -57,7 +57,7 @@ Test-first applies to every task that adds or changes behaviour that a test can 
 - [x] 3.6 Sweep godoc, examples, the README and other non-Go docs for the old paths and names that gopls cannot rewrite, leaving out `openspec/` and `.claude/.legacy`. Rewrite each hit to the new name, without recording the old one: godoc describes the code, not its history (design D12). Verify:
 - a search for every left-hand entry of `evidence/rename-map.tsv` finds no match outside `openspec/`, `.claude/.legacy` and `evidence/`;
 - a search of the Go files for history wording ("formerly", "renamed", "moved from", "was called") finds nothing that the baseline commit did not already have.
-- [ ] 3.7 Phase-2 gate: `evidence/check.sh`, `make check`, push and CI green, then the phase review against D8–D11. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.
+- [x] 3.7 Phase-2 gate: `evidence/check.sh`, `make check`, push and CI green, then the phase review against D8–D11. Verify: no unmapped difference, a green CI run on the pushed head, and a clean review.
 
 ## 4. Phase 3: file families and table tests (D6, D7)
 

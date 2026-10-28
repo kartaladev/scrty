@@ -291,6 +291,7 @@ A sentinel that names something other than its package keeps its noun (`identity
 - **Packages with no main type** prefix every option.
 - **Per-call option types** (`CreateOption`, `RotateOption`, `IssueOption`, `RemoveOption`) are named after the call and stay as they are.
 - **A name that already carries the stem and reads as English** keeps its word order (`WithMaxPasswordAge`, `WithIPv6SourcePrefix`).
+- **Kept on purpose:** `policy.WithMFAEnrolmentPath` and `WithMFARequiredForAll` configure the MFA requirement with the shorter `MFA` stem. They read as English, and `WithMFARequirementRequiredForAll` would not (decided 2026-10-28).
 
 The main types:
 
