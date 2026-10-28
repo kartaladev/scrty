@@ -37,7 +37,7 @@ Nothing is tagged yet and there are no consumers, so moving and renaming public 
   - One test file per production file. Scenarios become table cases or subtests, and harnesses fold into the test file they serve.
   - Generated mocks, example tests and `export_test.go` keep their own files.
   - Shared code is filed by what it is, for example the login tail every feature uses.
-- **Identical helpers in the three SQL backends move into `internal/storekit`.** This covers `bestEffort`, `checkUser`, `parseUserID`, `survivingRoles`, the detached-error family, `txKey`, `optionKind` and `sqlStater`.
+- **Identical helpers in the three SQL backends move into `internal/storekit`.** This covers `bestEffort`, `checkUser`, `parseUserID`, `survivingRoles`, the detached-error family, `optionKind` and `sqlStater`. Each backend keeps its own transaction context key, because a shared key would let one backend see another's transaction.
 - **`Manager` removed from every type name.**
   - `oidc.Manager` → `RelyingParty`
   - `oidc.HandoffManager` → `Handoff`
@@ -64,28 +64,28 @@ Nothing is tagged yet and there are no consumers, so moving and renaming public 
   - Options are `Option`/`With<Thing>` in a package with one configurable type, and `<Type>Option`/`With<Stem><Thing>` where several types share a package.
   - Typed enum constants carry their type's prefix.
 - **Repository wiring updated to the new paths:**
-  - every `go.mod` `replace` directive, `go.work`, CI workflows, `Makefile` targets and the layout-check fixtures;
+  - every `go.mod` `replace` directive, `go.work`, and the module directories the layout tests name;
   - the `config.yaml` context;
   - the path references in active changes' artifacts.
 
 ### Not in this change
 
-- **Changes to API shape or behaviour.** These go to a separate later change, `idiomatic-api-shape`, before `v0.1.0`:
-  - constructors returning concrete types;
-  - `context.Context` on key ports;
-  - consistent construction errors for in-memory stores;
-  - one lifecycle convention;
-  - the exported mutable `oidc.DefaultScopes`.
+- **Changes to API shape or behaviour.** These go to separate later changes, before `v0.1.0`:
+  - `idiomatic-api-shape`: constructors returning concrete types, consistent construction errors for in-memory stores, one lifecycle convention, and the exported mutable `oidc.DefaultScopes`;
+  - `key-port-context`: `context.Context` on the key and cipher ports.
 - **Any new feature.**
 - **Any change to what a test asserts.** Assertions move unchanged when tests become table cases. The only text that may change is an error-message prefix, which follows its new package name.
 
 ### Order
 
-1. `fix/stabilize-intermittent-tests` merges. It is complete on its branch, and a reliable gate is this change's proof that nothing broke.
+1. `fix/stabilize-intermittent-tests` merges (done, and archived). A reliable gate is this change's proof that nothing broke.
 2. This change.
 3. `idiomatic-api-shape`.
-4. `trusted-proxy-client-ip`.
-5. `release-readiness`.
+4. `key-port-context`.
+5. `trusted-proxy-client-ip`.
+6. `release-readiness`.
+
+`minimize-test-containers` changes test code only and may land at any point before `release-readiness`. It is not implemented at the same time as this change, whose moves rewrite the test module's imports.
 
 ## Capabilities
 
@@ -97,9 +97,9 @@ None.
 
 - `module-layout`:
   - the WebAuthn adapter's module path becomes `github.com/kartaladev/scrty/authenticate/passkey/webauthn`;
-  - the nested integration modules are named at their new paths;
-  - the list of modules the core must never require gains the four that the layout guard already refuses (`github.com/redis/go-redis`, `github.com/pressly/goose`, and the testcontainers `postgres` and `redis` modules);
-  - the supported Go release becomes 1.27 only, matching every `go.mod` and the CI matrix.
+  - the nested integration modules are named at their new paths, and the workspace may hold no other nested module besides the test and tools modules;
+  - the list of modules the core must never require gains the four that the layout guard already refuses (`github.com/redis/go-redis`, `github.com/pressly/goose`, and the testcontainers `postgres` and `redis` modules), at any major version;
+  - the supported Go releases become 1.27 and above, matching every `go.mod` and the CI matrix. The text is the one `release-readiness` states for the same requirement, word for word, so whichever change is archived first leaves the main spec as the other expects.
 
   The last two only bring the spec in line with what the code and CI already enforce.
 
@@ -124,6 +124,7 @@ No other requirement changes. Behaviour specs that use "manager" as plain Englis
   - no package's coverage drops;
   - test diffs touch only import paths, identifiers, file placement, error-message prefixes, and assertions moved unchanged into table cases;
   - an old-to-new map of every exported identifier is checked against an API diff, so nothing disappears without a successor;
+  - an inventory of every top-level declaration, exported or not, survives each phase, apart from the duplicate backend helpers replaced by their shared copy, so no feature is dropped in a file merge;
   - `make check`, including the Docker-backed suites, is green in CI.
 - **Dependencies, migrations, stored data:** unchanged.
 - **Consumers:** none yet. Nothing is tagged.

@@ -2,23 +2,28 @@
 
 ## Context
 
-See `proposal.md` (Why) for the motivation. The facts below shaped the approach. Counts are as of 2026-10-25.
+See `proposal.md` (Why) for the motivation. The facts below shaped the approach. Counts are as of 2026-10-25, and were checked again against `main` on 2026-10-28, after `stabilize-intermittent-tests` merged.
 
 - **The import graph.**
   - `httpsec` imports 24 core packages.
   - `passkey` and `recovery` import `mfa`, `session`, `policy` and `onetime`.
   - `factor` imports nothing, by design: its doc makes it the import-free owner of the first-factor vocabulary.
   - In Go a parent directory is only a namespace. Nesting a package changes its import path and never its import edges.
-- **The lockout group in `policy` is self-contained.** It is made up of `lockout.go`, `lockout_error.go`, `lockout_observer.go`, `attempts.go`, `streak.go` and `LockoutExpiryTask` in `expiry.go`. The rest of `policy` reaches it through one edge only: `Engine.RequiredAttemptViews`, which uses `AttemptViewRequirer` and `RequiredAttemptView` from `attempt_views.go`.
+- **The lockout group in `policy` is almost self-contained.** It is made up of `lockout.go`, `lockout_error.go`, `lockout_observer.go`, `attempts.go`, `streak.go` and `expiry.go`, which holds only `LockoutExpiryTask`. Its files use only exported `policy` names (`Phase`, `Decision`, `Input`, `ErrConfig`, `ErrPolicyDenied`), and all its tests are in the external `policy_test` package. The rest of `policy`'s production code reaches it through `attempt_views.go` alone:
+  - `AttemptViewRequirer.RequiredAttemptView` returns an `AttemptStore`, and the struct `RequiredAttemptView` has an `AttemptStore` field. `Engine.RequiredAttemptViews` reads both.
+  - The same file declares the method `(*AccountLockoutPolicy).RequiredAttemptView`, which reads the policy's unexported `attempts` and `capLimit`.
+
+  In the tests, `export_test.go` (package `policy`) exposes `AccountLockoutPolicy` and `MemoryAttemptStore` internals. `engine_test.go`, `example_test.go`, `expiry_test.go`, `returned_errors_test.go` and `store_failure_test.go` (all `policy_test`) use lockout names.
 - **`httpsec` is one package of 60 production files and 153 test files.** About 30 of the test files are generated mocks. Its `options.go` (2,659 lines) holds the chain core (configuration, `New`, the build and the chain-level options) and the `Enable…` function and option set of ten features. oidc, recovery, passkey and MFA enrolment keep theirs in their own files.
 - **No `httpsec` feature group can become a sub-package** without first moving its shared machinery (`config`, the login tail, the source throttle, the request readers) into an internal package. `Option` is `func(*config) error` over an unexported `config`.
-- **The three SQL backends repeat helpers with identical bodies:** `bestEffort` (also in `storekit`), `checkUser`, `parseUserID`, `survivingRoles`, `dbFailed`, `detachedError`/`detachedText`, `errPasskeyHandleHeld`, `errStreakContended`, `txKey`, `optionKind` and `sqlStater` (also in `internal/pglimiter`).
+- **The three SQL backends repeat helpers with identical declarations:** `bestEffort` (also in `storekit`), `checkUser`, `parseUserID`, `survivingRoles`, `dbFailed`, `detachedError`/`detachedText`, `errPasskeyHandleHeld`, `errStreakContended`, `txKey`, `optionKind` and `sqlStater` (also in `internal/pglimiter`). A comparison of the declarations on 2026-10-28 found them byte-identical, apart from each package's error prefix. `txKey`'s identity is part of its behaviour, though. Its godoc in each backend says the key "belongs to this package alone, so a transaction another backend attaches … is never seen by these stores" (D5).
 - **Error strings are prefixed with their package name** (`"pgx: …"`, `"policy: …"`, `"scrtyredis: …"`). The tests assert on some of these texts.
 - **Docker is not available in the planning session.** The testcontainers suites under `test/` run in CI.
 
 ## Goals / Non-Goals
 
 **Goals:**
+- **No feature is removed.** Every exported identifier, option, port, endpoint, sentinel, `Example` function and test has a successor after the change, and does what it did before. The only declarations that may disappear are D5's duplicate helper copies, each replaced by its single `storekit` declaration. D13 checks this mechanically, through the API inventory and a declaration inventory, not by review alone.
 - **Every move and rename is mechanical, and checkable after the fact.** Each one comes with a before-and-after inventory that a script compares.
 - **Each dispatch fits one lane's file ownership.** Phases that touch callers across packages run in one lane; phases confined to one package run in parallel.
 
@@ -26,7 +31,7 @@ See `proposal.md` (Why) for the motivation. The facts below shaped the approach.
 - **No default changes and no behaviour changes.** Every option and port keeps its default. A renamed option's godoc still names the default it replaces. `library-design`'s requirement to state the default and the override does not arise, because no decision here introduces or changes behaviour.
 - **No change to the test module's own layout.** `test/` keeps its sub-packages (`test/pgxstore`, `test/sqlstore`, …) and file layout. Only its imports and the names it references change.
 - **No consolidation of generated mocks.** Each one stays `<source>_mock_test.go`, produced by its `//go:generate` directive, as `use-mockgen` requires.
-- **None of `idiomatic-api-shape`'s items** (see `proposal.md`, Not in this change).
+- **None of `idiomatic-api-shape`'s or `key-port-context`'s items** (see `proposal.md`, Not in this change).
 
 ## Decisions
 
@@ -67,7 +72,11 @@ The parents are `authenticate`, `token`, `policy`, `store`, `expiry`, `httpsec` 
 
 The seven nested integration modules take the paths in D1, as the `module-layout` delta requires. Every other module requires them at the new paths. Both of the following are rewritten for the new paths:
 - the `replace` directives and `go.work`;
-- the CI workflow matrix, the `Makefile` targets, and the `testdata/layout` and `testdata/graph` fixtures that the layout checks read.
+- the module directories that the layout tests name: the WebAuthn adapter's directory and helper path in `layout_test.go` (`TestWebAuthnTypesStayInsideTheAdapter`, `TestSoftwareAuthenticatorStaysOutOfProduction`), the `ginsec` and `redis` inputs of `TestRedisClientStaysInItsModules`, and `redisClientOwners` in `layout_guard_test.go`.
+
+The `Makefile` takes its modules from `go list -m`, and so from `go.work`. The CI workflow names no module directory, and neither do the `testdata/layout` and `testdata/graph` fixtures. None of them needs an edit.
+
+The new layout test, for "Integration modules are published under the concept they extend", is exhaustive. Every workspace module other than `test` and `tools` must be one of the seven listed integrations. A module left at a former path, or added outside the list, fails it by name.
 
 The test module's path stays `github.com/kartaladev/scrty/test`.
 
@@ -76,15 +85,23 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 ### D3. `policy/lockout` takes the lockout group; attempt views stay with the engine
 
 **What moves to `lockout`:**
-- the lockout policy and its options;
+- the lockout policy and its options, including the method `RequiredAttemptView` that `attempt_views.go` declares on it today (a method moves with its type);
 - the error, observer and report types;
-- the attempt store and its in-memory implementation;
-- the failure streak;
-- the lockout expiry task.
+- the in-memory attempt store, the reaper port and the failure streak;
+- the lockout expiry task: all of `expiry.go`, with `expiry_test.go`.
 
-**What stays in `policy`:** `attempt_views.go`, because `Engine` reads `AttemptViewRequirer`.
+**What stays in `policy`:**
+- `attempt_views.go`, holding `AttemptViewRequirer` and `RequiredAttemptView`, because `Engine` reads them;
+- the `AttemptStore` port. The attempt-view contract returns it, so moving it would make `policy` import `lockout`, which imports `policy`: an import cycle. The SQL backends implement it, and `lockout` names it `policy.AttemptStore`.
 
-**Import direction:** `lockout` imports `policy` for `Phase`, `Decision`, `Input` and the attempt-view types. `policy` never imports `lockout`, so no cycle can form.
+**Import direction:** `lockout` imports `policy` for `Phase`, `Decision`, `Input`, `ErrConfig`, `ErrPolicyDenied`, `AttemptStore` and the attempt-view types. `policy` never imports `lockout`, so no cycle can form. `policy`'s external tests (`policy_test`) may import `lockout`, which is no cycle.
+
+**Tests:**
+- `export_test.go` splits: the `AccountLockoutPolicy` and `MemoryAttemptStore` accessors move to `lockout/export_test.go`.
+- The tests of the moved files move with them.
+- `policy_test` files that only use lockout as a collaborator (`engine_test.go`, `example_test.go`, `returned_errors_test.go`, `store_failure_test.go`) stay, and import `lockout`. An `Example` function for a lockout name moves to `lockout`'s `example_test.go`, so that it stays attached to its identifier.
+
+**Alternative considered:** move `AttemptStore` to `lockout` and have `AttemptViewRequirer` return `any`. That avoids the cycle, but it weakens a typed contract, which is an API-shape change and out of scope.
 
 | `policy` today | `lockout` |
 |---|---|
@@ -94,7 +111,8 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 | `LockoutError`, `LockoutObserver`, `LockoutReport`, `LockoutReportKind` | `Error`, `Observer`, `Report`, `ReportKind` |
 | `LockoutAtCeiling`, `LockoutCleared`, `LockoutHeld`, `LockoutReleased` | `ReportAtCeiling`, `ReportCleared`, `ReportHeld`, `ReportReleased` |
 | `NISTLockoutCap`, `LockoutExpiryTask` | `NISTCap`, `ExpiryTask` |
-| `AttemptStore`, `AttemptReaper`, `FailureStreak`, `FailureStreakStore`, `MemoryAttemptStore`, `NewMemoryAttemptStore`, `MemoryAttemptOption`, `WithAttemptStoreCapacity`, `ErrAccountLocked`, `ErrAccountHeld`, `ErrAttemptStoreFull`, `ErrReapUnsupported`, `ErrRetainSinceRequired` | same names in `lockout` |
+| `AttemptStore` | stays `policy.AttemptStore` (see above) |
+| `AttemptReaper`, `FailureStreak`, `FailureStreakStore`, `MemoryAttemptStore`, `NewMemoryAttemptStore`, `MemoryAttemptOption`, `WithAttemptStoreCapacity`, `ErrAccountLocked`, `ErrAccountHeld`, `ErrAttemptStoreFull`, `ErrReapUnsupported`, `ErrRetainSinceRequired` | same names in `lockout` |
 
 **Alternative considered:** leave the group in `policy`. That keeps 21 files and the `Lockout…` prefix stutter on every name.
 
@@ -111,6 +129,10 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 The helpers listed in Context, together with their `storekit` and `pglimiter` copies, become single `storekit` declarations. Each backend calls those declarations.
 
 Only helpers with identical bodies move. Near-duplicates that differ by driver API stay in their backend. The store-conformance suites under `test/` prove that nothing changed.
+
+**`txKey` stays in each backend.** Its declarations are identical, but each backend's distinct key type is the guarantee its godoc states: a transaction another backend attaches is never seen. A shared `storekit` key would let one backend's `WithTx` replace another's transaction in a shared context, and the stores of the first would silently run outside it. That is a behaviour change. The existing tests would not catch it: `gorm/tx_test.go` uses a `foreignTxKey` type of its own. The claim is `UNREPRODUCED`, because the merged code does not exist. The scenario that would reproduce it: one context carries both a `pgx` transaction and a `database/sql` transaction, and each backend's stores must still run on their own.
+
+`errPasskeyHandleHeld` and `errStreakContended` carry no package prefix and are unexported, so sharing them changes no text a consumer sees.
 
 **Alternative considered:** a driver-neutral executor port that would remove more of the duplication. It is a redesign, not a move, so it is out of scope.
 
@@ -160,7 +182,7 @@ The `httpsec` production map follows. In this map, "§X" means the `Enable…` f
 
 This brings `httpsec` from 60 production files to 45.
 
-The `oidc` production map follows (31 files to 16):
+The `oidc` production map follows (31 files to 17):
 
 | Target | From |
 |---|---|
@@ -265,7 +287,7 @@ A sentinel that names something other than its package keeps its noun (`identity
 
 **Options.**
 - **Main type.** A package's main type has the option type `Option` and options named `With<Thing>`.
-- **Other types.** Every other configurable type `T` has `<Stem>Option` and `With<Stem><Thing>`. The stem is `T`'s name, or the distinctive part of it that the package already uses (`Throttle` for `VerifyThrottle`, `Guard` for `SourceGuard`).
+- **Other types.** Every other configurable type `T` has `<Stem>Option` and `With<Stem><Thing>`. The stem is `T`'s name, or the distinctive part of it that the package already uses (`Throttle` for `mfa.VerifyThrottle`, `Guard` for `httpsec.Guards`, whose `GuardOption` and `WithGuard…` already follow the rule).
 - **Packages with no main type** prefix every option.
 - **Per-call option types** (`CreateOption`, `RotateOption`, `IssueOption`, `RemoveOption`) are named after the call and stay as they are.
 - **A name that already carries the stem and reads as English** keeps its word order (`WithMaxPasswordAge`, `WithIPv6SourcePrefix`).
@@ -338,6 +360,7 @@ This is the one place where a test assertion may change: only the prefix of an a
 - **Renames go through gopls, not text replacement.** Every identifier rename and package move uses `gopls rename`, or the equivalent refactor, across the whole `go.work` workspace, so every caller in every module is updated.
   - A text sweep afterwards catches what gopls cannot see: doc comments, README, OpenSpec prose, strings, `%T` output and `reflect` uses.
   - That sweep excludes `.claude/.legacy`.
+- **Godoc describes the code, not its history.** A comment the change touches names only the new names. No godoc or comment says that something was moved, renamed, merged or split, or names a former package, path or identifier. Comments that already explain the code keep their wording, apart from the names that changed. The history is in the commit messages and in this change's artifacts.
 - **File moves use `git mv`,** so history follows each file.
 - **Four phases, in order:**
   1. **Moves.** Directory and module moves (D1, D2, D4, then D3), in a single lane, because a package move rewrites the imports of every caller.
@@ -358,9 +381,10 @@ These checks run before phase 1 starts, and again after each phase:
    - every reported removal is a key of the map;
    - every reported addition is a value of the map;
    - nothing else is reported.
-3. **Coverage.** No package's statement coverage drops. The conversion in D7 must exercise the same code as before.
-4. **Assertion review.** Outside D7, a test diff touches only import paths, identifiers, file placement and D11 prefixes. A reviewer compares every D7 case's assertions with its original function's.
-5. **Gates.** `make check` (gofmt, vet, lint, race tests, `go generate` drift and the layout checks) passes locally where it can, and in CI with the Docker suites.
+3. **Declaration inventory.** Every top-level declaration in every non-generated production file, exported or not, is listed with its package and kind. This covers functions, methods, types, variables, constants and `//go:embed` patterns. After each phase, every baseline declaration maps through the rename map to a declaration that exists. The only allowed absences are the D5 copies, each mapped to its `storekit` successor. This catches code dropped during a file merge that the build, the API diff and the tests would all miss.
+4. **Coverage.** No package's statement coverage drops. The conversion in D7 must exercise the same code as before.
+5. **Assertion review.** Outside D7, a test diff touches only import paths, identifiers, file placement and D11 prefixes. A reviewer compares every D7 case's assertions with its original function's.
+6. **Gates.** `make check` (gofmt, vet, lint, race tests, `go generate` drift and the layout checks) passes locally where it can, and in CI with the Docker suites.
 
 ## Risks / Trade-offs
 
@@ -368,19 +392,22 @@ These checks run before phase 1 starts, and again after each phase:
 - **A converted table asserts less than the functions it replaced.** → The case-name mapping, the per-case assertion review and the coverage check in D13. Cases keep their original parallelism.
 - **A new cancelled-context case fails** (a real defect). → D7 stops that table, records the defect as `REPRODUCED`, and hands it to the user. It is not fixed in this change.
 - **The diff is very large and hard to review.** → One commit per phase and per lane. Each phase is reviewed against its own decisions, and the whole branch is reviewed once at the end.
-- **The layout checks and fixtures hard-code module names.** → They are updated in phase 1, and the layout tests prove the new paths before any rename runs.
+- **The layout tests hard-code module directories** (D2 lists them). → They are updated in phase 1, and the layout tests prove the new paths before any rename runs.
+- **A shared helper merges an identity that was deliberately separate** (`txKey`). → D5 keeps it per backend. The phase-4 review checks every merged declaration's godoc for a "this package alone" guarantee.
+- **The main spec names the security policy before it exists.** The "Supported Go releases" text matches `release-readiness`'s, word for word, and names "the security policy", which `release-readiness` writes. If this change is archived first, the main spec names that policy before it exists. → Accepted: the two changes land in order, and 1.27 is the only release either names today.
 - **Other branches in flight conflict with the moves.** → The order in `proposal.md`. The moves start from a `main` that has `fix/stabilize-intermittent-tests` merged, and no other change is implemented until this one is merged.
 - **Longer import paths** (`authenticate/passkey/webauthn`). → Accepted, in exchange for the concept grouping. Package names stay short.
 
 ## Migration Plan
 
-1. Merge `fix/stabilize-intermittent-tests`, then branch from `main`.
+1. Branch from `main`. `fix/stabilize-intermittent-tests` is already merged and archived.
 2. Capture the D13 baseline: test inventory, API inventory and coverage.
 3. Run phases 1–4 (D12), with D13 after each.
 4. In the same branch, update the repository's own references:
    - the `openspec/config.yaml` context (the module list and the `pkg/` and adapter names);
    - the README;
-   - the path and identifier references in the artifacts of the active changes (`trusted-proxy-client-ip`, `release-readiness` and its tag prefixes, `di-wiring`, `bff-resource-server`, `stabilize-intermittent-tests` if it is not yet archived).
+   - the path and identifier references in the artifacts of the active changes: `trusted-proxy-client-ip`, `release-readiness` (with its tag prefixes and its "Fresh consumer fetches a nested module" scenario), `di-wiring`, `bff-resource-server`, and `minimize-test-containers` once it is on `main`;
+   - `idiomatic-api-shape` and `key-port-context`, which are already written against this change's names: they are checked against the names that actually landed, not rewritten.
 5. Run the whole-branch review, then merge.
 
 **Rollback:** revert the merge. Nothing is tagged and there are no consumers, so a revert is complete.
@@ -410,6 +437,14 @@ These checks run before phase 1 starts, and again after each phase:
 
 **Researched (accessed 2026-10-25):**
 - [alexedwards/scs](https://github.com/alexedwards/scs): storage adapters named `<driver>store` (`pgxstore`, `gormstore`, `redisstore`).
+
+### Lockout split and shared helpers (D3, D5)
+
+Reasoned from scrty's own code and settled specs. On 2026-10-28, gopls references across the `policy` package showed the `AttemptStore` edge, and a declaration-by-declaration comparison of the three backends showed the identical helpers. The godoc of each backend's `txKey` states the per-package guarantee D5 keeps.
+
+**Primary documentation:**
+- [The Go Programming Language Specification: Import declarations](https://go.dev/ref/spec#Import_declarations): a package may not import itself, directly or indirectly.
+- [Package context: WithValue](https://pkg.go.dev/context#WithValue): a key should be of an unexported type of its own, to avoid collisions between packages.
 
 ### Proof of no regression (D13)
 
