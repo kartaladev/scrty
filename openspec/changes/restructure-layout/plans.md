@@ -29,13 +29,13 @@
 
   The test module stays `github.com/kartaladev/scrty/test`.
 - **Package name equals the last element of the path,** for every moved package and module (`redisstore`, not `scrtyredis`).
-- **Error strings** keep the form `"<package>: …"`, using the new package name, and an identifier a message names uses its new name (D11).
+- **Error strings** keep the form `"<package>: …"`, using the new package name, and an identifier a message names uses its new name (D11). A message that stands for another package's sentinel starts with that sentinel's text (`"policy: denied by policy: …"`, `"policy: invalid configuration: …"`, `"ratelimit: invalid configuration: …"`).
 - **Renames go through `gopls rename` or a gopls package move,** never through text replacement of Go identifiers. File moves use `git mv`.
 - **Never run** `git checkout --`, `git restore`, `git reset --hard`, `git stash` or `git clean`. An agent that needs to undo an edit does it by editing the file back.
 - **`.claude/.legacy` is never read, cited or copied.** Exclude it from every search.
 - **Mocks** stay `<source>_mock_test.go`, produced by their `//go:generate` directive. Regenerate them; never edit them by hand.
 - **Table tests** follow `.claude/skills/table-test`: an `assert` closure, a `ctx` modifier for context-sensitive components, and `t.Context()`. Parallelism is never added: a case calls `t.Parallel()` only if its original function did.
-- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change.
+- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. The exception is a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores.
 - **Only the main session** edits `openspec/` files, including `evidence/`. Agents never edit them.
 
 ## Review Focus
@@ -68,8 +68,13 @@
 | P4 | 5.1 | backends | Opus: extracts shared code while keeping behaviour | Opus |
 | main session | 5.2, 6.1–6.2, 7.2 | | main session | none |
 | review | 7.1 | whole branch | Opus | |
+| R1 | 8.1 | `internal/storekit` tests | Sonnet: the finding states the fix; exact texts are given below | Sonnet (combined R-review) |
+| R2 | 8.2 | `policy/lockout` | Sonnet: the text to restore and the table to extend are given | Sonnet (combined R-review) |
+| R3 | 8.3 | `httpsec` godoc | Haiku: a godoc edit whose exact diff is given | Sonnet (combined R-review) |
+| R4 | 8.4 | `test/httpsecconformance`, README | Sonnet: gopls field renames plus their comments | Sonnet (combined R-review) |
+| main session | 8.5 | gate | main session | one Sonnet review of R1–R4 |
 
-The five P3 lanes run in parallel, each owning only the packages its task names. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
+The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
 ---
 
@@ -297,3 +302,70 @@ The five P3 lanes run in parallel, each owning only the packages its task names.
 
 - [ ] **Step 1 (7.1):** Dispatch the Opus whole-branch reviewer with the `module-layout` delta, D1–D13 and `git diff origin/main...HEAD`. Expected: a clean report, with every finding fixed by a fresh dispatch of its lane.
 - [ ] **Step 2 (7.2):** `evidence/check.sh all` against the group-1 baseline, `openspec validate restructure-layout --strict`, and CI green on the final head. Expected: exit 0, valid, and green.
+
+### Task 20: `storekit` refusal tests assert exact text (task 8.1, R1)
+
+**Files:** Modify `internal/storekit/storekit_test.go` (`TestCheckUser`, its three refusing cases) only.
+
+**Interfaces:** Consumes `storekit.CheckUser(username string, u *identity.UserChange) error` and the unexported `unstorable(field string) error` in `internal/storekit/storekit.go`. Neither changes.
+
+- [ ] **Step 1: Replace each refusing case's assertions with the whole text**
+
+```go
+// "username with a NUL byte"
+require.EqualError(t, err, "the username holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+// "name with invalid UTF-8"
+require.EqualError(t, err, "the name holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+// "role with a NUL byte"
+require.EqualError(t, err, "the role holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
+```
+
+The `Contains` and `NotContains` lines in those three cases go; the exact text subsumes them. Case names, order and `t.Parallel()` stay.
+
+- [ ] **Step 2: Red step.** Temporarily change `unstorable` to `fmt.Errorf("the %s holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store: %q", field, value)` (threading the value through `CheckStorable`'s loop for the experiment only). Run: `go test -count=1 -run 'TestCheckUser' ./internal/storekit/`. Expected: FAIL in all three refusing cases, each showing the leaked value in the actual text. Record the lines. Edit the experiment back; `git diff internal/storekit/storekit.go` must be empty.
+
+- [ ] **Step 3: Verify.** `go test -count=1 -race ./internal/storekit/` passes. `go test -count=1 -coverprofile=<scratch>/sk.out ./internal/storekit/` covers at least 185 of 190 statements.
+
+### Task 21: Restore `storeDenied`'s text (task 8.2, R2)
+
+**Files:** Modify `policy/lockout/lockout.go` (`storeDenied`) and `policy/lockout/lockout_test.go` (`TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer`).
+
+**Interfaces:** `storeDenied(err error) policy.Decision` keeps its signature, its `diag.Wrap` call and its `policy.ErrDenied` kind. Only the fixed text changes.
+
+- [ ] **Step 1: Write the failing assertion.** In every case of `TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer` whose decision comes from `storeDenied` (the store returned an error), add beside the existing `ErrorIs` checks:
+
+```go
+assert.EqualError(t, d.Reason,
+	"policy: denied by policy: the attempt store could not say how often this identifier has failed")
+```
+
+The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, policy.ErrDenied)` stay: the text must not replace identity.
+
+- [ ] **Step 2: Run it.** `go test -count=1 -run 'TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer' ./policy/lockout/`. Expected: FAIL, actual text `"lockout: denied by policy: …"`. Record the line.
+
+- [ ] **Step 3: Implement.** In `storeDenied`, change the text to `"policy: denied by policy: the attempt store could not say how often this identifier has failed"`.
+
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./policy/...` and `go test -count=1 ./httpsec/...` pass. Then search the production `diag.Wrap` and `fmt.Errorf` texts that carry another package's sentinel as a kind or `%w`: each must start with that sentinel's text. Expected: no other mismatch (on 2026-10-29 only `storeDenied` differed). Report any found; do not fix it in this task.
+
+### Task 22: Doc links to `lockout.Policy.Attempts` (task 8.3, R3)
+
+**Files:** Modify the godoc at `httpsec/basic.go:252`, `httpsec/login_options.go:42` and `httpsec/options.go:1052`.
+
+- [ ] **Step 1:** In each of the three comments, replace `lockout.Attempts()` with `[lockout.Policy.Attempts]`, rewrapping the comment line if it then passes the file's comment width. No other wording changes.
+- [ ] **Step 2: Verify.** `rg -n 'lockout\.Attempts\(\)' --glob '!.claude/.legacy' .` finds nothing. `go doc ./httpsec BasicAuthDeps` shows `lockout.Policy.Attempts`. `gofmt -l httpsec` prints nothing.
+
+### Task 23: Conformance fixture fields and README names (task 8.4, R4)
+
+**Files:** `test/httpsecconformance/passkey_scenarios.go`, `oidc_scenarios.go`, `oidc_assurance_scenarios.go` and any other caller gopls finds; `README.md`.
+
+**Interfaces:** Produces `PasskeyFixture.Passkeys *passkey.Passkeys` and `OIDCFixture.RelyingParty *oidc.RelyingParty`. `Handoffs` and every other field are unchanged.
+
+- [ ] **Step 1:** `gopls rename` `PasskeyFixture.Manager` → `Passkeys` and `OIDCFixture.Manager` → `RelyingParty`. Rewrite their field comments to name what they hold ("Passkeys runs the ceremonies the chain's endpoints serve"; "IDP is the in-process provider, RelyingParty and Handoffs the relying party and handoff store the chain was given").
+- [ ] **Step 2:** In `README.md`, rename the variable bound to `oidc.NewRelyingParty(...)` from `manager` to `relyingParty`, with every use of it in the same snippet.
+- [ ] **Step 3: Verify.** In `test/`: `go build ./... && go vet ./...` pass, and `go test -list . ./httpsecconformance/... ./...` lists the same top-level tests as `evidence/baseline/testlist-test-module.txt` mapped through the rename map (`check.sh tests` reports nothing unaccounted). `rg -n '\.Manager\b' test/` finds nothing.
+
+### Task 24: Re-run the final gate (task 8.5, main session)
+
+- [ ] **Step 1:** After R1–R4 report, run `make check` and `evidence/check.sh all` against the group-1 baseline, and `openspec validate restructure-layout --strict`. Expected: pass, 0 unaccounted, valid.
+- [ ] **Step 2:** One Sonnet reviewer reads the R1–R4 diff against D5, D8, D11 and D12 and the recorded red-step lines. Expected: a clean report.
+- [ ] **Step 3:** Commit (`fix: answer PR #27's review: exact refusal text, the policy denial prefix, doc links and fixture names`), push, and confirm CI green on the new head, including the Docker suites.

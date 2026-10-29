@@ -139,6 +139,7 @@ Only helpers with identical bodies move. Near-duplicates that differ by driver A
 - `DetachedText` takes the backend's list of sentinels to keep as a parameter. The bodies were identical, but each read its own package's list, and the pgx list differs (`pgx.ErrTxClosed`, `pgx.ErrTxCommitRollback` against `sql.ErrTxDone`, `sql.ErrConnDone`). The lists stay in each backend.
 - `dbFailed` stays in each backend. It is `failed(op, detached(err))`, and both of those carry the backend's own prefix and sentinel list, so a shared version would leave each backend a one-line wrapper identical to the function it replaced.
 - `optionKind` stays in each backend with its constants. It is the vocabulary of each backend's own option plumbing, and moving the type alone would leave `storekit` a bare integer whose values live elsewhere.
+- **`storekit`'s refusal tests assert the whole error text** (added 2026-10-29 after the PR review). A refusal of unstorable text names the field, never the value, so the value cannot reach a log through the error (CWE-209). Only an exact-text assertion proves that: a leaked byte or a wrong field name changes the text. A `NotContains` check proves only the absence of the one substring it names, and a `Contains("name")` check also matches `"username"`. The package's other refusal tests already assert exact text; `TestCheckUser`'s refusing cases are brought into line.
 
 **Alternative considered:** a driver-neutral executor port that would remove more of the duplication. It is a redesign, not a move, so it is out of scope.
 
@@ -245,6 +246,8 @@ Five constraints keep the conversion from weakening any test:
 | `httpsec.WithSessionManager` | `WithSessions` |
 
 `FirstOf` is a type, so its constructor cannot also be called `FirstOf`: Go allows only one package-level identifier of a given name. It is therefore `NewFirstOf(delegates...)`.
+
+An exported field that holds one of these types is named after the new type too. In the test module, the conformance fixtures' `PasskeyFixture.Manager` becomes `Passkeys` and `OIDCFixture.Manager` becomes `RelyingParty`, and README variables that hold a `RelyingParty` are named `relyingParty`.
 
 **Alternatives considered:**
 - **`Chain`.** It clashes in meaning with `httpsec.Chain`.
@@ -362,6 +365,13 @@ An error string keeps the `"<package>: "` form under the new package name:
 
 An identifier that an error string names follows its rename too: lockout's `"WithLockoutCap must be positive"` becomes `"WithCap must be positive"`, and `(policy.FailureStreakStore)` becomes `(lockout.FailureStreakStore)`. A message names only things a consumer can find.
 
+**A message that stands for another package's sentinel starts with that sentinel's text**, as Go's `%w` wrapping prints it. Only a package's own messages take its own prefix. This is already the convention in the tree: `redisstore` and `pglimiter` report `ratelimit.ErrConfig` as `"ratelimit: invalid configuration: …"`. So:
+- lockout's own sentinels and failures read `"lockout: …"` (`ErrAccountHeld`, `"lockout: record a failed attempt"`);
+- `lockout.New`'s configuration errors wrap `policy.ErrConfig` and read `"policy: invalid configuration: …"`;
+- the refusal for an attempt store that cannot answer (`storeDenied`) stands for `policy.ErrDenied` and reads `"policy: denied by policy: the attempt store could not say how often this identifier has failed"`, as it did before the split. The phase-2 prefix sweep had turned it into `"lockout: denied by policy: …"`, which the PR review found on 2026-10-29.
+
+A consumer matches these errors with `errors.Is`, never by text, so the refusal still fails closed whatever it says. The rule keeps the text truthful about which contract the error answers to.
+
 Sentinel identity does not change, so `errors.Is` behaves as before.
 
 This is the one place where a test assertion may change: only the package prefix of an asserted string, and the renamed identifiers inside it. D13 checks this: every changed pair of asserted strings becomes equal once the rename map is applied to the old one.
@@ -369,6 +379,7 @@ This is the one place where a test assertion may change: only the package prefix
 **Alternatives considered:**
 - **Keep the old prefixes.** Packages would then report errors under names that no longer exist.
 - **Change only the prefix,** and leave the identifiers inside messages as they were. That is the narrowest assertion change, but consumers would read errors that name options which no longer exist. Declined on 2026-10-28.
+- **A `lockout.ErrConfig` that wraps `policy.ErrConfig`,** so lockout's configuration errors could read `"lockout: …"`. It would add exported API to a change that adds none (D13 would report it), and it would break the convention `redisstore` and `pglimiter` follow. Declined on 2026-10-29.
 
 ### D12. How the work is carried out
 
@@ -376,6 +387,7 @@ This is the one place where a test assertion may change: only the package prefix
   - A text sweep afterwards catches what gopls cannot see: doc comments, README, OpenSpec prose, strings, `%T` output and `reflect` uses.
   - That sweep excludes `.claude/.legacy`.
 - **Godoc describes the code, not its history.** A comment the change touches names only the new names. No godoc or comment says that something was moved, renamed, merged or split, or names a former package, path or identifier. Comments that already explain the code keep their wording, apart from the names that changed. The history is in the commit messages and in this change's artifacts.
+- **Godoc names a method in another package with a doc link,** `[lockout.Policy.Attempts]`, never as a package-qualified call. Where a variable once shared a package's new name, a call such as `lockout.Attempts()` reads as a package function that does not exist. `go doc` and pkg.go.dev resolve a doc link to the method itself.
 - **File moves use `git mv`,** so history follows each file.
 - **Four phases, in order:**
   1. **Moves.** Directory and module moves (D1, D2, D4, then D3), in a single lane, because a package move rewrites the imports of every caller.
@@ -461,6 +473,16 @@ Reasoned from scrty's own code and settled specs. On 2026-10-28, gopls reference
 **Primary documentation:**
 - [The Go Programming Language Specification: Import declarations](https://go.dev/ref/spec#Import_declarations): a package may not import itself, directly or indirectly.
 - [Package context: WithValue](https://pkg.go.dev/context#WithValue): a key should be of an unexported type of its own, to avoid collisions between packages.
+
+### Review findings: refusal text, error prefixes and doc links (D5, D11, D12)
+
+**Researched (accessed 2026-10-29):**
+- [CWE-209: Generation of Error Message Containing Sensitive Information](https://cwe.mitre.org/data/definitions/209.html): the weakness storekit's exact-text refusal tests guard against (D5).
+- [OWASP Error Handling Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html): error messages that do not reveal implementation details, to avoid information leakage (D5).
+- [Go blog: Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors): programs inspect errors with `errors.Is` and `errors.As`; wrapped text reads "description: wrapped error" (D11).
+- [Go Doc Comments](https://go.dev/doc/comment): `[pkg.Name1.Name2]` links to an identifier in another package (D12).
+
+The sentinel-prefix convention in D11 is reasoned from scrty's own code: `ratelimit/redisstore/verify.go` and `internal/pglimiter/runner.go` already follow it.
 
 ### Proof of no regression (D13)
 
