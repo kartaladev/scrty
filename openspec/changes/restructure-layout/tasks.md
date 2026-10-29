@@ -122,7 +122,7 @@ The second code review of PR #27 (2026-10-29) found nine items. Three were repro
 
   Verify: `go test -count=1 -run 'TestBackendDoesNotShadowDriver|TestWorkspaceModules|TestGoWorkListsEveryModule|TestIntegrationModulesUnderTheirConcept|TestNoUnlistedIntegrationModule|TestModulesDeclareGoMinimum' .` passes; the root `go.mod` is unchanged; and in a disposable export, raising `golang.org/x/crypto` in the root `go.mod` fails no layout test.
 - [x] 9.6 Rewrite the `session` godoc sentences whose subject is "the Sessions" (D8): `ErrReused` and `ErrRenewalRequired` in `reuse.go`, and every other hit of `rg -n 'the Sessions' session/` that does not read as English. Each names the method that acts (`[Sessions.Load]`), or reads "a [Sessions]". Wording only. Verify: `go doc ./session ErrReused` reads correctly, and `gofmt -l session` and `go vet ./session` are clean.
-- [ ] 9.7 Gate: `make check`, `evidence/check.sh all` against the group-1 baseline (with the 9.1 and 9.2 `merged` rows), `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then an Opus review of 9.1–9.2 against D5, and a Sonnet review of 9.3–9.6 against D2, D8 and D11. Verify: no unmapped difference, a valid change, a green CI run and clean reviews.
+- [x] 9.7 Gate: `make check`, `evidence/check.sh all` against the group-1 baseline (with the 9.1 and 9.2 `merged` rows), `openspec validate restructure-layout --strict`, push, and CI green on the new head, including the Docker suites. Then an Opus review of 9.1–9.2 against D5, and a Sonnet review of 9.3–9.6 against D2, D8 and D11. Verify: no unmapped difference, a valid change, a green CI run and clean reviews.
 
 ## Workflow follow-up
 
