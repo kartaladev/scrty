@@ -1528,7 +1528,9 @@ func TestLockoutCapWiring(t *testing.T) {
 			require.ErrorIs(t, err, httpsec.ErrConfig)
 			assert.Contains(t, err.Error(), field)
 			assert.Contains(t, err.Error(), `"account-lockout"`, "the requiring policy is named")
-			assert.Contains(t, err.Error(), "Attempts()")
+			assert.EqualError(t, err, httpsec.ErrConfig.Error()+": "+field+
+				" records failures into a store other than the view the \"account-lockout\" policy requires: "+
+				"give it that policy's view (lockout.Policy.Attempts for an account-lockout policy)")
 		}
 	}
 

@@ -1,12 +1,14 @@
 package scrty_test
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestModuleLayout(t *testing.T) {
@@ -522,30 +524,49 @@ func TestGoWorkListsEveryModule(t *testing.T) {
 	}
 }
 
-// TestBackendDoesNotShadowDriver builds, per backend, a consumer that imports
-// the backend beside the driver it wraps, with no import alias. It compiles only
-// while the backend's package name differs from its driver's. The build is
-// read-only, so a fixture whose go.mod or go.sum has drifted fails instead of
-// being rewritten.
+// TestWorkspaceModulesReadsSingleLineUse pins that workspaceModules reads both
+// forms of the go.work use directive.
+func TestWorkspaceModulesReadsSingleLineUse(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	work := "go 1.27\n\nuse ./a\n\nuse (\n\t./b\n)\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "go.work"), []byte(work), 0o600))
+	for _, dir := range []string{"a", "b"} {
+		require.NoError(t, os.Mkdir(filepath.Join(root, dir), 0o750))
+		mod := "module example.com/" + dir + "\n\ngo 1.27\n"
+		require.NoError(t, os.WriteFile(filepath.Join(root, dir, "go.mod"), []byte(mod), 0o600))
+	}
+
+	assert.ElementsMatch(t, []string{"a", "b"}, workspaceModules(t, root))
+}
+
+// TestBackendDoesNotShadowDriver pins that each backend's package name differs
+// from the name of the driver package it wraps. The names differ exactly when a
+// file can import both without an import alias.
 func TestBackendDoesNotShadowDriver(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name    string
-		fixture string
+		name   string
+		dir    string
+		driver string
 	}
 
 	cases := []testCase{
-		{name: "pgxstore beside github.com/jackc/pgx/v5", fixture: "testdata/layout/noaliaspgx"},
-		{name: "gormstore beside gorm.io/gorm", fixture: "testdata/layout/noaliasgorm"},
-		{name: "redisstore beside github.com/redis/go-redis/v9", fixture: "testdata/layout/noaliasredis"},
+		{name: "pgxstore beside pgx", dir: "store/pgxstore", driver: "github.com/jackc/pgx/v5"},
+		{name: "gormstore beside gorm", dir: "store/gormstore", driver: "gorm.io/gorm"},
+		{name: "redisstore beside go-redis", dir: "ratelimit/redisstore", driver: "github.com/redis/go-redis/v9"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			goCmd(t, tc.fixture, []string{"GOFLAGS=-mod=readonly"}, "build", "./...")
+			driverName := strings.TrimSpace(goCmd(t, tc.dir, nil, "list", "-f", "{{.Name}}", tc.driver))
+			clause := packageClause(t, tc.dir)
+			require.NotEmpty(t, clause, "no package clause in %s", tc.dir)
+			assert.NotEqual(t, driverName, clause)
 		})
 	}
 }
@@ -556,22 +577,22 @@ func TestModulesDeclareGoMinimum(t *testing.T) {
 	type testCase struct {
 		name   string
 		root   string
-		assert func(t *testing.T, below []string)
+		assert func(t *testing.T, off map[string]string)
 	}
 
 	cases := []testCase{
 		{
 			name: "every module declares the minimum",
 			root: ".",
-			assert: func(t *testing.T, below []string) {
-				assert.Empty(t, below)
+			assert: func(t *testing.T, off map[string]string) {
+				assert.Empty(t, off, "modules declaring another go version: %v", off)
 			},
 		},
 		{
 			name: "control: a module no go.work lists is named when it declares less",
 			root: "testdata/layout/wsstray",
-			assert: func(t *testing.T, below []string) {
-				assert.Equal(t, []string{"pgx"}, below)
+			assert: func(t *testing.T, off map[string]string) {
+				assert.Equal(t, map[string]string{"pgx": "1.21"}, off)
 			},
 		},
 	}
@@ -580,7 +601,7 @@ func TestModulesDeclareGoMinimum(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc.assert(t, belowGoMinimum(t, tc.root))
+			tc.assert(t, offGoMinimum(t, tc.root))
 		})
 	}
 }

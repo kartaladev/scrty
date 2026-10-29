@@ -82,6 +82,11 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 
 `release-readiness` names tag prefixes after module directories. It is updated to `authenticate/passkey/webauthn/`, `store/pgxstore/`, `store/gormstore/`, `ratelimit/redisstore/`, `expiry/sweep/`, `httpsec/ginsec/`, `httpsec/fibersec/` and `test/`. Nothing is tagged, so no published version is affected.
 
+**Layout guards, as revised after the second PR review (2026-10-29):**
+- **"A backend does not shadow its driver" is checked by comparing names, not by building fixtures.** A Go source file can import two packages without an alias exactly when their package names differ, so the comparison proves what the build proved. `TestBackendDoesNotShadowDriver` compares each backend's package clause with its driver's package name, as `go list -f '{{.Name}}' <driver>` reports it inside the backend's own module, whose `go.mod` already pins the driver. The three fixture modules `testdata/layout/noaliaspgx`, `noaliasgorm` and `noaliasredis` are removed. They pinned the whole indirect graph under `-mod=readonly`, so a routine requirement bump in the root module failed the test with no layout rule broken. `REPRODUCED` on 2026-10-29 in a disposable export: raising `golang.org/x/crypto` from v0.57.0 to v0.58.0 in the root `go.mod` failed all three subtests with `go: updates to go.mod needed, disabled by -mod=readonly`, and they passed again once the bump was reverted.
+- **`workspaceModules` reads `go.work` through `go work edit -json`,** the toolchain's own parser, instead of scanning for a `use (` block. The scan ignored a single-line `use ./dir` directive. `REPRODUCED` on 2026-10-29 by `TestWorkspaceModulesReadsSingleLineUse`: over a `go.work` holding `use ./a` and `use ( ./b )`, it returned `["b"]`. The toolchain adds no requirement to the core module.
+- **The Go-minimum guard is named for what it checks.** The "Supported Go releases" requirement asks every module to declare exactly `go 1.27`, so the guard rightly flags `go 1.28` too. Its helper was nevertheless called `belowGoMinimum`. It becomes `offGoMinimum`, and the test's failure names each module with the version it declares. This is not a defect: the check was right, and only its name misled.
+
 ### D3. `policy/lockout` takes the lockout group; attempt views stay with the engine
 
 **What moves to `lockout`:**
@@ -128,7 +133,7 @@ The test module's path stays `github.com/kartaladev/scrty/test`.
 
 The helpers listed in Context, together with their `storekit` and `pglimiter` copies, become single `storekit` declarations. Each backend calls those declarations.
 
-Only helpers with identical bodies move. Near-duplicates that differ by driver API stay in their backend. The store-conformance suites under `test/` prove that nothing changed.
+Only helpers with identical bodies move. Near-duplicates that differ by driver API stay in their backend. The one exception is a near-duplicate that differs only in how a value is converted for the driver: it is shared, and the conversion is passed in as a parameter (see "As landed"). The store-conformance suites under `test/` prove that nothing changed.
 
 **`txKey` stays in each backend.** Its declarations are identical, but each backend's distinct key type is the guarantee its godoc states: a transaction another backend attaches is never seen. A shared `storekit` key would let one backend's `WithTx` replace another's transaction in a shared context, and the stores of the first would silently run outside it. That is a behaviour change. The existing tests would not catch it: `gorm/tx_test.go` uses a `foreignTxKey` type of its own. The claim is `UNREPRODUCED`, because the merged code does not exist. The scenario that would reproduce it: one context carries both a `pgx` transaction and a `database/sql` transaction, and each backend's stores must still run on their own.
 
@@ -137,7 +142,9 @@ Only helpers with identical bodies move. Near-duplicates that differ by driver A
 **As landed (2026-10-29):**
 - `BestEffort`, `ParseUserID`, `CheckUser`, `SurvivingRoles`, `ErrPasskeyHandleHeld`, `ErrStreakContended`, `SQLStater` and `DetachedError` move into `internal/storekit` with their bodies unchanged.
 - `DetachedText` takes the backend's list of sentinels to keep as a parameter. The bodies were identical, but each read its own package's list, and the pgx list differs (`pgx.ErrTxClosed`, `pgx.ErrTxCommitRollback` against `sql.ErrTxDone`, `sql.ErrConnDone`). The lists stay in each backend.
-- `dbFailed` stays in each backend. It is `failed(op, detached(err))`, and both of those carry the backend's own prefix and sentinel list, so a shared version would leave each backend a one-line wrapper identical to the function it replaced.
+- `detached` and the SQLSTATE filter (`isSQLState` in `pgxstore`, `validSQLState` in `sqlstore` and `gormstore`) move as `storekit.Detached(err, kept)` and `storekit.ValidSQLState`. Their bodies were identical, and their only backend-specific input is the list of sentinels to keep, which `Detached` takes as `DetachedText` does. The filter decides which driver-reported text may reach an error, so a single copy keeps the three backends from drifting apart (second PR review, 2026-10-29). Each backend worded `detached`'s godoc differently; `storekit`'s godoc states everything any of them promised.
+- `dbFailed` stays in each backend, as `failed(op, storekit.Detached(err, detachedKept))`. `failed` carries the backend's own error prefix.
+- **The partial UPDATE of a user is shared by `sqlstore` and `pgxstore`,** as `storekit.Column`, `storekit.UserColumns(u, org, ts)` and `storekit.UpdateUserQuery(set, now, userID)`. This is the exception to "only identical bodies move". The two copies differed only in value conversion: the timestamp goes through each backend's own `nullTs` (`pgtype.Timestamptz` in `pgxstore`), and `pgxstore` passes the user id through `uuidArg`. Those conversions become parameters, as `DetachedText` takes its list. The builder is where column names meet SQL text and the column allow-list holds, so a column added to one copy and not the other would make the two backends write different fields. `gormstore` keeps its own `userColumns`: it builds a `map[string]any` for gorm's `Updates`, which is a different driver API.
 - `optionKind` stays in each backend with its constants. It is the vocabulary of each backend's own option plumbing, and moving the type alone would leave `storekit` a bare integer whose values live elsewhere.
 - **`storekit`'s refusal tests assert the whole error text** (added 2026-10-29 after the PR review). A refusal of unstorable text names the field, never the value, so the value cannot reach a log through the error (CWE-209). Only an exact-text assertion proves that: a leaked byte or a wrong field name changes the text. A `NotContains` check proves only the absence of the one substring it names, and a `Contains("name")` check also matches `"username"`. The package's other refusal tests already assert exact text; `TestCheckUser`'s refusing cases are brought into line.
 
@@ -246,6 +253,8 @@ Five constraints keep the conversion from weakening any test:
 | `httpsec.WithSessionManager` | `WithSessions` |
 
 `FirstOf` is a type, so its constructor cannot also be called `FirstOf`: Go allows only one package-level identifier of a given name. It is therefore `NewFirstOf(delegates...)`.
+
+Prose names a `Sessions` value the way it names any type: through the method that acts (`[Sessions.Load]` returns …), or as "a [Sessions]" where no single method acts. It never makes "the Sessions" the subject of a sentence ("the Sessions has revoked"). The phase-2 text sweep left such sentences in `session`'s godoc, which the second PR review found on 2026-10-29.
 
 An exported field that holds one of these types is named after the new type too. In the test module, the conformance fixtures' `PasskeyFixture.Manager` becomes `Passkeys` and `OIDCFixture.Manager` becomes `RelyingParty`, and README variables that hold a `RelyingParty` are named `relyingParty`.
 
@@ -369,6 +378,9 @@ An identifier that an error string names follows its rename too: lockout's `"Wit
 - lockout's own sentinels and failures read `"lockout: …"` (`ErrAccountHeld`, `"lockout: record a failed attempt"`);
 - `lockout.New`'s configuration errors wrap `policy.ErrConfig` and read `"policy: invalid configuration: …"`;
 - the refusal for an attempt store that cannot answer (`storeDenied`) stands for `policy.ErrDenied` and reads `"policy: denied by policy: the attempt store could not say how often this identifier has failed"`, as it did before the split. The phase-2 prefix sweep had turned it into `"lockout: denied by policy: …"`, which the PR review found on 2026-10-29.
+- **That prefix is built from `policy.ErrDenied.Error()`, not written out,** and the tests derive their expected text the same way. A literal does not follow the sentinel if its text changes. `REPRODUCED` on 2026-10-29 in a disposable export: with `ErrDenied`'s text changed, lockout's suite stayed green, because its expected text was the same literal. `TestStoreDeniedLeadsWithTheDeniedSentinelText` failed with `reason "policy: denied by policy: …" does not lead with "policy: denied: "`, and passed once `storeDenied` built its prefix from the sentinel.
+
+`httpsec`'s configuration error for a lockout policy given an attempt store other than its own names `lockout.Policy.Attempts`, not `Attempts()`. Since the split, that method lives in another package, and a bare `Attempts()` names nothing a consumer can find.
 
 A consumer matches these errors with `errors.Is`, never by text, so the refusal still fails closed whatever it says. The rule keeps the text truthful about which contract the error answers to.
 
@@ -474,13 +486,20 @@ Reasoned from scrty's own code and settled specs. On 2026-10-28, gopls reference
 - [The Go Programming Language Specification: Import declarations](https://go.dev/ref/spec#Import_declarations): a package may not import itself, directly or indirectly.
 - [Package context: WithValue](https://pkg.go.dev/context#WithValue): a key should be of an unexported type of its own, to avoid collisions between packages.
 
-### Review findings: refusal text, error prefixes and doc links (D5, D11, D12)
+### Review findings: refusal text, error prefixes, doc links and layout guards (D2, D5, D8, D11, D12)
 
 **Researched (accessed 2026-10-29):**
 - [CWE-209: Generation of Error Message Containing Sensitive Information](https://cwe.mitre.org/data/definitions/209.html): the weakness storekit's exact-text refusal tests guard against (D5).
 - [OWASP Error Handling Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Error_Handling_Cheat_Sheet.html): error messages that do not reveal implementation details, to avoid information leakage (D5).
 - [Go blog: Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors): programs inspect errors with `errors.Is` and `errors.As`; wrapped text reads "description: wrapped error" (D11).
 - [Go Doc Comments](https://go.dev/doc/comment): `[pkg.Name1.Name2]` links to an identifier in another package (D12).
+
+- [`go help work edit`](https://pkg.go.dev/cmd/go#hdr-Edit_go_work_from_tools_or_scripts): `-json` prints the parsed `go.work`, its `Use` entries carrying `DiskPath`. Read from the local go1.27.3 toolchain (D2).
+
+**Primary documentation:**
+- [The Go Programming Language Specification: Import declarations](https://go.dev/ref/spec#Import_declarations): an import with no alias declares the package's own name in the file block, so two imports need an alias only when their package names are equal (D2).
+
+The D5 sharing of the SQLSTATE filter, the detached-error builder and the user UPDATE, and the D8 prose rule, are reasoned from scrty's own code and settled specs.
 
 The sentinel-prefix convention in D11 is reasoned from scrty's own code: `ratelimit/redisstore/verify.go` and `internal/pglimiter/runner.go` already follow it.
 

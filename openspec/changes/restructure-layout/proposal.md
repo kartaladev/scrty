@@ -37,7 +37,7 @@ Nothing is tagged yet and there are no consumers, so moving and renaming public 
   - One test file per production file. Scenarios become table cases or subtests, and harnesses fold into the test file they serve.
   - Generated mocks, example tests and `export_test.go` keep their own files.
   - Shared code is filed by what it is, for example the login tail every feature uses.
-- **Identical helpers in the three SQL backends move into `internal/storekit`.** This covers `bestEffort`, `checkUser`, `parseUserID`, `survivingRoles`, the detached-error family, `optionKind` and `sqlStater`. Each backend keeps its own transaction context key, because a shared key would let one backend see another's transaction.
+- **Identical helpers in the three SQL backends move into `internal/storekit`.** This covers `bestEffort`, `checkUser`, `parseUserID`, `survivingRoles`, the detached-error family with its SQLSTATE filter, and `sqlStater`, and the partial user UPDATE that `sqlstore` and `pgxstore` both build. Each backend keeps its own transaction context key, because a shared key would let one backend see another's transaction.
 - **`Manager` removed from every type name.**
   - `oidc.Manager` → `RelyingParty`
   - `oidc.HandoffManager` → `Handoff`

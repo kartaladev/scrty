@@ -557,7 +557,7 @@ func storeDenied(err error) policy.Decision {
 	return policy.Decision{
 		Outcome: policy.Deny,
 		Reason: diag.Wrap(err,
-			"policy: denied by policy: the attempt store could not say how often this identifier has failed",
+			policy.ErrDenied.Error()+": the attempt store could not say how often this identifier has failed", //nolint:forbidigo // the library's own sentinel text, not the dependency's
 			policy.ErrDenied),
 	}
 }

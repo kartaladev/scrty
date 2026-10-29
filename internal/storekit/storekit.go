@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -309,4 +310,95 @@ func DetachedText(err error, text string, kept []error) error {
 	}
 
 	return &DetachedError{text: text, kept: matched}
+}
+
+// Detached is err with the driver's error value left out of its chain and
+// its text replaced with the library's own: "database failure", followed by
+// the SQLSTATE when err is or wraps an error reporting one through a
+// SQLState method and ValidSQLState accepts it. No other text of err's chain
+// is kept, neither the driver's message, since a PostgreSQL primary message
+// can quote a value, nor any text a library between the driver and the
+// adapter adds. It stays matchable against each sentinel of kept that err
+// matched, as DetachedText describes, so a caller still tells a
+// cancellation from a failure.
+func Detached(err error, kept []error) error {
+	text := "database failure"
+
+	var st SQLStater
+	if errors.As(err, &st) {
+		if code := st.SQLState(); ValidSQLState(code) {
+			text += " (SQLSTATE " + code + ")"
+		}
+	}
+
+	return DetachedText(err, text, kept)
+}
+
+// ValidSQLState reports whether code has the shape of a SQLSTATE: five digits
+// or upper-case letters. A driver, or a consumer's error, reporting anything
+// else through its SQLState method adds no text of its own.
+func ValidSQLState(code string) bool {
+	if len(code) != 5 {
+		return false
+	}
+	for _, c := range []byte(code) {
+		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+
+	return true
+}
+
+// Column is one users column an update writes, and the value it binds.
+type Column struct {
+	Name  string
+	Value any
+}
+
+// UserColumns is the users columns an update writes for the fields u names,
+// in a fixed order. Column names come only from this allow-list, never from
+// input. A field is written when it was named, whatever its value, and left
+// alone otherwise. The email has no column and writes nothing; the roles are
+// written by the grant rebuild. The password-changed-at time is its own
+// field: naming the password alone never writes it. org is the bound value
+// of organization_id, and ts converts the password-changed-at time to the
+// value the adapter's driver binds.
+func UserColumns(u *identity.UserChange, org any, ts func(time.Time) any) []Column {
+	var set []Column
+	if u.IsSet(identity.FieldName) {
+		set = append(set, Column{"name", u.Name})
+	}
+	if u.IsSet(identity.FieldPassword) {
+		set = append(set, Column{"password", OrEmpty(u.Password)})
+	}
+	if u.IsSet(identity.FieldOrganization) {
+		set = append(set, Column{"organization_id", org})
+	}
+	if u.IsSet(identity.FieldPasswordChangedAt) {
+		set = append(set, Column{"password_changed_at", ts(u.PasswordChangedAt)})
+	}
+
+	return set
+}
+
+// UpdateUserQuery is the partial UPDATE of user userID writing set and
+// updated_at, with its arguments. userID is bound as given, in the form the
+// adapter's driver takes. Each Column.Name is written into the SQL text as it
+// is, so it must come from UserColumns or be a fixed column name.
+func UpdateUserQuery(set []Column, now time.Time, userID any) (string, []any) {
+	var b strings.Builder
+	args := make([]any, 0, len(set)+2)
+
+	b.WriteString("UPDATE users SET ")
+	for _, c := range set {
+		args = append(args, c.Value)
+		b.WriteString(c.Name + " = $" + strconv.Itoa(len(args)) + ", ")
+	}
+	args = append(args, now)
+	b.WriteString("updated_at = $" + strconv.Itoa(len(args)))
+	args = append(args, userID)
+	b.WriteString(" WHERE id = $" + strconv.Itoa(len(args)))
+
+	return b.String(), args
 }

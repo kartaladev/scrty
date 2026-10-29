@@ -11,13 +11,13 @@ import (
 )
 
 // dbFailed wraps err, a failure of a database call the identity store made,
-// like failed, but first cuts it from the driver's error value (detached).
-// The identity store returns only this for a database failure: its tables
-// hold usernames and password hashes, which a driver error's detail fields
-// can carry. The security-state stores keep the driver error in the chain;
-// their rows hold neither.
+// like failed, but first cuts it from the driver's error value
+// ([storekit.Detached]). The identity store returns only this for a database
+// failure: its tables hold usernames and password hashes, which a driver
+// error's detail fields can carry. The security-state stores keep the driver
+// error in the chain; their rows hold neither.
 func dbFailed(op string, err error) error {
-	return failed(op, detached(err))
+	return failed(op, storekit.Detached(err, detachedKept))
 }
 
 // scanFailed wraps err, a failure of a Scan call the identity store made,
@@ -46,38 +46,4 @@ var detachedKept = []error{
 	context.DeadlineExceeded,
 	pgx.ErrTxClosed,
 	pgx.ErrTxCommitRollback,
-}
-
-// detached is err with the driver's error value left out of its chain and
-// its text replaced by the library's own: "database failure", and the
-// SQLSTATE when err reports one through a SQLState method. It stays
-// matchable against the context and pgx sentinels err matched, so a caller
-// still tells a cancellation from a failure. The text of err itself, which
-// for a PostgreSQL error is a primary message that can quote a value, never
-// reaches it.
-func detached(err error) error {
-	text := "database failure"
-	var st storekit.SQLStater
-	if errors.As(err, &st) {
-		if code := st.SQLState(); isSQLState(code) {
-			text += " (SQLSTATE " + code + ")"
-		}
-	}
-
-	return storekit.DetachedText(err, text, detachedKept)
-}
-
-// isSQLState reports whether code has the shape of a SQLSTATE: five digits or
-// upper-case letters. Anything else a consumer's error reports is left out.
-func isSQLState(code string) bool {
-	if len(code) != 5 {
-		return false
-	}
-	for _, c := range []byte(code) {
-		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
-			return false
-		}
-	}
-
-	return true
 }

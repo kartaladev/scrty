@@ -1,6 +1,7 @@
 package storekit_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
@@ -756,6 +757,238 @@ func TestDetachedError_Unwrap(t *testing.T) {
 			var de *storekit.DetachedError
 			require.ErrorAs(t, storekit.DetachedText(tc.err, "t", tc.kept), &de)
 			tc.assert(t, de.Unwrap())
+		})
+	}
+}
+
+// sqlStateErr is a driver error reporting code through a SQLState method,
+// with msg as its text.
+type sqlStateErr struct{ code, msg string }
+
+func (e *sqlStateErr) Error() string    { return e.msg }
+func (e *sqlStateErr) SQLState() string { return e.code }
+
+func TestValidSQLState(t *testing.T) {
+	type testCase struct {
+		name   string
+		code   string
+		assert func(t *testing.T, got bool)
+	}
+
+	accepted := func(t *testing.T, got bool) { assert.True(t, got) }
+	refused := func(t *testing.T, got bool) { assert.False(t, got) }
+
+	cases := []testCase{
+		{name: "five digits", code: "23505", assert: accepted},
+		{name: "upper-case letters and digits", code: "P0001", assert: accepted},
+		{name: "four characters", code: "2350", assert: refused},
+		{name: "six characters", code: "235050", assert: refused},
+		{name: "a lower-case letter", code: "p0001", assert: refused},
+		{name: "a space", code: "23 05", assert: refused},
+		{name: "empty", code: "", assert: refused},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, storekit.ValidSQLState(tc.code))
+		})
+	}
+}
+
+func TestDetached(t *testing.T) {
+	cancelled := &sqlStateErr{code: "57014", msg: "secret value"}
+
+	type testCase struct {
+		name   string
+		err    error
+		kept   []error
+		assert func(t *testing.T, got error)
+	}
+
+	cases := []testCase{
+		{
+			name: "a valid SQLSTATE is kept and the driver text is not",
+			err:  &sqlStateErr{code: "40001", msg: "secret value"},
+			assert: func(t *testing.T, got error) {
+				assert.EqualError(t, got, "database failure (SQLSTATE 40001)")
+			},
+		},
+		{
+			name: "a SQLSTATE deeper in the chain is kept",
+			err:  fmt.Errorf("query: %w", &sqlStateErr{code: "23505", msg: "secret value"}),
+			assert: func(t *testing.T, got error) {
+				assert.EqualError(t, got, "database failure (SQLSTATE 23505)")
+			},
+		},
+		{
+			name: "a code that is not a SQLSTATE adds no text",
+			err:  &sqlStateErr{code: "bad!!", msg: "secret value"},
+			assert: func(t *testing.T, got error) {
+				assert.EqualError(t, got, "database failure")
+			},
+		},
+		{
+			name: "an error reporting no SQLSTATE",
+			err:  errors.New("secret value"),
+			assert: func(t *testing.T, got error) {
+				assert.EqualError(t, got, "database failure")
+			},
+		},
+		{
+			name: "a kept sentinel err matched stays matchable and the driver error is cut",
+			err:  fmt.Errorf("%w: %w", context.Canceled, cancelled),
+			kept: []error{context.Canceled, context.DeadlineExceeded},
+			assert: func(t *testing.T, got error) {
+				assert.EqualError(t, got, "database failure (SQLSTATE 57014)")
+				assert.ErrorIs(t, got, context.Canceled)
+				assert.NotErrorIs(t, got, cancelled)
+			},
+		},
+		{
+			name: "a kept sentinel err does not match is not matchable",
+			err:  fmt.Errorf("%w: %w", context.Canceled, cancelled),
+			kept: []error{context.DeadlineExceeded},
+			assert: func(t *testing.T, got error) {
+				assert.EqualError(t, got, "database failure (SQLSTATE 57014)")
+				assert.NotErrorIs(t, got, context.DeadlineExceeded)
+				assert.NotErrorIs(t, got, context.Canceled)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, storekit.Detached(tc.err, tc.kept))
+		})
+	}
+}
+
+func TestUpdateUserQuery(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	changedAt := now.Add(-time.Hour)
+	userID := "user-1"
+
+	type testCase struct {
+		name   string
+		set    []storekit.Column
+		assert func(t *testing.T, query string, args []any)
+	}
+
+	cases := []testCase{
+		{
+			name: "no column writes updated_at alone",
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET updated_at = $1 WHERE id = $2", query)
+				assert.Equal(t, []any{now, userID}, args)
+			},
+		},
+		{
+			name: "one column precedes updated_at",
+			set:  []storekit.Column{{Name: "name", Value: "Ada"}},
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t, "UPDATE users SET name = $1, updated_at = $2 WHERE id = $3", query)
+				assert.Equal(t, []any{"Ada", now, userID}, args)
+			},
+		},
+		{
+			name: "four columns bind in the order given",
+			set: []storekit.Column{
+				{Name: "name", Value: "Ada"},
+				{Name: "password", Value: []byte("hash")},
+				{Name: "organization_id", Value: "org-1"},
+				{Name: "password_changed_at", Value: changedAt},
+			},
+			assert: func(t *testing.T, query string, args []any) {
+				assert.Equal(t,
+					"UPDATE users SET name = $1, password = $2, organization_id = $3, "+
+						"password_changed_at = $4, updated_at = $5 WHERE id = $6", query)
+				assert.Equal(t, []any{"Ada", []byte("hash"), "org-1", changedAt, now, userID}, args)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			query, args := storekit.UpdateUserQuery(tc.set, now, userID)
+			tc.assert(t, query, args)
+		})
+	}
+}
+
+func TestUserColumns(t *testing.T) {
+	changedAt := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	const org = "org-1"
+	const marker = "ts-marker"
+	ts := func(time.Time) any { return marker }
+
+	type testCase struct {
+		name   string
+		opts   []identity.UserOption
+		assert func(t *testing.T, got []storekit.Column)
+	}
+
+	cases := []testCase{
+		{
+			name:   "nothing named writes no column",
+			assert: func(t *testing.T, got []storekit.Column) { assert.Empty(t, got) },
+		},
+		{
+			name: "the name alone",
+			opts: []identity.UserOption{identity.WithUserName("Ada")},
+			assert: func(t *testing.T, got []storekit.Column) {
+				assert.Equal(t, []storekit.Column{{Name: "name", Value: "Ada"}}, got)
+			},
+		},
+		{
+			name: "the password alone, nil written as empty",
+			opts: []identity.UserOption{identity.WithUserPassword(nil)},
+			assert: func(t *testing.T, got []storekit.Column) {
+				assert.Equal(t, []storekit.Column{{Name: "password", Value: []byte{}}}, got)
+			},
+		},
+		{
+			name: "the organization alone binds org",
+			opts: []identity.UserOption{identity.WithUserOrganization(nil)},
+			assert: func(t *testing.T, got []storekit.Column) {
+				assert.Equal(t, []storekit.Column{{Name: "organization_id", Value: org}}, got)
+			},
+		},
+		{
+			name: "the password-changed-at time alone goes through ts",
+			opts: []identity.UserOption{identity.WithUserPasswordChangedAt(changedAt)},
+			assert: func(t *testing.T, got []storekit.Column) {
+				assert.Equal(t, []storekit.Column{{Name: "password_changed_at", Value: marker}}, got)
+			},
+		},
+		{
+			name: "every field in the fixed order, ts only for password_changed_at",
+			opts: []identity.UserOption{
+				identity.WithUserPasswordChangedAt(changedAt),
+				identity.WithUserOrganization(nil),
+				identity.WithUserPassword([]byte("hash")),
+				identity.WithUserEmail("ada@example.com"),
+				identity.WithUserRoles("admin"),
+				identity.WithUserName("Ada"),
+			},
+			assert: func(t *testing.T, got []storekit.Column) {
+				assert.Equal(t, []storekit.Column{
+					{Name: "name", Value: "Ada"},
+					{Name: "password", Value: []byte("hash")},
+					{Name: "organization_id", Value: org},
+					{Name: "password_changed_at", Value: marker},
+				}, got)
+			},
+		},
+		{
+			name:   "the email has no column",
+			opts:   []identity.UserOption{identity.WithUserEmail("ada@example.com")},
+			assert: func(t *testing.T, got []storekit.Column) { assert.Empty(t, got) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.assert(t, storekit.UserColumns(identity.ApplyUserOptions(tc.opts...), org, ts))
 		})
 	}
 }

@@ -125,7 +125,7 @@ type Supersession struct {
 // With no store configured a Sessions value uses NewMemoryStore, which does not
 // survive a restart: every session issued by the previous process is gone. A
 // consumer replaces it with any implementation through WithStore, typically
-// one backed by a table, and nothing else about the Sessions changes.
+// one backed by a table, and nothing else about a [Sessions] changes.
 //
 // Creating and saving are separate operations, and saving never inserts. That
 // split is the contract's one demand on an implementation beyond doing what
@@ -247,7 +247,7 @@ type Store interface {
 	// The retention deadline is what lets a renewal that extends the family
 	// (see WithSuccessorLifetime) keep detecting reuse: a superseded
 	// identifier presented after its own original deadline, while the family
-	// is still live, must load as superseded so the Sessions judges it as
+	// is still live, must load as superseded so a [Sessions] judges it as
 	// reuse, not read as an ordinary expiry that leaves the family alive. No
 	// renewal extends a family past it, so a record superseded earlier never
 	// needs rewriting. A superseded session never authenticates past its

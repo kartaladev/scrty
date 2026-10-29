@@ -475,23 +475,16 @@ func redisClientViolations(dir string, reqs []requirement) []violation {
 }
 
 // workspaceModules returns the directory of every module the go.work file at
-// root uses, relative to root.
+// root uses, as the file writes it: relative to root for a relative use entry.
+// The go tool parses the file, so both forms of the use directive are read.
 func workspaceModules(t *testing.T, root string) []string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(root, "go.work")) //nolint:gosec // G304: test-constructed path
-	require.NoError(t, err)
-	var dirs []string
-	inBlock := false
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		switch {
-		case line == "use (":
-			inBlock = true
-		case inBlock && line == ")":
-			inBlock = false
-		case inBlock && line != "" && !strings.HasPrefix(line, "//"):
-			dirs = append(dirs, filepath.Clean(strings.Fields(line)[0]))
-		}
+	out := goCmd(t, root, nil, "work", "edit", "-json", "go.work")
+	var work struct{ Use []struct{ DiskPath string } }
+	require.NoError(t, json.Unmarshal([]byte(out), &work))
+	dirs := make([]string, 0, len(work.Use))
+	for _, u := range work.Use {
+		dirs = append(dirs, filepath.Clean(u.DiskPath))
 	}
 	return dirs
 }
@@ -652,15 +645,17 @@ func unlistedModules(t *testing.T, root string, listed []string) []string {
 	return unlisted
 }
 
-// belowGoMinimum returns the modules under root, by directory relative to
-// root, whose go directive is not the supported minimum.
-func belowGoMinimum(t *testing.T, root string) []string {
+// offGoMinimum returns the modules under root, by directory relative to root,
+// whose go directive is not the supported minimum, each mapped to the version it
+// declares.
+func offGoMinimum(t *testing.T, root string) map[string]string {
 	t.Helper()
-	var below []string
+	off := map[string]string{}
 	for _, dir := range discoverModules(t, root) {
-		if version.Lang("go"+goDirective(t, filepath.Join(root, dir))) != "go1.27" {
-			below = append(below, filepath.ToSlash(dir))
+		declared := goDirective(t, filepath.Join(root, dir))
+		if version.Lang("go"+declared) != "go1.27" {
+			off[filepath.ToSlash(dir)] = declared
 		}
 	}
-	return below
+	return off
 }

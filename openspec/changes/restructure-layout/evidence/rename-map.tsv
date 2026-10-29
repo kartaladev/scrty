@@ -240,6 +240,18 @@ merged	github.com/kartaladev/scrty/gorm.errStreakContended	github.com/kartaladev
 merged	github.com/kartaladev/scrty/gorm.sqlStater	github.com/kartaladev/scrty/internal/storekit.SQLStater
 merged	github.com/kartaladev/scrty/internal/storekit.bestEffort	github.com/kartaladev/scrty/internal/storekit.BestEffort
 merged	github.com/kartaladev/scrty/internal/pglimiter.sqlStater	github.com/kartaladev/scrty/internal/storekit.SQLStater
+merged	github.com/kartaladev/scrty/sqlstore.detached	github.com/kartaladev/scrty/internal/storekit.Detached
+merged	github.com/kartaladev/scrty/sqlstore.validSQLState	github.com/kartaladev/scrty/internal/storekit.ValidSQLState
+merged	github.com/kartaladev/scrty/pgx.detached	github.com/kartaladev/scrty/internal/storekit.Detached
+merged	github.com/kartaladev/scrty/pgx.isSQLState	github.com/kartaladev/scrty/internal/storekit.ValidSQLState
+merged	github.com/kartaladev/scrty/gorm.detached	github.com/kartaladev/scrty/internal/storekit.Detached
+merged	github.com/kartaladev/scrty/gorm.validSQLState	github.com/kartaladev/scrty/internal/storekit.ValidSQLState
+merged	github.com/kartaladev/scrty/sqlstore.column	github.com/kartaladev/scrty/internal/storekit.Column
+merged	github.com/kartaladev/scrty/sqlstore.userColumns	github.com/kartaladev/scrty/internal/storekit.UserColumns
+merged	github.com/kartaladev/scrty/sqlstore.updateUserQuery	github.com/kartaladev/scrty/internal/storekit.UpdateUserQuery
+merged	github.com/kartaladev/scrty/pgx.column	github.com/kartaladev/scrty/internal/storekit.Column
+merged	github.com/kartaladev/scrty/pgx.userColumns	github.com/kartaladev/scrty/internal/storekit.UserColumns
+merged	github.com/kartaladev/scrty/pgx.updateUserQuery	github.com/kartaladev/scrty/internal/storekit.UpdateUserQuery
 # Test and subtest names that changed, as go test -json reports them.
 test	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/the_redis_and_test_modules_may_require_the_client	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/the_redisstore_and_test_modules_may_require_the_client
 test	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/no_workspace_module_outside_redis_and_test_requires_the_client	github.com/kartaladev/scrty#TestRedisClientStaysInItsModules/no_workspace_module_outside_redisstore_and_test_requires_the_client

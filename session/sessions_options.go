@@ -37,7 +37,7 @@ const (
 	defaultHousekeepingInterval = time.Minute
 )
 
-// Option configures the Sessions. Every option names the default it
+// Option configures a [Sessions]. Every option names the default it
 // replaces, and every default works with no configuration at all.
 type Option func(*Sessions)
 

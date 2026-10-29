@@ -289,7 +289,7 @@ func (s *MemoryStore) Save(_ context.Context, sess *Session) error {
 // Load returns the session with this identifier. A live session past either
 // deadline is ErrExpired. A superseded one is returned until its
 // RetainUntil passes, whatever its own deadlines say and with them intact, so
-// the Sessions can tell a late presentation (reuse) from an expiry; one with no
+// a [Sessions] can tell a late presentation (reuse) from an expiry; one with no
 // RetainUntil is judged by its own deadlines.
 func (s *MemoryStore) Load(_ context.Context, id string) (*Session, error) {
 	s.mu.RLock()

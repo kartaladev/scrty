@@ -819,7 +819,7 @@ var identifierEncoding = base64.RawURLEncoding.Strict()
 // It says nothing about whether such a session exists. It is for a caller that
 // receives a presented identifier from outside, such as an HTTP bearer, and
 // wants to refuse a value that cannot be one before it costs a store lookup.
-// An identifier minted by a consumer's own store is not one the Sessions
+// An identifier minted by a consumer's own store is not one a [Sessions]
 // issues, and is reported invalid.
 func ValidIdentifier(v string) bool {
 	if len(v) != identifierEncoding.EncodedLen(identifierBytes) {

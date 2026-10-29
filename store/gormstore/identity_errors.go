@@ -3,21 +3,20 @@ package gormstore
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"regexp"
 
 	"github.com/kartaladev/scrty/internal/storekit"
 )
 
 // dbFailed wraps err, a failure of a database call the identity store made,
-// like failed, but first cuts it from the driver's error value (detached).
-// The identity store returns only this for a database failure: its tables
-// hold usernames and password hashes, which a driver error's detail fields
-// can carry, and gorm hands the driver's error back as it is. The
-// security-state stores keep the driver error in the chain; their rows hold
-// neither.
+// like failed, but first cuts it from the driver's error value
+// ([storekit.Detached]). The identity store returns only this for a database
+// failure: its tables hold usernames and password hashes, which a driver
+// error's detail fields can carry, and gorm hands the driver's error back as
+// it is. The security-state stores keep the driver error in the chain; their
+// rows hold neither.
 func dbFailed(op string, err error) error {
-	return failed(op, detached(err))
+	return failed(op, storekit.Detached(err, detachedKept))
 }
 
 // scanColumnErr matches the prefix database/sql's Rows.Scan gives a
@@ -53,40 +52,3 @@ func scanFailed(op string, err error) error {
 // detachedKept is the sentinels a detached error stays matchable against when
 // the driver's error matched them. None carries a value.
 var detachedKept = []error{context.Canceled, context.DeadlineExceeded, sql.ErrTxDone, sql.ErrConnDone}
-
-// detached is err with the driver's error value left out of its chain and
-// its text replaced with the library's own: "database failure", followed by
-// the SQLSTATE when err is or wraps an error reporting one through a
-// SQLState method. The driver's message is never kept, since a PostgreSQL
-// primary message can quote a value, and neither is any other text of err's
-// chain, gorm's own included. It stays matchable against the context and
-// database/sql sentinels err matched, so a caller still tells a cancellation
-// from a failure.
-func detached(err error) error {
-	text := "database failure"
-
-	var st storekit.SQLStater
-	if errors.As(err, &st) {
-		if code := st.SQLState(); validSQLState(code) {
-			text += " (SQLSTATE " + code + ")"
-		}
-	}
-
-	return storekit.DetachedText(err, text, detachedKept)
-}
-
-// validSQLState reports whether code has the shape of a SQLSTATE, five digits
-// or upper-case letters, so a driver reporting anything else through its
-// SQLState method adds no text of its own.
-func validSQLState(code string) bool {
-	if len(code) != 5 {
-		return false
-	}
-	for _, c := range []byte(code) {
-		if (c < '0' || c > '9') && (c < 'A' || c > 'Z') {
-			return false
-		}
-	}
-
-	return true
-}

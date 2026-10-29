@@ -3,6 +3,7 @@ package lockout_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1094,7 +1095,8 @@ func TestAccountLockoutPolicyRunsInPreAuthenticationOnly(t *testing.T) {
 
 // storeDeniedText is the whole reason text of a refusal for a store that could
 // not answer; the kind's text leads it.
-const storeDeniedText = "policy: denied by policy: the attempt store could not say how often this identifier has failed"
+var storeDeniedText = policy.ErrDenied.Error() +
+	": the attempt store could not say how often this identifier has failed"
 
 func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 	t.Parallel()
@@ -1136,6 +1138,8 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 				assert.ErrorIs(t, d.Reason, errAttemptStoreDown)
 				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
 				assert.EqualError(t, d.Reason, storeDeniedText)
+				assert.True(t, strings.HasPrefix(d.Reason.Error(), policy.ErrDenied.Error()+": "),
+					"the reason does not lead with the denied sentinel's text: %q", d.Reason)
 			},
 		},
 		{

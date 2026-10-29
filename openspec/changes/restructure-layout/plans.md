@@ -35,7 +35,7 @@
 - **`.claude/.legacy` is never read, cited or copied.** Exclude it from every search.
 - **Mocks** stay `<source>_mock_test.go`, produced by their `//go:generate` directive. Regenerate them; never edit them by hand.
 - **Table tests** follow `.claude/skills/table-test`: an `assert` closure, a `ctx` modifier for context-sensitive components, and `t.Context()`. Parallelism is never added: a case calls `t.Parallel()` only if its original function did.
-- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. The exception is a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores.
+- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. There are two exceptions: a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores, and the second PR review's reproduced defects, which the user folded into this change as group 9 (2026-10-29).
 - **Only the main session** edits `openspec/` files, including `evidence/`. Agents never edit them.
 
 ## Review Focus
@@ -73,8 +73,12 @@
 | R3 | 8.3 | `httpsec` godoc | Haiku: a godoc edit whose exact diff is given | Sonnet (combined R-review) |
 | R4 | 8.4 | `test/httpsecconformance`, README | Sonnet: gopls field renames plus their comments | Sonnet (combined R-review) |
 | main session | 8.5 | gate | main session | one Sonnet review of R1–R4 |
+| P5 | 9.1, then 9.2 | `internal/storekit`, `store/sqlstore`, `store/pgxstore`, `store/gormstore` | Opus: extracts security-relevant redaction code and the UPDATE allow-list while keeping behaviour | Opus |
+| R5 | 9.3, 9.4, 9.6 | `policy/lockout`, `httpsec/options.go` and `httpsec/options_test.go`, `session` godoc | Sonnet: each text and its test are given | Sonnet (combined R5/R6 review) |
+| R6 | 9.5 | `layout_test.go`, `layout_guard_test.go`, `testdata/layout/noalias*` | Sonnet: each guard's new shape and its red test are given | Sonnet (combined R5/R6 review) |
+| main session | 9.7 | gate | main session | the reviews above |
 
-The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
+The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
 ---
 
@@ -369,3 +373,95 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 1:** After R1–R4 report, run `make check` and `evidence/check.sh all` against the group-1 baseline, and `openspec validate restructure-layout --strict`. Expected: pass, 0 unaccounted, valid.
 - [ ] **Step 2:** One Sonnet reviewer reads the R1–R4 diff against D5, D8, D11 and D12 and the recorded red-step lines. Expected: a clean report.
 - [ ] **Step 3:** Commit (`fix: answer PR #27's review: exact refusal text, the policy denial prefix, doc links and fixture names`), push, and confirm CI green on the new head, including the Docker suites.
+
+### Task 25: Shared detached-error builder and SQLSTATE filter (task 9.1, P5)
+
+**Files:**
+- Modify: `internal/storekit/storekit.go`, `internal/storekit/storekit_test.go`
+- Modify: `store/sqlstore/identity_errors.go`, `store/pgxstore/identity_errors.go`, `store/gormstore/identity_errors.go` (remove `detached` and `validSQLState`/`isSQLState`; `dbFailed` calls `storekit.Detached`)
+- Not owned: `openspec/` (the main session adds the `merged` rows)
+
+**Interfaces:**
+- Consumes: `storekit.SQLStater`, `storekit.DetachedText(err error, text string, kept []error) error` (unchanged).
+- Produces: `storekit.ValidSQLState(code string) bool`; `storekit.Detached(err error, kept []error) error`, whose text is `"database failure"`, followed by `" (SQLSTATE " + code + ")"` when `errors.As(err, &SQLStater)` reports a code `ValidSQLState` accepts. Its godoc states everything the three backends' `detached` godoc promised: the driver's error value is out of the chain, no driver text is kept, and the result stays matchable against the kept sentinels err matched.
+
+- [ ] **Step 1: Stub.** Declare both functions in `storekit.go` returning `false` and `nil`, so the tests compile and fail on behaviour.
+- [ ] **Step 2: Write the failing tables** (`table-test` form):
+  - `TestValidSQLState`: `"23505"` and `"P0001"` → true; `"2350"`, `"235050"`, `"p0001"`, `"23 05"`, `""` → false.
+  - `TestDetached`: a SQLStater error reporting `"40001"` with text `"secret value"` → `EqualError(err, "database failure (SQLSTATE 40001)")`; one reporting `"bad!!"` → `EqualError(err, "database failure")`; a plain error → `"database failure"`; an error wrapping `context.Canceled`, with `kept = []error{context.Canceled}` → `ErrorIs(err, context.Canceled)` and `NotErrorIs(err, <the driver error>)`; a kept sentinel err does not match → `NotErrorIs`.
+- [ ] **Step 3: Run.** `go test -count=1 -run 'TestValidSQLState|TestDetached' ./internal/storekit/`. Expected: FAIL on the true cases and every `EqualError`. Record the lines.
+- [ ] **Step 4: Implement.** Move the body of `validSQLState` and of `detached` (its list now the `kept` parameter) into `storekit`. In each backend, delete both functions and write `dbFailed` as `failed(op, storekit.Detached(err, detachedKept))`. `detachedKept`, `scanFailed` and `failed` stay.
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./internal/storekit/` passes; `go test -count=1 ./...` passes in the core module, `store/pgxstore` and `store/gormstore`; `rg -n 'func (detached|validSQLState|isSQLState)\b' store/` finds nothing. Report the six removed declarations by package for the `merged` rows.
+
+### Task 26: Shared partial user UPDATE (task 9.2, P5, after Task 25)
+
+**Files:**
+- Modify: `internal/storekit/storekit.go`, `internal/storekit/storekit_test.go`
+- Modify: `store/sqlstore/identity.go` (~lines 750–797), `store/pgxstore/identity.go` (~lines 780–829): remove `userColumns`, `updateUserQuery`, and `column` if nothing else uses it; the callers (`sqlstore/identity.go:384`, `pgxstore/identity.go:395`) call `storekit`.
+- Not touched: `store/gormstore/identity.go` (`userColumns` builds a `map[string]any` for gorm; D5).
+
+**Interfaces:**
+- Produces:
+  - `type Column struct { Name string; Value any }`
+  - `func UserColumns(u *identity.UserChange, org any, ts func(time.Time) any) []Column`: in this order, `name` (`u.Name`), `password` (`OrEmpty(u.Password)`), `organization_id` (`org`), `password_changed_at` (`ts(u.PasswordChangedAt)`), each only when `u.IsSet` names its field. The godoc keeps the allow-list wording of the backends' `userColumns`.
+  - `func UpdateUserQuery(set []Column, now time.Time, userID any) (string, []any)`
+- The callers pass `nullTs` (wrapped as `func(t time.Time) any { return nullTs(t) }` in `pgxstore`), and `pgxstore` passes `uuidArg(userID)` as `userID`.
+
+- [ ] **Step 1: Stub** both functions returning zero values.
+- [ ] **Step 2: Write the failing tables.**
+  - `TestUpdateUserQuery`: no column → `"UPDATE users SET updated_at = $1 WHERE id = $2"`, args `[now, id]`; `name` alone → `"UPDATE users SET name = $1, updated_at = $2 WHERE id = $3"`, args `["Ada", now, id]`; all four columns → `$1`…`$4`, `updated_at = $5`, `WHERE id = $6`.
+  - `TestUserColumns`: nothing set → empty; each field set alone → its one column; every field set → the four names in the order above; `FieldEmail` set → no column; `ts` is called only for `password_changed_at` (a `ts` that returns a marker value appears there and nowhere else).
+- [ ] **Step 3: Run.** `go test -count=1 -run 'TestUpdateUserQuery|TestUserColumns' ./internal/storekit/`. Expected: FAIL on every case but the empty one. Record the lines.
+- [ ] **Step 4: Implement.** Move the bodies, and switch both callers.
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./internal/storekit/` passes; `go test -count=1 ./...` passes in the core module and `store/pgxstore`; `GOWORK=off go build ./...` in `store/pgxstore`. The test module's store-conformance Update cases run in CI at Task 31. Report the removed declarations for the `merged` rows.
+
+### Task 27: `storeDenied`'s prefix from the sentinel (task 9.3, R5)
+
+**Files:** Modify `policy/lockout/lockout.go` (`storeDenied`) and `policy/lockout/lockout_test.go` (`storeDeniedText`, `TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer`).
+
+- [ ] **Step 1: Write the failing case.** Add to `TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer` a case whose store's `FailureCount` returns `errAttemptStoreDown`, asserting `assert.True(t, strings.HasPrefix(d.Reason.Error(), policy.ErrDenied.Error()+": "))`. If its setup cannot share the table's shape, make it the standalone `TestStoreDeniedLeadsWithTheDeniedSentinelText`, with the one-line comment `table-test` asks for.
+- [ ] **Step 2: Red.** Temporarily change `ErrDenied` in `policy/policy.go:34` to `errors.New("policy: denied")`. Run `go test -count=1 -run 'TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer|TestStoreDeniedLeadsWithTheDeniedSentinelText' ./policy/lockout/`. Expected: FAIL, the reason still reading `"policy: denied by policy: …"`. Record the line.
+- [ ] **Step 3: Implement.** `storeDenied`'s text becomes `policy.ErrDenied.Error() + ": the attempt store could not say how often this identifier has failed"`, and `storeDeniedText` becomes the same expression. Run Step 2's command again with `ErrDenied` still changed. Expected: PASS.
+- [ ] **Step 4: Restore and verify.** Edit `ErrDenied` back. `git diff policy/policy.go` is empty, and `go test -count=1 -race ./policy/...` passes.
+
+### Task 28: `httpsec` names `lockout.Policy.Attempts` (task 9.4, R5)
+
+**Files:** Modify `httpsec/options.go:1103-1104` and `httpsec/options_test.go` (`TestLockoutCapWiring`).
+
+- [ ] **Step 1: Write the failing assertion.** In `TestLockoutCapWiring`, the cases that use `refusedNaming` for a login given a store other than the capped policy's view gain `assert.EqualError(t, err, <the whole text>)`. Take the whole text from the current failure output, with `(Attempts() for an account-lockout policy)` replaced by `(lockout.Policy.Attempts for an account-lockout policy)`.
+- [ ] **Step 2: Run.** `go test -count=1 -run TestLockoutCapWiring ./httpsec/`. Expected: FAIL, the actual text holding `Attempts()`. Record the line.
+- [ ] **Step 3: Implement.** Change the message text to `"give it that policy's view (lockout.Policy.Attempts for an account-lockout policy)"`.
+- [ ] **Step 4: Verify.** `go test -count=1 -race ./httpsec/...` passes.
+
+### Task 29: The `session` godoc reads as English (task 9.6, R5)
+
+**Files:** Modify the comments in `session/reuse.go` (lines 16–17, 34) and every other hit of `rg -n 'the Sessions' session/` that does not read as English (on 2026-10-29 also `store.go:128`, `store.go:250`, `store_memory.go:292`, `sessions.go:822`, `sessions_options.go:40`). Comments only.
+
+- [ ] **Step 1:** Rewrite each such sentence so its subject is the method that acts, as a doc link (`ErrReused is what [Sessions.Load] returns …`, after checking in `sessions.go` which methods return it), or "a [Sessions]" where no one method acts. A sentence that already reads as English ("Option configures the Sessions") may stay. No other wording changes, and no history wording.
+- [ ] **Step 2: Verify.** `go doc ./session ErrReused` and `go doc ./session ErrRenewalRequired` read correctly; `gofmt -l session` prints nothing; `go vet ./session` is clean.
+
+### Task 30: Layout guards (task 9.5, R6)
+
+**Files:**
+- Modify: `layout_test.go` (`TestBackendDoesNotShadowDriver`, `TestModulesDeclareGoMinimum`), `layout_guard_test.go` (`workspaceModules` at ~line 479, `belowGoMinimum` at ~line 657)
+- Delete: `testdata/layout/noaliaspgx/`, `testdata/layout/noaliasgorm/`, `testdata/layout/noaliasredis/` (`git rm -r`)
+- Root `go.mod` and `go.sum`: unchanged.
+
+**Interfaces:**
+- Consumes: `goCmd(t, dir, env, args...) string` (`layout_guard_test.go:258`), `packageClause(t, dir) string`, `goDirective(t, dir) string`.
+- Produces: `offGoMinimum(t *testing.T, root string) map[string]string`, mapping each module directory whose `go` directive's `version.Lang` is not `go1.27` to the version it declares. `workspaceModules` keeps its signature.
+
+- [ ] **Step 1: Write the failing test for `workspaceModules`.** `TestWorkspaceModulesReadsSingleLineUse`: a `t.TempDir()` holding `go.work` (`go 1.27`, `use ./a`, `use ( ./b )`) and a one-line `go.mod` in `a` and `b`; assert `assert.ElementsMatch(t, []string{"a", "b"}, workspaceModules(t, root))`.
+- [ ] **Step 2: Run.** `go test -count=1 -run TestWorkspaceModulesReadsSingleLineUse .` Expected: FAIL, `"a"` missing. Record the line.
+- [ ] **Step 3: Implement.** `workspaceModules` runs `go work edit -json <root>/go.work` and returns `filepath.Clean(u.DiskPath)` for each `Use` entry of the decoded `struct{ Use []struct{ DiskPath string } }`. Run Step 2's command, then `go test -count=1 -run 'TestGoWorkListsEveryModule|TestIntegrationModulesUnderTheirConcept|TestNoUnlistedIntegrationModule' .` Expected: PASS.
+- [ ] **Step 4: Rewrite `TestBackendDoesNotShadowDriver`** as a table over `{backend dir, driver path}`: `store/pgxstore` with `github.com/jackc/pgx/v5`, `store/gormstore` with `gorm.io/gorm`, `ratelimit/redisstore` with `github.com/redis/go-redis/v9`. Each case asserts `assert.NotEqual(t, strings.TrimSpace(goCmd(t, dir, nil, "list", "-f", "{{.Name}}", driver)), packageClause(t, dir))`. The godoc says the names differ exactly when a file can import both without an alias. Delete the three fixture directories.
+- [ ] **Step 5: Red for Step 4.** Change one case's assertion to `assert.Equal`, run `go test -count=1 -run TestBackendDoesNotShadowDriver .`, and see it FAIL naming `pgx` and `pgxstore` (or the row inverted); edit it back. Record the line.
+- [ ] **Step 6: Rename.** `belowGoMinimum` becomes `offGoMinimum` with the signature above, and `TestModulesDeclareGoMinimum`'s cases assert `assert.Empty(t, off, "modules declaring another go version: %v", off)` and the matching control expectation. Run `go test -count=1 -run TestModulesDeclareGoMinimum .` Expected: PASS.
+- [ ] **Step 7: Verify.** `go test -count=1 -run 'TestBackendDoesNotShadowDriver|TestWorkspaceModules|TestGoWorkListsEveryModule|TestIntegrationModulesUnderTheirConcept|TestNoUnlistedIntegrationModule|TestModulesDeclareGoMinimum' .` passes; `git diff --exit-code go.mod go.sum`. In a disposable export (`git archive HEAD` plus the working changes, outside the project), `GOFLAGS=-mod=mod go get golang.org/x/crypto@v0.58.0` at the root, then run the same layout tests. Expected: no failure.
+
+### Task 31: Group-9 gate (task 9.7, main session)
+
+- [ ] **Step 1:** Add the `merged` rows that Tasks 25 and 26 report to `evidence/rename-map.tsv`, each mapped to its `storekit` successor.
+- [ ] **Step 2:** `make check`, `evidence/check.sh all` against the group-1 baseline, and `openspec validate restructure-layout --strict`. Expected: pass, 0 unaccounted, valid.
+- [ ] **Step 3:** An Opus reviewer reads the P5 diff against D5 (and `txKey` still declared in each backend). A Sonnet reviewer reads the R5 and R6 diffs against D2, D8 and D11, with the recorded red-step lines. Expected: clean reports.
+- [ ] **Step 4:** Commit (`fix: answer PR #27's second review: shared SQLSTATE and UPDATE helpers, layout guards and message texts`), push, and confirm CI green on the new head, including the Docker suites.

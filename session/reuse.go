@@ -13,9 +13,9 @@ import (
 	"github.com/kartaladev/scrty/pkg/id"
 )
 
-// ErrReused is what the Sessions returns when a superseded session is
-// presented at or after the end of its grace window. By then the Sessions has
-// revoked the session's whole family: whoever presents a credential that was
+// ErrReused is what [Sessions.Load] returns when a superseded session is
+// presented at or after the end of its grace window. By then the session's
+// whole family has been revoked: whoever presents a credential that was
 // already replaced is either a client that kept using it too long or someone
 // who stole it, and the two cannot be told apart.
 //
@@ -31,7 +31,7 @@ import (
 // audit statement does not abort the transaction the revocation is in.
 var ErrReused = fmt.Errorf("session: a superseded session was presented after its window: %w", ErrExpired)
 
-// ErrRenewalRequired is what the Sessions returns, with
+// ErrRenewalRequired is what [Sessions.Load] returns, with
 // WithUnusedSuccessorRecovery on, when an ordinary request presents a
 // superseded session after its grace window. Nothing is revoked: the client
 // may only have lost a renewal response, and it must renew (see

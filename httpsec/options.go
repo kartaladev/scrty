@@ -1101,7 +1101,7 @@ func (c *config) checkAttemptViews() error {
 			}
 
 			return newConfigError("%s records failures into a store other than the view the %q policy requires: "+
-				"give it that policy's view (Attempts() for an account-lockout policy)", field, r.Policy)
+				"give it that policy's view (lockout.Policy.Attempts for an account-lockout policy)", field, r.Policy)
 		}
 
 		return nil
