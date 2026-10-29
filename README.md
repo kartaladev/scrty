@@ -43,12 +43,12 @@ registry, err := oidc.NewRegistry(oidc.Provider{
 })
 
 broker, err := oidc.NewBroker(oidc.NewMemoryLinkStore(), users)
-manager, err := oidc.NewRelyingParty(registry, broker)
+relyingParty, err := oidc.NewRelyingParty(registry, broker)
 handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), users)
 
 chain, err := httpsec.New(
 	// ... your other chain options ...
-	httpsec.EnableOIDCLogin(manager, handoffs,
+	httpsec.EnableOIDCLogin(relyingParty, handoffs,
 		httpsec.WithOIDCTokens(tokens),
 		httpsec.WithOIDCSessions(sessions),
 	),
@@ -122,7 +122,7 @@ because on their own they do not show that a second factor was used. Replace the
 provider, as a whole, with `oidc.WithProviderAssurance`:
 
 ```go
-manager, err := oidc.NewRelyingParty(registry, broker,
+relyingParty, err := oidc.NewRelyingParty(registry, broker,
 	oidc.WithProviderAssurance("corp", oidc.Assurance{
 		AcceptedAMR: []string{"mfa", "hwk"},
 		AcceptedACR: []string{"gold"},
@@ -162,7 +162,7 @@ func (e adminsNeedAHardwareKey) MeetsAssurance(_ context.Context, in oidc.Assura
 
 evaluator := adminsNeedAHardwareKey{admins: []identity.UserID{"root"}}
 
-manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
+relyingParty, err := oidc.NewRelyingParty(registry, broker, oidc.WithAssuranceEvaluator(evaluator))
 ```
 
 **What happens when assurance is not met.** The requirement policy has three modes for a required
@@ -182,12 +182,12 @@ A provider that does not enforce a second factor then lets required users in wit
 requirement policy only; `policy.WithMFAFederatedChallengeWhenUnmet(true)` on the second-factor
 challenge policy separately challenges an enrolled user's unmet OIDC login, required or not.
 
-**Wire the source into the requirement policy.** Policy matches nothing itself: the OIDC manager
+**Wire the source into the requirement policy.** Policy matches nothing itself: the OIDC relying party
 is the `policy.FederatedAssuranceSource`. Give it to the policies you build, then put them in the
 chain's engine:
 
 ```go
-source := policy.WithFederatedAssuranceSource(manager)
+source := policy.WithFederatedAssuranceSource(relyingParty)
 
 requirement, err := policy.NewMFARequirement(nil, lookups,
 	policy.WithMFARequiredForAll(),
@@ -197,7 +197,7 @@ requirement, err := policy.NewMFARequirement(nil, lookups,
 ```
 
 `httpsec.New` refuses to assemble a chain with OIDC login enabled and a requirement policy in
-Challenge or Refuse mode that has no source. Fix it with `WithFederatedAssuranceSource(manager)`,
+Challenge or Refuse mode that has no source. Fix it with `WithFederatedAssuranceSource(relyingParty)`,
 with Exempt mode, or with a `WithMFAExemption` rule that exempts `oidc`. Wire `httpsec.EnableMFA`
 on the same chain, since the policies can raise a challenge.
 

@@ -557,7 +557,7 @@ func storeDenied(err error) policy.Decision {
 	return policy.Decision{
 		Outcome: policy.Deny,
 		Reason: diag.Wrap(err,
-			"lockout: denied by policy: the attempt store could not say how often this identifier has failed",
+			"policy: denied by policy: the attempt store could not say how often this identifier has failed",
 			policy.ErrDenied),
 	}
 }

@@ -39,11 +39,11 @@ type FormLoginDeps struct {
 
 	// Attempts is where a failed login is recorded and a successful one clears
 	// what came before. Supply the account-lockout policy's own view,
-	// lockout.Attempts(): it records into the store the policy reads, and it
-	// is what reports lockout transitions to an observer the policy was given.
-	// A bare store the policy also reads locks just the same, but nothing
-	// recorded through it is reported. A failure recorded in one store and
-	// counted in another locks nothing.
+	// [github.com/kartaladev/scrty/policy/lockout.Policy.Attempts]: it records
+	// into the store the policy reads, and it is what reports lockout transitions
+	// to an observer the policy was given. A bare store the policy also reads
+	// locks just the same, but nothing recorded through it is reported. A failure
+	// recorded in one store and counted in another locks nothing.
 	//
 	// When the policy has a consecutive-failure cap (lockout.WithCap),
 	// its view is required: only the view advances the consecutive count, so

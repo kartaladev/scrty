@@ -249,13 +249,13 @@ type BasicAuthDeps struct {
 	Authenticator authenticate.Authenticator
 
 	// Attempts is where a refused credential is recorded. Supply the
-	// account-lockout policy's own view, lockout.Attempts(): it records into
-	// the store the policy reads, and it is what reports lockout transitions
+	// account-lockout policy's own view, [lockout.Policy.Attempts]: it records
+	// into the store the policy reads, and it is what reports lockout transitions
 	// to an observer the policy was given. A bare store the policy also reads
-	// locks just the same, but nothing recorded through it is reported. A
-	// password guessed at over Basic counts towards the same lockout as one
-	// guessed at over the login form. A successful authentication clears the
-	// username's failures through it, as form login does.
+	// locks just the same, but nothing recorded through it is reported. A password
+	// guessed at over Basic counts towards the same lockout as one guessed at over
+	// the login form. A successful authentication clears the username's failures
+	// through it, as form login does.
 	//
 	// When the policy has a consecutive-failure cap (lockout.WithCap),
 	// its view is required: only the view advances the consecutive count, so

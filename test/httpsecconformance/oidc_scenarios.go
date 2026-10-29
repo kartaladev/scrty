@@ -46,15 +46,15 @@ const (
 //
 // Build drives every step that happens away from the application — the
 // browser at the provider, the provider's own callback — directly against the
-// manager and the test provider, so the one request an adapter serves is the
-// step the scenario is about, and the three frameworks are judged on that
+// relying party and the test provider, so the one request an adapter serves is
+// the step the scenario is about, and the three frameworks are judged on that
 // step alone.
 type OIDCFixture struct {
-	// IDP is the in-process provider, Manager and Handoffs the managers the
-	// chain was given.
-	IDP      *oidctest.IdentityProvider
-	Manager  *oidc.RelyingParty
-	Handoffs *oidc.Handoff
+	// IDP is the in-process provider, RelyingParty and Handoffs the relying party
+	// and handoff store the chain was given.
+	IDP          *oidctest.IdentityProvider
+	RelyingParty *oidc.RelyingParty
+	Handoffs     *oidc.Handoff
 
 	// FlowHandle is the flow cookie's value for a login Build started, and
 	// CallbackPath the genuine callback, path and query, the provider sent the
@@ -70,7 +70,8 @@ type OIDCFixture struct {
 }
 
 // newOIDCFixture wires a provider, a link from OIDCSubject to UserID, and the
-// managers a chain's EnableOIDCLogin is given, and records them on e.
+// relying party and handoff store a chain's EnableOIDCLogin is given, and
+// records them on e.
 func newOIDCFixture(t *testing.T, e *Effects) *OIDCFixture {
 	t.Helper()
 
@@ -91,24 +92,23 @@ func newOIDCFixture(t *testing.T, e *Effects) *OIDCFixture {
 	registry, err := oidc.NewRegistry(idp.Provider(OIDCProvider, oidc.ClientSecretPost))
 	require.NoError(t, err)
 
-	manager, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(idp.Outbound(t)))
+	relyingParty, err := oidc.NewRelyingParty(registry, broker, oidc.WithOutboundClient(idp.Outbound(t)))
 	require.NoError(t, err)
 
 	handoffs, err := oidc.NewHandoff(oidc.NewMemoryHandoffStore(), fixtureUsers{})
 	require.NoError(t, err)
 
-	fx := &OIDCFixture{IDP: idp, Manager: manager, Handoffs: handoffs}
+	fx := &OIDCFixture{IDP: idp, RelyingParty: relyingParty, Handoffs: handoffs}
 	e.OIDC = fx
 
 	return fx
 }
 
 // oidcOptions is the federated-login wiring every OIDC scenario shares: the
-// chain's own defaults, with the fixture's token generator and session
-// manager.
+// chain's own defaults, with the fixture's token generator and sessions.
 func oidcOptions(e *Effects) []httpsec.Option {
 	return []httpsec.Option{
-		httpsec.EnableOIDCLogin(e.OIDC.Manager, e.OIDC.Handoffs,
+		httpsec.EnableOIDCLogin(e.OIDC.RelyingParty, e.OIDC.Handoffs,
 			httpsec.WithOIDCTokens(fixtureTokens{}),
 			httpsec.WithOIDCSessions(e.Sessions)),
 	}
@@ -133,14 +133,14 @@ func oidcBuild(prepare func(t *testing.T, e *Effects)) func(t *testing.T) ChainS
 	}
 }
 
-// beginLogin starts a login at the manager and plays the user at the
+// beginLogin starts a login at the relying party and plays the user at the
 // provider, leaving the flow cookie and the genuine callback on the fixture.
 func beginLogin(t *testing.T, e *Effects) {
 	t.Helper()
 
 	fx := e.OIDC
 
-	auth, err := fx.Manager.Authorize(t.Context(), OIDCProvider, "")
+	auth, err := fx.RelyingParty.Authorize(t.Context(), OIDCProvider, "")
 	require.NoError(t, err)
 
 	fx.FlowHandle = auth.Handle
@@ -158,7 +158,7 @@ func completeLogin(t *testing.T, e *Effects) {
 
 	q := callbackQuery(t, fx.CallbackPath)
 
-	res, err := fx.Manager.Callback(t.Context(), OIDCProvider, q.Get("code"), q.Get("state"), fx.FlowHandle)
+	res, err := fx.RelyingParty.Callback(t.Context(), OIDCProvider, q.Get("code"), q.Get("state"), fx.FlowHandle)
 	require.NoError(t, err)
 
 	fx.HandoffCode, err = fx.Handoffs.Issue(t.Context(), res)
@@ -342,7 +342,7 @@ func oidcForgedCallbackIsRefused() Scenario {
 
 			fx := res.Effects.OIDC
 			q := callbackQuery(t, fx.CallbackPath)
-			_, err := fx.Manager.Callback(t.Context(), OIDCProvider, q.Get("code"), q.Get("state"), fx.FlowHandle)
+			_, err := fx.RelyingParty.Callback(t.Context(), OIDCProvider, q.Get("code"), q.Get("state"), fx.FlowHandle)
 			assert.NoError(t, err, "the refused callback left the browser's flow completable")
 		},
 	}

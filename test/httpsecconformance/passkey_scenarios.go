@@ -55,8 +55,8 @@ type PasskeyFixture struct {
 	// stores sit beside.
 	Base *RecoveryFixture
 
-	// Manager runs the ceremonies the chain's endpoints serve.
-	Manager *passkey.Passkeys
+	// Passkeys runs the ceremonies the chain's endpoints serve.
+	Passkeys *passkey.Passkeys
 
 	// Credentials is the durable passkey store, read back by a scenario to
 	// assert what a ceremony left.
@@ -79,7 +79,7 @@ type passkeyBuild struct {
 	enrolTOTP bool
 }
 
-// newPasskeyFixture wires the durable stores and the manager.
+// newPasskeyFixture wires the durable stores and the passkey ceremonies.
 func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.Sessions) {
 	t.Helper()
 
@@ -138,7 +138,7 @@ func newPasskeyFixture(t *testing.T, b passkeyBuild) (*PasskeyFixture, *session.
 		opts = append(opts, passkey.WithOptionalRecoveryCodes())
 	}
 
-	pf.Manager, err = passkey.New(deps, opts...)
+	pf.Passkeys, err = passkey.New(deps, opts...)
 	require.NoError(t, err)
 
 	return pf, sessions
@@ -161,10 +161,10 @@ func (pf *PasskeyFixture) totpCode(t *testing.T) string {
 // when the user enrolled one, and always the passkey.
 func (pf *PasskeyFixture) methods(withTOTP bool) []mfa.Method {
 	if withTOTP {
-		return []mfa.Method{pf.Base.TOTP, pf.Manager.MFAMethod()}
+		return []mfa.Method{pf.Base.TOTP, pf.Passkeys.MFAMethod()}
 	}
 
-	return []mfa.Method{pf.Manager.MFAMethod()}
+	return []mfa.Method{pf.Passkeys.MFAMethod()}
 }
 
 // passkeyOptions is the chain every passkey scenario shares, in the order a
@@ -197,7 +197,7 @@ func (pf *PasskeyFixture) options(
 			httpsec.WithMFATokens(fixtureTokens{}),
 			httpsec.WithMFAChallengeStore(pf.Base.OneTime)),
 		httpsec.EnablePasskeys(
-			httpsec.PasskeyDeps{Passkeys: pf.Manager, Sessions: sessions, Users: fixtureUsers{}},
+			httpsec.PasskeyDeps{Passkeys: pf.Passkeys, Sessions: sessions, Users: fixtureUsers{}},
 			httpsec.WithPasskeyPasswordlessLogin()),
 	)
 }
@@ -864,7 +864,7 @@ func passkeyRecoveryThenRegistrationReachesFullSession() Scenario {
 			coreOpts := []recovery.Option{
 				recovery.WithProofs(recovery.ProofSaved, recovery.ProofIssued),
 				recovery.WithRepudiationContact(recoveryRepudiationContact),
-				recovery.WithAuthenticatorKinds(pf.Manager.RecoveryKind()),
+				recovery.WithAuthenticatorKinds(pf.Passkeys.RecoveryKind()),
 				recovery.WithMessages(conformanceRecoveryMessages{}),
 				recovery.WithClock(pf.Base.Clock),
 				recovery.WithIssuedCodeStore(pf.Base.OneTime),
@@ -977,7 +977,7 @@ func passkeyEnrolmentOnlyUserRegistersWithEmailedCode() Scenario {
 						httpsec.WithMFATokens(fixtureTokens{}),
 						httpsec.WithMFAChallengeStore(pf.Base.OneTime)),
 					httpsec.EnableMFAEnrolment(httpsec.EnrolmentDeps{Users: fixtureUsers{}, Sender: pf.Base.Outbox}),
-					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pf.Manager, Sessions: sessions}),
+					httpsec.EnablePasskeys(httpsec.PasskeyDeps{Passkeys: pf.Passkeys, Sessions: sessions}),
 				),
 				Effects: effects,
 				Routes:  passkeyRoutes(),

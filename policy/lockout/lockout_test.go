@@ -1092,6 +1092,10 @@ func TestAccountLockoutPolicyRunsInPreAuthenticationOnly(t *testing.T) {
 	}
 }
 
+// storeDeniedText is the whole reason text of a refusal for a store that could
+// not answer; the kind's text leads it.
+const storeDeniedText = "policy: denied by policy: the attempt store could not say how often this identifier has failed"
+
 func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 	t.Parallel()
 
@@ -1114,6 +1118,8 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 				assert.Equal(t, policy.Deny, d.Outcome,
 					"a broken attempt store let the request through, so breaking the store disables lockout")
 				assert.ErrorIs(t, d.Reason, errAttemptStoreDown, "the cause was collapsed")
+				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
+				assert.EqualError(t, d.Reason, storeDeniedText)
 				assert.NotErrorIs(t, d.Reason, lockout.ErrAccountLocked,
 					"an outage was reported to the caller as a locked account")
 			},
@@ -1127,6 +1133,9 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 			},
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Deny, d.Outcome)
+				assert.ErrorIs(t, d.Reason, errAttemptStoreDown)
+				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
+				assert.EqualError(t, d.Reason, storeDeniedText)
 			},
 		},
 		{
@@ -1147,6 +1156,8 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 			assert: func(t *testing.T, d policy.Decision) {
 				assert.Equal(t, policy.Deny, d.Outcome)
 				assert.ErrorIs(t, d.Reason, context.Canceled)
+				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
+				assert.EqualError(t, d.Reason, storeDeniedText)
 			},
 		},
 		{
@@ -1206,6 +1217,7 @@ func TestAccountLockoutPolicyDeniesWhenTheStoreCannotAnswer(t *testing.T) {
 					"a store that failed on the wait query let the request through")
 				assert.ErrorIs(t, d.Reason, errAttemptStoreDown, "the cause was collapsed")
 				assert.ErrorIs(t, d.Reason, policy.ErrDenied)
+				assert.EqualError(t, d.Reason, storeDeniedText)
 				assert.NotErrorIs(t, d.Reason, lockout.ErrAccountLocked,
 					"an outage was reported to the caller as a locked account")
 			},

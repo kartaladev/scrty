@@ -1049,12 +1049,13 @@ func WithClock(c clock.Clock) Option {
 //
 // A lockout policy with a cap (lockout.WithCap) advances an identifier's
 // consecutive count only when a failure is recorded through its own view,
-// lockout.Attempts(). Form login or Basic handed the bare store would still
-// lock by the window, but would never bring anyone closer to a hold: the
-// configuration would read as a cap and enforce none. Nothing would show it,
-// so it is refused here rather than documented, and there is no option to
-// switch it off. A chain with no password login, or whose logins share the
-// view, builds as before, and so does any store under a policy without a cap.
+// [github.com/kartaladev/scrty/policy/lockout.Policy.Attempts]. Form login or
+// Basic handed the bare store would still lock by the window, but would never
+// bring anyone closer to a hold: the configuration would read as a cap and
+// enforce none. Nothing would show it, so it is refused here rather than
+// documented, and there is no option to switch it off. A chain with no
+// password login, or whose logins share the view, builds as before, and so
+// does any store under a policy without a cap.
 //
 // A login records into one store, so when two registered policies require
 // different views and a password login is enabled, construction fails naming

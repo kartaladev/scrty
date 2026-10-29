@@ -579,9 +579,8 @@ func TestCheckUser(t *testing.T) {
 			username: "bob\x00x",
 			change:   &identity.UserChange{Name: "Alice"},
 			assert: func(t *testing.T, err error) {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "username")
-				assert.NotContains(t, err.Error(), "bob")
+				require.EqualError(t, err,
+					"the username holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
 			},
 		},
 		{
@@ -589,8 +588,8 @@ func TestCheckUser(t *testing.T) {
 			username: "alice",
 			change:   &identity.UserChange{Name: "\xff"},
 			assert: func(t *testing.T, err error) {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "name")
+				require.EqualError(t, err,
+					"the name holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
 			},
 		},
 		{
@@ -598,9 +597,8 @@ func TestCheckUser(t *testing.T) {
 			username: "alice",
 			change:   &identity.UserChange{Name: "Alice", Roles: []string{"admin", "ed\x00itor"}},
 			assert: func(t *testing.T, err error) {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "role")
-				assert.NotContains(t, err.Error(), "editor")
+				require.EqualError(t, err,
+					"the role holds a NUL byte or invalid UTF-8, which PostgreSQL text cannot store")
 			},
 		},
 	}
