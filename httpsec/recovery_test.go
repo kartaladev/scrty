@@ -386,7 +386,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			name: "a consumer hold responder that sets no header still answers with no-store",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
 				h.coreOpts = append(h.coreOpts,
-					recovery.WithDelay(time.Hour), recovery.WithCancelLink("https://app.example.com/cancel"))
+					recovery.WithHoldDelay(time.Hour), recovery.WithCancelLink("https://app.example.com/cancel"))
 				h.recOpts = []httpsec.RecoveryOption{httpsec.WithRecoveryHoldResponder(
 					func(ex *httpsec.Exchange, _ recovery.Hold) error {
 						ex.Writer.WriteHeader(http.StatusAccepted)
@@ -854,7 +854,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			name: "a held recovery is answered by the default hold responder",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
 				h.coreOpts = append(h.coreOpts,
-					recovery.WithDelay(time.Hour), recovery.WithCancelLink("https://app.example.com/cancel"))
+					recovery.WithHoldDelay(time.Hour), recovery.WithCancelLink("https://app.example.com/cancel"))
 			},
 			act: func(t *testing.T, h *recoveryHarness) served {
 				return h.complete(t, recoveryForm(
@@ -881,7 +881,7 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 			name: "a consumer hold responder replaces the default",
 			arrange: func(_ *testing.T, h *recoveryHarness) {
 				h.coreOpts = append(h.coreOpts,
-					recovery.WithDelay(time.Hour), recovery.WithCancelLink("https://app.example.com/cancel"))
+					recovery.WithHoldDelay(time.Hour), recovery.WithCancelLink("https://app.example.com/cancel"))
 				h.recOpts = []httpsec.RecoveryOption{httpsec.WithRecoveryHoldResponder(
 					func(ex *httpsec.Exchange, hold recovery.Hold) error {
 						if hold.CompletionToken == "" {
@@ -1881,7 +1881,7 @@ type heldRecovery struct {
 // withHold configures the fixed delay and the cancel link a hold needs.
 func (h *recoveryHarness) withHold() {
 	h.coreOpts = append(h.coreOpts,
-		recovery.WithDelay(recoveryHoldDelay), recovery.WithCancelLink("https://app.example.com/cancel"))
+		recovery.WithHoldDelay(recoveryHoldDelay), recovery.WithCancelLink("https://app.example.com/cancel"))
 }
 
 // hold completes a recovery that the configured delay holds, and returns what
@@ -1944,7 +1944,7 @@ func (h *recoveryHarness) passwordLogin(t *testing.T) served {
 func (h *recoveryHarness) withMagicLink(t *testing.T) {
 	t.Helper()
 
-	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTokenTTL(magicLinkTTL))
 	require.NoError(t, err)
 
 	links, err := magiclink.New(onetimes, h.users, h.sender, "https://app.example.com")
@@ -2766,7 +2766,7 @@ func TestRecoveryHold_OIDCLogin(t *testing.T) {
 						recovery.WithRepudiationContact("Write to security@example.com if this was not you."),
 						recovery.WithAuthenticatorKinds(kind),
 						recovery.WithMessages(recoveryMessages{}),
-						recovery.WithDelay(recoveryHoldDelay),
+						recovery.WithHoldDelay(recoveryHoldDelay),
 						recovery.WithCancelLink("https://app.example.com/cancel"),
 					)),
 			)

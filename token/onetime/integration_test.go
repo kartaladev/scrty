@@ -22,7 +22,7 @@ func TestManagerAndStoreShareAConsumerClock(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(start)
 	store := onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))
 	m, err := onetime.New("magic-link",
-		onetime.WithStore(store), onetime.WithClock(clk), onetime.WithTTL(5*time.Minute))
+		onetime.WithStore(store), onetime.WithClock(clk), onetime.WithTokenTTL(5*time.Minute))
 	require.NoError(t, err)
 
 	presented, tok, err := m.Issue(t.Context(), "ada@example.com")

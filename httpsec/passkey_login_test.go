@@ -1032,7 +1032,7 @@ func TestPasswordless(t *testing.T) {
 			setup: func(t *testing.T, d *pwlDeployment) {
 				d.required.on.Store(false)
 
-				onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
+				onetimes, err := onetime.New("magic-link", onetime.WithTokenTTL(magicLinkTTL))
 				require.NoError(t, err)
 
 				links, err := magiclink.New(onetimes, d.users, d.notices, "https://app.example.com")

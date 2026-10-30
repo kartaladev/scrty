@@ -31,7 +31,7 @@ var ErrReapUnsupported = errors.New("lockout: attempt store cannot purge attempt
 var ErrRetainSinceRequired = errors.New("lockout: a retain-since cutoff is required")
 
 // ErrAttemptStoreFull is returned by MemoryAttemptStore when it already holds
-// as many identifiers as its capacity allows, a sweep has released none, and
+// as many identifiers as its maximum number of identifiers allows, a sweep has released none, and
 // it is asked to record a failure for an identifier it does not hold, or to
 // count the failures of one.
 //
@@ -41,7 +41,7 @@ var ErrRetainSinceRequired = errors.New("lockout: a retain-since cutoff is requi
 var ErrAttemptStoreFull = errors.New("lockout: the attempt store is full")
 
 // ErrAccountHeld matches the refusal of an identifier held by the
-// consecutive-failure cap, alongside ErrAccountLocked.
+// failure-streak limit, alongside ErrAccountLocked.
 //
 // A hold has no wait: it lasts until the identifier's failures are cleared,
 // by a password change through the chain or by the policy's Reset.
@@ -86,16 +86,16 @@ type FailureStreak struct {
 	Newest time.Time
 
 	// HeldAt is the instant of the failure that brought the streak to the
-	// cap, and is zero while the streak is not held.
+	// streak limit, and is zero while the streak is not held.
 	HeldAt time.Time
 }
 
-// Held reports whether the streak has reached a cap and is held.
+// Held reports whether the streak has reached a failure-streak limit and is held.
 func (s FailureStreak) Held() bool { return !s.HeldAt.IsZero() }
 
 // FailureStreakStore is the optional half of policy.AttemptStore that keeps each
 // identifier's consecutive failures, for a policy configured with
-// WithCap.
+// WithFailureStreakLimit.
 //
 // A store that implements it must clear the streak, hold included, in Reset,
 // atomically with the failures Reset already clears: one transaction for a SQL
@@ -166,7 +166,7 @@ type FailureStreakStore interface {
 }
 
 // defaultAttemptStoreCapacity is how many identifiers MemoryAttemptStore holds
-// unless WithAttemptStoreCapacity replaces it.
+// unless WithAttemptStoreMaxIdentifiers replaces it.
 const defaultAttemptStoreCapacity = 100_000
 
 // maxPlainIdentifierLen is the longest identifier MemoryAttemptStore keeps as
@@ -219,13 +219,13 @@ func (e *attemptEntry) empty() bool {
 // MemoryAttemptOption configures a MemoryAttemptStore.
 type MemoryAttemptOption func(*MemoryAttemptStore)
 
-// WithAttemptStoreCapacity replaces how many identifiers the store holds at
+// WithAttemptStoreMaxIdentifiers replaces how many identifiers the store holds at
 // once. The default is 100,000.
 //
-// A capacity of zero or less holds nothing, so every login would be refused;
+// A maximum of zero or less holds nothing, so every login would be refused;
 // it is a wiring mistake, and NewMemoryAttemptStore panics on it, since it
 // returns no error.
-func WithAttemptStoreCapacity(n int) MemoryAttemptOption {
+func WithAttemptStoreMaxIdentifiers(n int) MemoryAttemptOption {
 	return func(s *MemoryAttemptStore) { s.capacity = n }
 }
 
@@ -233,7 +233,7 @@ func WithAttemptStoreCapacity(n int) MemoryAttemptOption {
 // default store and it is safe for concurrent use.
 //
 // It stays bounded. A lockout policy built over it tells it the longest it
-// needs a failure kept: the window, or the cap's retention (WithCap)
+// needs a failure kept: the window, or the failure-streak retention (WithFailureStreakLimit)
 // when that is longer. The store then forgets what is older than that as it is
 // written to: each write drops the written identifier's expired failures, and
 // once per retention a write sweeps every identifier. A hold is never
@@ -241,7 +241,7 @@ func WithAttemptStoreCapacity(n int) MemoryAttemptOption {
 // longest-retaining of them needs. A store no policy has been built over does
 // not know how long a failure matters, and forgets nothing by age.
 //
-// It holds at most 100,000 identifiers (WithAttemptStoreCapacity). An
+// It holds at most 100,000 identifiers (WithAttemptStoreMaxIdentifiers). An
 // identifier longer than 256 bytes is held by its SHA-256 digest, so a long
 // one costs no more than a short one. When the store is full and a sweep frees
 // nothing, a failure for an identifier it does not hold is refused with
@@ -268,8 +268,8 @@ func WithAttemptStoreCapacity(n int) MemoryAttemptOption {
 // consumer sweeps itself, or pass the inner *MemoryAttemptStore to the policy
 // and have the wrapper forward to it.
 //
-// A deployment that needs any of those, or a capacity a single process cannot
-// give, supplies its own store through WithAttemptStore: a durable or shared
+// A deployment that needs any of those, or a number of identifiers a single process cannot
+// hold, supplies its own store through WithAttemptStore: a durable or shared
 // store is the override for the full-store trade-off.
 type MemoryAttemptStore struct {
 	mu       sync.Mutex
@@ -293,8 +293,8 @@ type MemoryAttemptStore struct {
 }
 
 // NewMemoryAttemptStore returns the default attempt store, holding nothing,
-// with a capacity of 100,000 identifiers unless WithAttemptStoreCapacity
-// replaces it. It panics on a capacity of zero or less.
+// with a maximum of 100,000 identifiers unless WithAttemptStoreMaxIdentifiers
+// replaces it. It panics on a maximum of zero or less.
 func NewMemoryAttemptStore(opts ...MemoryAttemptOption) *MemoryAttemptStore {
 	s := &MemoryAttemptStore{
 		entries:  make(map[attemptKey]*attemptEntry),
@@ -306,7 +306,7 @@ func NewMemoryAttemptStore(opts ...MemoryAttemptOption) *MemoryAttemptStore {
 		}
 	}
 	if s.capacity <= 0 {
-		panic(fmt.Sprintf("lockout: WithAttemptStoreCapacity must be positive, got %d: "+
+		panic(fmt.Sprintf("lockout: WithAttemptStoreMaxIdentifiers must be positive, got %d: "+
 			"a store that holds nothing refuses every login", s.capacity))
 	}
 
@@ -634,7 +634,7 @@ func (s *MemoryAttemptStore) FailureStreak(_ context.Context, username string, s
 //
 // The cutoff is clamped as DeleteAttemptsBefore's is: to no later than now
 // minus the longest retention any policy built over the store has asked for,
-// so a policy with a shorter cap retention cannot drop a count another policy
+// so a policy with a shorter failure-streak retention cannot drop a count another policy
 // on the same store still holds.
 func (s *MemoryAttemptStore) DeleteStreaksBefore(_ context.Context, retainSince time.Time) (int, error) {
 	if retainSince.IsZero() {

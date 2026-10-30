@@ -29,7 +29,7 @@ import (
 // Every default is replaceable. With no options a manager keeps its tokens in
 // process memory, mints them from crypto/rand, expires them after 15 minutes
 // and counts issuance over the hour before now. A consumer supplies a durable
-// store through WithStore, a different lifetime through WithTTL, a different
+// store through WithStore, a different lifetime through WithTokenTTL, a different
 // counting window through WithIssuanceWindow, and a test moves time through
 // WithClock without waiting for it.
 //
@@ -95,10 +95,10 @@ type Option func(*Tokens)
 // would find out about until a deploy.
 func WithStore(s Store) Option { return func(m *Tokens) { m.store, m.storeSet = s, true } }
 
-// WithTTL replaces how long an issued token stays valid. The default is 15
+// WithTokenTTL replaces how long an issued token stays valid. The default is 15
 // minutes. Zero or less is a configuration error: it would expire every token
 // at the instant it was issued.
-func WithTTL(d time.Duration) Option { return func(m *Tokens) { m.ttl = d } }
+func WithTokenTTL(d time.Duration) Option { return func(m *Tokens) { m.ttl = d } }
 
 // WithIssuanceWindow replaces the span IssuedCount counts over and the distance
 // back from now that PurgeExpired leaves alone. The default is one hour. Zero
@@ -247,9 +247,9 @@ func New(purpose string, opts ...Option) (*Tokens, error) {
 // what New was given.
 func (m *Tokens) Purpose() string { return m.purpose }
 
-// TTL reports how long an issued token stays valid, which is what WithTTL
+// TokenTTL reports how long an issued token stays valid, which is what WithTokenTTL
 // configured.
-func (m *Tokens) TTL() time.Duration { return m.ttl }
+func (m *Tokens) TokenTTL() time.Duration { return m.ttl }
 
 // IssuanceWindow reports the window IssuedCount counts over and PurgeExpired
 // takes its cutoff from, which is what WithIssuanceWindow configured.

@@ -137,7 +137,7 @@ func TestLifetimeReporter(t *testing.T) {
 				km, err := signingkey.New(t.Context(),
 					signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 					signingkey.WithAlgs(signingkey.EdDSA),
-					signingkey.WithLifetime(48*time.Hour),
+					signingkey.WithKeyLifetime(48*time.Hour),
 					signingkey.WithRotateInterval(6*time.Hour),
 				)
 				require.NoError(t, err)

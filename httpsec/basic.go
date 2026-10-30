@@ -257,7 +257,7 @@ type BasicAuthDeps struct {
 	// the login form. A successful authentication clears the username's failures
 	// through it, as form login does.
 	//
-	// When the policy has a consecutive-failure cap (lockout.WithCap),
+	// When the policy has a consecutive-failure cap (lockout.WithFailureStreakLimit),
 	// its view is required: only the view advances the consecutive count, so
 	// any other store here, the policy's own bare store included, fails New
 	// with a configuration error naming this field. That check covers only
@@ -300,7 +300,7 @@ type BasicAuthOption func(*basicAuth) error
 //  4. Authenticate. A failure is recorded against the account and the source.
 //     A success clears the username's failures through BasicAuthDeps.Attempts,
 //     as form login does, including its count towards a cap set with
-//     lockout.WithCap; a store that fails to clear is logged and the
+//     lockout.WithFailureStreakLimit; a store that fails to clear is logged and the
 //     request still succeeds. It costs one reset of the attempt store per
 //     successful request; for a policy with a cap that reset clears both the
 //     failure log and the consecutive count.

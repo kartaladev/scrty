@@ -466,7 +466,7 @@ func TestRecoveryCodes(t *testing.T) {
 
 						return err
 					}),
-					httpsec.WithRecoveryCountResponder(func(ex *httpsec.Exchange, n recovery.Count) error {
+					httpsec.WithRecoveryCountResponder(func(ex *httpsec.Exchange, n recovery.RemainingCodes) error {
 						ex.Writer.WriteHeader(http.StatusAccepted)
 						_, err := ex.Writer.Write([]byte(strings.Repeat("*", n.N)))
 

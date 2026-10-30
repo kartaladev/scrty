@@ -47,7 +47,7 @@ func WithIdleTimeout(d time.Duration) IdleOption {
 }
 
 // WithIdleAbsoluteTimeout replaces the deadline nothing extends, which
-// this policy reports through Thresholds. The default is 12 hours. Zero or
+// this policy reports through Deadlines. The default is 12 hours. Zero or
 // less is a configuration error, for the same reason a zero idle timeout is.
 //
 // Like WithIdleTimeout it is named for this policy, and is distinct from
@@ -71,7 +71,7 @@ func WithIdleAbsoluteTimeout(d time.Duration) IdleOption {
 // accessed" as "idle since the beginning of time" would refuse every request
 // made through a store or a consumer that does not keep the field.
 //
-// The absolute timeout is reported by Thresholds and is not enforced here.
+// The absolute timeout is reported by Deadlines and is not enforced here.
 // Enforcing it would duplicate the session store, which already refuses a
 // session past either of its deadlines; this policy exists for the deployment
 // whose store cannot, and for a refusal the caller can tell apart.
@@ -153,7 +153,7 @@ func (p *IdleTimeout) Evaluate(_ context.Context, in *Input) Decision {
 	return Decision{}
 }
 
-// Thresholds returns the deadlines a session created at createdAt has when it
+// Deadlines returns the deadlines a session created at createdAt has when it
 // is accessed at now: the idle deadline that this access extends, and the
 // absolute deadline that nothing extends.
 //
@@ -164,7 +164,7 @@ func (p *IdleTimeout) Evaluate(_ context.Context, in *Input) Decision {
 // The idle deadline is never past the absolute one. A session in its last
 // minutes must not be handed an idle deadline that outlives the deadline
 // nothing extends, or the two would contradict each other about when it ends.
-func (p *IdleTimeout) Thresholds(createdAt, now time.Time) (idle, absolute time.Time) {
+func (p *IdleTimeout) Deadlines(createdAt, now time.Time) (idle, absolute time.Time) {
 	absolute = createdAt.Add(p.absolute)
 
 	idle = now.Add(p.idle)

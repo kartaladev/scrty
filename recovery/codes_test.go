@@ -104,13 +104,13 @@ func TestNewCodes_Config(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 1, Low: false}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 1, Low: false}, count)
 
 				spendCode(t, c, "u-1", codes[0])
 
 				count, err = c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 0, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 0, Low: true}, count)
 			},
 		},
 		{
@@ -135,13 +135,13 @@ func TestNewCodes_Config(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 3, Low: false}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 3, Low: false}, count)
 
 				spendCode(t, c, "u-1", codes[7])
 
 				count, err = c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 2, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 2, Low: true}, count)
 			},
 		},
 	}
@@ -380,7 +380,7 @@ func TestCodes(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 2, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 2, Low: true}, count)
 			},
 		},
 		{
@@ -397,13 +397,13 @@ func TestCodes(t *testing.T) {
 
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 5, Low: false}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 5, Low: false}, count)
 
 				spendCode(t, c, "u-1", codes[5])
 
 				count, err = c.Remaining(t.Context(), "u-1")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 4, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 4, Low: true}, count)
 			},
 		},
 		{
@@ -411,7 +411,7 @@ func TestCodes(t *testing.T) {
 			assert: func(t *testing.T, c *recovery.Codes) {
 				count, err := c.Remaining(t.Context(), "nobody")
 				require.NoError(t, err)
-				assert.Equal(t, recovery.Count{N: 0, Low: true}, count)
+				assert.Equal(t, recovery.RemainingCodes{N: 0, Low: true}, count)
 			},
 		},
 		{
@@ -679,7 +679,7 @@ func TestCodes(t *testing.T) {
 			assert: func(t *testing.T, c *recovery.Codes) {
 				count, err := c.Remaining(t.Context(), "u-1")
 				require.ErrorIs(t, err, storeFault)
-				assert.Equal(t, recovery.Count{}, count)
+				assert.Equal(t, recovery.RemainingCodes{}, count)
 				assert.NotContains(t, err.Error(), storeFault.Error())
 			},
 		},

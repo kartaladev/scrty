@@ -31,6 +31,8 @@ def dec(name):
 class Map:
     def __init__(self, path):
         self.paths, self.idents, self.tests, self.splits, self.merged = [], {}, [], [], {}
+        # D13 phase 6: identifiers a decision adds, and ones whose type a decision changes.
+        self.added, self.changed = set(), set()
         for line in open(path):
             if not line.strip() or line.startswith("#"):
                 continue
@@ -45,6 +47,10 @@ class Map:
                 self.splits.append((old, new))
             elif kind == "merged":
                 self.merged[old] = new
+            elif kind == "added":
+                self.added.add(new)
+            elif kind == "changed":
+                self.changed.add(new)
         self.paths.sort(key=lambda p: -len(p[0]))
         # Keys in the moved-but-not-renamed form too, so a half-applied rename normalises.
         self.final = {}
@@ -54,7 +60,7 @@ class Map:
             self.final[self.path(opkg) + "." + oname] = new
             npkg, _ = split_qualified(new)
             self.final[npkg + "." + oname] = new
-        self.values = set(self.idents.values())
+        self.values = set(self.idents.values()) | self.added
         # Merged copies keyed in their moved form too, so a copy normalises after phase 1.
         self.merged_final = {}
         for old, new in self.merged.items():
@@ -132,6 +138,8 @@ def check_api(m, ev, fresh, apidiff, empty):
                 continue
             name, _, msg = line[2:].partition(": ")
             name = member_name(name)
+            if (new + "." + name) in m.changed or (final + "." + name) in m.changed:
+                continue
             if msg == "removed":
                 if m.ident(old + "." + name) == m.path(old) + "." + name and (old + "." + name) not in m.idents:
                     problems.append(f"{old}: {name} removed, and the map names no successor")

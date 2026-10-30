@@ -67,7 +67,7 @@ func cappedFailures(id string, limit, n int) func(*testing.T, policy.AttemptStor
 	return func(t *testing.T, s policy.AttemptStore) {
 		t.Helper()
 
-		seeder := lockoutWith(t, lockout.WithAttemptStore(s), lockout.WithCap(limit))
+		seeder := lockoutWith(t, lockout.WithAttemptStore(s), lockout.WithFailureStreakLimit(limit))
 		for i := range n {
 			require.NoError(t, seeder.Attempts().RecordFailure(t.Context(), id, lockoutNow.Add(-time.Duration(n-i)*time.Second)))
 		}
@@ -155,7 +155,7 @@ func TestLockoutObserver(t *testing.T) {
 			assert: func(t *testing.T, r []lockout.Report, err error, _ string) {
 				require.NoError(t, err)
 				require.Len(t, r, 1)
-				assert.Equal(t, lockout.ReportAtCeiling, r[0].Kind)
+				assert.Equal(t, lockout.ReportAtWindowFailureLimit, r[0].Kind)
 				assert.Equal(t, 100, r[0].Failures)
 			},
 		},
@@ -356,7 +356,7 @@ func TestLockoutObserver(t *testing.T) {
 			// Spec: "Held". The twentieth write is reported as the hold, and
 			// not also as a windowed lock.
 			name: "the failure that reaches the cap reports the hold once",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			act: func(t *testing.T, p *lockout.Policy) error {
 				for range 20 {
 					require.NoError(t, record("ada")(t, p))
@@ -380,7 +380,7 @@ func TestLockoutObserver(t *testing.T) {
 			// Review Focus 1: the count passed a cap it was never held at, so
 			// the hold is set by the next write, at 71, not at the cap.
 			name:   "a cap lowered below an existing count reports the hold on the next failure",
-			opts:   []lockout.Option{lockout.WithCap(50)},
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(50)},
 			before: cappedFailures("ada", 100, 70),
 			act:    record("ada"),
 			assert: func(t *testing.T, r []lockout.Report, err error, _ string) {
@@ -394,7 +394,7 @@ func TestLockoutObserver(t *testing.T) {
 			// Only the write that set the hold reports it; later failures are
 			// reported by the window, as before.
 			name:   "a failure after the hold is reported by the window",
-			opts:   []lockout.Option{lockout.WithCap(20)},
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			before: cappedFailures("ada", 20, 20),
 			act:    record("ada"),
 			assert: func(t *testing.T, r []lockout.Report, err error, _ string) {
@@ -409,7 +409,7 @@ func TestLockoutObserver(t *testing.T) {
 			// report because the log failed would lose it for good, since no
 			// later write sets it again.
 			name: "a hold set while the log could not record is still reported",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakAttemptStore(t)
 				s.MockFailureStreakStore.EXPECT().
@@ -430,7 +430,7 @@ func TestLockoutObserver(t *testing.T) {
 		{
 			// Spec: "Hold lifted", through the administrator's unlock.
 			name:   "a reset of a held identifier reports the hold lifted in place of cleared",
-			opts:   []lockout.Option{lockout.WithCap(20)},
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			before: cappedFailures("ada", 20, 20),
 			act:    func(t *testing.T, p *lockout.Policy) error { return p.Reset(t.Context(), "ada") },
 			assert: func(t *testing.T, r []lockout.Report, err error, _ string) {
@@ -444,7 +444,7 @@ func TestLockoutObserver(t *testing.T) {
 			// A hold outlives the window, so its release is reported even when
 			// the window holds nothing to clear.
 			name:   "a hold with nothing in the window is still reported lifted",
-			opts:   []lockout.Option{lockout.WithCap(20)},
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			before: heldStreak("ada", 20),
 			act: func(t *testing.T, p *lockout.Policy) error {
 				return p.Attempts().Reset(t.Context(), "ada")
@@ -458,7 +458,7 @@ func TestLockoutObserver(t *testing.T) {
 		},
 		{
 			name:   "with a cap a reset of failures that are not held reports them cleared",
-			opts:   []lockout.Option{lockout.WithCap(20)},
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			before: cappedFailures("ada", 20, 3),
 			act: func(t *testing.T, p *lockout.Policy) error {
 				return p.Attempts().Reset(t.Context(), "ada")
@@ -472,7 +472,7 @@ func TestLockoutObserver(t *testing.T) {
 		},
 		{
 			name: "with a cap clearing nothing is not reported",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			act: func(t *testing.T, p *lockout.Policy) error {
 				return p.Attempts().Reset(t.Context(), "ada")
 			},
@@ -485,7 +485,7 @@ func TestLockoutObserver(t *testing.T) {
 			// Without the streak the policy cannot tell a release from a
 			// clearing, so it reports neither rather than the wrong one.
 			name: "a reset whose streak could not be read loses only its report",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakAttemptStore(t)
 				s.MockAttemptStore.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).Return(3, nil)
@@ -508,7 +508,7 @@ func TestLockoutObserver(t *testing.T) {
 		},
 		{
 			name: "a reset of a held identifier the store refused is not reported",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakAttemptStore(t)
 				s.MockAttemptStore.EXPECT().FailureCount(gomock.Any(), "ada", gomock.Any()).Return(20, nil)
@@ -640,7 +640,7 @@ func TestLockoutObserverReportKindString(t *testing.T) {
 
 	cases := []testCase{
 		{name: "locked", kind: lockout.ReportLocked, assert: is("locked")},
-		{name: "at the ceiling", kind: lockout.ReportAtCeiling, assert: is("at-ceiling")},
+		{name: "at the ceiling", kind: lockout.ReportAtWindowFailureLimit, assert: is("at-ceiling")},
 		{name: "cleared", kind: lockout.ReportCleared, assert: is("cleared")},
 		{name: "held", kind: lockout.ReportHeld, assert: is("held")},
 		{name: "released", kind: lockout.ReportReleased, assert: is("released")},

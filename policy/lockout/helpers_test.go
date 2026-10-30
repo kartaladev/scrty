@@ -72,7 +72,7 @@ func failuresAt(t *testing.T, store *lockout.MemoryAttemptStore, username string
 }
 
 // defaultCapRetention is the retention a cap takes when no
-// WithCapRetention is given.
+// WithFailureStreakRetention is given.
 const defaultCapRetention = 30 * 24 * time.Hour
 
 // failDaily records perDay[d] failures for username through the policy's view

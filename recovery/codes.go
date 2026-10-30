@@ -41,12 +41,12 @@ const (
 	errTextCodeStore = "recovery: saved-code store failed"
 )
 
-// Count is how many unspent codes a user has, and whether that is low.
+// RemainingCodes is how many unspent codes a user has, and whether that is low.
 //
 // Low is true when N is at or below the manager's low threshold, so a
 // consumer's interface can prompt a regeneration. The library renders nothing
 // itself.
-type Count struct {
+type RemainingCodes struct {
 	N   int
 	Low bool
 }
@@ -215,15 +215,15 @@ func (c *Codes) Confirm(ctx context.Context, user identity.UserID, presented str
 
 // Remaining reports how many unspent codes user has, and whether that is at or
 // below the low threshold. A user with no set has none, which is low.
-func (c *Codes) Remaining(ctx context.Context, user identity.UserID) (Count, error) {
+func (c *Codes) Remaining(ctx context.Context, user identity.UserID) (RemainingCodes, error) {
 	n, err := c.store.Remaining(ctx, user)
 	if err != nil {
 		c.logFailure(ctx, msgCodeStoreError, "store", err)
 
-		return Count{}, diag.Wrap(err, errTextCodeStore)
+		return RemainingCodes{}, diag.Wrap(err, errTextCodeStore)
 	}
 
-	return Count{N: n, Low: n <= c.lowThreshold}, nil
+	return RemainingCodes{N: n, Low: n <= c.lowThreshold}, nil
 }
 
 // check is the throttled, write-free check of a presented code, and returns

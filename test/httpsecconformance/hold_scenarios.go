@@ -43,7 +43,7 @@ func heldLockout(t *testing.T) *lockout.Policy {
 	t.Helper()
 
 	lockoutPolicy, err := lockout.New(
-		lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithCap(holdCap))
+		lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithFailureStreakLimit(holdCap))
 	require.NoError(t, err)
 
 	first := time.Now().Add(-time.Hour)

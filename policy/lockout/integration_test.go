@@ -66,20 +66,20 @@ func TestDefaultLockoutStore_ReleasesIdentifiersOutsideWindow(t *testing.T) {
 		},
 		{
 			name: "a hold is kept after its retention passes",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			run: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
-				failDaily(t, p, clk, "bob", lockout.NISTCap)
+				failDaily(t, p, clk, "bob", lockout.NISTFailureStreakLimit)
 				clk.Advance(defaultCapRetention + 24*time.Hour)
 				require.NoError(t, p.RecordFailure(t.Context(), "late"))
 			},
 			assert: func(t *testing.T, p *lockout.Policy, store *lockout.MemoryAttemptStore, _ *clockwork.FakeClock) {
-				deniedAsHeld(t, p.Evaluate(t.Context(), lockoutInput("bob")), lockout.NISTCap)
+				deniedAsHeld(t, p.Evaluate(t.Context(), lockoutInput("bob")), lockout.NISTFailureStreakLimit)
 				assert.Equal(t, 2, store.IdentifiersForTest(), "the sweep did not release only what it may")
 			},
 		},
 		{
 			name: "under a cap a count inside its retention outlives the window",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			run: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				failDaily(t, p, clk, "ada", 10)
 				clk.Advance(48 * time.Hour)
@@ -189,7 +189,7 @@ func TestDefaultLockoutStore_PurgesOldFailures(t *testing.T) {
 		{
 			name: "a policy over the default store removes only what left its window",
 			run: func(t *testing.T, s *lockout.MemoryAttemptStore) (int, error) {
-				p := lockoutWith(t, lockout.WithAttemptStore(s), lockout.WithWindow(15*time.Minute))
+				p := lockoutWith(t, lockout.WithAttemptStore(s), lockout.WithFailureWindow(15*time.Minute))
 				seed(t, s)
 
 				return p.PurgeExpired(t.Context())
@@ -250,7 +250,7 @@ func TestMemoryAttemptStore_SharedPurgeKeepsLongestRetention(t *testing.T) {
 			name: "a short-window purge leaves the failures a long-window policy still counts",
 			run: func(t *testing.T, s *lockout.MemoryAttemptStore, clk *clockwork.FakeClock) {
 				short, err := lockout.New(lockout.WithAttemptStore(s),
-					lockout.WithClock(clk), lockout.WithWindow(15*time.Minute))
+					lockout.WithClock(clk), lockout.WithFailureWindow(15*time.Minute))
 				require.NoError(t, err)
 				long, err := lockout.New(lockout.WithAttemptStore(s), lockout.WithClock(clk))
 				require.NoError(t, err)
@@ -272,10 +272,10 @@ func TestMemoryAttemptStore_SharedPurgeKeepsLongestRetention(t *testing.T) {
 			name: "a shorter cap retention purge leaves the counts a longer one still holds",
 			run: func(t *testing.T, s *lockout.MemoryAttemptStore, clk *clockwork.FakeClock) {
 				short, err := lockout.New(lockout.WithAttemptStore(s), lockout.WithClock(clk),
-					lockout.WithCap(10), lockout.WithCapRetention(48*time.Hour))
+					lockout.WithFailureStreakLimit(10), lockout.WithFailureStreakRetention(48*time.Hour))
 				require.NoError(t, err)
 				long, err := lockout.New(lockout.WithAttemptStore(s), lockout.WithClock(clk),
-					lockout.WithCap(10))
+					lockout.WithFailureStreakLimit(10))
 				require.NoError(t, err)
 
 				require.NoError(t, long.RecordFailure(t.Context(), "ada"))
@@ -319,7 +319,7 @@ func TestLockoutCapBurst(t *testing.T) {
 	p, err := lockout.New(
 		lockout.WithAttemptStore(store),
 		lockout.WithClock(clk),
-		lockout.WithCap(lockout.NISTCap),
+		lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 		lockout.WithObserver(got.observe),
 	)
 	require.NoError(t, err)

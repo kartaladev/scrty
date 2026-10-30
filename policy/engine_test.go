@@ -606,7 +606,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 		{
 			name: "a capped lockout policy requires its view",
 			build: func(t *testing.T) ([]policy.Policy, []policy.RequiredAttemptView) {
-				p := newLockout(t, lockout.WithCap(20))
+				p := newLockout(t, lockout.WithFailureStreakLimit(20))
 
 				return []policy.Policy{p}, []policy.RequiredAttemptView{{Policy: p.Name(), View: p.Attempts()}}
 			},
@@ -634,7 +634,7 @@ func TestRequiredAttemptViews(t *testing.T) {
 					view:       lockout.NewMemoryAttemptStore(),
 					required:   true,
 				}
-				p := newLockout(t, lockout.WithCap(20))
+				p := newLockout(t, lockout.WithFailureStreakLimit(20))
 
 				return []policy.Policy{own, newLockout(t), p}, []policy.RequiredAttemptView{
 					{Policy: "own", View: own.view},

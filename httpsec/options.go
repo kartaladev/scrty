@@ -1047,7 +1047,7 @@ func WithClock(c clock.Clock) Option {
 // checkAttemptViews refuses a chain whose password logins record failures
 // into a store other than a view a registered policy requires.
 //
-// A lockout policy with a cap (lockout.WithCap) advances an identifier's
+// A lockout policy with a cap (lockout.WithFailureStreakLimit) advances an identifier's
 // consecutive count only when a failure is recorded through its own view,
 // [github.com/kartaladev/scrty/policy/lockout.Policy.Attempts]. Form login or
 // Basic handed the bare store would still lock by the window, but would never

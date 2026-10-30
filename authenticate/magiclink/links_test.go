@@ -1173,7 +1173,7 @@ func TestManager_PurgeExpired(t *testing.T) {
 	clk := clockwork.NewFakeClockAt(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
 	tokens, err := onetime.New("magic-link",
 		onetime.WithStore(onetime.NewMemoryStore(onetime.WithMemoryStoreClock(clk))),
-		onetime.WithClock(clk), onetime.WithTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
+		onetime.WithClock(clk), onetime.WithTokenTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
 	require.NoError(t, err)
 
 	_, _, err = tokens.Issue(t.Context(), "carol")
@@ -1262,7 +1262,7 @@ func TestExpiryTask(t *testing.T) {
 
 			tokens, err := onetime.New("magic-link",
 				onetime.WithStore(store), onetime.WithClock(clk),
-				onetime.WithTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
+				onetime.WithTokenTTL(15*time.Minute), onetime.WithIssuanceWindow(time.Hour))
 			require.NoError(t, err)
 
 			_, _, err = tokens.Issue(t.Context(), "carol")

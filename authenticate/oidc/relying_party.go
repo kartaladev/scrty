@@ -488,10 +488,10 @@ const DefaultClockSkew = 60 * time.Second
 // rather than honoured.
 const MaxClockSkew = 5 * time.Minute
 
-// MaxLogoutTokenMaxAge is the longest age WithLogoutTokenMaxAge accepts. The
+// LongestLogoutTokenMaxAge is the longest age WithLogoutTokenMaxAge accepts. The
 // maximum age is the replay window of a captured logout token, so a longer one
 // is refused at construction rather than honoured.
-const MaxLogoutTokenMaxAge = time.Hour
+const LongestLogoutTokenMaxAge = time.Hour
 
 // WithClockSkew sets the leeway allowed between the manager's clock and a
 // provider's when judging a token's expiry (exp), issued-at (iat) and
@@ -521,7 +521,7 @@ func WithClockSkew(d time.Duration) Option {
 // The maximum age is also the replay window: no jti is recorded, so a captured
 // token is accepted again until its issued-at is older than the maximum age
 // plus the leeway, and widening one widens the other. A maximum age of zero or
-// less is refused: no token could be accepted. One above MaxLogoutTokenMaxAge
+// less is refused: no token could be accepted. One above LongestLogoutTokenMaxAge
 // (one hour) is refused too, because it would keep a captured token replayable
 // for that long; the bound cannot be exceeded.
 func WithLogoutTokenMaxAge(d time.Duration) Option {
@@ -529,8 +529,8 @@ func WithLogoutTokenMaxAge(d time.Duration) Option {
 		if d <= 0 {
 			return fmt.Errorf("%w: WithLogoutTokenMaxAge must be positive, got %s", ErrConfig, d)
 		}
-		if d > MaxLogoutTokenMaxAge {
-			return fmt.Errorf("%w: WithLogoutTokenMaxAge must not exceed %s, got %s", ErrConfig, MaxLogoutTokenMaxAge, d)
+		if d > LongestLogoutTokenMaxAge {
+			return fmt.Errorf("%w: WithLogoutTokenMaxAge must not exceed %s, got %s", ErrConfig, LongestLogoutTokenMaxAge, d)
 		}
 		m.logoutMaxAge = d
 		return nil

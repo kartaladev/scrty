@@ -36,9 +36,9 @@ var ErrPending = errors.New("passkey: credential pending confirmation")
 // configured attestation policy does not accept.
 var ErrAttestationRefused = errors.New("passkey: attestation refused")
 
-// ErrLimitReached is the refusal of a registration for a user who already
+// ErrPerUserLimitReached is the refusal of a registration for a user who already
 // holds the maximum number of passkeys.
-var ErrLimitReached = errors.New("passkey: passkey limit reached")
+var ErrPerUserLimitReached = errors.New("passkey: passkey limit reached")
 
 // ErrReauthenticationRequired is the refusal of an action from a session whose
 // latest authentication is older than the freshness window.

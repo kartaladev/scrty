@@ -729,7 +729,7 @@ func TestFinishRegistration(t *testing.T) {
 			},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, passkey.ErrLimitReached)
+				require.ErrorIs(t, err, passkey.ErrPerUserLimitReached)
 				assert.Nil(t, res)
 
 				n, err := e.f.creds.Count(t.Context(), "u-1")
@@ -739,7 +739,7 @@ func TestFinishRegistration(t *testing.T) {
 		},
 		{
 			name: "consumer passkey limit counts pending credentials",
-			opts: []passkey.Option{passkey.WithLimit(1)},
+			opts: []passkey.Option{passkey.WithPerUserLimit(1)},
 			setup: func(t *testing.T, f *fixture) {
 				require.NoError(t, f.creds.Insert(t.Context(), &passkey.Credential{
 					ID: id.ID{15: 9}, User: "u-1", CredentialID: []byte("old"), CreatedAt: regStart,
@@ -748,7 +748,7 @@ func TestFinishRegistration(t *testing.T) {
 			},
 			assert: func(t *testing.T, _ *env, res *passkey.RegistrationResult, err error) {
 				t.Helper()
-				require.ErrorIs(t, err, passkey.ErrLimitReached)
+				require.ErrorIs(t, err, passkey.ErrPerUserLimitReached)
 				assert.Nil(t, res)
 			},
 		},
@@ -982,7 +982,7 @@ func race(n int, f func(i int) error) []error {
 // TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit races four
 // finishes for u-1, each answering a challenge of its own, against a passkey
 // limit of one. The limit is decided by the write, so exactly one stores a
-// passkey and the other three are refused with ErrLimitReached.
+// passkey and the other three are refused with ErrPerUserLimitReached.
 //
 // Standalone from TestFinishRegistration: it races four finishes through a barrier store.
 func TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit(t *testing.T) {
@@ -993,7 +993,7 @@ func TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit(t *testing.
 	f := newFixture(t)
 	creds := &countBarrierCredentials{MemoryCredentialStore: f.creds, b: newBarrier(racers)}
 	f.deps.Credentials = creds
-	m := f.manager(t, passkey.WithLimit(1))
+	m := f.manager(t, passkey.WithPerUserLimit(1))
 	s := fullSession("sess-a", "u-1")
 
 	challenges := make([]string, racers)
@@ -1018,7 +1018,7 @@ func TestFinishRegistration_ConcurrentFinishesStayWithinPasskeyLimit(t *testing.
 			continue
 		}
 
-		require.ErrorIs(t, err, passkey.ErrLimitReached)
+		require.ErrorIs(t, err, passkey.ErrPerUserLimitReached)
 		refused++
 	}
 
@@ -1150,7 +1150,7 @@ func TestFinishRegistration_RefusedFinishLeavesStoredFinishsCodesWorking(t *test
 	f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
 	creds := newStaggeredCredentials(f.creds)
 	f.deps.Credentials = creds
-	m := f.manager(t, passkey.WithLimit(1))
+	m := f.manager(t, passkey.WithPerUserLimit(1))
 	s := fullSession("sess-a", "u-1")
 
 	challenges := []string{f.begin(t, m, s), f.begin(t, m, s)}
@@ -1169,7 +1169,7 @@ func TestFinishRegistration_RefusedFinishLeavesStoredFinishsCodesWorking(t *test
 	var stored *passkey.RegistrationResult
 	for i, err := range errs {
 		if err != nil {
-			require.ErrorIs(t, err, passkey.ErrLimitReached)
+			require.ErrorIs(t, err, passkey.ErrPerUserLimitReached)
 
 			continue
 		}
@@ -1240,7 +1240,7 @@ func (s *lateListCredentials) InsertWithin(ctx context.Context, c *passkey.Crede
 // passkey. That passkey was created at or after the instant the second
 // finish's challenge was issued, so it belongs to a concurrent ceremony, not an abandoned one, and is
 // kept. The second finish then counts a full limit and is refused with
-// ErrLimitReached before it inserts; the first finish stores, and the codes it
+// ErrPerUserLimitReached before it inserts; the first finish stores, and the codes it
 // returned or sent confirm its own passkey. Were the kept passkey deleted
 // instead, the second finish would find room and store.
 //
@@ -1297,7 +1297,7 @@ func TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey(t *testing
 
 			creds := &lateListCredentials{MemoryCredentialStore: f.creds, firstInserted: make(chan struct{})}
 			f.deps.Credentials = creds
-			e := &env{f: f, m: f.manager(t, passkey.WithLimit(1)), s: tc.session}
+			e := &env{f: f, m: f.manager(t, passkey.WithPerUserLimit(1)), s: tc.session}
 
 			challenges := []string{f.begin(t, e.m, e.s), f.begin(t, e.m, e.s)}
 			f.clock.Advance(tc.advance)
@@ -1314,7 +1314,7 @@ func TestFinishRegistration_ConcurrentFinishKeepsStoredFinishsPasskey(t *testing
 			})
 
 			require.NoError(t, errs[0], "the first finish")
-			require.ErrorIs(t, errs[1], passkey.ErrLimitReached, "the second finish")
+			require.ErrorIs(t, errs[1], passkey.ErrPerUserLimitReached, "the second finish")
 
 			stored := results[0]
 			require.NotNil(t, stored)
@@ -1444,7 +1444,7 @@ func TestFinishRegistration_RefusedOrFailedFinishLeavesNothing(t *testing.T) {
 				return limitedCredentials{inner}
 			},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
-				require.ErrorIs(t, err, passkey.ErrLimitReached)
+				require.ErrorIs(t, err, passkey.ErrPerUserLimitReached)
 				assert.Nil(t, res)
 				assert.Empty(t, e.f.messages(), "messages sent")
 				storedNothing(t, e)
@@ -1459,7 +1459,7 @@ func TestFinishRegistration_RefusedOrFailedFinishLeavesNothing(t *testing.T) {
 				return &replaceCodes{MemoryCodeStore: recovery.NewMemoryCodeStore()}
 			},
 			assert: func(t *testing.T, e *env, res *passkey.RegistrationResult, err error) {
-				require.ErrorIs(t, err, passkey.ErrLimitReached)
+				require.ErrorIs(t, err, passkey.ErrPerUserLimitReached)
 				assert.Nil(t, res)
 				assert.Zero(t, e.codes.replaced.Load(), "saved-code sets stored")
 				storedNothing(t, e)
@@ -1603,7 +1603,7 @@ func TestFinishRegistration_AbandonedRegistrationReplacedAtLimitOne(t *testing.T
 				f.deps.Recovery = recoveryDeps(t, f, recovery.WayBackDeps{})
 			}
 
-			e := &env{f: f, m: f.manager(t, passkey.WithLimit(1)), s: tc.session}
+			e := &env{f: f, m: f.manager(t, passkey.WithPerUserLimit(1)), s: tc.session}
 
 			first, err := e.m.FinishRegistration(t.Context(), e.s,
 				regBody(f.begin(t, e.m, e.s), "cred-first", ""), tc.rc)

@@ -27,7 +27,7 @@ func (km *Keys) rotateAll(ctx context.Context) {
 
 // report tells the consumer about a rotation or reload failure: it calls the
 // error hook, and writes a record to the logger unless the sampling window
-// WithLogSampleWindow describes has already had one for this operation and
+// WithLogInterval describes has already had one for this operation and
 // algorithm. The hook is never sampled.
 //
 // The record carries the failure's fixed reason and its cause's Go type

@@ -332,8 +332,8 @@ func (m *Links) BindingEnabled() bool { return m.binding }
 //
 // It is the token manager's time-to-live rather than a setting of this
 // package: a one-time credential's lifetime is configured in one place, with
-// onetime.WithTTL.
-func (m *Links) TTL() time.Duration { return m.tokens.TTL() }
+// onetime.WithTokenTTL.
+func (m *Links) TTL() time.Duration { return m.tokens.TokenTTL() }
 
 // Request issues and sends a sign-in link for the submitted address.
 //

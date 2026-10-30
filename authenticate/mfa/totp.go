@@ -64,7 +64,7 @@ type TOTP struct {
 // stored but never shown would be worse than none.
 //
 // Defaults: 6 digits (WithDigits, which also accepts 8), a 30-second step
-// (WithPeriod), clock.System() (WithClock), crypto/rand.Reader (WithRandom) and
+// (WithTimeStep), clock.System() (WithClock), crypto/rand.Reader (WithRandom) and
 // id.NewV7Generator for enrolment generations (WithIDGenerator), and 5
 // verification attempts per enrolment per 15 minutes (WithVerifyAttempts). store
 // has no default — an enrolment store is the one thing this method cannot
@@ -670,7 +670,7 @@ func WithDigits(n int) Option {
 	return func(t *TOTP) { t.digits = n }
 }
 
-// WithPeriod sets the length of one time step, replacing the default of 30
+// WithTimeStep sets the length of one time step, replacing the default of 30
 // seconds. The period must be a whole number of seconds, at least one: RFC
 // 6238 counts steps in seconds and a provisioning URI carries the period as
 // whole seconds, so any other period is a construction error matching
@@ -679,7 +679,7 @@ func WithDigits(n int) Option {
 // 30 seconds is what authenticator apps assume when a provisioning URI omits
 // the period. A deployment that changes it is relying on the app reading the
 // period parameter, which not every app does.
-func WithPeriod(d time.Duration) Option {
+func WithTimeStep(d time.Duration) Option {
 	return func(t *TOTP) { t.period = d }
 }
 

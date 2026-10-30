@@ -41,7 +41,7 @@ func TestRecoverer_Complete(t *testing.T) {
 			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
 				require.NoError(t, err)
 				require.Len(t, res.Codes, 10)
-				assert.Equal(t, recovery.Count{N: 10, Low: false}, res.Remaining, "the new set is counted")
+				assert.Equal(t, recovery.RemainingCodes{N: 10, Low: false}, res.Remaining, "the new set is counted")
 				assert.Nil(t, res.Held)
 
 				// The new set first: each refused old code is charged to the
@@ -69,7 +69,7 @@ func TestRecoverer_Complete(t *testing.T) {
 			assert: func(t *testing.T, _ *completeEnv, res *recovery.Result, err error) {
 				require.NoError(t, err)
 				require.Len(t, res.Codes, 2)
-				assert.Equal(t, recovery.Count{N: 2, Low: true}, res.Remaining,
+				assert.Equal(t, recovery.RemainingCodes{N: 2, Low: true}, res.Remaining,
 					"two codes, at the default threshold of two, is low")
 			},
 		},
@@ -98,7 +98,7 @@ func TestRecoverer_Complete(t *testing.T) {
 				require.NotNil(t, res.Details)
 				assert.Equal(t, anaID, res.Details.ID)
 				assert.Len(t, res.Codes, 10)
-				assert.Equal(t, recovery.Count{N: 10, Low: false}, res.Remaining)
+				assert.Equal(t, recovery.RemainingCodes{N: 10, Low: false}, res.Remaining)
 			},
 		},
 		{
@@ -112,7 +112,7 @@ func TestRecoverer_Complete(t *testing.T) {
 			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {
 				require.NoError(t, err)
 				assert.Nil(t, res.Codes)
-				assert.Equal(t, recovery.Count{N: 2, Low: true}, res.Remaining)
+				assert.Equal(t, recovery.RemainingCodes{N: 2, Low: true}, res.Remaining)
 				assert.True(t, e.savedUsable(t.Context(), t, e.saved[9]), "the set is not replaced")
 			},
 		},
@@ -188,7 +188,7 @@ func TestRecoverer_Complete(t *testing.T) {
 		{
 			name: "a configured session lifetime replaces the default",
 			opts: func(*completeEnv) []recovery.Option {
-				return []recovery.Option{recovery.WithSessionLifetime(5 * time.Minute)}
+				return []recovery.Option{recovery.WithPendingSessionLifetime(5 * time.Minute)}
 			},
 			req: savedAndIssuedReq,
 			assert: func(t *testing.T, e *completeEnv, res *recovery.Result, err error) {

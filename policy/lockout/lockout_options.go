@@ -29,30 +29,30 @@ func WithAttemptStore(s policy.AttemptStore) Option {
 	return func(p *Policy) { p.store = s }
 }
 
-// WithThreshold replaces how many failures inside the window are free
+// WithWaitThreshold replaces how many failures inside the window are free
 // before a wait is owed. The default is 5.
 //
 // Zero or less is a configuration error: it would make every account wait,
 // including those that have never failed. So is a threshold at or above the
-// ceiling (WithCeiling, 100 by default), which would refuse an account
+// window failure limit (WithWindowFailureLimit, 100 by default), which would refuse an account
 // outright before it ever owed a wait. It cannot be combined with
 // WithSliding, which sets its own.
-func WithThreshold(n int) Option {
+func WithWaitThreshold(n int) Option {
 	return func(p *Policy) {
 		p.threshold = n
 		p.setThreshold = true
 	}
 }
 
-// WithWindow replaces how far back failures are counted, which is also
-// how long an account at the ceiling stays refused once the failures stop, and
+// WithFailureWindow replaces how far back failures are counted, which is also
+// how long an account at the window failure limit stays refused once the failures stop, and
 // the cutoff PurgeExpired sweeps behind. The default is 24 hours.
 //
 // Zero or less is a configuration error: no failure is ever inside a window of
 // zero, so lockout would be disabled while reading, at every call site, exactly
 // like a lockout that works. It cannot be combined with WithSliding, which
 // sets its own.
-func WithWindow(d time.Duration) Option {
+func WithFailureWindow(d time.Duration) Option {
 	return func(p *Policy) {
 		p.window = d
 		p.setWindow = true
@@ -90,10 +90,10 @@ func WithClock(clk clock.Clock) Option {
 // the window, so each further failure locks again for the full duration, one
 // guess per duration rather than a fresh threshold's worth. This is the
 // configuration for an audit that asks for a minimum lock duration;
-// WithSliding does not provide one. The ceiling (WithCeiling)
+// WithSliding does not provide one. The window failure limit (WithWindowFailureLimit)
 // still applies: a guesser who keeps to one failure per duration reaches it,
 // 100 failures by default, within about a day, and is then refused until
-// failures age out of the window, so "exactly" holds only below the ceiling.
+// failures age out of the window, so "exactly" holds only below the window failure limit.
 func WithWait(first, longest time.Duration) Option {
 	return func(p *Policy) {
 		p.firstWait, p.longestWait = first, longest
@@ -101,16 +101,16 @@ func WithWait(first, longest time.Duration) Option {
 	}
 }
 
-// WithCeiling replaces how many failures in the window refuse an
+// WithWindowFailureLimit replaces how many failures in the window refuse an
 // identifier however long it has waited. The default is 100.
 //
-// A ceiling not above the threshold is a configuration error: it would refuse
-// an account outright before it ever owed a wait. A ceiling above 100 is
-// allowed. The ceiling counts failures inside the window, which age out; it is
-// not a cap on consecutive failures in total and never disables the
+// A window failure limit not above the threshold is a configuration error: it would refuse
+// an account outright before it ever owed a wait. A window failure limit above 100 is
+// allowed. The window failure limit counts failures inside the window, which age out; it is
+// not a limit on consecutive failures in total and never disables the
 // authenticator (see Policy). It cannot be combined with
-// WithSliding, which has no ceiling.
-func WithCeiling(n int) Option {
+// WithSliding, which has no window failure limit.
+func WithWindowFailureLimit(n int) Option {
 	return func(p *Policy) {
 		p.ceiling = n
 		p.setCeiling = true
@@ -134,9 +134,9 @@ func WithCeiling(n int) Option {
 // to prevent.
 //
 // A threshold or window of zero or less is a configuration error, as for
-// WithThreshold and WithWindow. Combining it with
-// WithThreshold, WithWindow, WithWait or
-// WithCeiling is a configuration error whatever the order, since each
+// WithWaitThreshold and WithFailureWindow. Combining it with
+// WithWaitThreshold, WithFailureWindow, WithWait or
+// WithWindowFailureLimit is a configuration error whatever the order, since each
 // would mean something different, or nothing, under a sliding lock. A refusal
 // under a sliding lock carries no wait.
 func WithSliding(threshold int, window time.Duration) Option {
@@ -146,20 +146,22 @@ func WithSliding(threshold int, window time.Duration) Option {
 	}
 }
 
-// NISTCap is the limit NIST SP 800-63B-4 §3.2.2 sets on consecutive
-// failed attempts for one account: 100. Pass it to WithCap to hold an
-// identifier at that limit. It is a documented value to pass, not a default:
-// a policy has no cap unless WithCap sets one.
-const NISTCap = 100
+// NISTFailureStreakLimit is the limit NIST SP 800-63B-4 §3.2.2 sets on
+// consecutive failed authentication attempts for one account: 100. Pass it to
+// WithFailureStreakLimit to hold an identifier at that limit. It is a
+// documented value to pass, not a default: a policy has no failure-streak
+// limit unless WithFailureStreakLimit sets one.
+const NISTFailureStreakLimit = 100
 
-// defaultLockoutCapRetention is how long a consecutive count below the cap
-// lives after its newest failure, once WithCap sets a cap.
+// defaultLockoutCapRetention is how long a consecutive count below the streak limit
+// lives after its newest failure, once WithFailureStreakLimit sets a limit.
 const defaultLockoutCapRetention = 30 * 24 * time.Hour
 
-// WithCap holds an identifier once n consecutive failures have been
-// recorded for it, however many days they are spread over. The default is no
-// cap: an identifier is never held, and only the windowed waits and ceiling
-// apply. NISTCap is the value to pass for NIST's limit.
+// WithFailureStreakLimit holds an identifier once n consecutive failed
+// authentication attempts have been recorded for it, however many days they
+// are spread over. The default is no limit: an identifier is never held, and
+// only the windowed waits and the window's failure limit apply.
+// NISTFailureStreakLimit is the value to pass for NIST's limit.
 //
 // A held identifier is refused before its password is checked, with a
 // *Error that matches both ErrAccountLocked and ErrAccountHeld and
@@ -174,12 +176,12 @@ const defaultLockoutCapRetention = 30 * 24 * time.Hour
 // and neither does a correct password, which is never checked while the hold
 // stands.
 //
-// NIST SP 800-63B-4 §3.2.2 limits consecutive failed attempts for one account
-// to 100. A lower cap is within that limit; a cap above NISTCap is
+// NIST SP 800-63B-4 §3.2.2 limits consecutive failed authentication attempts
+// for one account to 100. A lower limit is within NIST's; a limit above NISTFailureStreakLimit is
 // accepted, and no longer meets it.
 //
 // A hold is a denial of service in the hands of anyone who knows a username:
-// they can hold its account by failing on purpose, which is why the cap is
+// they can hold its account by failing on purpose, which is why the streak limit is
 // opt-in. What bounds that risk:
 //   - account recovery with saved recovery codes still works while an account
 //     is held and needs no password, and the password change after it lifts
@@ -187,7 +189,7 @@ const defaultLockoutCapRetention = 30 * 24 * time.Hour
 //   - the per-source password-login guard of the httpsec chain (50 failures
 //     per 15 minutes by default) bounds what one source can send;
 //   - the escalating waits allow one identifier about 24 failures a day after
-//     the first day, so reaching a cap of 100 takes about four days, in which
+//     the first day, so reaching a streak limit of 100 takes about four days, in which
 //     the owner's own successful login clears the count.
 //
 // The policy cannot tell an identifier that names an account from one that
@@ -195,37 +197,37 @@ const defaultLockoutCapRetention = 30 * 24 * time.Hour
 // retention or by PurgeExpired, so a spray of unknown identifiers leaves one
 // held record per name; a consumer clears them with Reset.
 //
-// A cap needs an attempt store that keeps consecutive failures
+// A failure-streak limit needs an attempt store that keeps consecutive failures
 // (FailureStreakStore); the default in-memory store and the library's durable
-// stores do. Failures count toward the cap only when recorded through the
+// stores do. Failures count toward the streak limit only when recorded through the
 // policy's view, Attempts, or its RecordFailure, so the view, not the bare
 // store, is what the chain's login endpoints must record into. The httpsec
 // chain checks this at construction, but only for policies registered in its
-// engine before httpsec.New runs; a capped policy added later is not checked.
-// A count below the cap expires after the retention (WithCapRetention,
+// engine before httpsec.New runs; a policy with a failure-streak limit added later is not checked.
+// A count below the streak limit expires after the retention (WithFailureStreakRetention,
 // 30 days by default).
 //
 // It is a configuration error for n to be zero or less, or not above the
 // threshold (the first lock would already be a hold), and for the store not to
 // implement FailureStreakStore.
-func WithCap(n int) Option {
+func WithFailureStreakLimit(n int) Option {
 	return func(p *Policy) {
 		p.capLimit = n
 		p.setCap = true
 	}
 }
 
-// WithCapRetention replaces how long a consecutive count below the cap
+// WithFailureStreakRetention replaces how long a consecutive count below the streak limit
 // lives after its newest failure. The default is 30 days. A count whose newest
 // failure is older is no longer counted, the next failure starts a new count,
 // and PurgeExpired removes it. A hold never expires this way, and is never
 // purged.
 //
 // It is a configuration error for d to be zero or less, for it to be given
-// without WithCap, which makes it meaningless, and for it to be shorter
+// without WithFailureStreakLimit, which makes it meaningless, and for it to be shorter
 // than the lockout window, since a count would then expire while the window
 // still counts its failures.
-func WithCapRetention(d time.Duration) Option {
+func WithFailureStreakRetention(d time.Duration) Option {
 	return func(p *Policy) {
 		p.capRetention = d
 		p.setCapRetention = true

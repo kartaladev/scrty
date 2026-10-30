@@ -21,10 +21,10 @@ const (
 	// reached the threshold.
 	ReportLocked ReportKind = iota + 1
 
-	// ReportAtCeiling reports a recorded failure that leaves its identifier
-	// at the ceiling, refused however long it waits. The sliding lock has no
-	// ceiling, so under it a locking failure is always ReportLocked.
-	ReportAtCeiling
+	// ReportAtWindowFailureLimit reports a recorded failure that leaves its identifier
+	// at the window failure limit, refused however long it waits. The sliding lock has no
+	// window failure limit, so under it a locking failure is always ReportLocked.
+	ReportAtWindowFailureLimit
 
 	// ReportCleared reports a reset that removed failures from the window.
 	// Its count is read just before the reset, so a failure recorded
@@ -35,10 +35,10 @@ const (
 	ReportCleared
 
 	// ReportHeld reports the failure that made its identifier held by the
-	// consecutive-failure cap (WithCap). It is reported once per hold,
+	// failure-streak limit (WithFailureStreakLimit). It is reported once per hold,
 	// by the one write the store reports as having set it, so it is exact
-	// even under a concurrent burst, and including when a cap lowered below an
-	// existing count is reached by the next failure. That write is reported
+	// even under a concurrent burst, and including when a lowered failure-streak limit, now below an
+	// existing count, is reached by the next failure. That write is reported
 	// only as ReportHeld; later failures are reported by the window, as
 	// before.
 	ReportHeld
@@ -57,7 +57,7 @@ func (k ReportKind) String() string {
 	switch k {
 	case ReportLocked:
 		return "locked"
-	case ReportAtCeiling:
+	case ReportAtWindowFailureLimit:
 		return "at-ceiling"
 	case ReportCleared:
 		return "cleared"
@@ -117,11 +117,11 @@ type Report struct {
 // and only its report is lost, which the policy logs through
 // WithLogger. The same holds for a reset: if the failures could not be
 // counted before it, the reset still clears them, and only the ReportCleared
-// report is lost and logged; with a cap, a reset whose consecutive count could
+// report is lost and logged; with a failure-streak limit, a reset whose consecutive count could
 // not be read loses its report the same way, since the policy cannot tell a
 // release from a clearing without it.
 //
-// With a cap (WithCap) it is also told of the failure that sets a hold,
+// With a failure-streak limit (WithFailureStreakLimit) it is also told of the failure that sets a hold,
 // ReportHeld, even when the failure log could not record that failure: the
 // hold is in the store and no later write sets it again. A reset that lifts a
 // hold is reported as ReportReleased.
@@ -141,7 +141,7 @@ type Observer func(ctx context.Context, r Report)
 //
 // With an observer, recording a failure also counts the identifier's failures
 // in the window, and a reset counts them before clearing, which is one extra
-// store read on each. With a cap as well, a reset also reads the
+// store read on each. With a failure-streak limit as well, a reset also reads the
 // consecutive count, a second read; the failure that sets a hold needs no
 // read.
 //
@@ -186,19 +186,19 @@ func WithLogger(l *slog.Logger) Option {
 //
 // It returns the same value on every call, so a consumer that hands it to
 // several endpoints hands them one store, and anything that deduplicates
-// stores sees one. Without an observer or a cap it is the store itself. A
+// stores sees one. Without an observer or a failure-streak limit it is the store itself. A
 // failure recorded straight into the store, rather than through this view, is
 // not reported.
 //
-// With a cap (WithCap) the view's RecordFailure writes the identifier's
+// With a failure-streak limit (WithFailureStreakLimit) the view's RecordFailure writes the identifier's
 // consecutive-failure streak and then the failure log, and always attempts the
 // log even when the streak write failed; it returns both errors joined. A zero
 // instant is recorded at the policy's clock, for both writes.
 func (p *Policy) Attempts() policy.AttemptStore { return p.attempts }
 
 // observedAttempts is the view Attempts hands out when the policy has an
-// observer or a cap: it forwards every call to the policy's store, advances
-// the identifier's consecutive-failure streak when there is a cap, and
+// observer or a failure-streak limit: it forwards every call to the policy's store, advances
+// the identifier's consecutive-failure streak when there is a failure-streak limit, and
 // reports the transitions its writes cause when there is an observer.
 type observedAttempts struct {
 	p *Policy
@@ -211,7 +211,7 @@ const msgReportLost = "lockout: a lockout report was lost: the attempt store rec
 func (o *observedAttempts) RecordFailure(ctx context.Context, username string, at time.Time) error {
 	p := o.p
 
-	// A capped view records a zero instant at the policy's clock, for the
+	// A view under a failure-streak limit records a zero instant at the policy's clock, for the
 	// streak and the log alike: a hold set at the zero instant would read as no
 	// hold at all.
 	if p.streaks != nil && at.IsZero() {
@@ -258,7 +258,7 @@ func (o *observedAttempts) RecordFailure(ctx context.Context, username string, a
 
 	switch {
 	case !p.sliding && count >= p.ceiling:
-		p.report(ctx, Report{Identifier: username, Kind: ReportAtCeiling, Failures: count, At: at})
+		p.report(ctx, Report{Identifier: username, Kind: ReportAtWindowFailureLimit, Failures: count, At: at})
 	case count >= p.threshold:
 		p.report(ctx, Report{Identifier: username, Kind: ReportLocked, Failures: count, At: at})
 	}
@@ -316,7 +316,7 @@ func (o *observedAttempts) Reset(ctx context.Context, username string) error {
 	// asked for, and only the report depends on the count.
 	count, countErr := p.store.FailureCount(ctx, username, now.Add(-p.window))
 
-	// With a cap the streak is read too, to tell a release from a clearing.
+	// With a failure-streak limit the streak is read too, to tell a release from a clearing.
 	// Without it the policy cannot tell which one the reset was, so it
 	// reports neither rather than the wrong one.
 	var (

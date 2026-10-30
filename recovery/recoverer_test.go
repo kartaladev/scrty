@@ -177,16 +177,16 @@ func TestNewRecoverer(t *testing.T) {
 		{name: "a nil risk hook", opts: with(recovery.WithRisk(nil)), assert: configError},
 
 		// The completion.
-		{name: "a session lifetime of zero", opts: with(recovery.WithSessionLifetime(0)), assert: configError},
-		{name: "a negative session lifetime", opts: with(recovery.WithSessionLifetime(-time.Minute)), assert: configError},
+		{name: "a session lifetime of zero", opts: with(recovery.WithPendingSessionLifetime(0)), assert: configError},
+		{name: "a negative session lifetime", opts: with(recovery.WithPendingSessionLifetime(-time.Minute)), assert: configError},
 		{
 			name:   "a session lifetime of 13h against a 12h absolute timeout",
-			opts:   with(recovery.WithSessionLifetime(13 * time.Hour)),
+			opts:   with(recovery.WithPendingSessionLifetime(13 * time.Hour)),
 			assert: configError,
 		},
 		{
 			name:   "a session lifetime equal to the absolute timeout",
-			opts:   with(recovery.WithSessionLifetime(12 * time.Hour)),
+			opts:   with(recovery.WithPendingSessionLifetime(12 * time.Hour)),
 			assert: ok,
 		},
 		{
@@ -205,7 +205,7 @@ func TestNewRecoverer(t *testing.T) {
 		{name: "session revocation turned off", opts: with(recovery.WithoutSessionRevocation()), assert: ok},
 
 		// Holds.
-		{name: "a delay without a cancel link", opts: with(recovery.WithDelay(72 * time.Hour)), assert: configError},
+		{name: "a delay without a cancel link", opts: with(recovery.WithHoldDelay(72 * time.Hour)), assert: configError},
 		{
 			name:   "a risk hook without a cancel link",
 			opts:   with(recovery.WithRisk(func(context.Context, recovery.RiskInput) (time.Duration, error) { return 0, nil })),
@@ -213,53 +213,53 @@ func TestNewRecoverer(t *testing.T) {
 		},
 		{
 			name:   "a delay with an https cancel link",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("https://app.example.com/recovery/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("https://app.example.com/recovery/cancel")),
 			assert: ok,
 		},
 		{
 			name:   "a cancel link over http to a public host",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://app.example.com")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("http://app.example.com")),
 			assert: configError,
 		},
 		{
 			name:   "a cancel link over http to localhost",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://localhost:3000")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("http://localhost:3000")),
 			assert: ok,
 		},
 		{
 			name:   "a cancel link over http to LOCALHOST, folded in ASCII",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://LOCALHOST:8080/recovery/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("http://LOCALHOST:8080/recovery/cancel")),
 			assert: ok,
 		},
 		{
 			// U+017F folds to "s" only under Unicode case folding.
 			name:   "a cancel link over http to a Unicode-folded look-alike of localhost",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://localhoſt/recovery/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("http://localhoſt/recovery/cancel")),
 			assert: configError,
 		},
 		{
 			name:   "a cancel link over http to 127.0.0.1",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://127.0.0.1:3000/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("http://127.0.0.1:3000/cancel")),
 			assert: ok,
 		},
 		{
 			name:   "a cancel link over http to ::1",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("http://[::1]:3000/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("http://[::1]:3000/cancel")),
 			assert: ok,
 		},
 		{
 			name:   "a relative cancel link",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("/recovery/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("/recovery/cancel")),
 			assert: configError,
 		},
 		{
 			name:   "a cancel link carrying userinfo",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("https://user:pw@app.example.com/cancel")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("https://user:pw@app.example.com/cancel")),
 			assert: configError,
 		},
 		{
 			name:   "a cancel link carrying a fragment",
-			opts:   with(recovery.WithDelay(72*time.Hour), recovery.WithCancelLink("https://app.example.com/cancel#x")),
+			opts:   with(recovery.WithHoldDelay(72*time.Hour), recovery.WithCancelLink("https://app.example.com/cancel#x")),
 			assert: configError,
 		},
 		{
@@ -269,15 +269,15 @@ func TestNewRecoverer(t *testing.T) {
 		},
 		{
 			name:   "a delay of zero",
-			opts:   with(recovery.WithDelay(0), recovery.WithCancelLink("https://app.example.com/cancel")),
+			opts:   with(recovery.WithHoldDelay(0), recovery.WithCancelLink("https://app.example.com/cancel")),
 			assert: configError,
 		},
 		{
 			name:   "a negative delay",
-			opts:   with(recovery.WithDelay(-time.Hour), recovery.WithCancelLink("https://app.example.com/cancel")),
+			opts:   with(recovery.WithHoldDelay(-time.Hour), recovery.WithCancelLink("https://app.example.com/cancel")),
 			assert: configError,
 		},
-		{name: "a completion window of zero", opts: with(recovery.WithCompletionWindow(0)), assert: configError},
+		{name: "a completion window of zero", opts: with(recovery.WithHoldCompletionWindow(0)), assert: configError},
 		{name: "a nil hold token store", opts: with(recovery.WithHoldTokenStore(nil)), assert: configError},
 	}
 

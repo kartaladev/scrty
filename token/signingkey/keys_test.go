@@ -132,7 +132,7 @@ func TestNewKeyManager(t *testing.T) {
 			opts: []signingkey.Option{
 				signingkey.WithRotateInterval(6 * time.Hour),
 				signingkey.WithReloadInterval(10 * time.Second),
-				signingkey.WithLifetime(48 * time.Hour),
+				signingkey.WithKeyLifetime(48 * time.Hour),
 				signingkey.WithHousekeepingInterval(30 * time.Minute),
 			},
 			assert: accepted,
@@ -140,7 +140,7 @@ func TestNewKeyManager(t *testing.T) {
 		{
 			name: "a lifetime no longer than the rotate interval",
 			opts: []signingkey.Option{
-				signingkey.WithLifetime(30 * time.Minute),
+				signingkey.WithKeyLifetime(30 * time.Minute),
 				signingkey.WithRotateInterval(time.Hour),
 			},
 			assert: refused("lifetime"),
@@ -148,7 +148,7 @@ func TestNewKeyManager(t *testing.T) {
 		{
 			name: "a lifetime exactly the rotate interval",
 			opts: []signingkey.Option{
-				signingkey.WithLifetime(time.Hour),
+				signingkey.WithKeyLifetime(time.Hour),
 				signingkey.WithRotateInterval(time.Hour),
 			},
 			assert: refused("lifetime"),
@@ -176,7 +176,7 @@ func TestNewKeyManager(t *testing.T) {
 		},
 		{
 			name:   "a negative lifetime",
-			opts:   []signingkey.Option{signingkey.WithLifetime(-time.Second)},
+			opts:   []signingkey.Option{signingkey.WithKeyLifetime(-time.Second)},
 			assert: refused("lifetime must be positive"),
 		},
 		{
@@ -764,7 +764,7 @@ func TestDuplicateAlgsAreRefused(t *testing.T) {
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(30*time.Minute),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	if err != nil {
 		require.ErrorIs(t, err, signingkey.ErrConfig)
@@ -813,7 +813,7 @@ func TestNewKeyManagerWiringMistakes(t *testing.T) {
 				signingkey.WithKeyStore(signingkey.NewMemoryKeyStore()),
 				signingkey.WithAlgs(signingkey.EdDSA),
 				signingkey.WithRotateInterval(time.Hour),
-				signingkey.WithLifetime(2 * time.Hour),
+				signingkey.WithKeyLifetime(2 * time.Hour),
 				signingkey.WithHousekeepingInterval(1000 * time.Hour),
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, err error) {
@@ -927,7 +927,7 @@ func TestADuplicateStoreRecordIsHeldOnce(t *testing.T) {
 	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(&listingStore{recs: []signingkey.Record{dup, dup, current}}),
 		signingkey.WithClock(clk),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 		signingkey.WithHousekeepingInterval(time.Second),
 		signingkey.WithReloadInterval(30*time.Minute),
 		signingkey.WithRotateInterval(6*time.Hour),
@@ -996,7 +996,7 @@ func TestSigningStaysAvailableDuringASlowStoreWrite(t *testing.T) {
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 

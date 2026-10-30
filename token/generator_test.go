@@ -64,7 +64,7 @@ func TestGenerateClaims(t *testing.T) {
 			opts: func(clock *clockwork.FakeClock) []token.Option {
 				return []token.Option{
 					token.WithSigningAlg(signingkey.ES256),
-					token.WithLifetime(5 * time.Minute),
+					token.WithTokenLifetime(5 * time.Minute),
 					token.WithClock(clock),
 				}
 			},
@@ -149,7 +149,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 		t.Helper()
 
 		return newKeySourceWith(t,
-			signingkey.WithLifetime(24*time.Hour),
+			signingkey.WithKeyLifetime(24*time.Hour),
 			signingkey.WithRotateInterval(time.Hour))
 	}
 
@@ -245,7 +245,7 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// nil without thinking about it.
 			name:   "a nil option is skipped",
 			keys:   reporting,
-			opts:   []token.Option{nil, token.WithLifetime(time.Minute), nil},
+			opts:   []token.Option{nil, token.WithTokenLifetime(time.Minute), nil},
 			assert: constructed,
 		},
 		{
@@ -282,13 +282,13 @@ func TestNewGeneratorValidation(t *testing.T) {
 		{
 			name:   "a zero lifetime",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(0)},
+			opts:   []token.Option{token.WithTokenLifetime(0)},
 			assert: refused("positive"),
 		},
 		{
 			name:   "a negative lifetime",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(-time.Second)},
+			opts:   []token.Option{token.WithTokenLifetime(-time.Second)},
 			assert: refused("positive"),
 		},
 		{
@@ -296,37 +296,37 @@ func TestNewGeneratorValidation(t *testing.T) {
 			// would issue tokens that expire at an instant nobody asked for.
 			name:   "a sub-second lifetime",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(500 * time.Millisecond)},
+			opts:   []token.Option{token.WithTokenLifetime(500 * time.Millisecond)},
 			assert: refused("whole number of seconds"),
 		},
 		{
 			name:   "a lifetime that is not a whole number of seconds",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(1500 * time.Millisecond)},
+			opts:   []token.Option{token.WithTokenLifetime(1500 * time.Millisecond)},
 			assert: refused("whole number of seconds"),
 		},
 		{
 			name:   "a one-second lifetime is accepted",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(time.Second)},
+			opts:   []token.Option{token.WithTokenLifetime(time.Second)},
 			assert: constructed,
 		},
 		{
 			name:   "a lifetime that outlives the key",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(24 * time.Hour)},
+			opts:   []token.Option{token.WithTokenLifetime(24 * time.Hour)},
 			assert: refused("outlive"),
 		},
 		{
 			name:   "a lifetime one second past the usable window",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(23*time.Hour + time.Second)},
+			opts:   []token.Option{token.WithTokenLifetime(23*time.Hour + time.Second)},
 			assert: refused("outlive"),
 		},
 		{
 			name:   "a lifetime exactly filling the usable window is accepted",
 			keys:   reporting,
-			opts:   []token.Option{token.WithLifetime(23 * time.Hour)},
+			opts:   []token.Option{token.WithTokenLifetime(23 * time.Hour)},
 			assert: constructed,
 		},
 		{
@@ -484,7 +484,7 @@ func TestConsumerSuppliedKeySource(t *testing.T) {
 
 	// A reporting key source would refuse this lifetime; one that cannot
 	// report has nothing to check it against.
-	gen, err := token.NewGenerator(external, token.WithLifetime(30*24*time.Hour))
+	gen, err := token.NewGenerator(external, token.WithTokenLifetime(30*24*time.Hour))
 	require.NoError(t, err)
 
 	raw, err := gen.Generate(t.Context(), "s-1", alice())

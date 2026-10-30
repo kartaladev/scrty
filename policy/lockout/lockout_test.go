@@ -69,7 +69,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 	// refusedNaming is a refusal whose error contains fragment, which names the
 	// option at fault so a consumer reading it knows which line of wiring to
 	// change. A cap fragment carries the words after the name, so that an error
-	// naming WithCapRetention does not satisfy it.
+	// naming WithFailureStreakRetention does not satisfy it.
 	refusedNaming := func(fragment string) func(t *testing.T, p *lockout.Policy, err error) {
 		return func(t *testing.T, p *lockout.Policy, err error) {
 			t.Helper()
@@ -90,92 +90,92 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Zero(t, p.Cap(), "a policy with default options holds identifiers")
+				assert.Zero(t, p.FailureStreakLimit(), "a policy with default options holds identifiers")
 			},
 		},
 		{
 			name: "a cap takes the default retention of thirty days",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 100, p.Cap())
-				assert.Equal(t, 30*24*time.Hour, p.CapRetention())
+				assert.Equal(t, 100, p.FailureStreakLimit())
+				assert.Equal(t, 30*24*time.Hour, p.FailureStreakRetention())
 			},
 		},
 		{
 			name: "a consumer retention replaces the default",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(7 * 24 * time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(7 * 24 * time.Hour),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 7*24*time.Hour, p.CapRetention())
+				assert.Equal(t, 7*24*time.Hour, p.FailureStreakRetention())
 			},
 		},
 		{
 			name: "a retention given before the cap is accepted",
 			opts: []lockout.Option{
-				lockout.WithCapRetention(7 * 24 * time.Hour),
-				lockout.WithCap(lockout.NISTCap),
+				lockout.WithFailureStreakRetention(7 * 24 * time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 7*24*time.Hour, p.CapRetention())
+				assert.Equal(t, 7*24*time.Hour, p.FailureStreakRetention())
 			},
 		},
 		{
 			name: "a retention shorter than the window is refused whatever the option order",
 			opts: []lockout.Option{
-				lockout.WithCapRetention(time.Hour),
-				lockout.WithCap(lockout.NISTCap),
+				lockout.WithFailureStreakRetention(time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 			},
-			assert: refusedNaming("WithCapRetention"),
+			assert: refusedNaming("WithFailureStreakRetention"),
 		},
 		{
 			name: "a store that keeps streaks given after the cap is accepted",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 				lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 100, p.Cap())
+				assert.Equal(t, 100, p.FailureStreakLimit())
 			},
 		},
 		{
 			name: "a store that keeps no streaks given after the cap is refused",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 				lockout.WithAttemptStore(streaklessStore),
 			},
-			assert: refusedNaming("WithCap needs"),
+			assert: refusedNaming("WithFailureStreakLimit needs"),
 		},
 		{
 			// NIST's 100 is an upper bound; a higher cap is the consumer's
 			// documented departure, not a wiring mistake.
 			name: "a cap above NIST's limit is accepted",
-			opts: []lockout.Option{lockout.WithCap(150)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(150)},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 150, p.Cap())
+				assert.Equal(t, 150, p.FailureStreakLimit())
 			},
 		},
 		{
 			name: "a consumer cap just above a consumer threshold is accepted",
 			opts: []lockout.Option{
-				lockout.WithThreshold(3),
-				lockout.WithCap(4),
+				lockout.WithWaitThreshold(3),
+				lockout.WithFailureStreakLimit(4),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 4, p.Cap())
+				assert.Equal(t, 4, p.FailureStreakLimit())
 			},
 		},
 		{
@@ -183,76 +183,76 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			name: "a cap with a store that keeps no streaks is refused",
 			opts: []lockout.Option{
 				lockout.WithAttemptStore(streaklessStore),
-				lockout.WithCap(lockout.NISTCap),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 			},
-			assert: refusedNaming("WithCap needs"),
+			assert: refusedNaming("WithFailureStreakLimit needs"),
 		},
 		{
 			// Spec: "Cap at the threshold": the first lock would already be a
 			// hold.
 			name:   "a cap at the threshold is refused",
-			opts:   []lockout.Option{lockout.WithCap(5)},
-			assert: refusedNaming("WithCap must be above"),
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(5)},
+			assert: refusedNaming("WithFailureStreakLimit must be above"),
 		},
 		{
 			name: "a cap below a consumer threshold is refused",
 			opts: []lockout.Option{
-				lockout.WithThreshold(10),
-				lockout.WithCap(8),
+				lockout.WithWaitThreshold(10),
+				lockout.WithFailureStreakLimit(8),
 			},
-			assert: refusedNaming("WithCap must be above"),
+			assert: refusedNaming("WithFailureStreakLimit must be above"),
 		},
 		{
 			name:   "a cap of zero is refused",
-			opts:   []lockout.Option{lockout.WithCap(0)},
-			assert: refusedNaming("WithCap must be positive"),
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(0)},
+			assert: refusedNaming("WithFailureStreakLimit must be positive"),
 		},
 		{
 			name:   "a negative cap is refused",
-			opts:   []lockout.Option{lockout.WithCap(-1)},
-			assert: refusedNaming("WithCap must be positive"),
+			opts:   []lockout.Option{lockout.WithFailureStreakLimit(-1)},
+			assert: refusedNaming("WithFailureStreakLimit must be positive"),
 		},
 		{
 			// Spec: "Retention without a cap".
 			name:   "a retention without a cap is refused",
-			opts:   []lockout.Option{lockout.WithCapRetention(30 * 24 * time.Hour)},
-			assert: refusedNaming("WithCapRetention"),
+			opts:   []lockout.Option{lockout.WithFailureStreakRetention(30 * 24 * time.Hour)},
+			assert: refusedNaming("WithFailureStreakRetention"),
 		},
 		{
 			name: "a retention of zero is refused",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(0),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(0),
 			},
-			assert: refusedNaming("WithCapRetention"),
+			assert: refusedNaming("WithFailureStreakRetention"),
 		},
 		{
 			name: "a negative retention is refused",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(-time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(-time.Hour),
 			},
-			assert: refusedNaming("WithCapRetention"),
+			assert: refusedNaming("WithFailureStreakRetention"),
 		},
 		{
 			// A count would expire while the window still counts its failures.
 			name: "a retention shorter than the window is refused",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(time.Hour),
 			},
-			assert: refusedNaming("WithCapRetention"),
+			assert: refusedNaming("WithFailureStreakRetention"),
 		},
 		{
 			name: "a retention equal to the window is accepted",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(24 * time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(24 * time.Hour),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 24*time.Hour, p.CapRetention())
+				assert.Equal(t, 24*time.Hour, p.FailureStreakRetention())
 			},
 		},
 		{
@@ -273,8 +273,8 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 5, p.Threshold())
-				assert.Equal(t, 24*time.Hour, p.Window())
+				assert.Equal(t, 5, p.WaitThreshold())
+				assert.Equal(t, 24*time.Hour, p.FailureWindow())
 			},
 		},
 		{
@@ -306,27 +306,27 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			// The ceiling is where waiting stops lifting the lock, so it must
 			// leave at least one escalated wait between it and the threshold.
 			name:   "a ceiling equal to the default threshold is refused",
-			opts:   []lockout.Option{lockout.WithCeiling(5)},
+			opts:   []lockout.Option{lockout.WithWindowFailureLimit(5)},
 			assert: refused,
 		},
 		{
 			name: "a ceiling below a consumer threshold is refused",
 			opts: []lockout.Option{
-				lockout.WithThreshold(10),
-				lockout.WithCeiling(8),
+				lockout.WithWaitThreshold(10),
+				lockout.WithWindowFailureLimit(8),
 			},
 			assert: refused,
 		},
 		{
 			name:   "a consumer threshold at the default ceiling is refused",
-			opts:   []lockout.Option{lockout.WithThreshold(100)},
+			opts:   []lockout.Option{lockout.WithWaitThreshold(100)},
 			assert: refused,
 		},
 		{
 			// NIST caps consecutive failures at 100; a higher ceiling is the
 			// consumer's documented departure, not a wiring mistake.
 			name: "a ceiling above one hundred is allowed",
-			opts: []lockout.Option{lockout.WithCeiling(150)},
+			opts: []lockout.Option{lockout.WithWindowFailureLimit(150)},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
@@ -338,8 +338,8 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 3, p.Threshold())
-				assert.Equal(t, 15*time.Minute, p.Window(), "Window did not report the sliding lock's window")
+				assert.Equal(t, 3, p.WaitThreshold())
+				assert.Equal(t, 15*time.Minute, p.FailureWindow(), "FailureWindow did not report the sliding lock's window")
 			},
 		},
 		{
@@ -386,28 +386,28 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			name: "a sliding lock with a ceiling option is refused",
 			opts: []lockout.Option{
 				lockout.WithSliding(5, 15*time.Minute),
-				lockout.WithCeiling(50),
+				lockout.WithWindowFailureLimit(50),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				refused(t, p, err)
-				assert.Contains(t, err.Error(), "WithCeiling")
+				assert.Contains(t, err.Error(), "WithWindowFailureLimit")
 				assert.NotContains(t, err.Error(), "WithWait", "the error named an option that was not combined")
-				assert.NotContains(t, err.Error(), "WithThreshold", "the error named an option that was not combined")
-				assert.NotContains(t, err.Error(), "WithWindow", "the error named an option that was not combined")
+				assert.NotContains(t, err.Error(), "WithWaitThreshold", "the error named an option that was not combined")
+				assert.NotContains(t, err.Error(), "WithFailureWindow", "the error named an option that was not combined")
 			},
 		},
 		{
 			name: "a sliding lock with several conflicting options names each of them",
 			opts: []lockout.Option{
 				lockout.WithSliding(5, 15*time.Minute),
-				lockout.WithThreshold(3),
+				lockout.WithWaitThreshold(3),
 				lockout.WithWait(time.Second, time.Minute),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				refused(t, p, err)
-				assert.Contains(t, err.Error(), "WithThreshold")
+				assert.Contains(t, err.Error(), "WithWaitThreshold")
 				assert.Contains(t, err.Error(), "WithWait")
-				assert.NotContains(t, err.Error(), "WithCeiling")
+				assert.NotContains(t, err.Error(), "WithWindowFailureLimit")
 			},
 		},
 		{
@@ -415,7 +415,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			// before the sliding lock would otherwise be silently overwritten.
 			name: "a threshold option before a sliding lock is refused",
 			opts: []lockout.Option{
-				lockout.WithThreshold(3),
+				lockout.WithWaitThreshold(3),
 				lockout.WithSliding(5, 15*time.Minute),
 			},
 			assert: refused,
@@ -424,21 +424,21 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			name: "a window option after a sliding lock is refused",
 			opts: []lockout.Option{
 				lockout.WithSliding(5, 15*time.Minute),
-				lockout.WithWindow(time.Hour),
+				lockout.WithFailureWindow(time.Hour),
 			},
 			assert: refused,
 		},
 		{
 			name: "a consumer's own threshold and window are kept",
 			opts: []lockout.Option{
-				lockout.WithThreshold(3),
-				lockout.WithWindow(time.Hour),
+				lockout.WithWaitThreshold(3),
+				lockout.WithFailureWindow(time.Hour),
 			},
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 3, p.Threshold())
-				assert.Equal(t, time.Hour, p.Window())
+				assert.Equal(t, 3, p.WaitThreshold())
+				assert.Equal(t, time.Hour, p.FailureWindow())
 			},
 		},
 		{
@@ -453,24 +453,24 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			// A window of zero contains no failure at all, so lockout is
 			// disabled while every call site still reads like a lockout.
 			name:   "a zero window is refused rather than silently disabling lockout",
-			opts:   []lockout.Option{lockout.WithWindow(0)},
+			opts:   []lockout.Option{lockout.WithFailureWindow(0)},
 			assert: refused,
 		},
 		{
 			name:   "a negative window is refused",
-			opts:   []lockout.Option{lockout.WithWindow(-time.Minute)},
+			opts:   []lockout.Option{lockout.WithFailureWindow(-time.Minute)},
 			assert: refused,
 		},
 		{
 			// Zero failures are at or above a threshold of zero, so every
 			// account is locked, including one that has never failed.
 			name:   "a zero threshold is refused rather than locking every account",
-			opts:   []lockout.Option{lockout.WithThreshold(0)},
+			opts:   []lockout.Option{lockout.WithWaitThreshold(0)},
 			assert: refused,
 		},
 		{
 			name:   "a negative threshold is refused",
-			opts:   []lockout.Option{lockout.WithThreshold(-1)},
+			opts:   []lockout.Option{lockout.WithWaitThreshold(-1)},
 			assert: refused,
 		},
 		{
@@ -539,7 +539,7 @@ func TestNewAccountLockoutPolicy(t *testing.T) {
 			assert: func(t *testing.T, p *lockout.Policy, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, p)
-				assert.Equal(t, 5, p.Threshold())
+				assert.Equal(t, 5, p.WaitThreshold())
 			},
 		},
 	}
@@ -561,8 +561,8 @@ func TestAccountLockoutPolicyDefaults(t *testing.T) {
 	p, err := lockout.New()
 	require.NoError(t, err)
 
-	assert.Equal(t, 5, p.Threshold(), "the default threshold is not five")
-	assert.Equal(t, 24*time.Hour, p.Window(), "the default window is not twenty-four hours")
+	assert.Equal(t, 5, p.WaitThreshold(), "the default threshold is not five")
+	assert.Equal(t, 24*time.Hour, p.FailureWindow(), "the default window is not twenty-four hours")
 	assert.Equal(t, []policy.Phase{policy.PreAuthentication}, p.Phases(),
 		"the lockout rule must apply whether or not the submitted secret is correct, which is the pre-authentication phase")
 	assert.NotEmpty(t, p.Name())
@@ -823,7 +823,7 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 		},
 		{
 			name:   "a consumer ceiling refuses at its own count",
-			opts:   []lockout.Option{lockout.WithCeiling(20)},
+			opts:   []lockout.Option{lockout.WithWindowFailureLimit(20)},
 			record: failuresEndingAt("ada", 20, 2*time.Hour),
 			assert: denies,
 		},
@@ -869,13 +869,13 @@ func TestAccountLockoutPolicyEvaluates(t *testing.T) {
 		},
 		{
 			name:   "a consumer threshold of three owes a wait at three failures",
-			opts:   []lockout.Option{lockout.WithThreshold(3)},
+			opts:   []lockout.Option{lockout.WithWaitThreshold(3)},
 			record: failuresEndingAt("ada", 3, 10*time.Second),
 			assert: denies,
 		},
 		{
 			name: "a consumer window of one hour drops a failure the default would still count",
-			opts: []lockout.Option{lockout.WithWindow(time.Hour)},
+			opts: []lockout.Option{lockout.WithFailureWindow(time.Hour)},
 			record: func(t *testing.T, store *lockout.MemoryAttemptStore) {
 				failuresEndingAt("ada", 4, 10*time.Second)(t, store)
 				failuresAt(t, store, "ada", lockoutNow.Add(-2*time.Hour))
@@ -1373,7 +1373,7 @@ func TestAccountLockoutPolicyPurgeExpired(t *testing.T) {
 			DeleteAttemptsBefore(gomock.Any(), lockoutNow.Add(-time.Hour)).
 			Return(0, nil)
 
-		p := lockoutWith(t, lockout.WithAttemptStore(store), lockout.WithWindow(time.Hour))
+		p := lockoutWith(t, lockout.WithAttemptStore(store), lockout.WithFailureWindow(time.Hour))
 
 		_, err := p.PurgeExpired(t.Context())
 		require.NoError(t, err)
@@ -1628,7 +1628,7 @@ func TestLockoutCapView(t *testing.T) {
 		},
 		{
 			name: "with a cap the streak is written before the log",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			expect: func(s *streakAttemptStore) {
 				gomock.InOrder(
 					s.MockFailureStreakStore.EXPECT().
@@ -1648,8 +1648,8 @@ func TestLockoutCapView(t *testing.T) {
 			// clock.
 			name: "the view handed to an endpoint advances the streak with a consumer cap and retention",
 			opts: []lockout.Option{
-				lockout.WithCap(20),
-				lockout.WithCapRetention(7 * 24 * time.Hour),
+				lockout.WithFailureStreakLimit(20),
+				lockout.WithFailureStreakRetention(7 * 24 * time.Hour),
 			},
 			expect: func(s *streakAttemptStore) {
 				at := lockoutNow.Add(-time.Hour)
@@ -1674,7 +1674,7 @@ func TestLockoutCapView(t *testing.T) {
 			// to write it does not skip the log: the log entry alone keeps the
 			// windowed lock counting while the streak store is failing.
 			name: "a failed streak write is returned and the log is still written",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			expect: func(s *streakAttemptStore) {
 				gomock.InOrder(
 					s.MockFailureStreakStore.EXPECT().
@@ -1692,7 +1692,7 @@ func TestLockoutCapView(t *testing.T) {
 		},
 		{
 			name: "when both writes fail both errors are returned",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			expect: func(s *streakAttemptStore) {
 				gomock.InOrder(
 					s.MockFailureStreakStore.EXPECT().
@@ -1709,7 +1709,7 @@ func TestLockoutCapView(t *testing.T) {
 		},
 		{
 			name: "a failed log write after the streak is returned",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			expect: func(s *streakAttemptStore) {
 				gomock.InOrder(
 					s.MockFailureStreakStore.EXPECT().
@@ -1727,7 +1727,7 @@ func TestLockoutCapView(t *testing.T) {
 			// With a cap and no observer there is nothing to report, so a
 			// reset is the store's Reset, which clears the streak with the log.
 			name: "with a cap and no observer a reset only clears through the store",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			expect: func(s *streakAttemptStore) {
 				s.MockAttemptStore.EXPECT().Reset(gomock.Any(), "ada").Return(nil)
 			},
@@ -1796,7 +1796,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 		{
 			// Spec: "Cap reached across days" and "Held refusal".
 			name: "a cap of 100 reached across five days holds",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1810,7 +1810,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 		{
 			// Spec: "Consumer cap".
 			name: "a consumer cap of 20 reached over two days holds",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1826,7 +1826,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 			// at the policy's clock: at the zero instant the hold would be set
 			// at time zero, which reads as no hold at all.
 			name: "failures recorded at a zero instant through the view still hold",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			seed: func(t *testing.T, p *lockout.Policy, _ *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1842,7 +1842,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 		{
 			// Spec: "Below the cap".
 			name: "ninety-nine failures under a cap of 100 are allowed",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1857,7 +1857,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 			// Spec: "Unknown identifiers are held alike". The policy cannot
 			// tell them apart, and its refusal must not either.
 			name: "an identifier with no account is held with the same refusal",
-			opts: []lockout.Option{lockout.WithCap(20)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(20)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1877,7 +1877,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 		{
 			// Spec: "A windowed lock is not a hold".
 			name: "a windowed lock under a cap is not a hold",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1904,7 +1904,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 			// policy that cannot tell whether an identifier is held does not
 			// know enough to allow it.
 			name: "a streak that cannot be read denies, wrapping the store's error",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(t *testing.T) policy.AttemptStore {
 				t.Helper()
 
@@ -1928,7 +1928,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 		{
 			// Spec: "A hold outlives every window".
 			name: "a hold set ninety days ago still holds",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -1946,7 +1946,7 @@ func TestLockoutCapEvaluate(t *testing.T) {
 			// writes nothing, so the identifier is still held afterwards. The
 			// mock expects the two reads and nothing else.
 			name: "pre-authentication refuses a held identifier and leaves it held",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(t *testing.T) policy.AttemptStore {
 				t.Helper()
 
@@ -2023,7 +2023,7 @@ func TestLockoutCapRetention(t *testing.T) {
 		{
 			// Spec: "Inactive count restarts".
 			name: "a count inactive for longer than the retention restarts",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -2043,8 +2043,8 @@ func TestLockoutCapRetention(t *testing.T) {
 			// Spec: "Consumer retention".
 			name: "a consumer retention of seven days restarts a count eight days old",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(7 * 24 * time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(7 * 24 * time.Hour),
 			},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
@@ -2064,8 +2064,8 @@ func TestLockoutCapRetention(t *testing.T) {
 			// days old under seven days of retention still counts.
 			name: "a consumer retention of seven days keeps a count six days old",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(7 * 24 * time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(7 * 24 * time.Hour),
 			},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
@@ -2082,7 +2082,7 @@ func TestLockoutCapRetention(t *testing.T) {
 		{
 			// Spec: "A hold does not expire".
 			name: "a hold set thirty-one days ago still holds",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -2098,7 +2098,7 @@ func TestLockoutCapRetention(t *testing.T) {
 			// the window go together: with any of them left, ada would still
 			// be refused, held or at the ceiling.
 			name: "the policy's reset lifts a hold and clears the window",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			seed: func(t *testing.T, p *lockout.Policy, clk *clockwork.FakeClock) {
 				t.Helper()
 
@@ -2179,7 +2179,7 @@ func TestLockoutCapPurge(t *testing.T) {
 	cases := []testCase{
 		{
 			name: "with a cap the inactive streaks behind the retention are purged too",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakReaperStore(t)
 				gomock.InOrder(
@@ -2198,8 +2198,8 @@ func TestLockoutCapPurge(t *testing.T) {
 		{
 			name: "the streaks are purged behind the consumer's retention",
 			opts: []lockout.Option{
-				lockout.WithCap(lockout.NISTCap),
-				lockout.WithCapRetention(7 * 24 * time.Hour),
+				lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
+				lockout.WithFailureStreakRetention(7 * 24 * time.Hour),
 			},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakReaperStore(t)
@@ -2230,7 +2230,7 @@ func TestLockoutCapPurge(t *testing.T) {
 		},
 		{
 			name: "a streak purge that failed is returned behind the library's text",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakReaperStore(t)
 				s.MockAttemptReaper.EXPECT().DeleteAttemptsBefore(gomock.Any(), windowCutoff).Return(3, nil)
@@ -2247,7 +2247,7 @@ func TestLockoutCapPurge(t *testing.T) {
 		},
 		{
 			name: "a failed attempt purge leaves the streaks alone",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(t *testing.T) policy.AttemptStore {
 				s := newStreakReaperStore(t)
 				s.MockAttemptReaper.EXPECT().DeleteAttemptsBefore(gomock.Any(), windowCutoff).Return(0, errAttemptStoreDown)
@@ -2262,7 +2262,7 @@ func TestLockoutCapPurge(t *testing.T) {
 			// The in-memory store purges its log and its streaks: with
 			// nothing recorded, the purge succeeds and removes nothing.
 			name: "with a cap the in-memory store purges",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			store: func(*testing.T) policy.AttemptStore {
 				return lockout.NewMemoryAttemptStore()
 			},
@@ -2302,7 +2302,7 @@ func TestLockoutCapPurgeKeepsHolds(t *testing.T) {
 	p, err := lockout.New(
 		lockout.WithAttemptStore(store),
 		lockout.WithClock(clk),
-		lockout.WithCap(lockout.NISTCap),
+		lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 	)
 	require.NoError(t, err)
 
@@ -2340,7 +2340,7 @@ func TestPolicy_RequiredAttemptView(t *testing.T) {
 	tests := []testCase{
 		{
 			name: "with a cap the policy requires its view",
-			opts: []lockout.Option{lockout.WithCap(lockout.NISTCap)},
+			opts: []lockout.Option{lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit)},
 			assert: func(t *testing.T, required bool) {
 				assert.True(t, required)
 			},
@@ -2386,7 +2386,7 @@ func TestLockoutExpiryTask(t *testing.T) {
 		store := newSweepingAttemptStore()
 		p, err := lockout.New(
 			lockout.WithClock(clockwork.NewFakeClockAt(lockoutNow)),
-			lockout.WithWindow(window),
+			lockout.WithFailureWindow(window),
 			lockout.WithAttemptStore(store),
 		)
 		require.NoError(t, err)
@@ -2438,7 +2438,7 @@ func TestLockoutExpiryTask(t *testing.T) {
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				p, err := lockout.New(
 					lockout.WithClock(clockwork.NewFakeClockAt(lockoutNow)),
-					lockout.WithWindow(15*time.Minute),
+					lockout.WithFailureWindow(15*time.Minute),
 					lockout.WithAttemptStore(NewMockAttemptStore(gomock.NewController(t))),
 				)
 				require.NoError(t, err)
@@ -2456,7 +2456,7 @@ func TestLockoutExpiryTask(t *testing.T) {
 			setup: func(t *testing.T) (expiry.Task, func(t *testing.T)) {
 				p, err := lockout.New(
 					lockout.WithClock(clockwork.NewFakeClockAt(lockoutNow)),
-					lockout.WithWindow(15*time.Minute),
+					lockout.WithFailureWindow(15*time.Minute),
 				)
 				require.NoError(t, err)
 				for _, d := range []time.Duration{5 * time.Minute, 20 * time.Minute} {

@@ -82,11 +82,11 @@ func ExampleWithObserver() {
 // spaced so that each failure's wait has passed by the next, and the hold outlasts any
 // wait. Only clearing its failures lifts it; here, the policy's Reset, which
 // is the unlock an administrator or support tool calls.
-func ExampleWithCap() {
+func ExampleWithFailureStreakLimit() {
 	clk := clockwork.NewFakeClockAt(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 	p, err := lockout.New(
 		lockout.WithClock(clk),
-		lockout.WithCap(lockout.NISTCap),
+		lockout.WithFailureStreakLimit(lockout.NISTFailureStreakLimit),
 	)
 	if err != nil {
 		fmt.Println(err)
@@ -95,7 +95,7 @@ func ExampleWithCap() {
 	}
 
 	ctx := context.Background()
-	for range lockout.NISTCap {
+	for range lockout.NISTFailureStreakLimit {
 		if err := p.Attempts().RecordFailure(ctx, "ada", clk.Now()); err != nil {
 			fmt.Println(err)
 

@@ -580,7 +580,7 @@ func recoveryHeldRecoveryCancelledByLogin() Scenario {
 				Users: fixtureUsers{}, Sessions: sessions, Records: fx.Records, Sender: fx.Outbox, Codes: fx.Codes,
 			}
 			coreOpts := append(recoveryCoreOptions(fx, recovery.ProofSaved, recovery.ProofIssued),
-				recovery.WithDelay(recoveryHoldDelay),
+				recovery.WithHoldDelay(recoveryHoldDelay),
 				recovery.WithCancelLink("https://app.example.com/cancel"),
 			)
 
@@ -938,7 +938,7 @@ func recoveryFinishEndpointCompletesAHeldRecovery() Scenario {
 				Users: fixtureUsers{}, Sessions: sessions, Records: fx.Records, Sender: fx.Outbox, Codes: fx.Codes,
 			}
 			coreOpts := append(recoveryCoreOptions(fx, recovery.ProofSaved, recovery.ProofIssued),
-				recovery.WithDelay(recoveryHoldDelay),
+				recovery.WithHoldDelay(recoveryHoldDelay),
 				recovery.WithCancelLink("https://app.example.com/cancel"),
 			)
 
@@ -1025,7 +1025,7 @@ func recoveryCancelEndpointCancelsAHeldRecovery() Scenario {
 				Users: fixtureUsers{}, Sessions: sessions, Records: fx.Records, Sender: fx.Outbox, Codes: fx.Codes,
 			}
 			coreOpts := append(recoveryCoreOptions(fx, recovery.ProofSaved, recovery.ProofIssued),
-				recovery.WithDelay(recoveryHoldDelay),
+				recovery.WithHoldDelay(recoveryHoldDelay),
 				recovery.WithCancelLink("https://app.example.com/cancel"),
 			)
 

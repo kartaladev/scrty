@@ -859,8 +859,8 @@ func TestMFAConstructors_ErrorsAreConfigErrors(t *testing.T) {
 		{name: "totp: empty issuer", build: totp(store, ""), assert: configError},
 		{name: "totp: issuer containing ':'", build: totp(store, "Ex:ample"), assert: configError},
 		{name: "totp: 7 digits", build: totp(store, "Example", mfa.WithDigits(7)), assert: configError},
-		{name: "totp: zero period", build: totp(store, "Example", mfa.WithPeriod(0)), assert: configError},
-		{name: "totp: negative period", build: totp(store, "Example", mfa.WithPeriod(-time.Second)), assert: configError},
+		{name: "totp: zero period", build: totp(store, "Example", mfa.WithTimeStep(0)), assert: configError},
+		{name: "totp: negative period", build: totp(store, "Example", mfa.WithTimeStep(-time.Second)), assert: configError},
 		{name: "totp: nil logger", build: totp(store, "Example", mfa.WithLogger(nil)), assert: configError},
 		{
 			name:   "totp: nil identifier generator",

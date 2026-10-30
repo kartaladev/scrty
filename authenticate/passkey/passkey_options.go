@@ -81,12 +81,12 @@ func WithRegistrationChallengeLimit(n int) Option {
 	return func(m *Passkeys) { m.issueLimit = n }
 }
 
-// WithLimit replaces how many passkeys one user may hold, counting
+// WithPerUserLimit replaces how many passkeys one user may hold, counting
 // every state. The default is 25; a registration beyond it is refused with
-// ErrLimitReached. The limit is decided by the credential store's bounded
+// ErrPerUserLimitReached. The limit is decided by the credential store's bounded
 // insert (CredentialStore.InsertWithin), so finishes racing for one user never
 // leave it holding more. Zero or less is a configuration error.
-func WithLimit(n int) Option {
+func WithPerUserLimit(n int) Option {
 	return func(m *Passkeys) { m.passkeyLimit = n }
 }
 

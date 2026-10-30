@@ -698,7 +698,7 @@ func newIntegrationHarness(t *testing.T) *integrationHarness {
 	h.wireUsers()
 	h.wireTokens()
 
-	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTokenTTL(magicLinkTTL))
 	require.NoError(t, err)
 
 	h.links, err = magiclink.New(
@@ -1605,7 +1605,7 @@ func newE2EDeployment(t *testing.T) *e2eDeployment {
 	d.totp, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example Payroll", mfa.WithClock(d.clock))
 	require.NoError(t, err)
 
-	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTokenTTL(magicLinkTTL))
 	require.NoError(t, err)
 
 	d.links, err = magiclink.New(onetimes, d.users, d.sender, "https://app.example.com")

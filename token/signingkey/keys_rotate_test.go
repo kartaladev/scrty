@@ -35,7 +35,7 @@ func TestRotationAtTheConfiguredInterval(t *testing.T) {
 		signingkey.WithRotateInterval(6*time.Hour), // the consumer's interval
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -148,7 +148,7 @@ func TestRotationFailureIsObservable(t *testing.T) {
 				signingkey.WithRotateInterval(time.Hour),
 				signingkey.WithReloadInterval(30 * time.Minute),
 				signingkey.WithHousekeepingInterval(12 * time.Hour),
-				signingkey.WithLifetime(24 * time.Hour),
+				signingkey.WithKeyLifetime(24 * time.Hour),
 				signingkey.WithErrorHook(report.hook),
 			}, tc.logTo(t, logger)...)
 
@@ -190,7 +190,7 @@ func TestRotation_IsNotUndoneByAFutureDatedStoredKey(t *testing.T) {
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -253,7 +253,7 @@ func TestErrorHookMayReadTheManagerBack(t *testing.T) {
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	require.NoError(t, km.Start(t.Context()))
@@ -335,11 +335,11 @@ func TestFailureLogsAreSampled(t *testing.T) {
 				signingkey.WithAlgs(signingkey.EdDSA),
 				signingkey.WithLogger(logger),
 				signingkey.WithErrorHook(report.hook),
-				signingkey.WithLogSampleWindow(window),
+				signingkey.WithLogInterval(window),
 				signingkey.WithRotateInterval(time.Minute),
 				signingkey.WithReloadInterval(30*time.Second),
 				signingkey.WithHousekeepingInterval(12*time.Hour),
-				signingkey.WithLifetime(24*time.Hour),
+				signingkey.WithKeyLifetime(24*time.Hour),
 			)
 			require.NoError(t, err)
 			stopAndVerify(t, km)
@@ -479,7 +479,7 @@ func TestSigningKeyStoreFailureRecords(t *testing.T) {
 				signingkey.WithReloadInterval(100*time.Millisecond),
 				signingkey.WithRotateInterval(time.Second),
 				signingkey.WithHousekeepingInterval(12*time.Hour),
-				signingkey.WithLifetime(24*time.Hour),
+				signingkey.WithKeyLifetime(24*time.Hour),
 			)
 			require.NoError(t, err)
 			stopAndVerify(t, km)
@@ -532,11 +532,11 @@ func TestReloadPublishesAnotherReplicasKeys(t *testing.T) {
 	// everything it publishes beyond its own first key came from the store.
 	replicaA, err := signingkey.New(t.Context(), append(shared,
 		signingkey.WithRotateInterval(time.Minute),
-		signingkey.WithLifetime(24*time.Hour))...)
+		signingkey.WithKeyLifetime(24*time.Hour))...)
 	require.NoError(t, err)
 	replicaB, err := signingkey.New(t.Context(), append(shared,
 		signingkey.WithRotateInterval(24*time.Hour),
-		signingkey.WithLifetime(48*time.Hour))...)
+		signingkey.WithKeyLifetime(48*time.Hour))...)
 	require.NoError(t, err)
 
 	k1 := currentKid(t, replicaA, signingkey.EdDSA)
@@ -591,7 +591,7 @@ func TestReloadSkipsExpiredKeysAndRepicksCurrent(t *testing.T) {
 		signingkey.WithReloadInterval(10*time.Second),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -636,7 +636,7 @@ func TestReloadFailureKeepsHeldKeys(t *testing.T) {
 		signingkey.WithReloadInterval(10*time.Second),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -684,7 +684,7 @@ func TestReloadAfterClockStepBackKeepsASigner(t *testing.T) {
 		signingkey.WithRotateInterval(24*time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(48*time.Hour),
+		signingkey.WithKeyLifetime(48*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -713,7 +713,7 @@ func TestReloadAdoptsAKeyStoredJustAhead(t *testing.T) {
 		signingkey.WithRotateInterval(24*time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(48*time.Hour),
+		signingkey.WithKeyLifetime(48*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -789,7 +789,7 @@ func TestReloadBreaksATieAsTheStoreLists(t *testing.T) {
 				signingkey.WithReloadInterval(10*time.Second),
 				signingkey.WithRotateInterval(time.Hour),
 				signingkey.WithHousekeepingInterval(12*time.Hour),
-				signingkey.WithLifetime(24*time.Hour),
+				signingkey.WithKeyLifetime(24*time.Hour),
 			)
 			require.NoError(t, err)
 			stopAndVerify(t, km)
@@ -838,7 +838,7 @@ func TestForeignAlgorithmKeysVerifyButNeverSign(t *testing.T) {
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
 		signingkey.WithAlgs(signingkey.RS256),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 		signingkey.WithRotateInterval(6*time.Hour),
 		signingkey.WithReloadInterval(30*time.Minute),
 		signingkey.WithHousekeepingInterval(time.Second),
@@ -959,7 +959,7 @@ func TestHousekeeping(t *testing.T) {
 			km, err := signingkey.New(t.Context(),
 				signingkey.WithKeyStore(store),
 				signingkey.WithClock(clk),
-				signingkey.WithLifetime(24*time.Hour),
+				signingkey.WithKeyLifetime(24*time.Hour),
 				signingkey.WithHousekeepingInterval(time.Second),
 				signingkey.WithReloadInterval(30*time.Minute),
 				signingkey.WithRotateInterval(6*time.Hour),
@@ -998,7 +998,7 @@ func TestHousekeepingAndRotationNeverDeadlock(t *testing.T) {
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithHousekeepingInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
-		signingkey.WithLifetime(2*time.Hour),
+		signingkey.WithKeyLifetime(2*time.Hour),
 	)
 	require.NoError(t, err)
 	stopAndVerify(t, km)
@@ -1046,7 +1046,7 @@ func TestHousekeepingKeepsAKeyUntilItHasOutlivedTheLifetime(t *testing.T) {
 	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
-		signingkey.WithLifetime(lifetime),
+		signingkey.WithKeyLifetime(lifetime),
 		signingkey.WithHousekeepingInterval(sweep),
 		signingkey.WithReloadInterval(30*time.Minute),
 		signingkey.WithRotateInterval(6*time.Hour),
@@ -1095,7 +1095,7 @@ func TestHousekeep_RetiresFarFutureKey(t *testing.T) {
 	km, err := signingkey.New(t.Context(),
 		signingkey.WithKeyStore(store),
 		signingkey.WithClock(clk),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 		signingkey.WithHousekeepingInterval(time.Second),
 		signingkey.WithReloadInterval(30*time.Minute),
 		signingkey.WithRotateInterval(6*time.Hour),

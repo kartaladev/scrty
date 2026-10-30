@@ -91,10 +91,10 @@ type Keys struct {
 // discovered as a surprise.
 //
 // Defaults, each replaced by the Option named after it: RS256 only
-// (WithAlgs); a 24h key lifetime (WithLifetime); rotation every 1h
+// (WithAlgs); a 24h key lifetime (WithKeyLifetime); rotation every 1h
 // (WithRotateInterval); housekeeping every 1h (WithHousekeepingInterval);
-// reload every 1m (WithReloadInterval); a 5m failure-log sampling window
-// (WithLogSampleWindow); an in-memory store that does not survive a restart
+// reload every 1m (WithReloadInterval); a 5m failure-log sampling interval
+// (WithLogInterval); an in-memory store that does not survive a restart
 // (WithKeyStore); clock.System(), the system clock (WithClock); slog.Default() (WithLogger);
 // and no error hook (WithErrorHook).
 //
@@ -132,7 +132,7 @@ func New(ctx context.Context, opts ...Option) (*Keys, error) {
 	if err := km.validate(); err != nil {
 		return nil, err
 	}
-	// See WithLogSampleWindow for what the sampler is for; the reporter is
+	// See WithLogInterval for what the sampler is for; the reporter is
 	// what keeps a count from being dropped rather than written.
 	km.sampler = logsample.New(km.sampleWindow, logsample.WithReporter(km.reportSuppressed))
 
@@ -203,7 +203,7 @@ func (e *keyEntry) stored() storedKey {
 // which is the one that signs and is kept however old it is.
 //
 // There is no option over the rule itself, because it is what makes a retired
-// key stop verifying; WithLifetime moves the line it draws.
+// key stop verifying; WithKeyLifetime moves the line it draws.
 func (km *Keys) publishable(k storedKey, newestOfAlg bool, now time.Time) bool {
 	return newestOfAlg || !km.pastLifetime(k.createdAt, now)
 }
@@ -486,10 +486,10 @@ func WithAlgs(algs ...Alg) Option {
 	return func(km *Keys) { km.algs = slices.Clone(algs) }
 }
 
-// WithLifetime sets how long a key stays published after it was created.
+// WithKeyLifetime sets how long a key stays published after it was created.
 // Default: 24h. It must be longer than the rotation interval, or a key would
 // stop being published while tokens it signed are still valid.
-func WithLifetime(d time.Duration) Option {
+func WithKeyLifetime(d time.Duration) Option {
 	return func(km *Keys) { km.lifetime = d }
 }
 
@@ -512,18 +512,18 @@ func WithReloadInterval(d time.Duration) Option {
 	return func(km *Keys) { km.reloadEvery = d }
 }
 
-// WithLogSampleWindow sets how long one written record about a rotation or
+// WithLogInterval sets how long one written record about a rotation or
 // reload failure suppresses further records for the same operation and
 // algorithm. Default: 5m.
 //
 // A store outage fails every interval for as long as it lasts, which without
-// sampling is one record per interval. At most one record per window is
+// sampling is one record per interval. At most one record per interval is
 // written, and every record states how many failures were suppressed before it,
-// so no failure goes unaccounted for. A window of zero or less writes every
+// so no failure goes unaccounted for. An interval of zero or less writes every
 // failure, for a consumer whose own handler samples.
 //
 // The error hook is never sampled: every failure reaches it.
-func WithLogSampleWindow(d time.Duration) Option {
+func WithLogInterval(d time.Duration) Option {
 	return func(km *Keys) { km.sampleWindow = d }
 }
 

@@ -2557,7 +2557,7 @@ func newMagicLinkHarness(t *testing.T, managerOpts ...magiclink.Option) *magicLi
 			return "issued-token", nil
 		})
 
-	onetimes, err := onetime.New("magic-link", onetime.WithTTL(magicLinkTTL))
+	onetimes, err := onetime.New("magic-link", onetime.WithTokenTTL(magicLinkTTL))
 	require.NoError(t, err)
 
 	h.manager, err = magiclink.New(

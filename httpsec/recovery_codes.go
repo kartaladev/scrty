@@ -31,7 +31,7 @@ type RecoveryCodesResponder func(ex *Exchange, codes []string) error
 // With none supplied, the library answers 200 with the JSON document
 // {"remaining":n,"low":bool}; a consumer replaces that whole response with
 // WithRecoveryCountResponder.
-type RecoveryCountResponder func(ex *Exchange, count recovery.Count) error
+type RecoveryCountResponder func(ex *Exchange, count recovery.RemainingCodes) error
 
 // WithRecoveryRegenerationFreshness sets how recent a session's latest authentication
 // must be for it to regenerate the user's saved codes. The latest
@@ -195,7 +195,7 @@ type recoveryCodesDocument struct {
 
 // writeRecoveryCount is the response a count succeeds with when the consumer
 // supplies no responder.
-func writeRecoveryCount(ex *Exchange, count recovery.Count) error {
+func writeRecoveryCount(ex *Exchange, count recovery.RemainingCodes) error {
 	return writeSuccessDocument(ex, recoveryCountDocument{Remaining: count.N, Low: count.Low})
 }
 

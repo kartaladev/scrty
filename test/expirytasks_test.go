@@ -391,7 +391,7 @@ func TestExpiryLockoutStreaks(t *testing.T) {
 			lockoutPolicy, err := lockout.New(
 				lockout.WithAttemptStore(store),
 				lockout.WithClock(clk),
-				lockout.WithCap(capLimit),
+				lockout.WithFailureStreakLimit(capLimit),
 			)
 			require.NoError(t, err)
 

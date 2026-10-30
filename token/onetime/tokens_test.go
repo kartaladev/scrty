@@ -96,18 +96,18 @@ func TestNewManager(t *testing.T) {
 			assert: func(t *testing.T, m *onetime.Tokens, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
-				assert.Equal(t, 15*time.Minute, m.TTL())
+				assert.Equal(t, 15*time.Minute, m.TokenTTL())
 				assert.Equal(t, time.Hour, m.IssuanceWindow())
 			},
 		},
 		{
 			name:    "a consumer replaces both durations",
 			purpose: "magic-link",
-			opts:    []onetime.Option{onetime.WithTTL(24 * time.Hour), onetime.WithIssuanceWindow(6 * time.Hour)},
+			opts:    []onetime.Option{onetime.WithTokenTTL(24 * time.Hour), onetime.WithIssuanceWindow(6 * time.Hour)},
 			assert: func(t *testing.T, m *onetime.Tokens, err error) {
 				require.NoError(t, err)
 				require.NotNil(t, m)
-				assert.Equal(t, 24*time.Hour, m.TTL())
+				assert.Equal(t, 24*time.Hour, m.TokenTTL())
 				assert.Equal(t, 6*time.Hour, m.IssuanceWindow())
 			},
 		},
@@ -127,13 +127,13 @@ func TestNewManager(t *testing.T) {
 		{
 			name:    "a zero time-to-live is refused, because every token would expire as it was issued",
 			purpose: "magic-link",
-			opts:    []onetime.Option{onetime.WithTTL(0)},
+			opts:    []onetime.Option{onetime.WithTokenTTL(0)},
 			assert:  configError,
 		},
 		{
 			name:    "a negative time-to-live is refused",
 			purpose: "magic-link",
-			opts:    []onetime.Option{onetime.WithTTL(-time.Second)},
+			opts:    []onetime.Option{onetime.WithTokenTTL(-time.Second)},
 			assert:  configError,
 		},
 		{
@@ -294,7 +294,7 @@ func TestNewManager_DefaultStoreFollowsClock(t *testing.T) {
 			fc := clockwork.NewFakeClockAt(time.Now().Add(tc.offset))
 			opts := []onetime.Option{
 				onetime.WithClock(fc),
-				onetime.WithTTL(15 * time.Minute),
+				onetime.WithTokenTTL(15 * time.Minute),
 				onetime.WithIssuanceWindow(tc.window),
 			}
 			if tc.store != nil {
@@ -368,7 +368,7 @@ func TestIssue(t *testing.T) {
 			manager: func(t *testing.T, clk *clockwork.FakeClock) (*onetime.Tokens, *onetime.MemoryStore) {
 				t.Helper()
 
-				return newManager(t, clk, onetime.WithTTL(24*time.Hour))
+				return newManager(t, clk, onetime.WithTokenTTL(24*time.Hour))
 			},
 			assert: func(t *testing.T, _ *onetime.MemoryStore, _ string, tok onetime.Token, err error) {
 				require.NoError(t, err)
@@ -538,7 +538,7 @@ func TestIssue(t *testing.T) {
 func TestIssueDefaultClockIsTheSystemClock(t *testing.T) {
 	t.Parallel()
 
-	m, err := onetime.New("magic-link", onetime.WithTTL(5*time.Minute))
+	m, err := onetime.New("magic-link", onetime.WithTokenTTL(5*time.Minute))
 	require.NoError(t, err)
 
 	before := time.Now()
@@ -900,7 +900,7 @@ func TestCheck(t *testing.T) {
 			},
 			presented: checkTokenID.String() + "." + checkSecret,
 			at:        issuedAt.Add(16 * time.Minute),
-			opts:      []onetime.Option{onetime.WithTTL(24 * time.Hour)},
+			opts:      []onetime.Option{onetime.WithTokenTTL(24 * time.Hour)},
 			assert: func(t *testing.T, _ onetime.Checked, err error, _ string) {
 				require.NoError(t, err)
 			},
@@ -1704,7 +1704,7 @@ func TestPurgeExpired(t *testing.T) {
 		t.Parallel()
 
 		clk := clockwork.NewFakeClockAt(issuedAt)
-		m, store := newManager(t, clk, onetime.WithTTL(24*time.Hour))
+		m, store := newManager(t, clk, onetime.WithTokenTTL(24*time.Hour))
 
 		presented := issueAgo(t, clk, m, "ada@example.com", 2*time.Hour)
 
@@ -1813,7 +1813,7 @@ func expiryManager(t *testing.T, purpose string, store onetime.Store, clk clockw
 	m, err := onetime.New(purpose,
 		onetime.WithStore(store),
 		onetime.WithClock(clk),
-		onetime.WithTTL(15*time.Minute),
+		onetime.WithTokenTTL(15*time.Minute),
 		onetime.WithIssuanceWindow(time.Hour),
 	)
 	require.NoError(t, err)

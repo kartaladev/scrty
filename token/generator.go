@@ -44,13 +44,13 @@ func WithIssuer(iss string) Option { return Option(setIssuer(iss)) }
 // set nor checked.
 func WithAudience(aud string) Option { return Option(setAudience(aud)) }
 
-// WithLifetime sets how long an issued token is valid. Default: 15 minutes.
+// WithTokenLifetime sets how long an issued token is valid. Default: 15 minutes.
 //
 // A lifetime below one second, or not a whole number of seconds, fails
 // construction, because expiry is recorded in whole seconds. So does one
 // longer than the window a key source that reports its own lifetimes can
 // cover, because a token must not outlive the key that signed it.
-func WithLifetime(d time.Duration) Option {
+func WithTokenLifetime(d time.Duration) Option {
 	return func(c *config) { c.lifetime = d }
 }
 

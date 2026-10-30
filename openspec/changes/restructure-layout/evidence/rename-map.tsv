@@ -1,4 +1,5 @@
 # kind	old	new
+# Phase 6 (D16-D20) adds two kinds: "added" (old is -) for an identifier a decision introduces, and "changed" (old is -) for one whose type a decision changes.
 path	github.com/kartaladev/scrty/passkey/webauthn	github.com/kartaladev/scrty/authenticate/passkey/webauthn
 path	github.com/kartaladev/scrty/factor	github.com/kartaladev/scrty/authenticate/factor
 path	github.com/kartaladev/scrty/password	github.com/kartaladev/scrty/authenticate/password
@@ -27,13 +28,13 @@ split	github.com/kartaladev/scrty/policy	github.com/kartaladev/scrty/policy/lock
 ident	github.com/kartaladev/scrty/policy.AccountLockoutPolicy	github.com/kartaladev/scrty/policy/lockout.Policy
 ident	github.com/kartaladev/scrty/policy.NewAccountLockoutPolicy	github.com/kartaladev/scrty/policy/lockout.New
 ident	github.com/kartaladev/scrty/policy.LockoutOption	github.com/kartaladev/scrty/policy/lockout.Option
-ident	github.com/kartaladev/scrty/policy.WithLockoutCap	github.com/kartaladev/scrty/policy/lockout.WithCap
-ident	github.com/kartaladev/scrty/policy.WithLockoutCapRetention	github.com/kartaladev/scrty/policy/lockout.WithCapRetention
-ident	github.com/kartaladev/scrty/policy.WithLockoutCeiling	github.com/kartaladev/scrty/policy/lockout.WithCeiling
+ident	github.com/kartaladev/scrty/policy.WithLockoutCap	github.com/kartaladev/scrty/policy/lockout.WithFailureStreakLimit
+ident	github.com/kartaladev/scrty/policy.WithLockoutCapRetention	github.com/kartaladev/scrty/policy/lockout.WithFailureStreakRetention
+ident	github.com/kartaladev/scrty/policy.WithLockoutCeiling	github.com/kartaladev/scrty/policy/lockout.WithWindowFailureLimit
 ident	github.com/kartaladev/scrty/policy.WithLockoutClock	github.com/kartaladev/scrty/policy/lockout.WithClock
-ident	github.com/kartaladev/scrty/policy.WithLockoutThreshold	github.com/kartaladev/scrty/policy/lockout.WithThreshold
+ident	github.com/kartaladev/scrty/policy.WithLockoutThreshold	github.com/kartaladev/scrty/policy/lockout.WithWaitThreshold
 ident	github.com/kartaladev/scrty/policy.WithLockoutWait	github.com/kartaladev/scrty/policy/lockout.WithWait
-ident	github.com/kartaladev/scrty/policy.WithLockoutWindow	github.com/kartaladev/scrty/policy/lockout.WithWindow
+ident	github.com/kartaladev/scrty/policy.WithLockoutWindow	github.com/kartaladev/scrty/policy/lockout.WithFailureWindow
 ident	github.com/kartaladev/scrty/policy.WithLockoutLogger	github.com/kartaladev/scrty/policy/lockout.WithLogger
 ident	github.com/kartaladev/scrty/policy.WithLockoutObserver	github.com/kartaladev/scrty/policy/lockout.WithObserver
 ident	github.com/kartaladev/scrty/policy.WithSlidingLockout	github.com/kartaladev/scrty/policy/lockout.WithSliding
@@ -43,11 +44,11 @@ ident	github.com/kartaladev/scrty/policy.LockoutObserver	github.com/kartaladev/s
 ident	github.com/kartaladev/scrty/policy.LockoutReport	github.com/kartaladev/scrty/policy/lockout.Report
 ident	github.com/kartaladev/scrty/policy.LockoutReportKind	github.com/kartaladev/scrty/policy/lockout.ReportKind
 ident	github.com/kartaladev/scrty/policy.LockoutLocked	github.com/kartaladev/scrty/policy/lockout.ReportLocked
-ident	github.com/kartaladev/scrty/policy.LockoutAtCeiling	github.com/kartaladev/scrty/policy/lockout.ReportAtCeiling
+ident	github.com/kartaladev/scrty/policy.LockoutAtCeiling	github.com/kartaladev/scrty/policy/lockout.ReportAtWindowFailureLimit
 ident	github.com/kartaladev/scrty/policy.LockoutCleared	github.com/kartaladev/scrty/policy/lockout.ReportCleared
 ident	github.com/kartaladev/scrty/policy.LockoutHeld	github.com/kartaladev/scrty/policy/lockout.ReportHeld
 ident	github.com/kartaladev/scrty/policy.LockoutReleased	github.com/kartaladev/scrty/policy/lockout.ReportReleased
-ident	github.com/kartaladev/scrty/policy.NISTLockoutCap	github.com/kartaladev/scrty/policy/lockout.NISTCap
+ident	github.com/kartaladev/scrty/policy.NISTLockoutCap	github.com/kartaladev/scrty/policy/lockout.NISTFailureStreakLimit
 ident	github.com/kartaladev/scrty/policy.LockoutExpiryTask	github.com/kartaladev/scrty/policy/lockout.ExpiryTask
 ident	github.com/kartaladev/scrty/policy.AttemptReaper	github.com/kartaladev/scrty/policy/lockout.AttemptReaper
 ident	github.com/kartaladev/scrty/policy.FailureStreak	github.com/kartaladev/scrty/policy/lockout.FailureStreak
@@ -55,7 +56,7 @@ ident	github.com/kartaladev/scrty/policy.FailureStreakStore	github.com/kartalade
 ident	github.com/kartaladev/scrty/policy.MemoryAttemptStore	github.com/kartaladev/scrty/policy/lockout.MemoryAttemptStore
 ident	github.com/kartaladev/scrty/policy.NewMemoryAttemptStore	github.com/kartaladev/scrty/policy/lockout.NewMemoryAttemptStore
 ident	github.com/kartaladev/scrty/policy.MemoryAttemptOption	github.com/kartaladev/scrty/policy/lockout.MemoryAttemptOption
-ident	github.com/kartaladev/scrty/policy.WithAttemptStoreCapacity	github.com/kartaladev/scrty/policy/lockout.WithAttemptStoreCapacity
+ident	github.com/kartaladev/scrty/policy.WithAttemptStoreCapacity	github.com/kartaladev/scrty/policy/lockout.WithAttemptStoreMaxIdentifiers
 ident	github.com/kartaladev/scrty/policy.ErrAccountLocked	github.com/kartaladev/scrty/policy/lockout.ErrAccountLocked
 ident	github.com/kartaladev/scrty/policy.ErrAccountHeld	github.com/kartaladev/scrty/policy/lockout.ErrAccountHeld
 ident	github.com/kartaladev/scrty/policy.ErrAttemptStoreFull	github.com/kartaladev/scrty/policy/lockout.ErrAttemptStoreFull
@@ -179,7 +180,7 @@ ident	github.com/kartaladev/scrty/recovery.WithSetSize	github.com/kartaladev/scr
 ident	github.com/kartaladev/scrty/seal.WithEncryptionKey	github.com/kartaladev/scrty/store/seal.WithKeyringEncryptionKey
 ident	github.com/kartaladev/scrty/seal.WithRetiredEncryptionKey	github.com/kartaladev/scrty/store/seal.WithKeyringRetiredEncryptionKey
 ident	github.com/kartaladev/scrty/token.GenerateOption	github.com/kartaladev/scrty/token.Option
-ident	github.com/kartaladev/scrty/passkey.WithPasskeyLimit	github.com/kartaladev/scrty/authenticate/passkey.WithLimit
+ident	github.com/kartaladev/scrty/passkey.WithPasskeyLimit	github.com/kartaladev/scrty/authenticate/passkey.WithPerUserLimit
 ident	github.com/kartaladev/scrty/redis.WithLimiterClock	github.com/kartaladev/scrty/ratelimit/redisstore.WithClock
 ident	github.com/kartaladev/scrty/redis.WithUnavailableProbeInterval	github.com/kartaladev/scrty/ratelimit/redisstore.WithProbeInterval
 ident	github.com/kartaladev/scrty/httpsec.WithAllowedOrigins	github.com/kartaladev/scrty/httpsec.WithMagicLinkAllowedOrigins
@@ -347,3 +348,24 @@ test	github.com/kartaladev/scrty/httpsec#TestMFAVerifyConsumerResponder	github.c
 test	github.com/kartaladev/scrty/httpsec#TestMagicLinkConsumerResponder	github.com/kartaladev/scrty/httpsec#TestMagicLinkResponder/consumer_responder
 test	github.com/kartaladev/scrty/httpsec#TestRecoveryGateAnonymous	github.com/kartaladev/scrty/httpsec#TestRecoveryGate/anonymous
 test	github.com/kartaladev/scrty/httpsec#TestOIDCRedeem_RequiredUserWithoutAssuranceIsRefused	github.com/kartaladev/scrty/httpsec#TestOIDCRedeemMFADefaultClassification/required_user_without_assurance_is_refused
+# D15: names that say what they bound (phase 5).
+ident	github.com/kartaladev/scrty/policy.AccountLockoutPolicy.Cap	github.com/kartaladev/scrty/policy/lockout.Policy.FailureStreakLimit
+ident	github.com/kartaladev/scrty/policy.AccountLockoutPolicy.CapRetention	github.com/kartaladev/scrty/policy/lockout.Policy.FailureStreakRetention
+ident	github.com/kartaladev/scrty/policy.AccountLockoutPolicy.Threshold	github.com/kartaladev/scrty/policy/lockout.Policy.WaitThreshold
+ident	github.com/kartaladev/scrty/policy.AccountLockoutPolicy.Window	github.com/kartaladev/scrty/policy/lockout.Policy.FailureWindow
+ident	github.com/kartaladev/scrty/passkey.ErrLimitReached	github.com/kartaladev/scrty/authenticate/passkey.ErrPerUserLimitReached
+ident	github.com/kartaladev/scrty/recovery.WithDelay	github.com/kartaladev/scrty/recovery.WithHoldDelay
+ident	github.com/kartaladev/scrty/recovery.WithCompletionWindow	github.com/kartaladev/scrty/recovery.WithHoldCompletionWindow
+ident	github.com/kartaladev/scrty/recovery.WithSessionLifetime	github.com/kartaladev/scrty/recovery.WithPendingSessionLifetime
+ident	github.com/kartaladev/scrty/recovery.Count	github.com/kartaladev/scrty/recovery.RemainingCodes
+ident	github.com/kartaladev/scrty/token.WithLifetime	github.com/kartaladev/scrty/token.WithTokenLifetime
+ident	github.com/kartaladev/scrty/signingkey.WithLifetime	github.com/kartaladev/scrty/token/signingkey.WithKeyLifetime
+ident	github.com/kartaladev/scrty/signingkey.WithLogSampleWindow	github.com/kartaladev/scrty/token/signingkey.WithLogInterval
+ident	github.com/kartaladev/scrty/onetime.WithTTL	github.com/kartaladev/scrty/token/onetime.WithTokenTTL
+ident	github.com/kartaladev/scrty/onetime.Manager.TTL	github.com/kartaladev/scrty/token/onetime.Tokens.TokenTTL
+ident	github.com/kartaladev/scrty/policy.IdleTimeoutPolicy.Thresholds	github.com/kartaladev/scrty/policy.IdleTimeout.Deadlines
+ident	github.com/kartaladev/scrty/mfa.WithPeriod	github.com/kartaladev/scrty/authenticate/mfa.WithTimeStep
+ident	github.com/kartaladev/scrty/oidc.MaxLogoutTokenMaxAge	github.com/kartaladev/scrty/authenticate/oidc.LongestLogoutTokenMaxAge
+ident	github.com/kartaladev/scrty/notify.WithQueueSize	github.com/kartaladev/scrty/notify.WithQueueMaxMessages
+ident	github.com/kartaladev/scrty/notify.QueuedSender.QueueSize	github.com/kartaladev/scrty/notify.QueuedSender.QueueMaxMessages
+ident	github.com/kartaladev/scrty/httpsec.WithEnrolmentSessionTTL	github.com/kartaladev/scrty/httpsec.WithEnrolmentSessionLifetime

@@ -52,7 +52,7 @@ type queued struct {
 // NewQueuedSender wraps inner and starts its workers.
 //
 // Defaults: 2 workers (WithQueueWorkers), a queue of 256 messages
-// (WithQueueSize), a 30-second bound on each delivery (WithQueueSendTimeout)
+// (WithQueueMaxMessages), a 30-second bound on each delivery (WithQueueSendTimeout)
 // and slog's default logger (WithQueueLogger). Construction fails, wrapping
 // ErrConfig, on an absent inner sender — a nil interface or one holding a nil
 // pointer — or a worker count, queue size or send timeout of zero or less.
@@ -145,13 +145,13 @@ type QueuedOption func(*queuedConfig)
 // message and delivers none.
 func WithQueueWorkers(n int) QueuedOption { return func(c *queuedConfig) { c.workers = n } }
 
-// WithQueueSize replaces how many messages may wait for a worker. The default
+// WithQueueMaxMessages replaces how many messages may wait for a worker. The default
 // is 256. Zero or less is a configuration error: it would drop every message
 // that did not find an idle worker at that instant.
 //
 // The queue is memory, not storage. Sizing it larger buys tolerance of a
 // longer outage and nothing else — a crash still loses whatever is in it.
-func WithQueueSize(n int) QueuedOption { return func(c *queuedConfig) { c.size = n } }
+func WithQueueMaxMessages(n int) QueuedOption { return func(c *queuedConfig) { c.size = n } }
 
 // WithQueueSendTimeout replaces the bound on one delivery. The default is 30
 // seconds. Zero or less is a configuration error.
@@ -194,8 +194,8 @@ func (s *QueuedSender) NonBlocking() bool { return true }
 // Workers reports how many deliveries can run at once. Default: 2.
 func (s *QueuedSender) Workers() int { return s.workers }
 
-// QueueSize reports how many messages can wait for a worker. Default: 256.
-func (s *QueuedSender) QueueSize() int { return s.size }
+// QueueMaxMessages reports how many messages can wait for a worker. Default: 256.
+func (s *QueuedSender) QueueMaxMessages() int { return s.size }
 
 // SendTimeout reports the bound on one delivery. Default: 30s.
 func (s *QueuedSender) SendTimeout() time.Duration { return s.timeout }

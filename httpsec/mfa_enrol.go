@@ -234,7 +234,7 @@ func (c *config) wireMFAEnrolment() error {
 		}
 
 		if limit := c.sessions.AbsoluteTimeout(); i.lifetime > limit {
-			return newConfigError("WithEnrolmentSessionTTL was given %s, longer than the session "+
+			return newConfigError("WithEnrolmentSessionLifetime was given %s, longer than the session "+
 				"manager's absolute timeout of %s; an enrolment-only session never outlives "+
 				"the deadline it already has", i.lifetime, limit)
 		}

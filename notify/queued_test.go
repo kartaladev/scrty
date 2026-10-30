@@ -107,7 +107,7 @@ func TestNewQueuedSender(t *testing.T) {
 				t.Cleanup(func() { _ = s.Close(context.WithoutCancel(t.Context())) })
 
 				assert.Equal(t, 2, s.Workers())
-				assert.Equal(t, 256, s.QueueSize())
+				assert.Equal(t, 256, s.QueueMaxMessages())
 				assert.Equal(t, 30*time.Second, s.SendTimeout())
 				assert.True(t, s.NonBlocking())
 			},
@@ -129,7 +129,7 @@ func TestNewQueuedSender(t *testing.T) {
 		{
 			name:   "zero queue",
 			inner:  &recordingSender{},
-			opts:   []notify.QueuedOption{notify.WithQueueSize(0)},
+			opts:   []notify.QueuedOption{notify.WithQueueMaxMessages(0)},
 			assert: configError,
 		},
 		{
@@ -228,7 +228,7 @@ func TestQueuedSenderFull(t *testing.T) {
 
 		s, err := notify.NewQueuedSender(inner,
 			notify.WithQueueWorkers(1),
-			notify.WithQueueSize(1),
+			notify.WithQueueMaxMessages(1),
 			notify.WithQueueLogger(logger),
 		)
 		require.NoError(t, err)
@@ -328,7 +328,7 @@ func TestQueuedSenderWorkers(t *testing.T) {
 			return nil
 		})
 
-		s, err := notify.NewQueuedSender(inner, notify.WithQueueWorkers(8), notify.WithQueueSize(32))
+		s, err := notify.NewQueuedSender(inner, notify.WithQueueWorkers(8), notify.WithQueueMaxMessages(32))
 		require.NoError(t, err)
 
 		for range 16 {
@@ -416,7 +416,7 @@ func TestQueuedSenderReportsDropsByDefault(t *testing.T) {
 
 				opts := append([]notify.QueuedOption{
 					notify.WithQueueWorkers(1),
-					notify.WithQueueSize(1),
+					notify.WithQueueMaxMessages(1),
 				}, tc.opts...)
 
 				s, err := notify.NewQueuedSender(inner, opts...)

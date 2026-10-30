@@ -172,7 +172,7 @@ func TestIdleTimeoutPolicyThresholds(t *testing.T) {
 			p, err := policy.NewIdleTimeout(tc.opts...)
 			require.NoError(t, err)
 
-			idle, absolute := p.Thresholds(tc.createdAt, tc.now)
+			idle, absolute := p.Deadlines(tc.createdAt, tc.now)
 			tc.assert(t, idle, absolute)
 		})
 	}

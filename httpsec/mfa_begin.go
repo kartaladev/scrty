@@ -250,7 +250,7 @@ func (i *mfaInterceptor) wireChallenges(c *config) error {
 		}
 
 		mgr, err := onetime.New(mfaChallengePurpose(m.Name()),
-			onetime.WithTTL(i.challengeTTL),
+			onetime.WithTokenTTL(i.challengeTTL),
 			onetime.WithStore(store),
 			onetime.WithClock(c.clock),
 			onetime.WithLogger(c.logger))

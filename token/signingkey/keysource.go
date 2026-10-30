@@ -153,7 +153,7 @@ type LifetimeReporter interface {
 }
 
 // KeyLifetime reports how long a key stays published after it was created,
-// which is what WithLifetime configured.
+// which is what WithKeyLifetime configured.
 func (km *Keys) KeyLifetime() time.Duration { return km.lifetime }
 
 // RotateInterval reports how often a new key is minted, which is what

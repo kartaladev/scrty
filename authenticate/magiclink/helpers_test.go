@@ -67,7 +67,7 @@ func advanceClockPast(t *testing.T, tokens *onetime.Tokens) {
 	c, ok := clocks.Load(tokens)
 	require.True(t, ok, "the manager was not built by a helper in this package")
 
-	c.(*clockwork.FakeClock).Advance(tokens.TTL() + time.Second)
+	c.(*clockwork.FakeClock).Advance(tokens.TokenTTL() + time.Second)
 }
 
 func issueFor(t *testing.T, tokens *onetime.Tokens, subject string) string {

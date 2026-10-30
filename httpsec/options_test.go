@@ -1085,7 +1085,7 @@ func TestCeremonyCookieTTL_RefusesSubSecond(t *testing.T) {
 
 			h := newMagicLinkHarness(t)
 
-			onetimes, err := onetime.New("magic-link", onetime.WithTTL(ttl))
+			onetimes, err := onetime.New("magic-link", onetime.WithTokenTTL(ttl))
 			require.NoError(t, err)
 
 			h.manager, err = magiclink.New(onetimes, h.users, h.sender, "https://app.example.com")
@@ -1228,7 +1228,7 @@ func TestHeld(t *testing.T) {
 			t.Parallel()
 
 			lockoutPolicy, err := lockout.New(
-				lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithCap(heldCap))
+				lockout.WithAttemptStore(lockout.NewMemoryAttemptStore()), lockout.WithFailureStreakLimit(heldCap))
 			require.NoError(t, err)
 
 			// Each identifier is held before any request: heldCap failures
@@ -1515,7 +1515,7 @@ func TestLockoutCapWiring(t *testing.T) {
 	capped := func(t *testing.T, store policy.AttemptStore) *lockout.Policy {
 		t.Helper()
 
-		p, err := lockout.New(lockout.WithAttemptStore(store), lockout.WithCap(20))
+		p, err := lockout.New(lockout.WithAttemptStore(store), lockout.WithFailureStreakLimit(20))
 		require.NoError(t, err)
 
 		return p

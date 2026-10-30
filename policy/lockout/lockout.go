@@ -38,8 +38,8 @@ const accountLockedText = "lockout: account locked after repeated failures"
 // not instants, so the policy cannot tell how much of the wait has already
 // passed. The refusal lifts no later than the window after the newest failure,
 // so a Wait longer than the configured window overstates it. Wait is zero
-// where no wait lifts the lock — at the ceiling, under WithSliding,
-// and for an identifier held by the cap (WithCap) — and a caller must
+// where no wait lifts the lock — at the window failure limit, under WithSliding,
+// and for an identifier held by the streak limit (WithFailureStreakLimit) — and a caller must
 // not read zero as "try now".
 //
 // The refusal of a held identifier also matches ErrAccountHeld, so a consumer
@@ -54,15 +54,15 @@ const accountLockedText = "lockout: account locked after repeated failures"
 // Its text is fixed library text naming the failure count and the window,
 // never anything an attempt store said.
 type Error struct {
-	// Wait is the escalated wait owed, or zero at the ceiling, under a
+	// Wait is the escalated wait owed, or zero at the window failure limit, under a
 	// sliding lock and for a hold.
 	Wait time.Duration
 
 	failures int
 	window   time.Duration
 
-	// held marks the refusal of an identifier held by the consecutive-failure
-	// cap; failures is then the streak's count, and window is unused.
+	// held marks the refusal of an identifier held by the failure-streak
+	// limit; failures is then the streak's count, and window is unused.
 	held bool
 }
 
@@ -83,7 +83,7 @@ func (e *Error) Error() string {
 
 // Is reports whether target is ErrAccountLocked, the sentinel every
 // account-locked refusal matches, or ErrAccountHeld, which only the refusal of
-// an identifier held by the consecutive-failure cap matches.
+// an identifier held by the failure-streak limit matches.
 func (e *Error) Is(target error) bool {
 	//nolint:errorlint // identity: Is compares against its own sentinels
 	return target == ErrAccountLocked || (e.held && target == ErrAccountHeld)
@@ -100,22 +100,22 @@ const (
 	// what the store holds while keeping a slow, steady guesser's failures in
 	// view; a successful authentication clears them sooner, through Reset.
 	// Failures older than the window no longer count toward anything, the
-	// ceiling included.
+	// window failure limit included.
 	defaultLockoutWindow = 24 * time.Hour
 
 	// defaultLockoutFirstWait and defaultLockoutLongestWait are the ends of
 	// NIST SP 800-63B's example range for waits that grow as an account
-	// nears its cap: thirty seconds up to an hour.
+	// nears a failure-streak limit: thirty seconds up to an hour.
 	defaultLockoutFirstWait   = 30 * time.Second
 	defaultLockoutLongestWait = time.Hour
 
 	// defaultLockoutCeiling is how many failures inside the window refuse an
 	// identifier outright. It borrows the number NIST SP 800-63B-4 §3.2.2
-	// uses, but it is not that section's cap: NIST counts consecutive failures
+	// uses, but it is not that section's limit: NIST counts consecutive failures
 	// in total and disables the authenticator until it is bound again, while
-	// this ceiling counts only the window and lifts as failures age out. With
+	// this window failure limit counts only the window and lifts as failures age out. With
 	// the default waits a guesser who respects them makes about 24 guesses a
-	// day, so the ceiling bounds bursts of concurrent requests, not a patient
+	// day, so the window failure limit bounds bursts of concurrent requests, not a patient
 	// guesser's total.
 	defaultLockoutCeiling = 100
 
@@ -138,10 +138,10 @@ const (
 // failure is more recent than that wait. Once the wait has passed, the next
 // attempt is judged on its merits. At 100 failures in the window it is refused
 // however long it has waited, until failures leave the window or a successful
-// authentication clears them. That ceiling limits the guessing rate, about 24
+// authentication clears them. That limit bounds the guessing rate, about 24
 // guesses a day under the default waits, not the total. It is not NIST SP
-// 800-63B-4 §3.2.2's cap on consecutive failures, which disables the
-// authenticator until it is bound again. That cap is opt-in: WithCap
+// 800-63B-4 §3.2.2's limit on consecutive failures, which disables the
+// authenticator until it is bound again. The failure-streak limit is opt-in: WithFailureStreakLimit
 // holds an identifier until its failures are cleared.
 //
 // Waiting rather than locking is the point. A hard lock lets anyone who knows
@@ -157,9 +157,9 @@ const (
 //
 // A consumer replaces the store with WithAttemptStore — which is what a
 // deployment of more than one replica needs — the free failures with
-// WithThreshold, the span with WithWindow, the waits with
-// WithWait, the cap with WithCeiling and the clock with
-// WithClock. WithCap adds a cap on consecutive failures, which
+// WithWaitThreshold, the span with WithFailureWindow, the waits with
+// WithWait, the failures a window may hold with WithWindowFailureLimit and
+// the clock with WithClock. WithFailureStreakLimit adds a limit on consecutive failures, which
 // holds an identifier until its failures are cleared; by default there is
 // none. WithSliding replaces the escalating wait with a sliding lock,
 // which limits the failure rate within a window; WithWait with equal
@@ -175,9 +175,9 @@ const (
 // the failures age, and a successful authentication clears it through Reset.
 // Nothing has to run on a timer for a refused user to get back in.
 //
-// A cap is the exception (WithCap). Under one, the store keeps a
+// A failure-streak limit is the exception (WithFailureStreakLimit). Under one, the store keeps a
 // record of each identifier's consecutive failures, and the record of one
-// that reached the cap is a hold: it is refused until its failures are
+// that reached the streak limit is a hold: it is refused until its failures are
 // cleared, by a password change through the chain or by Reset, which is the
 // unlock call. A hold never expires.
 //
@@ -211,11 +211,11 @@ type Policy struct {
 	setObserver bool
 	logger      *slog.Logger
 
-	// capLimit and capRetention are WithCap's cap and
-	// WithCapRetention's retention; the set flags record which of them
-	// a consumer passed, so a retention without a cap is refused. streaks is
+	// capLimit and capRetention are WithFailureStreakLimit's limit and
+	// WithFailureStreakRetention's retention; the set flags record which of them
+	// a consumer passed, so a retention without a limit is refused. streaks is
 	// the store's FailureStreakStore half, and is nil exactly when there is no
-	// cap.
+	// failure-streak limit.
 	capLimit                int
 	capRetention            time.Duration
 	setCap, setCapRetention bool
@@ -229,19 +229,19 @@ type Policy struct {
 // New returns a policy that makes an account wait, longer
 // each time, after repeated failures.
 //
-// Defaults: a threshold of 5 free failures (WithThreshold) in a window
-// of 24 hours (WithWindow); a wait of 30 seconds doubling up to 1 hour
-// (WithWait); a ceiling of 100 failures in the window
-// (WithCeiling); a bounded in-memory store (WithAttemptStore), which
+// Defaults: a threshold of 5 free failures (WithWaitThreshold) in a window
+// of 24 hours (WithFailureWindow); a wait of 30 seconds doubling up to 1 hour
+// (WithWait); a limit of 100 failures in the window
+// (WithWindowFailureLimit); a bounded in-memory store (WithAttemptStore), which
 // keeps failures only as long as this policy needs them (the window, or the
-// cap's retention when longer), and the system clock (WithClock); no lockout observer (WithObserver), and
+// failure-streak retention when longer), and the system clock (WithClock); no lockout observer (WithObserver), and
 // slog.Default for its records (WithLogger). WithSliding replaces
 // the escalating wait with a sliding lock.
 //
 // Every misconfiguration is an error wrapping policy.ErrConfig, rather than something
 // evaluation copes with: a threshold, window or first wait of zero or less; a
-// longest wait shorter than the first; a ceiling not above the threshold;
-// WithSliding combined with any threshold, window, wait or ceiling
+// longest wait shorter than the first; a window failure limit not above the threshold;
+// WithSliding combined with any threshold, window, wait or window failure limit
 // option; and a missing store or clock. Each produces a policy that reads like
 // a lockout at every call site and is not one — a window of zero contains no
 // failure, so nothing ever locks, and a threshold of zero is already reached by
@@ -276,10 +276,10 @@ func New(opts ...Option) (*Policy, error) {
 			set  bool
 			name string
 		}{
-			{p.setThreshold, "WithThreshold"},
-			{p.setWindow, "WithWindow"},
+			{p.setThreshold, "WithWaitThreshold"},
+			{p.setWindow, "WithFailureWindow"},
 			{p.setWait, "WithWait"},
-			{p.setCeiling, "WithCeiling"},
+			{p.setCeiling, "WithWindowFailureLimit"},
 		} {
 			if c.set {
 				conflicts = append(conflicts, c.name)
@@ -287,7 +287,7 @@ func New(opts ...Option) (*Policy, error) {
 		}
 		if len(conflicts) > 0 {
 			return nil, fmt.Errorf(
-				"%w: WithSliding sets its own threshold and window and has no wait or ceiling, so "+
+				"%w: WithSliding sets its own threshold and window and has no wait or window failure limit, so "+
 					"combining it with %s would silently change what that option means",
 				policy.ErrConfig, strings.Join(conflicts, ", "))
 		}
@@ -318,8 +318,8 @@ func New(opts ...Option) (*Policy, error) {
 	}
 
 	if p.setCapRetention && !p.setCap {
-		return nil, fmt.Errorf("%w: WithCapRetention has no cap to retain counts for: "+
-			"pass WithCap too, or drop it", policy.ErrConfig)
+		return nil, fmt.Errorf("%w: WithFailureStreakRetention has no failure-streak limit to retain counts for: "+
+			"pass WithFailureStreakLimit too, or drop it", policy.ErrConfig)
 	}
 	if p.setCap {
 		if err := p.validateCap(); err != nil {
@@ -349,7 +349,7 @@ func New(opts ...Option) (*Policy, error) {
 }
 
 // validateEscalation refuses an escalating wait that would not escalate, or
-// whose ceiling leaves no wait at all between it and the threshold.
+// whose window failure limit leaves no wait at all between it and the threshold.
 func (p *Policy) validateEscalation() error {
 	if p.firstWait <= 0 {
 		return fmt.Errorf(
@@ -363,7 +363,7 @@ func (p *Policy) validateEscalation() error {
 	}
 	if p.ceiling <= p.threshold {
 		return fmt.Errorf(
-			"%w: the lockout ceiling must be above the threshold, got ceiling %d and threshold %d: "+
+			"%w: the window failure limit must be above the threshold, got limit %d and threshold %d: "+
 				"an account would be refused outright before it ever owed a wait",
 			policy.ErrConfig, p.ceiling, p.threshold)
 	}
@@ -371,30 +371,30 @@ func (p *Policy) validateEscalation() error {
 	return nil
 }
 
-// validateCap refuses a cap the policy could not enforce, or whose retention
+// validateCap refuses a failure-streak limit the policy could not enforce, or whose retention
 // would let a count expire while the window still counts its failures. On
 // success it keeps the store's FailureStreakStore half, which is what turns
-// the cap on.
+// the limit on.
 func (p *Policy) validateCap() error {
 	if p.capLimit <= 0 {
-		return fmt.Errorf("%w: WithCap must be positive, got %d: "+
-			"leave the option out for no cap", policy.ErrConfig, p.capLimit)
+		return fmt.Errorf("%w: WithFailureStreakLimit must be positive, got %d: "+
+			"leave the option out for no failure-streak limit", policy.ErrConfig, p.capLimit)
 	}
 	if p.capLimit <= p.threshold {
-		return fmt.Errorf("%w: WithCap must be above the threshold, got cap %d and threshold %d: "+
+		return fmt.Errorf("%w: WithFailureStreakLimit must be above the threshold, got limit %d and threshold %d: "+
 			"the first lock would already be a hold", policy.ErrConfig, p.capLimit, p.threshold)
 	}
 	if p.capRetention <= 0 {
-		return fmt.Errorf("%w: WithCapRetention must be positive, got %s", policy.ErrConfig, p.capRetention)
+		return fmt.Errorf("%w: WithFailureStreakRetention must be positive, got %s", policy.ErrConfig, p.capRetention)
 	}
 	if p.capRetention < p.window {
-		return fmt.Errorf("%w: WithCapRetention %s is shorter than the lockout window %s: "+
+		return fmt.Errorf("%w: WithFailureStreakRetention %s is shorter than the lockout window %s: "+
 			"a count would expire while the window still counts its failures",
 			policy.ErrConfig, p.capRetention, p.window)
 	}
 	streaks, ok := p.store.(FailureStreakStore)
 	if !ok {
-		return fmt.Errorf("%w: WithCap needs an attempt store that keeps consecutive failures "+
+		return fmt.Errorf("%w: WithFailureStreakLimit needs an attempt store that keeps consecutive failures "+
 			"(lockout.FailureStreakStore), and %T does not", policy.ErrConfig, p.store)
 	}
 	p.streaks = streaks
@@ -411,45 +411,45 @@ func (p *Policy) Name() string { return lockoutPolicyName }
 // work proving its password is right.
 func (p *Policy) Phases() []policy.Phase { return []policy.Phase{policy.PreAuthentication} }
 
-// Threshold reports how many failures inside the window are free before a wait
-// is owed, or lock the account under a sliding lock: what WithThreshold or
+// WaitThreshold reports how many failures inside the window are free before a wait
+// is owed, or lock the account under a sliding lock: what WithWaitThreshold or
 // WithSliding configured.
-func (p *Policy) Threshold() int { return p.threshold }
+func (p *Policy) WaitThreshold() int { return p.threshold }
 
-// Window reports how far back failures are counted: what WithWindow or
+// FailureWindow reports how far back failures are counted: what WithFailureWindow or
 // WithSliding configured.
-func (p *Policy) Window() time.Duration { return p.window }
+func (p *Policy) FailureWindow() time.Duration { return p.window }
 
-// Cap reports the consecutive-failure cap WithCap configured, or zero
+// FailureStreakLimit reports the failure-streak limit WithFailureStreakLimit configured, or zero
 // when there is none.
-func (p *Policy) Cap() int { return p.capLimit }
+func (p *Policy) FailureStreakLimit() int { return p.capLimit }
 
-// CapRetention reports how long a consecutive count below the cap lives after
-// its newest failure: what WithCapRetention configured, or 30 days. It
-// only applies when Cap is not zero.
-func (p *Policy) CapRetention() time.Duration { return p.capRetention }
+// FailureStreakRetention reports how long a consecutive count below the streak limit lives after
+// its newest failure: what WithFailureStreakRetention configured, or 30 days. It
+// only applies when FailureStreakLimit is not zero.
+func (p *Policy) FailureStreakRetention() time.Duration { return p.capRetention }
 
 // Evaluate denies when the submitted identifier owes a wait or has reached the
-// ceiling, and allows otherwise.
+// window failure limit, and allows otherwise.
 //
 // It counts the failures recorded strictly inside the window before now. Below
 // the threshold that one query is all it asks, and the request is allowed. At
-// the ceiling it denies with no wait. Between the two it asks a second
+// the window failure limit it denies with no wait. Between the two it asks a second
 // question, whether any failure is more recent than the wait owed, and denies
 // if one is. Counting is strictly after each cutoff, so a newest failure
 // exactly as old as the wait has served it. Under WithSliding it denies
 // whenever the threshold is reached in the window.
 //
 // A locked identifier's reason is a *Error matching ErrAccountLocked,
-// whose Wait is the wait owed, or zero at the ceiling and under a sliding lock.
+// whose Wait is the wait owed, or zero at the window failure limit and under a sliding lock.
 //
-// With a cap (WithCap), it first reads the identifier's consecutive
+// With a failure-streak limit (WithFailureStreakLimit), it first reads the identifier's consecutive
 // failures, and a held identifier is denied there and then, whatever the
 // window holds: its reason is a *Error matching both ErrAccountLocked
 // and ErrAccountHeld, with no wait. Evaluating never writes, so a request
 // refused here, whatever password it carries, leaves the hold as it was. An
 // identifier that is not held is judged by the window exactly as without a
-// cap.
+// failure-streak limit.
 //
 // Now is the instant the phase carries, so every policy in the phase judges
 // the same request against the same moment; the policy's own clock answers
@@ -600,8 +600,8 @@ func (p *Policy) RecordFailure(ctx context.Context, username string) error {
 // The store's own error comes back behind fixed library text; it stays
 // reachable through errors.Is and errors.As, but its text never is.
 //
-// It is also the unlock an administrator or a support tool calls. With a cap
-// (WithCap) it lifts a hold, which nothing else in the policy does: the
+// It is also the unlock an administrator or a support tool calls. With a failure-streak limit
+// (WithFailureStreakLimit) it lifts a hold, which nothing else in the policy does: the
 // store's Reset clears the hold and the consecutive count together with the
 // failures in the window, so the identifier is neither held nor waiting
 // afterwards. It is not an error for an identifier with nothing to clear.
@@ -621,9 +621,9 @@ func (p *Policy) Reset(ctx context.Context, username string) error {
 // policy's own, 24 hours by default or the sliding lock's — and reports how many
 // went.
 //
-// With a cap (WithCap) it then deletes the consecutive counts that have
-// aged out of the retention (WithCapRetention) and adds them to the
-// total. It never deletes a count the policy still counts, nor a hold. Without a cap it never touches the counts.
+// With a failure-streak limit (WithFailureStreakLimit) it then deletes the consecutive counts that have
+// aged out of the retention (WithFailureStreakRetention) and adds them to the
+// total. It never deletes a count the policy still counts, nor a hold. Without a failure-streak limit it never touches the counts.
 //
 // It takes no window of its own. The cutoff is this policy's own window behind
 // its own clock, so the failures the policy would still count are exactly the
@@ -681,10 +681,10 @@ func purgeFailed(err error, msg string) error {
 	return diag.Wrap(err, msg)
 }
 
-// RequiredAttemptView reports the policy's view, Attempts, and true when a cap
-// is configured (WithCap): only the view advances the consecutive
+// RequiredAttemptView reports the policy's view, Attempts, and true when a failure-streak limit
+// is configured (WithFailureStreakLimit): only the view advances the consecutive
 // count, so a failure recorded straight into the store would never bring an
-// identifier closer to its hold. Without a cap it reports false, and any store
+// identifier closer to its hold. Without a failure-streak limit it reports false, and any store
 // the policy reads will do, as before.
 func (p *Policy) RequiredAttemptView() (policy.AttemptStore, bool) {
 	return p.attempts, p.capLimit > 0
@@ -697,12 +697,12 @@ var _ policy.Policy = (*Policy)(nil)
 //
 // The task is named "login-attempts". It sets no Interval, because only the
 // deployment knows its cadence, and it accepts no cutoff: the cutoff is p's own
-// window behind p's own clock (24 hours by default, or what WithWindow
+// window behind p's own clock (24 hours by default, or what WithFailureWindow
 // or WithSliding set). It never deletes a failure the policy would still
 // count, so a sweep cannot unlock an account that is locked.
 //
-// With a cap (WithCap) the task also deletes the consecutive counts
-// that have aged out of the cap retention (WithCapRetention), and never
+// With a failure-streak limit (WithFailureStreakLimit) the task also deletes the consecutive counts
+// that have aged out of the failure-streak retention (WithFailureStreakRetention), and never
 // a hold: a held identifier stays held however many sweeps run.
 //
 // A store that cannot purge, the default in-memory one among them, yields an

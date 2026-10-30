@@ -297,7 +297,7 @@ const wrongCode = "0000-0000-0000-0000-0000-0000-00"
 
 // holdFor returns the options that hold every recovery for d.
 func holdFor(d time.Duration) []recovery.Option {
-	return []recovery.Option{recovery.WithDelay(d), recovery.WithCancelLink(cancelBase)}
+	return []recovery.Option{recovery.WithHoldDelay(d), recovery.WithCancelLink(cancelBase)}
 }
 
 // heldRecovery starts a recovery that must be held, and returns its hold.

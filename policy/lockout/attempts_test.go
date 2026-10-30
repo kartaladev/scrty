@@ -193,7 +193,7 @@ func TestMemoryAttemptStoreIsSafeForConcurrentUse(t *testing.T) {
 	assert.Equal(t, writers*perWriter, count)
 }
 
-// TestMemoryAttemptStore_ConsumerCapacity pins WithAttemptStoreCapacity: the
+// TestMemoryAttemptStore_ConsumerCapacity pins WithAttemptStoreMaxIdentifiers: the
 // consumer's capacity replaces the default in both directions, and one that
 // holds nothing is a wiring mistake.
 func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
@@ -221,7 +221,7 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 		{
 			name: "a capacity above the default holds more than 100,000 identifiers",
 			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreCapacity(1_000_000))
+				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(1_000_000))
 			},
 			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
 				s := build()
@@ -232,7 +232,7 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 		{
 			name: "a capacity below the default refuses the identifier past it",
 			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreCapacity(3))
+				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(3))
 			},
 			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
 				s := build()
@@ -257,7 +257,7 @@ func TestMemoryAttemptStore_ConsumerCapacity(t *testing.T) {
 		{
 			name: "a capacity of zero is a wiring mistake",
 			build: func() *lockout.MemoryAttemptStore {
-				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreCapacity(0))
+				return lockout.NewMemoryAttemptStore(lockout.WithAttemptStoreMaxIdentifiers(0))
 			},
 			assert: func(t *testing.T, build func() *lockout.MemoryAttemptStore) {
 				assert.Panics(t, func() { build() })

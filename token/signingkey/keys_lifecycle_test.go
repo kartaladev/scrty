@@ -331,7 +331,7 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 				signingkey.WithRotateInterval(50 * time.Millisecond),
 				signingkey.WithReloadInterval(10 * time.Millisecond),
 				signingkey.WithHousekeepingInterval(10 * time.Millisecond),
-				signingkey.WithLifetime(120 * time.Millisecond),
+				signingkey.WithKeyLifetime(120 * time.Millisecond),
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, _ signingkey.KeyStore) {
 				first := currentKid(t, km, signingkey.EdDSA)
@@ -351,7 +351,7 @@ func TestSystemClockDrivesTheLoops(t *testing.T) {
 				signingkey.WithRotateInterval(time.Hour),
 				signingkey.WithReloadInterval(20 * time.Millisecond),
 				signingkey.WithHousekeepingInterval(time.Hour),
-				signingkey.WithLifetime(24 * time.Hour),
+				signingkey.WithKeyLifetime(24 * time.Hour),
 			},
 			assert: func(t *testing.T, km *signingkey.Keys, store signingkey.KeyStore) {
 				// Another replica, configured for an algorithm this one does not
@@ -405,7 +405,7 @@ func restartable(t *testing.T, clk *clockwork.FakeClock, store signingkey.KeySto
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	return km
@@ -597,7 +597,7 @@ func TestStopWaitsForAnInFlightStoreWrite(t *testing.T) {
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(12*time.Hour),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	require.NoError(t, km.Start(t.Context()))
@@ -649,12 +649,12 @@ func TestStopAfterSeveralLoopRuns(t *testing.T) {
 		signingkey.WithKeyStore(failingStore(t, &failureReport{}, opReload)),
 		signingkey.WithClock(clk),
 		signingkey.WithLogger(logger),
-		signingkey.WithLogSampleWindow(24*time.Hour),
+		signingkey.WithLogInterval(24*time.Hour),
 		signingkey.WithAlgs(signingkey.EdDSA),
 		signingkey.WithRotateInterval(time.Hour),
 		signingkey.WithReloadInterval(time.Minute),
 		signingkey.WithHousekeepingInterval(30*time.Minute),
-		signingkey.WithLifetime(24*time.Hour),
+		signingkey.WithKeyLifetime(24*time.Hour),
 	)
 	require.NoError(t, err)
 	require.NoError(t, km.Start(t.Context()))

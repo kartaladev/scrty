@@ -132,7 +132,7 @@ type EnrolmentOption func(*enrolmentInterceptor) error
 //     refused with ErrCredentialsMissing (400), and are not counted as failed
 //     confirmations;
 //   - an enrolment-only session lives at most 15 minutes from the mark
-//     (WithEnrolmentSessionTTL);
+//     (WithEnrolmentSessionLifetime);
 //   - begins are limited to 5 per hour per user, every call counted
 //     (WithEnrolmentBeginLimiter), and failed confirmations to 5 per 15
 //     minutes per user (WithEnrolmentConfirmLimiter), each by a limiter of
@@ -331,7 +331,7 @@ func WithEnrolmentMethods(names ...string) EnrolmentOption {
 	}
 }
 
-// WithEnrolmentSessionTTL lets an enrolment-only session live at most d from
+// WithEnrolmentSessionLifetime lets an enrolment-only session live at most d from
 // the moment it is marked.
 //
 // Default: 15 minutes, long enough to install an authenticator app and read an
@@ -359,10 +359,10 @@ func WithEnrolmentMethods(names ...string) EnrolmentOption {
 // session. With a session manager whose idle timeout is shorter than d, a user
 // who is actively enrolling can still idle out mid-enrolment, and must log in
 // again; keep d within the idle timeout, or accept that.
-func WithEnrolmentSessionTTL(d time.Duration) EnrolmentOption {
+func WithEnrolmentSessionLifetime(d time.Duration) EnrolmentOption {
 	return func(i *enrolmentInterceptor) error {
 		if d <= 0 {
-			return newConfigError("WithEnrolmentSessionTTL was given %s; an enrolment-only "+
+			return newConfigError("WithEnrolmentSessionLifetime was given %s; an enrolment-only "+
 				"session needs a lifetime greater than zero", d)
 		}
 

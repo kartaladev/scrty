@@ -216,24 +216,24 @@ func TestEnableMFAEnrolmentConstruction(t *testing.T) {
 		{
 			name: "a lifetime of zero",
 			prepare: func(_ *testing.T, h *enrolHarness) {
-				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentSessionTTL(0)}
+				h.enrolOpts = []httpsec.EnrolmentOption{httpsec.WithEnrolmentSessionLifetime(0)}
 			},
-			assert: refused("WithEnrolmentSessionTTL"),
+			assert: refused("WithEnrolmentSessionLifetime"),
 		},
 		{
 			name: "a lifetime longer than the session manager's absolute timeout",
 			prepare: func(_ *testing.T, h *enrolHarness) {
 				h.enrolOpts = []httpsec.EnrolmentOption{
-					httpsec.WithEnrolmentSessionTTL(h.sessions.AbsoluteTimeout() + time.Minute),
+					httpsec.WithEnrolmentSessionLifetime(h.sessions.AbsoluteTimeout() + time.Minute),
 				}
 			},
-			assert: refused("WithEnrolmentSessionTTL", "absolute timeout"),
+			assert: refused("WithEnrolmentSessionLifetime", "absolute timeout"),
 		},
 		{
 			name: "a lifetime equal to the absolute timeout",
 			prepare: func(_ *testing.T, h *enrolHarness) {
 				h.enrolOpts = []httpsec.EnrolmentOption{
-					httpsec.WithEnrolmentSessionTTL(h.sessions.AbsoluteTimeout()),
+					httpsec.WithEnrolmentSessionLifetime(h.sessions.AbsoluteTimeout()),
 				}
 			},
 			assert: assembles,
@@ -481,7 +481,7 @@ var (
 	_ mfa.Enroller = renamedTOTPMethod{}
 )
 
-// TestEnrolmentSessionTTLOption pins that WithEnrolmentSessionTTL's value is
+// TestEnrolmentSessionTTLOption pins that WithEnrolmentSessionLifetime's value is
 // what a real login actually lowers an enrolment-only session's deadline to,
 // not only what enrolmentInterceptor.lifetime holds in memory. EnableMFAEnrolment
 // carries the option into the chain's shared enrolment lifetime
@@ -519,7 +519,7 @@ func TestEnrolmentSessionTTLOption(t *testing.T) {
 		},
 		{
 			name:      "consumer lifetime: still loads at 09:20",
-			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithEnrolmentSessionTTL(30 * time.Minute)},
+			enrolOpts: []httpsec.EnrolmentOption{httpsec.WithEnrolmentSessionLifetime(30 * time.Minute)},
 			at:        start.Add(20 * time.Minute),
 			assert: func(t *testing.T, err error) {
 				t.Helper()

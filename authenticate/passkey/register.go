@@ -215,14 +215,14 @@ type RegistrationResult struct {
 //     room, this finish is refused in step 7. The removals stand even when the
 //     finish is refused later.
 //  6. Refuse a user still holding the passkey limit, counting every state,
-//     with ErrLimitReached. It runs after the removals above so the passkeys
+//     with ErrPerUserLimitReached. It runs after the removals above so the passkeys
 //     they replaced no longer count: a user whose only passkey is an abandoned
 //     one registers again at a limit of one. This early count spares a user
 //     plainly at the limit the work below; it does not decide.
 //  7. Store the credential through the store's bounded insert, which decides
 //     the limit by the write: of finishes racing for one user, the user never
 //     ends up holding more than the limit, and the others are refused with
-//     ErrLimitReached. A credential ID already registered, to anyone, is
+//     ErrPerUserLimitReached. A credential ID already registered, to anyone, is
 //     refused, leaving the existing record unchanged.
 //  8. Only once it is stored, generate the saved codes and queue the emailed
 //     code the passkey awaits. When either fails, the stored passkey is
@@ -309,7 +309,7 @@ func (m *Passkeys) FinishRegistration(
 	}
 
 	if held >= m.passkeyLimit {
-		return nil, ErrLimitReached
+		return nil, ErrPerUserLimitReached
 	}
 
 	cid, err := m.ids.NewID()
@@ -348,7 +348,7 @@ func (m *Passkeys) FinishRegistration(
 	case err != nil:
 		return nil, diag.Wrap(err, "passkey: could not store the passkey")
 	case !stored:
-		return nil, ErrLimitReached
+		return nil, ErrPerUserLimitReached
 	}
 
 	if err := m.settlePending(ctx, c, rc, plan); err != nil {

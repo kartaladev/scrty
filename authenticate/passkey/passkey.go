@@ -223,7 +223,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 
 	reg, err := onetime.New(registrationPurpose,
 		onetime.WithStore(challenges),
-		onetime.WithTTL(m.ttl),
+		onetime.WithTokenTTL(m.ttl),
 		onetime.WithIssuanceWindow(issuanceWindow),
 		onetime.WithClock(m.clock),
 		onetime.WithRandom(m.random),
@@ -238,7 +238,7 @@ func New(deps Deps, opts ...Option) (*Passkeys, error) {
 
 	login, err := onetime.New(loginPurpose,
 		onetime.WithStore(challenges),
-		onetime.WithTTL(m.ttl),
+		onetime.WithTokenTTL(m.ttl),
 		onetime.WithIssuanceWindow(m.ttl),
 		onetime.WithClock(m.clock),
 		onetime.WithRandom(m.random),

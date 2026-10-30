@@ -245,7 +245,7 @@ func TestNewTOTP_RefusesSubSecondPeriod(t *testing.T) {
 			assert.NotPanics(t, func() {
 				var m *mfa.TOTP
 				m, err = mfa.NewTOTP(mfa.NewMemoryEnrolmentStore(), "Example",
-					mfa.WithPeriod(tc.period), mfa.WithClock(clockwork.NewFakeClockAt(now)))
+					mfa.WithTimeStep(tc.period), mfa.WithClock(clockwork.NewFakeClockAt(now)))
 				if err != nil {
 					return
 				}
@@ -1244,13 +1244,13 @@ func TestNewTOTP(t *testing.T) {
 		{
 			name:   "zero period",
 			issuer: "Example",
-			opts:   []mfa.Option{mfa.WithPeriod(0)},
+			opts:   []mfa.Option{mfa.WithTimeStep(0)},
 			assert: configError,
 		},
 		{
 			name:   "negative period",
 			issuer: "Example",
-			opts:   []mfa.Option{mfa.WithPeriod(-time.Second)},
+			opts:   []mfa.Option{mfa.WithTimeStep(-time.Second)},
 			assert: configError,
 		},
 		{
@@ -1335,7 +1335,7 @@ func TestNewTOTP(t *testing.T) {
 		{
 			name:   "eight digits and a consumer period",
 			issuer: "Example",
-			opts:   []mfa.Option{mfa.WithDigits(8), mfa.WithPeriod(60 * time.Second)},
+			opts:   []mfa.Option{mfa.WithDigits(8), mfa.WithTimeStep(60 * time.Second)},
 			assert: func(t *testing.T, m *mfa.TOTP, err error) {
 				require.NoError(t, err)
 				assert.Equal(t, 8, m.Digits())

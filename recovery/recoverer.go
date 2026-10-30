@@ -587,7 +587,7 @@ func (r *Recoverer) validateIssued(c *config) error {
 		return nil
 	}
 
-	topts := []onetime.Option{onetime.WithTTL(c.issuedTTL), onetime.WithClock(c.clock), onetime.WithLogger(c.logger)}
+	topts := []onetime.Option{onetime.WithTokenTTL(c.issuedTTL), onetime.WithClock(c.clock), onetime.WithLogger(c.logger)}
 	if c.issuedStoreSet {
 		topts = append(topts, onetime.WithStore(c.issuedStore))
 	}
@@ -699,7 +699,7 @@ func (r *Recoverer) validateFlow(c *config) error {
 //   - "recovery-issued-codes": issued recovery codes, when ProofIssued is
 //     enabled (WithProofs). Start issues them to anyone who knows a username.
 //   - "recovery-finish-tokens" and "recovery-cancel-tokens": the tokens of
-//     held recoveries, when holds are enabled (WithDelay or WithRisk; see
+//     held recoveries, when holds are enabled (WithHoldDelay or WithRisk; see
 //     Holds).
 //
 // A recoverer with neither returns an empty, non-nil slice. The state lives in

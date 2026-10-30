@@ -343,7 +343,7 @@ func TestRecoverer_Hold(t *testing.T) {
 		},
 		{
 			name: "a configured completion window replaces the default",
-			opts: append(holdFor(72*time.Hour), recovery.WithCompletionWindow(time.Hour)),
+			opts: append(holdFor(72*time.Hour), recovery.WithHoldCompletionWindow(time.Hour)),
 			act:  finishAt(thursday.Add(time.Hour + time.Second)),
 			assert: func(t *testing.T, _ *completeEnv, _ *recovery.Result, err error) {
 				require.ErrorIs(t, err, recovery.ErrRefused)

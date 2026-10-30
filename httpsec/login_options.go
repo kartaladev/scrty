@@ -45,7 +45,7 @@ type FormLoginDeps struct {
 	// locks just the same, but nothing recorded through it is reported. A failure
 	// recorded in one store and counted in another locks nothing.
 	//
-	// When the policy has a consecutive-failure cap (lockout.WithCap),
+	// When the policy has a consecutive-failure cap (lockout.WithFailureStreakLimit),
 	// its view is required: only the view advances the consecutive count, so
 	// any other store here, the policy's own bare store included, fails New
 	// with a configuration error naming this field. That check covers only

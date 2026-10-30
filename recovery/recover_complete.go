@@ -56,9 +56,9 @@ type Result struct {
 	// Remaining is how many saved codes the user holds once the recovery
 	// completed, with Low judged by the saved-code manager's low threshold.
 	// When a saved code was spent it counts the new set in Codes; otherwise
-	// it counts what is left of the old one. It is the zero Count when saved
+	// it counts what is left of the old one. It is the zero RemainingCodes when saved
 	// codes are not in use.
-	Remaining Count
+	Remaining RemainingCodes
 
 	// Details is the recovered user's account, as the recovery loaded it. A
 	// caller that must name the user, such as when minting the credential for
@@ -175,7 +175,7 @@ func (r *Recoverer) complete(ctx context.Context, c completion, now time.Time) (
 		}
 
 		res.Codes = codes
-		res.Remaining = Count{N: len(codes), Low: len(codes) <= r.codes.lowThreshold}
+		res.Remaining = RemainingCodes{N: len(codes), Low: len(codes) <= r.codes.lowThreshold}
 	case r.codes != nil:
 		n, err := r.codes.Remaining(ctx, c.user)
 		if err != nil {
@@ -251,14 +251,14 @@ func WithoutSessionRevocation() Option {
 	return func(c *config) { c.keepSessions = true }
 }
 
-// WithSessionLifetime replaces how long the recovery-pending session a
+// WithPendingSessionLifetime replaces how long the recovery-pending session a
 // completed recovery produces lives before it must become full by binding a
 // new authenticator. The default is 15 minutes.
 //
 // Zero or less is a configuration error, and so is longer than the session
 // manager's absolute timeout, which no session outlives. The default is held
 // to the same bound.
-func WithSessionLifetime(d time.Duration) Option {
+func WithPendingSessionLifetime(d time.Duration) Option {
 	return func(c *config) { c.sessionLifetime = d }
 }
 

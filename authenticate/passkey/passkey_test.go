@@ -96,7 +96,7 @@ func TestNew(t *testing.T) {
 		{name: "zero challenge TTL", opts: []passkey.Option{passkey.WithChallengeTTL(0)}, assert: refused},
 		{name: "negative freshness", opts: []passkey.Option{passkey.WithManagementFreshness(-time.Minute)}, assert: refused},
 		{name: "zero issuance limit", opts: []passkey.Option{passkey.WithRegistrationChallengeLimit(0)}, assert: refused},
-		{name: "zero passkey limit", opts: []passkey.Option{passkey.WithLimit(0)}, assert: refused},
+		{name: "zero passkey limit", opts: []passkey.Option{passkey.WithPerUserLimit(0)}, assert: refused},
 		{name: "unknown user verification", opts: []passkey.Option{passkey.WithUserVerification(0)}, assert: refused},
 		{name: "unknown resident key", opts: []passkey.Option{passkey.WithResidentKey(9)}, assert: refused},
 		{name: "nil name resolver", opts: []passkey.Option{passkey.WithNameResolver(nil)}, assert: refused},

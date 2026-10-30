@@ -275,7 +275,7 @@ var statusTable = []statusRow{
 	// answered 401.
 	{passkey.ErrPending, http.StatusForbidden},
 	{passkey.ErrAttestationRefused, http.StatusForbidden},
-	{passkey.ErrLimitReached, http.StatusForbidden},
+	{passkey.ErrPerUserLimitReached, http.StatusForbidden},
 	{passkey.ErrReauthenticationRequired, http.StatusForbidden},
 }
 

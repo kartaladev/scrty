@@ -312,7 +312,7 @@ only logout is let through as well.
 | Endpoint path prefixes | `/mfa/enrol/begin`, `/mfa/enrol/confirm`, `/mfa/enrol/confirm-email`, each with `/<name>` appended per method | `httpsec.WithEnrolmentBeginPrefix`, `WithEnrolmentConfirmPrefix`, `WithEnrolmentEmailConfirmPrefix` |
 | Methods enrolled | every method `EnableMFA` was given that implements `mfa.Enroller` and supports the path | `httpsec.WithEnrolmentMethods` |
 | First factors admitted | `password`, `magic-link`, unrecorded | `policy.WithEnrolmentFirstFactors` |
-| Confined session lifetime | 15 minutes | `httpsec.WithEnrolmentSessionTTL` |
+| Confined session lifetime | 15 minutes | `httpsec.WithEnrolmentSessionLifetime` |
 | Begin limit | 5 per hour, per user, in-memory | `httpsec.WithEnrolmentBeginLimiter` |
 | Confirmation failure limit | 5 per 15 minutes, per user, in-memory | `httpsec.WithEnrolmentConfirmLimiter` |
 | Emailed-code confirmation | on | `httpsec.WithoutEnrolmentEmailConfirmation` |
@@ -440,7 +440,7 @@ proved they kept it.
 ### Holds, cool-down and regeneration
 
 - **No waiting period by default.** A recovery that presents its two proofs completes at once.
-  `recovery.WithDelay` holds every recovery for a fixed time before it can complete, and
+  `recovery.WithHoldDelay` holds every recovery for a fixed time before it can complete, and
   `recovery.WithCancelLink` is required with any hold — a delay or `recovery.WithRisk`'s hook: the
   held-recovery notice links to it, so a normal login, or the link itself, cancels a recovery the
   real user did not make.
@@ -459,11 +459,11 @@ proved they kept it.
 |---|---|---|
 | Codes per set | 10 | `recovery.WithCodesSetSize` |
 | Issued code lifetime | 15 minutes | `recovery.WithIssuedCodeTTL` |
-| Recovery-pending session lifetime | 15 minutes | `recovery.WithSessionLifetime` (via `httpsec.WithRecoveryCore`) |
+| Recovery-pending session lifetime | 15 minutes | `recovery.WithPendingSessionLifetime` (via `httpsec.WithRecoveryCore`) |
 | Regeneration freshness window | 15 minutes | `httpsec.WithRecoveryRegenerationFreshness` |
 | Authenticator reset | everything held, except what was proved | `recovery.WithResetReported`, `recovery.WithResetPolicy` |
 | Other sessions of the user | ended on recovery | `recovery.WithoutSessionRevocation` |
-| Waiting period | none | `recovery.WithDelay`, `recovery.WithRisk` |
+| Waiting period | none | `recovery.WithHoldDelay`, `recovery.WithRisk` |
 | Cool-down after recovery | off | `httpsec.EnableRecoveryCooldown` |
 | Recovery record store (`RecoveryDeps.Records`) | in-memory, one process only | `recovery.NewMemoryRecordStore` replaced by a durable `recovery.RecordStore` |
 | Issued-code token store | in-memory, one process only | `recovery.WithIssuedCodeStore` |
@@ -538,7 +538,7 @@ left out only with both `passkey.WithoutSessionRevocationOnRemoval` and
 | Endpoint paths | `/passkey/register`, `/passkey/credentials`, `/passkey/login` | `httpsec.WithPasskeyRegistrationPrefix`, `WithPasskeyCredentialsPrefix`, `WithPasskeyPasswordlessPrefix` |
 | Challenge lifetime | 5 minutes (also the timeout in the creation options) | `passkey.WithChallengeTTL` |
 | Registration challenges per user | 10 per hour; the window is fixed | `passkey.WithRegistrationChallengeLimit` |
-| Passkeys per user | 25, every state counted | `passkey.WithLimit` |
+| Passkeys per user | 25, every state counted | `passkey.WithPerUserLimit` |
 | Freshness to register or remove a passkey | latest authentication within 15 minutes | `passkey.WithManagementFreshness` |
 | Second factor a session must have met to register or remove a passkey | any MFA method usable against the session's first factor: inside a chain with an MFA slot, the slot's methods (the passkey method among them when it is on the slot); otherwise `passkey.Deps.MFAMethods`. The user's own active passkeys count too, whatever the first factor, when the passkey method is among those methods or the chain serves passwordless login that proves the second factor. A password session steps up through the passkey method; a passkey-first session cannot (same channel) and signs in again with user verification, or by password then the passkey step-up. Accepted fail-closed limit: `WithoutSecondFactorAtLogin`, the passkey method on the slot, and a policy completing a passkey-first session without a second factor leave that session unable to manage passkeys. The method is recognised by identity, so a wrapped passkey method opens no route. A failed MFA or passkey lookup refuses with fixed text | `passkey.RegistrationContext.MFAMethods` and `PasswordlessLogin`, for a direct caller of the manager; the own-passkeys rule itself has no override |
 | User verification | required | `passkey.WithUserVerification` |

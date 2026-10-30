@@ -46,19 +46,19 @@ type Hold struct {
 	CompletableAt   time.Time
 }
 
-// WithDelay holds every recovery for d before it can complete. There is no
+// WithHoldDelay holds every recovery for d before it can complete. There is no
 // default: a recovery completes at once. Zero or less is a configuration
 // error. With WithRisk as well, the hold is the longer of the two.
 //
 // A hold needs WithCancelLink.
-func WithDelay(d time.Duration) Option {
+func WithHoldDelay(d time.Duration) Option {
 	return func(c *config) { c.delay, c.delaySet = d, true }
 }
 
-// WithCompletionWindow replaces how long after its hold a held recovery can
+// WithHoldCompletionWindow replaces how long after its hold a held recovery can
 // still be finished. The default is 24 hours. Zero or less is a configuration
 // error.
-func WithCompletionWindow(d time.Duration) Option {
+func WithHoldCompletionWindow(d time.Duration) Option {
 	return func(c *config) { c.window = d }
 }
 
@@ -140,7 +140,7 @@ func (r *Recoverer) validateHolds(c *config) error {
 // tokens that live for ttl.
 func (r *Recoverer) holdTokens(purpose string, ttl time.Duration) (*onetime.Tokens, error) {
 	m, err := onetime.New(purpose,
-		onetime.WithStore(r.holdStore), onetime.WithTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
+		onetime.WithStore(r.holdStore), onetime.WithTokenTTL(ttl), onetime.WithClock(r.clock), onetime.WithLogger(r.logger))
 	if err != nil {
 		return nil, fmt.Errorf("%w: hold tokens: %w", ErrConfig, err)
 	}
