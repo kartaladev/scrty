@@ -29,7 +29,7 @@ See `proposal.md` (Why) for the motivation. The facts below shaped the approach.
 
 **Non-Goals:**
 - **No default changes and no behaviour changes.** Every option and port keeps its default. A renamed option's godoc still names the default it replaces. `library-design`'s requirement to state the default and the override does not arise, because no decision here introduces or changes behaviour.
-- **No change to the test module's own layout.** `test/` keeps its sub-packages (`test/pgxstore`, `test/sqlstore`, …) and file layout. Only its imports and the names it references change.
+- **No change to the test module's own layout.** `test/` keeps its sub-packages (`test/pgxstore`, `test/sqlstore`, …) and file layout. Only its imports and the names it references change, apart from D14's HTTP client helpers.
 - **No consolidation of generated mocks.** Each one stays `<source>_mock_test.go`, produced by its `//go:generate` directive, as `use-mockgen` requires.
 - **None of `idiomatic-api-shape`'s or `key-port-context`'s items** (see `proposal.md`, Not in this change).
 
@@ -423,8 +423,23 @@ These checks run before phase 1 starts, and again after each phase:
 3. **Declaration inventory.** Every top-level declaration in every non-generated production file, exported or not, is listed with its package and kind. This covers functions, methods, types, variables, constants and `//go:embed` patterns. After each phase, every baseline declaration maps through the rename map to a declaration that exists. The only allowed absences are the D5 copies, each mapped to its `storekit` successor. This catches code dropped during a file merge that the build, the API diff and the tests would all miss.
 4. **Coverage.** No package's statement coverage drops. The conversion in D7 must exercise the same code as before.
 5. **Test names.** Test function names that name a renamed type (`TestManager…`, `TestNewJwtAuthenticator`, `TestNormaliseName`) keep their old wording. gopls does not rename them, and renaming them would only churn the test inventory this decision compares. The D7 conversions rename only the functions they fold, through `test` rows of the map.
-6. **Assertion review.** Outside D7, a test diff touches only import paths, identifiers, file placement and D11 prefixes. A reviewer compares every D7 case's assertions with its original function's.
+6. **Assertion review.** Outside D7 and D14, a test diff touches only import paths, identifiers, file placement and D11 prefixes. D14 changes how three test helpers build their HTTP clients and adds the tests that pin it, and changes no existing assertion. A reviewer compares every D7 case's assertions with its original function's.
 7. **Gates.** `make check` (gofmt, vet, lint, race tests, `go generate` drift and the layout checks) passes locally where it can, and in CI with the Docker suites.
+
+### D14. The test module's HTTP clients own their transport
+
+Three test-module helpers send through `http.DefaultTransport`: `httpClient` in `test/oidc`, `keycloakBrowser`, and the SMTP helper's message-API reads, which use `http.DefaultClient`. `httptest.Server.Close` calls `CloseIdleConnections` on `http.DefaultTransport`, and that closes every idle connection the transport holds, not only those to the closing server. In a package whose tests run in parallel, one test's server shutdown can therefore close a connection another test has just taken from the pool, and that request fails with `http: CloseIdleConnections called`.
+
+CI saw this once, on 2026-10-29: `TestTestIdentityProviderMalformedTokens/no_subject` failed on a commit that changed only `tasks.md`, and passed on rerun. The flake is `UNREPRODUCED`: 150 plain runs and 100 runs with `-race -cpu 2` passed locally. The mechanism underneath it is deterministic, and that is what the red tests pin: after another server's `Close`, a client on the default transport cannot reuse its idle connection.
+
+**Decision.** Each helper's client sends through a clone of `http.DefaultTransport` (`(*http.Transport).Clone`), and the helper registers the clone's `CloseIdleConnections` with `t.Cleanup`, so a test's connections end with the test. The root test package has one unexported helper for both of its clients. `test/oidc` builds its own, because it imports nothing from the root package. The SMTP helper keeps its client in an unexported field of `SMTPConn`, so `SMTPConn`'s exported shape does not change.
+
+**Default and override.** These are test helpers. No consumer-facing default, option or port changes.
+
+**Alternatives considered:**
+- **Disable keep-alives.** Also immune, but every request then opens a connection, and the clients still share state they do not need to share.
+- **Stop running the subtests in parallel.** It removes the trigger from one test only, and D7 keeps every test's parallelism as it was.
+- **Retry a failed request.** It would also hide a real connection failure a test should see.
 
 ## Risks / Trade-offs
 
@@ -502,6 +517,13 @@ Reasoned from scrty's own code and settled specs. On 2026-10-28, gopls reference
 The D5 sharing of the SQLSTATE filter, the detached-error builder and the user UPDATE, and the D8 prose rule, are reasoned from scrty's own code and settled specs.
 
 The sentinel-prefix convention in D11 is reasoned from scrty's own code: `ratelimit/redisstore/verify.go` and `internal/pglimiter/runner.go` already follow it.
+
+### Test HTTP clients (D14)
+
+**Primary documentation:**
+- `net/http/httptest`, `Server.Close`: its source (`src/net/http/httptest/server.go`, read from the local go1.27.3 toolchain) calls `CloseIdleConnections` on `http.DefaultTransport`. The [package documentation](https://pkg.go.dev/net/http/httptest#Server.Close) does not state it.
+- [`http.Transport.Clone`](https://pkg.go.dev/net/http#Transport.Clone): a copy of a transport's settings, which keeps a connection pool of its own.
+- [`httptrace.GotConnInfo`](https://pkg.go.dev/net/http/httptrace#GotConnInfo): `Reused` reports whether a request was sent on a connection used before, which the red tests observe.
 
 ### Proof of no regression (D13)
 

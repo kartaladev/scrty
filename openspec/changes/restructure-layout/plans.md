@@ -10,7 +10,7 @@
 
 **Tech Stack:** Go 1.27 workspace (`go.work` lists 9 modules; `tools` sits outside it, by design), gopls v0.24 for moves and renames, `golang.org/x/exp/cmd/apidiff`, testify, mockgen v0.6 (`--typed`), GitHub Actions with testcontainers.
 
-**Spec:** `openspec/changes/restructure-layout/proposal.md`, `design.md` (decisions D1–D13), `specs/module-layout/spec.md` and `tasks.md`. Step numbers below cite `tasks.md` task numbers.
+**Spec:** `openspec/changes/restructure-layout/proposal.md`, `design.md` (decisions D1–D14), `specs/module-layout/spec.md`, `specs/test-provisioning/spec.md` and `tasks.md`. Step numbers below cite `tasks.md` task numbers.
 
 ## Global Constraints
 
@@ -35,7 +35,7 @@
 - **`.claude/.legacy` is never read, cited or copied.** Exclude it from every search.
 - **Mocks** stay `<source>_mock_test.go`, produced by their `//go:generate` directive. Regenerate them; never edit them by hand.
 - **Table tests** follow `.claude/skills/table-test`: an `assert` closure, a `ctx` modifier for context-sensitive components, and `t.Context()`. Parallelism is never added: a case calls `t.Parallel()` only if its original function did.
-- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. There are two exceptions: a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores, and the second PR review's reproduced defects, which the user folded into this change as group 9 (2026-10-29).
+- **Any defect found** is reported as `REPRODUCED` with its failing test, as `defect-claims.md` requires, and is never fixed in this change. There are three exceptions: a difference this change itself introduced against `main`, such as the `storeDenied` text that task 8.2 restores; the second PR review's reproduced defects, which the user folded into this change as group 9 (2026-10-29); and the test module's shared HTTP transport (D14), which the user folded in as group 10 (2026-10-30).
 - **Only the main session** edits `openspec/` files, including `evidence/`. Agents never edit them.
 
 ## Review Focus
@@ -77,8 +77,11 @@
 | R5 | 9.3, 9.4, 9.6 | `policy/lockout`, `httpsec/options.go` and `httpsec/options_test.go`, `session` godoc | Sonnet: each text and its test are given | Sonnet (combined R5/R6 review) |
 | R6 | 9.5 | `layout_test.go`, `layout_guard_test.go`, `testdata/layout/noalias*` | Sonnet: each guard's new shape and its red test are given | Sonnet (combined R5/R6 review) |
 | main session | 9.7 | gate | main session | the reviews above |
+| T1 | 10.1 | `test/oidc/idp_test.go` | Sonnet: the helper change and its red test are given | Sonnet (combined T1/T2 review) |
+| T2 | 10.2 | `test/testutils.go`, `test/oidc_keycloak_test.go`, `test/testutils_http_test.go` | Sonnet: same reason | Sonnet (combined T1/T2 review) |
+| main session | 10.3 | gate | main session | the review above |
 
-The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
+The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
 ---
 
@@ -465,3 +468,47 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 2:** `make check`, `evidence/check.sh all` against the group-1 baseline, and `openspec validate restructure-layout --strict`. Expected: pass, 0 unaccounted, valid.
 - [ ] **Step 3:** An Opus reviewer reads the P5 diff against D5 (and `txKey` still declared in each backend). A Sonnet reviewer reads the R5 and R6 diffs against D2, D8 and D11, with the recorded red-step lines. Expected: clean reports.
 - [ ] **Step 4:** Commit (`fix: answer PR #27's second review: shared SQLSTATE and UPDATE helpers, layout guards and message texts`), push, and confirm CI green on the new head, including the Docker suites.
+
+### Task 32: `test/oidc`'s client owns its transport (task 10.1, T1)
+
+**Files:** Modify `test/oidc/idp_test.go` (`httpClient` at ~line 104, and the new test).
+
+**Interfaces:**
+- Produces: `httpClient(t *testing.T) *http.Client`, unchanged signature, now with `Transport` set to a clone of `http.DefaultTransport` whose `CloseIdleConnections` is registered with `t.Cleanup`. Jar and `CheckRedirect` stay as they are.
+
+- [ ] **Step 1: Write the failing test** `TestHTTPClientKeepsItsConnectionsWhenAnotherServerCloses`:
+  - `own := httptest.NewServer(<200 handler>)` and `other := httptest.NewServer(<200 handler>)`, each closed at `t.Cleanup`; `client := httpClient(t)`.
+  - A `get` closure sends `GET own.URL` with `httptrace.WithClientTrace(t.Context(), &httptrace.ClientTrace{GotConn: func(i httptrace.GotConnInfo) { reused = i.Reused }})`, then reads the body to EOF and closes it, so the connection returns to the pool.
+  - `get()`; `other.Close()`; `get()`; `assert.True(t, reused, "the second request to its own server opened a new connection after another server closed")`.
+  - No `t.Parallel()`: the test must not depend on what other tests close.
+  - `TestHTTPClientReleasesItsConnectionsWhenItsTestEnds`: one `own` server closed at the outer `t.Cleanup`; inside `t.Run("build", …)` set `client = httpClient(t)` (the subtest's `t`) and `get()`; after `t.Run` returns, `get()` again and `assert.False(t, reused, "the client kept a connection after the test that built it ended")`.
+- [ ] **Step 2: Run.** `cd test && go test -count=1 -run 'TestHTTPClientKeepsItsConnectionsWhenAnotherServerCloses|TestHTTPClientReleasesItsConnectionsWhenItsTestEnds' ./oidc/`. Expected: FAIL on both messages. Record the lines.
+- [ ] **Step 3: Implement** the transport in `httpClient` as in Interfaces.
+- [ ] **Step 4: Verify.** Step 2's command passes; `cd test && go test -count=1 -race ./oidc/` passes; `go test -count=20 -run TestTestIdentityProviderMalformedTokens ./oidc/` passes; `gofmt -l oidc` prints nothing.
+
+### Task 33: The root test package's clients own their transport (task 10.2, T2)
+
+**Files:**
+- Modify: `test/testutils.go` (new helpers; `SMTPConn` gains an unexported field; `SMTPConn.get` at ~line 276; the SMTP helper's `return SMTPConn{…}` at ~line 217), `test/oidc_keycloak_test.go` (`keycloakBrowser` at ~line 231)
+- Create: `test/testutils_http_test.go`
+- Not owned: `test/oidc/` (Task 32).
+
+**Interfaces:**
+- Produces, in `test/testutils.go`:
+  - `ownTransport(t *testing.T) *http.Transport`: `http.DefaultTransport.(*http.Transport).Clone()`, with its `CloseIdleConnections` registered at `t.Cleanup`.
+  - `smtpAPIClient(t *testing.T) *http.Client`: `&http.Client{Transport: ownTransport(t)}`.
+  - `SMTPConn` field `client *http.Client`, set by the SMTP helper from `smtpAPIClient(t)`; `SMTPConn.get` sends through `c.client`.
+- `keycloakBrowser` keeps its signature, jar, timeout and `CheckRedirect`, and sets `Transport: ownTransport(t)`.
+- The `KeycloakConn` clients built over the container's own TLS transport (~lines 1195–1285) already own a transport and are not changed.
+
+- [ ] **Step 1: Stub** `smtpAPIClient` returning `http.DefaultClient`, so the test compiles and fails on behaviour.
+- [ ] **Step 2: Write the failing table** `TestHTTPClientsKeepTheirConnectionsWhenAnotherServerCloses` in `test/testutils_http_test.go`, in the `table-test` form: cases `"keycloak browser"` (`client: keycloakBrowser`) and `"smtp message API"` (`client: smtpAPIClient`), each running Task 32's Step 1 sequence with the constructor under test, and asserting with the same message. `TestHTTPClientsReleaseTheirConnectionsWhenTheirTestEnds` is the same table over Task 32's cleanup check. No `t.Parallel()`.
+- [ ] **Step 3: Run.** `cd test && go test -count=1 -run 'TestHTTPClientsKeepTheirConnectionsWhenAnotherServerCloses|TestHTTPClientsReleaseTheirConnectionsWhenTheirTestEnds' .`. Expected: FAIL in every case. Record the lines.
+- [ ] **Step 4: Implement** the Interfaces above: `ownTransport`, the real `smtpAPIClient`, the `SMTPConn` field and `get`, and `keycloakBrowser`'s transport.
+- [ ] **Step 5: Verify.** Step 3's command passes; `cd test && go test -count=1 -race -run 'TestHTTPClients|SMTP' .` passes with Docker; `rg -n 'http\.Default(Client|Transport)' test --glob '*.go'` finds only `ownTransport` and Task 32's `httpClient`; `go vet ./...` and `gofmt -l .` in `test` are clean.
+
+### Task 34: Group-10 gate (task 10.3, main session)
+
+- [ ] **Step 1:** `make check`, `evidence/check.sh all` against the group-1 baseline, and `openspec validate restructure-layout --strict`. Expected: pass, 0 unaccounted (the new tests and helpers appear only as additions), valid.
+- [ ] **Step 2:** A Sonnet reviewer reads the T1 and T2 diffs against D14 and the `test-provisioning` delta, with the recorded red-step lines. Expected: a clean report.
+- [ ] **Step 3:** Commit (`test: give the test module's HTTP clients a transport of their own`), push, and confirm CI green on the new head, including the Docker suites.

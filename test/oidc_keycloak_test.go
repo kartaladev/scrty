@@ -235,6 +235,7 @@ func keycloakBrowser(t *testing.T) *http.Client {
 	require.NoError(t, err)
 
 	return &http.Client{
+		Transport:     ownTransport(t),
 		Jar:           jar,
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

@@ -113,7 +113,8 @@ type SMTPConn struct {
 	Password string
 	RootCAs  *x509.CertPool
 
-	api string // the container's HTTP API, for reading received messages
+	api    string       // the container's HTTP API, for reading received messages
+	client *http.Client // reads api, on a transport of its own
 }
 
 // ReceivedMessage is one message the test server accepted, as it arrived on
@@ -221,6 +222,7 @@ func RunTestSMTP(t *testing.T, opts ...TestOption) SMTPConn {
 		Password: cfg.password,
 		RootCAs:  pool,
 		api:      strings.TrimSuffix(api, "/"),
+		client:   smtpAPIClient(t),
 	}
 }
 
@@ -267,13 +269,34 @@ func (c SMTPConn) Messages(t *testing.T) []ReceivedMessage {
 	return out
 }
 
+// ownTransport returns a clone of the default HTTP transport that closes its
+// idle connections when t ends. A client built on it keeps connections no
+// other test can clear: httptest.Server.Close closes the idle connections of
+// the default transport.
+func ownTransport(t *testing.T) *http.Transport {
+	t.Helper()
+
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	t.Cleanup(tr.CloseIdleConnections)
+
+	return tr
+}
+
+// smtpAPIClient returns the HTTP client a SMTPConn reads the message API
+// with, on a transport of its own that is released when t ends.
+func smtpAPIClient(t *testing.T) *http.Client {
+	t.Helper()
+
+	return &http.Client{Transport: ownTransport(t)}
+}
+
 func (c SMTPConn) get(t *testing.T, url string) []byte {
 	t.Helper()
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, url, nil)
 	require.NoError(t, err)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.client.Do(req)
 	require.NoError(t, err, "message API request to %s failed", url)
 	defer func() { _ = resp.Body.Close() }()
 

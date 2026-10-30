@@ -67,6 +67,7 @@ Nothing is tagged yet and there are no consumers, so moving and renaming public 
   - every `go.mod` `replace` directive, `go.work`, and the module directories the layout tests name;
   - the `config.yaml` context;
   - the path references in active changes' artifacts.
+- **The test module's HTTP clients stop sharing Go's default transport.** The OIDC login harness's client, the Keycloak browser client and the SMTP helper's message-API reads each get a transport of their own, closed when the test ends. Every `httptest.Server.Close` clears the idle connections of `http.DefaultTransport`, so one parallel test's server shutdown could cut another test's request. CI saw it once on PR #27 (2026-10-29). Test code only; folded into this change on 2026-10-30.
 
 ### Not in this change
 
@@ -102,12 +103,13 @@ None.
   - the supported Go releases become 1.27 and above, matching every `go.mod` and the CI matrix. The text is the one `release-readiness` states for the same requirement, word for word, so whichever change is archived first leaves the main spec as the other expects.
 
   The last two only bring the spec in line with what the code and CI already enforce.
+- `test-provisioning`: an HTTP client a test-module helper builds keeps its connections when another test's server closes, and releases them when its own test ends.
 
 No other requirement changes. Behaviour specs that use "manager" as plain English, not as an identifier, keep their wording.
 
 ## Impact
 
-- **Code:** every package in the core module, and every nested module (`fibersec`, `ginsec`, `gorm`, `pgx`, `redis`, `sweep`, `passkey/webauthn`, `test`, `tools`). Import paths and exported names change, and files are reorganised.
+- **Code:** every package in the core module, and every nested module (`fibersec`, `ginsec`, `gorm`, `pgx`, `redis`, `sweep`, `passkey/webauthn`, `test`, `tools`). Import paths and exported names change, and files are reorganised. In the test module, the HTTP client helpers in `test/oidc/idp_test.go`, `test/oidc_keycloak_test.go` and `test/testutils.go` take a transport of their own.
 - **Module paths:**
   - `passkey/webauthn` → `authenticate/passkey/webauthn`
   - `pgx` → `store/pgxstore`
