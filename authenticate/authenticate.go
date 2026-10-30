@@ -32,12 +32,46 @@ var ErrUnsupportedCredentials = errors.New("authenticate: unsupported credential
 
 // ErrAuthenticationFailed is the one failure every refusal reads as.
 //
-// An unknown username, a wrong password, a correct password for an inactive
-// account and a user store that is down all return it, bare and alike, because
-// telling them apart turns the login endpoint into an oracle for which accounts
-// exist and which are disabled. What distinguishes them is written to the log,
-// where the operator can see it and the caller cannot.
+// An unknown username, a wrong password and a correct password for an inactive
+// account all return it, bare and alike, because telling them apart turns the
+// login endpoint into an oracle for which accounts exist and which are
+// disabled. What distinguishes them is written to the log, where the operator
+// can see it and the caller cannot. A user store that could not answer is not a
+// refusal and returns ErrUnavailable instead. A load that the caller's own
+// cancellation or deadline ended is not an outage: the store did not fail, the
+// caller left. It returns this error, so a caller that counts refusals counts
+// it.
 var ErrAuthenticationFailed = errors.New("authenticate: authentication failed")
+
+// ErrUnavailable reports that the user store could not answer, so the
+// credential was never judged.
+//
+// The password provider returns it, bare, when its user loader fails with
+// anything other than identity.ErrUserNotFound. The one exception is a load the
+// caller's own context ended: when ctx has ended and the loader's error is, or
+// wraps, ctx's error or its cause, the provider returns
+// ErrAuthenticationFailed, so a client that hangs up mid-login is charged like
+// any guess. Otherwise it does not match ErrAuthenticationFailed: no credential
+// was refused, and a caller that counts failed logins must not count this one.
+// An outage counted as a guess would lock or hold real accounts for failures
+// their owners never made. It carries none of the loader's error text; the
+// provider logs the failure at error level, naming its Go type, for the
+// operator.
+//
+// It reveals nothing about any one account: the store is down for every
+// username alike, and the provider spends the same password work as for an
+// unknown username, so the timing does not change either. One edge remains. A
+// single account whose own row fails to load, from corrupt data say, while
+// other rows load, answers unavailable where other accounts answer as refused,
+// which tells a prober that account exists. Such a row is already an incident
+// the error-level record reports.
+//
+// By default httpsec answers it 503 (httpsec.StatusForError), and form login,
+// Basic authentication and account recovery's password proof record no failure
+// for it. A consumer's own error
+// handler, which replaces the default response, may answer it as it likes.
+// There is no option to count it as a failed login.
+var ErrUnavailable = errors.New("authenticate: the user store is unavailable")
 
 // ErrNoEligibleAuthenticator reports that every provider skipped the presented
 // credentials, so none of them judged the caller at all.
@@ -60,7 +94,9 @@ type Authenticator interface {
 	// ErrUnsupportedCredentials and nothing else, so a FirstOf can offer them to
 	// the next provider. Every refusal of credentials this provider does handle
 	// returns an error matching ErrAuthenticationFailed, and carries no detail
-	// that would let a caller tell one refusal from another.
+	// that would let a caller tell one refusal from another. A dependency that
+	// could not answer, so that the credentials were never judged, is not a
+	// refusal: the built-in password provider returns ErrUnavailable for it.
 	Authenticate(ctx context.Context, c identity.Credentials) (*Authentication, error)
 }
 

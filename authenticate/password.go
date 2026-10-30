@@ -125,13 +125,17 @@ type RefusalLogFlusher interface {
 }
 
 // The reasons a refusal is recorded under. They are the sampler's keys, so each
-// is held back independently: a flood of unknown usernames cannot bury the one
-// record saying the user store is down. reasonUserLoadFailed also names the
-// user loader in diag.Failure's record, so its value is the word an operator
-// sees, not a synonym for it.
+// is held back independently: a flood of unknown usernames, or of clients
+// hanging up, cannot bury the one record saying the user store is down.
+// reasonUserLoadFailed also names the user loader in diag.Failure's record, so
+// its value is the word an operator sees, not a synonym for it.
 const (
-	reasonUnknownUser     = "unknown-user"
-	reasonUserLoadFailed  = "user-loader"
+	reasonUnknownUser    = "unknown-user"
+	reasonUserLoadFailed = "user-loader"
+	// reasonCallerEnded names a load the caller's own context ended. It is not
+	// an outage, so it has a key of its own.
+	reasonCallerEnded = "caller-ended"
+
 	reasonWrongPassword   = "wrong-password"
 	reasonAccountInactive = "account-inactive"
 	// reasonNoPasswordHash and reasonUnrecognisedHash name a known user whose
@@ -249,9 +253,24 @@ func NewUsernamePasswordAuthenticator(users identity.UserLoader, opts ...Passwor
 // Authenticate resolves a username and password against the user loader.
 //
 // Every refusal returns the bare ErrAuthenticationFailed, with nothing wrapped
-// and nothing added, so an unknown username, a wrong password and a user store
-// that is down are one answer rather than three. What separates them goes to
-// the log, where an operator sees it and a caller does not.
+// and nothing added, so an unknown username, a wrong password and an inactive
+// account are one answer rather than three. What separates them goes to the
+// log, where an operator sees it and a caller does not.
+//
+// A user loader that fails with anything other than identity.ErrUserNotFound
+// is not a refusal: the credential was never judged. That returns the bare
+// ErrUnavailable, with none of the loader's text, and an error-level record
+// naming the failure's Go type. It costs the same verification against the
+// reference hash as an unknown username, so its timing tells nothing either.
+// See ErrUnavailable for what it reveals and how httpsec answers it.
+//
+// The one load failure that is not an outage is the caller's own: when ctx has
+// ended and the loader's error is, or wraps, ctx's own error, the store did not
+// fail, the caller left. That returns the uniform ErrAuthenticationFailed, so
+// a caller that charges refusals charges it too, and a client that hangs up
+// mid-login cannot spend password work that nothing counts. A loader that
+// fails with some other error after the caller left, or with a deadline of its
+// own while the caller still waits, is still unavailable.
 //
 // A username the store does not know is still verified, against the reference
 // hash built at construction. Returning early there would make the unknown-user
@@ -298,23 +317,39 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 		// Deliberately unused: the verification is the point, not its verdict.
 		_ = a.enc.Match(presented, a.reference)
 
-		switch {
-		case err == nil, errors.Is(err, identity.ErrUserNotFound):
+		if err == nil || errors.Is(err, identity.ErrUserNotFound) {
 			// Routine: someone mistyped a username, or is guessing at them.
 			a.refuse(ctx, slog.LevelDebug, reasonUnknownUser, creds.Username,
 				slog.String("reason", reasonUnknownUser))
-		default:
-			// Not routine: the store could not answer, so nobody can log in
-			// and an operator has something to fix. diag.Failure names the
-			// failure and the error's Go type, never its text: the store's
-			// error can quote another column of the row, or a value the
-			// library never saw, and a consumer who wants that detail logs
-			// it inside their own implementation of the user loader.
-			a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
-				diag.Failure(reasonUserLoadFailed, err)...)
+
+			return nil, ErrAuthenticationFailed
 		}
 
-		return nil, ErrAuthenticationFailed
+		// A load the caller's own cancellation or deadline ended judged
+		// nothing, and the store did not fail: the caller left. It is recorded
+		// at debug, under a key of its own so a burst of hang-ups cannot take
+		// the outage's place in the sampled window, and it stays the uniform
+		// failure, which the endpoints charge, so a client that hangs up
+		// mid-login cannot spend password work no throttle pays for.
+		if causedByCaller(ctx, err) {
+			a.refuse(ctx, slog.LevelDebug, reasonCallerEnded, creds.Username,
+				diag.Failure(reasonCallerEnded, err)...)
+
+			return nil, ErrAuthenticationFailed
+		}
+
+		// Not routine: the store could not answer, so nobody can log in and an
+		// operator has something to fix. diag.Failure names the failure and
+		// the error's Go type, never its text: the store's error can quote
+		// another column of the row, or a value the library never saw, and a
+		// consumer who wants that detail logs it inside their own
+		// implementation of the user loader.
+		a.refuse(ctx, slog.LevelError, reasonUserLoadFailed, creds.Username,
+			diag.Failure(reasonUserLoadFailed, err)...)
+
+		// Bare: the loader's text stays out of the error as it stays out of
+		// the log.
+		return nil, ErrUnavailable
 	}
 
 	if reason, level, usable := a.usableHash(details.Password); !usable {
@@ -376,6 +411,17 @@ func (a *passwordAuthenticator) Authenticate(ctx context.Context, c identity.Cre
 		Time:              time.Now(),
 		PasswordChangedAt: details.PasswordChangedAt,
 	}, nil
+}
+
+// causedByCaller reports whether err is the caller's own context ending, rather
+// than the user loader failing on its own: ctx has ended, and err is or wraps
+// ctx's error or its cause. A cancellation or deadline the loader met on a
+// context of its own does not count, since the caller was still waiting.
+func causedByCaller(ctx context.Context, err error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil &&
+		(errors.Is(err, ctxErr) || errors.Is(err, context.Cause(ctx)))
 }
 
 // usableHash reports whether the stored hash is one the encoder would verify,

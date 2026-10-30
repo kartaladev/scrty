@@ -20,7 +20,7 @@ The library SHALL provide a public status-only mapping from an error to an HTTP 
 | held recovery presented before its hold ends | 409 |
 | session renewal that lost a concurrent renewal | 409 |
 | API key rotation refused (the key is revoked or expired, or a concurrent rotation won) | 409 |
-| the user store unavailable to a password login, a Basic authentication or an API key owner check (the authentication capability's unavailable error) | 503 |
+| the user store unavailable to a password login, a Basic authentication, a recovery's password proof or an API key owner check (the authentication capability's unavailable error) | 503 |
 | any other error | 500 |
 
 A failure to read or record password history is a dependency failure, not a refusal of the caller's input, and SHALL map to 500 like any other unrecognised error.

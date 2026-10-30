@@ -98,6 +98,7 @@
 | U1 | 13.1–13.3 | `authenticate`, `httpsec/basic*.go`, `httpsec/login*.go`, `httpsec/errors*.go` | Opus: changes what a refusal means across two packages, and a wrong mapping would pass most tests | Opus |
 | U3 | 13.5 | `authenticate/password*.go`, `httpsec/password_outage_test.go`, `httpsec/basic.go`, `httpsec/recovery.go` | Opus: refusal semantics under cancellation | Opus (one review of U1–U3) |
 | U4 | 13.6 | `authenticate/authenticate.go`, `authenticate/password*.go`, `httpsec/recovery*.go`, `httpsec/login.go`, `httpsec/password_outage_test.go`, `recovery/recover_test.go` | Sonnet: folds review findings whose fixes are stated, and a log change the user decided | Opus, inside the 13.7 group review |
+| U5 | 13.7 | `authenticate/password*.go`, `authenticate/authenticate.go`, `httpsec/login.go`, `httpsec/basic.go`, `httpsec/recovery*.go`, `recovery/recover.go`, `httpsec/password_outage_test.go` | Opus: refusal counting on three security paths, and a mistake would pass most tests | Opus |
 | U2 | 13.4 | `recovery/recover*.go`, `httpsec/login_options.go` | Opus: same reason as U1, and it touches a security refusal path | Opus (one review of U1–U2) |
 | K1 | 14.1–14.2 | `httpsec/apikey*.go` | Opus: refusal logic written for the first time | Opus |
 | V1 | 15.1–15.3 | `token/**` | Opus: token verification logic | Opus |
@@ -108,7 +109,7 @@
 | L2 | 16.2 | `internal/pglimiter`, `internal/unavailable`, `store/sqlstore/limiter*.go`, `store/pgxstore/limiter*.go`, `ratelimit/redisstore`, the test module's limiter suites | Opus: atomic writes in SQL and Lua | Opus (one review of L1–L3) |
 | L2b | 16.3 | `test/ratelimittest/charge.go`, `test/ratelimittest/doubles_test.go`, `test/ratelimittest/broken_test.go`, godoc in `ratelimit/charge.go`, `ratelimit/memory.go`, `ratelimit/redisstore/limiter.go`, `internal/unavailable/wrap.go` | Sonnet: the case, the flaw and the wording are given by the review | Opus, inside the 16.5 group review |
 | L3 | 16.4 | `ratelimit/limiter.go`, every `limiter_mock_test.go`, `test/ratelimittest/doubles_test.go`, `test/pg_ratelimit_fault_test.go`, `recovery/codes*.go` | Opus: widens a port and fixes a race | Opus (one review of L1–L3) |
-| main session | 12.3, 13.7, 14.3, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
+| main session | 12.3, 13.8, 14.3, 15.7, 16.5, 17.1–17.2 | gates, `openspec/` references | main session | the reviews above; Opus whole-branch review at 17.2 |
 
 The five P3 lanes run in parallel, each owning only the packages its task names. R1–R4 own disjoint files and run in parallel too, and so do P5, R5 and R6, and T1 and T2. Groups 11–16 run in four rounds: N1 alone; then S1, U1, V1 and L1 in parallel; then U2 (after U1), L2 (after L1) and V2 (after V1) in parallel, and K1 after U2; then L3 (after L2 and K1, because it regenerates `httpsec/limiter_mock_test.go`). The review folds U4, V4 and L2b run in parallel, each in its own tree: U4 in the U worktree before it is cherry-picked, V4 on the branch, L2b in the L worktree. The U and L lanes reach the branch by cherry-pick, U before K1 and L before L3, so K1 and L3 run on the branch. All other dispatches run in sequence. Each dispatch starts only after the previous one's gate is green and its review is clean.
 
@@ -677,10 +678,24 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
 - [ ] **Step 5: Wording.** The `ErrUnavailable` and `ErrAuthenticationFailed` godoc as the review gave it (a caller-ended load is the uniform failure; recovery's password proof records nothing for `ErrUnavailable`); `countsAgainstRecoverySource`'s caller-ended sentence; the recovery test messages ("an outage is not marked as a refusal after a valid code"); the `httpsec/login.go` reflow; the outage test's godoc names its hung-up rows.
 - [ ] **Step 6: Verify.** `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...`, and in `httpsec/ginsec` and `httpsec/fibersec`. Expected: PASS.
 
-### Task 44: Group-13 gate (task 13.7, main session)
+### Task 43d: A caller-ended load is charged to the source only (task 13.7, U5, after Task 43c)
+
+**Files:** `authenticate/password.go`, `authenticate/authenticate.go` (godoc), `authenticate/password_test.go`; `httpsec/login.go`, `httpsec/basic.go`, `httpsec/recovery.go` and `recovery/recover.go` (wherever the password proof's refusal is counted); `httpsec/password_outage_test.go`, `httpsec/recovery_test.go`.
+
+**Interfaces:**
+- Produces: for a caller-ended load, the provider returns `errors.Join(ErrAuthenticationFailed, <ctx's error or cause>)`: `errors.Is(err, ErrAuthenticationFailed)` and `errors.Is(err, ctx.Err())` are both true. No new exported identifier.
+- The endpoints decide "no password was compared" from that error, never from the request context alone, because a wrong password that was compared before the client left is a real failure.
+
+- [ ] **Step 1: Write** the row "a slow store behind client timeouts never holds an account" in `TestPasswordLoginStoreOutageIsNotACredentialFailure`, for Basic and form login, as task 13.7 states. Change the hung-up rows to expect one source charge and no failure for the username, and the Basic hung-up row to assert its challenge. Change the recovery hung-up case to expect one source charge and none against the user's recovery limit. In the authenticator's caller-ended cases, assert `ErrorIs(err, context.Canceled)` (or `DeadlineExceeded`, or the cause).
+- [ ] **Step 2: Run.** `go test -count=1 -race -run 'TestPasswordLoginStoreOutageIsNotACredentialFailure|TestRecoveryComplete_HTTP|TestPasswordAuthenticatorDoesNotRevealWhyItFailed' ./httpsec/ ./authenticate/`. Expected: FAIL with "held after 3 consecutive failures", a recorded failure for the username, and a recovery-limit charge. Record the lines.
+- [ ] **Step 3: Implement** the joined error in the provider, and the source-only charge at the three endpoints.
+- [ ] **Step 4: Wording.** `Authenticate`'s godoc says "or its cause"; reflow `authenticate/authenticate.go` 69–73; `ErrUnavailable` says that it never matches `ErrAuthenticationFailed`.
+- [ ] **Step 5: Verify.** `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...`, and in `httpsec/ginsec` and `httpsec/fibersec`. Expected: PASS.
+
+### Task 44: Group-13 gate (task 13.8, main session)
 
 - [ ] **Step 1:** Add an `added` row for `ErrUnavailable`, and list Task 41's changed case for the assertion review. Run `evidence/check.sh all && make check && openspec validate restructure-layout --strict`.
-- [ ] **Step 2:** An Opus review of the U1–U4 diffs against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
+- [ ] **Step 2:** An Opus review of the U1–U5 diffs against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas, with the recorded red lines. Then commit (`fix!: a user-store outage is unavailable, not a failed login`), push, and CI green.
 
 ### Task 45: API key owners (tasks 14.1–14.2, K1, after Task 44)
 

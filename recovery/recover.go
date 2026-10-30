@@ -86,10 +86,15 @@ type Request struct {
 // returned by the recovery unchanged, so a lock returned alone is disclosed as
 // itself. Either way it is counted against the user, and marked as a
 // refusal after a valid code (see RefusedAfterValidCode), so it is counted
-// against the source too. The recovery cannot tell a check that met an outage
-// from one that refused: an implementation should return a lockout or a
-// refusal only for a genuine refusal, and let an outage be seen as one, by
-// its own logging and monitoring, rather than disguise it as a wrong password.
+// against the source too.
+//
+// An error matching authenticate.ErrUnavailable is the one exception: the
+// check could not judge the password, because the user store could not
+// answer. The recovery returns it unchanged and unmarked, counts it against
+// nothing, and spends nothing; httpsec answers it 503 and does not count it
+// against the source. A check that meets an outage should return that error,
+// and never disguise the outage as a wrong password or a lock, which would
+// count it as a guess.
 type PasswordCheck func(ctx context.Context, username string, password []byte) error
 
 // Check is a consumer's refusal check. It runs after every proof has been
@@ -145,7 +150,8 @@ func (e *refusedAfterCode) Unwrap() error { return e.err }
 // RefusedAfterValidCode reports whether err refused a recovery after the
 // recovery codes it presented had passed their check. It marks exactly these:
 //   - any error from the password check, whether a wrong password, a lockout
-//     or an outage the check reports (see PasswordCheck);
+//     or another failure the check reports, except authenticate.ErrUnavailable
+//     (see PasswordCheck);
 //   - an MFA method the user is not enrolled on;
 //   - in the reported mode, a reported loss the user does not hold;
 //   - a reset policy error;
@@ -161,7 +167,7 @@ func (e *refusedAfterCode) Unwrap() error { return e.err }
 // (including the reported mode's empty report and a reported loss the request
 // also proves), and a dependency outage the recovery can tell apart, such as a
 // user lookup, MFA enrolment lookup, authenticator listing or saved-code store
-// failure.
+// failure, or a password check returning authenticate.ErrUnavailable.
 //
 // The error it looks for wraps the refusal without changing it: its text is
 // the refusal's own, and errors.Is and errors.As find the refusal, a consumer
@@ -205,6 +211,12 @@ func (r *Recoverer) verify(ctx context.Context, req Request) (*verified, error) 
 
 	if v.has(ProofPassword) {
 		if err := r.passwordCheck(ctx, req.Username, req.Password); err != nil {
+			// The user store could not answer, so no proof was refused:
+			// returned as it is, unmarked, and counted nowhere.
+			if errors.Is(err, authenticate.ErrUnavailable) {
+				return nil, err
+			}
+
 			if errors.Is(err, authenticate.ErrAuthenticationFailed) {
 				err = refusedByCheck(err)
 			}

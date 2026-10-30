@@ -343,6 +343,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 	}
 
 	auth, err := l.verifyPassword(ctx, username, password, now)
+	if errors.Is(err, authenticate.ErrUnavailable) {
+		// No credential was judged, so the source is charged nothing.
+		return err
+	}
 	if err != nil {
 		recordSourceFailure(ctx, l.guard, src)
 
@@ -393,9 +397,10 @@ func (l *formLogin) Intercept(ex *Exchange, next Next) error {
 // differently for a right guess than for a wrong one. A lock is refused as
 // login refuses it (refuseLocked): concealed behind a decoy by default, the
 // lock alone when the consumer discloses locks. A credential the
-// authenticator refuses is recorded as a failed attempt. Clearing the failures
-// a success supersedes is left to the caller, because only a login is a
-// success in that sense.
+// authenticator refuses is recorded as a failed attempt; a user store that
+// could not answer (authenticate.ErrUnavailable) is returned as it is and
+// recorded as nothing. Clearing the failures a success supersedes is left to
+// the caller, because only a login is a success in that sense.
 //
 // There is no source check here. The login endpoint checks the
 // password-login guard before calling the two steps itself, and account
@@ -431,6 +436,11 @@ func (l *formLogin) preAuthenticate(ctx context.Context, username string, now ti
 
 // verifyPassword checks the password, recording a refused one as a failed
 // attempt against the account.
+//
+// A user store that could not answer (authenticate.ErrUnavailable) is returned
+// as it is and recorded as nothing: no credential was judged, and counting it
+// would let an outage lock or hold accounts whose owners typed the right
+// password.
 func (l *formLogin) verifyPassword(
 	ctx context.Context,
 	username string,
@@ -438,6 +448,9 @@ func (l *formLogin) verifyPassword(
 	now time.Time,
 ) (*authenticate.Authentication, error) {
 	auth, err := l.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	if errors.Is(err, authenticate.ErrUnavailable) {
+		return nil, err
+	}
 	if err != nil {
 		l.recordFailure(ctx, username, now)
 

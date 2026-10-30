@@ -154,6 +154,12 @@ type statusRow struct {
 var statusTable = []statusRow{
 	{ErrAuthenticationRequired, http.StatusUnauthorized},
 	{authorize.ErrAuthenticationRequired, http.StatusUnauthorized},
+
+	// The user store could not answer, so no credential was judged. It is not
+	// a refusal of the caller and does not match ErrAuthenticationFailed; it
+	// sits above that row so an error that joins both still reads as the
+	// outage it is. The client may retry, which 503 says.
+	{authenticate.ErrUnavailable, http.StatusServiceUnavailable},
 	{authenticate.ErrAuthenticationFailed, http.StatusUnauthorized},
 	{policy.ErrSessionIdle, http.StatusUnauthorized},
 	{ratelimit.ErrThrottled, http.StatusUnauthorized},
@@ -302,6 +308,11 @@ var statusTable = []statusRow{
 // history that could not be read or recorded ([password.ErrHistoryUnavailable])
 // is a dependency failure, not a refusal of the caller's input, and maps to
 // 500 like any other unrecognised error.
+//
+// A user store that could not answer a login ([authenticate.ErrUnavailable])
+// is 503: no credential was judged, so it is neither 401 nor an unexplained
+// 500, and the client may retry. This is the default answer; a consumer's own
+// error handler, which replaces the default response, may answer it otherwise.
 func StatusForError(err error) int {
 	if err == nil {
 		return http.StatusInternalServerError

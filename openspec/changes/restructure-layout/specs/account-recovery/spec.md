@@ -35,3 +35,10 @@ When a recovery's password proof receives the authentication capability's unavai
 - **THEN** the recovery is refused with the unavailable error and answered 503
 - **AND** nothing is counted against `u-1`'s recovery limit or the source
 
+### Requirement: A client that leaves during the proof's user load is charged to its source only
+When a recovery's password proof receives the uniform failure for a load the request's own context ended, the recovery SHALL be refused as a failed proof and counted against the request's source, but SHALL NOT be counted against the user's recovery limit, because no password was compared.
+
+#### Scenario: A client hangs up during the password proof
+- **WHEN** a recovery for `u-1` has passed its codes, the request's context is cancelled, and the user loader fails with that cancellation during the password proof
+- **THEN** the recovery is refused as a failed proof
+- **AND** one failure is counted against the source and none against `u-1`'s recovery limit

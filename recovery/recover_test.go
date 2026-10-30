@@ -324,6 +324,20 @@ func TestRecoverer_Verify(t *testing.T) {
 			},
 		},
 		{
+			name:  "an unavailable user store is not a failed proof",
+			setup: func(e *recoverEnv) { e.passwordErr = authenticate.ErrUnavailable },
+			req:   savedAndPassword(anaPassword),
+			assert: func(t *testing.T, e *recoverEnv, _ *recovery.Recoverer, _ *recovery.Verified, err error) {
+				require.ErrorIs(t, err, authenticate.ErrUnavailable)
+				assert.NotErrorIs(t, err, recovery.ErrRefused, "an outage read as a refused proof")
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed, "an outage read as a refused proof")
+				assert.False(t, recovery.RefusedAfterValidCode(err),
+					"the outage was marked as a refusal after a valid code")
+				assert.Zero(t, e.failures.Load(), "the outage was counted against the user's recovery limit")
+				assert.True(t, e.savedUsable(t.Context(), t, e.saved[0]), "the saved code stays redeemable")
+			},
+		},
+		{
 			name: "a wrong password keeps the codes, and a retry succeeds",
 			run: func(t *testing.T, ctx context.Context, e *recoverEnv, r *recovery.Recoverer) (*recovery.Verified, error) {
 				_, err := recoverOnce(ctx, r, savedAndPassword("wrong")(e))
@@ -413,7 +427,7 @@ func TestRecoverer_Verify(t *testing.T) {
 			assert: func(t *testing.T, e *recoverEnv, r *recovery.Recoverer, _ *recovery.Verified, err error) {
 				require.ErrorIs(t, err, errOutage)
 				assert.NotContains(t, err.Error(), "row 42")
-				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not counted against the source")
+				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not marked as a refusal after a valid code")
 				assert.True(t, e.issuedUsable(t.Context(), t, r, anaID, e.issued))
 				assert.Zero(t, e.failures.Load())
 			},
@@ -773,7 +787,7 @@ func TestRecoverer_SpendFailure(t *testing.T) {
 			assert: func(t *testing.T, e *recoverEnv, err error) {
 				require.ErrorIs(t, err, errDown)
 				assert.NotErrorIs(t, err, recovery.ErrRefused, "an outage is not a refusal")
-				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not counted against the source")
+				assert.False(t, recovery.RefusedAfterValidCode(err), "an outage is not marked as a refusal after a valid code")
 				assert.NotContains(t, err.Error(), "row 42")
 				assert.Zero(t, e.failures.Load(), "an outage is not counted against the user")
 			},

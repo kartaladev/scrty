@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -243,6 +244,65 @@ func TestRecoveryComplete_HTTP(t *testing.T) {
 				n, err := h.attempts.FailureCount(t.Context(), e2eAddress, time.Now().Add(-time.Hour))
 				require.NoError(t, err)
 				assert.Equal(t, 1, n)
+			},
+		},
+		{
+			name: "an unavailable user store during the password proof is answered 503 and counted nowhere",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.authn = unavailableAuthenticator(t)
+				h.recOpts = []httpsec.RecoveryOption{
+					httpsec.WithRecoveryLimiter(countingLimiter(t, 0)),
+					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 0)),
+				}
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				return h.complete(t, recoveryForm(
+					httpsec.RecoverySavedCodeParam, h.saved(t),
+					httpsec.RecoveryPasswordParam, e2ePassword))
+			},
+			assert: func(t *testing.T, h *recoveryHarness, out served) {
+				require.ErrorIs(t, out.err, authenticate.ErrUnavailable)
+				assert.NotErrorIs(t, out.err, recovery.ErrRefused, "an outage read as a refused proof")
+				assert.Equal(t, http.StatusServiceUnavailable, httpsec.StatusForError(out.err))
+
+				n, err := h.attempts.FailureCount(t.Context(), e2eAddress, time.Now().Add(-time.Hour))
+				require.NoError(t, err)
+				assert.Zero(t, n, "the outage was recorded as a failed attempt against the account")
+
+				left, err := h.codes.Remaining(t.Context(), e2eUser)
+				require.NoError(t, err)
+				assert.Equal(t, 10, left.N, "the saved code is not spent")
+			},
+		},
+		{
+			name: "a caller that hangs up during the password proof is refused and counted as a wrong password is",
+			arrange: func(t *testing.T, h *recoveryHarness) {
+				h.authn = hangUpAuthenticator(t)
+				h.recOpts = []httpsec.RecoveryOption{
+					httpsec.WithRecoveryLimiter(countingLimiter(t, 1)),
+					httpsec.WithRecoveryUserLimiter(countingLimiter(t, 1)),
+				}
+			},
+			act: func(t *testing.T, h *recoveryHarness) served {
+				hungUp, cancel := context.WithCancel(t.Context())
+				cancel()
+
+				return serveIn(hungUp, t, h.chain, postValues(hungUp, httpsec.DefaultRecoveryCompletePath, e2eSource,
+					recoveryForm(
+						httpsec.RecoverySavedCodeParam, h.saved(t),
+						httpsec.RecoveryPasswordParam, e2ePassword)))
+			},
+			assert: func(t *testing.T, h *recoveryHarness, out served) {
+				require.ErrorIs(t, out.err, recovery.ErrRefused,
+					"a hang-up during the proof was read as an outage")
+				assert.NotErrorIs(t, out.err, authenticate.ErrUnavailable)
+				assert.True(t, recovery.RefusedAfterValidCode(out.err),
+					"the hang-up was not marked as a refusal after a valid code")
+				assert.Equal(t, http.StatusUnauthorized, httpsec.StatusForError(out.err))
+
+				n, err := h.attempts.FailureCount(t.Context(), e2eAddress, time.Now().Add(-time.Hour))
+				require.NoError(t, err)
+				assert.Equal(t, 1, n, "the hang-up was not recorded as a failed attempt, as a wrong password is")
 			},
 		},
 		{
@@ -1033,6 +1093,42 @@ func lockDecoyAuthenticator(t *testing.T, decoys int) authenticate.Authenticator
 	require.NoError(t, err)
 
 	return m
+}
+
+// unavailableAuthenticator is form login's password provider over a user store
+// that cannot answer: every load fails with a connection error, so every
+// password check returns authenticate.ErrUnavailable.
+func unavailableAuthenticator(t *testing.T) authenticate.Authenticator {
+	t.Helper()
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+		Return(nil, errors.New("dial tcp 10.0.0.5:5432: connection refused")).AnyTimes()
+
+	provider, err := authenticate.NewUsernamePasswordAuthenticator(users,
+		authenticate.WithPasswordLogger(slog.New(slog.DiscardHandler)))
+	require.NoError(t, err)
+
+	return provider
+}
+
+// hangUpAuthenticator is form login's password provider over a user store that
+// fails with the caller's own context error, as a driver does once the client
+// has hung up: the load is ended by the caller, not by the store.
+func hangUpAuthenticator(t *testing.T) authenticate.Authenticator {
+	t.Helper()
+
+	users := NewMockUserLoader(gomock.NewController(t))
+	users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) {
+			return nil, fmt.Errorf("load user: %w", ctx.Err())
+		}).AnyTimes()
+
+	provider, err := authenticate.NewUsernamePasswordAuthenticator(users,
+		authenticate.WithPasswordLogger(slog.New(slog.DiscardHandler)))
+	require.NoError(t, err)
+
+	return provider
 }
 
 // recoveryLogs is the capturing handler the row's WithLogger installed.

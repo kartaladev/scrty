@@ -2,8 +2,10 @@ package authenticate_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -371,14 +373,58 @@ func TestPasswordRefusalRecords(t *testing.T) {
 // the provider reached them.
 const presentedPassword = "hunter2"
 
+// errCallerLeft is the cause a caller's context is ended with, in the cases
+// where the caller says why it left.
+var errCallerLeft = errors.New("the caller left")
+
 func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name   string
-		creds  func(t *testing.T) identity.Credentials
-		users  func(t *testing.T, ctrl *gomock.Controller, inner password.Encoder) identity.UserLoader
+		name  string
+		creds func(t *testing.T) identity.Credentials
+		users func(t *testing.T, ctrl *gomock.Controller, inner password.Encoder) identity.UserLoader
+		// ctx modifies the context Authenticate is called with. nil means the
+		// test's own.
+		ctx    func(ctx context.Context) context.Context
 		assert func(t *testing.T, err error, enc *recordingEncoder)
+	}
+
+	// cancelled is a caller that hung up before the user store answered.
+	cancelled := func(ctx context.Context) context.Context {
+		cctx, cancel := context.WithCancel(ctx)
+		cancel()
+
+		return cctx
+	}
+
+	// failsWithTheCallersEnd is a store that does what a SQL driver does once
+	// the caller's context has ended: it fails with that context's error,
+	// wrapped.
+	failsWithTheCallersEnd := func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
+		t.Helper()
+
+		users := NewMockUserLoader(ctrl)
+		users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) {
+				return nil, fmt.Errorf("store: load user: %w", ctx.Err())
+			})
+
+		return users
+	}
+
+	// failsWithTheCallersCause is a store that reports why the caller's context
+	// ended, as a driver does that returns context.Cause.
+	failsWithTheCallersCause := func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
+		t.Helper()
+
+		users := NewMockUserLoader(ctrl)
+		users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+			DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) {
+				return nil, fmt.Errorf("store: load user: %w", context.Cause(ctx))
+			})
+
+		return users
 	}
 
 	// bare is the whole of what a caller may learn: the sentinel itself, with
@@ -437,7 +483,32 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			},
 		},
 		{
-			name: "a loader failure returns the same bare sentinel, and still pays for a comparison",
+			name: "a loader failure is unavailable, not the uniform failure, and carries no driver text",
+			users: func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
+				t.Helper()
+
+				users := NewMockUserLoader(ctrl)
+				users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+					Return(nil, errBackendDown)
+
+				return users
+			},
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				require.ErrorIs(t, err, authenticate.ErrUnavailable)
+				assert.Equal(t, authenticate.ErrUnavailable, err,
+					"the unavailable error was wrapped, so it can carry detail of the loader's failure")
+				assert.NotErrorIs(t, err, authenticate.ErrAuthenticationFailed,
+					"an outage read as a refused credential, so a caller counts it as a guess")
+				assert.NotErrorIs(t, err, errBackendDown,
+					"the loader's error reached the caller")
+				assert.NotContains(t, err.Error(), errBackendDown.Error(),
+					"the loader's text reached the caller")
+			},
+		},
+		{
+			name: "a load failure spends the unknown-user password work",
 			users: func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
 				t.Helper()
 
@@ -450,13 +521,130 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 			assert: func(t *testing.T, err error, enc *recordingEncoder) {
 				t.Helper()
 
+				require.ErrorIs(t, err, authenticate.ErrUnavailable)
+
+				matches, matchedTo := enc.calls()
+				require.Equal(t, 1, matches,
+					"the load-failure path skipped the comparison, so its timing differs from an unknown user's")
+				assert.Equal(t, enc.reference(t), matchedTo[0],
+					"the comparison ran against something other than the construction-time reference hash")
+			},
+		},
+		{
+			name:  "a load the caller's own cancellation ended is the uniform failure, not an outage",
+			users: failsWithTheCallersEnd,
+			ctx:   cancelled,
+			assert: func(t *testing.T, err error, enc *recordingEncoder) {
+				t.Helper()
+
+				// An unavailable answer here is charged nowhere, so a client
+				// that hangs up mid-login would spend password work no source
+				// pays for.
 				bare(t, err)
-				assert.NotErrorIs(t, err, errBackendDown,
-					"the outage reached the caller, who can now tell a broken store from a wrong password")
 
 				matches, matchedTo := enc.calls()
 				require.Equal(t, 1, matches)
 				assert.Equal(t, enc.reference(t), matchedTo[0])
+			},
+		},
+		{
+			name:  "a load the caller's own deadline ended is the uniform failure, not an outage",
+			users: failsWithTheCallersEnd,
+			ctx: func(ctx context.Context) context.Context {
+				dctx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				t.Cleanup(cancel)
+
+				return dctx
+			},
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				bare(t, err)
+			},
+		},
+		{
+			name:  "a load the caller's cancel cause ended is the uniform failure",
+			users: failsWithTheCallersCause,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancelCause(ctx)
+				cancel(errCallerLeft)
+
+				return cctx
+			},
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				bare(t, err)
+			},
+		},
+		{
+			name:  "a load the caller's timeout cause ended is the uniform failure",
+			users: failsWithTheCallersCause,
+			ctx: func(ctx context.Context) context.Context {
+				dctx, cancel := context.WithTimeoutCause(ctx, -time.Second, errCallerLeft)
+				t.Cleanup(cancel)
+
+				return dctx
+			},
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				bare(t, err)
+			},
+		},
+		{
+			name: "a store that fails with its own cause while the caller waits is unavailable",
+			users: func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
+				t.Helper()
+
+				users := NewMockUserLoader(ctrl)
+				users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+					Return(nil, fmt.Errorf("store: load user: %w", errCallerLeft))
+
+				return users
+			},
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				assert.Equal(t, authenticate.ErrUnavailable, err,
+					"an error equal to a cause the caller never set was read as the caller leaving")
+			},
+		},
+		{
+			name: "a store that fails on its own after the caller hung up is still unavailable",
+			users: func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
+				t.Helper()
+
+				users := NewMockUserLoader(ctrl)
+				users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+					Return(nil, errBackendDown)
+
+				return users
+			},
+			ctx: cancelled,
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				assert.Equal(t, authenticate.ErrUnavailable, err,
+					"a store outage was read as the caller hanging up because the caller had")
+			},
+		},
+		{
+			name: "a store's own timeout is unavailable while the caller is still waiting",
+			users: func(t *testing.T, ctrl *gomock.Controller, _ password.Encoder) identity.UserLoader {
+				t.Helper()
+
+				users := NewMockUserLoader(ctrl)
+				users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+					Return(nil, fmt.Errorf("store: query timed out: %w", context.DeadlineExceeded))
+
+				return users
+			},
+			assert: func(t *testing.T, err error, _ *recordingEncoder) {
+				t.Helper()
+
+				assert.Equal(t, authenticate.ErrUnavailable, err,
+					"a deadline the store set for itself was read as the caller's own")
 			},
 		},
 		{
@@ -564,7 +752,12 @@ func TestPasswordAuthenticatorDoesNotRevealWhyItFailed(t *testing.T) {
 				creds = tc.creds(t)
 			}
 
-			_, err = auth.Authenticate(t.Context(), creds)
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			_, err = auth.Authenticate(ctx, creds)
 			tc.assert(t, err, enc)
 		})
 	}
@@ -690,6 +883,54 @@ func TestRefusalLogsAreBoundedAndCarryNoPassword(t *testing.T) {
 		})
 	})
 
+	t.Run("a burst of hang-ups does not use up the outage's window", func(t *testing.T) {
+		t.Parallel()
+
+		synctest.Test(t, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+
+			users := NewMockUserLoader(ctrl)
+			users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) {
+					if ctx.Err() != nil {
+						return nil, fmt.Errorf("store: load user: %w", ctx.Err())
+					}
+
+					return nil, errBackendDown
+				}).AnyTimes()
+
+			enc := NewMockEncoder(ctrl)
+			enc.EXPECT().Encode(gomock.Any()).Return([]byte("$fake$reference"), nil)
+			enc.EXPECT().Match(gomock.Any(), gomock.Any()).Return(false).AnyTimes()
+
+			buf := &bytes.Buffer{}
+			auth, err := authenticate.NewUsernamePasswordAuthenticator(users,
+				authenticate.WithPasswordEncoder(enc),
+				authenticate.WithPasswordLogger(debugLogger(buf)),
+				authenticate.WithPasswordLogInterval(time.Minute))
+			require.NoError(t, err)
+
+			hungUp, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			for range 20 {
+				_, _ = auth.Authenticate(hungUp,
+					identity.NewUsernamePassword("ada", []byte(presentedPassword)))
+			}
+			_, _ = auth.Authenticate(t.Context(),
+				identity.NewUsernamePassword("ada", []byte(presentedPassword)))
+			synctest.Wait()
+
+			var reasons []any
+			for _, record := range refusalRecords(t, buf) {
+				reasons = append(reasons, record["reason"])
+			}
+
+			assert.ElementsMatch(t, []any{"caller-ended", "user-loader"}, reasons,
+				"the hang-ups and the outage were sampled under one key, so one hid the other")
+		})
+	})
+
 	t.Run("a consumer disables sampling with an interval of zero", func(t *testing.T) {
 		t.Parallel()
 
@@ -713,8 +954,15 @@ func TestRefusalLogRecords(t *testing.T) {
 	t.Parallel()
 
 	type testCase struct {
-		name       string
-		loadErr    error
+		name    string
+		loadErr error
+		// loadFrom, when set, is the user loader's failure as a function of the
+		// context Authenticate passed it, for a store that fails with the
+		// caller's own end. It takes precedence over loadErr.
+		loadFrom func(ctx context.Context) error
+		// ctx modifies the context Authenticate is called with. nil means the
+		// test's own.
+		ctx        func(ctx context.Context) context.Context
 		user       *identity.Details
 		matches    bool
 		assert     func(t *testing.T, record map[string]any)
@@ -748,6 +996,44 @@ func TestRefusalLogRecords(t *testing.T) {
 					"the record does not name the failure an operator has to fix")
 				assert.NotContains(t, record, "error",
 					"the dependency's error text reached the log")
+			},
+		},
+		{
+			name: "a caller that hangs up mid-load is not an outage, recorded at debug under its own reason",
+			loadFrom: func(ctx context.Context) error {
+				return fmt.Errorf("store: load user: %w", ctx.Err())
+			},
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			wantRecord: true,
+			assert: func(t *testing.T, record map[string]any) {
+				t.Helper()
+
+				assert.Equal(t, "DEBUG", record["level"],
+					"a client leaving was recorded as a fault an operator has to fix")
+				assert.Equal(t, "caller-ended", record["reason"],
+					"the hang-up shares the outage's sampler key")
+			},
+		},
+		{
+			name:    "a store that fails on its own after the caller hung up is still recorded at error",
+			loadErr: errBackendDown,
+			ctx: func(ctx context.Context) context.Context {
+				cctx, cancel := context.WithCancel(ctx)
+				cancel()
+
+				return cctx
+			},
+			wantRecord: true,
+			assert: func(t *testing.T, record map[string]any) {
+				t.Helper()
+
+				assert.Equal(t, "ERROR", record["level"])
+				assert.Equal(t, "user-loader", record["reason"])
 			},
 		},
 		{
@@ -788,7 +1074,14 @@ func TestRefusalLogRecords(t *testing.T) {
 			ctrl := gomock.NewController(t)
 
 			users := NewMockUserLoader(ctrl)
-			users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).Return(tc.user, tc.loadErr)
+			users.EXPECT().LoadByUsername(gomock.Any(), gomock.Any()).
+				DoAndReturn(func(ctx context.Context, _ string) (*identity.Details, error) {
+					if tc.loadFrom != nil {
+						return nil, tc.loadFrom(ctx)
+					}
+
+					return tc.user, tc.loadErr
+				})
 
 			enc := NewMockEncoder(ctrl)
 			enc.EXPECT().Encode(gomock.Any()).Return([]byte("$fake$reference"), nil)
@@ -800,7 +1093,12 @@ func TestRefusalLogRecords(t *testing.T) {
 				authenticate.WithPasswordLogger(debugLogger(buf)))
 			require.NoError(t, err)
 
-			_, _ = auth.Authenticate(t.Context(),
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(ctx)
+			}
+
+			_, _ = auth.Authenticate(ctx,
 				identity.NewUsernamePassword("ada", []byte(presentedPassword)))
 
 			assert.NotContains(t, buf.String(), presentedPassword,

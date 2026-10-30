@@ -3,6 +3,7 @@ package ginsec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -157,6 +158,29 @@ func TestGinRefusal(t *testing.T) {
 			},
 			assert: func(t *testing.T, out *served) {
 				assert.Equal(t, http.StatusInternalServerError, out.rec.Code)
+				assert.Empty(t, out.rec.Body.String())
+				assert.False(t, out.routeRan)
+			},
+		},
+		{
+			// The status comes from httpsec.StatusForError, so an outage of
+			// the user store answers 503 here as it does on net/http, and
+			// neither 401 (a refused credential) nor 500.
+			name: "an unavailable user store answers 503",
+			build: func(t *testing.T, out *served) *gin.Engine {
+				t.Helper()
+
+				eng := gin.New()
+				eng.Use(ginsec.Middleware(newChain(t,
+					httpsec.RegisterInterceptor(
+						refusing(fmt.Errorf("login: %w", authenticate.ErrUnavailable), nil),
+						httpsec.OrderAuthorizer))))
+				eng.GET("/reports", out.route())
+
+				return eng
+			},
+			assert: func(t *testing.T, out *served) {
+				assert.Equal(t, http.StatusServiceUnavailable, out.rec.Code)
 				assert.Empty(t, out.rec.Body.String())
 				assert.False(t, out.routeRan)
 			},

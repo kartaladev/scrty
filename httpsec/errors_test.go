@@ -63,6 +63,11 @@ func TestStatusForError(t *testing.T) {
 			want: 401,
 		},
 		{name: "authentication failed", err: authenticate.ErrAuthenticationFailed, want: 401},
+		{
+			name: "user store unavailable",
+			err:  fmt.Errorf("login: %w", authenticate.ErrUnavailable),
+			want: 503,
+		},
 		{name: "session idle", err: policy.ErrSessionIdle, want: 401},
 		{name: "throttled source", err: ratelimit.ErrThrottled, want: 401},
 		{
@@ -312,6 +317,7 @@ var sentinelRegistry = map[string]map[string]error{
 		"authenticate.ErrAuthenticationFailed":    authenticate.ErrAuthenticationFailed,
 		"authenticate.ErrConfig":                  authenticate.ErrConfig,
 		"authenticate.ErrNoEligibleAuthenticator": authenticate.ErrNoEligibleAuthenticator,
+		"authenticate.ErrUnavailable":             authenticate.ErrUnavailable,
 		"authenticate.ErrUnsupportedCredentials":  authenticate.ErrUnsupportedCredentials,
 	},
 	"github.com/kartaladev/scrty/authorize": {

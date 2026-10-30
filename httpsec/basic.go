@@ -96,9 +96,9 @@ func (b *basicAuth) flushRefusalLogs() {
 // on the one way out, so no refusal path can miss it (RFC 9110 §15.5.2): a
 // malformed header, a throttled source, a concealed lock, a wrong password, a
 // pre-authentication deny or a stateless challenge alike. A refusal answered
-// otherwise, such as a disclosed lock (429) or a deny answered 403, carries
-// none. What the protected handler returns is its own, and is never
-// challenged here.
+// otherwise, such as a disclosed lock (429), a deny answered 403 or an
+// unavailable user store (503), carries none. What the protected handler
+// returns is its own, and is never challenged here.
 func (b *basicAuth) Intercept(ex *Exchange, next Next) error {
 	header := ex.Request.Header("Authorization")
 	if !strings.HasPrefix(header, basicPrefix) {
@@ -166,6 +166,14 @@ func (b *basicAuth) authenticate(ex *Exchange, credential string) (*authenticate
 	}
 
 	auth, err := b.authn.Authenticate(ctx, identity.NewUsernamePassword(username, password))
+	if errors.Is(err, authenticate.ErrUnavailable) {
+		// The user store could not answer, so no credential was judged:
+		// nothing is recorded against the username or the source, and
+		// nothing is cleared. Counting it would let an outage lock or hold
+		// accounts whose owners typed the right password. It answers 503,
+		// which Intercept does not challenge.
+		return nil, err
+	}
 	if err != nil {
 		// The record carries a fixed reason and the attempt store's error
 		// type, never its text: a consumer who wants that detail logs it
@@ -298,20 +306,22 @@ type BasicAuthOption func(*basicAuth) error
 //     wrong password after a decoy password verification (WithLockDisclosure)
 //     and counts against the source.
 //  4. Authenticate. A failure is recorded against the account and the source.
-//     A success clears the username's failures through BasicAuthDeps.Attempts,
-//     as form login does, including its count towards a cap set with
-//     lockout.WithFailureStreakLimit; a store that fails to clear is logged and the
-//     request still succeeds. It costs one reset of the attempt store per
-//     successful request; for a policy with a cap that reset clears both the
-//     failure log and the consecutive count.
+//     A user store that could not answer (authenticate.ErrUnavailable) is not
+//     a failure: it is returned at once, answered 503, and records, counts and
+//     clears nothing. A success clears the username's failures through
+//     BasicAuthDeps.Attempts, as form login does, including its count towards
+//     a cap set with lockout.WithFailureStreakLimit; a store that fails to
+//     clear is logged and the request still succeeds. It costs one reset of
+//     the attempt store per successful request; for a policy with a cap that
+//     reset clears both the failure log and the consecutive count.
 //  5. Run the stateless-authentication phase, and continue with the caller
 //     published.
 //
 // Every refusal StatusForError answers 401 carries the WWW-Authenticate
 // challenge for the realm, throttled, concealed-lock, pre-authentication and
 // stateless-challenge refusals included, and no refusal answered otherwise
-// does: a lock disclosed with WithLockDisclosure is a 429, and a deny answered
-// 403 carries none.
+// does: a lock disclosed with WithLockDisclosure is a 429, a deny answered
+// 403 and an unavailable user store answered 503 carry none.
 func EnableBasicAuth(d BasicAuthDeps, opts ...BasicAuthOption) Option {
 	const option = "EnableBasicAuth"
 

@@ -10,7 +10,7 @@ The username-and-password provider SHALL return the same uniform failure, with n
 
 A failure to load the user other than "not found", and other than the caller's own context ending, SHALL NOT be returned as the uniform failure. It SHALL be returned as a distinct unavailable error, which is not identifiable as the uniform failure, so that a caller can tell an outage of the user store from a refused credential and never counts the outage against the account. The provider SHALL spend the same password work on a load failure as on an unknown username, so the outcome's timing does not change.
 
-The account's active state SHALL be checked only after the password has been verified. A user-load failure other than "not found" SHALL be logged at error level. Constructing the provider without a user loader SHALL fail with a configuration error.
+The account's active state SHALL be checked only after the password has been verified. A user-load failure other than "not found", and other than the caller's own context ending, SHALL be logged at error level. A load the caller's own context ended SHALL be returned as the uniform failure, which SHALL also match that context's error, so that a caller can tell that no password was compared. Constructing the provider without a user loader SHALL fail with a configuration error.
 
 #### Scenario: Unknown user
 - **WHEN** a username that does not exist is presented
@@ -33,4 +33,5 @@ The account's active state SHALL be checked only after the password has been ver
 #### Scenario: The caller hangs up during the load
 - **WHEN** the request's context is cancelled and the user loader fails with that cancellation
 - **THEN** the uniform authentication failure is returned, not the unavailable error
+- **AND** it also matches the context's cancellation error
 - **AND** the record of it is logged at debug level, apart from the error-level records of store outages

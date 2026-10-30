@@ -2,6 +2,7 @@ package fibersec_test
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kartaladev/scrty/authenticate"
 	"github.com/kartaladev/scrty/authorize"
 	"github.com/kartaladev/scrty/httpsec"
 	"github.com/kartaladev/scrty/httpsec/fibersec"
@@ -183,6 +185,20 @@ func TestFiberRefusalResponse(t *testing.T) {
 			},
 			assert: func(t *testing.T, res response, _ refused) {
 				assert.Equal(t, http.StatusUnauthorized, res.status)
+				assert.Empty(t, res.body)
+			},
+		},
+		{
+			// The status comes from httpsec.StatusForError, so an outage of
+			// the user store answers 503 here as it does on net/http, and
+			// neither 401 (a refused credential) nor 500.
+			name:   "an unavailable user store answers 503",
+			refuse: fmt.Errorf("login: %w", authenticate.ErrUnavailable),
+			config: func(*refused) fiber.Config {
+				return fiber.Config{ErrorHandler: fibersec.ErrorHandler}
+			},
+			assert: func(t *testing.T, res response, _ refused) {
+				assert.Equal(t, http.StatusServiceUnavailable, res.status)
 				assert.Empty(t, res.body)
 			},
 		},
