@@ -67,7 +67,7 @@
 - Create: the `Flusher` declaration in `pkg/logsample/logsample.go`
 - Modify: `policy/engine.go` (probe), `httpsec/login.go` and `httpsec/basic.go` (probes), `authenticate/oidc/relying_party.go` (probe)
 - Remove: `RefusalLogFlusher` from `authenticate/password.go` and `policy/mfa.go`
-- Modify (exported types): `authenticate/password.go`, `authenticate/jwt.go`, `policy/mfa.go`, `policy/mfarequirement.go`, the `password` encoder files, the `token` generator and verifier files, `store/seal/keyring.go`, `store/seal/aead.go`, `token/signingkey/record.go`
+- Modify (exported types): `authenticate/password.go`, `authenticate/jwt.go`, `policy/mfa.go`, `policy/mfa_requirement.go`, the `password` encoder files, the `token` generator and verifier files, `store/seal/keyring.go`, `store/seal/cipher.go`, `token/signingkey/record.go`
 
 **Interfaces:**
 - Produces:
@@ -84,7 +84,7 @@
   - `signingkey.NewMemoryKeyStore() *MemoryKeyStore`
 
 - [ ] **Step 1 (2.1):** Declare `logsample.Flusher`, switch the three probes to it, and delete the two `RefusalLogFlusher` declarations. Run `go build ./...` in every module, then `go test -count=1 ./pkg/... ./policy/... ./authenticate/... ./httpsec/...`. Expected: PASS with no test assertion changed.
-- [ ] **Step 2 (2.2):** Rename each unexported implementation to its exported name with gopls. Change the constructor results, add `var _ Authenticator = (*UsernamePasswordAuthenticator)(nil)` (and the same for each type), and remove the type-assertion paragraph from the godoc. Rewrite the tests that type-asserted (`authenticate/sampling_test.go`, `policy/mfasampling_test.go`, `policy/mfarequirement_test.go`) to call `FlushRefusalLogs()` directly. Expected: `go test ./authenticate/... ./policy/... ./httpsec/...` passes.
+- [ ] **Step 2 (2.2):** Rename each unexported implementation to its exported name with gopls. Change the constructor results, add `var _ Authenticator = (*UsernamePasswordAuthenticator)(nil)` (and the same for each type), and remove the type-assertion paragraph from the godoc. Rewrite the tests that type-asserted (`authenticate/password_test.go`, `policy/mfa_requirement_test.go`, `policy/integration_test.go`) to call `FlushRefusalLogs()` directly. Expected: `go test ./authenticate/... ./policy/... ./httpsec/...` passes.
 - [ ] **Step 3 (2.3):** The same for the `password`, `token`, `seal` and `signingkey` rows. For each newly exported type, list its exported methods in the dispatch report, and keep any that only serve the library unexported. Expected: `go test -count=1 ./...` passes in every module, and `go vet` is clean.
 - [ ] **Step 4:** Commit: `refactor!: return concrete types and share one flush interface`.
 

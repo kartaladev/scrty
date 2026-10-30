@@ -33,3 +33,4 @@ The account's active state SHALL be checked only after the password has been ver
 #### Scenario: The caller hangs up during the load
 - **WHEN** the request's context is cancelled and the user loader fails with that cancellation
 - **THEN** the uniform authentication failure is returned, not the unavailable error
+- **AND** the record of it is logged at debug level, apart from the error-level records of store outages

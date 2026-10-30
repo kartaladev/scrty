@@ -168,7 +168,16 @@ Proven by `TestBasicAuth_IdentityStoreOutageIsNotACredentialFailure` (`design.md
   - reflow the `httpsec/basic.go` godoc lines the edit left long.
 
   Verify: the failing lines are recorded, and `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...` passes.
-- [ ] 13.6 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.5 against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas. Verify: as 11.5.
+- [ ] 13.6 Fold the U3 review (D19, hang-up bullet). Red step: in the password authenticator's table, the caller-cancelled case asserts one debug-level record under its own reason, `caller-ended`, and no error-level record, while the connection-error case keeps its error-level `user-loader` record. See it fail on the current error-level `user-loader` record. Also:
+  - a caller context ended with a cause (`WithCancelCause`, `WithTimeoutCause`) whose loader returns `context.Cause(ctx)` is the uniform failure too. Red step: `TestPasswordAuthenticator_CallerCancelCauseIsUniformFailure`'s case in the authenticator's table, seen to fail with `ErrUnavailable`;
+  - a recovery whose password proof's load is ended by the caller is refused and counted as any refusal after the codes passed is. A test case pins it; where it passes on the current code, invert `causedByCaller` temporarily and see it fail;
+  - the godoc of `ErrUnavailable` and `ErrAuthenticationFailed` says that a load the caller's own cancellation or deadline ended is the uniform failure, not unavailable, and `ErrUnavailable`'s names recovery's password proof among the paths that record nothing;
+  - `countsAgainstRecoverySource`'s godoc says a caller-ended load is counted as any refusal after the codes passed is;
+  - the recovery test messages that say an outage is not counted against the source say what `countsAgainstRecoverySource` does: an outage is not marked as a refusal after a valid code;
+  - the `httpsec/login.go` paragraph left short by an earlier edit is reflowed, and the outage test's godoc names its hung-up rows.
+
+  Verify: the failing lines are recorded, and `go test -count=1 -race ./authenticate/... ./httpsec/... ./recovery/...` passes, with `httpsec/ginsec` and `httpsec/fibersec`.
+- [ ] 13.7 Gate: as 12.3, with `ErrUnavailable` as an `added` row and the changed assertion of 13.1 listed for the assertion review. Then an Opus review of 13.1–13.6 against D19 and the `authentication`, `http-error-propagation`, `http-security-chain` and `account-recovery` deltas. Verify: as 11.5.
 
 ## 14. API key authentication can require an active owner (D17)
 
@@ -205,17 +214,23 @@ Proven by `TestVerifier_RefusesTokenForAnotherAudienceWhenNoneConfigured`. One l
   - a row shows a generator that waived both claims accepts a token carrying a foreign `iss` and `aud`.
 
   See the empty-value rows fail. The base rows "configured as the empty string is still enforced" become refusal rows. Verify: the failing lines are recorded, and `go test -count=1 -race ./token/...` passes.
-- [ ] 15.6 Gate: as 12.3, with the four waivers as `added` rows, and the changed tests of 15.2, 15.4 and 15.5 listed for the assertion review. Then an Opus review of 15.1–15.5 against D18 and the `token-issuance` delta. Verify: as 11.5.
+- [x] 15.6 Refuse a blank issuer or audience, and pin the waiver's name in the refusal (D18, white-space bullet). Red step:
+  - rows in both construction tables expect `ErrConfig` for `WithIssuer(" ")`, `WithAudience("\t")`, `WithVerifyIssuer(" ")` and `WithVerifyAudience("\n ")`;
+  - every empty and blank row asserts that the error names the matching waiver (`WithoutIssuer`, `WithoutAudience`, `WithoutVerifyIssuer`, `WithoutVerifyAudience`);
+  - a row shows `WithAudience(" svc ")` is accepted and enforced as given.
+
+  See the blank rows fail. Where a waiver-name assertion passes on the current code, break the message temporarily and see it fail. Then the failure lists in the godoc of `NewVerifier` and `NewGenerator` name the empty-or-blank refusal. Verify: the failing lines are recorded; `go test -count=1 -race ./token/...` passes; `go doc ./token NewVerifier` and `go doc ./token NewGenerator` name the refusal.
+- [ ] 15.7 Gate: as 12.3, with the four waivers as `added` rows, and the changed tests of 15.2, 15.4, 15.5 and 15.6 listed for the assertion review. Then an Opus review of 15.1–15.5 against D18 (done, clean) and a Sonnet review of 15.6 and the `token-issuance` delta. Verify: as 11.5.
 
 ## 16. Limiters charge and refund atomically (D20)
 
-Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 100 runs. Concurrency, so Opus. It is one lane in three sequential dispatches, so that the tree compiles after each one. The port is widened only in 16.3, once every implementation exists. The lane owns:
+Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 100 runs. Concurrency, so Opus. It is one lane in four sequential dispatches, so that the tree compiles after each one. The port is widened only in 16.4, once every implementation exists. The lane owns:
 - `ratelimit/**`, including `ratelimit/redisstore`;
 - `internal/pglimiter` and `internal/unavailable`;
 - `store/sqlstore/limiter*.go` and `store/pgxstore/limiter*.go`;
 - `recovery/codes*.go`;
 - `test/ratelimittest`, `test/pg_ratelimit_fault_test.go`, and the test module's limiter suites;
-- in 16.3, every generated `limiter_mock_test.go`.
+- in 16.4, every generated `limiter_mock_test.go`.
 
 - [ ] 16.1 Add `ratelimit.Receipt` and an interface `ratelimit.Charger` with D20's `Charge` and `Refund`, implement them on the in-memory limiter, and add the conformance cases (D20). Red step:
   - In `test/ratelimittest`, add the conformance cases: 64 goroutines charge one key against a limit of 5, and exactly five succeed; a refund returns the allowance; a refund after the window removes nothing.
@@ -223,13 +238,20 @@ Proven by `TestCodes_ConcurrentWrongCodesStayWithinLimit`, which failed 100 of 1
   - Then run them against the in-memory limiter with stub methods, and see them fail.
 
   Verify: the failing lines are recorded; `go test -count=1 -race ./ratelimit/...` passes, run with `-count=50` for the concurrent case; the test module's in-memory limiter suite passes.
-- [ ] 16.2 Implement `Charger` on `internal/pglimiter` (with the `sqlstore` and `pgxstore` runners), on `redisstore`, and through the `internal/unavailable` decorator (D20). Each shared limiter runs 16.1's conformance cases, and each is first seen to fail against a stub. `pglimiter` charges with one conditional `UPDATE … RETURNING` on the key's row and needs no migration. `redisstore` charges with one Lua script. The decorator passes both methods through, and charges its local fallback when degraded. Verify: `go test -count=1 -race ./...` in the core module and in `ratelimit/redisstore`, `store/sqlstore` and `store/pgxstore`; the Docker-backed limiter suites in the test module pass in CI; `git diff --stat store/migrate` is empty.
-- [ ] 16.3 Widen `ratelimit.Limiter` to embed `Charger`, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
+- [ ] 16.2 Implement `Charger` on `internal/pglimiter` (with the `sqlstore` and `pgxstore` runners), on `redisstore`, and through the `internal/unavailable` decorator (D20). Each shared limiter runs 16.1's conformance cases, and each is first seen to fail against a stub. `pglimiter` charges with one `INSERT … ON CONFLICT DO UPDATE … WHERE` on the key's row, in its own READ COMMITTED transaction, refunds with `array_position` and slicing, and needs no migration. `redisstore` charges with one Lua script and keeps its trimming rule. The decorator passes both methods through, and charges its local fallback when degraded. Verify: `go test -count=1 -race ./...` in the core module and in `ratelimit/redisstore`, `store/sqlstore` and `store/pgxstore`; the Docker-backed limiter suites in the test module pass in CI; `git diff --stat store/migrate` is empty.
+- [ ] 16.3 Fold the L1–L2 review (D20). Red step: add the conformance case "refund removes its own failure, not a newer one" to `test/ratelimittest`: limit 2, window 1m; charge A; advance 30s; charge B; refund A; advance 31s; a charge succeeds, and the key is then exceeded. Add the flaw `refund-removes-newest-instead` to the suite's broken variants, and see the case fail against it with `expected: true actual: false` while the existing cases pass it. Also:
+  - `Refund`'s godoc says a receipt belongs to the limiter that issued it;
+  - `Charger`'s godoc names every limiter scrty ships, not only the in-memory one;
+  - the decorator's `Refund` godoc says "the same microsecond", not "the same instant";
+  - the odd line wraps at `ratelimit/memory.go:548` and `ratelimit/redisstore/limiter.go:349` are reflowed.
+
+  Verify: the failing lines are recorded; `cd test && go test -count=1 -race ./ratelimittest/` passes, including the catch-broken test; the new case passes against the memory limiter, `sqlstore`, `pgxstore` and every Redis and Valkey image in the test module's limiter suites.
+- [ ] 16.4 Widen `ratelimit.Limiter` to embed `Charger`, regenerate every limiter mock with `go generate`, and give the test module's hand-written limiter doubles both methods. Then make `recovery.Codes` charge before the lookup, on a context whose cancellation is stripped, and refund on a valid code (D20). Red step: port the export's `TestCodes_ConcurrentWrongCodesStayWithinLimit` into `recovery`, following `table-test`, with its barrier decorator, and add the `account-recovery` delta's "A valid code spends no allowance" case. See both fail on the check-then-record code; then switch `Codes` to `Charge` and `Refund`. Verify:
   - the failing lines are recorded;
   - `go test -count=100 -race -run TestCodes_ConcurrentWrongCodesStayWithinLimit ./recovery/` passes every run;
   - `go test -count=1 -race ./...` passes in the core module and every nested module;
   - `go generate ./...` leaves no drift.
-- [ ] 16.4 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows. Then an Opus review of 16.1–16.3 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
+- [ ] 16.5 Gate: as 12.3, with `Receipt`, `Charger`, and the two methods on each limiter type as `added` rows. Then an Opus review of 16.1–16.4 against D20 and the `rate-limiting` and `account-recovery` deltas, with attention to:
   - refund precision under concurrent charges;
   - the decorator's degraded path;
   - the conditional `UPDATE` under PostgreSQL's default isolation.
