@@ -712,6 +712,7 @@ The existing `ErrorIs(d.Reason, errAttemptStoreDown)` and `ErrorIs(d.Reason, pol
   - `"missing owner"`: `ErrUserNotFound`, then the same as inactive;
   - `"active owner"`: authenticated, principal `Kind` is service, with the key's reference;
   - `"loader outage"`: `errors.Is(err, authenticate.ErrUnavailable)`, 503, no `RecordFailure`;
+  - `"caller left during the owner load"`: the request context is cancelled and the loader returns `ctx.Err()`; `errors.Is(err, context.Canceled)`, not `ErrUnavailable`, no `RecordFailure`;
   - `"nil loader"`: `New` returns an error.
 - [ ] **Step 3: Run.** `go test -count=1 -run TestAPIKeyOwners ./httpsec/`. Expected: FAIL on the inactive, missing, outage and nil rows. Record the lines.
 - [ ] **Step 4: Implement** the lookup after `Verify` succeeds and before the stateless phase.

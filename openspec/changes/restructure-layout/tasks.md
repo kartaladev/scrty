@@ -198,6 +198,7 @@ Proven by `TestAPIKey_RefusesKeyOfInactiveOwner`. One lane, Opus, because it is 
   - an inactive owner and a missing owner are refused exactly as a wrong key is, and counted against the source;
   - an active owner authenticates as the key's service principal;
   - a loader connection error is refused with `ErrUnavailable`, answered 503, and not counted;
+  - an owner load the request's own context ended is refused with an error matching that context's error, not `ErrUnavailable`, and not counted;
   - `WithAPIKeyOwners(nil)` is a configuration error from `New`.
 
   Declare the option as a no-op first, and see the inactive, missing, outage and nil rows fail. Verify: the failing lines are recorded, and `go test -count=1 -race ./httpsec/...` passes.

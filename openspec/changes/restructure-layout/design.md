@@ -521,6 +521,7 @@ A key's principal is "the consumer's own reference for the machine caller", stor
 **Decision.**
 - **Default:** no lookup, as today. The godoc of `EnableAPIKey` says that deactivating a user then stops none of the keys issued for that reference, and names the option.
 - **Override:** `httpsec.WithAPIKeyOwners(identity.UserLoader)`. After a key verifies, its principal reference is loaded with `LoadByUserID`. A user that is not found or not active is refused exactly as a wrong key is, and counted against the source. A loader failure of any other kind returns D19's `authenticate.ErrUnavailable`, answered 503, and is not counted against the source, because the caller's key was not refused.
+- An owner load that the request's own context or its cause ended is refused with an error wrapping that context's error. It is not `ErrUnavailable`, and nothing is counted against the source, because the key was verified, not refused, and the client has left. This follows D19's line between a store that failed and a caller that left.
 - A nil loader is a configuration error.
 
 **Departure from the established design,** which had no such check: recorded here, justified by `TestAPIKey_RefusesKeyOfInactiveOwner`.
